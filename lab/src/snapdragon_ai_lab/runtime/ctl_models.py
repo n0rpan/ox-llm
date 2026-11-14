@@ -109,6 +109,9 @@ def capabilities(config, context):
             'thinking': 'toggle', 'preserve_thinking': family == 'rust', 'mtp': _mtp(config, family),
             'max_context': max_context, 'vision': False, 'slots': 1,
             'park': {'rust': 'ram+disk', 'rust-flash': 'disk'}.get(family, 'none'),
+            # Wave D D4: the client-neutral, per-model capability names (also on each /v1/models row).
+            'remote': False, 'remote_provider': None, 'echo': rust,
+            'cache_hints': rust, 'cancel': True, 'prefill': rust, 'context_window': max_context,
             'sampling': sampling_controls(family)}
 
 
@@ -198,11 +201,15 @@ class ModelsMixin:
                     cap = self.context_block(config, value).get('cap')
                     if type(cap) is not int:
                         cap = config.get('context_size') if type(config.get('context_size')) is int else None
-                    limits[target] = {'context_length': cap, 'max_output_tokens': output_limit(config)}
+                    caps = capabilities(config, self.context_block(config, value))
+                    limits[target] = {'context_length': cap, 'max_output_tokens': output_limit(config),
+                                      'capabilities': caps}
                 except (Unavailable, OSError, ValueError, KeyError, TypeError, AttributeError):
                     limits[target] = None
             if limits[target] is not None:
                 row.update(limits[target])
+                if isinstance(limits[target].get('capabilities'), dict):
+                    row.setdefault('context_window', limits[target]['capabilities'].get('context_window'))
 
     def catalog(self):
         """Chooser rows for eligible profiles; metadata only, never loads a model."""
