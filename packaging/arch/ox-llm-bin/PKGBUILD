@@ -1,0 +1,18 @@
+# CI artifacts stay local: download, inspect and verify them before invoking makepkg.
+pkgname=ox-llm-bin
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Local AI engine, controller and coding agent (CI CPU binaries)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/n0rpan/ox-llm'
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'python' 'bubblewrap')
+provides=("ox-llm=$pkgver")
+conflicts=('ox-llm')
+options=('!lto' '!debug' '!strip')
+source=("ox-llm-${pkgver}-linux-${CARCH}.tar.gz")
+sha256sums=("${OX_BINARY_SHA256:?set OX_BINARY_SHA256 from verified SHA256SUMS}")
+
+package() {
+  cp -a "$srcdir/usr" "$pkgdir/"
+}
