@@ -729,3 +729,29 @@ fn real_unresolvable_cwd_is_refused() {
         "{out}"
     );
 }
+
+/// Live regression of the gh token-store mask: `hosts.yml` must stay a readable regular file
+/// (gh fails on an unreadable one) but its content (other hosts' tokens) must stay hidden, and
+/// the benign config stays readable.
+#[test]
+fn real_gh_hosts_file_is_readable_empty_and_hides_the_token_store() {
+    let env = TestEnv::new();
+    env.write("home/.config/gh/hosts.yml", "SYNTH-HOST-TOKEN-SENTINEL");
+    env.write("home/.config/gh/config.yml", "editor: synth-editor");
+    let Some(b) = real(&env, machine(&env)) else { return };
+    let mut sp = spec(
+        "cat \"$HOME/.config/gh/hosts.yml\" && test -f \"$HOME/.config/gh/hosts.yml\" && echo REGULAR; cat \"$HOME/.config/gh/config.yml\"",
+        &env.work(),
+        true,
+    );
+    sp.net = true;
+    let r = b.run(&sp, &CancelToken::new(), &mut |_| {});
+    let (exit, out) = (r.exit, String::from_utf8_lossy(&r.output).into_owned());
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("REGULAR") && out.contains("synth-editor"), "{out}");
+    assert!(!out.contains("SYNTH-HOST-TOKEN-SENTINEL"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(env.home().join(".config/gh/hosts.yml")).unwrap(),
+        "SYNTH-HOST-TOKEN-SENTINEL"
+    );
+}

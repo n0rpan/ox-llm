@@ -276,3 +276,27 @@ fn started_in_home_the_startup_files_ask_and_the_folders_are_the_workspace() {
     let a = Access::Write(nvim.join("init.lua"));
     assert_eq!(p.decide(Mode::Workspace, &a, &nvim), Decision::Allow);
 }
+
+#[test]
+fn the_real_account_home_is_denied_as_well_as_a_changed_home() {
+    let env = TestEnv::new();
+    // `real` stands for the passwd home; `$HOME` points elsewhere (env.home()).
+    let real = env.work().join("real-account-home");
+    for rel in [".ssh/id_synth", ".aws/credentials", ".config/gh/hosts.yml", ".gnupg/k"] {
+        env.write(&format!("work/real-account-home/{rel}"), "SYNTH");
+    }
+    let guard = PathGuard::with_real_home(
+        &env.home(),
+        Some(&real),
+        &env.agent_dir(),
+        &env.agent_dir().join("tmp"),
+    );
+    let p = ModePolicy::new().with_guard(guard);
+    for home in [env.home(), real.clone()] {
+        for rel in [".ssh/id_synth", ".aws/credentials", ".gnupg/k"] {
+            for a in [Access::Read(home.join(rel)), Access::Write(home.join(rel))] {
+                assert_eq!(p.decide(Mode::Workspace, &a, &env.work()), SENSITIVE, "{a:?}");
+            }
+        }
+    }
+}

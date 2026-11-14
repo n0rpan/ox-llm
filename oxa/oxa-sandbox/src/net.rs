@@ -44,6 +44,47 @@ fn redact(bytes: &[u8], token: &str) -> Vec<u8> {
     out
 }
 
+/// A streaming redactor: holds back at most `token.len() - 1` bytes (a suffix that could be the
+/// start of the token) between chunks; [`StreamRedactor::finish`] flushes them at EOF.
+struct StreamRedactor<'a> {
+    token: &'a [u8],
+    pending: Vec<u8>,
+}
+
+impl<'a> StreamRedactor<'a> {
+    fn new(token: &'a str) -> Self {
+        StreamRedactor { token: token.as_bytes(), pending: Vec::new() }
+    }
+
+    /// Feed a chunk; returns the bytes now safe to show.
+    fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
+        self.pending.extend_from_slice(chunk);
+        let t = self.token;
+        let mut out = Vec::new();
+        let mut i = 0;
+        let buf = &self.pending;
+        while i < buf.len() {
+            let rest = &buf[i..];
+            if rest.starts_with(t) {
+                out.extend_from_slice(REDACTED.as_bytes());
+                i += t.len();
+            } else if t.starts_with(rest) {
+                break; // maybe the start of the token: wait for more
+            } else {
+                out.push(buf[i]);
+                i += 1;
+            }
+        }
+        self.pending.drain(..i);
+        out
+    }
+
+    /// EOF: whatever is held back is not a token.
+    fn finish(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
 impl NetSandbox {
     /// `setting_on` = [`sandbox_net_setting`]; `offline` = the hard switch.
     pub fn new(inner: Arc<dyn Sandbox>, setting_on: bool, offline: bool) -> NetSandbox {
@@ -87,7 +128,17 @@ impl NetSandbox {
         let Some(t) = self.gh_token.as_ref().filter(|_| s.net) else {
             return run(&s, live);
         };
-        let mut r = run(&s, &mut |b: &[u8]| live(&redact(b, t)));
+        let mut sr = StreamRedactor::new(t);
+        let mut r = run(&s, &mut |b: &[u8]| {
+            let o = sr.push(b);
+            if !o.is_empty() {
+                live(&o);
+            }
+        });
+        let tail = sr.finish();
+        if !tail.is_empty() {
+            live(&tail);
+        }
         r.output = redact(&r.output, t);
         r
     }
@@ -212,5 +263,36 @@ mod tests {
             .with_gh_token(Some("ghp_SECRET123".into()));
         let shown = sb.bwrap_args(&spec(true)).join(" ");
         assert!(!shown.contains("ghp_SECRET123"), "{shown}");
+    }
+
+    /// Emits "a <token> b" in two chunks split at `self.0`.
+    struct Split(usize);
+    impl Sandbox for Split {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(&self, _s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+            let out = b"a SYNTH_MARKER_TOKEN_42 b SYNTH_MARKER_TOKEN_42".to_vec();
+            live(&out[..self.0]);
+            live(&out[self.0..]);
+            ExecResult { output: out, exit: Some(0), timed_out: false }
+        }
+    }
+
+    #[test]
+    fn a_token_split_across_live_chunks_never_leaks() {
+        let total = "a SYNTH_MARKER_TOKEN_42 b SYNTH_MARKER_TOKEN_42".len();
+        for at in 0..=total {
+            let sb = NetSandbox::new(Arc::new(Split(at)), true, false)
+                .with_gh_token(Some("SYNTH_MARKER_TOKEN_42".into()));
+            let mut live = Vec::new();
+            let r = sb.run(&spec(true), &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+            let live = String::from_utf8(live).unwrap();
+            assert_eq!(live, "a [redacted] b [redacted]", "split at {at}");
+            assert_eq!(String::from_utf8(r.output).unwrap(), live, "split at {at}");
+        }
     }
 }
