@@ -36,6 +36,7 @@ test orchestrate CLI approved files ... ok
 test orchestrate CLI crash inspection ... ok
 test native cancellation journal inspection ... ok
 test orchestrate CLI Git worktrees ... ok
+test orchestrate CLI stalled stderr ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -100,3 +101,8 @@ shared approved base while the actual workers see only masked read-only Git
 metadata. The CLI worktree scenario verifies shared controller metadata across
 A2A tasks, refused metadata writes, review proposals, unchanged source and ignored
 ambient Git configuration/object-store injection. See [GIT_WORKTREES.md](GIT_WORKTREES.md).
+The stalled-stderr case fills a blocking pipe before starting the command and
+keeps its reader open without draining it. The one-second run deadline still
+produces a partial JSON report, reaps the owned workers and closes the observed
+owned listener. The caller's stderr flags stay unchanged. The actual feature-built
+binary smoke check exercises the same case.
