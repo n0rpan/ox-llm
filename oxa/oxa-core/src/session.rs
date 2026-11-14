@@ -102,6 +102,8 @@ pub struct Stats {
     pub profile: oxa_proto::Profile,
     /// B6: the engine sent a reply without `cached_tokens` (the notice was shown).
     pub cached_unreported: bool,
+    /// Adaptive thinking on tool follow-ups (`think.rs`) of the current run. Never persisted.
+    pub escalation: crate::think::Escalation,
 }
 
 /// A running session.
