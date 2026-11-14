@@ -164,6 +164,24 @@ pub enum Activity {
     },
 }
 
+impl StatusModel {
+    /// The thinking text for the status line. Claude 5.5 models cannot disable thinking: oxc
+    /// sends adaptive thinking for every level (`off` as `low`), so show that instead of `off`.
+    pub fn thinking_label(&self) -> Option<String> {
+        let level = self.thinking?;
+        let m = self.model.strip_prefix("anthropic/").unwrap_or("");
+        if !(m.starts_with("claude-") && m.contains("-5-5")) {
+            return Some(level.as_str().to_string());
+        }
+        let eff = if level == ThinkingLevel::Off {
+            "low"
+        } else {
+            level.as_str()
+        };
+        Some(format!("adaptive • {eff}"))
+    }
+}
+
 /// Everything the chrome (D6) draws. Updated by [`crate::apply_event`] and by the app from
 /// `Session::state()` / `Session::stats()` after each settle.
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -361,3 +361,21 @@ fn header_profile_word() {
     let lines = render_header(&info, &vm, &keymap, false, 80, &Theme::plain());
     assert_eq!(lines[0], "oxa v0.1.0");
 }
+
+/// Issue #51: Claude 5.5 cannot disable thinking; the footer shows what oxc sends upstream.
+#[test]
+fn footer_claude_55_never_shows_off() {
+    let footer = |model: &str, level| {
+        let st = StatusModel {
+            model: model.to_string(),
+            thinking: Some(level),
+            ..base_status()
+        };
+        render_footer(&vm_with(st), 120, &Theme::plain())[1].clone()
+    };
+    let off = footer("anthropic/claude-sonnet-5-5", ThinkingLevel::Off);
+    assert!(off.contains("adaptive • low") && !off.contains("off"), "{off}");
+    let high = footer("anthropic/claude-sonnet-5-5", ThinkingLevel::High);
+    assert!(high.contains("adaptive • high"), "{high}");
+    assert!(footer("qwen", ThinkingLevel::Off).contains("qwen • off"));
+}
