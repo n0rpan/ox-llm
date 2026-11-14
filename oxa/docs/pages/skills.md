@@ -23,7 +23,7 @@ Where skills are found, in order. The first skill with a name wins; a later one 
 
 1. `--skill <path>` (repeatable);
 2. `~/.oxa/agent/skills/`;
-3. `~/.agents/skills/`;
+3. `~/.agents/skills/`, except skills another product synced there (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s): they are written for that product's own tools, so oxa skips them unless `oxa.skills.includeSynced` is `true`;
 4. the project's `.oxa/skills/` (trusted projects only);
 5. the project's `.agents/skills/`, in the project directory and each parent up to the repository root (trusted projects only);
 6. the paths in the `skills` setting;
