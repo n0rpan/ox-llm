@@ -1,0 +1,438 @@
+//! Git: hooks and config run outside the sandbox later, so a command must not write them,
+//! whatever layout the repository uses for its git directory.
+
+use crate::harness::{assert_refused, dir, run, sandbox, write};
+use oxa_fake::TestEnv;
+use std::path::Path;
+
+fn config(work: &Path, body: &str) {
+    dir(&work.join(".git/hooks"));
+    dir(&work.join(".git/objects"));
+    write(&work.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&work.join(".git/config"), body);
+}
+
+fn plain(env: &TestEnv) -> std::path::PathBuf {
+    let work = env.work();
+    config(&work, "[core]\n\trepositoryformatversion = 0\n");
+    work
+}
+
+/// Threat: a command writes `.git/hooks/pre-commit` or `.git/config`, which git runs/reads
+/// outside the sandbox on the user's next command.
+/// Attempt: append the config and plant a hook, with the entries both present and missing.
+/// Expected refusal: both are read-only; a missing one cannot be created either.
+#[test]
+fn hooks_and_config_are_read_only() {
+    let env = TestEnv::new();
+    let work = plain(&env);
+    let Some(sb) = sandbox(&env) else { return };
+    for cmd in [
+        "printf '\\n[core]\\n\\thooksPath = .\\n' >> .git/config",
+        "printf '#!/bin/sh\\n' > .git/hooks/pre-commit",
+    ] {
+        let (exit, out) = run(&sb, &work, cmd, true, false);
+        assert_refused(exit, &out, cmd);
+    }
+    assert_eq!(
+        std::fs::read_to_string(work.join(".git/config")).expect("config"),
+        "[core]\n\trepositoryformatversion = 0\n"
+    );
+    assert!(!work.join(".git/hooks/pre-commit").exists());
+
+    // Missing entries: the sandbox masks/creates an empty read-only file or directory.
+    let env = TestEnv::new();
+    let work = env.work();
+    dir(&work.join(".git/objects"));
+    write(&work.join(".git/HEAD"), "ref: refs/heads/main\n");
+    let Some(sb) = sandbox(&env) else { return };
+    for cmd in [
+        "printf '#!/bin/sh\\n' > .git/hooks/pre-commit",
+        "printf '[core]\\n\\thooksPath = .\\n' > .git/config",
+    ] {
+        let (exit, out) = run(&sb, &work, cmd, true, false);
+        assert_refused(exit, &out, cmd);
+    }
+    assert!(!work.join(".git/hooks/pre-commit").exists());
+    let cfg = std::fs::read_to_string(work.join(".git/config")).unwrap_or_default();
+    assert!(!cfg.contains("hooksPath"), "config created: {cfg}");
+}
+
+/// Threat: a repository config includes another file and hides `core.hooksPath` there.
+/// Attempt: `[include] path = hooks.cfg` with `hooksPath = .githooks`, then write `.githooks`.
+/// Expected refusal: the included value is followed and its directory is read-only too.
+#[test]
+fn a_hooks_path_in_an_included_config_is_protected() {
+    let env = TestEnv::new();
+    let work = env.work();
+    config(
+        &work,
+        "[core]\n\trepositoryformatversion = 0\n[include]\n\tpath = hooks.cfg\n",
+    );
+    write(&work.join(".git/hooks.cfg"), "[core]\n\thooksPath = .githooks\n");
+    dir(&work.join(".githooks"));
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf '#!/bin/sh\\n' > .githooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "included hooksPath");
+    assert!(!work.join(".githooks/pre-commit").exists());
+}
+
+/// Threat: `core.hooksPath` names a project directory; `.git/hooks` is protected but that
+/// directory is not.
+/// Attempt: write a hook into `.githooks`, both when it exists and when it does not.
+/// Expected refusal: the configured directory is read-only (or masked when missing).
+#[test]
+fn the_configured_hooks_path_is_read_only() {
+    let env = TestEnv::new();
+    let work = env.work();
+    config(
+        &work,
+        "[core]\n\trepositoryformatversion = 0\n\thooksPath = .githooks\n",
+    );
+    dir(&work.join(".githooks"));
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf '#!/bin/sh\\n' > .githooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "existing hooksPath");
+    assert!(!work.join(".githooks/pre-commit").exists());
+
+    let env = TestEnv::new();
+    let work = env.work();
+    config(
+        &work,
+        "[core]\n\trepositoryformatversion = 0\n\thooksPath = .githooks\n",
+    );
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "mkdir -p .githooks && printf '#!/bin/sh\\n' > .githooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "missing hooksPath");
+    assert!(!work.join(".githooks/pre-commit").exists());
+}
+
+/// Threat: `.git` is a symlink to a git directory inside the project; renaming the target and
+/// putting a new one in its place leaves the hooks writable while git still follows the link.
+/// Attempt: write `.git/hooks/pre-commit` (and the target config) through the symlink.
+/// Expected refusal: the sandbox refuses a symlinked `.git` instead of guessing at its target.
+#[test]
+fn a_symlinked_dotgit_is_refused() {
+    let env = TestEnv::new();
+    let work = env.work();
+    dir(&work.join("gitdata/hooks"));
+    dir(&work.join("gitdata/objects"));
+    write(&work.join("gitdata/HEAD"), "ref: refs/heads/main\n");
+    write(&work.join("gitdata/config"), "[core]\n");
+    std::os::unix::fs::symlink("gitdata", work.join(".git")).expect("symlink");
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "mv gitdata gitdata.old && mkdir -p gitdata/hooks && printf '#!/bin/sh\\n' > gitdata/hooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "symlinked .git");
+    assert!(out.contains("sandbox refused"), "{out}");
+    assert!(!work.join("gitdata/hooks/pre-commit").exists());
+}
+
+/// Threat: a worktree `.git` file names a git directory inside the project; the file is
+/// read-only but the gitdir it names is part of the writable cwd.
+/// Attempt: write `gitdata/hooks/pre-commit` and `gitdata/config` behind the `.git` file.
+/// Expected refusal: a `.git` file that names a writable directory is refused.
+#[test]
+fn a_worktree_gitdir_inside_the_project_is_refused() {
+    let env = TestEnv::new();
+    let work = env.work();
+    dir(&work.join("gitdata/hooks"));
+    dir(&work.join("gitdata/objects"));
+    write(&work.join("gitdata/HEAD"), "ref: refs/heads/main\n");
+    write(
+        &work.join(".git"),
+        &format!("gitdir: {}\n", work.join("gitdata").display()),
+    );
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "mkdir -p gitdata/hooks && printf '#!/bin/sh\\n' > gitdata/hooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "worktree gitdir inside cwd");
+    assert!(out.contains("sandbox refused"), "{out}");
+    assert!(!work.join("gitdata/hooks/pre-commit").exists());
+}
+
+/// Threat: an `includeIf` in `.git/config` points at another config that sets a hook path.
+/// Attempt: append to `.git/config` and write the include target.
+/// Expected refusal: a config with includes makes the git directory read-only for the run.
+#[test]
+fn include_if_config_is_not_writable() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let inc = env.tmp().join("hooks.cfg");
+    write(
+        &work.join(".git/config"),
+        &format!(
+            "[core]\n\trepositoryformatversion = 0\n[includeIf \"gitdir:{}/\"]\n\tpath = {}\n",
+            work.display(),
+            inc.display()
+        ),
+    );
+    dir(&work.join(".git/hooks"));
+    dir(&work.join(".git/objects"));
+    write(&work.join(".git/HEAD"), "ref: refs/heads/main\n");
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(&sb, &work, "printf x >> .git/config", true, false);
+    assert_refused(exit, &out, "includeIf config");
+    assert_eq!(
+        std::fs::read_to_string(work.join(".git/config")).expect("config"),
+        format!(
+            "[core]\n\trepositoryformatversion = 0\n[includeIf \"gitdir:{}/\"]\n\tpath = {}\n",
+            work.display(),
+            inc.display()
+        )
+    );
+}
+
+/// Threat: the session builds its layout from a safe repository, then the project replaces
+/// `.git` with a symlink before the next command (a check/use race).
+/// Attempt: build the sandbox, swap `.git` for a symlink to a writable git directory, then run.
+/// Expected refusal: the per-command check sees the symlink and refuses; nothing is written.
+#[test]
+fn a_git_swap_after_start_is_rechecked() {
+    let env = TestEnv::new();
+    let work = plain(&env);
+    let Some(sb) = sandbox(&env) else { return };
+    std::fs::rename(work.join(".git"), work.join("gitdata")).expect("rename .git");
+    dir(&work.join("gitdata/hooks"));
+    write(&work.join("gitdata/config"), "[core]\n");
+    std::os::unix::fs::symlink("gitdata", work.join(".git")).expect("symlink");
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf '#!/bin/sh\\n' > gitdata/hooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "swapped .git");
+    assert!(out.contains("sandbox refused"), "{out}");
+    assert!(!work.join("gitdata/hooks/pre-commit").exists());
+}
+
+/// Threat: a `.git` file names a not-yet-existing gitdir with `..` in the path, so a lexical
+/// check misses it and the command creates the directory and a hook.
+/// Attempt: `.git` -> `../work/gitdata` (missing), then create `gitdata/hooks/pre-commit`.
+/// Expected refusal: the target is normalised to the writable cwd and refused.
+#[test]
+fn a_dotgit_file_with_dotdot_to_a_missing_gitdir_is_refused() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let name = work.file_name().expect("cwd name");
+    write(
+        &work.join(".git"),
+        &format!("gitdir: ../{}/gitdata\n", name.to_string_lossy()),
+    );
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "mkdir -p gitdata/hooks && printf '#!/bin/sh\\n' > gitdata/hooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "dotdot .git target");
+    assert!(out.contains("sandbox refused"), "{out}");
+    assert!(!work.join("gitdata/hooks/pre-commit").exists());
+}
+
+/// Threat: a real `.git` directory has a `commondir` file pointing at a writable directory in
+/// the project; git reads hooks and config from the common dir, not from `.git`.
+/// Attempt: `.git/commondir` -> `../gitdata`, then write `gitdata/hooks/pre-commit`.
+/// Expected refusal: the common dir lies in what the command can write, so commands are refused.
+#[test]
+fn a_gitdir_with_a_commondir_inside_the_project_is_refused() {
+    let env = TestEnv::new();
+    let work = env.work();
+    dir(&work.join(".git/hooks"));
+    dir(&work.join(".git/objects"));
+    write(&work.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&work.join(".git/config"), "[core]\n");
+    write(&work.join(".git/commondir"), "../gitdata\n");
+    dir(&work.join("gitdata/hooks"));
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf '#!/bin/sh\\n' > gitdata/hooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "commondir inside cwd");
+    assert!(out.contains("sandbox refused"), "{out}");
+    assert!(!work.join("gitdata/hooks/pre-commit").exists());
+}
+
+/// Threat: `core.hooksPath` is written with `..` so a lexical check does not see that it
+/// points back inside the project.
+/// Attempt: `hooksPath = ../<cwd>/gitdata/hooks`, then write a hook there.
+/// Expected refusal: the path is normalised before the containment check and protected.
+#[test]
+fn a_hooks_path_with_dotdot_is_normalised() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let name = work.file_name().expect("cwd name").to_string_lossy().into_owned();
+    config(
+        &work,
+        &format!("[core]\n\trepositoryformatversion = 0\n\thooksPath = ../{name}/gitdata/hooks\n"),
+    );
+    dir(&work.join("gitdata/hooks"));
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf '#!/bin/sh\\n' > gitdata/hooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "dotdot hooksPath");
+    assert!(!work.join("gitdata/hooks/pre-commit").exists());
+}
+
+/// Threat: `core.hooksPath` points into a writable package cache, and plan mode still binds
+/// caches read-write, so a read-only command can plant a hook there.
+/// Attempt: plan mode, `hooksPath` in a layout write bind, write the hook.
+/// Expected refusal: the configured hooks path is read-only in plan mode too.
+#[test]
+fn a_hooks_path_in_a_writable_cache_is_read_only_in_plan_mode() {
+    let env = TestEnv::new();
+    let work = env.work();
+    write(&env.home().join(".cache/pip/hooks/keep"), "keep\n");
+    config(
+        &work,
+        "[core]\n\trepositoryformatversion = 0\n\thooksPath = ~/.cache/pip/hooks\n",
+    );
+    let mut layout = oxa_sandbox::Layout::default();
+    layout.write.push(env.home().join(".cache/pip"));
+    let Some(sb) = crate::harness::sandbox_with_layout(&env, layout) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf '#!/bin/sh\\n' > ~/.cache/pip/hooks/pre-commit",
+        false,
+        false,
+    );
+    assert_refused(exit, &out, "hooksPath in a writable cache, plan mode");
+    assert!(!env.home().join(".cache/pip/hooks/pre-commit").exists());
+}
+
+/// Threat: a `.git` file points at an external git directory the sandbox did not validate;
+/// its config can still name `.githooks` in this writable cwd.
+/// Attempt: `.git` -> an external directory that does not pass the worktree checks, then write
+/// `.githooks/pre-commit`.
+/// Expected refusal: an unvalidated `.git` file is refused.
+#[test]
+fn an_unvalidated_external_dotgit_is_refused() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let external = env.tmp().join("external-gitdir");
+    dir(&external);
+    write(&external.join("HEAD"), "ref: refs/heads/main\n");
+    write(&work.join(".git"), &format!("gitdir: {}\n", external.display()));
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "mkdir -p .githooks && printf '#!/bin/sh\\n' > .githooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "unvalidated .git file");
+    assert!(out.contains("sandbox refused"), "{out}");
+    assert!(!work.join(".githooks/pre-commit").exists());
+}
+
+/// Threat: a real `.git` has a `commondir` outside the project; its config can name
+/// `.githooks` in the writable cwd, and the sandbox does not read that config.
+/// Attempt: `commondir` -> an external directory, then write `.githooks/pre-commit`.
+/// Expected refusal: a real `.git` with an unprotected common dir is refused.
+#[test]
+fn a_real_dotgit_with_an_external_commondir_is_refused() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let common = env.tmp().join("external-common");
+    dir(&common);
+    dir(&work.join(".git/hooks"));
+    dir(&work.join(".git/objects"));
+    write(&work.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&work.join(".git/config"), "[core]\n");
+    write(&work.join(".git/commondir"), &format!("{}\n", common.display()));
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "mkdir -p .githooks && printf '#!/bin/sh\\n' > .githooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "external commondir");
+    assert!(out.contains("sandbox refused"), "{out}");
+    assert!(!work.join(".githooks/pre-commit").exists());
+}
+
+/// Threat: a valid worktree `.git` file names a gitdir outside the project but a common dir
+/// inside it; the common dir is exposed by the writable cwd bind and is not self-bound.
+/// Attempt: write `common/hooks/pre-commit` behind the worktree layout.
+/// Expected refusal: a worktree git/common dir inside what the command can write is refused.
+#[test]
+fn a_worktree_common_dir_inside_the_project_is_refused() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let gitdir = env.tmp().join("external-gitdir");
+    let common = work.join("common");
+    dir(&gitdir);
+    dir(&common.join("objects"));
+    dir(&common.join("worktrees"));
+    write(&gitdir.join("HEAD"), "ref: refs/heads/main\n");
+    write(
+        &gitdir.join("gitdir"),
+        &format!("{}\n", work.join(".git").display()),
+    );
+    write(&gitdir.join("commondir"), &format!("{}\n", common.display()));
+    std::os::unix::fs::symlink(&gitdir, common.join("worktrees/external-gitdir")).expect("symlink");
+    dir(&common.join("hooks"));
+    write(&work.join(".git"), &format!("gitdir: {}\n", gitdir.display()));
+    let Some(sb) = sandbox(&env) else { return };
+    assert!(
+        !sb.layout.git.is_empty(),
+        "the fixture must validate as a worktree"
+    );
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf '#!/bin/sh\\n' > common/hooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "worktree common dir inside cwd");
+    assert!(out.contains("sandbox refused"), "{out}");
+    assert!(!common.join("hooks/pre-commit").exists());
+}
