@@ -740,6 +740,13 @@ fn status_from_keeps_display_only_fields() {
     assert_eq!(next.git_branch.as_deref(), Some("main"));
     assert_eq!(next.working_message.as_deref(), Some("Reading"));
     assert_eq!(next.model, state.model);
+    assert!(!next.model_remote, "a local session is shown as local");
+    let mut remote_state = state.clone();
+    remote_state.model_remote = true;
+    remote_state.model_provider = Some("openrouter");
+    let remote = status_from(&remote_state, &stats, &prev);
+    assert!(remote.model_remote);
+    assert_eq!(remote.model_provider, Some("openrouter"));
 }
 
 #[test]

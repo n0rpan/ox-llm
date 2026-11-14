@@ -156,6 +156,8 @@ fn quiet_startup() {
         resources: vec![("skills".to_string(), vec!["review".to_string()])],
         engine_url: "http://127.0.0.1:8080".to_string(),
         model: "qwen".to_string(),
+        model_remote: false,
+        model_provider: None,
         profile: None,
     };
     let keymap = Keymap::defaults();
@@ -351,6 +353,8 @@ fn header_profile_word() {
         resources: Vec::new(),
         engine_url: "http://127.0.0.1:8080".to_string(),
         model: "qwen".to_string(),
+        model_remote: false,
+        model_provider: None,
         profile: Some("local".to_string()),
     };
     let keymap = Keymap::defaults();
@@ -360,4 +364,65 @@ fn header_profile_word() {
     info.profile = None;
     let lines = render_header(&info, &vm, &keymap, false, 80, &Theme::plain());
     assert_eq!(lines[0], "oxa v0.1.0");
+}
+
+/// Wave D D4b: the status bar names where the model runs, both states.
+#[test]
+fn footer_and_header_show_the_model_location() {
+    let local = render_footer(&vm_with(base_status()), 120, &Theme::plain());
+    assert!(local[1].contains("local · qwen"), "local segment: {}", local[1]);
+
+    let remote_status = StatusModel {
+        model_remote: true,
+        model_provider: Some("openrouter"),
+        ..base_status()
+    };
+    let remote = render_footer(&vm_with(remote_status), 120, &Theme::plain());
+    assert!(
+        remote[1].contains("cloud · openrouter · qwen"),
+        "cloud segment: {}",
+        remote[1]
+    );
+
+    let mut theme = coloured();
+    theme.colors.insert("success".to_string(), Color::Indexed(2));
+    theme.colors.insert("accent".to_string(), Color::Indexed(6));
+    let local_colour = render_footer(&vm_with(base_status()), 120, &theme)[1].clone();
+    assert!(
+        local_colour.contains("\x1b[38;5;2m"),
+        "local is green: {local_colour}"
+    );
+    let cloud_colour = render_footer(
+        &vm_with(StatusModel {
+            model_remote: true,
+            model_provider: Some("anthropic"),
+            ..base_status()
+        }),
+        120,
+        &theme,
+    )[1]
+    .clone();
+    assert!(
+        cloud_colour.contains("\x1b[38;5;6m"),
+        "cloud is its own colour: {cloud_colour}"
+    );
+    assert!(cloud_colour.contains("cloud · anthropic"), "{cloud_colour}");
+
+    let keymap = Keymap::defaults();
+    let vm = ViewModel::default();
+    let mut info = HeaderInfo {
+        version: "0.2.0".to_string(),
+        resources: Vec::new(),
+        engine_url: "http://127.0.0.1:8092".to_string(),
+        model: "qwen".to_string(),
+        model_remote: false,
+        model_provider: None,
+        profile: Some("local".to_string()),
+    };
+    let local_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
+    assert!(local_header.contains("local"), "{local_header}");
+    info.model_remote = true;
+    info.model_provider = Some("openrouter");
+    let cloud_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
+    assert!(cloud_header.contains("cloud · openrouter"), "{cloud_header}");
 }

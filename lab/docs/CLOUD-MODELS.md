@@ -96,3 +96,34 @@ one:
   `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`;
   provider values win, missing values are completed.
 - The reply's `model` is the catalog id the client asked for, not the upstream id.
+
+## Per-model capabilities and oxa
+
+Every `/v1/models` row and every `model_limits[id]` entry in `/_local/status` carries a
+capability block with the client-neutral names:
+
+| field | meaning |
+|---|---|
+| `remote` | `true` when the model runs at a provider through the controller |
+| `remote_provider` | `openrouter` / `anthropic`, else `null` |
+| `echo` | the engine echoes a cached reply (local Rust engine) |
+| `cache_hints` | local prefix hints (snapshot, hint clear, cache warming) are useful |
+| `cancel` | a running request may be cancelled by closing the socket |
+| `prefill` | zero-token prefill (`max_tokens: 0`) is available |
+| `context_window` | the model's context window; the context size a client should use |
+
+The older local fields (`prefill_only`, `snapshot_hint`, `hint_clear`, `preserve_thinking`,
+`park`, `max_context`) remain next to them for existing clients.
+
+oxa reads these per model before its first request:
+
+- it takes `context_window` (or the row's `cap`) as the model's context size;
+- for a remote model it does not send the local `X-Oxe-*` hints, `cache_prompt`,
+  `chat_template_kwargs`/`preserve_thinking`, prefix snapshots or cache-warming requests; it
+  sends the standard `reasoning_effort` instead and skips local cache-miss accounting;
+- under `--offline` / `OXA_OFFLINE` it refuses a model whose `remote` capability is true with
+  the usual two-line offline error.
+
+The interactive status bar shows the location: `local` in the theme's green, or
+`cloud · openrouter` / `cloud · anthropic` in the accent colour; the start banner shows the
+same segment.

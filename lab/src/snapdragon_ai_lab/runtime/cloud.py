@@ -293,7 +293,7 @@ def capabilities(item):
     """The Wave D per-model capability block for a remote catalog entry."""
     return {'remote': True, 'remote_provider': item['provider'], 'echo': False,
             'cache_hints': False, 'cancel': True, 'prefill': False,
-            'context_window': item['context_window']}
+            'preserve_thinking': False, 'context_window': item['context_window']}
 
 
 def row(item):
@@ -301,6 +301,7 @@ def row(item):
     return {'id': item['id'], 'object': 'model', 'created': 0, 'owned_by': item['provider'],
             'name': item['display_name'], 'remote': True, 'provider': item['provider'],
             'context_length': item['context_window'],
+            'context_window': item['context_window'],
             'max_output_tokens': item['max_output'],
             'capabilities': capabilities(item)}
 

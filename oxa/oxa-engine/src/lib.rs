@@ -23,7 +23,7 @@ mod http;
 mod info;
 mod sse;
 
-pub use chat::{build_body, HttpEngine, ReplyAssembler};
+pub use chat::{build_body, build_body_for, HttpEngine, ReplyAssembler};
 pub use hints::{build_headers, new_idem_key};
 pub use http::{http_request, HttpRequest, HttpResponse, Url};
 pub use info::{count_tokens, fetch_info, fetch_info_for, parse_info, parse_info_for, DEFAULT_MAX_OUTPUT};

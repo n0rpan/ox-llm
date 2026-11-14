@@ -80,12 +80,12 @@ pub fn parse_info_for(
     let row = status
         .get("model_limits")
         .and_then(|m| m.get(key))
-        .filter(|r| first_u32(r, &["/cap"]).is_some_and(|n| n > 0));
+        .filter(|r| first_u32(r, &["/context_window", "/cap"]).is_some_and(|n| n > 0));
 
     let (limits_for, n_ctx, published_output, compact_at) = match row {
         Some(r) => (
             key.to_string(),
-            first_u32(r, &["/cap"]).unwrap_or(0),
+            first_u32(r, &["/context_window", "/cap"]).unwrap_or(0),
             first_u32(r, &["/max_output"]),
             mode_compact_at(r),
         ),
@@ -124,6 +124,9 @@ pub fn parse_info_for(
         .unwrap_or_else(|| DEFAULT_MAX_OUTPUT.min(n_ctx / 4).max(1));
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
     let (prefill_only, caps) = capabilities(status, &limits_for);
+    if caps.remote && oxa_proto::offline() {
+        return Err(oxa_proto::offline_error(&format!("the cloud model {limits_for}")));
+    }
 
     Ok(EngineInfo {
         base_url: base_url.to_string(),
@@ -155,13 +158,25 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
         .and_then(|r| r.get("capabilities"))
         .filter(|c| c.is_object());
     if let Some(c) = published {
+        let prefill = flag(c, "prefill") || flag(c, "prefill_only");
         let caps = EngineCaps {
             snapshot_keep: count(c, "snapshot_hint"),
-            hint_clear: flag(c, "hint_clear"),
+            hint_clear: flag(c, "hint_clear") || flag(c, "cache_hints"),
             preserve_thinking: c.get("preserve_thinking").and_then(Value::as_bool),
             park_disk_only: c.get("park").and_then(Value::as_str) == Some("disk"),
+            remote: flag(c, "remote"),
+            remote_provider: match c.get("remote_provider").and_then(Value::as_str) {
+                Some("openrouter") => Some("openrouter"),
+                Some("anthropic") => Some("anthropic"),
+                _ => None,
+            },
+            echo: flag(c, "echo"),
+            cache_hints: flag(c, "cache_hints") || flag(c, "hint_clear"),
+            cancel: flag(c, "cancel"),
+            prefill,
+            context_window: first_u32(c, &["/context_window"]),
         };
-        return (flag(c, "prefill_only"), caps);
+        return (prefill || flag(c, "prefill_only"), caps);
     }
     match status.get("oxe_hints").filter(|h| h.is_object()) {
         Some(h) => (
@@ -171,6 +186,9 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
                 hint_clear: flag(h, "hint_clear"),
                 preserve_thinking: None,
                 park_disk_only: false,
+                cache_hints: flag(h, "hint_clear"),
+                prefill: flag(h, "prefill_only"),
+                ..EngineCaps::default()
             },
         ),
         None => (false, EngineCaps::default()),
