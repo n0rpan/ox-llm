@@ -42,11 +42,11 @@ class CloudCase(unittest.TestCase):
         if self.stack is not None:
             self.stack.close()
 
-    def start(self, *, enabled=True, budget=1.0, offline=False, models=None, mock=None):
+    def start(self, *, enabled=True, budget=1.0, offline=False, models=None, mock=None, base_suffix='/v1'):
         mock = mock or self.upstream
         table = models if models is not None else profiles()
         for row in table.values():
-            row['base_url'] = mock.base + '/v1'
+            row['base_url'] = mock.base + base_suffix
         cloud_config = {'enabled': enabled, 'daily_budget_usd': budget, 'secrets_file': str(self.secrets),
                         'models': table}
         environ = {'LOCAL_AI_LEDGER_DIR': str(self.ledger)}

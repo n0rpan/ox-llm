@@ -10,11 +10,13 @@ if __package__:
     from .ctl_proxy_prep import HOP_HEADERS
     from .ctl_seams import ctl
     from . import cloud, openai_api
+    from . import cloud_anthropic
 else:
     from ctl_proxy_prep import HOP_HEADERS
     from ctl_seams import ctl
     import cloud
     import openai_api
+    import cloud_anthropic
 
 MAX_STREAM_BYTES = 64 * 1024 * 1024
 _budget_lock = threading.Lock()
@@ -74,6 +76,8 @@ def forward(self, st):
         key = cloud.secret(item['provider'], value)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, 'cloud_credentials_unavailable', error.param)
+    if item['provider'] == 'anthropic':
+        return cloud_anthropic.forward(self, st, item, key)
     try:
         body = cloud.upstream_payload(st.payload, item)
     except cloud.CloudError as error:

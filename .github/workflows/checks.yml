@@ -110,6 +110,10 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
+      - name: Anthropic SDK for the mock-only D6 tests
+        # The native Messages client is the official SDK; every test talks to a loopback mock,
+        # never a real API and never a real key.
+        run: python3 -m pip install --disable-pip-version-check 'anthropic==0.125.0'
       - name: Unit tests (verbose, so skips are visible)
         run: |
           set -o pipefail
