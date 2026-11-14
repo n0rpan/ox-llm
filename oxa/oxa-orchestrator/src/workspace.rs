@@ -88,6 +88,8 @@ fn protected(part: &str) -> bool {
             | ".pypirc"
             | "credentials"
             | "credentials.json"
+            | "registration.json"
+            | ".registration.json.pending"
             | "secrets.json"
             | "id_rsa"
             | "id_ed25519"
@@ -754,6 +756,9 @@ mod tests {
             "a/./b",
             "a\\b",
             ".env",
+            "registration.json",
+            "nested/REGISTRATION.JSON",
+            ".registration.json.pending",
             "src/.git/config",
             "x.key",
             "x\nname",
