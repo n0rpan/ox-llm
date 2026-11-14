@@ -12,7 +12,7 @@ This is selected profile coverage, not full upstream-suite conformance.
 
 Current scope: typed messages/tasks/events/cards, JSON-RPC envelope validation,
 task identity checks, a bounded SSE data reader, authenticated loopback HTTP
-client and an owned mock agent. File parts and unknown
+client, an owned mock agent and a bounded server for owned backends. File parts and unknown
 required extensions fail closed. Cards cannot change the registered endpoint.
 The client provides send, get, stream, cancel and resubscribe. Streams bind
 task/context IDs and reject disconnects before a final record. Tests exercise
@@ -24,12 +24,22 @@ supports completed echo tasks or paused tasks that can be canceled or steered.
 It is a development fixture, with no models or tools. Unsupported send
 configuration fails explicitly, including push-notification configuration.
 
-Limits: HTTP responses must carry Content-Length; chunked transfer encoding is
-rejected. No production TLS/remote adapter exists yet. Literal loopback mocks
-are the only eligible routes; a loopback oxc proxy is not thereby proven local
-or offline. No worker processes are launched. Permission envelopes, production
-credentials, artifact accumulation and worker budget enforcement belong to
-later orchestration work and are not supplied by these wire types.
+`server::Server` explicitly starts an authenticated loopback-only listener for
+trusted `Backend` implementations. It serves send/get/cancel and live streaming
+or resubscription through bounded task snapshots. It limits simultaneous
+handlers, leaves one slot available for non-streaming control requests, caps
+headers/bodies/events, and interrupts owned sockets and joins handlers on drop.
+Cancellation must produce a terminal task state; an unverified acknowledgment
+is an error. The backend must supply bounded methods and join its owned work
+on shutdown. No models, tools or arbitrary plugins implement this trait.
+
+Limits: JSON responses require Content-Length; SSE also supports explicit
+Connection: close framing for live updates. Chunked transfer encoding remains
+unsupported. No production TLS/remote adapter exists yet. Only explicitly
+registered loopback development agents are eligible; a loopback oxc proxy is
+not thereby proven local or offline. This crate itself launches no workers.
+Permission envelopes, production credentials, artifact accumulation and worker
+budget enforcement belong to orchestration and are not supplied by wire types.
 
 Run `cargo test --locked -p oxa-a2a` from `oxa/`. The workspace registration
 adds this crate to ordinary hosted checks without linking it into `oxa`.

@@ -2,7 +2,8 @@
 //!
 //! It cannot reach remote hosts, resolve DNS, follow redirects, use proxies or
 //! load credentials from the environment. This is not a production TLS client.
-//! HTTP responses require Content-Length; chunked encoding is not supported.
+//! JSON responses require Content-Length. SSE also permits explicitly
+//! close-delimited bodies; chunked encoding is not supported yet.
 use crate::sse::SseReader;
 use crate::wire::*;
 use serde_json::{json, Value};
@@ -194,7 +195,21 @@ impl Client {
         if head.headers.get("content-type").and_then(|s| s.split(';').next()) != Some(content_type) {
             return Err(invalid("unexpected agent content type"));
         }
-        let length = head.length(self.limits.body_bytes)?;
+        let length = if content_type == "text/event-stream"
+            && !head.headers.contains_key("content-length")
+            && !head.headers.contains_key("transfer-encoding")
+            && head
+                .headers
+                .get("connection")
+                .is_some_and(|s| s.eq_ignore_ascii_case("close"))
+        {
+            self.limits
+                .body_bytes
+                .checked_add(1)
+                .ok_or_else(|| invalid("invalid body limit"))?
+        } else {
+            head.length(self.limits.body_bytes)?
+        };
         Ok(Response {
             body: reader.take(length as u64),
         })

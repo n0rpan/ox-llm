@@ -112,3 +112,32 @@ fn stalled_headers_are_bounded_by_the_absolute_deadline() {
     assert!(start.elapsed() < Duration::from_secs(2));
     handle.join().unwrap();
 }
+
+#[test]
+fn close_delimited_sse_requires_explicit_framing_and_protocol_completion() {
+    let message = "data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"message\",\"messageId\":\"m\",\"role\":\"agent\",\"parts\":[{\"kind\":\"text\",\"text\":\"synthetic\"}]}}\n\n";
+    let framed =
+        format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{message}");
+    with_server(framed.into_bytes(), |client| {
+        let mut stream = client.stream(params()).unwrap();
+        assert!(matches!(stream.next_event().unwrap(), Some(Event::Message(_))));
+        assert!(stream.next_event().unwrap().is_none());
+    });
+    for head in [
+        "Content-Type: text/event-stream\r\n",
+        "Content-Type: text/event-stream\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n",
+    ] {
+        with_server(
+            format!("HTTP/1.1 200 OK\r\n{head}\r\n{message}").into_bytes(),
+            |client| assert!(client.stream(params()).is_err()),
+        );
+    }
+    with_server(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: incomplete"
+            .to_vec(),
+        |client| {
+            let mut stream = client.stream(params()).unwrap();
+            assert!(stream.next_event().is_err());
+        },
+    );
+}
