@@ -67,15 +67,23 @@ echoes the key is redacted before it reaches the client.
   and code `offline`, before any DNS or socket call. Remote models are not listed while
   offline.
 - `cloud.daily_budget_usd` is a positive USD cap per local day. A missing or non-positive cap
-  fails closed (`budget_not_configured`). Once the sum of today's `cost_usd` ledger rows
-  reaches the cap, requests get `429` with code `budget_exceeded`.
+  fails closed (`budget_not_configured`). Admission atomically reserves the worst case
+  (`prompt estimate + max_tokens` at the model price) before forwarding, so concurrent
+  requests cannot all spend the same budget; the actual cost settles after the ledger row is
+  written. A request that would exceed `spent + reserved` gets `429` with code
+  `budget_exceeded`.
+- Missing usage charges the reserved worst case, never zero. An unreadable, corrupt or
+  unwritable ledger refuses remote calls with `503` and code `cloud_ledger_unavailable` until
+  it is repaired.
 - Every remote request writes one ledger row with `remote: true`, `remote_provider`, the
-  upstream model id, token usage when the provider reports it and `cost_usd`. The prompt and
-  reply text are never written.
+  upstream model id, token usage when the provider reports it and a settled `cost_usd`. The
+  prompt and reply text are never written. Streamed chunks, success bodies, errors and error
+  bodies are all redacted for the upstream key before they reach the client or the ledger.
 
 ## Tests
 
 `lab/tests/test_cloud_remote.py` runs a mock OpenRouter server on loopback: routing and the
-forced privacy prefs, the key boundary, cloud-off-by-default, the offline refusal, the budget
-cap, streamed usage metering and ledger rows. No test reads a real key or calls a real cloud
+forced privacy prefs, the key boundary (including a key split across TCP chunks), cloud-off-by-
+default, the offline refusal, atomic budget reservation under concurrent requests, missing
+usage, corrupt/unreadable ledgers, streamed usage metering and ledger rows. No test reads a real key or calls a real cloud
 API.

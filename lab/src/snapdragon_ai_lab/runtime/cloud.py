@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import ssl
+import threading
 import urllib.parse
 
 if __package__:
@@ -28,7 +29,15 @@ LEGACY_OFFLINE = 'LOCAL_AI_OFFLINE'
 DEFAULT_TIMEOUT = 1800.0
 MAX_SECRET_BYTES = 64 * 1024
 MAX_ERROR_BYTES = 1024 * 1024
+COST_EPSILON = 1e-12
 _TRUE = ('1', 'true', 'yes')
+
+# Admission reservations are per local day and per process: a request reserves its worst-case
+# cost here before it is forwarded, so concurrent requests cannot all spend the same budget.
+_budget_lock = threading.Lock()
+_reserved = {}
+_ledger_failures = set()
+
 
 
 class CloudError(Exception):
@@ -173,11 +182,18 @@ def cost(entry_value, prompt_tokens, completion_tokens):
     return round((prompt * price['input_per_million'] + completion * price['output_per_million']) / 1_000_000.0, 8)
 
 
-def budget(value):
-    """The daily USD cap (None = not configured, which fails closed) and today's spend."""
+def _cap(value):
     cap = settings(value).get('daily_budget_usd')
-    cap = float(cap) if type(cap) in (int, float) and math.isfinite(cap) and cap > 0 else None
-    return cap, spend_today(value)
+    return float(cap) if type(cap) in (int, float) and math.isfinite(cap) and cap > 0 else None
+
+
+def budget(value):
+    """The daily USD cap (None = not configured, which fails closed) and today's spend.
+
+    ``spend_today`` raises :class:`CloudError` when the ledger cannot be read or is corrupt:
+    an accounting failure must never look like zero spend.
+    """
+    return _cap(value), spend_today(value)
 
 
 def _ledger_dir():
@@ -187,30 +203,171 @@ def _ledger_dir():
         return None
 
 
-def spend_today(value=None, day=None):
-    """Today's remote spend from the request ledger, or 0.0 when it is unavailable."""
-    directory = _ledger_dir()
-    if directory is None:
-        return 0.0
-    import time
-    day = day or time.strftime('%Y%m%d')
-    path = Path(directory) / ('requests-%s.jsonl' % day)
+def _ledger_error():
+    return CloudError('The request ledger is unreadable; cloud calls are blocked until it is repaired.',
+                      503, 'cloud_ledger_unavailable')
+
+
+def _read_spend(path):
     total = 0.0
     try:
-        with open(path, encoding='utf-8') as stream:
+        stream = open(path, encoding='utf-8')
+    except FileNotFoundError:
+        return 0.0
+    except (OSError, UnicodeError):
+        raise _ledger_error() from None
+    try:
+        with stream:
             for line in stream:
+                if not line.strip():
+                    continue
                 try:
                     row = json.loads(line)
                 except ValueError:
+                    raise _ledger_error() from None
+                if not isinstance(row, dict):
+                    raise _ledger_error() from None
+                if row.get('remote') is not True:
                     continue
-                if not isinstance(row, dict) or row.get('remote') is not True:
-                    continue
-                value = row.get('cost_usd')
-                if type(value) in (int, float) and math.isfinite(value) and value >= 0:
-                    total += value
-    except OSError:
-        return 0.0
+                usd = row.get('cost_usd')
+                if type(usd) not in (int, float) or not math.isfinite(usd) or usd < 0:
+                    # A remote row without a settled cost under-counts the cap: fail closed.
+                    raise _ledger_error() from None
+                total += usd
+    except CloudError:
+        raise
+    except (OSError, UnicodeError):
+        raise _ledger_error() from None
     return round(total, 8)
+
+
+def spend_today(value=None, day=None):
+    """Today's remote spend from the request ledger.
+
+    Missing today's file is zero spend.  An unreadable file, a malformed row or a remote row
+    without a cost raises :class:`CloudError` (fail closed) instead of returning 0.0.
+    """
+    directory = _ledger_dir()
+    if directory is None:
+        raise _ledger_error()
+    import time
+    day = day or time.strftime('%Y%m%d')
+    path = Path(directory) / ('requests-%s.jsonl' % day)
+    # Read under the ledger's own append lock so a row written by a concurrent finish is
+    # either absent or complete; never parse a half-appended line.
+    lock = getattr(ctl.request_ledger, 'LEDGER_LOCK', None)
+    if lock is None:
+        return _read_spend(path)
+    with lock:
+        return _read_spend(path)
+
+
+def mark_ledger_failure(value=None):
+    """A cloud ledger row could not be written: refuse further cloud calls for this directory."""
+    directory = _ledger_dir()
+    if directory is not None:
+        _ledger_failures.add(str(directory))
+
+
+def _check_ledger_health():
+    directory = _ledger_dir()
+    if directory is not None and str(directory) in _ledger_failures:
+        raise _ledger_error()
+
+
+def _max_tokens(payload, item):
+    for field in ('max_tokens', 'max_completion_tokens', 'n_predict'):
+        value = payload.get(field) if isinstance(payload, dict) else None
+        if type(value) is int and value > 0:
+            return value
+    value = item.get('max_output')
+    return value if type(value) is int and value > 0 else 4096
+
+
+def estimate_prompt_tokens(payload):
+    """A deterministic upper-ish estimate for admission: UTF-8 bytes of the prompt / 4."""
+    if not isinstance(payload, dict):
+        return 1
+    material = {'messages': payload.get('messages'), 'tools': payload.get('tools'),
+                'system': payload.get('system')}
+    try:
+        text = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    except (TypeError, ValueError):
+        text = str(material)
+    return max(1, (len(text.encode('utf-8', 'replace')) + 3) // 4)
+
+
+def worst_case_cost(item, payload):
+    """The most one request can cost: the prompt estimate plus max_tokens at the output price."""
+    usd = cost(item, estimate_prompt_tokens(payload), _max_tokens(payload, item))
+    return math.inf if usd is None else usd
+
+
+class BudgetHold:
+    """One admission reservation.  ``settle`` is idempotent and must always run."""
+
+    def __init__(self, day, reserved):
+        self.day = day
+        self.reserved = reserved
+        self.settled = False
+
+    def settle(self):
+        with _budget_lock:
+            if self.settled:
+                return
+            remaining = _reserved.get(self.day, 0.0) - self.reserved
+            if remaining > 0:
+                _reserved[self.day] = remaining
+            else:
+                _reserved.pop(self.day, None)
+            self.settled = True
+
+
+def reserve(value, item, payload):
+    """Atomically reserve the worst-case cost before forwarding, or raise a clear CloudError."""
+    cap = _cap(value)
+    if cap is None:
+        raise CloudError('Cloud models need a per-day USD budget (`cloud.daily_budget_usd`).',
+                         403, 'budget_not_configured')
+    if not getattr(ctl.request_ledger, 'enabled', lambda: True)():
+        raise CloudError('The request ledger is disabled; cloud calls are blocked until it is enabled.',
+                         503, 'cloud_ledger_unavailable')
+    _check_ledger_health()
+    day = spend_day()
+    worst = worst_case_cost(item, payload)
+    with _budget_lock:
+        spent = spend_today(value, day=day)
+        already = _reserved.get(day, 0.0)
+        if spent + already + worst > cap + COST_EPSILON:
+            raise CloudError('The daily cloud budget is exhausted.', 429, 'budget_exceeded')
+        _reserved[day] = already + worst
+    return BudgetHold(day, worst)
+
+
+def spend_day():
+    import time
+    return time.strftime('%Y%m%d')
+
+
+def conservative_cost(row, hold, failed=False):
+    """Fill a ledger row from a reservation when usage or cost is missing.
+
+    A failed request (or a reply that never reported usage) is charged the reserved
+    worst case, never zero.  The reservation is released only by the caller after the row has
+    been written, so a crash cannot make spend disappear.
+    """
+    if hold is None:
+        return row
+    missing = (failed or row.get('prompt_tokens') is None or row.get('completion_tokens') is None
+               or row.get('cost_usd') is None)
+    if missing:
+        row['cost_usd'] = hold.reserved
+        row['usage_missing'] = True
+        row['settled'] = 'reserved'
+    else:
+        row['settled'] = 'usage'
+    return row
+
 
 
 def secrets_file(value):
@@ -276,16 +433,50 @@ def configured(value):
 
 
 def redact(text, key):
-    """Remove a known key from an error/body string before it can reach a client or a log.
-    Bytes stay bytes (an SSE or JSON body is relayed as it arrived, minus the key)."""
-    was_bytes = isinstance(text, bytes)
-    if was_bytes:
-        text = text.decode('utf-8', 'replace')
-    if not isinstance(text, str):
+    """Remove a known key from a body/error string before it can reach a client or a log."""
+    if not key:
         return text
-    if key:
-        text = text.replace(key, '[redacted]')
-    return text.encode('utf-8') if was_bytes else text
+    if isinstance(text, bytes):
+        return text.replace(key.encode('utf-8'), b'[redacted]')
+    if isinstance(text, str):
+        return text.replace(key, '[redacted]')
+    return text
+
+
+class StreamRedactor:
+    """Incremental redactor for a byte stream: a key split across chunks is still removed.
+
+    Only the longest suffix that could be the start of the key is held, so ordinary text is
+    never delayed just because the key is long.
+    """
+
+    def __init__(self, key):
+        self.key = key.encode('utf-8') if isinstance(key, str) and key else b''
+        self.buffer = b''
+
+    def feed(self, chunk):
+        if not self.key:
+            return chunk
+        data = (self.buffer + chunk).replace(self.key, b'[redacted]')
+        hold = 0
+        for size in range(min(len(self.key) - 1, len(data)), 0, -1):
+            if data.endswith(self.key[:size]):
+                hold = size
+                break
+        if hold:
+            self.buffer = data[-hold:]
+            return data[:-hold]
+        self.buffer = b''
+        return data
+
+    def finish(self):
+        if not self.key or not self.buffer:
+            self.buffer = b''
+            return b''
+        data = self.buffer.replace(self.key, b'[redacted]')
+        self.buffer = b''
+        return data
+
 
 
 def capabilities(item):
@@ -409,7 +600,7 @@ class Meter:
             except ValueError:
                 pass
 
-    def row(self, item):
+    def row(self, item, secret=None):
         prompt, completion = self.prompt, self.completion
         out = {'remote': True, 'remote_provider': item['provider'],
                'remote_model': item['upstream_model']}
@@ -420,7 +611,7 @@ class Meter:
         if self.cached is not None:
             out['cached_tokens'] = self.cached
         if self.finish is not None:
-            out['finish_reason'] = self.finish
+            out['finish_reason'] = redact(self.finish, secret)
         usd = cost(item, prompt, completion)
         if usd is not None:
             out['cost_usd'] = usd
