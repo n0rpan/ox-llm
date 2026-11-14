@@ -18,16 +18,35 @@ use std::sync::{
 use std::time::Duration;
 
 pub enum Control {
-    Pause { revision: u64 },
-    Resume { revision: u64 },
-    Steer { revision: u64, text: String },
-    Cancel { revision: u64 },
+    /// Correlate an attachment request with its eventual owner admission event.
+    Identified {
+        id: String,
+        control: Box<Control>,
+    },
+    Pause {
+        revision: u64,
+    },
+    Resume {
+        revision: u64,
+    },
+    Steer {
+        revision: u64,
+        text: String,
+    },
+    Cancel {
+        revision: u64,
+    },
+    SetGoal {
+        revision: u64,
+        text: String,
+    },
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Event {
     pub kind: String,
     pub goal: goals::Snapshot,
     pub reply: Option<String>,
+    pub request_id: Option<String>,
 }
 #[derive(Debug, Serialize)]
 pub struct Report {
@@ -108,7 +127,12 @@ pub fn pursue(
     let mut active = true;
     let mut needs_declaration = false;
     emit(&goal, "goal_started", None, &mut observe);
+    let mut status_at = std::time::Instant::now();
     loop {
+        if status_at.elapsed() >= Duration::from_millis(250) {
+            emit(&goal, "goal_status", None, &mut observe);
+            status_at = std::time::Instant::now();
+        }
         for _ in 0..32 {
             let control = match controls.try_recv() {
                 Ok(control) => control,
@@ -118,7 +142,14 @@ pub fn pursue(
                     break;
                 }
             };
+            let (request_id, control) = match control {
+                Control::Identified { id, control } if !id.is_empty() && id.len() <= 128 => {
+                    (Some(id), *control)
+                }
+                control => (None, control),
+            };
             let accepted = match control {
+                Control::Identified { .. } => false,
                 Control::Pause { revision } => goal
                     .pause(revision)
                     .map(|effect| {
@@ -133,6 +164,17 @@ pub fn pursue(
                     .is_some(),
                 Control::Resume { revision } => goal.resume(revision).is_ok(),
                 Control::Cancel { revision } => goal.cancel(revision).is_ok(),
+                Control::SetGoal { revision, text } => {
+                    // Keep escaped text inside the native task's size bound.
+                    if serde_json::to_string(&text).is_ok_and(|s| s.len() <= 24 * 1024)
+                        && goal.set_goal(revision, text.clone()).is_ok()
+                    {
+                        journal.record(None, "goal_updated", json!({"goalSha256":digest(&text)}))?;
+                        true
+                    } else {
+                        false
+                    }
+                }
                 Control::Steer { revision, text } => {
                     if revision == goal.revision()
                         && goal.state() == State::Active
@@ -147,16 +189,17 @@ pub fn pursue(
                     }
                 }
             };
-            emit(
-                &goal,
-                if accepted {
+            observe(Event {
+                kind: if accepted {
                     "control_admitted"
                 } else {
                     "control_rejected"
-                },
-                None,
-                &mut observe,
-            );
+                }
+                .into(),
+                goal: goal.snapshot(),
+                reply: None,
+                request_id,
+            });
         }
         if cancel.load(Ordering::Acquire) {
             let _ = goal.cancel(goal.revision());
@@ -234,6 +277,7 @@ pub fn pursue(
                 }
                 active = false;
                 journal.record(None,"goal_turn_finished",json!({"turn":goal.snapshot().turns_started,"state":goal.state(),"reportedTokens":goal.snapshot().reported_tokens,"replySha256":digest(&last_reply)}))?;
+                emit(&goal, "turn_reply", Some(last_reply.clone()), &mut observe);
                 if !matches!(outcome, Outcome::Completed | Outcome::Canceled) {
                     if matches!(outcome, Outcome::TokenBudget | Outcome::OutputBudget) {
                         goal.runtime_budget(if outcome == Outcome::TokenBudget {
@@ -250,7 +294,6 @@ pub fn pursue(
                 if goal.state() == State::Done {
                     break;
                 }
-                emit(&goal, "turn_reply", Some(last_reply.clone()), &mut observe);
                 continue; // admit controls before automatically starting another turn
             }
         }
@@ -302,6 +345,7 @@ fn emit(goal: &Goal, kind: &str, reply: Option<String>, observe: &mut impl FnMut
         kind: kind.into(),
         goal: goal.snapshot(),
         reply,
+        request_id: None,
     });
 }
 fn digest(text: &str) -> String {

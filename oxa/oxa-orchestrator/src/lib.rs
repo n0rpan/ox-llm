@@ -4,6 +4,7 @@ pub mod a2a_run;
 mod agent_cli;
 mod checkpoint;
 pub mod cli;
+pub mod control;
 mod git_worktrees;
 pub mod goal_session;
 pub mod goals;

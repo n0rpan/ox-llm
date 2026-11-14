@@ -62,6 +62,164 @@ fn assert_reaped(report: &RunReport) {
     }
 }
 
+fn control_request(path: &Path, value: serde_json::Value) -> serde_json::Value {
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect(path).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    writeln!(stream, "{value}").unwrap();
+    serde_json::from_reader(stream).unwrap()
+}
+fn shared_clients_control_one_native_goal_session() {
+    use oxa_orchestrator::{control, goal_session, goals};
+    use serde_json::json;
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![
+            ScriptTurn::text(r#"{"state":"continue","summary":"shared-first-step"}"#),
+            ScriptTurn::text(
+                r#"{"state":"done","summary":"shared goal verified","evidence":["same context retained"]}"#,
+            ),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let mut config = settings(&env, "shared-session");
+    config.parallelism = 1;
+    config.wall_time = Duration::from_secs(10);
+    let directory = config.directory.clone();
+    let spec = worker(&engine, "shared-author");
+    let (tx, rx) = mpsc::sync_channel(64);
+    let (ready, await_ready) = mpsc::channel::<std::path::PathBuf>();
+    let clients = std::thread::spawn(move || {
+        let socket = await_ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let started = Instant::now();
+        let revision = loop {
+            let status = control_request(&socket, json!({"method":"status","id":"reader"}));
+            if status["status"]["goal"]["state"] == "paused" {
+                break status["status"]["goal"]["revision"].as_u64().unwrap();
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let redirected = control_request(
+            &socket,
+            json!({"method":"set_goal","id":"redirect","revision":revision,"text":"Verify the shared revised goal"}),
+        );
+        assert_eq!(redirected["queued"], true);
+        let revision = loop {
+            let status = control_request(&socket, json!({"method":"status","id":"redirect-status"}));
+            if status["status"]["goal"]["goal"] == "Verify the shared revised goal" {
+                assert_eq!(status["status"]["goal"]["state"], "paused");
+                assert_eq!(status["status"]["goal"]["turns_started"], 1);
+                assert_eq!(status["status"]["goal"]["budget"]["turns"], 4);
+                break status["status"]["goal"]["revision"].as_u64().unwrap();
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // Both writers submit the SAME revision, without a writer ownership lock.
+        // The owner admits one and rejects the stale other, with request correlation.
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            for id in ["external-one", "external-two"] {
+                let socket = &socket;
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    let result =
+                        control_request(socket, json!({"method":"resume","id":id,"revision":revision}));
+                    assert_eq!(result["queued"], true);
+                });
+            }
+        });
+        let mut after = 0;
+        let mut admitted = Vec::new();
+        let mut rejected = Vec::new();
+        let mut replies = Vec::new();
+        loop {
+            let response = control_request(&socket, json!({"method":"events","id":"events","after":after}));
+            assert_eq!(response["gap"], false);
+            for event in response["events"].as_array().unwrap() {
+                let event = &event["event"];
+                if let Some(id) = event["request_id"].as_str() {
+                    if id == "redirect" {
+                        continue;
+                    }
+                    if event["kind"] == "control_admitted" {
+                        admitted.push(id.to_owned());
+                    }
+                    if event["kind"] == "control_rejected" {
+                        rejected.push(id.to_owned());
+                    }
+                }
+                if let Some(reply) = event["reply"]["text"].as_str() {
+                    replies.push(reply.to_owned());
+                }
+            }
+            after = response["next"].as_u64().unwrap();
+            if admitted.len() == 1
+                && rejected.len() == 1
+                && replies.iter().any(|r| r.contains("shared-first-step"))
+                && replies.iter().any(|r| r.contains("shared goal verified"))
+            {
+                assert_ne!(admitted, rejected);
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    let mut server = None;
+    let mut paused = false;
+    let report = goal_session::pursue(
+        config,
+        spec,
+        goals::Budget {
+            wall_ms: 10_000,
+            tokens: Some(500_000),
+            turns: 4,
+        },
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |event| {
+            if event.kind == "goal_started" {
+                server = Some(control::Server::start(&directory, tx.clone()).unwrap());
+                ready.send(directory.join("session.sock")).unwrap();
+            }
+            server.as_ref().unwrap().publisher().publish(&event);
+            if event.kind == "turn_reply" && !paused {
+                paused = true;
+                tx.try_send(goal_session::Control::Pause {
+                    revision: event.goal.revision,
+                })
+                .unwrap();
+            }
+        },
+    )
+    .unwrap();
+    clients.join().unwrap();
+    assert_eq!(report.goal.state, goals::State::Done);
+    assert_eq!(report.goal.turns_started, 2);
+    assert_eq!(report.goal.goal, "Verify the shared revised goal");
+    assert!(report.process_stopped && !Path::new(&format!("/proc/{}", report.process_id)).exists());
+    let requests = engine.requests();
+    let generating: Vec<_> = requests.iter().filter(|r| r.max_tokens > 0).collect();
+    assert_eq!(generating.len(), 2);
+    assert!(generating[1].messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("shared-first-step"))));
+    let log = std::fs::read_to_string(directory.join("goal.jsonl")).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|s| s.contains("\"event\":\"spawned\""))
+            .count(),
+        1
+    );
+    drop(server);
+    assert!(!directory.join("session.sock").exists());
+}
+
 fn session_goal_context_workspace_and_budget() {
     use oxa_orchestrator::workspace::{Grant, RelativePath, Snapshot};
     use oxa_orchestrator::{goal_session, goals};
@@ -210,6 +368,129 @@ fn session_goal_completion_and_budget_boundaries() {
         assert_eq!(report.goal.turns_started, 1);
         assert!(report.process_stopped && !Path::new(&format!("/proc/{}", report.process_id)).exists());
         assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 1);
+    }
+}
+
+fn orchestrate_cli_shared_control_attachment() {
+    use serde_json::json;
+    use std::io::Read;
+    for resume in [true, false] {
+        let env = TestEnv::new();
+        let engine = FakeServer::start(vec![
+            ScriptTurn::text(r#"{"state":"blocked","reason":"operator clarification needed"}"#),
+            ScriptTurn::text(r#"{"state":"done","summary":"clarification verified","evidence":["revised goal checked"]}"#),
+        ],FakeOpts::default()).unwrap();
+        let mut child = CliChild(
+            cli_command(&env, &engine, "cli-shared")
+                .args([
+                    "--goal",
+                    "--control",
+                    "--timeout",
+                    "10",
+                    "--worker-timeout",
+                    "5",
+                    "original goal",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let socket = env.root().join("cli-shared/session.sock");
+        let started = Instant::now();
+        let revision = loop {
+            if socket.exists() {
+                let status = control_request(&socket, json!({"method":"status","id":"outside-status"}));
+                if status["status"]["goal"]["state"] == "blocked" {
+                    break status["status"]["goal"]["revision"].as_u64().unwrap();
+                }
+            }
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "shared owner must remain live while blocked"
+            );
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let count = engine.requests().iter().filter(|r| r.max_tokens > 0).count();
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(
+            engine.requests().iter().filter(|r| r.max_tokens > 0).count(),
+            count
+        );
+        let revision = if resume {
+            let response = control_request(
+                &socket,
+                json!({"method":"set_goal","id":"outside-goal","revision":revision,"text":"operator clarified goal"}),
+            );
+            assert_eq!(response["queued"], true);
+            loop {
+                let status = control_request(&socket, json!({"method":"status","id":"outside-new-status"}));
+                if status["status"]["goal"]["goal"] == "operator clarified goal" {
+                    assert_eq!(status["status"]["goal"]["state"], "paused");
+                    break status["status"]["goal"]["revision"].as_u64().unwrap();
+                }
+                assert!(started.elapsed() < Duration::from_secs(5));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        } else {
+            revision
+        };
+        let response = control_request(
+            &socket,
+            json!({"method":if resume {"resume"} else {"cancel"},"id":"outside-finish","revision":revision}),
+        );
+        assert_eq!(response["queued"], true);
+        let final_status = loop {
+            let status = control_request(&socket, json!({"method":"status","id":"outside-final"}));
+            if status["runtime_stopped"] == true {
+                break status;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(
+            final_status["status"]["goal"]["state"],
+            if resume { "done" } else { "canceled" }
+        );
+        let events = control_request(
+            &socket,
+            json!({"method":"events","id":"outside-final-events","after":0}),
+        );
+        assert!(events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["event"]["kind"] == "goal_finished"));
+        assert_eq!(
+            control_request(&socket, json!({"method":"close","id":"outside-close"}))["closed"],
+            true
+        );
+        let status = loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status.code(), Some(if resume { 0 } else { 1 }));
+        let mut output = Vec::new();
+        child.0.stdout.take().unwrap().read_to_end(&mut output).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(report["goal"]["state"], if resume { "done" } else { "canceled" });
+        assert_eq!(report["process_stopped"], true);
+        assert!(!Path::new(&format!("/proc/{}", report["process_id"].as_u64().unwrap())).exists());
+        assert!(!socket.exists());
+        assert!(!env.root().join("cli-shared/report.json").exists());
+        let requests = engine.requests();
+        let generating: Vec<_> = requests.iter().filter(|r| r.max_tokens > 0).collect();
+        assert_eq!(generating.len(), if resume { 2 } else { 1 });
+        if resume {
+            assert!(generating[1].messages.iter().any(|m| m
+                .content
+                .as_deref()
+                .is_some_and(|s| s.contains("operator clarified goal"))));
+        }
     }
 }
 
@@ -2915,6 +3196,14 @@ fn main() {
     }
     std::env::set_var("OXA_PARENT_PRIVATE_MARKER", "synthetic-parent-value");
     for (name, test) in [
+        (
+            "orchestrate CLI shared control attachment",
+            orchestrate_cli_shared_control_attachment as fn(),
+        ),
+        (
+            "shared clients control one native goal session",
+            shared_clients_control_one_native_goal_session as fn(),
+        ),
         (
             "session goal accepts live steering in its native process",
             session_goal_accepts_steering_while_native_inference_is_running as fn(),

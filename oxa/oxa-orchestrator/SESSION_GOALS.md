@@ -73,8 +73,9 @@ identity, as the foundation for TUI and external clients sharing one owner.
 A live control owner can hold the goal paused or blocked for operator input. With
 no remaining control sender, the command returns its blocked/paused report and
 stops/reaps its process. The CLI currently exposes status and Ctrl-C cancellation;
-the local shared-session control API and TUI attachment are the NEXT priority, not
-claimed implemented by this milestone. Background-task wake-ups and goal-driven
+the opt-in [local socket API](SHARED_SESSION.md) now connects external clients to
+this owner. Existing interactive TUI attachment is still the NEXT integration,
+not claimed implemented. Background-task wake-ups and goal-driven
 worker-lane events follow that API. Context compaction/cloud reliability remains
 separate work with the existing approval and main-lane coordination gates.
 

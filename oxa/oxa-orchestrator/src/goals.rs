@@ -300,6 +300,24 @@ impl Goal {
         self.event("goal_resumed");
         Ok(())
     }
+    /// Redirect settled work without resetting any budget or accounting. The
+    /// operator must explicitly resume after changing the goal.
+    pub fn set_goal(&mut self, revision: u64, goal: String) -> Result<(), Error> {
+        self.check(revision)?;
+        self.tick();
+        if self.snapshot.turn_active || !matches!(self.snapshot.state, State::Paused | State::Blocked) {
+            return Err(Error::NotActive);
+        }
+        if !text(&goal, MAX_TEXT) {
+            return Err(Error::Invalid);
+        }
+        self.snapshot.goal = goal;
+        self.snapshot.evidence.clear();
+        self.snapshot.state = State::Paused;
+        self.snapshot.reason = None;
+        self.event("goal_updated");
+        Ok(())
+    }
     pub fn cancel(&mut self, revision: u64) -> Result<Effect, Error> {
         self.check(revision)?;
         if matches!(
@@ -449,6 +467,35 @@ mod tests {
         Decision::Continue {
             summary: "One useful step finished; more remains".into(),
         }
+    }
+    #[test]
+    fn redirect_requires_settlement_and_preserves_cumulative_allowances() {
+        let mut goal = goal(Some(100));
+        goal.begin_turn().unwrap();
+        assert_eq!(
+            goal.set_goal(goal.revision(), "New goal".into()),
+            Err(Error::NotActive)
+        );
+        goal.pause(goal.revision()).unwrap();
+        assert_eq!(
+            goal.set_goal(goal.revision(), "New goal".into()),
+            Err(Error::NotActive)
+        );
+        goal.finish_turn(Some(20), more()).unwrap();
+        let before = goal.snapshot();
+        assert!(goal.set_goal(before.revision + 1, "New goal".into()).is_err());
+        goal.set_goal(before.revision, "New goal".into()).unwrap();
+        let after = goal.snapshot();
+        assert_eq!(after.goal, "New goal");
+        assert_eq!(after.state, State::Paused);
+        assert_eq!(after.turns_started, before.turns_started);
+        assert_eq!(after.reported_tokens, Some(20));
+        assert_eq!(after.budget.tokens, Some(100));
+        assert!(after.elapsed_ms >= before.elapsed_ms);
+        goal.resume(after.revision).unwrap();
+        goal.begin_turn().unwrap();
+        goal.finish_turn(Some(80), more()).unwrap();
+        assert_eq!(goal.snapshot().state, State::BudgetExhausted);
     }
     #[test]
     fn one_goal_survives_multiple_turns_with_cumulative_budget_and_explicit_done() {

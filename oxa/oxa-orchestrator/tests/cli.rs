@@ -33,9 +33,11 @@ fn goal_mode_is_one_persistent_session_with_explicit_bounds() {
         vec!["--goal", "--workers", "2", "goal"],
         vec!["--goal", "--goal-turns", "0", "goal"],
         vec!["--goal", "--parallel", "2", "goal"],
+        vec!["--control", "goal"],
     ] {
         assert!(parse(&args(&extra)).is_err());
     }
+    assert!(parse(&args(&["--goal", "--control", "goal"])).unwrap().is_some());
 }
 
 #[test]
