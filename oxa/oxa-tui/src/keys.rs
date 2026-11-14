@@ -152,6 +152,16 @@ pub fn flush_pending(buf: &[u8]) -> Vec<InputEvent> {
     scan(buf, true).0
 }
 
+/// `true` when a terminal without the kitty keyboard protocol can send `id` as itself: its
+/// legacy bytes ([`encode_legacy`]) parse back to `id`. `ctrl+shift+f` cannot (it arrives as
+/// ctrl+f), nor can `shift+enter` (CR, enter); `alt+s`, `ctrl+up` and `shift+tab` can.
+pub fn legacy_sendable(id: &KeyId) -> bool {
+    let Some(bytes) = encode_legacy(id) else {
+        return false;
+    };
+    matches!(flush_pending(&bytes).as_slice(), [InputEvent::Key(k)] if &k.id == id)
+}
+
 /// The legacy byte sequence a terminal without the kitty protocol sends for `id`, if it has
 /// one (used by tests and by `TestTerminal` scripts): `encode_legacy("ctrl+c") == Some(b"\x03")`.
 pub fn encode_legacy(id: &KeyId) -> Option<Vec<u8>> {

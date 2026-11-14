@@ -74,7 +74,8 @@ The environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM
 
 If oxa starts in your home directory, in `/`, or in a parent of your home directory (for example `/home`), the project directory is not a project. The whole directory is then the bash working directory, and:
 
-- it is read-only for bash, unless the user setting `oxa.sandbox.allowHomeWrite: true` is set. A start in `/` with that setting makes the whole system writable for bash;
+- a start in `/` or a parent of your home directory is read-only for bash, whatever the settings;
+- a start in your home directory itself is read-only for bash, unless you confirm the interactive question below or the user setting `oxa.sandbox.allowHomeWrite: true` is set. Then your home directory is the workspace: bash can write in its folders and files (for example `~/project`), while the home folder itself (so nothing new appears next to your dotfiles), every dotfile and dot-folder (`.bashrc`, `.profile`, `.zshrc`, `.config`, `.local/bin`, `.ssh`, `.oxa`, `.claude`, `.codex`, ...), symlinks and `~/bin` stay read-only, and the deny-list stays masked. One notice at the start says so ("workspace = your home directory"). Create a new top-level folder with the file tools or outside oxa. The file tools ask before writing the shell startup files, `~/.local/bin`, `~/.config/{systemd,autostart,hypr,omarchy,...}`, `~/bin` and the agents' settings, also in YOLO mode. In print, JSON and RPC mode only the setting makes the home writable;
 - your home directory is visible to bash, read-only, with the deny-list below still masked. A command can read your shell history, your dot files and your other files there;
 - bash has network access by default, so a command can send what it reads to a host (see [Network](#network)).
 

@@ -2,6 +2,10 @@
 
 ## [0.2.0] - 2026-11-13
 
+### Fixed (first run)
+
+- Started in your home directory and confirmed (or with `oxa.sandbox.allowHomeWrite`), bash now gets the home as its workspace: its folders and files are writable, the home folder itself, dotfiles, dot-folders and `~/bin` stay read-only, and keys stay masked. `/` and a parent of home are never writable, even with the setting; a symlink to home counts as home. The file tools ask before writing shell startup files and the agents' settings when started in home.
+
 ### Added
 
 - First public release of oxa: a Rust reimplementation of the pi 1.5.2 coding agent for the oxe engine.
