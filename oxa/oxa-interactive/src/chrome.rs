@@ -217,7 +217,7 @@ pub struct HeaderInfo {
     /// Wave D D4b: where the model runs; shown in the start banner.
     pub model_remote: bool,
     pub model_provider: Option<&'static str>,
-    /// The profile word after the version (`local`); `None` under the default `pi` profile.
+    /// The profile word after the version (`local`); `None` under `pi`.
     pub profile: Option<String>,
 }
 

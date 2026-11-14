@@ -13,6 +13,7 @@ The transcript shows your messages, the assistant's text, thinking blocks (colla
 - Enter submits. Shift+Enter or Ctrl+J inserts a new line.
 - Up and Down move through the lines of a multi-line entry. At the first or last line they step through earlier and later prompts (history).
 - Tab completes. Typing `@` completes file paths in the project.
+- The file list opens only on `@`, Tab, or a word that starts with `./`, `../`, `~/` or `/`; never for a quote or an apostrophe in prose. Hidden files are listed when the typed name starts with `.`. Enter sends the text as typed unless you moved the selection with the arrow keys (Tab takes the selected entry).
 - Ctrl+- undoes the last edit. Ctrl+Y yanks the last deleted text.
 - Pasting a path to an image file attaches it to the next prompt. Ctrl+V pastes an image from the clipboard.
 

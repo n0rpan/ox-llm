@@ -300,7 +300,7 @@ fn pi_with_the_same_setting_keeps_pis_16_kib_read() {
     let results = tool_results(
         &env,
         &cwd,
-        r#"{"oxa": {"compaction": {"softTokens": 8000}}}"#,
+        r#"{"oxa": {"profile": "pi", "compaction": {"softTokens": 8000}}}"#,
         vec![
             ScriptTurn::tool("c1", "read", r#"{"path":"project/src/large.rs"}"#),
             ScriptTurn::text("done"),

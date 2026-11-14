@@ -22,6 +22,7 @@ fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg], model: &'a str
         max_tokens: 64,
         thinking: true,
         preserve_thinking: true,
+        sampling: None,
         hints: Hints {
             session: "session",
             idem_key: "idem",

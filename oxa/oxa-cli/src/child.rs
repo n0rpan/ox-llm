@@ -215,6 +215,7 @@ mod tests {
                 max_tokens: 1,
                 thinking: false,
                 preserve_thinking: false,
+                sampling: None,
                 hints: Hints {
                     session: "own-ephemeral-id",
                     idem_key: "k1",

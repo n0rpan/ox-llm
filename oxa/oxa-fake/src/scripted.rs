@@ -199,6 +199,7 @@ impl Engine for ScriptedEngine {
             background: r.hints.background,
             snapshot_keep: r.hints.snapshot_keep,
             preserve_thinking: r.preserve_thinking.then_some(true),
+            temperature: r.sampling.map_or(0.0, |s| f64::from(s.temperature)),
             headers: Vec::new(),
             body: Vec::new(),
             reply: None,

@@ -3,8 +3,8 @@
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{
-    build_prefix, build_prefix_with, declared_specs, resolve_toolset, Deps, Open, PrefixOpts, Session,
-    ToolSelection, PROFILE_ENTRY,
+    build_prefix_with, declared_specs, resolve_toolset, Deps, Open, PrefixOpts, Session, ToolSelection,
+    PROFILE_ENTRY,
 };
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
@@ -73,35 +73,37 @@ fn markers(s: &Session) -> usize {
         .count()
 }
 
-/// The prefix the built-ins gave before profiles existed: the resolved specs, undeclared.
+/// The prefix the built-ins gave before profiles existed: the resolved specs, undeclared, under
+/// pi (the default is `local` now, so the profile must be explicit here).
 fn todays_prefix(env: &TestEnv) -> oxa_proto::FrozenPrefix {
     let dirs = Dirs::under(env.root());
     let settings = Settings::load(&dirs, &env.work(), true);
     let (active, _) = resolve_toolset(&oxa_tools::builtin_tools(), &ToolSelection::default());
     let specs: Vec<ToolSpec> = active.specs();
-    build_prefix(&env.work(), &resources(env, &settings), &specs, &[])
+    let opts = PrefixOpts {
+        profile: Profile::Pi,
+        diet_output: false,
+        child: false,
+    };
+    build_prefix_with(&env.work(), &resources(env, &settings), &specs, &[], &opts)
 }
 
 #[test]
 fn pi_first_request_bytes_are_todays() {
-    for settings in [None, Some(r#"{"oxa": {"profile": "pi"}}"#)] {
-        let env = TestEnv::new();
-        if let Some(json) = settings {
-            write_settings(&env, json);
-        }
-        let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("ok")]));
-        let mut s = open(&env, engine.clone(), Arc::new(MemStore::new()), Open::New);
-        prompt(&mut s, "hi");
-        let today = todays_prefix(&env);
-        let r = &engine.requests()[0];
-        assert_eq!(r.system, today.system_text(), "system bytes under pi");
-        assert_eq!(r.tools_json, today.tools_json, "tools bytes under pi");
-        assert_eq!(s.inner().prefix.sha256, today.sha256);
-        assert!(r.tools_json.contains(descriptions::EDIT.schema_json));
-        assert_eq!(s.state().profile, Profile::Pi);
-        assert_eq!(s.stats().profile, Profile::Pi);
-        assert_eq!(markers(&s), 0, "a pi epoch writes no profile entry");
-    }
+    let env = TestEnv::new();
+    write_settings(&env, r#"{"oxa": {"profile": "pi"}}"#);
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("ok")]));
+    let mut s = open(&env, engine.clone(), Arc::new(MemStore::new()), Open::New);
+    prompt(&mut s, "hi");
+    let today = todays_prefix(&env);
+    let r = &engine.requests()[0];
+    assert_eq!(r.system, today.system_text(), "system bytes under pi");
+    assert_eq!(r.tools_json, today.tools_json, "tools bytes under pi");
+    assert_eq!(s.inner().prefix.sha256, today.sha256);
+    assert!(r.tools_json.contains(descriptions::EDIT.schema_json));
+    assert_eq!(s.state().profile, Profile::Pi);
+    assert_eq!(s.stats().profile, Profile::Pi);
+    assert_eq!(markers(&s), 0, "a pi epoch writes no profile entry");
 }
 
 /// The prefix of a `local` epoch with the output diet on (the default under `local`): the

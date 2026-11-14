@@ -25,7 +25,9 @@ const RETRY_STEP_MS: u64 = 100;
 /// "stream_options":{"include_usage":true},"temperature":0,"cache_prompt":true,
 /// "max_tokens":N,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":B}}`.
 /// `"tools"` is omitted when `tools_json` is `[]`. Nothing else is ever added: no date, no
-/// user field, no seed.
+/// user field, no seed. With `r.sampling` set (opt-in, `oxa.sampling.mode = model`) the
+/// `0` becomes `T,"top_p":P,"top_k":K,"min_p":M,"presence_penalty":X` (+ `,"seed":S` when
+/// one is fixed), in place, before `"cache_prompt"`.
 pub fn build_body(r: &ChatRequest, out: &mut Vec<u8>) {
     build_body_for(r, false, out);
 }
@@ -49,9 +51,22 @@ pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
         out.extend_from_slice(b",\"tools\":");
         out.extend_from_slice(r.prefix.tools_json.as_bytes());
     }
-    out.extend_from_slice(b",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"temperature\":0,");
+    out.extend_from_slice(b",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"temperature\":");
+    match &r.sampling {
+        None => out.push(b'0'),
+        Some(s) => {
+            let mut keys = format!(
+                "{},\"top_p\":{},\"top_k\":{},\"min_p\":{},\"presence_penalty\":{}",
+                s.temperature, s.top_p, s.top_k, s.min_p, s.presence_penalty
+            );
+            if let Some(seed) = s.seed {
+                keys.push_str(&format!(",\"seed\":{seed}"));
+            }
+            out.extend_from_slice(keys.as_bytes());
+        }
+    }
     if remote {
-        out.extend_from_slice(b"\"max_tokens\":");
+        out.extend_from_slice(b",\"max_tokens\":");
         out.extend_from_slice(r.max_tokens.to_string().as_bytes());
         out.extend_from_slice(b",\"reasoning_effort\":\"");
         out.extend_from_slice(if r.thinking { b"high" } else { b"none" });
@@ -59,7 +74,7 @@ pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
         out.push(b'}');
         return;
     }
-    out.extend_from_slice(b"\"cache_prompt\":true,\"max_tokens\":");
+    out.extend_from_slice(b",\"cache_prompt\":true,\"max_tokens\":");
     out.extend_from_slice(r.max_tokens.to_string().as_bytes());
     out.extend_from_slice(b",\"chat_template_kwargs\":{");
     if r.preserve_thinking {

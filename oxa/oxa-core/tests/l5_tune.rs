@@ -123,6 +123,7 @@ fn create_local_large_context_keeps_seven_and_the_defaults() {
 #[test]
 fn create_pi_changes_nothing() {
     let env = TestEnv::new();
+    write_settings(&env, r#"{"oxa": {"profile": "pi"}}"#);
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     let engine = Arc::new(ScriptedEngine::new(Vec::new()).with_limits(16_384, 1024));
     let s = open(&env, engine, store, Open::New);
@@ -171,6 +172,7 @@ fn resume_takes_the_tune_of_the_branch_profile() {
 #[test]
 fn resume_of_a_pi_branch_keeps_the_pi_tune_under_local_settings() {
     let env = TestEnv::new();
+    write_settings(&env, r#"{"oxa": {"profile": "pi"}}"#);
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("ok")]).with_limits(16_384, 1024));
     let sref = {
@@ -191,6 +193,8 @@ fn resume_of_a_pi_branch_keeps_the_pi_tune_under_local_settings() {
 #[test]
 fn an_epoch_retunes_the_session() {
     let env = TestEnv::new();
+    // The default is `local`; start under `pi` so the reload really changes the profile.
+    write_settings(&env, r#"{"oxa": {"profile": "pi"}}"#);
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     let engine = Arc::new(ScriptedEngine::new(Vec::new()).with_limits(16_384, 1024));
     let mut s = open(&env, engine, store, Open::New);

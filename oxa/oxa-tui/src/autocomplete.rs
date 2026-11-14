@@ -459,6 +459,7 @@ impl CombinedProvider {
         }
         let search_base = display_base.strip_prefix("./").unwrap_or(display_base);
         let q_lower = query.to_lowercase();
+        let show_hidden = hidden_allowed(query);
 
         // (score, depth, relative path without trailing slash, is_dir)
         let mut scored: Vec<(f64, usize, String, bool)> = Vec::new();
@@ -468,7 +469,7 @@ impl CombinedProvider {
             };
             let is_dir = rest.ends_with('/');
             let rel = rest.strip_suffix('/').unwrap_or(rest);
-            if rel.is_empty() {
+            if rel.is_empty() || (!show_hidden && is_hidden_rel(rel)) {
                 continue;
             }
             let score = entry_score(rel, query, &q_lower, is_dir);
@@ -542,6 +543,9 @@ impl CombinedProvider {
         for e in read.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             if !name.to_lowercase().starts_with(&search_prefix.to_lowercase()) {
+                continue;
+            }
+            if name.starts_with('.') && !hidden_allowed(&search_prefix) {
                 continue;
             }
             let is_dir = match e.file_type() {
@@ -926,24 +930,38 @@ fn extract_at_prefix(text: &str) -> Option<&str> {
     }
 }
 
-/// The path-like prefix for Tab (forced) or a natural trigger (`./`, `~/`, a `/`, or a token
-/// boundary), or `None`.
+/// `true` when `raw` (a path prefix without `@` / quotes) is an explicit path: it starts with
+/// `./`, `../`, `~/` or `/`.
+fn is_explicit_path(raw: &str) -> bool {
+    raw.starts_with("./") || raw.starts_with("../") || raw.starts_with("~/") || raw.starts_with('/')
+}
+
+/// The path-like prefix for Tab (forced) or an explicit path token (`./`, `../`, `~/`, `/`),
+/// or `None`. Without Tab, prose never opens the list: not a quote (`what's `, `it's "fine`),
+/// not a trailing space, not a word with a `/` in it (`and/or`).
 fn extract_path_prefix(text: &str, force: bool) -> Option<String> {
     if let Some(q) = extract_quoted_prefix(text) {
-        return Some(q.to_string());
+        if force || is_explicit_path(parse_path_prefix(q).0) {
+            return Some(q.to_string());
+        }
+        return None;
     }
     let token = strip_leading_wrappers(last_token(text));
-    if force {
+    if force || is_explicit_path(token) {
         return Some(token.to_string());
-    }
-    if token.contains('/') || token.starts_with('.') || token.starts_with("~/") {
-        return Some(token.to_string());
-    }
-    // An empty token right after a separator: start a list, but not for empty text.
-    if token.is_empty() && text.chars().next_back().is_some_and(is_separator) {
-        return Some(String::new());
     }
     None
+}
+
+/// A hidden entry (a path component that starts with `.`) is offered only when the typed name
+/// starts with `.` (`@.c`, `./.git`, Tab on `.ca`).
+fn hidden_allowed(query: &str) -> bool {
+    query.starts_with('.')
+}
+
+fn is_hidden_rel(rel: &str) -> bool {
+    rel.split('/')
+        .any(|c| c.starts_with('.') && c != "." && c != "..")
 }
 
 /// `(raw, is_at, is_quoted)` for a prefix such as `@"src/ma`, `"src/ma`, `@src/ma`, `src/ma`.

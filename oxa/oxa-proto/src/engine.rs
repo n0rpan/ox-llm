@@ -111,7 +111,23 @@ pub struct ChatRequest<'a> {
     /// W6 / F8: send `chat_template_kwargs.preserve_thinking: true`. `false` omits the key (the
     /// server's own default applies; never forced on a model without the capability).
     pub preserve_thinking: bool,
+    /// Stochastic sampling for this request. `None` = W6 greedy: `"temperature":0` and no other
+    /// sampling key (the engine's MTP speculation runs on greedy requests only).
+    pub sampling: Option<Sampling>,
     pub hints: Hints<'a>,
+}
+
+/// Sampling parameters sent with a request (`oxa.sampling.mode = model`): the model card's
+/// recommended values. The engine reads `presence_penalty` per reply.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sampling {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: i32,
+    pub min_p: f32,
+    pub presence_penalty: f32,
+    /// A fixed seed (tests, reproducible runs); `None` = the engine's own.
+    pub seed: Option<u64>,
 }
 
 /// The engine as the core sees it. `oxa-engine` implements it over HTTP; tests script it.
