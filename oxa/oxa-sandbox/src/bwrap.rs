@@ -221,15 +221,7 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
     }
     // Mount points below the hidden home must be created before sealing its root.
     // Child workspace/cache binds remain writable; unbound home writes now fail with EROFS.
-    // When the cwd is a strict ancestor of home, the cwd bind covers the home tmpfs, so home
-    // is no mount of its own and cannot be remounted: ro-bind it onto itself instead (such a
-    // cwd has no writable workspace below home anyway).
-    let home_str = home_c.to_string_lossy().into_owned();
-    if cwd_path.starts_with(&home_c) || !home_c.starts_with(cwd_path) {
-        push(&mut a, &["--remount-ro", &home_str]);
-    } else {
-        push(&mut a, &["--ro-bind", &home_str, &home_str]);
-    }
+    push(&mut a, &["--remount-ro", &home_c.to_string_lossy()]);
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
     push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
     push(&mut a, &["--setenv", "HOME", &home_s]);
