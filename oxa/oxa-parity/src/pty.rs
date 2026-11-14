@@ -194,7 +194,8 @@ pub struct Modes {
     pub focus_reporting: bool,
     /// Synchronized output (`CSI ? 2026 h`) is currently open.
     pub synchronized_output: bool,
-    /// The kitty keyboard flags stack (`CSI > n u` pushes, `CSI < n u` pops); top is last.
+    /// The kitty keyboard flags stack of the screen in use (`CSI > n u` pushes, `CSI < n u`
+    /// pops); top is last. The main and the alternate screen each have their own stack.
     pub kitty_stack: Vec<u32>,
 }
 
@@ -398,7 +399,12 @@ pub fn escape_bytes(bytes: &[u8]) -> String {
 
 struct Answerer {
     profile: TermProfile,
+    /// `modes.kitty_stack` is the main screen's kitty keyboard stack.
     modes: Modes,
+    /// The alternate screen's own kitty keyboard stack: the kitty protocol keeps one stack per
+    /// screen ("separate stacks for the main and alternate screens"; kitty and foot do), so a
+    /// push made on the main screen does not apply in the alternate screen.
+    alt_kitty_stack: Vec<u32>,
     title: String,
     replies: Vec<u8>,
 }
@@ -409,6 +415,17 @@ fn first(p: &[&[u16]], i: usize) -> Option<u16> {
 
 fn rgb_reply(code: &str, (r, g, b): (u16, u16, u16)) -> String {
     format!("\x1b]{code};rgb:{r:04x}/{g:04x}/{b:04x}\x1b\\")
+}
+
+impl Answerer {
+    /// The kitty keyboard stack of the screen in use (main or alternate).
+    fn kitty_stack(&mut self, screen: &vt100::Screen) -> &mut Vec<u32> {
+        if screen.alternate_screen() {
+            &mut self.alt_kitty_stack
+        } else {
+            &mut self.modes.kitty_stack
+        }
+    }
 }
 
 impl vt100::Callbacks for Answerer {
@@ -455,37 +472,37 @@ impl vt100::Callbacks for Answerer {
             }
             (Some(b'?'), 'u') => {
                 if self.profile.kitty_keyboard {
-                    let flags = self.modes.kitty_flags();
+                    let flags = self.kitty_stack(screen).last().copied().unwrap_or(0);
                     self.replies
                         .extend_from_slice(format!("\x1b[?{flags}u").as_bytes());
                 }
             }
             (Some(b'>'), 'u') => {
                 if self.profile.kitty_keyboard {
-                    self.modes
-                        .kitty_stack
+                    self.kitty_stack(screen)
                         .push(u32::from(first(params, 0).unwrap_or(0)));
                 }
             }
             (Some(b'<'), 'u') => {
                 let n = first(params, 0).unwrap_or(1).max(1);
                 for _ in 0..n {
-                    self.modes.kitty_stack.pop();
+                    self.kitty_stack(screen).pop();
                 }
             }
             (Some(b'='), 'u') => {
                 if self.profile.kitty_keyboard {
                     let flags = u32::from(first(params, 0).unwrap_or(0));
                     let mode = first(params, 1).unwrap_or(1);
-                    let cur = self.modes.kitty_flags();
+                    let stack = self.kitty_stack(screen);
+                    let cur = stack.last().copied().unwrap_or(0);
                     let new = match mode {
                         2 => cur | flags,
                         3 => cur & !flags,
                         _ => flags,
                     };
-                    match self.modes.kitty_stack.last_mut() {
+                    match stack.last_mut() {
                         Some(top) => *top = new,
-                        None => self.modes.kitty_stack.push(new),
+                        None => stack.push(new),
                     }
                 }
             }
@@ -559,6 +576,9 @@ fn snapshot(st: &State) -> Screen {
     };
     let mut modes = cb.modes.clone();
     modes.alt_screen = screen.alternate_screen();
+    if modes.alt_screen {
+        modes.kitty_stack = cb.alt_kitty_stack.clone();
+    }
     modes.bracketed_paste = screen.bracketed_paste();
     modes.cursor_hidden = screen.hide_cursor();
     modes.mouse = screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None;
@@ -604,6 +624,7 @@ pub fn replay_output(rows: u16, cols: u16, chunks: &[&[u8]], mut seen: impl FnMu
     let answerer = Answerer {
         profile: TermProfile::silent(),
         modes: Modes::default(),
+        alt_kitty_stack: Vec::new(),
         title: String::new(),
         replies: Vec::new(),
     };
@@ -1014,6 +1035,7 @@ impl PtySession {
         let answerer = Answerer {
             profile: opts.profile.clone(),
             modes: Modes::default(),
+            alt_kitty_stack: Vec::new(),
             title: String::new(),
             replies: Vec::new(),
         };

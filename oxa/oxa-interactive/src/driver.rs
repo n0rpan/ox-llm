@@ -2547,11 +2547,21 @@ impl<'a> Loop<'a> {
             // The footer shows the live state: the HUD's state segment and spinner.
             let ctx = self.hint_context();
             let saved = std::mem::replace(&mut self.vm.status, status);
+            // The footer names only keys this terminal can send: without the kitty keyboard
+            // protocol a shift chord arrives as its legacy byte (ctrl+shift+f as ctrl+f), so
+            // the next bound key of the action is shown (alt+s for search), or none.
+            let sendable;
+            let keymap = if self.caps.kitty_keyboard {
+                &self.opts.keymap
+            } else {
+                sendable = self.opts.keymap.retain_keys(oxa_tui::legacy_sendable);
+                &sendable
+            };
             lines.extend(oxa_footer(
                 &self.vm,
                 self.profile.as_deref(),
                 ctx,
-                &self.opts.keymap,
+                keymap,
                 self.fullscreen,
                 width,
                 &self.theme,

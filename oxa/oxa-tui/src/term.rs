@@ -294,18 +294,23 @@ impl Terminal for ProcessTerminal {
             }
             return;
         }
-        let is_on = self.active.contains(&mode);
-        if is_on == on {
+        let Some(pos) = (match (self.active.iter().position(|m| *m == mode), on) {
+            (None, true) => Some(self.active.len()),
+            (Some(at), false) => Some(at),
+            _ => None,
+        }) else {
             return;
-        }
+        };
+        let bytes = switch_sequence(&self.active[..pos], mode, on);
         if on {
             self.active.push(mode);
         } else {
             self.active.retain(|m| *m != mode);
         }
         if !self.suspended {
-            self.write(mode_sequence(mode, on).as_bytes());
+            self.write(bytes.as_bytes());
         }
+        ALT_KITTY.store(alt_kitty(&self.active), Ordering::SeqCst);
     }
     fn suspend(&mut self) {
         if self.suspended {
@@ -316,6 +321,7 @@ impl Terminal for ProcessTerminal {
         self.flush();
         restore_termios();
         self.suspended = true;
+        ALT_KITTY.store(false, Ordering::SeqCst);
     }
     fn resume(&mut self) {
         if !self.suspended {
@@ -327,10 +333,11 @@ impl Terminal for ProcessTerminal {
             let _ = set_attr(&raw);
         }
         self.suspended = false;
-        let modes = self.active.clone();
-        for mode in modes {
-            self.out.extend_from_slice(mode_sequence(mode, true).as_bytes());
+        for (i, mode) in self.active.iter().enumerate() {
+            let bytes = switch_sequence(&self.active[..i], *mode, true);
+            self.out.extend_from_slice(bytes.as_bytes());
         }
+        ALT_KITTY.store(alt_kitty(&self.active), Ordering::SeqCst);
         if self.cursor_hidden {
             self.out
                 .extend_from_slice(mode_sequence(TermMode::CursorVisible, false).as_bytes());
@@ -359,9 +366,9 @@ impl Drop for ProcessTerminal {
 /// "off" on the way out: the cursor is visible on entry).
 pub fn leave_sequence(active: &[TermMode], cursor_hidden: bool) -> Vec<u8> {
     let mut out = Vec::new();
-    for mode in active.iter().rev() {
+    for (i, mode) in active.iter().enumerate().rev() {
         if *mode != TermMode::CursorVisible {
-            out.extend_from_slice(mode_sequence(*mode, false).as_bytes());
+            out.extend_from_slice(switch_sequence(&active[..i], *mode, false).as_bytes());
         }
     }
     if cursor_hidden {
@@ -387,6 +394,38 @@ pub fn mode_sequence(mode: TermMode, on: bool) -> &'static str {
         (TermMode::FocusReporting, false) => "\x1b[?1004l",
         (TermMode::CursorVisible, true) => "\x1b[?25h",
         (TermMode::CursorVisible, false) => "\x1b[?25l",
+    }
+}
+
+/// The bytes that switch `mode` on or off when `earlier` are the modes switched on before it.
+/// [`mode_sequence`], except for the alternate screen while the kitty keyboard protocol is
+/// on: the protocol keeps a separate flags stack per screen (kitty, foot), so a push made on
+/// the main screen does not reach the alternate one, where every shift chord would arrive as
+/// its legacy byte (ctrl+shift+f as ctrl+f). Entering pushes the same flags there; leaving pops
+/// them first, so the main screen's stack is untouched.
+pub fn switch_sequence(earlier: &[TermMode], mode: TermMode, on: bool) -> String {
+    let alt = mode_sequence(mode, on);
+    if mode == TermMode::AltScreen && earlier.contains(&TermMode::KittyKeyboard) {
+        let kitty = mode_sequence(TermMode::KittyKeyboard, on);
+        if on {
+            format!("{alt}{kitty}")
+        } else {
+            format!("{kitty}{alt}")
+        }
+    } else {
+        alt.to_string()
+    }
+}
+
+/// `true` when `active` has the kitty flags pushed on the alternate screen as well (the
+/// protocol was on before the alternate screen was entered).
+fn alt_kitty(active: &[TermMode]) -> bool {
+    match (
+        active.iter().position(|m| *m == TermMode::KittyKeyboard),
+        active.iter().position(|m| *m == TermMode::AltScreen),
+    ) {
+        (Some(k), Some(a)) => k < a,
+        _ => false,
     }
 }
 
@@ -441,6 +480,9 @@ static SAVED: OnceLock<libc::termios> = OnceLock::new();
 static PANIC_HOOK: AtomicBool = AtomicBool::new(false);
 static PANIC_OWNER: OnceLock<std::thread::ThreadId> = OnceLock::new();
 static SIGNALS: Once = Once::new();
+/// The terminal has kitty keyboard flags pushed on the alternate screen (for the emergency
+/// restore of a panic or a signal, which cannot see the terminal's mode list).
+static ALT_KITTY: AtomicBool = AtomicBool::new(false);
 
 enum Polled {
     Ready,
@@ -515,6 +557,10 @@ fn restore_termios() {
 
 /// Restore everything a terminal can be left with: the modes, the screen attributes and termios.
 fn emergency_restore() {
+    // The alternate screen's own kitty push is popped before it is left (`switch_sequence`).
+    if ALT_KITTY.load(Ordering::SeqCst) {
+        write_fd(1, mode_sequence(TermMode::KittyKeyboard, false).as_bytes());
+    }
     write_fd(1, restore_sequence().as_bytes());
     restore_termios();
 }
