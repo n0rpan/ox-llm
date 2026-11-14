@@ -104,6 +104,7 @@ class PrivacySwitch(CloudCase):
         self.assertTrue(row['remote'])
         self.assertEqual(row['provider'], 'openrouter')
         self.assertEqual(row['context_length'], 64000)
+        self.assertEqual(row['context_window'], 64000)
         self.assertEqual(row['max_output_tokens'], 4096)
         caps = row['capabilities']
         self.assertEqual(caps['remote_provider'], 'openrouter')
@@ -111,6 +112,23 @@ class PrivacySwitch(CloudCase):
         self.assertFalse(caps['prefill'])
         self.assertFalse(caps['cache_hints'])
         self.assertFalse(caps['echo'])
+
+    def test_local_rows_publish_the_canonical_capabilities_too(self):
+        self.start()
+        local = next(row for row in self.rows() if row['id'] == 'local-default')
+        caps = local['capabilities']
+        for key in ('remote', 'echo', 'cache_hints', 'cancel', 'prefill', 'context_window'):
+            self.assertIn(key, caps)
+        self.assertFalse(caps['remote'])
+        self.assertGreater(caps['context_window'], 0)
+        self.assertEqual(local['context_window'], caps['context_window'])
+        status, body = self.call('GET', '/_local/status')
+        self.assertEqual(status, 200)
+        limits = json.loads(body)['model_limits']['local-default']
+        self.assertEqual(limits['capabilities']['context_window'], caps['context_window'])
+        remote = json.loads(body)['model_limits'][REMOTE]
+        self.assertTrue(remote['capabilities']['remote'])
+        self.assertEqual(remote['context_window'], 64000)
 
     def test_status_exposes_the_switch_but_never_the_key_or_path(self):
         self.start()

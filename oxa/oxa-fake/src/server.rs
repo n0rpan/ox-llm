@@ -70,6 +70,9 @@ pub struct FakeOpts {
     /// B6: the usage leaves out `prompt_tokens_details.cached_tokens` (a server that does not
     /// report it). Default `false` (the oxe engine always reports it, 0 included).
     pub omit_cached_tokens: bool,
+    /// Wave D D4: publish every `model_limits` row as a cloud model of this provider
+    /// (`openrouter` / `anthropic`), with the canonical remote capability block. Default `None`.
+    pub remote: Option<&'static str>,
 }
 
 /// When one chat request ran on the fake (ENG-001 / ENG-002): milliseconds since the server
@@ -211,6 +214,7 @@ impl Default for FakeOpts {
             rewrite_resume_block: None,
             drop_reasoning: false,
             omit_cached_tokens: false,
+            remote: None,
         }
     }
 }
@@ -574,7 +578,30 @@ fn model_limits(o: &FakeOpts) -> Value {
                 "turn_kind": c.prefill_only, "hint_clear": c.hint_clear, "thinking": "toggle",
                 "preserve_thinking": c.preserve_thinking, "mtp": null, "max_context": r.cap,
                 "vision": false, "slots": 1, "park": c.park,
+                "remote": false, "remote_provider": null, "echo": c.prefill_only,
+                "cache_hints": c.hint_clear, "cancel": true, "prefill": c.prefill_only,
+                "context_window": r.cap,
             });
+        }
+        if let Some(provider) = o.remote {
+            row["context_window"] = json!(r.cap);
+            if !row["capabilities"].is_object() {
+                row["capabilities"] = json!({
+                    "prefill_only": false, "snapshot_hint": 0, "turn_kind": false,
+                    "hint_clear": false, "thinking": "effort", "preserve_thinking": false,
+                    "mtp": false, "max_context": r.cap, "vision": false, "slots": 1,
+                    "park": "none",
+                });
+            }
+            let caps = row["capabilities"].as_object_mut().expect("capabilities object");
+            caps.insert("remote".to_string(), json!(true));
+            caps.insert("remote_provider".to_string(), json!(provider));
+            caps.insert("echo".to_string(), json!(false));
+            caps.insert("cache_hints".to_string(), json!(false));
+            caps.insert("cancel".to_string(), json!(true));
+            caps.insert("prefill".to_string(), json!(false));
+            caps.insert("preserve_thinking".to_string(), json!(false));
+            caps.insert("context_window".to_string(), json!(r.cap));
         }
         out.insert(r.alias, row);
     }
