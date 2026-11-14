@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `a1c683f9e3783fdac4716bef53241833babe60a6`.
-The current suite passes 205 scenarios in 24 unittest methods. This remains a
+The current suite passes 211 scenarios in 30 unittest methods. This remains a
 partial contract suite, not a complete parity claim. No Rust
 implementation has been started: the full Python suite must pass first.
 
@@ -70,6 +70,7 @@ python3 conformance/test_api.py --record-python
 python3 conformance/test_http_gates.py --record-python
 python3 conformance/test_cli_runtime.py --record-python
 python3 conformance/test_scans.py --record-python
+python3 conformance/test_update.py --record-python
 ```
 
 Recording rejects alternate implementation command overrides. Review the diff;
@@ -86,10 +87,11 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Files | PASS, 3 tests | Not implemented | Additional state stores and sharing secrets |
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness ready; Python/Python PASS | Not implemented | Run Python/selected/Python round trips with Rust |
-| Bootstrap/install | PASS, 4 scenarios | Not implemented | Full staged update/rollback flow and recovery |
+| Bootstrap/install | PASS, 4 scenarios | Not implemented | Transfer/build/install-journal edge cases |
+| Staged update/rollback | PASS, 6 scenarios / 9 CLI goldens | Not implemented | Release identity proof, created/removed files, interruption recovery |
 | Uninstall | PASS, dry-run and apply CLI cases | Not implemented | Installed release records and model deletion cases |
 | Shipped scans | PASS, 11 cases | Not implemented | More secret/SDK rule inputs (no real secrets or SDK material) |
-| Fake engine benchmark | Not measured | Not implemented | Idle/load RSS, CPU and latency |
+| Fake engine benchmark | Python baseline recorded | Not implemented | Repeat identical measurement with Rust |
 
 No hardware calls or real cloud API calls are part of this suite. Hardware A/B
 belongs to the owner's lane.
@@ -118,3 +120,24 @@ provides them. Each override is a shell command string parsed with shlex:
 
 Runtime CLI commands passed in overrides should be outside `/home` and `/tmp`,
 which are private mounts in these tests (a build under the checkout works).
+
+The staged update tests use public CLI processes, the real seal/installer/guarded
+rollback tooling, a stateful systemd command peer and a loopback HTTP peer. They
+cover check/install/explicit rollback, seal and live-data drift refusals, an
+unproven service stop, and automatic recovery after chat or startup failure.
+Progress output, errors and exit codes are golden-tested; only the measured chat
+duration and temporary HOME path are normalized.
+
+Run the model-free benchmark separately (not part of CI's parity gate):
+
+```sh
+python3 conformance/benchmark.py --requests 100 --idle-seconds 1
+```
+
+`OXC_DAEMON_COMMAND` selects another controller. RSS and CPU come from the actual
+daemon PID, excluding bubblewrap and the synthetic engine/client. CPU percentages
+are relative to one CPU core and are limited by the reported kernel clock-tick
+resolution. Load RSS is sampled every 20 ms; latency covers complete sequential
+HTTP requests. The stored Python baseline is an executor measurement with the
+synthetic host files and fake engine, not laptop hardware validation. See
+[benchmarks/python-a1c683f.json](benchmarks/python-a1c683f.json).

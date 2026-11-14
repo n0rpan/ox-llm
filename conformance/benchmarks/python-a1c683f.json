@@ -1,0 +1,28 @@
+{
+  "schema": "oxc-fake-engine-benchmark/1",
+  "created_utc": "2026-11-14T18:32:12.818659+00:00",
+  "main_sha": "a1c683f9e3783fdac4716bef53241833babe60a6",
+  "implementation": "python",
+  "architecture": "x86_64",
+  "available_cpus": 5,
+  "fixture_sha256": "0efe7242974825e9a301d50c2089d947dd32e1834c10e03e40f54ef7aa202e7c",
+  "requests": 100,
+  "stream": false,
+  "output_tokens_per_request": 3,
+  "idle": {
+    "wall_seconds": 1.0001,
+    "rss_kib": 20056,
+    "cpu_seconds": 0.0,
+    "cpu_percent_one_core": 0.0
+  },
+  "load": {
+    "wall_seconds": 5.2479,
+    "peak_sampled_rss_kib": 20540,
+    "cpu_seconds": 0.26,
+    "cpu_percent_one_core": 4.954,
+    "latency_mean_ms": 52.477,
+    "latency_p50_ms": 52.463,
+    "latency_p95_ms": 52.913
+  },
+  "cpu_tick_seconds": 0.01
+}

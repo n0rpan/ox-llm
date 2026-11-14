@@ -1,0 +1,47 @@
+{
+  "test_changed_seal_is_refused_without_stopping_services/0": {
+    "exit": 2,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nNothing was changed: The staged release changed after it was sealed (runtime.json); stage it again.\n"
+  },
+  "test_check_then_install_then_explicit_rollback/0": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nReady to install. Run `local-ai update <HOME>/staged/synthetic-release`.\n"
+  },
+  "test_check_then_install_then_explicit_rollback/1": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nChecking that chat answers (this may load the model) ...\nUpdated to synthetic-release. Chat answered in <seconds> s. If anything feels wrong: local-ai rollback\n"
+  },
+  "test_check_then_install_then_explicit_rollback/2": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Rollback is ready: it would put back the version before synthetic-release.\n"
+  },
+  "test_check_then_install_then_explicit_rollback/3": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Putting back the version before synthetic-release ...\nThe previous version is back and running. To install the newer one again: local-ai update <HOME>/staged/synthetic-release\n"
+  },
+  "test_failed_chat_automatically_restores_previous_files/0": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nChecking that chat answers (this may load the model) ...\nThe new version did not pass its check (the test chat did not answer (HTTP 503)). Putting the previous version back ...\nYour previous version is back and working. Nothing else changed.\n"
+  },
+  "test_failed_start_automatically_restores_previous_files/0": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nThe new version did not pass its check (the service did not start). Putting the previous version back ...\nYour previous version is back and working. Nothing else changed.\n"
+  },
+  "test_live_drift_is_refused_without_overwriting_owner_data/0": {
+    "exit": 2,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nNothing was changed: Its rollback would not work (the installed files are not the ones this release put there (a newer install or a hand edit)).\n"
+  },
+  "test_unproven_service_stop_refuses_install/0": {
+    "exit": 2,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nNothing was changed: the local AI service did not stop\n"
+  }
+}
