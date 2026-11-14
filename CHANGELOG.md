@@ -27,6 +27,12 @@ from two repositories.
   kernel (`--attn-out pb`), user-message checkpoints (`--user-snapshots`, default off) and the
   `isa-roof` model-free ISA roofline probe. The fix batch includes echo, state-store and preload
   robustness.
+- **Cloud models through oxc (opt-in, off by default):** remote catalog entries for an
+  OpenAI-compatible OpenRouter endpoint and the native Anthropic Messages API. The key lives in
+  an owner-only secrets file, every request is metered in the ledger with a daily USD cap,
+  `OXC_OFFLINE` refuses remote models, and per-model capabilities tell oxa to skip local-only
+  hints and show `local` / `cloud · <provider>` in the status bar. Design only: Sign in with
+  ChatGPT. Docs: `lab/docs/CLOUD-MODELS.md`.
 - **Lab:** a lab fix batch, the panel redesign, a client-free user-snapshots gate and a query string on
   the Rust Flash inference routes refused (403, consistent with the legacy route).
 - **Removed dead code:** `flash-iobench`, prompt-lookup drafting (`--spec-type lookup`, `--lookup-*`),
