@@ -2223,19 +2223,45 @@ mod status_reset_tests {
     /// The TUI path of `/model`: the `ModelSelect` event, before any new turn.
     #[test]
     fn model_select_event_clears_speed_and_cache() {
-        let mut vm = ViewModel { status: stale(), ..ViewModel::default() };
-        apply_event(&mut vm, &AgentEvent::ModelSelect { model: "b".into(), previous: Some("a".into()) });
-        assert_eq!((vm.status.tok_per_s, vm.status.last_cached, vm.status.last_prompt), (None, None, None));
+        let mut vm = ViewModel {
+            status: stale(),
+            ..ViewModel::default()
+        };
+        apply_event(
+            &mut vm,
+            &AgentEvent::ModelSelect {
+                model: "b".into(),
+                previous: Some("a".into()),
+            },
+        );
+        assert_eq!(
+            (vm.status.tok_per_s, vm.status.last_cached, vm.status.last_prompt),
+            (None, None, None)
+        );
     }
 
     /// The TUI path of `/new` (`WorkerMsg::Reopened` / `Status` -> `refresh_status`).
     #[test]
     fn refresh_status_clears_cache_on_empty_session_and_keeps_it_otherwise() {
         let mut dst = stale();
-        refresh_status(&mut dst, StatusModel { model: "a".into(), context_tokens: 0, ..StatusModel::default() });
+        refresh_status(
+            &mut dst,
+            StatusModel {
+                model: "a".into(),
+                context_tokens: 0,
+                ..StatusModel::default()
+            },
+        );
         assert_eq!((dst.last_cached, dst.last_prompt), (None, None));
         let mut dst = stale();
-        refresh_status(&mut dst, StatusModel { model: "a".into(), context_tokens: 120, ..StatusModel::default() });
+        refresh_status(
+            &mut dst,
+            StatusModel {
+                model: "a".into(),
+                context_tokens: 120,
+                ..StatusModel::default()
+            },
+        );
         assert_eq!(dst.last_cached, Some(97));
     }
 }
