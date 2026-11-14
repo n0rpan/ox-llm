@@ -164,9 +164,17 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
     // OXA-LOCAL-FIRST sec. 6; the default is `Profile::DEFAULT` (a test keeps them equal).
-    key("oxa.profile", Kind::Enum(&["pi", "local"]), "\"pi\""),
+    key("oxa.profile", Kind::Enum(&["pi", "local"]), "\"local\""),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).
+    // `greedy` = W6 `temperature: 0` (MTP on); `model` = the model card's sampling (oxa-core
+    // `sampling.rs`). The seed is sent only with `model`.
+    key(
+        "oxa.sampling.mode",
+        Kind::Enum(&["greedy", "model"]),
+        "\"greedy\"",
+    ),
+    key("oxa.sampling.seed", Kind::Number, "null"),
     key("oxa.sandbox.allowHomeWrite", Kind::Bool, "false"),
     key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
@@ -181,6 +189,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.thinking.policy", Kind::Enum(&["fixed", "auto"]), "null"),
     key("oxa.toolOutputCap", Kind::Number, "16384"),
     key("oxa.toolRepair", Kind::Bool, "true"),
+    // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
+    key("oxa.toolRepeatGuard", Kind::Bool, "true"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
     key("oxa.webSearch.maxTokens", Kind::Number, "2048"),
@@ -235,6 +245,17 @@ const SCHEMA: &[KeyDef] = &[
         "tuiMode",
         Kind::Enum(&["regular", "fullscreen"]),
         "\"fullscreen\"",
+    ),
+    key(
+        "ui.animation",
+        Kind::Enum(&["arcade", "minimal", "off"]),
+        "\"arcade\"",
+    ),
+    key("ui.animationGraphics", Kind::Enum(&["auto", "off"]), "\"auto\""),
+    key(
+        "ui.animationScene",
+        Kind::Enum(&["graphics", "stack", "stars", "charge"]),
+        "null",
     ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa"]), "\"auto\""),

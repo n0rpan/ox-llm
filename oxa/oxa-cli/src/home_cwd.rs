@@ -7,7 +7,7 @@
 use crate::dispatch::RunMode;
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{codes, OxaError};
-use oxa_sandbox::is_home_or_above;
+use oxa_sandbox::{is_home_itself, is_home_or_above};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -52,8 +52,18 @@ pub(crate) fn refusal(cwd: &Path) -> OxaError {
     ))
 }
 
-/// The start check: `Ok` to go on, `Err` (one line, non-zero exit through `report`) to stop.
-/// Interactive mode prints the warning on `stdout` and reads the answer from `stdin`.
+/// O-199: an interactive start in the home directory itself that the user confirmed (or opted
+/// into with `oxa.allowHomeCwd` / `OXA_ALLOW_HOME_CWD`) makes the home a workspace for bash
+/// (`oxa_sandbox::Layout::allow_home_write`). Never for `/` or a parent of the home, and
+/// never in print, json or rpc mode (only the explicit `oxa.sandbox.allowHomeWrite` setting
+/// does that there, so a script cannot widen access by accident).
+pub(crate) fn home_workspace(mode: RunMode, start: Start, home_itself: bool) -> bool {
+    mode == RunMode::Interactive && home_itself && matches!(start, Start::Proceed | Start::Confirm)
+}
+
+/// The start check: `Ok(home_workspace)` to go on (see [`home_workspace`]), `Err` (one line,
+/// non-zero exit through `report`) to stop. Interactive mode prints the warning on `stdout`
+/// and reads the answer from `stdin`.
 pub(crate) fn check(
     mode: RunMode,
     cwd: &Path,
@@ -61,34 +71,42 @@ pub(crate) fn check(
     dirs: &Dirs,
     stdin: &mut dyn Read,
     stdout: &mut dyn Write,
-) -> Result<(), OxaError> {
+) -> Result<bool, OxaError> {
     // A symlink to the home directory is the home directory: check the resolved path as well.
     let resolved = cwd.canonicalize();
     let home_root =
         is_home_or_above(cwd, &dirs.home) || resolved.is_ok_and(|real| is_home_or_above(&real, &dirs.home));
     if !home_root {
-        return Ok(());
+        return Ok(false);
     }
+    let home_itself = is_home_itself(cwd, &dirs.home);
     let user = Settings::load(dirs, cwd, false);
     let opted_in =
         crate::netguard::truthy(env.get(ENV_ALLOW_HOME_CWD)) || user.bool(SETTING_ALLOW_HOME_CWD, false);
-    match decide(mode, home_root, opted_in) {
-        Start::Proceed => Ok(()),
+    let start = decide(mode, home_root, opted_in);
+    match start {
+        Start::Proceed => Ok(home_workspace(mode, start, home_itself)),
         Start::Refuse => Err(refusal(cwd)),
         Start::Confirm => {
             let e = refusal(cwd);
+            let effect = if home_itself {
+                crate::sandbox_layout::home_confirm_effect()
+            } else {
+                "If you go on, bash gets no writable directory here.".to_string()
+            };
             let _ = writeln!(
                 stdout,
-                "Warning: {}\n{}",
+                "Warning: {}\n{}\n{}",
                 e.message,
-                e.hint.clone().unwrap_or_default()
+                e.hint.clone().unwrap_or_default(),
+                effect
             );
             let _ = write!(stdout, "Start oxa here anyway? [y/N] ");
             let _ = stdout.flush();
             let answer = read_answer(stdin);
             let answer = answer.trim().to_lowercase();
             if answer == "y" || answer == "yes" {
-                Ok(())
+                Ok(home_workspace(mode, start, home_itself))
             } else {
                 Err(e)
             }
@@ -128,6 +146,21 @@ mod tests {
         // Opted in: go on in every mode.
         for mode in [RunMode::Interactive, RunMode::Print, RunMode::Json, RunMode::Rpc] {
             assert_eq!(decide(mode, true, true), Start::Proceed);
+        }
+    }
+
+    #[test]
+    fn only_an_interactive_start_in_home_itself_is_a_workspace() {
+        // O-199: confirmed (or opted in) in $HOME itself, interactive: a workspace.
+        assert!(home_workspace(RunMode::Interactive, Start::Confirm, true));
+        assert!(home_workspace(RunMode::Interactive, Start::Proceed, true));
+        // A parent of $HOME or `/`: never.
+        assert!(!home_workspace(RunMode::Interactive, Start::Confirm, false));
+        assert!(!home_workspace(RunMode::Interactive, Start::Proceed, false));
+        // Print, json, rpc: never through the start check (only the explicit setting).
+        for mode in [RunMode::Print, RunMode::Json, RunMode::Rpc] {
+            assert!(!home_workspace(mode, Start::Proceed, true));
+            assert!(!home_workspace(mode, Start::Refuse, true));
         }
     }
 

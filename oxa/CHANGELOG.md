@@ -2,6 +2,10 @@
 
 ## [0.2.0] - 2026-11-13
 
+### Fixed (first run)
+
+- Started in your home directory and confirmed (or with `oxa.sandbox.allowHomeWrite`), bash now gets the home as its workspace: its folders and files are writable, the home folder itself, dotfiles, dot-folders and `~/bin` stay read-only, and keys stay masked. `/` and a parent of home are never writable, even with the setting; a symlink to home counts as home. The file tools ask before writing shell startup files and the agents' settings when started in home.
+
 ### Added
 
 - First public release of oxa: a Rust reimplementation of the pi 1.5.2 coding agent for the oxe engine.
@@ -12,6 +16,8 @@
 - A `subagent` child process now dies with its parent: the child is started with the Linux parent-death signal (SIGTERM), so a killed or crashed parent no longer leaves a child holding an engine request. Abort still ends the child's process group (TERM, then KILL after 2 s).
 - A cache miss is never reported with the cause `unknown`: without a rebase it is `cold_start` on the first request and `engine_evicted` afterwards.
 - `rust-version` is 1.87; the release profile unwinds on panic.
+- Repeated calls: a tool call (any tool) that already returned the same result three times in a row (same arguments, nothing in between, same prompt) gets a short note instead of the result; after two notes the next repeat stops the run (`oxa.toolRepeatGuard`, on by default). See [tools.md](docs/pages/tools.md#repeated-calls).
+- `oxa.sampling.mode: model` (opt-in) sends the model card's sampling for Qwen3.6 and Ornith instead of `temperature: 0`. The default stays greedy: the engine's speculative decoding runs on greedy requests only.
 
 ### Not in oxa (removed before the release)
 

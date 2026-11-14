@@ -189,9 +189,10 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         return report(&mut *stderr, &e);
     }
     // Item 3 (sec-prod): a session in the home directory or above it needs the user's say-so.
-    if let Err(e) = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout) {
-        return report(&mut *stderr, &e);
-    }
+    let home_workspace = match crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout) {
+        Ok(w) => w,
+        Err(e) => return report(&mut *stderr, &e),
+    };
 
     // CLI-019: pi's question when `--session <id>` names a session of another directory
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
@@ -214,6 +215,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             &dirs,
             &cwd,
             mode,
+            home_workspace,
             stdin_is_tty,
             stdout_is_tty,
             &mut confirm,
@@ -371,6 +373,7 @@ fn prepare(
     dirs: &Dirs,
     cwd: &Path,
     mode: RunMode,
+    home_workspace: bool,
     stdin_is_tty: bool,
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
@@ -552,7 +555,7 @@ fn prepare(
     }));
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
-            b.layout = crate::sandbox_layout::layout(env, dirs, cwd, &mut notices);
+            b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
             let b = b.with_git_dirs(cwd);
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)

@@ -234,7 +234,9 @@ const ACTIONS: &[ActionDef] = &[
     },
     ActionDef {
         id: "tui.altScreen.search",
-        default_keys: &["ctrl+shift+f"],
+        // oxa: `alt+s` as well, which a terminal without the kitty keyboard protocol can send
+        // (it sends ctrl+shift+f as ctrl+f, the cursor key).
+        default_keys: &["ctrl+shift+f", "alt+s"],
         description: "Search the rendered transcript",
     },
     ActionDef {
@@ -644,6 +646,17 @@ impl Keymap {
             .filter(|(_, keys)| keys.contains(key))
             .map(|(id, _)| id.as_str())
             .collect()
+    }
+    /// This keymap with only the keys `keep` accepts (an action may end up with none). For the
+    /// footer: the keys a terminal can actually send.
+    pub fn retain_keys(&self, keep: impl Fn(&KeyId) -> bool) -> Keymap {
+        Keymap {
+            bindings: self
+                .bindings
+                .iter()
+                .map(|(id, keys)| (id.clone(), keys.iter().filter(|k| keep(k)).cloned().collect()))
+                .collect(),
+        }
     }
     pub fn keys_for(&self, action: &str) -> Vec<KeyId> {
         self.bindings

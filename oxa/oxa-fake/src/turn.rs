@@ -138,6 +138,8 @@ pub struct Recorded {
     pub snapshot_keep: bool,
     /// `chat_template_kwargs.preserve_thinking` as sent (`None` = the key is absent; F8).
     pub preserve_thinking: Option<bool>,
+    /// The `temperature` sent (`0` = greedy, W6).
+    pub temperature: f64,
     /// Request headers, names lowercased (empty for the scripted engine).
     pub headers: Vec<(String, String)>,
     /// The raw body (empty for the scripted engine).
