@@ -254,6 +254,23 @@ fn run_inner(
             if st.shared.cancel.is_cancelled() {
                 return Ok(RunEnd::Aborted);
             }
+            // The repeat guard gave up: the same call after its notices ends the run.
+            if let Some(r) = results.iter().find(|r| r.stop) {
+                let text = crate::repeat::stop_text(&r.tool_name);
+                persist(
+                    st,
+                    EntryBody::Shown {
+                        text: text.clone(),
+                        why: shown_why::NOTICE,
+                    },
+                    sink,
+                )?;
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Error,
+                    text,
+                });
+                return Ok(RunEnd::Stopped);
+            }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
             // L5 mid-run (`oxa.compaction.midRun`): past the soft limit, compact before the next

@@ -332,6 +332,7 @@ fn recorder_catches_an_oversized_target_request() {
         max_tokens: 1,
         thinking: false,
         preserve_thinking: false,
+        sampling: None,
         hints: oxa_proto::Hints {
             session: "s",
             idem_key: "",
