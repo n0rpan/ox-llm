@@ -38,8 +38,10 @@ sign/authenticate a journal or prove the machine survived a power loss.
 
 ## Recover completed worker artifacts offline
 
-New A2A runs publish `worker-<worker-id>.json` beside `transcript.jsonl` before
-recording each worker's durable `finished` event. For the built-in CLI, worker 1
+With explicit `A2ARunSettings::persist_results = true`, A2A runs publish
+`worker-<worker-id>.json` beside `transcript.jsonl` before
+recording each worker's durable `finished` event. The CLI enables this only with
+`--save-results`; its default is no raw-result JSON persistence. For the built-in CLI, worker 1
 is `<directory>/run/worker-worker-1.json`. Each versioned checkpoint contains the
 run ID and complete worker report, including results and review proposals. The
 finished journal record binds its exact bytes with `checkpointSha256`. The
@@ -136,7 +138,8 @@ surviving server to query; bubblewrap parent-death cleanup stops its workers.
 The inspector still reports missing terminal evidence honestly. It never restarts
 that server or treats a new server as a continuation of the old one.
 
-The CLI saves its final report to `<directory>/report.json` after owned cleanup
+With `--save-results`, the CLI saves its final report to
+`<directory>/report.json` after owned cleanup
 and before stdout, including partial outcomes. See [CLI.md](CLI.md#saved-final-report)
 for publication and failure semantics. This preserves completed results when a
 stdout consumer closes, but cannot recover a controller killed before publication.

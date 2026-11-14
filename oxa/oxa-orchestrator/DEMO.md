@@ -38,6 +38,7 @@ test native cancellation journal inspection ... ok
 test orchestrate CLI Git worktrees ... ok
 test orchestrate CLI stalled stderr ... ok
 test orchestrate CLI durable report with closed stdout ... ok
+test orchestrate CLI result persistence requires opt-in ... ok
 test orchestrate CLI completed worker checkpoint after crash ... ok
 test orchestrate CLI structural input limits ... ok
 test orchestrate CLI protected run namespace ... ok
@@ -129,3 +130,9 @@ complete checkpoint binding and before worker 2 finishes. With no final report,
 it recovers worker 1 through both the library and the read-only CLI, preserves the
 original journal bytes, and refuses worker 2 using worker 1's file. Recovery tests
 also reject changed bytes, links and orphan/torn-finish bindings.
+
+Persistence scenarios explicitly pass `--save-results`. The default-retention
+scenario verifies stdout still contains the complete result while no final,
+pending or per-worker result JSON is created and the journal has no checkpoint
+binding or raw result text. Library callers must explicitly choose
+`A2ARunSettings::persist_results`; normal scheduler fixtures choose false.

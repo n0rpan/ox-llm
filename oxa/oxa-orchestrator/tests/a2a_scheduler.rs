@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 fn settings(env: &TestEnv, name: &str) -> A2ARunSettings {
     A2ARunSettings {
+        persist_results: false,
         id: name.into(),
         directory: env.root().join(name),
         parallelism: 2,

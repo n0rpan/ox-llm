@@ -27,7 +27,7 @@ use std::time::Duration;
 pub const HELP: &str = r#"Usage: oxa orchestrate [options] <goal>
 
 Run local offline workers over A2A; tools are off unless files are approved. Print worker status to stderr
-and save report.json in the private directory before printing final JSON to stdout.
+and print final JSON to stdout. Use --save-results to persist result checkpoints.
 Ctrl-C cancels and cleans up owned workers.
 
 Required:
@@ -50,6 +50,7 @@ Options:
   --edit                       Allow private-copy edits; requires workspace mode
   --allow-new <relative-path>   Allow a new review path; repeat, requires --edit
   --git-worktrees               Use owned snapshot Git worktrees; requires --edit
+  --save-results               Save raw results privately for later recovery/review
   --offline                    Explicit offline mode (always enabled here)
   --                           Treat remaining words as goal text
   --help                       Show this help without starting workers
@@ -76,6 +77,7 @@ pub struct Options {
     new_files: Vec<RelativePath>,
     editing: bool,
     git_worktrees: bool,
+    save_results: bool,
 }
 
 pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
@@ -84,6 +86,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     let mut new_files = Vec::new();
     let mut editing = false;
     let mut git_worktrees = false;
+    let mut save_results = false;
     let mut engine = None;
     let mut model = None;
     let mut directory = None;
@@ -115,6 +118,10 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
             return Ok(None);
         }
         if flag == "--offline" {
+            continue;
+        }
+        if flag == "--save-results" {
+            save_results = true;
             continue;
         }
         if flag == "--local-only" {
@@ -268,6 +275,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
         new_files,
         editing,
         git_worktrees,
+        save_results,
     }))
 }
 
@@ -435,6 +443,7 @@ pub fn execute(
         A2ARunSettings {
             id: "orchestrate".into(),
             directory: directory.join("run"),
+            persist_results: options.save_results,
             parallelism: options.parallel,
             wall_time: options.run_timeout,
             response_reservation: options.response_bytes * plan.len(),
@@ -452,7 +461,9 @@ pub fn execute(
     // stdout report, including when a downstream consumer closes its pipe.
     drop(server);
     let report = report?;
-    crate::checkpoint::save(&directory, &report)?;
+    if options.save_results {
+        crate::checkpoint::save(&directory, &report)?;
+    }
     Ok(report)
 }
 

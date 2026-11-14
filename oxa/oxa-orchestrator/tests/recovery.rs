@@ -171,6 +171,7 @@ fn complete_scheduler_journal_can_recover_results_without_resending() {
     let backend = Agent::new(TaskState::Completed);
     let server = Server::start(backend.clone(), ServerLimits::default()).unwrap();
     let settings = A2ARunSettings {
+        persist_results: true,
         id: "actual".into(),
         directory: env.root().join("actual"),
         parallelism: 1,

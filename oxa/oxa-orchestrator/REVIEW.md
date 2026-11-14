@@ -8,7 +8,8 @@ no agent configuration and executes no shell, Git command, hook or test.
 
 From `oxa/`, after building `oxa-cli --features orchestrator`, preview a saved
 report using the original source file scope. `oxa orchestrate` saves its final
-report as `<directory>/report.json` before writing stdout:
+report as `<directory>/report.json` before writing stdout when `--save-results`
+was explicitly supplied:
 
 ```sh
 ./target/debug/oxa orchestrate-review \
