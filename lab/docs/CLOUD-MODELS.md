@@ -131,10 +131,26 @@ same segment.
 ## Anthropic Messages (D6)
 
 An entry of kind `remote/anthropic` uses the native Messages API through the official
-`anthropic` Python SDK, not OpenAI compatibility mode. The three example entries
-(`claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`) are in
-[`examples/cloud-models.example.json`](../examples/cloud-models.example.json); copy the block
-into `runtime.json` and put the key in the same owner-only secrets file under `anthropic`.
+`anthropic` Python SDK, not OpenAI compatibility mode. The three model ids are
+`anthropic/claude-haiku-5-5`, `anthropic/claude-sonnet-5-5` and
+`anthropic/claude-opus-5-5`; put the key in the same owner-only secrets file under `anthropic`.
+
+```json
+"cloud": {"enabled": true, "daily_budget_usd": 2.0, "models": {
+  "anthropic/claude-haiku-5-5": {"kind": "remote/anthropic", "provider": "anthropic",
+    "base_url": "https://api.anthropic.com", "upstream_model": "claude-haiku-5-5",
+    "context_window": 200000, "max_output": 8192,
+    "pricing": {"input_per_million": 0.8, "output_per_million": 4.0}},
+  "anthropic/claude-sonnet-5-5": {"kind": "remote/anthropic", "provider": "anthropic",
+    "base_url": "https://api.anthropic.com", "upstream_model": "claude-sonnet-5-5",
+    "context_window": 200000, "max_output": 16000,
+    "pricing": {"input_per_million": 3.0, "output_per_million": 15.0}},
+  "anthropic/claude-opus-5-5": {"kind": "remote/anthropic", "provider": "anthropic",
+    "base_url": "https://api.anthropic.com", "upstream_model": "claude-opus-5-5",
+    "context_window": 200000, "max_output": 32000,
+    "pricing": {"input_per_million": 15.0, "output_per_million": 75.0}}
+}}
+```
 
 `base_url` is the SDK base (`https://api.anthropic.com`), not a `/v1/messages` URL.
 
