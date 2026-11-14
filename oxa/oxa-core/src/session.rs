@@ -1873,7 +1873,20 @@ mod tests {
             .iter()
             .filter_map(|m| m.content.clone())
             .collect();
-        assert_eq!(texts[..2], ["queued earlier".to_string(), "now".to_string()]);
+        assert_eq!(texts[0], "queued earlier");
+        // The prompt may carry the default environment note. Compare its typed text using
+        // the persisted provenance, while still checking the wire ordering above.
+        let parts = s
+            .inner()
+            .tree
+            .entries()
+            .iter()
+            .find_map(|entry| match &entry.body {
+                EntryBody::Msg { wire, parts } if wire.content.as_deref() == Some(&texts[1]) => Some(parts),
+                _ => None,
+            })
+            .expect("stored prompt");
+        assert_eq!(crate::envnote::strip_note(&texts[1], parts), "now");
         assert!(s.st.next_turn.is_empty());
     }
 }
