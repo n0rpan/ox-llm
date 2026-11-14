@@ -829,6 +829,78 @@ fn a2a_scheduler_coordinates_real_rpc_workers() {
     assert!(log.contains("task_bound"));
 }
 
+fn a2a_scheduler_resumes_only_never_started_real_workers() {
+    use oxa_orchestrator::recovery::{ExclusiveRun, InspectedRun, Phase};
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("resumable native result"); 2],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let agent = native_agent(&env, &engine, "resume-native-agent", 1);
+    let server = Server::start(agent.clone(), ServerLimits::default()).unwrap();
+    let mut config = a2a_settings(&env, "resume-native-parent");
+    config.parallelism = 1;
+    config.persist_results = true;
+    let path = config.directory.join("transcript.jsonl");
+    let (_tx, rx) = mpsc::sync_channel(2);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_a2a(
+            config,
+            vec![a2a_worker(&server, "reader"), a2a_worker(&server, "reviewer")],
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |_| {
+                if InspectedRun::inspect(&path)
+                    .unwrap()
+                    .snapshot()
+                    .workers
+                    .iter()
+                    .any(|w| w.worker == "reader" && w.phase == Phase::Finished)
+                {
+                    panic!("synthetic controller failure after native worker checkpoint");
+                }
+            },
+        )
+    }));
+    assert!(failed.is_err());
+    let before = std::fs::read(&path).unwrap();
+    let owner = ExclusiveRun::claim(&path).unwrap();
+    assert_eq!(
+        owner
+            .inspected()
+            .snapshot()
+            .workers
+            .iter()
+            .find(|w| w.worker == "reviewer")
+            .unwrap()
+            .phase,
+        Phase::Queued
+    );
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 1);
+    let (_tx, rx) = mpsc::sync_channel(2);
+    let report = oxa_orchestrator::resume::resume_queued(
+        &owner,
+        &env.root().join("resume-native-child"),
+        vec![a2a_worker(&server, "reviewer")],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert!(report.succeeded(), "{report:?}");
+    assert_eq!(report.workers.len(), 2);
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 2);
+    let mut ids = std::collections::BTreeSet::new();
+    for worker in &report.workers {
+        let task = worker.task.as_ref().unwrap();
+        assert!(ids.insert(task.id.clone()));
+        let native = agent.report(&task.id).unwrap();
+        assert!(!Path::new(&format!("/proc/{}", native.process_id.unwrap())).exists());
+    }
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
 fn a2a_scheduler_steering_cancellation_and_wire_caps() {
     let env = TestEnv::new();
     let engine = FakeServer::start(
@@ -2247,6 +2319,10 @@ fn main() {
         (
             "A2A scheduler coordinates real RPC workers",
             a2a_scheduler_coordinates_real_rpc_workers,
+        ),
+        (
+            "A2A scheduler resumes only never-started real workers",
+            a2a_scheduler_resumes_only_never_started_real_workers,
         ),
         (
             "A2A scheduler steering, cancellation and wire caps",

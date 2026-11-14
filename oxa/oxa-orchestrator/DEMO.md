@@ -29,6 +29,7 @@ test A2A RPC bridge streaming, steering and deduplication ... ok
 test A2A cancellation, resubscription and shutdown ... ok
 test cancellation bypasses full control queues ... ok
 test A2A scheduler coordinates real RPC workers ... ok
+test A2A scheduler resumes only never-started real workers ... ok
 test A2A scheduler steering, cancellation and wire caps ... ok
 test orchestrate CLI success and inert validation ... ok
 test orchestrate CLI signal cleanup ... ok
@@ -143,3 +144,11 @@ inode after death while recovering saved results. Library tests verify live
 inspection remains available, a second recovery owner is excluded, dropping the
 owner releases the lock, legacy journals cannot establish exclusion, and an audit
 write failure retains ownership until the writer is dropped.
+
+The queued-resume RPC scenario unwinds the scheduler only after its first worker's
+complete durable finish. The agent remains explicitly owned outside that
+scheduler. Reclaiming the original journal and supplying the original queued spec
+starts only the second actual sandboxed worker, restores the first worker's result,
+returns both outcomes and verifies distinct task IDs and reaped processes. Separate
+recovery tests verify one-time parent consumption, substitution refusal and original
+deadline enforcement including controller downtime; see [RESUME.md](RESUME.md).

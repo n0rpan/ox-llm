@@ -40,6 +40,20 @@ pub(crate) fn save_worker(
 pub(crate) const MAX_WORKER: usize = 64 * 1024 * 1024;
 
 fn publish(directory: &Path, name: &str, report: &impl serde::Serialize, limit: usize) -> io::Result<String> {
+    let anchor = crate::namespace::protected_directory(directory)?;
+    publish_anchored(&anchor, name, report, limit)
+}
+
+pub(crate) fn consume_resume(directory: &File, receipt: &impl serde::Serialize) -> io::Result<()> {
+    publish_anchored(directory, "resume.json", receipt, 64 * 1024).map(|_| ())
+}
+
+fn publish_anchored(
+    anchor: &File,
+    name: &str,
+    report: &impl serde::Serialize,
+    limit: usize,
+) -> io::Result<String> {
     if name.is_empty()
         || name.len() > 96
         || !name
@@ -51,7 +65,6 @@ fn publish(directory: &Path, name: &str, report: &impl serde::Serialize, limit: 
     let name_c = CString::new(name).unwrap();
     let temporary_name = format!(".{name}.pending");
     let temporary_c = CString::new(temporary_name.clone()).unwrap();
-    let anchor = crate::namespace::protected_directory(directory)?;
     let metadata = anchor.metadata()?;
     // SAFETY: geteuid only returns the current effective user identity.
     if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {

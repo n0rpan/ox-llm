@@ -165,6 +165,319 @@ impl Backend for Agent {
 fn agent(server: &Server<Agent>) -> LocalAgent {
     LocalAgent::register_verified_local(server.client(Limits::default()).unwrap())
 }
+
+fn queued_spec(id: &str, server: &Server<Agent>) -> A2AWorkerSpec {
+    A2AWorkerSpec {
+        id: id.into(),
+        role: format!("synthetic {id} role"),
+        task: format!("synthetic {id} task"),
+        agent: agent(server),
+        wall_time: Duration::from_secs(2),
+        response_bytes: 128 * 1024,
+        reported_tokens: None,
+    }
+}
+#[derive(Clone, Copy)]
+enum StopAt {
+    Manifest,
+    FirstFinished,
+    SecondBound,
+}
+fn interrupted_manifest(
+    env: &TestEnv,
+    name: &str,
+    servers: (&Server<Agent>, &Server<Agent>),
+    stop: StopAt,
+    wall_time: Duration,
+) -> PathBuf {
+    let directory = env.root().join(name);
+    let journal = directory.join("transcript.jsonl");
+    let (_tx, rx) = mpsc::sync_channel(2);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_a2a(
+            A2ARunSettings {
+                id: "resume-original".into(),
+                directory,
+                persist_results: true,
+                parallelism: 1,
+                wall_time,
+                response_reservation: 256 * 1024,
+                journal_bytes: 128 * 1024,
+                request_timeout: Duration::from_millis(100),
+                poll_interval: Duration::from_millis(5),
+                cancel_grace: Duration::from_millis(100),
+            },
+            vec![queued_spec("one", servers.0), queued_spec("two", servers.1)],
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |status| {
+                let captured = InspectedRun::inspect(&journal).unwrap();
+                let stop_now = match stop {
+                    StopAt::Manifest => status.worker == "two" && status.state == "queued",
+                    StopAt::FirstFinished => captured
+                        .snapshot()
+                        .workers
+                        .iter()
+                        .any(|w| w.worker == "one" && w.phase == Phase::Finished),
+                    StopAt::SecondBound => captured
+                        .snapshot()
+                        .workers
+                        .iter()
+                        .any(|w| w.worker == "two" && w.phase == Phase::Bound),
+                };
+                if stop_now {
+                    panic!("synthetic controller failure at a known durable boundary");
+                }
+            },
+        )
+    }));
+    assert!(failed.is_err());
+    journal
+}
+
+#[test]
+fn queued_resume_preserves_original_inputs_results_deadline_and_one_time_consumption() {
+    use oxa_orchestrator::resume::resume_queued;
+    let env = TestEnv::new();
+    let first = Agent::new(TaskState::Completed);
+    let second = Agent::new(TaskState::Completed);
+    let a = Server::start(first.clone(), ServerLimits::default()).unwrap();
+    let b = Server::start(second.clone(), ServerLimits::default()).unwrap();
+    let path = interrupted_manifest(
+        &env,
+        "resume-parent",
+        (&a, &b),
+        StopAt::FirstFinished,
+        Duration::from_secs(10),
+    );
+    let bytes = fs::read(&path).unwrap();
+    let original_records = bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for case in 0..4 {
+        let mut bad = original_records.clone();
+        match case {
+            0 => bad[0]["details"]["resumeBinding"]["version"] = json!(2),
+            1 => bad[0]["details"]["resumeBinding"]["response_reservation"] = json!(1),
+            2 => bad[1]["details"]["resumeBinding"]["endpoint_sha256"] = json!("f".repeat(64)),
+            _ => {
+                bad[1]["details"].as_object_mut().unwrap().remove("resumeBinding");
+            }
+        }
+        assert!(InspectedRun::inspect(&journal(
+            env.root(),
+            &format!("bad-resume-binding-{case}"),
+            &bad,
+            b""
+        ))
+        .is_err());
+    }
+    let owner = ExclusiveRun::claim(&path).unwrap();
+    let parent = owner.inspected().snapshot().resume_binding.clone().unwrap();
+    assert_eq!(first.sends.load(Ordering::Relaxed), 1);
+    assert_eq!(second.sends.load(Ordering::Relaxed), 0);
+    for change in 0..7 {
+        let mut spec = queued_spec("two", &b);
+        match change {
+            0 => spec.role.push_str(" changed"),
+            1 => spec.task.push_str(" changed"),
+            2 => spec.wall_time += Duration::from_secs(1),
+            3 => spec.response_bytes += 1,
+            4 => spec.reported_tokens = Some(1),
+            5 => spec.agent = agent(&a),
+            _ => spec.id = "one".into(),
+        }
+        let (_tx, rx) = mpsc::sync_channel(2);
+        assert!(resume_queued(
+            &owner,
+            &env.root().join("rejected"),
+            vec![spec],
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |_| {}
+        )
+        .is_err());
+        assert!(!env.root().join("rejected").exists());
+        assert!(!env.root().join("resume-parent/resume.json").exists());
+    }
+    let (_tx, rx) = mpsc::sync_channel(2);
+    let report = resume_queued(
+        &owner,
+        &env.root().join("resumed"),
+        vec![queued_spec("two", &b)],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert!(report.succeeded());
+    assert_eq!(
+        report
+            .workers
+            .iter()
+            .map(|w| w.worker.as_str())
+            .collect::<Vec<_>>(),
+        vec!["one", "two"]
+    );
+    assert_eq!(
+        first.sends.load(Ordering::Relaxed),
+        1,
+        "finished worker must not be sent again"
+    );
+    assert_eq!(second.sends.load(Ordering::Relaxed), 1);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    let child = InspectedRun::inspect(&env.root().join("resumed/transcript.jsonl")).unwrap();
+    let inherited = child.snapshot().resume_binding.as_ref().unwrap();
+    assert_eq!(inherited.started_ns, parent.started_ns);
+    assert_eq!(inherited.deadline_ns, parent.deadline_ns);
+    assert_eq!(inherited.response_reservation, 128 * 1024);
+    assert_ne!(child.snapshot().run, report.run);
+    assert!(env.root().join("resume-parent/resume.json").exists());
+    drop(owner);
+    let owner = ExclusiveRun::claim(&path).unwrap();
+    let (_tx, rx) = mpsc::sync_channel(2);
+    assert!(resume_queued(
+        &owner,
+        &env.root().join("duplicate"),
+        vec![queued_spec("two", &b)],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {}
+    )
+    .is_err());
+    assert!(!env.root().join("duplicate").exists());
+    assert_eq!(second.sends.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn queued_resume_refuses_ambiguous_starts_expiry_and_replay_after_child_crash() {
+    use oxa_orchestrator::resume::resume_queued;
+    let env = TestEnv::new();
+    let first = Agent::new(TaskState::Completed);
+    let second = Agent::new(TaskState::Working);
+    let a = Server::start(first.clone(), ServerLimits::default()).unwrap();
+    let b = Server::start(second.clone(), ServerLimits::default()).unwrap();
+    let path = interrupted_manifest(
+        &env,
+        "ambiguous",
+        (&a, &b),
+        StopAt::SecondBound,
+        Duration::from_secs(10),
+    );
+    let owner = ExclusiveRun::claim(&path).unwrap();
+    let sends = second.sends.load(Ordering::Relaxed);
+    let (_tx, rx) = mpsc::sync_channel(2);
+    assert!(resume_queued(
+        &owner,
+        &env.root().join("no-replay"),
+        vec![queued_spec("two", &b)],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {}
+    )
+    .is_err());
+    assert_eq!(second.sends.load(Ordering::Relaxed), sends);
+    assert!(!env.root().join("ambiguous/resume.json").exists());
+    let path = interrupted_manifest(
+        &env,
+        "expired",
+        (&a, &b),
+        StopAt::Manifest,
+        Duration::from_millis(20),
+    );
+    std::thread::sleep(Duration::from_millis(30));
+    let owner = ExclusiveRun::claim(&path).unwrap();
+    let (_tx, rx) = mpsc::sync_channel(2);
+    assert!(resume_queued(
+        &owner,
+        &env.root().join("too-late"),
+        vec![queued_spec("one", &a), queued_spec("two", &b)],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {}
+    )
+    .is_err());
+    assert!(!env.root().join("expired/resume.json").exists());
+    let path = interrupted_manifest(
+        &env,
+        "consumed",
+        (&a, &b),
+        StopAt::Manifest,
+        Duration::from_secs(10),
+    );
+    let owner = ExclusiveRun::claim(&path).unwrap();
+    let (_tx, rx) = mpsc::sync_channel(2);
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        resume_queued(
+            &owner,
+            &env.root().join("child-crash"),
+            vec![queued_spec("one", &a), queued_spec("two", &b)],
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |_| panic!("synthetic child controller crash before send"),
+        )
+    }));
+    assert!(crashed.is_err());
+    assert!(env.root().join("consumed/resume.json").exists());
+    let (_tx, rx) = mpsc::sync_channel(2);
+    assert!(resume_queued(
+        &owner,
+        &env.root().join("parent-replay"),
+        vec![queued_spec("one", &a), queued_spec("two", &b)],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {}
+    )
+    .is_err());
+    assert_eq!(second.sends.load(Ordering::Relaxed), sends);
+    assert!(!env.root().join("parent-replay").exists());
+}
+
+#[test]
+fn queued_resume_counts_controller_downtime_against_the_original_run_deadline() {
+    use oxa_orchestrator::resume::resume_queued;
+    let env = TestEnv::new();
+    let first = Agent::new(TaskState::Working);
+    let second = Agent::new(TaskState::Working);
+    let a = Server::start(first.clone(), ServerLimits::default()).unwrap();
+    let b = Server::start(second.clone(), ServerLimits::default()).unwrap();
+    let path = interrupted_manifest(
+        &env,
+        "downtime",
+        (&a, &b),
+        StopAt::Manifest,
+        Duration::from_millis(600),
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let owner = ExclusiveRun::claim(&path).unwrap();
+    let remaining = owner
+        .inspected()
+        .snapshot()
+        .resume_binding
+        .as_ref()
+        .unwrap()
+        .remaining()
+        .unwrap();
+    assert!(remaining < Duration::from_millis(300));
+    let started = Instant::now();
+    let (_tx, rx) = mpsc::sync_channel(2);
+    let report = resume_queued(
+        &owner,
+        &env.root().join("remaining-only"),
+        vec![queued_spec("one", &a), queued_spec("two", &b)],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert!(started.elapsed() < remaining + Duration::from_millis(250));
+    assert!(report.workers.iter().all(|w| w.outcome == Outcome::Deadline));
+    assert_eq!(first.sends.load(Ordering::Relaxed), 1);
+    assert_eq!(second.sends.load(Ordering::Relaxed), 0);
+    assert_eq!(first.task.lock().unwrap().status.state, TaskState::Canceled);
+}
 #[test]
 fn complete_scheduler_journal_can_recover_results_without_resending() {
     let env = TestEnv::new();
