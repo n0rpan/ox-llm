@@ -23,6 +23,7 @@ impl Journal {
             .create_new(true)
             .mode(0o600)
             .open(path)?;
+        crate::ownership::lock(&file)?;
         Ok(Self {
             file,
             sequence: 0,
@@ -44,7 +45,16 @@ impl Journal {
         result
     }
 
-    fn append(&mut self, worker: Option<&str>, kind: &str, details: Value) -> io::Result<()> {
+    fn append(&mut self, worker: Option<&str>, kind: &str, mut details: Value) -> io::Result<()> {
+        if kind == "run_started" {
+            details
+                .as_object_mut()
+                .ok_or_else(|| io::Error::other("invalid run start details"))?
+                .insert(
+                    "ownership".into(),
+                    Value::String(crate::ownership::PROTOCOL.into()),
+                );
+        }
         let value = json!({"schema":1,"sequence":self.sequence,"elapsedMs":self.started.elapsed().as_millis(),"worker":worker,"event":kind,"details":details});
         let mut line = serde_json::to_vec(&value)?;
         line.push(b'\n');
@@ -57,5 +67,37 @@ impl Journal {
         self.bytes += line.len();
         self.sequence += 1;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recovery::ExclusiveRun;
+    use oxa_fake::TestEnv;
+
+    #[test]
+    fn failed_audit_keeps_ownership_until_the_writer_is_dropped() {
+        let env = TestEnv::new();
+        let path = env.root().join("transcript.jsonl");
+        let mut journal = Journal::create(&path, 512).unwrap();
+        use std::os::fd::AsRawFd;
+        // SAFETY: querying flags on this test's live journal descriptor.
+        let flags = unsafe { libc::fcntl(journal.file.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+        journal
+            .record(None, "run_started", json!({"run":"failure","workers":1}))
+            .unwrap();
+        assert!(journal
+            .record(None, "control_rejected", json!({"synthetic":"x".repeat(1024)}))
+            .is_err());
+        assert_eq!(
+            ExclusiveRun::claim(&path).err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(journal);
+        let exclusive = ExclusiveRun::claim(&path).unwrap();
+        assert!(!exclusive.inspected().snapshot().recorded_run_finished);
+        assert_eq!(exclusive.inspected().snapshot().unlisted_workers, 1);
     }
 }

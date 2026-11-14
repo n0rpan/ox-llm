@@ -192,12 +192,19 @@ fn complete_scheduler_journal_can_recover_results_without_resending() {
         reported_tokens: None,
     };
     let (_tx, rx) = mpsc::sync_channel(2);
+    let live_path = settings.directory.join("transcript.jsonl");
     let report = run_a2a(
         settings.clone(),
         vec![spec],
         rx,
         Arc::new(AtomicBool::new(false)),
-        |_| {},
+        |_| {
+            assert_eq!(
+                ExclusiveRun::claim(&live_path).err().unwrap().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            assert!(InspectedRun::inspect(&live_path).is_ok());
+        },
     )
     .unwrap();
     assert!(report.succeeded());
@@ -205,6 +212,18 @@ fn complete_scheduler_journal_can_recover_results_without_resending() {
     let before = fs::read(&path).unwrap();
     let inspected = InspectedRun::inspect(&path).unwrap();
     assert!(inspected.snapshot().recorded_run_finished);
+    assert!(inspected.snapshot().exclusive_ownership_supported);
+    let exclusive = ExclusiveRun::claim(&path).unwrap();
+    assert_eq!(
+        exclusive.inspected().snapshot().journal_sha256,
+        inspected.snapshot().journal_sha256
+    );
+    assert_eq!(
+        ExclusiveRun::claim(&path).err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(exclusive);
+    drop(ExclusiveRun::claim(&path).unwrap());
     assert_eq!(inspected.snapshot().workers[0].phase, Phase::Finished);
     let checkpoint = env.root().join("actual/worker-one.json");
     let checkpoint_bytes = fs::read(&checkpoint).unwrap();
@@ -322,6 +341,17 @@ fn interrupted_bound_tasks_can_be_observed_or_explicitly_canceled() {
         b"{\"schema\":1,\"sequence\":4",
     );
     let inspected = InspectedRun::inspect(&path).unwrap();
+    assert!(!inspected.snapshot().exclusive_ownership_supported);
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        ExclusiveRun::claim(&path)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("legacy journal"),
+        "legacy journals never prove controller exclusion"
+    );
     assert!(inspected.snapshot().truncated_tail);
     assert!(!inspected.snapshot().recorded_run_finished);
     assert_eq!(inspected.snapshot().workers[0].phase, Phase::Bound);
@@ -439,12 +469,14 @@ fn journal_corruption_links_and_lifecycle_inconsistency_fail_closed() {
     for (name, mut bad) in [
         ("sequence", records.clone()),
         ("schema", records.clone()),
+        ("ownership", records.clone()),
         ("transition", records.clone()),
         ("unknown", records.clone()),
     ] {
         match name {
             "sequence" => bad[2]["sequence"] = json!(4),
             "schema" => bad[0]["schema"] = json!(2),
+            "ownership" => bad[0]["details"]["ownership"] = json!("future-lock-protocol"),
             "transition" => bad[2]["event"] = json!("task_bound"),
             _ => bad[2]["event"] = json!("new_unsupported_event"),
         };

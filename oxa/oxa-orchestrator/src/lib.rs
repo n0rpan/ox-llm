@@ -6,6 +6,7 @@ pub mod cli;
 mod git_worktrees;
 mod journal;
 mod namespace;
+mod ownership;
 mod process;
 pub mod recovery;
 mod recovery_cli;

@@ -36,6 +36,43 @@ No raw prompts, results, credentials or diagnostic text are recovered from hashe
 The file hash binds the captured bytes, including an ignored tail; it does not
 sign/authenticate a journal or prove the machine survived a power loss.
 
+## Exclusive controller ownership
+
+New native and A2A journal writers acquire a nonblocking exclusive `flock` on
+the journal inode before writing anything. Their first record declares
+`ownership: "journal-flock-v1"`; inspection reports
+`exclusive_ownership_supported`. The descriptor remains open across scheduling
+and owned cleanup. Audit failure does not release ownership early. Worker execs
+do not inherit it. Closing the descriptor, ordinary unwinding or controller death
+releases the kernel lock, without a PID file, timeout guess or stale-lock removal.
+
+`recovery::ExclusiveRun::claim(journal_path)` is the library ownership primitive
+for future scheduler recovery. It checks the protected output namespace and an
+operator-owned private, bounded plain single-link journal, pins its inode, opens
+an independent descriptor and tries the same lock without waiting. A live writer
+or another recovery owner yields `WouldBlock`. While holding the lock it captures
+and validates the journal from that pinned inode. The returned value owns the
+descriptor and exposes `inspected()`; keep the value alive for the entire recovery
+operation. Dropping it releases the lock. No file content, PID, agent, network
+route or worker is changed, and no model prompt is replayed.
+
+Legacy journals remain inspectable, but absence of the declared cooperative
+protocol refuses an exclusive claim: an old writer may never have held a lock.
+Unknown protocol tags fail inspection rather than implying compatibility.
+Ordinary read-only inspection does not acquire ownership and remains available
+while a controller is live. A successful claim establishes that the cooperative journal writer released
+ownership, not that its host controller process exited. It does not prove that
+remote tasks or native descendants have stopped. Recorded outcomes and
+unconfirmed stops retain their existing meanings.
+
+This is cooperative exclusion on one host/filesystem. Same-UID processes and
+root remain trusted; advisory locks do not stop a malicious noncooperating writer,
+replacement by an authorized operator or edits to both journal and protocol tag.
+It is not a distributed lease, authorization to resume, reattachment capability,
+proof of remote stop or a completed queued-plan resume implementation. Original
+budgets, explicit plan/input binding and task reconciliation still need to govern
+any later resume API. The CLI exposes inspection/recovery only, not takeover.
+
 ## Recover completed worker artifacts offline
 
 With explicit `A2ARunSettings::persist_results = true`, A2A runs publish

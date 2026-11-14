@@ -2070,7 +2070,7 @@ fn orchestrate_cli_result_persistence_requires_opt_in() {
 }
 
 fn orchestrate_cli_completed_checkpoint_survives_controller_crash() {
-    use oxa_orchestrator::recovery::InspectedRun;
+    use oxa_orchestrator::recovery::{ExclusiveRun, InspectedRun};
     let env = TestEnv::new();
     let engine = FakeServer::start(
         vec![ScriptTurn::text("checkpointed worker result"); 2],
@@ -2128,11 +2128,16 @@ fn orchestrate_cli_completed_checkpoint_survives_controller_crash() {
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+    assert_eq!(
+        ExclusiveRun::claim(&journal).err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
     child.0.kill().unwrap();
     assert!(!child.0.wait().unwrap().success());
     assert!(!root.join("report.json").exists());
     let before = std::fs::read(&journal).unwrap();
-    let inspected = InspectedRun::inspect(&journal).unwrap();
+    let exclusive = ExclusiveRun::claim(&journal).unwrap();
+    let inspected = exclusive.inspected();
     assert!(!inspected.snapshot().recorded_run_finished);
     let recovered = inspected
         .load_checkpoint("worker-1", &root.join("run/worker-worker-1.json"))
