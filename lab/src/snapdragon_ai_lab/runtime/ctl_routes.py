@@ -251,6 +251,8 @@ class ControlRoutes:
             return self.json_reply(404, {'error': 'Unknown local control route.'})
         # Polling these routes must never repeatedly reload an idle model.
         if self.command in ('GET', 'HEAD') and path in ('/health', '/v1/models', '/models'):
+            if path != '/health' and self.manager.cloud_only():
+                return self.json_reply(200, {'object': 'list', 'data': self.manager.models()})
             if path != '/health':
                 try:
                     if self.manager.config().get('profiles'):
