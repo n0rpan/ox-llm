@@ -11,10 +11,12 @@ The following gaps remain visible rather than being represented by skipped tests
   refusal, remote ledger labels and redaction: no implementation exists on this
   reference main. Implement the planned native functionality after the existing
   runtime paths, keeping the absent Python baseline explicit.
-- Disk state/prefix/session caches: seed actual on-disk formats, budget/GC, clear
+- Disk state/prefix/session caches: extend actual on-disk formats, clear
   scopes, preload, concurrent mutation and additional cross-implementation reads.
   Usage tests now read populated state formats, pending-write ages, overrides and
-  symlink refusals. Mutation/GC coverage remains pending.
+  symlink refusals. Budget persistence and controller eviction now cover TTL,
+  value ranking, shared blocks, pins, opaque manifests and private lease ownership.
+  Clear/preload, engine-owned mutation and further race coverage remain pending.
 - LAN sharing: actual listener configuration, key rotation and file permissions,
   origin/route/header restrictions, rates, shared/local priority and preemption.
   All listeners/upstreams used in tests must remain synthetic and isolated.
@@ -59,7 +61,7 @@ run/review, mark ready deliberately or dispatch checks.yml once for the branch.
 The merge queue runs full integration CI again. If waiting is needed, use one
 blocking gh pr checks --watch; never poll CI status.
 
-Next implementation step: complete config/state round trips and remaining CLI
+Next implementation step: disk-cache clear/preload, engine adapters and remaining CLI
 commands. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
 opt-in learning, memory-only operation, streaming, bounded candidates/prefixes,
@@ -69,6 +71,10 @@ private salt/hash/file compatibility, history/reply tracking, cancellation,
 advisory failures and unload finalization. Optional turn diagnostics and
 queue/replay modes remain pending. The native cache usage and storage inventory
 readers pass 14 additional cases. No tests are skipped to hide these gaps.
+All three config/ledger/key-file contracts now pass with Rust. Eight context-mode
+cases cover published limits/capabilities, hash-bound RSS-proof gates, active
+requests, cap-changing reloads and symlink/permission preservation. Twelve budget
+cases cover persistence and descriptor-anchored eviction without reading KV bytes.
 State-cache-capable engines and the automatic engine-ledger bridge currently
 refuse launch explicitly until their adapters are ported. Full Rust conformance
 remains FAIL, and no native deployment or readiness claim is made.

@@ -1,0 +1,4778 @@
+{
+  "config-symlink": [
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "Ornith only"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "config_mode": 416,
+      "config_symlink": true,
+      "context_modes": {
+        "models": {
+          "ornith-35b-a3b-local": "fast",
+          "qwen3.6-35b-a3b-local": "deep"
+        }
+      },
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      }
+    }
+  ],
+  "max-busy": [
+    {
+      "body": {
+        "error": "A request is running, so the mode was not changed. Try again when it finishes."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": [],
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": [],
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": [],
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "config_mode": 384,
+      "config_symlink": false,
+      "context_modes": {
+        "models": {
+          "ornith-35b-a3b-local": "deep"
+        }
+      },
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      }
+    }
+  ],
+  "max-load-cycle": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 262144,
+        "mode": "max",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "state": "unloaded"
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "state": "unloaded"
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "state": "ready"
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "launched_contexts": [
+        32768,
+        262144,
+        32768
+      ]
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": [],
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": [],
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": [],
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "config_mode": 384,
+      "config_symlink": false,
+      "context_modes": {
+        "models": {
+          "ornith-35b-a3b-local": "fast"
+        }
+      },
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      }
+    }
+  ],
+  "metadata": [
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "config_mode": 384,
+      "config_symlink": false,
+      "context_modes": {
+        "default": "deep",
+        "models": {
+          "ornith-35b-a3b-local": "unknown-synthetic-mode"
+        }
+      },
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      }
+    }
+  ],
+  "metadata-edge-types": [
+    {
+      "context": {
+        "cap": 131072,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": null,
+        "modes": []
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 32768,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": null,
+          "modes": []
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 32768,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": null,
+          "modes": []
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        },
+        "synthetic-no-modes": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 32768,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": null,
+          "modes": []
+        }
+      }
+    },
+    {
+      "config_mode": 384,
+      "config_symlink": false,
+      "context_modes": null,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      }
+    }
+  ],
+  "proof-gates": [
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "error": "needs RSS proof"
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "error": "needs RSS proof"
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "RSS proof is for another engine"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "RSS proof is for another engine"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "RSS proof is for another engine"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "RSS proof is for another engine"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "error": "RSS proof is for another engine"
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "RSS proof is for another engine"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "error": "needs RSS proof"
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "RSS above 27 GiB"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "RSS above 27 GiB"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "RSS above 27 GiB"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "RSS above 27 GiB"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "error": "RSS above 27 GiB"
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "RSS above 27 GiB"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "error": "needs RSS proof"
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 262144,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": null
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "cap": 262144,
+        "mode": "max",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": null
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "config_mode": 384,
+      "config_symlink": false,
+      "context_modes": {
+        "models": {
+          "ornith-35b-a3b-local": "fast"
+        }
+      },
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      }
+    }
+  ],
+  "set-fast-deep": [
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "body": {
+        "cap": 32768,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "Ornith only"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "context": {
+        "cap": 32768,
+        "mode": "fast",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 49536,
+            "context": 131072,
+            "id": "fast",
+            "reason": null
+          },
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 102000,
+            "context": 131072,
+            "id": "deep",
+            "reason": null
+          },
+          {
+            "available": false,
+            "cap": 262144,
+            "compact_at": 199750,
+            "context": 262144,
+            "id": "max",
+            "reason": "needs RSS proof"
+          }
+        ]
+      },
+      "model_limits": {
+        "local-default": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "ornith-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "fast",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "needs RSS proof"
+            }
+          ]
+        },
+        "qwen3.6-35b-a3b-local": {
+          "cap": 32768,
+          "capabilities": {
+            "hint_clear": true,
+            "max_context": 131072,
+            "mtp": null,
+            "park": "ram+disk",
+            "prefill_only": true,
+            "preserve_thinking": true,
+            "sampling": null,
+            "slots": 1,
+            "snapshot_hint": 2,
+            "thinking": "toggle",
+            "turn_kind": true,
+            "vision": false
+          },
+          "max_output": 4,
+          "mode": "deep",
+          "modes": [
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 49536,
+              "context": 131072,
+              "id": "fast",
+              "reason": null
+            },
+            {
+              "available": true,
+              "cap": 131072,
+              "compact_at": 102000,
+              "context": 131072,
+              "id": "deep",
+              "reason": null
+            },
+            {
+              "available": false,
+              "cap": 262144,
+              "compact_at": 199750,
+              "context": 262144,
+              "id": "max",
+              "reason": "Ornith only"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "config_mode": 384,
+      "config_symlink": false,
+      "context_modes": {
+        "models": {
+          "ornith-35b-a3b-local": "fast",
+          "qwen3.6-35b-a3b-local": "deep"
+        }
+      },
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      }
+    }
+  ],
+  "validation": [
+    {
+      "body": {
+        "error": "Send {\"model\": alias, \"mode\": \"fast\"|\"deep\"|\"max\"}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"model\": alias, \"mode\": \"fast\"|\"deep\"|\"max\"}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"model\": alias, \"mode\": \"fast\"|\"deep\"|\"max\"}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Name the model."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Name the model."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Mode must be fast, deep or max."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Mode must be fast, deep or max."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Unknown local model. Choose one listed in /v1/models."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "This model has no context modes."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Ornith only"
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "config_mode": 384,
+      "config_symlink": false,
+      "context_modes": null,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      }
+    }
+  ]
+}

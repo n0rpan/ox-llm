@@ -200,6 +200,7 @@ def main():
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--alias', required=True)
     parser.add_argument('--model', required=True)
+    parser.add_argument('--ctx-size', type=int)
     args = parser.parse_args()
     if diagnostic := os.environ.get('FAKE_ENGINE_STDERR'):
         os.write(2, diagnostic.encode())
@@ -212,7 +213,8 @@ def main():
     server.daemon_threads = True
     server.alias = args.alias
     event('started', pid=os.getpid(), alias=args.alias,
-          affinity=sorted(os.sched_getaffinity(0)))
+          affinity=sorted(os.sched_getaffinity(0)),
+          **({'context_size': args.ctx_size} if args.ctx_size is not None else {}))
     server.serve_forever()
 
 

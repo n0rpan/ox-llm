@@ -422,6 +422,8 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         "/_local/harness/learn",
         "/_local/harness/label",
         "/_local/harness/prepare",
+        "/_local/cache/budget",
+        "/_local/mode",
     ]
     .contains(&path.as_str())
         && method == Method::POST
@@ -447,6 +449,34 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             },
             Err(_) => return context.error(400, "Invalid control request.", "", "", None),
         };
+        if path == "/_local/mode" {
+            if !control
+                .as_object()
+                .is_some_and(|m| m.len() == 2 && m.contains_key("model") && m.contains_key("mode"))
+            {
+                return context.reply(400,json!({"error":"Send {\"model\": alias, \"mode\": \"fast\"|\"deep\"|\"max\"}."}));
+            }
+            return match app
+                .engine
+                .set_mode(control["model"].clone(), control["mode"].clone())
+                .await
+            {
+                Ok(value) => context.reply(200, value),
+                Err((code, value)) => context.reply(code, value),
+            };
+        }
+        if path == "/_local/cache/budget" {
+            if !control
+                .as_object()
+                .is_some_and(|m| m.len() == 1 && m.contains_key("bytes"))
+            {
+                return context.reply(400, json!({"error":"Send only {\"bytes\": N}."}));
+            }
+            return match app.engine.set_cache_budget(control["bytes"].clone()).await {
+                Ok(value) => context.reply(200, value),
+                Err((code, value)) => context.reply(code, value),
+            };
+        }
         if path == "/_local/harness/learning" {
             return match app
                 .engine

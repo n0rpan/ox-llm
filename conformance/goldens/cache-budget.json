@@ -1,0 +1,652 @@
+{
+  "config-symlink": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 4000000000,
+        "freed_bytes": 0,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 2
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 4000000000,
+        "ttl_secs": 86400
+      },
+      "config_mode": 416,
+      "config_symlink": true,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/identity.json": 2
+      }
+    }
+  ],
+  "empty": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 4000000000,
+        "freed_bytes": 0,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 2
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 4000000000,
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/identity.json": 2
+      }
+    }
+  ],
+  "expired-shared": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 4000000000,
+        "freed_bytes": 234,
+        "used_bytes": 257
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 257
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": "<recent:unix-seconds>",
+          "oldest_atime": "<recent:unix-seconds>"
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 257
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 4000000000,
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": 15,
+        "aaaaaaaaaaaaaaaa/echo/ffffffffffffffffffffffffffffffff.jsonl": 15,
+        "aaaaaaaaaaaaaaaa/identity.json": 2,
+        "aaaaaaaaaaaaaaaa/sessions/second.json": 225
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "body": {
+        "error": "Send only {\"bytes\": N}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send only {\"bytes\": N}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"bytes\": N}: 0 (disk tier off) or a whole number of at least 4000000000."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"bytes\": N}: 0 (disk tier off) or a whole number of at least 4000000000."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"bytes\": N}: 0 (disk tier off) or a whole number of at least 4000000000."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"bytes\": N}: 0 (disk tier off) or a whole number of at least 4000000000."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"bytes\": N}: 0 (disk tier off) or a whole number of at least 4000000000."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"bytes\": N}: 0 (disk tier off) or a whole number of at least 4000000000."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"bytes\": N}: 0 (disk tier off) or a whole number of at least 4000000000."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 2
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/identity.json": 2
+      }
+    }
+  ],
+  "invalid-root": [
+    {
+      "body": {
+        "error": "state_cache_root_override_invalid"
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 4000000000,
+        "root": "/outside-synthetic-home",
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/identity.json": 2
+      }
+    }
+  ],
+  "lease-busy": [
+    {
+      "body": {
+        "error": "The budget was saved; another job is running, so saved state is trimmed later (at the next load or budget change)."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 0,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 0,
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": 15,
+        "aaaaaaaaaaaaaaaa/echo/cccccccccccccccccccccccccccccccc.jsonl": 15,
+        "aaaaaaaaaaaaaaaa/identity.json": 2,
+        "aaaaaaaaaaaaaaaa/sessions/first.json": 219
+      }
+    }
+  ],
+  "loaded-engine": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 0,
+        "freed_bytes": 249,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 0,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 2
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 0,
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/identity.json": 2
+      }
+    }
+  ],
+  "off-populated": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 0,
+        "freed_bytes": 264,
+        "used_bytes": 23
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 0,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 23
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 23
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 0,
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/identity.json": 2,
+        "aaaaaaaaaaaaaaaa/new.pending": 21,
+        "aaaaaaaaaaaaaaaa/old.pending": 21,
+        "aaaaaaaaaaaaaaaa/unknown.txt": 14
+      }
+    }
+  ],
+  "opaque": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 0,
+        "freed_bytes": 219,
+        "used_bytes": 81
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 0,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 81
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 81
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 0,
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.eeeeeeeeeeeeeeee.kv": 15,
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": 15,
+        "aaaaaaaaaaaaaaaa/echo/cccccccccccccccccccccccccccccccc.jsonl": 15,
+        "aaaaaaaaaaaaaaaa/identity.json": 2,
+        "aaaaaaaaaaaaaaaa/new.pending": 21,
+        "aaaaaaaaaaaaaaaa/old.pending": 21,
+        "aaaaaaaaaaaaaaaa/sessions/opaque.json": 13,
+        "aaaaaaaaaaaaaaaa/unknown.txt": 14
+      }
+    }
+  ],
+  "orphan-echo": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 4000000000,
+        "freed_bytes": 19,
+        "used_bytes": 24
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 24
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 24
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 4000000000,
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/echo/synthetic-recent-group.jsonl": 22,
+        "aaaaaaaaaaaaaaaa/identity.json": 2
+      }
+    }
+  ],
+  "pins-and-recent": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 4000000000,
+        "freed_bytes": 0,
+        "used_bytes": 505
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 505
+        },
+        "sessions": {
+          "count": 2,
+          "newest_atime": "<recent:unix-seconds>",
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 86400,
+        "used_bytes": 505
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 4000000000,
+        "ttl_secs": 86400
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.eeeeeeeeeeeeeeee.kv": 15,
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": 15,
+        "aaaaaaaaaaaaaaaa/echo/cccccccccccccccccccccccccccccccc.jsonl": 15,
+        "aaaaaaaaaaaaaaaa/echo/ffffffffffffffffffffffffffffffff.jsonl": 15,
+        "aaaaaaaaaaaaaaaa/identity.json": 2,
+        "aaaaaaaaaaaaaaaa/sessions/first.json": 218,
+        "aaaaaaaaaaaaaaaa/sessions/second.json": 225
+      }
+    }
+  ],
+  "ranked-budget": [
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 4000000000,
+        "freed_bytes": 2200000240,
+        "used_bytes": 2200000243
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 2200000243
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": "<recent:unix-seconds>",
+          "oldest_atime": "<recent:unix-seconds>"
+        },
+        "ttl_secs": 315360000,
+        "used_bytes": 2200000243
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "cache": {
+        "disk_budget_bytes": 4000000000,
+        "ttl_secs": 315360000
+      },
+      "config_mode": 384,
+      "config_symlink": false,
+      "extension": {
+        "opaque": [
+          7,
+          "synthetic"
+        ]
+      },
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.eeeeeeeeeeeeeeee.kv": 2200000000,
+        "aaaaaaaaaaaaaaaa/echo/ffffffffffffffffffffffffffffffff.jsonl": 15,
+        "aaaaaaaaaaaaaaaa/identity.json": 2,
+        "aaaaaaaaaaaaaaaa/sessions/second.json": 226
+      }
+    }
+  ]
+}

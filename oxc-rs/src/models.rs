@@ -93,7 +93,10 @@ pub fn resolve(config: &Value, name: Option<&str>) -> Result<Value, &'static str
     {
         profile.shift_remove("memlat_overrides");
     }
-    Ok(Value::Object(profile))
+    Ok(apply_mode(
+        Value::Object(profile),
+        stored_mode(config, requested),
+    ))
 }
 
 pub fn eligible(profile: &Value) -> bool {
@@ -106,7 +109,7 @@ pub fn eligible(profile: &Value) -> bool {
         }) {
             return false;
         }
-        // Flash and long-context qualification adapters are not ported yet.
+        // The Flash qualification adapter is not ported yet.
         // Do not advertise an unvalidated profile as eligible in their place.
         if profile["oxe_flash"].is_object()
             || !profile["model_alias"].as_str().is_some_and(|alias| {
@@ -136,12 +139,15 @@ pub fn eligible(profile: &Value) -> bool {
         }
         for (key, max) in [
             ("threads", 12_u64),
-            ("context_size", 131072),
+            ("context_size", 262144),
             ("expected_bytes", 64 * 1024 * 1024 * 1024),
         ] {
             if !profile[key].as_u64().is_some_and(|v| v > 0 && v <= max) {
                 return false;
             }
+        }
+        if rss_proof_reason(profile, profile["context_size"].as_u64().unwrap_or(0)).is_some() {
+            return false;
         }
         if profile["prefix_cache"]["enabled"] == true {
             return false;
@@ -205,6 +211,157 @@ fn limits(row: &mut Value, profile: &Value) {
     };
     row["context_length"] = json!(context);
     row["max_output_tokens"] = output;
+}
+
+pub fn stored_mode<'a>(config: &'a Value, alias: &str) -> &'a str {
+    let valid = |v: &'a Value| v.as_str().filter(|s| ["fast", "deep", "max"].contains(s));
+    valid(&config["context_modes"]["models"][alias])
+        .or_else(|| valid(&config["context_modes"]["default"]))
+        .unwrap_or("fast")
+}
+fn has_modes(profile: &Value) -> bool {
+    matches!(
+        profile["model_alias"].as_str(),
+        Some("ornith-35b-a3b-local" | "qwen3.6-35b-a3b-local")
+    )
+}
+fn valid_proof(proof: &Value) -> bool {
+    let Some(object) = proof.as_object() else {
+        return false;
+    };
+    object.len() == 4
+        && ["context", "peak_rss_bytes", "engine_sha256", "date"]
+            .iter()
+            .all(|k| object.contains_key(*k))
+        && proof["context"]
+            .as_u64()
+            .is_some_and(|n| (131073..=262144).contains(&n))
+        && proof["peak_rss_bytes"].as_u64().is_some_and(|n| n > 0)
+        && proof["engine_sha256"].as_str().is_some_and(|s| {
+            s.len() == 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+        && proof["date"].as_str().is_some_and(|s| {
+            let b = s.as_bytes();
+            b.len() == 10
+                && b[0] == b'2'
+                && b[1] == b'0'
+                && b[2..4].iter().all(u8::is_ascii_digit)
+                && b[4] == b'-'
+                && (b[5] == b'0' || b[5] == b'1')
+                && b[6].is_ascii_digit()
+                && b[7] == b'-'
+                && (b'0'..=b'3').contains(&b[8])
+                && b[9].is_ascii_digit()
+        })
+}
+pub fn rss_proof_reason(profile: &Value, context: u64) -> Option<&'static str> {
+    if context > 262144 {
+        return Some("above 262144");
+    }
+    if context <= 131072 {
+        return None;
+    }
+    if profile["model_alias"] != "ornith-35b-a3b-local" {
+        return Some("Ornith only");
+    }
+    if profile["backend_kind"] != "oxe" || profile["oxe_flash"].is_object() {
+        return Some("Rust engine only");
+    }
+    let proof = &profile["rss_proof"];
+    if !valid_proof(proof) {
+        return Some("needs RSS proof");
+    }
+    if proof["engine_sha256"] != profile["server_sha256"] {
+        return Some("RSS proof is for another engine");
+    }
+    if proof["context"].as_u64().unwrap_or(0) < context {
+        return Some("needs RSS proof");
+    }
+    if proof["peak_rss_bytes"].as_u64().unwrap_or(0) > 27 * 1024 * 1024 * 1024 {
+        return Some("RSS above 27 GiB");
+    }
+    None
+}
+pub fn mode_rows(profile: &Value) -> Vec<Value> {
+    if !has_modes(profile) {
+        return Vec::new();
+    }
+    [("fast",131072,49536),("deep",131072,102000),("max",262144,199750)].into_iter().map(|(mode,cap,compact)|{
+        let reason=rss_proof_reason(profile,cap);
+        json!({"id":mode,"context":cap,"compact_at":compact,"cap":cap,"available":reason.is_none(),"reason":reason})
+    }).collect()
+}
+pub fn apply_mode(mut profile: Value, mode: &str) -> Value {
+    if !has_modes(&profile) {
+        return profile;
+    }
+    let chosen = if mode == "max" && rss_proof_reason(&profile, 262144).is_some() {
+        "fast"
+    } else {
+        mode
+    };
+    profile["context_mode"] = json!(chosen);
+    if chosen == "max" {
+        profile["context_size"] = json!(262144)
+    } else if profile["context_size"].as_u64().is_some_and(|n| n > 131072) {
+        profile["context_size"] = json!(131072)
+    }
+    profile
+}
+pub fn context(profile: &Value, config: &Value) -> Value {
+    let mode = stored_mode(config, profile["model_alias"].as_str().unwrap_or(""));
+    let applied = apply_mode(profile.clone(), mode);
+    let rows = mode_rows(profile);
+    let mut cap = if applied["context_size"].is_i64() || applied["context_size"].is_u64() {
+        applied["context_size"].clone()
+    } else {
+        Value::Null
+    };
+    let mode = if rows.is_empty() {
+        Value::Null
+    } else {
+        applied["context_mode"].clone()
+    };
+    if !rows.is_empty() && cap.is_null() {
+        cap = json!(if mode == "max" { 262144 } else { 131072 });
+    }
+    json!({"cap":cap,"mode":mode,"modes":rows})
+}
+pub fn model_limit(profile: &Value, config: &Value, sampling: Option<Vec<String>>) -> Value {
+    let mut context = context(profile, config);
+    let max_context = context["modes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["available"] == true)
+        .filter_map(|r| r["cap"].as_u64())
+        .max()
+        .map(|n| json!(n))
+        .unwrap_or_else(|| context["cap"].clone());
+    let args = profile["oxe_args"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let spec = args
+        .windows(2)
+        .filter(|w| w[0] == "--spec-type")
+        .map(|w| w[1].clone())
+        .next_back();
+    let mtp = spec.map(|s| json!(s == "draft-mtp")).unwrap_or_else(|| {
+        if args.iter().any(|s| s == "--mtp") {
+            json!(true)
+        } else {
+            Value::Null
+        }
+    });
+    context["capabilities"] = json!({"prefill_only":true,"snapshot_hint":2,"turn_kind":true,"hint_clear":true,
+        "thinking":"toggle","preserve_thinking":true,"mtp":mtp,"max_context":max_context,"vision":false,"slots":1,"park":"ram+disk","sampling":sampling});
+    let mut row = json!({});
+    limits(&mut row, profile);
+    context["max_output"] = row["max_output_tokens"].clone();
+    context
 }
 
 pub fn rows(config: &Value) -> Vec<Value> {

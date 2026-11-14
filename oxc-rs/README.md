@@ -20,7 +20,9 @@ rotation/fail-closed behavior pass in Rust. All 18 lifecycle tests and 13 harnes
 cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 29 runtime cases passes against the Python daemon.
 The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
-The Python reference suite has 285 passing scenarios in 50 unittest methods.
+Twelve cache-budget cases, eight context-mode cases and all three file round-trip
+contracts also pass. The Python reference suite has 305 passing scenarios in 52
+unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
 cache controls, harness prepare/forget dispatch, load/unload dispatch, storage
@@ -61,12 +63,22 @@ headers follow the Python contracts, including existing file compatibility.
 Read-only cache usage walks recognized files through directory descriptors and
 reads bounded manifests. Storage inventory reads bounded identity headers, tracks
 configured references and open/mapped paths, and returns no private paths.
+Cache-budget changes persist atomically and evict expired/low-value sessions
+under the inference lease. Pins, recent sessions, shared blocks and opaque models
+retain the Python protections; unlink operations stay anchored to directory fds.
+The lease/manager remain held if a control caller disconnects during mutation.
+
+Fast/deep/max modes publish per-model limits and capabilities and preserve
+unknown config fields, symlinks and permission bits. Max context requires the
+same engine-hash-bound RSS proof and 27 GiB ceiling as Python. Cap changes unload
+an idle model and refuse an active request; the synthetic engine verifies the
+new context reaches its launch arguments. This is fixture validation only.
 
 Complete status/control state, optional turn diagnostics, disk-cache launch adapters,
-qualified Flash/classic profiles, proof-gated long contexts, installers,
+qualified Flash/classic and execution-override profiles, installers,
 update/rollback, sharing/cloud secrets and remaining CLI commands are pending.
 State-cache-capable binaries and automatic native engine-ledger capture explicitly
-refuse launch until their adapters are implemented. Flash/classic and long-context
+refuse launch until their adapters are implemented. Flash/classic
 profiles remain ineligible while their qualification adapters are missing. Full
 Rust conformance fails; no installation switch or hardware readiness is claimed.
 

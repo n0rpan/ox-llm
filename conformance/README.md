@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `16a307c73d24157a38fb9c462b7a00c632416079`.
-The current suite passes 285 scenarios in 50 unittest methods. This remains a
+The current suite passes 305 scenarios in 52 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -74,6 +74,8 @@ python3 conformance/test_http.py --record-python
 python3 conformance/test_api.py --record-python
 python3 conformance/test_http_gates.py --record-python
 python3 conformance/test_state_cache.py --record-python
+python3 conformance/test_cache_budget.py --record-python
+python3 conformance/test_context_modes.py --record-python
 python3 conformance/test_storage.py --record-python
 python3 conformance/test_harnesses.py --record-python
 python3 conformance/test_ledger.py --record-python
@@ -92,13 +94,15 @@ do not refresh goldens merely because an alternate implementation fails them.
 | CLI runtime | PASS, 48 cases | Partial: 29/48 native CLI cases against Python daemon | More success/failure branches, qualified Flash/plan launch, populated digest/ledger |
 | HTTP empty install | PASS, 7 cases | PASS | Additional setup failures |
 | Configured HTTP | PASS, 62 cases | PASS: chat, completions and Responses JSON/SSE | More option combinations and engine error paths |
-| Cache usage | PASS, 9 cases | PASS | GC, clear, preload and active-engine ownership |
+| Cache usage | PASS, 9 cases | PASS | Clear, preload and active-engine ownership |
+| Cache budgets | PASS, 12 cases | PASS: persistence, value/TTL eviction, pins/recent sessions, shared blocks, orphan echo, opaque models, lease refusal and symlink safety | State-cache engine adapter and mutation races |
+| Context modes | PASS, 8 cases | PASS: limits/capabilities, fast/deep/max, RSS-proof gates, active/cap-changing controls and private config writes | Execution override adapters and more malformed profiles |
 | Storage inventory | PASS, 5 cases | PASS | Deletion, races and additional identity variants |
 | HTTP gates | PASS, 18 cases | PASS | LAN share listeners and rate limits |
 | Lifecycle | PASS, 18 tests | PASS | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
 | Harness registry | PASS, 13 cases | PASS: learning/privacy, controls, prepare, streaming, limits and Python/Rust file reads | More malformed/advisory-I/O cases |
 | Request ledger | PASS, 12 goldens and 8 additional checks | PASS: private HMACs, JSON/SSE records, history/reply tracking, errors/cancel, retention, limits, engine hints, advisory I/O and unload finalization | Optional turn diagnostics, queue/replay modes and more malformed backend timings |
-| Files | PASS, 3 tests | Ledger and API-key refresh/fail-closed PASS; config round trip pending | Additional state stores and sharing secrets |
+| Files | PASS, 3 tests | PASS: config and ledger Python/Rust/Python, API-key refresh/fail-closed | Additional state stores and sharing secrets |
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |
 | Bootstrap/install | PASS, 4 scenarios | Not implemented | Transfer/build/install-journal edge cases |

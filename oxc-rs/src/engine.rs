@@ -408,9 +408,20 @@ impl Manager {
             .try_lock()
             .ok()
             .and_then(|s| s.running.as_ref().map(|r| r.guard.metadata()));
+        let limits = models::rows(config)
+            .into_iter()
+            .filter_map(|row| {
+                let alias = row["alias_of"].as_str().or_else(|| row["id"].as_str())?;
+                let profile = models::resolve(config, Some(alias)).ok()?;
+                Some((
+                    row["id"].as_str()?.to_owned(),
+                    models::model_limit(&profile, config, self.sampling(alias)),
+                ))
+            })
+            .collect::<serde_json::Map<_, _>>();
         json!({"state":self.phase(),"model":profile["model_alias"],"selected_model":models::resolve(config,None).ok().map(|p|p["model_alias"].clone()),
             "validated":models::eligible(&profile),"active_requests":self.active.load(Ordering::SeqCst),"queued_requests":self.queued.load(Ordering::SeqCst),
-            "capabilities":["models","active"],"context_size":profile["context_size"],"memory_policy":memory,
+            "capabilities":["models","active"],"context_size":profile["context_size"],"context":models::context(&profile,config),"model_limits":limits,"memory_policy":memory,
             "last_error":self.last_failure.lock().unwrap_or_else(|e|e.into_inner()).clone(),"model_preload":self.preload.lock().unwrap_or_else(|e|e.into_inner()).clone()})
     }
     pub async fn set_harness_learning(
@@ -445,6 +456,164 @@ impl Manager {
         paths::write_config(&config)
             .map_err(|_| "The harness learning setting could not be saved.")?;
         Ok(crate::harness::settings(&config))
+    }
+    pub async fn set_cache_budget(self: &Arc<Self>, budget: Value) -> Result<Value, (u16, Value)> {
+        if crate::state_cache::valid_budget(&budget).is_none() {
+            return Err((
+                400,
+                json!({"error":"Send {\"bytes\": N}: 0 (disk tier off) or a whole number of at least 4000000000."}),
+            ));
+        }
+        // A disconnected control caller does not release the manager/lease
+        // while a disk mutation is still running on the blocking executor.
+        let manager = self.clone();
+        tokio::spawn(async move { manager.cache_budget_inner(budget).await })
+            .await
+            .unwrap_or_else(|_| {
+                Err((
+                    503,
+                    json!({"error":"The cache budget could not be applied."}),
+                ))
+            })
+    }
+    pub async fn set_mode(
+        self: &Arc<Self>,
+        alias: Value,
+        mode: Value,
+    ) -> Result<Value, (u16, Value)> {
+        let manager = self.clone();
+        tokio::spawn(async move { manager.set_mode_inner(alias, mode).await })
+            .await
+            .unwrap_or_else(|_| Err((409, json!({"error":"The mode could not be saved."}))))
+    }
+    async fn set_mode_inner(&self, alias: Value, mode: Value) -> Result<Value, (u16, Value)> {
+        let error = |message: &str| (409, json!({"error":message}));
+        let alias = alias
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| error("Name the model."))?;
+        let mode = mode
+            .as_str()
+            .filter(|s| ["fast", "deep", "max"].contains(s))
+            .ok_or_else(|| error("Mode must be fast, deep or max."))?;
+        let mut state = tokio::time::timeout(Duration::from_secs(2), self.state.lock())
+            .await
+            .map_err(|_| error("A model is loading; change the mode when it is ready."))?;
+        let mut config = paths::read_config()
+            .ok_or_else(|| error("Local model setup is still being prepared."))?;
+        let profile = models::resolve(&config, Some(alias)).map_err(error)?;
+        let rows = models::mode_rows(&profile);
+        if rows.is_empty() {
+            return Err(error("This model has no context modes."));
+        }
+        let row = rows.iter().find(|r| r["id"] == mode).expect("context mode");
+        if row["available"] != true {
+            return Err(error(
+                row["reason"]
+                    .as_str()
+                    .unwrap_or("This mode is unavailable."),
+            ));
+        }
+        let alias = profile["model_alias"].as_str().expect("model alias");
+        let applied = models::apply_mode(profile.clone(), mode);
+        let cap_change = state.running.is_some()
+            && self.loaded().is_some_and(|p| {
+                p["model_alias"] == alias && p["context_size"] != applied["context_size"]
+            });
+        if cap_change && self.busy() {
+            return Err(error(
+                "A request is running, so the mode was not changed. Try again when it finishes.",
+            ));
+        }
+        let mut block = config["context_modes"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let mut models = block
+            .get("models")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        models.insert(alias.into(), json!(mode));
+        block.insert("models".into(), Value::Object(models));
+        config["context_modes"] = Value::Object(block);
+        paths::write_config(&config).map_err(|_| error("The mode could not be saved."))?;
+        if cap_change {
+            self.cleanup(&mut state)
+                .await
+                .map_err(|e| (503, json!({"error":e})))?;
+        }
+        let profile = models::resolve(&config, Some(alias)).map_err(error)?;
+        Ok(models::context(&profile, &config))
+    }
+    async fn cache_budget_inner(&self, budget: Value) -> Result<Value, (u16, Value)> {
+        let failure = || {
+            (
+                503,
+                json!({"error":"The cache budget could not be applied."}),
+            )
+        };
+        let state = tokio::time::timeout(Duration::from_secs(2), self.state.lock())
+            .await
+            .map_err(|_| {
+                (
+                    409,
+                    json!({"error":"A model is loading; change the budget when it is ready."}),
+                )
+            })?;
+        let mut config = paths::read_config()
+            .ok_or_else(|| (409, json!({"error":"The cache budget could not be saved."})))?;
+        let mut cache = config["cache"].as_object().cloned().unwrap_or_default();
+        cache.insert("disk_budget_bytes".into(), budget.clone());
+        config["cache"] = Value::Object(cache);
+        paths::write_config(&config)
+            .map_err(|_| (409, json!({"error":"The cache budget could not be saved."})))?;
+        crate::state_cache::root(&config).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidInput {
+                (400, json!({"error":e.to_string()}))
+            } else {
+                failure()
+            }
+        })?;
+        let lease = if state.running.is_none() {
+            let path = std::env::var_os("LOCAL_AI_LEASE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/inference.lock")
+                });
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|_| failure())?;
+            }
+            let saved_busy = || {
+                (
+                    409,
+                    json!({"error":"The budget was saved; another job is running, so saved state is trimmed later (at the next load or budget change)."}),
+                )
+            };
+            let file = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path)
+                .map_err(|e| {
+                    if e.raw_os_error() == Some(libc::ELOOP) {
+                        saved_busy()
+                    } else {
+                        failure()
+                    }
+                })?;
+            file.try_lock().map_err(|_| saved_busy())?;
+            Some(file)
+        } else {
+            None
+        };
+        tokio::task::spawn_blocking(move ||{
+            let _lease=lease;
+            let freed=crate::state_cache::gc(&config)?;
+            let used=crate::state_cache::usage(&config)?["used_bytes"].clone();
+            Ok::<_,std::io::Error>(json!({"budget_bytes":budget,"used_bytes":used,"freed_bytes":freed,"applied_by":"controller"}))
+        }).await.map_err(|_|failure())?.map_err(|_|failure())
     }
     pub async fn prepare_harness(
         self: &Arc<Self>,
