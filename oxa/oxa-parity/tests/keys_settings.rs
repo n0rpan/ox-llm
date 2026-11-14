@@ -446,11 +446,12 @@ mod tui {
     }
 
     /// The first row whose text (without the fullscreen scrollbar column) is exactly `needle`.
-    /// The numbered reply is completely drawn at the bottom: the closing code fence row sits
-    /// right after the `last` line (it arrives after the last line while the reply streams, and
-    /// shifts every row above it by one).
+    /// The numbered reply is completely drawn at the bottom and the turn is over: the closing
+    /// code fence row sits right after the `last` line and the "Working..." loader (blank line
+    /// plus spinner above the editor) is gone. Both arrive/leave after the last line while the
+    /// turn ends, and each shifts every transcript row above by one or two.
     pub fn reply_closed(s: &Screen, last: &str) -> bool {
-        row_index(s, last).is_some_and(|r| {
+        !s.contains("Working") && row_index(s, last).is_some_and(|r| {
             s.rows()
                 .get(r + 1)
                 .is_some_and(|f| f.trim_end().trim_end_matches(['│', '█']).trim() == "```")
