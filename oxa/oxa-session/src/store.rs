@@ -117,6 +117,8 @@ pub struct FsStore {
     root: PathBuf,
     /// The session this process holds open for writing (shared by clones of the store).
     held: std::sync::Arc<std::sync::Mutex<Option<crate::SessionLock>>>,
+    /// A lock taken by `acquire` that `commit_lock` has not yet made the held one.
+    staged: std::sync::Arc<std::sync::Mutex<Option<crate::SessionLock>>>,
 }
 
 impl FsStore {
@@ -125,6 +127,7 @@ impl FsStore {
         FsStore {
             root,
             held: Default::default(),
+            staged: Default::default(),
         }
     }
     pub fn root(&self) -> &Path {
@@ -173,13 +176,25 @@ impl SessionStore for FsStore {
 
     fn acquire(&self, s: &SessionRef) -> Result<(), OxaError> {
         check_safe(&s.path)?;
-        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
         if held.as_ref().is_some_and(|l| l.session() == s.path) {
             return Ok(());
         }
-        // The new lock first: a refused switch keeps the old session held.
-        *held = Some(crate::SessionLock::acquire(&s.path)?);
+        // The new lock is only staged: the held one stays until `commit_lock`.
+        let new = crate::SessionLock::acquire(&s.path)?;
+        *self.staged.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);
         Ok(())
+    }
+
+    fn commit_lock(&self) {
+        let staged = self.staged.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(new) = staged {
+            *self.held.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);
+        }
+    }
+
+    fn abort_lock(&self) {
+        drop(self.staged.lock().unwrap_or_else(|p| p.into_inner()).take());
     }
 
     fn append(&self, s: &SessionRef, e: &Entry) -> Result<(), OxaError> {

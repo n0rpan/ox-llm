@@ -1152,6 +1152,7 @@ fn start_new(
 ) -> Result<(), OxaError> {
     let sref = st.store.create(&st.cwd, session_id, None)?;
     st.store.acquire(&sref)?;
+    st.store.commit_lock();
     st.sref = sref;
     st.tree = Tree::new(Vec::new());
     st.transcript = Transcript::default();
@@ -1188,8 +1189,30 @@ fn restore(
 ) -> Result<(), OxaError> {
     let header = st.store.header(&sref)?;
     // One writer per session file: a session open in another oxa is refused before anything
-    // of this one is read.
+    // of this one is read. The lock is staged and only replaces the current session's on
+    // success; any failure keeps the session we are in locked.
     st.store.acquire(&sref)?;
+    match restore_locked(st, sref, header, cli, start, sink, ui) {
+        Ok(()) => {
+            st.store.commit_lock();
+            Ok(())
+        }
+        Err(e) => {
+            st.store.abort_lock();
+            Err(e)
+        }
+    }
+}
+
+fn restore_locked(
+    st: &mut SessionState,
+    sref: SessionRef,
+    header: oxa_session::SessionHeader,
+    cli: Option<&Cli>,
+    start: &crate::fire::SessionStart,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<(), OxaError> {
     if !header.cwd.is_dir() {
         return Err(OxaError::new(
             codes::NOT_FOUND,
