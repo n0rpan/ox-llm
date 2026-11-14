@@ -971,17 +971,8 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                 wait_s: *wait_s,
             };
         }
-        AgentEvent::PrefixEpoch {
-            reason,
-            reprefill_tokens,
-            ..
-        } => {
-            push_notice(
-                vm,
-                Level::Info,
-                format!("New prefix epoch ({reason}): re-prefill of {reprefill_tokens} tokens"),
-            );
-        }
+        // The core's one notice carries the epoch and its cost.
+        AgentEvent::PrefixEpoch { .. } => {}
         AgentEvent::CacheMiss {
             expected,
             cached,
