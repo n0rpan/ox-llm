@@ -1,0 +1,7 @@
+data: {"choices":[{"delta":{"content":"hi"}}]}
+
+: prefill 1/2 0s
+data: {"choices":[{"delta":{"content":"!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}
+
+data: [DONE]
+
