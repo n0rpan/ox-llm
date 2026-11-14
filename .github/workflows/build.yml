@@ -20,6 +20,14 @@ on:
         description: Package tarballs and upload them as the "dist-*" artifacts
         type: boolean
         default: false
+      heavy:
+        description: Run engine builds and mandatory-sandbox workspace tests
+        type: boolean
+        default: true
+      build_oxa:
+        description: Run the oxa build (disabled only for draft PR checks)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -35,6 +43,7 @@ defaults:
 
 jobs:
   engine:
+    if: inputs.heavy
     name: oxe-server (MoE) + oxi
     runs-on: ubuntu-24.04-arm
     container:
@@ -92,6 +101,7 @@ jobs:
           retention-days: 7
 
   flash:
+    if: inputs.heavy
     name: oxe-server --features flash
     runs-on: ubuntu-24.04-arm
     container:
@@ -152,6 +162,7 @@ jobs:
           retention-days: 7
 
   oxa-tests:
+    if: inputs.heavy
     # oxa's tests with its bwrap sandbox REQUIRED: on the runner itself, not in a container (Docker's
     # default seccomp/AppArmor profiles refuse the user namespaces bwrap needs). The bwrap tests print
     # "skipped: ... bwrap ..." and return early when no sandbox can be created; here such a notice
@@ -237,6 +248,7 @@ jobs:
           echo "PARITY profile local passed; skip notices: 0"
 
   oxa:
+    if: inputs.build_oxa
     # oxa (the coding agent) is its own cargo workspace at oxa/. No model, no engine build: oxa
     # talks to the engine over HTTP only. Generic aarch64 code (no target-cpu flag).
     name: oxa

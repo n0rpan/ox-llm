@@ -41,17 +41,15 @@ python3 -I -m unittest discover -s tools/release/tests   # release tooling (repo
 
 Hosted CI runs in three tiers:
 
-- Branch pushes run formatting, clippy and unit tests for changed products; unknown or shared
-  tooling paths select all products. Engine pushes exercise the x86_64 stub; oxa pushes run
-  workspace library tests; lab pushes run the model-free lab suite.
-- Source pull requests (including stacked PRs) and main pushes run the full x86_64/aarch64
-  builds, oxa workspace and behavior suite, release-profile tests with required bwrap, lab
-  tests and the OpenAI contract against loopback servers.
-- Nightly on main and manual runs execute the full set. Docs-only changes run local Markdown
-  link checks. Secret, SDK-material, product-isolation and receipt scans run on every event,
-  including docs-only changes.
+- Draft PRs run formatting, cheap path controls and all secret, SDK-material, product-isolation
+  and receipt scans. Test locally while iterating, then mark the PR ready for review.
+- Ready PRs also run clippy, the oxa build and the x86 stub checks. Engine/Flash builds, oxa's
+  mandatory-bwrap workspace tests and the lab suite skip via job-level conditions, so all nine
+  required check names still report. Documentation links are checked when applicable.
+- The native merge queue (`merge_group`) is the full integration gate. Queue runs, pushes to
+  main, manual runs and nightly runs execute the full set, including the loopback OpenAI contract,
+  regardless of changed paths. Ordinary branch pushes do not duplicate the PR workflow.
 
-Workflows use GitHub-hosted runners and pinned actions. Branch concurrency cancels superseded
-runs. Cargo registry/git/build caches and pip download caches contain no credential files.
-The path classifier's unit tests run in the classification job. No real cloud key or paid API
-is used by tests.
+Workflows use GitHub-hosted runners and pinned actions. Only PR events cancel superseded runs;
+main and merge-group runs are not cancelled in progress. Existing cargo and pip caches contain
+no credential files. No real cloud key or paid API is used by tests.

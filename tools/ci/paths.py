@@ -32,13 +32,13 @@ def classify(paths, full_event=False):
             changed[component] = True
         else:
             changed = dict.fromkeys(changed, True)
-    return {**changed, 'docs': docs, 'full': full_event and not docs}
+    return {**changed, 'docs': docs, 'full': full_event}
 
 
 def changed_paths(event, name):
     if event.get('deleted'):
         return []
-    if name in ('schedule', 'workflow_dispatch'):
+    if name in ('schedule', 'workflow_dispatch', 'merge_group'):
         return subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')[:-1]
     if name == 'pull_request':
         base, head = event['pull_request']['base']['sha'], event['pull_request']['head']['sha']
@@ -56,10 +56,15 @@ def changed_paths(event, name):
     return subprocess.check_output(['git', 'diff', '--name-only', '-z', span, '--']).decode().split('\0')[:-1]
 
 
+def full_gate(name, ref):
+    return name in ('merge_group', 'workflow_dispatch', 'schedule') or (
+        name == 'push' and ref == 'refs/heads/main')
+
+
 def main():
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
     name = os.environ['GITHUB_EVENT_NAME']
-    full = name != 'push' or os.environ.get('GITHUB_REF') == 'refs/heads/main'
+    full = full_gate(name, os.environ.get('GITHUB_REF', ''))
     result = classify(changed_paths(event, name), full)
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
         for key, value in result.items():
