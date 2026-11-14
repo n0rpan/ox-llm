@@ -51,6 +51,32 @@ UNSUPPORTED = {
 SERVED_V1 = ('/v1/chat/completions', '/v1/completions', '/v1/responses', '/v1/models')
 RESPONSES_PATH = '/v1/responses'
 FLASH_MAX_TOKENS = 2048
+# An SSE event this large without its blank line is not model output: cap the partial frame so a
+# broken or hostile upstream cannot grow the controller's memory without bound.
+MAX_SSE_FRAME = 16 * 1024 ** 2
+
+
+def next_sse_frame(buffer):
+    """(frame, rest) for the first complete SSE event in `buffer`, else (None, buffer).
+
+    An event ends at a blank line. Lines end at CRLF, LF or a lone CR (the SSE grammar), so a
+    CRLF stream is parsed exactly like an LF one and a frame is delivered as soon as its blank
+    line arrives, not when the socket closes."""
+    line_start = 0
+    i = 0
+    while i < len(buffer):
+        byte = buffer[i]
+        if byte == 13 or byte == 10:
+            end = i + 1
+            if byte == 13 and end < len(buffer) and buffer[end] == 10:
+                end += 1  # the LF of a CRLF belongs to the same line ending
+            if i == line_start:  # a blank line: the event ends before it
+                return buffer[:i], buffer[end:]
+            line_start = end
+            i = end
+        else:
+            i += 1
+    return None, buffer
 
 
 # ------------------------------------------------------------------ settings
@@ -72,7 +98,8 @@ def alias_table(value):
                 table.pop(name, None)
             elif isinstance(target, str) and target:
                 table[name] = target
-    profiles = value.get('profiles', {}) if isinstance(value, dict) else {}
+    profiles = value.get('profiles') if isinstance(value, dict) else None
+    profiles = profiles if isinstance(profiles, dict) else {}
     base = value.get('model_alias') if isinstance(value, dict) else None
     return {name: target for name, target in table.items()
             if name not in profiles and name != base and name not in DEFAULT_NAMES
@@ -88,7 +115,8 @@ def resolve_model(name, value):
         return None
     if not isinstance(name, str):
         return name
-    profiles = value.get('profiles', {}) if isinstance(value, dict) else {}
+    profiles = value.get('profiles') if isinstance(value, dict) else None
+    profiles = profiles if isinstance(profiles, dict) else {}
     base = value.get('model_alias', LEGACY_DEFAULT) if isinstance(value, dict) else LEGACY_DEFAULT
     table = alias_table(value)
     candidates = [name] + [name[len(p):] for p in PROVIDER_PREFIXES if name.startswith(p)]
@@ -432,7 +460,7 @@ class CompletionStream:
 
     def _translate(self, raw):
         if not raw.startswith(b'data:'):
-            return raw + b'\n\n' if raw.strip() else b''
+            return raw.rstrip(b'\r\n') + b'\n\n' if raw.strip() else b''
         data = raw[5:].strip()
         if data == b'[DONE]':
             return b''
@@ -462,8 +490,16 @@ class CompletionStream:
     def feed(self, chunk):
         self.buffer += chunk
         out = b''
-        while b'\n\n' in self.buffer:
-            raw, self.buffer = self.buffer.split(b'\n\n', 1)
+        while True:
+            raw, self.buffer = next_sse_frame(self.buffer)
+            if raw is None:
+                if len(self.buffer) > MAX_SSE_FRAME:
+                    self.buffer = b''
+                    self.done = True
+                    return out + self._frame({'error': {
+                        'message': 'The backend sent an SSE frame above the size limit.',
+                        'type': 'local_backend_error'}})
+                break
             out += self._event(raw)
         return out
 

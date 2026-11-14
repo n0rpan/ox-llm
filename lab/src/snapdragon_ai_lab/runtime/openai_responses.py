@@ -44,9 +44,10 @@ import time
 
 if __package__:
     from .openai_api import BadParam
-    from . import openai_conformance
+    from . import openai_api, openai_conformance
 else:
     from openai_api import BadParam
+    import openai_api
     import openai_conformance
 
 STATEFUL = {'previous_response_id': 'previous_response_id', 'conversation': 'conversation', 'prompt': 'prompt'}
@@ -427,7 +428,9 @@ class ResponseStream:
 
     def _tool_delta(self, delta):
         out = b''
-        index = delta.get('index', 0)
+        index = delta.get('index')
+        if type(index) is not int or index < 0:  # JSON can put anything here; a missing index is the next slot
+            index = max(self.calls, default=-1) + 1
         state = self.calls.get(index)
         function = delta.get('function') if isinstance(delta.get('function'), dict) else {}
         if state is None:
@@ -505,7 +508,8 @@ class ResponseStream:
             self.usage = value['usage']
         if isinstance(value.get('timings'), dict):
             self.timings = value['timings']
-        for choice in value.get('choices') or ():
+        choices = value.get('choices')
+        for choice in choices if isinstance(choices, list) else ():
             if not isinstance(choice, dict):
                 continue
             delta = choice.get('delta') if isinstance(choice.get('delta'), dict) else {}
@@ -524,8 +528,8 @@ class ResponseStream:
         if not raw.strip():
             return b''
         if raw.startswith(b':'):
-            return raw + b'\n\n'  # comments (`: queued`, `: prefill`) unchanged
-        lines = raw.split(b'\n')
+            return raw.rstrip(b'\r\n') + b'\n\n'  # comments (`: queued`, `: prefill`), one blank line
+        lines = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n').split(b'\n')
         data = b''.join(line[5:].strip() for line in lines if line.startswith(b'data:'))
         is_error = any(line.strip() == b'event: error' for line in lines)
         if not data:
@@ -545,8 +549,14 @@ class ResponseStream:
     def feed(self, chunk):
         self.buffer += chunk
         out = b''
-        while b'\n\n' in self.buffer:
-            raw, self.buffer = self.buffer.split(b'\n\n', 1)
+        while True:
+            raw, self.buffer = openai_api.next_sse_frame(self.buffer)
+            if raw is None:
+                if len(self.buffer) > openai_api.MAX_SSE_FRAME:
+                    self.buffer = b''
+                    return out + self._fail({'message': 'The backend sent an SSE frame above the size limit.',
+                                             'code': 'stream_too_large'})
+                break
             out += self._translate(raw)
         return out
 

@@ -134,7 +134,9 @@ class ModelsMixin:
             value = json.loads(ctl.CONFIG.read_text())
             if not isinstance(value, dict): raise ValueError()
             base_alias = value.get('model_alias', 'qwen-local')
-            profiles = value.get('profiles', {})
+            profiles = value.get('profiles')
+            if not isinstance(profiles, dict):
+                profiles = {}
             selected = value.get('selected_model', base_alias)
             # local-default / local-heavy / openai/<name>: static names only (openai_api.py)
             alias = openai_api.resolve_model(alias, value)
@@ -153,7 +155,7 @@ class ModelsMixin:
             # to 262144 only with an RSS proof, else deep).
             return profile_policy.apply_mode(profile_policy.resolve(merged),
                                              profile_policy.stored_mode(value, requested))
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
             raise Unavailable('Local model setup is still being prepared.')
 
     def eligible(self, config):
