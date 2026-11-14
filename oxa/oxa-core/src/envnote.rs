@@ -141,10 +141,24 @@ fn kernel() -> String {
         .unwrap_or_default()
 }
 
-/// Whether the note is on for this session (`oxa.envNote`; unset = on under `local`).
+/// `OXA_ENV_NOTE=0` (also `false`, `no`, `off`) / `=1` (`true`, `yes`, `on`) overrides the
+/// setting for this process (the PARITY harness turns the note off: it checks pi's bytes).
+pub const ENV_SWITCH: &str = "OXA_ENV_NOTE";
+
+/// Whether the note is on for this session: [`ENV_SWITCH`], else `oxa.envNote` (unset = on
+/// under `local`).
 pub fn enabled(st: &SessionState) -> bool {
-    st.settings
-        .bool("oxa.envNote", st.stats.profile == Profile::Local)
+    let forced = std::env::var(ENV_SWITCH)
+        .ok()
+        .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+            "0" | "false" | "no" | "off" => Some(false),
+            "1" | "true" | "yes" | "on" => Some(true),
+            _ => None,
+        });
+    forced.unwrap_or_else(|| {
+        st.settings
+            .bool("oxa.envNote", st.stats.profile == Profile::Local)
+    })
 }
 
 /// The facts of `st` now.

@@ -73,9 +73,14 @@ pub fn profile() -> Profile {
 }
 
 /// The environment that selects [`profile`] in a child `oxa` (`OXA_PROFILE`). Every place that
-/// starts `oxa` adds it after `TestEnv::envs` (which never sets a profile).
+/// starts `oxa` adds it after `TestEnv::envs` (which never sets a profile). The per-prompt
+/// environment note of profile `local` is off (`OXA_ENV_NOTE=0`): PARITY compares the user
+/// messages with pi's bytes; the note has its own tests (`oxa-core/tests/env_note_cache.rs`).
 pub fn profile_env() -> Vec<(String, String)> {
-    vec![(Profile::ENV.to_string(), profile().as_str().to_string())]
+    vec![
+        (Profile::ENV.to_string(), profile().as_str().to_string()),
+        ("OXA_ENV_NOTE".to_string(), "0".to_string()),
+    ]
 }
 
 /// Run `oxa <args>` in `env.work()` with only `env.envs(engine_url)` and [`profile_env`] as
