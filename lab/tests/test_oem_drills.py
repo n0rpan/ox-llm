@@ -42,7 +42,8 @@ class Smoke(unittest.TestCase):
                                        self.headers.get('X-Local-AI-Origin')))
                 status = 200
                 if self.path == '/_local/status':
-                    value = {'state': owner.state, 'model': 'synthetic-model'}
+                    value = {'state': owner.state,
+                             ('selected_alias' if owner.state == 'unloaded' else 'model'): 'synthetic-model'}
                 elif self.path == '/v1/models':
                     value = {'data': [{'id': 'synthetic-model', 'remote': owner.remote}]} if owner.models else {}
                 elif self.path == '/v1/chat/completions':
@@ -79,11 +80,15 @@ class Smoke(unittest.TestCase):
         self.assertEqual(self.requests[-1][2]['model'], 'synthetic-model')
         self.assertEqual(self.requests[-1][2]['max_tokens'], 8)
 
-    def test_idle_smoke_unloads_its_model_even_when_chat_fails(self):
+    def test_unloaded_smoke_allows_cold_start_and_unloads_even_on_chat_failure(self):
         for status in (200, 500):
-            self.state, self.chat_status = 'idle', status
-            code, _ = self.run_smoke()
+            self.state, self.chat_status = 'unloaded', status
+            with patch.object(tool.http.client, 'HTTPConnection',
+                              wraps=http.client.HTTPConnection) as connection:
+                code, _ = self.run_smoke()
             self.assertEqual(code, 0 if status == 200 else 1)
+            self.assertEqual([call.kwargs['timeout'] for call in connection.call_args_list],
+                             [10, 10, 180, 120])
             self.assertEqual(self.requests[-1][1], '/_local/unload')
 
     def test_remote_and_malformed_models_are_refused_before_chat(self):

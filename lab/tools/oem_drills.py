@@ -33,9 +33,9 @@ def controller_url(value):
     return value.rstrip('/')
 
 
-def request(controller, path, payload=None):
+def request(controller, path, payload=None, *, timeout=10):
     parts = urllib.parse.urlsplit(controller)
-    connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=10)
+    connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=timeout)
     try:
         data = json.dumps(payload).encode() if payload is not None else None
         headers = {'Content-Type': 'application/json', **release_update.LAB_HEADER}
@@ -53,7 +53,7 @@ def request(controller, path, payload=None):
 
 def smoke(controller):
     code, status = request(controller, '/_local/status')
-    if code != 200 or not isinstance(status, dict) or status.get('state') not in ('idle', 'ready', 'loaded'):
+    if code != 200 or not isinstance(status, dict) or status.get('state') not in ('unloaded', 'ready', 'loaded'):
         raise SmokeError('The controller is not ready for a smoke check.')
     code, models = request(controller, '/v1/models')
     rows = models.get('data') if isinstance(models, dict) else None
@@ -71,7 +71,7 @@ def smoke(controller):
     try:
         code, reply = request(controller, '/v1/chat/completions', {
             'model': model, 'temperature': 0, 'max_tokens': 8, 'stream': False,
-            'messages': [{'role': 'user', 'content': 'Reply with one word: ready'}]})
+            'messages': [{'role': 'user', 'content': 'Reply with one word: ready'}]}, timeout=180)
         choices = reply.get('choices') if isinstance(reply, dict) else None
         choice = choices[0] if isinstance(choices, list) and choices else None
         message = choice.get('message') if isinstance(choice, dict) else None
@@ -80,7 +80,7 @@ def smoke(controller):
             raise SmokeError('The smoke chat did not answer.')
     finally:
         if not loaded:
-            code, _ = request(controller, '/_local/unload', {})
+            code, _ = request(controller, '/_local/unload', {}, timeout=120)
             if code != 200:
                 raise SmokeError('The smoke check could not unload its model.')
     return 0
