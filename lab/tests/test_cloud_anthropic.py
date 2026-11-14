@@ -337,6 +337,27 @@ class ThinkingRoundTrip(AnthropicBase):
         self.assertEqual(sent[1]['content'][0]['signature'], 'sig-abc-123')
         self.assertEqual(sent[1]['content'][1]['data'], 'opaque-encrypted-blob')
 
+    def test_explicit_thinking_blocks_keep_the_rest_of_the_assistant_turn(self):
+        upstream = MockAnthropic()
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        assistant = {'role': 'assistant', 'content': 'I will read.',
+                     'thinking_blocks': [{'type': 'thinking', 'thinking': 'plan',
+                                          'signature': 'sig-explicit'}],
+                     'tool_calls': [{'id': 'toolu_1', 'type': 'function',
+                                     'function': {'name': 'read', 'arguments': '{"path":"x"}'}}]}
+        status, _ = self.call('POST', '/v1/chat/completions', {
+            'model': 'anthropic/claude-sonnet-5-5',
+            'messages': [{'role': 'user', 'content': 'read x'}, assistant],
+            'tools': self._tools(), 'max_tokens': 100})
+        self.assertEqual(status, 200)
+        blocks = upstream.requests[0]['body']['messages'][1]['content']
+        self.assertEqual(blocks[0], {'type': 'thinking', 'thinking': 'plan',
+                                     'signature': 'sig-explicit'})
+        self.assertEqual(blocks[1], {'type': 'text', 'text': 'I will read.'})
+        self.assertEqual(blocks[2]['type'], 'tool_use')
+        self.assertEqual(blocks[2]['input'], {'path': 'x'})
+
     def test_streamed_thinking_and_tool_use_round_trip_byte_for_byte(self):
         events = [
             ('message_start', {'type': 'message_start', 'message': {
