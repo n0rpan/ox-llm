@@ -189,9 +189,10 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         return report(&mut *stderr, &e);
     }
     // Item 3 (sec-prod): a session in the home directory or above it needs the user's say-so.
-    if let Err(e) = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout) {
-        return report(&mut *stderr, &e);
-    }
+    let home_workspace = match crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout) {
+        Ok(w) => w,
+        Err(e) => return report(&mut *stderr, &e),
+    };
 
     // CLI-019: pi's question when `--session <id>` names a session of another directory
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
@@ -214,6 +215,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             &dirs,
             &cwd,
             mode,
+            home_workspace,
             stdin_is_tty,
             stdout_is_tty,
             &mut confirm,
@@ -377,6 +379,7 @@ fn prepare(
     dirs: &Dirs,
     cwd: &Path,
     mode: RunMode,
+    home_workspace: bool,
     stdin_is_tty: bool,
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
@@ -532,6 +535,24 @@ fn prepare(
             notices.push((Level::Warning, e.message));
         }
     }
+    // O-152, automatic: the identity section is refreshed at every start, before the prefix is
+    // built, from cheap local facts (machine, OS, oxa version) and the engine's model list (a
+    // few loopback requests), so a missed `oxa identity --refresh` or an update never leaves
+    // a stale or generic identity. The file is rewritten only when its bytes change, so the
+    // prefix (and the cache) changes only when a fact did; a running session keeps its epoch's
+    // prefix (W3). When the engine does not answer, an existing file keeps its model list.
+    // Never under test isolation or in a subagent child (its parent just did it); a failure
+    // only keeps the previous text.
+    if env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
+        let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
+        let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
+        let keep_known_models = facts.models.is_empty() && oxa_resources::read_identity(dirs).is_some();
+        if !keep_known_models {
+            if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
+                notices.push((Level::Warning, e.message));
+            }
+        }
+    }
     // Resources, package sources included (E10).
     let resources = discover(dirs, cwd, &settings, &opts);
     notices.extend(resources.diagnostics.iter().map(|d| {
@@ -558,7 +579,7 @@ fn prepare(
     }));
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
-            b.layout = crate::sandbox_layout::layout(env, dirs, cwd, &mut notices);
+            b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
             let b = b.with_git_dirs(cwd);
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)

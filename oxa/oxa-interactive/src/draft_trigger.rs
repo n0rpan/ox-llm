@@ -22,6 +22,7 @@ pub(crate) fn draft_key(text: &str, parts: &[Part]) -> Option<u64> {
     for part in parts {
         match part {
             Part::Text(t) => (0u8, t).hash(&mut h),
+            Part::EnvNote(n) => (2u8, n).hash(&mut h),
             Part::Image {
                 path,
                 sha256,

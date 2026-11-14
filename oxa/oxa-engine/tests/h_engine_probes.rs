@@ -75,6 +75,7 @@ fn count_prompt_equals_the_reported_prompt_tokens() {
         max_tokens: 64,
         thinking: false,
         preserve_thinking: true,
+        sampling: None,
         hints: Hints {
             session: "s1",
             idem_key: "",
@@ -126,6 +127,7 @@ fn count_prompt_without_the_endpoint_is_none_once() {
         max_tokens: 8,
         thinking: false,
         preserve_thinking: true,
+        sampling: None,
         hints: Hints {
             session: "s",
             idem_key: "",

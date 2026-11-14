@@ -646,6 +646,10 @@ fn part_value(p: &Part) -> Value {
             m.insert("type".into(), "text".into());
             m.insert("text".into(), Value::from(text.as_str()));
         }
+        Part::EnvNote(note) => {
+            m.insert("type".into(), "envNote".into());
+            m.insert("text".into(), Value::from(note.as_str()));
+        }
         Part::Image {
             path,
             mime,
@@ -879,6 +883,7 @@ fn decode_part(v: &Value) -> Result<Part, OxaError> {
     let o = v.as_object().ok_or_else(|| invalid("part is not an object"))?;
     match get_str(o, "type")? {
         "text" => Ok(Part::Text(get_str(o, "text")?.to_string())),
+        "envNote" => Ok(Part::EnvNote(get_str(o, "text")?.to_string())),
         "image" => Ok(Part::Image {
             path: PathBuf::from(get_str(o, "path")?),
             mime: get_str(o, "mime")?.to_string(),

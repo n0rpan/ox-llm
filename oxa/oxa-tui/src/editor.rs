@@ -2,7 +2,7 @@
 // ported from pi packages/tui/src/components/editor.ts, kill-ring.ts, undo-stack.ts, word-navigation.ts
 use crate::{
     cluster_boundaries, pad_to_width, truncate_to_width, visible_width, AutocompleteItem,
-    AutocompleteProvider, Component, CursorPos, Interactive, Key, KeyKind, Mouse, Theme,
+    AutocompleteProvider, Component, CursorPos, Interactive, Key, KeyKind, Mouse, PopupStyle, Theme,
 };
 use oxa_config::Keymap;
 use std::collections::BTreeMap;
@@ -21,6 +21,12 @@ pub struct EditorOpts {
     /// A paste longer than this many lines or 1000 characters is shown as a paste marker
     /// (`[paste #1 +12 lines]`) instead of its text.
     pub paste_marker_min_lines: usize,
+    /// How the suggestions look: pi's bare list (the default) or OXA's panel.
+    pub popup: PopupStyle,
+    /// `true`: [`Component::render`] leaves the suggestions out and the owner draws
+    /// [`Editor::popup`] itself (OXA's fullscreen layout floats it over the transcript, so an
+    /// opening list moves nothing).
+    pub popup_detached: bool,
 }
 
 impl Default for EditorOpts {
@@ -31,6 +37,8 @@ impl Default for EditorOpts {
             max_visible_rows: 20,
             border_token: "border".to_string(),
             paste_marker_min_lines: 10,
+            popup: PopupStyle::List,
+            popup_detached: false,
         }
     }
 }
@@ -107,6 +115,9 @@ struct Suggest {
     items: Vec<AutocompleteItem>,
     prefix: String,
     selected: usize,
+    /// The user moved the selection (up / down / page). Until then Enter sends the text as
+    /// typed; only a moved selection (or Tab) is applied.
+    touched: bool,
 }
 
 /// The prompt editor.
@@ -297,6 +308,11 @@ impl Editor {
     pub fn autocomplete_open(&self) -> bool {
         self.suggest.is_some()
     }
+    /// The open suggestions as lines of `width` columns (empty when none are open): what
+    /// `render` appends below the editor unless `EditorOpts::popup_detached`.
+    pub fn popup(&self, width: u16, theme: &Theme) -> Vec<String> {
+        self.suggest_popup((width as usize).max(1), theme)
+    }
     /// The keymap used by `Component::input` (which has no keymap parameter). Must be called
     /// once before the editor is used as a plain `Component`.
     pub fn set_keymap(&mut self, keymap: Keymap) {
@@ -363,7 +379,17 @@ impl Editor {
                 return Changed;
             }
             if is("tui.select.confirm") {
-                let slash = self.suggest.as_ref().is_some_and(|s| s.prefix.starts_with('/'));
+                let (slash, touched) = self
+                    .suggest
+                    .as_ref()
+                    .map_or((false, false), |s| (s.prefix.starts_with('/'), s.touched));
+                // A slash command (its name or an argument) keeps pi's Enter. A file list (`@`,
+                // a path, Tab) never replaces what was typed unless the user moved the
+                // selection: Enter sends the text as typed.
+                if !self.in_slash_command() && !touched {
+                    self.suggest = None;
+                    return self.submit();
+                }
                 if self.accept_suggestion() && !slash {
                     return Changed;
                 }
@@ -377,6 +403,10 @@ impl Editor {
                 return Ignored;
             }
             self.refresh_suggestions(true);
+            // pi: a Tab with exactly one candidate applies it directly.
+            if self.suggest.as_ref().is_some_and(|s| s.items.len() == 1) {
+                self.accept_suggestion();
+            }
             return Changed;
         }
 
@@ -1124,9 +1154,21 @@ impl Editor {
                 items: s.items,
                 prefix: s.prefix,
                 selected: 0,
+                touched: false,
             }),
             _ => None,
         };
+    }
+
+    /// The cursor is in a slash command line (`/name args`, first line), where the provider
+    /// offers command names and arguments rather than files.
+    fn in_slash_command(&self) -> bool {
+        self.st.line == 0
+            && self
+                .st
+                .lines
+                .first()
+                .is_some_and(|l| l.trim_start().starts_with('/'))
     }
 
     fn suggest_move(&mut self, delta: isize, wrap: bool) {
@@ -1137,6 +1179,7 @@ impl Editor {
         if n == 0 {
             return;
         }
+        s.touched = true;
         let target = s.selected as isize + delta;
         s.selected = if wrap {
             target.rem_euclid(n) as usize
@@ -1173,6 +1216,9 @@ impl Editor {
             return Vec::new();
         };
         let max = self.opts.autocomplete_max_visible.max(1);
+        if self.opts.popup != PopupStyle::List {
+            return crate::suggest_panel(&s.items, s.selected, &s.prefix, max, w, self.opts.popup, theme);
+        }
         let start = if s.selected >= max {
             s.selected + 1 - max
         } else {
@@ -1415,7 +1461,9 @@ impl Component for Editor {
             out.push(pad_to_width(&line, w, false));
         }
         out.push(self.border(w, below, "↓", theme));
-        out.extend(self.suggest_popup(w, theme));
+        if !self.opts.popup_detached {
+            out.extend(self.suggest_popup(w, theme));
+        }
         self.cursor = cursor;
         out
     }

@@ -219,6 +219,7 @@ fn a_settings_reload_of_timeout_and_diet_applies_without_an_epoch() {
 fn profile_pi_keeps_the_default_tune_and_the_bytes_across_window_changes() {
     let env = TestEnv::new();
     big_file(&env);
+    write_settings(&env, r#"{"oxa": {"profile": "pi"}}"#);
     let engine = Window::new(Vec::new(), 16_000);
     let mut s = open(&env, engine.clone());
     assert_eq!(s.inner().stats.profile, Profile::Pi);

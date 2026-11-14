@@ -718,7 +718,7 @@ pub(crate) fn images_json(parts: &[oxa_proto::Part]) -> Vec<Value> {
                 "width": w,
                 "height": h,
             })),
-            oxa_proto::Part::Text(_) => None,
+            oxa_proto::Part::Text(_) | oxa_proto::Part::EnvNote(_) => None,
         })
         .collect()
 }

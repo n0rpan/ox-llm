@@ -60,6 +60,12 @@ At most two repairs can follow each other. A valid tool call resets the count. T
 
 `oxa.toolRepair: false` turns repairs off, and a malformed reply then ends the run at once.
 
+## Repeated calls
+
+A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. The second note is the last: the next identical call ends the run with a stop message. A re-run after an edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
+
+`oxa.toolRepeatGuard: false` turns this off.
+
 ## subagent
 
 `subagent` lets the model hand a task to a child oxa that works in its own context and returns only its final answer. It keeps long searches out of the main conversation.
@@ -106,7 +112,7 @@ A key added or removed during a session takes effect at the next `/reload` or ne
 
 ### Use
 
-The model passes `query` (up to 600 characters). Optional parameters are `count` (1 to 20 results), `freshness` (`pd`, `pw`, `pm`, `py`, or a date range `YYYY-MM-DDtoYYYY-MM-DD`), `country` (two letters) and `search_lang` (for example `en`).
+The model passes `query` (up to 600 characters). Optional parameters are `count` (1 to 20 results), `freshness` (`pd`, `pw`, `pm`, `py`, or a date range `YYYY-MM-DDtoYYYY-MM-DD`; the words `day`, `24h`, `today`, `week`, `month` and `year` are accepted too), `country` (two letters) and `search_lang` (for example `en`).
 
 oxa uses Brave's LLM Context endpoint first. Its output size is `oxa.webSearch.maxTokens` (2048 by default, from 1024 to 32768). If the key's plan does not include that endpoint, oxa switches to Brave's web search endpoint for the rest of the process and says so once.
 

@@ -868,7 +868,10 @@ impl Session {
             )?;
         }
         let images = crate::fire::images_json(&parts);
-        let wire = user_message(&text, &parts);
+        let (wire, note) = crate::envnote::add_note(st, user_message(&text, &parts));
+        // The note's provenance is stored with the entry (refill and display strip exactly it).
+        let mut parts = parts;
+        parts.extend(note.map(Part::EnvNote));
         st.stats.user_messages += 1;
         persist(st, EntryBody::Msg { wire, parts }, sink)?;
 
@@ -1442,7 +1445,8 @@ fn draft_message(st: &mut SessionState, text: &str, parts: &[Part]) -> Option<Wi
     let text = prompt_text(st, text.to_string()).ok()?;
     let msg = user_message(&text, parts);
     let len = msg.content.as_deref().map_or(0, str::len);
-    (len >= Session::DRAFT_PREFILL_MIN_BYTES).then_some(msg)
+    // The draft carries the note the prompt would get, so the prefilled bytes match the send.
+    (len >= Session::DRAFT_PREFILL_MIN_BYTES).then(|| crate::envnote::with_note(st, msg))
 }
 
 /// V020-OPTIMIZE #13, privacy: a draft the user never submitted is sent only to an engine on
@@ -1465,6 +1469,8 @@ fn wire_text(text: &str, parts: &[Part]) -> String {
     for part in parts {
         match part {
             Part::Text(t) => lines.push(t.clone()),
+            // Provenance of a stored message; never among a prompt's parts.
+            Part::EnvNote(_) => {}
             Part::Image { path, w, h, .. } => {
                 let name = path
                     .file_name()

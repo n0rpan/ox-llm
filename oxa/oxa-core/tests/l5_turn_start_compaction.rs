@@ -221,8 +221,13 @@ fn aborted_big_read_is_compacted_before_the_next_prompt() {
         "the answer sees the compacted head, not the {BIG}-byte read ({} bytes)",
         wire_bytes(answer)
     );
+    // Profile `local` appends the environment note to the prompt (`oxa_core::envnote`).
     assert_eq!(
-        answer.messages.last().and_then(|m| m.content.as_deref()),
+        answer
+            .messages
+            .last()
+            .and_then(|m| m.content.as_deref())
+            .map(|c| c.split_once("\n\n").map_or(c, |(typed, _)| typed)),
         Some("next task")
     );
     assert!(sink
