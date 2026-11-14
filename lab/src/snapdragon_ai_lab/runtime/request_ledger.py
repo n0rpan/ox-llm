@@ -55,6 +55,9 @@ PROMPT_CACHE_KEY = 'prompt_cache_key'  # OpenAI's body field; the session hint w
 TOOL_BYTES_MAX = 128
 GAP_SESSIONS = 512
 _lock = threading.Lock()
+# Cloud admission reads today's remote rows under the same lock the appender holds, so it can
+# never parse a half-written line.  Read-only consumers of local rows do not need it.
+LEDGER_LOCK = _lock
 _pruned_day = [None]
 _salt = [None]
 _gap_lock = threading.Lock()
@@ -401,6 +404,7 @@ class Entry:
         self.admitted = None
         self.first_byte = None
         self.tail = b''
+        self.written = None
 
     def label(self, harness=None, prefix_key=None):
         """Harness registry labels (O-9): the detected harness name and the registry's prefix
@@ -468,7 +472,9 @@ class Entry:
                 _last_end.move_to_end(self.session)
                 while len(_last_end) > GAP_SESSIONS:
                     _last_end.popitem(last=False)
-        write(r)
+        # True only when this row is durably appended.  A cloud request uses this to fail
+        # closed instead of releasing a budget reservation whose spend was never recorded.
+        self.written = write(r)
         return r
 
 
@@ -590,8 +596,10 @@ def retention_days():
 
 
 def write(row):
+    """Append one row.  Returns True only when it was written; a ledger failure never raises
+    into a local request, but cloud admission cannot release spend it could not record."""
     if not enabled():
-        return
+        return False
     try:
         d = ledger_dir()
         day = time.strftime('%Y%m%d')
@@ -611,8 +619,9 @@ def write(row):
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, 'a') as f:
                 f.write(json.dumps(row, separators=(',', ':')) + '\n')
-    except OSError:
-        pass
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 MEDIAN_KEYS = ('queue_wait_ms', 'admit_ms', 'ttfb_ms', 'wall_ms')
