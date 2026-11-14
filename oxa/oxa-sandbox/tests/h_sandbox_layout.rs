@@ -553,8 +553,13 @@ fn real_parent_of_home_is_never_writable() {
     for cwd in [parent.clone(), PathBuf::from("/")] {
         let (exit, out) = run(&b, &format!("touch {}/planted", parent.display()), &cwd);
         assert_ne!(exit, Some(0), "{cwd:?}: {out}");
+        assert!(out.contains("Read-only file system"), "{cwd:?}: {out}");
         let (exit, out) = run(&b, "touch ~/project/planted", &cwd);
         assert_ne!(exit, Some(0), "{cwd:?}: {out}");
+        assert!(out.contains("Read-only file system"), "{cwd:?}: {out}");
+        let (exit, out) = run(&b, "cat /etc/hostname >/dev/null; echo marker-ok", &cwd);
+        assert_eq!(exit, Some(0), "{cwd:?}: {out}");
+        assert!(out.contains("marker-ok"), "{cwd:?}: {out}");
     }
     assert!(!parent.join("planted").exists());
     assert!(!env.home().join("project/planted").exists());
