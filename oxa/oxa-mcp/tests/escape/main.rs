@@ -32,6 +32,48 @@ impl Drop for Offline {
     }
 }
 
+/// Ambient proxy variables for one test: every variable ureq reads is cleared, the test's
+/// values are set, and the previous values are restored on drop. The offline tests serialize
+/// on [`NET_LOCK`], so no other transport reads these variables in the meantime.
+struct ProxyEnv {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+impl ProxyEnv {
+    fn set(proxy: &str, no_proxy: Option<&str>) -> ProxyEnv {
+        const VARS: [&str; 8] = [
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ];
+        let saved = VARS.iter().map(|name| (*name, std::env::var_os(name))).collect();
+        for name in VARS {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("ALL_PROXY", proxy);
+        if let Some(no_proxy) = no_proxy {
+            std::env::set_var("NO_PROXY", no_proxy);
+        }
+        ProxyEnv { saved }
+    }
+}
+
+impl Drop for ProxyEnv {
+    fn drop(&mut self) {
+        for (name, value) in &self.saved {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
 /// A one-shot HTTP server on loopback: reads the request, writes `response`, returns its URL.
 fn respond_once(response: &'static str) -> (String, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -82,6 +124,50 @@ fn offline_refuses_a_remote_proxy() {
     let e = t
         .send(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
         .expect_err("a remote proxy is refused offline");
+    assert_eq!(e.code, codes::OFFLINE, "{e}");
+    assert!(!e.to_string().contains(SYNTHETIC_PASSWORD), "{e}");
+}
+
+/// Threat: offline, an ambient remote `ALL_PROXY` would carry a loopback MCP request (and the
+/// bearer token) to the proxy's host even though the target is on `NO_PROXY`.
+/// Attempt: offline, `ALL_PROXY` at a reserved non-loopback address and `NO_PROXY=127.0.0.1`,
+/// a mock loopback server.
+/// Expected: allowed — ureq routes the excluded target direct, so the loopback call succeeds.
+#[test]
+fn offline_allows_a_loopback_target_excluded_by_no_proxy() {
+    let _offline = Offline::on();
+    let _env = ProxyEnv::set("http://192.0.2.1:9", Some("127.0.0.1"));
+    let (url, server) = respond_once(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 127\r\nConnection: close\r\n\r\n\
+         {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock\",\"version\":\"1\"}}}",
+    );
+    let mut t = transport(url, None, Duration::from_millis(1000));
+    t.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
+        .expect("a NO_PROXY loopback target is direct offline");
+    let msg = t
+        .recv(Duration::from_millis(1000))
+        .expect("recv")
+        .expect("a message");
+    let _ = server.join();
+    assert_eq!(msg["id"], json!(1));
+}
+
+/// Threat: offline, an ambient remote proxy with no matching `NO_PROXY` carries the loopback
+/// request to the proxy's host.
+/// Attempt: offline, `ALL_PROXY` at a reserved non-loopback address, no `NO_PROXY`.
+/// Expected refusal: the standard offline error, before any connection.
+#[test]
+fn offline_refuses_an_ambient_remote_proxy_when_not_excluded() {
+    let _offline = Offline::on();
+    let _env = ProxyEnv::set("http://192.0.2.1:9", None);
+    let mut t = transport(
+        "http://127.0.0.1:9/mcp".to_string(),
+        None,
+        Duration::from_millis(300),
+    );
+    let e = t
+        .send(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
+        .expect_err("an ambient remote proxy is refused offline");
     assert_eq!(e.code, codes::OFFLINE, "{e}");
     assert!(!e.to_string().contains(SYNTHETIC_PASSWORD), "{e}");
 }

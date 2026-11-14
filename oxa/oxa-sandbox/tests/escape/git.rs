@@ -1,7 +1,7 @@
 //! Git: hooks and config run outside the sandbox later, so a command must not write them,
 //! whatever layout the repository uses for its git directory.
 
-use crate::harness::{assert_refused, dir, run, sandbox, write};
+use crate::harness::{assert_ok, assert_refused, dir, run, sandbox, sandbox_at, write};
 use oxa_fake::TestEnv;
 use std::path::Path;
 
@@ -435,4 +435,68 @@ fn a_worktree_common_dir_inside_the_project_is_refused() {
     assert_refused(exit, &out, "worktree common dir inside cwd");
     assert!(out.contains("sandbox refused"), "{out}");
     assert!(!common.join("hooks/pre-commit").exists());
+}
+
+/// Threat: a session runs in a nested directory of a repository and the repository's
+/// `core.hooksPath` is relative. Git resolves that value from the worktree root, not from the
+/// session cwd, so resolving it from the cwd protects a different directory and leaves the
+/// real hook directory writable.
+/// Attempt: worktree root with `hooksPath = sub/.githooks`; run in `sub`; write the hook.
+/// Expected refusal: the worktree-root path `sub/.githooks` is protected, not `sub/sub/...`.
+#[test]
+fn a_nested_cwd_resolves_a_relative_hooks_path_from_the_worktree_root() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let nested = work.join("sub");
+    config(
+        &work,
+        "[core]\n\trepositoryformatversion = 0\n\thooksPath = sub/.githooks\n",
+    );
+    // The old cwd-relative resolution derived `sub/sub/.githooks`; keep that path's parent a
+    // real directory so the wrong path was protected instead of refused, as the bug did.
+    dir(&nested.join("sub"));
+    let Some(sb) = sandbox_at(&env, &nested) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        &nested,
+        "mkdir -p .githooks && printf '#!/bin/sh\\n' > .githooks/pre-commit",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "nested cwd hooksPath");
+    assert!(!nested.join(".githooks/pre-commit").exists());
+}
+
+/// Control: a nested session cwd with a relative `hooksPath` whose real target is the worktree
+/// root, outside the writable cwd. The sandbox must not derive a path from the session cwd and
+/// mask legitimate project content there.
+/// Attempt: `hooksPath = .githooks`; run in `sub`; write `sub/.githooks/pre-commit`, which is
+/// not the hook directory (git runs `work/.githooks`), so it must be allowed.
+#[test]
+fn a_nested_cwd_does_not_protect_a_hooks_path_derived_from_the_session_cwd() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let nested = work.join("sub");
+    dir(&nested);
+    config(
+        &work,
+        "[core]\n\trepositoryformatversion = 0\n\thooksPath = .githooks\n",
+    );
+    // The real hook directory, outside the nested writable cwd: the command cannot write it
+    // (the worktree root is read-only inside the sandbox), so no mask is needed there.
+    dir(&work.join(".githooks"));
+    let Some(sb) = sandbox_at(&env, &nested) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        &nested,
+        "mkdir -p .githooks && printf '#!/bin/sh\\n' > .githooks/pre-commit",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "nested cwd unrelated .githooks");
+    assert!(nested.join(".githooks/pre-commit").exists());
 }
