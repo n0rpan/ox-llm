@@ -839,13 +839,17 @@ fn run_compaction(st: &mut SessionState, spec: &Spec, sink: &mut dyn EventSink, 
             }
             observe(st, HookPoint::SessionCompact, &payload, sink, ui);
             st.stats.compactions += 1;
-            st.stats.context_tokens = st.transcript.context();
-            let count = counter(st);
-            let estimated = a
-                .head
-                .iter()
-                .map(|m| count(m.content.as_deref().unwrap_or("")))
-                .fold(0u32, u32::saturating_add);
+            // Rebase clears transcript usage. Count the full request (including the
+            // frozen system/tools prefix), not just the surviving message content.
+            // The local estimate over-counts (about 2.5x on a small cloud session), so an
+            // estimated count never exceeds what the context was before compaction.
+            let (counted, how) = prompt_tokens(st, &a.head);
+            let estimated = if how == Counted::Exact {
+                counted
+            } else {
+                counted.min(a.tokens_before)
+            };
+            st.stats.context_tokens = estimated;
             sink.emit(&AgentEvent::CompactionEnd {
                 reason,
                 result: Some(CompactionResult {

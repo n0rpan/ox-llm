@@ -12,8 +12,8 @@ use oxa_core::{append_entry, maybe_compact, run_loop, Queue, RunEnd, SessionStat
 use oxa_fake::{Fault, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    CancelToken, CommandSpec, Engine, EntryBody, FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode,
-    OxaError, Policy, Profile, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
+    AgentEvent, CancelToken, CommandSpec, Engine, EntryBody, FrozenPrefix, HeadlessUi, HookPoint, HookReply,
+    Hooks, Mode, OxaError, Policy, Profile, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -153,6 +153,20 @@ fn compact_with(summary: ScriptTurn, profile: Profile) -> (Arc<Recorder>, bool) 
     );
     st.compact.soft = st.transcript.context() - 1;
     let done = maybe_compact(&mut st, true, &mut sink, &mut HeadlessUi::default()).expect("maybe_compact");
+    if done {
+        let after = sink
+            .0
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::CompactionEnd {
+                    result: Some(result), ..
+                } => Some(result.estimated_tokens_after),
+                _ => None,
+            })
+            .expect("compaction result");
+        assert!(after > 0, "rebased context still contains the prefix and summary");
+        assert_eq!(st.stats.context_tokens, after);
+    }
     (rec, done)
 }
 
