@@ -275,6 +275,14 @@ pub(crate) struct Loop<'a> {
     /// OXA's fullscreen look: the editor's suggestion panel of this frame and the editor's
     /// first row among the bottom lines (the panel floats above it, over the transcript).
     popup_overlay: Option<(usize, Vec<String>)>,
+    /// The graphics tier of the arcade: the frames the terminal holds, whether the terminal
+    /// answered the graphics query and draws placeholders, image bytes waiting to be written
+    /// before the next frame, and "delete everything first" (resize, back from a suspend).
+    pixel: crate::skin::PixelStage,
+    gfx_answered: bool,
+    gfx_placeholders: bool,
+    gfx_out: String,
+    gfx_reset: bool,
     /// O-182: the theme as loaded; `theme` is its hot variant while YOLO is on (OXA's look).
     cool_theme: Theme,
     /// O-182: what the screen last showed of the YOLO switch, and until when its banner shows.
@@ -303,6 +311,8 @@ impl<'a> Loop<'a> {
     ) -> Loop<'a> {
         let caps = opts.caps.unwrap_or_else(|| term.caps());
         let term_colors = crate::app::terminal_colors(&*opts, term.colors());
+        let gfx_answered = term.graphics();
+        let gfx_placeholders = oxa_tui::env_gfx_placeholders(&opts.env);
         let theme = load_theme(&*opts, caps, term_colors.as_ref());
         let theme_name = theme_name(&*opts);
         let view = view_settings(&*opts, &caps);
@@ -397,6 +407,11 @@ impl<'a> Loop<'a> {
             anim_step: 0,
             arcade: ArcadeState::default(),
             popup_overlay: None,
+            pixel: crate::skin::PixelStage::new(caps.cell_px),
+            gfx_answered,
+            gfx_placeholders,
+            gfx_out: String::new(),
+            gfx_reset: false,
             cool_theme: Theme::plain(),
             yolo_shown: false,
             yolo_banner_since: 0,
@@ -438,6 +453,30 @@ impl<'a> Loop<'a> {
             Animation::from_setting(self.opts.settings.string("ui.animation").as_deref())
         } else {
             Animation::Off
+        }
+    }
+
+    /// The arcade plays as pixel art (the graphics tier): the terminal can, and the settings
+    /// do not say otherwise.
+    fn pixels(&self) -> bool {
+        self.animation() == Animation::Arcade
+            && self.view.skin == crate::Skin::Oxa
+            && crate::skin::graphics_wanted(
+                self.opts.settings.string("ui.animationScene").as_deref(),
+                self.opts.settings.string("ui.animationGraphics").as_deref(),
+                self.gfx_answered,
+                self.gfx_placeholders,
+            )
+    }
+
+    /// Delete every image of the graphics tier from the terminal, now (exit, suspend).
+    fn drop_images(&mut self, term: &mut dyn Terminal) {
+        self.gfx_out.clear();
+        let mut out = String::new();
+        self.pixel.clear(&mut out);
+        if !out.is_empty() {
+            term.write(out.as_bytes());
+            term.flush();
         }
     }
 
@@ -1001,7 +1040,10 @@ impl<'a> Loop<'a> {
             InputEvent::Key(key) => self.key(term, key),
             InputEvent::Paste(text) => self.paste(&text),
             InputEvent::Mouse(m) => self.mouse(term, m),
-            InputEvent::Resize { .. } => self.dirty = true,
+            InputEvent::Resize { .. } => {
+                self.dirty = true;
+                self.gfx_reset = true;
+            }
             _ => {}
         }
     }
@@ -1627,6 +1669,7 @@ impl<'a> Loop<'a> {
         match self.editor_command() {
             None => self.push_notice(Level::Warning, NO_EDITOR.to_string()),
             Some(cmd) => {
+                self.drop_images(term);
                 match edit_externally(&text, &cmd, &self.opts.dirs.tmp_dir, term) {
                     Ok(Some(edited)) => {
                         self.dialogs.set_editor_text(&edited);
@@ -2275,6 +2318,7 @@ impl<'a> Loop<'a> {
                 None => self.push_notice(Level::Warning, NO_EDITOR.to_string()),
                 Some(cmd) => {
                     let text = self.editor.expanded_text();
+                    self.drop_images(term);
                     match edit_externally(&text, &cmd, &self.opts.dirs.tmp_dir, term) {
                         Ok(Some(edited)) => self.editor.set_text(&edited),
                         Ok(None) => {}
@@ -2284,6 +2328,7 @@ impl<'a> Loop<'a> {
                 }
             },
             AppAction::Suspend => {
+                self.drop_images(term);
                 suspend_process(term);
                 self.after_external();
             }
@@ -2444,16 +2489,34 @@ impl<'a> Loop<'a> {
             let active = status.activity != Activity::Idle;
             self.arcade.observe(active, &self.vm.blocks, now_ms());
             let scene = ArcadeScene::from_setting(self.opts.settings.string("ui.animationScene").as_deref());
-            let line = oxa_arcade_line(
-                &status,
-                &self.opts.keymap,
-                self.animation(),
-                scene,
-                &self.arcade.run(now_ms()),
-                width,
-                &self.theme,
-                self.view.skin,
-            );
+            let run = self.arcade.run(now_ms());
+            let pixel_line = if self.pixels() {
+                crate::skin::oxa_pixel_line(
+                    &status,
+                    &self.opts.keymap,
+                    &run,
+                    width,
+                    &self.theme,
+                    self.view.skin,
+                    &mut self.pixel,
+                    self.theme_epoch,
+                    &mut self.gfx_out,
+                )
+            } else {
+                None
+            };
+            let line = pixel_line.or_else(|| {
+                oxa_arcade_line(
+                    &status,
+                    &self.opts.keymap,
+                    self.animation(),
+                    scene,
+                    &run,
+                    width,
+                    &self.theme,
+                    self.view.skin,
+                )
+            });
             lines.extend(line);
         } else if let Some(text) = activity_text(&status) {
             lines.push(self.theme.dim(&text));
@@ -2611,6 +2674,10 @@ impl<'a> Loop<'a> {
     pub(crate) fn draw(&mut self, term: &mut dyn Terminal) {
         self.dirty = false;
         self.report_status(term);
+        if self.gfx_reset {
+            self.gfx_reset = false;
+            self.pixel.clear(&mut self.gfx_out);
+        }
         if self.fullscreen {
             self.draw_fullscreen(term);
         } else {
@@ -2661,6 +2728,11 @@ impl<'a> Loop<'a> {
             self.renderer.repaint();
         }
         self.last_frame = live.clone();
+        if !self.gfx_out.is_empty() {
+            // New frames of the pixel scene: they must be there before the row that shows them.
+            term.write(self.gfx_out.as_bytes());
+            self.gfx_out.clear();
+        }
         self.renderer.draw(&Frame { lines: live, cursor }, term);
     }
 
@@ -2754,6 +2826,11 @@ impl<'a> Loop<'a> {
             col: p.col,
         });
         self.last_frame = frame.clone();
+        if !self.gfx_out.is_empty() {
+            // New frames of the pixel scene: they must be there before the row that shows them.
+            term.write(self.gfx_out.as_bytes());
+            self.gfx_out.clear();
+        }
         self.renderer.draw(&Frame { lines: frame, cursor }, term);
     }
 
@@ -2768,6 +2845,7 @@ impl<'a> Loop<'a> {
         if self.running() {
             self.handle.abort();
         }
+        self.drop_images(term);
         if self.fullscreen {
             self.renderer.clear(term);
             term.set_mode(TermMode::Mouse, false);

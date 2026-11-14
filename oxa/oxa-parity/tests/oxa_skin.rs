@@ -10,7 +10,8 @@ use std::time::Duration;
 const REPLY: &str = "PONG from the fake engine";
 const WAIT: Duration = Duration::from_secs(30);
 /// Glyphs only the working sprites draw.
-const SPRITE_GLYPHS: [char; 7] = ['▪', '▒', '▜', '▙', '▟', '▛', '▇'];
+/// Glyphs of the moving scene: the small sprites and the stacking columns (the default).
+const SPRITE_GLYPHS: [char; 12] = ['▪', '▒', '▜', '▙', '▟', '▛', '▇', '▁', '▂', '▃', '▄', '▆'];
 
 struct Rig {
     // Field order = drop order: the pty (and the child) go first, then the engine, then the dirs.

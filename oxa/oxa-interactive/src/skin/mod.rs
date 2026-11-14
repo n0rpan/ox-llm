@@ -18,11 +18,13 @@ mod arcade;
 mod batch;
 mod chrome;
 mod panels;
+mod pixel;
 
 pub use arcade::*;
 pub use batch::*;
 pub use chrome::*;
 pub use panels::*;
+pub use pixel::*;
 
 /// The glyphs of the skin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

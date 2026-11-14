@@ -241,10 +241,11 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["arcade", "minimal", "off"]),
         "\"arcade\"",
     ),
+    key("ui.animationGraphics", Kind::Enum(&["auto", "off"]), "\"auto\""),
     key(
         "ui.animationScene",
-        Kind::Enum(&["charge", "stars", "stack"]),
-        "\"charge\"",
+        Kind::Enum(&["graphics", "stack", "stars", "charge"]),
+        "null",
     ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa"]), "\"auto\""),

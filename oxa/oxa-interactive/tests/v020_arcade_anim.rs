@@ -459,7 +459,6 @@ fn golden_frames_of_the_other_scenes() {
         Skin::Oxa,
         12,
         &[
-            "|            |",
             "|▂           |",
             "|▄           |",
             "|▆           |",
@@ -471,6 +470,7 @@ fn golden_frames_of_the_other_scenes() {
             "|██▂         |",
             "|██▄         |",
             "|██▆         |",
+            "|███         |",
         ],
     );
     check(
@@ -480,7 +480,6 @@ fn golden_frames_of_the_other_scenes() {
         Skin::Oxa,
         12,
         &[
-            "|            |",
             "|▄           |",
             "|█           |",
             "|█▄          |",
@@ -488,6 +487,7 @@ fn golden_frames_of_the_other_scenes() {
             "|██▄         |",
             "|███         |",
             "|███▄        |",
+            "|████        |",
         ],
     );
     check(
@@ -497,10 +497,10 @@ fn golden_frames_of_the_other_scenes() {
         Skin::Oxa,
         12,
         &[
-            "|      ▐$▌ ◆3|",
             "|▂     ▐$▌ ◆3|",
             "|▄     ▐$▌ ◆3|",
             "|▆     ▐$▌ ◆3|",
+            "|█     ▐$▌ ◆3|",
         ],
     );
     check(
@@ -531,7 +531,6 @@ fn golden_frames_of_the_other_scenes() {
         Skin::OxaAscii,
         12,
         &[
-            "|            |",
             "|.           |",
             "|:           |",
             "|=           |",
@@ -543,6 +542,7 @@ fn golden_frames_of_the_other_scenes() {
             "|##.         |",
             "|##:         |",
             "|##=         |",
+            "|###         |",
         ],
     );
 }

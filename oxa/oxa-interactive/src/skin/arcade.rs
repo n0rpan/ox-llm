@@ -46,22 +46,49 @@ impl Animation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArcadeScene {
     /// The ox charges through blocks, butts tool crates open and collects a coin per tool.
-    #[default]
     Charge,
     /// A small ship in a two-layer starfield; warp streaks while the reply streams.
     Stars,
-    /// Columns that stack up and flash when the row is full.
+    /// Columns that stack up and flash when the row is full. The default on a text terminal.
+    #[default]
     Stack,
 }
 
 impl ArcadeScene {
-    /// `"stars"` and `"stack"`; anything else (unset, `"charge"`) is the charging ox.
+    /// `"charge"` and `"stars"`; anything else (unset, `"stack"`, `"graphics"` on a terminal
+    /// without graphics) is the stack.
     pub fn from_setting(setting: Option<&str>) -> ArcadeScene {
         match setting.map(str::trim) {
+            Some("charge") => ArcadeScene::Charge,
             Some("stars") => ArcadeScene::Stars,
-            Some("stack") => ArcadeScene::Stack,
-            _ => ArcadeScene::Charge,
+            _ => ArcadeScene::Stack,
         }
+    }
+}
+
+/// Whether the pixel scene of the graphics tier plays (`skin/pixel.rs`), from the settings
+/// `ui.animationScene` and `ui.animationGraphics` and what the terminal can do:
+/// `answered` = it answered the kitty graphics query, `placeholders` = it is known to draw
+/// Unicode placeholders (kitty, Ghostty).
+///
+/// * `ui.animationGraphics = "off"`: never.
+/// * `ui.animationScene` unset: when the terminal answered and draws placeholders.
+/// * `ui.animationScene = "graphics"`: whenever the terminal answered (the user's override
+///   for a terminal this build does not know).
+/// * a text scene by name (`stack`, `stars`, `charge`): never.
+pub fn graphics_wanted(
+    scene: Option<&str>,
+    graphics: Option<&str>,
+    answered: bool,
+    placeholders: bool,
+) -> bool {
+    if graphics.map(str::trim) == Some("off") || !answered {
+        return false;
+    }
+    match scene.map(str::trim) {
+        Some("graphics") => true,
+        Some("stack") | Some("stars") | Some("charge") => false,
+        _ => placeholders,
     }
 }
 
@@ -534,7 +561,8 @@ fn stack(c: &mut Canvas, st: &StatusModel, run: &ArcadeRun, f: u64, ascii: bool,
     };
     let full = cols as u64 * 8;
     let flash = 8;
-    let units = (f * speed) % (full + flash * speed).max(1);
+    // The first frame already shows a block: a run never starts on an empty row.
+    let units = ((f + 1) * speed) % (full + flash * speed).max(1);
     for x in 0..cols {
         if units >= full {
             // The row is full: it flashes, then the stack starts again.
@@ -604,6 +632,33 @@ pub fn arcade_scene(
     Some(c.paint(token, st.yolo, theme))
 }
 
+/// The closing line behind `lead` (a scene, already styled): the `CLEAR` / `FAILED` badge and
+/// the coins of the run.
+pub(super) fn finish_line(
+    lead: String,
+    how: Finish,
+    run: &ArcadeRun,
+    width: u16,
+    theme: &Theme,
+    skin: Skin,
+) -> String {
+    let (word, token) = match how {
+        Finish::Clear => ("CLEAR", "success"),
+        Finish::Fail => ("FAILED", "error"),
+    };
+    let mut line = format!(" {lead} {}", badge(word, token, theme));
+    if run.coins > 0 {
+        let g = glyphs(skin);
+        let tools = if run.coins == 1 { "tool" } else { "tools" };
+        line.push_str(&format!(
+            "  {} {}",
+            theme.fg("warning", &format!("{}{}", g.diamond, run.coins)),
+            theme.fg("muted", tools)
+        ));
+    }
+    truncate_to_width(&line, usize::from(width), "...")
+}
+
 /// The activity line with the animation setting (the UI loop's entry point).
 ///
 /// * `Animation::Arcade`: the line starts with the scene of the activity; for [`FINISH_MS`]
@@ -637,25 +692,18 @@ pub fn oxa_arcade_line(
         let art = if ascii { &ART_ASCII } else { &ART };
         let mut c = Canvas::new(cells);
         finish(&mut c, how, ms / SPRITE_FRAME_MS, art);
-        let (word, token) = match how {
-            Finish::Clear => ("CLEAR", "success"),
-            Finish::Fail => ("FAILED", "error"),
+        let token = match how {
+            Finish::Clear => "success",
+            Finish::Fail => "error",
         };
-        let mut line = format!(
-            " {} {}",
+        return Some(finish_line(
             c.paint(token, st.yolo, theme),
-            badge(word, token, theme)
-        );
-        if run.coins > 0 {
-            let g = glyphs(skin);
-            let tools = if run.coins == 1 { "tool" } else { "tools" };
-            line.push_str(&format!(
-                "  {} {}",
-                theme.fg("warning", &format!("{}{}", g.diamond, run.coins)),
-                theme.fg("muted", tools)
-            ));
-        }
-        return Some(truncate_to_width(&line, usize::from(width), "..."));
+            how,
+            run,
+            width,
+            theme,
+            skin,
+        ));
     }
     let lead = arcade_scene(scene, st, run, cells, theme, skin);
     activity_line_lead(st, keymap, lead, width, theme, skin)
@@ -672,8 +720,10 @@ mod tests {
         assert_eq!(Animation::from_setting(Some(" minimal ")), Animation::Minimal);
         assert_eq!(Animation::from_setting(Some("off")), Animation::Off);
         assert_eq!(ArcadeScene::from_setting(Some("stars")), ArcadeScene::Stars);
-        assert_eq!(ArcadeScene::from_setting(Some("stack")), ArcadeScene::Stack);
-        assert_eq!(ArcadeScene::from_setting(Some("?")), ArcadeScene::Charge);
+        assert_eq!(ArcadeScene::from_setting(Some("charge")), ArcadeScene::Charge);
+        assert_eq!(ArcadeScene::from_setting(None), ArcadeScene::Stack);
+        assert_eq!(ArcadeScene::from_setting(Some("graphics")), ArcadeScene::Stack);
+        assert_eq!(ArcadeScene::default(), ArcadeScene::Stack);
     }
 
     #[test]
