@@ -39,6 +39,7 @@ pub enum Control {
     SetGoal {
         revision: u64,
         text: String,
+        budget: Option<goals::Budget>,
     },
 }
 #[derive(Clone, Debug, Serialize)]
@@ -164,9 +165,14 @@ pub fn pursue(
                     .is_some(),
                 Control::Resume { revision } => goal.resume(revision).is_ok(),
                 Control::Cancel { revision } => goal.cancel(revision).is_ok(),
-                Control::SetGoal { revision, text } => {
+                Control::SetGoal {
+                    revision,
+                    text,
+                    budget,
+                } => {
                     // Keep escaped text inside the native task's size bound.
-                    if serde_json::to_string(&text).is_ok_and(|s| s.len() <= 24 * 1024)
+                    if budget.is_none()
+                        && serde_json::to_string(&text).is_ok_and(|s| s.len() <= 24 * 1024)
                         && goal.set_goal(revision, text.clone()).is_ok()
                     {
                         journal.record(None, "goal_updated", json!({"goalSha256":digest(&text)}))?;

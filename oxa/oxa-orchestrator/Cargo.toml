@@ -7,22 +7,40 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+interactive-control = ["dep:oxa-core", "dep:oxa-proto"]
+
 [dependencies]
 oxa-a2a = { path = "../oxa-a2a" }
 serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true
 sha2.workspace = true
+oxa-core = { workspace = true, optional = true }
+oxa-proto = { workspace = true, optional = true }
 
 [dev-dependencies]
 oxa-cli = { path = "../oxa-cli" }
 oxa-fake.workspace = true
 oxa-config.workspace = true
+oxa-interactive = { path = "../oxa-interactive", features = ["session-control"] }
+oxa-core.workspace = true
+oxa-proto.workspace = true
+oxa-engine.workspace = true
+oxa-session.workspace = true
+oxa-tui.workspace = true
+oxa-resources.workspace = true
 
 [[test]]
 name = "real_workers"
 path = "tests/real_workers.rs"
 harness = false
+
+[[test]]
+name = "shared_tui"
+path = "tests/shared_tui.rs"
+harness = false
+required-features = ["interactive-control"]
 
 [lints]
 workspace = true

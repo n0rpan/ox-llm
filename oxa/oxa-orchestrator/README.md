@@ -204,8 +204,9 @@ process/conversation across multiple turns; see [SESSION_GOALS.md](SESSION_GOALS
 
 `--goal --control` now exposes that native owner through a private Unix socket
 for concurrent external status, pause/resume, goal redirection, steering and
-event polling; see [SHARED_SESSION.md](SHARED_SESSION.md). Existing interactive
-TUI attachment to this shared owner is still the next integration, with no
-exclusive writer lock held by either client. Background-task wake-ups
+event polling; see [SHARED_SESSION.md](SHARED_SESSION.md). The existing interactive
+TUI also exposes its actual core session with `OXA_SESSION_CONTROL_DIRECTORY` in
+a feature-enabled build; both clients retain write access and share goal state,
+context and native events. Background-task wake-ups
 and worker-lane integration follow. All implementation stays in the new crates
 plus small default-off hooks; cloud execution and merging retain the brief's gates.

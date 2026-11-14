@@ -74,8 +74,9 @@ A live control owner can hold the goal paused or blocked for operator input. Wit
 no remaining control sender, the command returns its blocked/paused report and
 stops/reaps its process. The CLI currently exposes status and Ctrl-C cancellation;
 the opt-in [local socket API](SHARED_SESSION.md) now connects external clients to
-this owner. Existing interactive TUI attachment is still the NEXT integration,
-not claimed implemented. Background-task wake-ups and goal-driven
+this owner. The existing interactive TUI also has a default-off attachment to its
+actual core session; see that guide for activation and limits. Background-task
+wake-ups and goal-driven
 worker-lane events follow that API. Context compaction/cloud reliability remains
 separate work with the existing approval and main-lane coordination gates.
 

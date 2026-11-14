@@ -26,14 +26,39 @@ const CLIENT_TIME: Duration = Duration::from_secs(2);
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
-    Status { id: String },
-    Events { id: String, after: u64 },
-    Pause { id: String, revision: u64 },
-    Resume { id: String, revision: u64 },
-    Steer { id: String, revision: u64, text: String },
-    Cancel { id: String, revision: u64 },
-    SetGoal { id: String, revision: u64, text: String },
-    Close { id: String },
+    Status {
+        id: String,
+    },
+    Events {
+        id: String,
+        after: u64,
+    },
+    Pause {
+        id: String,
+        revision: u64,
+    },
+    Resume {
+        id: String,
+        revision: u64,
+    },
+    Steer {
+        id: String,
+        revision: u64,
+        text: String,
+    },
+    Cancel {
+        id: String,
+        revision: u64,
+    },
+    SetGoal {
+        id: String,
+        revision: u64,
+        text: String,
+        budget: Option<crate::goals::Budget>,
+    },
+    Close {
+        id: String,
+    },
 }
 impl Request {
     fn id(&self) -> &str {
@@ -56,6 +81,7 @@ struct State {
     events: VecDeque<(u64, Value, usize)>,
     bytes: usize,
     terminal: bool,
+    session: Option<Value>,
 }
 /// The session owner publishes without waiting for socket clients. No raw payload is persisted.
 #[derive(Clone)]
@@ -63,7 +89,7 @@ pub struct Publisher(Arc<Mutex<State>>);
 impl Publisher {
     pub fn publish(&self, event: &Event) {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.latest = Some(json!({"goal":event.goal,"kind":event.kind}));
+        state.latest = Some(json!({"goal":event.goal,"kind":event.kind,"session":state.session}));
         if event.kind == "goal_status" {
             return;
         }
@@ -75,7 +101,7 @@ impl Publisher {
             }
             json!({"text":&text[..end],"truncated":end != text.len()})
         });
-        let value = json!({"kind":event.kind,"goal":event.goal,"reply":reply,"request_id":event.request_id});
+        let value = json!({"kind":event.kind,"goal":event.goal,"reply":reply,"request_id":event.request_id,"session":state.session});
         let bytes = value.to_string().len();
         state.sequence += 1;
         let seq = state.sequence;
@@ -86,6 +112,10 @@ impl Publisher {
                 state.bytes -= bytes;
             }
         }
+    }
+    pub fn bind_session(&self, id: &str, model: &str, mode: &str, busy: bool) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).session =
+            Some(json!({"id":id,"model":model,"mode":mode,"busy":busy}));
     }
 }
 /// Lifetime is owned by the foreground session; drop joins the bounded I/O loop.
@@ -156,6 +186,10 @@ impl Server {
     }
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+    #[cfg(feature = "interactive-control")]
+    pub(crate) fn stop_handle(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
     }
 }
 impl Drop for Server {
@@ -288,7 +322,16 @@ fn handle(bytes: &[u8], controls: &SyncSender<Control>, publisher: &Publisher) -
         Request::Pause { revision, .. } => Control::Pause { revision },
         Request::Resume { revision, .. } => Control::Resume { revision },
         Request::Cancel { revision, .. } => Control::Cancel { revision },
-        Request::SetGoal { revision, text, .. } => Control::SetGoal { revision, text },
+        Request::SetGoal {
+            revision,
+            text,
+            budget,
+            ..
+        } => Control::SetGoal {
+            revision,
+            text,
+            budget,
+        },
         Request::Close { .. } => {
             let state = publisher.0.lock().unwrap_or_else(|e| e.into_inner());
             return if state.terminal {
