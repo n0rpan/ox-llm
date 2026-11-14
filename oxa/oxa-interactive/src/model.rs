@@ -170,6 +170,12 @@ impl StatusModel {
     /// (adaptive `low`). Claude 5.5 cannot disable thinking, so `off` shows as `adaptive • low`
     /// and every other level as `adaptive • high`. Other models show the level name.
     pub fn thinking_label(&self) -> Option<String> {
+        self.thinking_label_with("•")
+    }
+
+    /// [`Self::thinking_label`] with the separator between `adaptive` and the effort supplied by
+    /// the caller (the ASCII skin passes its `mid` glyph so the HUD stays ASCII).
+    pub fn thinking_label_with(&self, sep: &str) -> Option<String> {
         let level = self.thinking?;
         if !is_claude_55(&self.model) {
             return Some(level.as_str().to_string());
@@ -179,7 +185,7 @@ impl StatusModel {
         } else {
             "high"
         };
-        Some(format!("adaptive • {eff}"))
+        Some(format!("adaptive {sep} {eff}"))
     }
 }
 

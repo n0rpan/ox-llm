@@ -1093,9 +1093,9 @@ fn hud_thinking_label_claude_55_effective_effort() {
     ];
     for level in all {
         let want = if level == ThinkingLevel::Off {
-            "adaptive • low"
+            "adaptive · low"
         } else {
-            "adaptive • high"
+            "adaptive · high"
         };
         let line = hud_for("anthropic/claude-haiku-5-5", level);
         assert!(line.contains(want), "5.5 {level:?}: {line}");

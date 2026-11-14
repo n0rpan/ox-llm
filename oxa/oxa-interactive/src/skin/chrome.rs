@@ -192,7 +192,7 @@ impl HudParts {
                 model
             },
             level: st.thinking.map(|level| level.as_str()),
-            level_text: st.thinking_label(),
+            level_text: st.thinking_label_with(g.mid),
             note: clean_opt(st.thinking_note.as_deref()),
             mode: st.mode,
             state: activity_style(&st.activity),
