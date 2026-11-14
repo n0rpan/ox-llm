@@ -125,7 +125,10 @@ fn a_cloud_only_controller_gets_a_remote_model_and_no_preload() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "stdout: {stdout}\nstderr: {stderr}");
-    assert!(!stderr.contains("warning") && !stderr.contains("preload"), "{stderr}");
+    assert!(
+        !stderr.contains("warning") && !stderr.contains("preload"),
+        "{stderr}"
+    );
     let requests = server.requests();
     assert_eq!(requests.len(), 1, "no preload request: {requests:?}");
     assert_eq!(requests[0].model, "anthropic/claude-haiku-5-5");
