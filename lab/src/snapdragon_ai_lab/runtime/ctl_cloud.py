@@ -4,6 +4,7 @@ Called from `ctl_proxy.proxy_request` after the request body is prepared and the
 is open, instead of local admission.  The request never touches the local engine, the prefix
 store or the local model lease.
 """
+import http.client
 import json
 if __package__:
     from .ctl_proxy_prep import HOP_HEADERS
@@ -172,6 +173,8 @@ def forward(self, st):
             _finish(self, st, item, meter, 502, 'cloud_response_too_large', hold, key, failed=True)
             return self.json_reply(502, {'error': {'message': 'The cloud provider sent an oversized response.',
                                                    'type': 'cloud_error', 'code': 'cloud_response_too_large'}})
+        if response.length is not None and response.length > 0:
+            raise http.client.IncompleteRead(payload, response.length)
         if responses is not None:
             payload = json.dumps(cloud_openai.response(json.loads(payload), item,
                                  st.payload.get('messages'), key), ensure_ascii=False).encode()
@@ -197,11 +200,10 @@ def forward(self, st):
             self.json_reply(error.status, {'error': {'message': cloud.redact(str(error), key),
                                                    'type': 'cloud_error', 'param': error.param,
                                                    'code': error.code}})
-    except (OSError, ValueError, json.JSONDecodeError) as error:
-        detail = cloud.redact(str(error), key)
+    except (OSError, ValueError, http.client.HTTPException):
         _finish(self, st, item, meter, 503, 'cloud_unavailable', hold, key, failed=True)
         if not started:
-            self.json_reply(503, {'error': {'message': 'The cloud provider is unavailable. ' + detail[:200],
+            self.json_reply(503, {'error': {'message': 'The cloud provider is unavailable.',
                                             'type': 'cloud_error', 'param': 'model', 'code': 'cloud_unavailable'}})
         else:
             self.close_connection = True

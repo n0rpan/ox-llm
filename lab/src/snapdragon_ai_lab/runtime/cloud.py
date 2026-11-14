@@ -285,7 +285,10 @@ def _check_ledger_health():
 
 
 def _max_tokens(payload, item):
-    for field in ('max_tokens', 'max_completion_tokens', 'max_output_tokens', 'n_predict'):
+    fields = ('max_tokens', 'max_completion_tokens', 'n_predict')
+    if item.get('provider') == 'openai':
+        fields += ('max_output_tokens',)
+    for field in fields:
         value = payload.get(field) if isinstance(payload, dict) else None
         if type(value) is int and value > 0:
             return value
@@ -425,9 +428,10 @@ def secret(provider, value):
     raw = data.get(provider)
     if isinstance(raw, dict):
         raw = raw.get('api_key')
-    if not isinstance(raw, str) or not raw.strip() or len(raw) > 8192:
+    if (not isinstance(raw, str) or not raw or len(raw) > 8192
+            or any(not 33 <= ord(char) <= 126 for char in raw)):
         raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable')
-    return raw.strip()
+    return raw
 
 
 def configured(value):

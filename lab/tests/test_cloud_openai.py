@@ -50,6 +50,66 @@ class OpenAI(CloudCase):
         self.assertEqual(row['settled'], 'usage')
         self.assertEqual(json.loads(body)['model'], REMOTE)
 
+    def test_truncated_http_chunk_retains_reserved_charge(self):
+        class Truncated(MockOpenRouter):
+            def _sse(self, handler, events):
+                handler.send_response(200)
+                handler.send_header('Content-Type', 'text/event-stream')
+                handler.send_header('Transfer-Encoding', 'chunked')
+                handler.end_headers()
+                handler.wfile.write(b'100\r\ndata: {"choices":[]}\n\n')
+                handler.wfile.flush()
+                handler.close_connection = True
+        upstream = Truncated()
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        import http.client
+        with self.assertRaises(http.client.IncompleteRead):
+            self.chat(stream=True)
+        rows = self.ledger_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['settled'], 'reserved')
+        self.assertGreater(rows[0]['cost_usd'], 0)
+        self.assertEqual(cloud.spend_today(), rows[0]['cost_usd'])
+        self.assertFalse(cloud._reserved)
+
+    def test_truncated_nonstream_body_returns_failure_and_charges(self):
+        class Truncated(MockOpenRouter):
+            def _json(self, handler, status, value):
+                handler.send_response(200)
+                handler.send_header('Content-Length', '100')
+                handler.end_headers()
+                handler.wfile.write(b'{"choices":[')
+                handler.wfile.flush()
+                handler.close_connection = True
+        upstream = Truncated()
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, _ = self.chat()
+        self.assertEqual(status, 503)
+        self.assertEqual(self.ledger_rows()[0]['settled'], 'reserved')
+
+    def test_non_openai_reservation_ignores_responses_only_limit(self):
+        item = cloud.entry('synthetic-router', {
+            'kind': 'remote/openrouter', 'base_url': 'https://example.invalid/v1',
+            'upstream_model': 'synthetic-model',
+            'context_window': 100000, 'max_output': 32000,
+            'pricing': {'input_per_million': 1, 'output_per_million': 10}})
+        request = {'messages': [{'role': 'user', 'content': 'synthetic prompt'}]}
+        self.assertEqual(cloud.worst_case_cost(item, request),
+                         cloud.worst_case_cost(item, dict(request, max_output_tokens=1)))
+
+    def test_malformed_credential_is_refused_without_disclosing_fragments(self):
+        self.secrets.write_text(json.dumps({'openai': {'api_key': KEY + '\nsecond-line'}}))
+        self.start()
+        status, body = self.chat()
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)['error']['code'], 'cloud_credentials_unavailable')
+        for fragment in (KEY.encode(), b'second-line'):
+            self.assertNotIn(fragment, body)
+            self.assertNotIn(fragment.decode(), self.ledger_text())
+        self.assertEqual(self.upstream.requests, [])
+
     def test_default_url_capabilities_and_no_local_features(self):
         item = cloud.entry(REMOTE, models()[REMOTE])
         self.assertEqual(item['base_url'], 'https://api.openai.com/v1')
