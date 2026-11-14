@@ -87,6 +87,12 @@ surviving server to query; bubblewrap parent-death cleanup stops its workers.
 The inspector still reports missing terminal evidence honestly. It never restarts
 that server or treats a new server as a continuation of the old one.
 
+The CLI saves its final report to `<directory>/report.json` after owned cleanup
+and before stdout, including partial outcomes. See [CLI.md](CLI.md#saved-final-report)
+for publication and failure semantics. This preserves completed results when a
+stdout consumer closes, but cannot recover a controller killed before publication.
+Pending temporary output is not treated as a completed report.
+
 This is recovery inspection and explicit task reconciliation, not scheduler resume.
 Persistent authenticated agent registration, durable artifact checkpoints,
 automatic reattachment/resubscription, queued-plan resume, concurrent-controller

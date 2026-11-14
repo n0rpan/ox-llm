@@ -1,6 +1,7 @@
 //! Inert worker supervisor; no listener or subprocess is started on import.
 //! The initial executable profile is local, tool-free oxa over bounded RPC.
 pub mod a2a_run;
+mod checkpoint;
 pub mod cli;
 mod git_worktrees;
 mod journal;

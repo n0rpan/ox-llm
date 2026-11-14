@@ -37,6 +37,7 @@ test orchestrate CLI crash inspection ... ok
 test native cancellation journal inspection ... ok
 test orchestrate CLI Git worktrees ... ok
 test orchestrate CLI stalled stderr ... ok
+test orchestrate CLI durable report with closed stdout ... ok
 test orchestrate CLI structural input limits ... ok
 test orchestrate CLI protected run namespace ... ok
 ```
@@ -116,3 +117,8 @@ Candidate publication additionally rejects a group-writable destination parent
 before staging state is created. Namespace tests also reject a replaceable
 ancestor and symlink aliases, while private-parent publication still produces the
 exact approved candidate hash. No existing permissions are changed by staging.
+
+The closed-stdout scenario discards the pipe reader before inference finishes,
+then verifies exit 1, a complete saved report with terminal task results, no
+pending report and reaped native workers. The success scenario checks byte-for-byte
+equality between saved report and stdout, including escaped terminal controls.

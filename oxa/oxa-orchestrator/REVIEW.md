@@ -7,7 +7,8 @@ JSON preview. It makes no inference request, starts no worker/listener, discover
 no agent configuration and executes no shell, Git command, hook or test.
 
 From `oxa/`, after building `oxa-cli --features orchestrator`, preview a saved
-report using the original source file scope:
+report using the original source file scope. `oxa orchestrate` saves its final
+report as `<directory>/report.json` before writing stdout:
 
 ```sh
 ./target/debug/oxa orchestrate-review \

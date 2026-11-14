@@ -998,6 +998,7 @@ fn orchestrate_cli_success_and_validation() {
     assert!(status.contains("worker-1: completed"));
     assert!(status.contains("worker-2: completed"));
     let root = env.root().join("cli-success");
+    assert_eq!(std::fs::read(root.join("report.json")).unwrap(), output.stdout);
     assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o077, 0);
     let audit = std::fs::read_to_string(root.join("run/transcript.jsonl")).unwrap();
     assert!(!audit.contains("synthetic CLI goal"));
@@ -1085,6 +1086,10 @@ fn orchestrate_cli_signal_cleanup() {
     let mut stdout = Vec::new();
     child.0.stdout.take().unwrap().read_to_end(&mut stdout).unwrap();
     assert_eq!(child.0.wait().unwrap().code(), Some(130));
+    assert_eq!(
+        std::fs::read(env.root().join("cli-signal/report.json")).unwrap(),
+        stdout
+    );
     let report: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(report["workers"][0]["outcome"], "canceled");
     assert_eq!(report["workers"][0]["stop"], "confirmed");
@@ -1309,8 +1314,8 @@ fn orchestrate_cli_approved_files() {
     );
     assert!(!env.work().join("new.txt").exists());
     // Review the real A2A report through the same default-off binary hook.
-    let saved = env.root().join("saved-report.json");
-    std::fs::write(&saved, &output.stdout).unwrap();
+    let saved = env.root().join("cli-files/report.json");
+    assert_eq!(std::fs::read(&saved).unwrap(), output.stdout);
     let review_command = || {
         let mut command = std::process::Command::new(cli_binary());
         command
@@ -1977,6 +1982,51 @@ fn orchestrate_cli_protected_run_namespace() {
     assert!(engine.requests().is_empty());
 }
 
+fn orchestrate_cli_report_survives_closed_stdout() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("durable synthetic result")],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let mut child = CliChild(
+        cli_command(&env, &engine, "cli-closed-stdout")
+            .args(["--workers", "1", "synthetic checkpoint goal"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    drop(child.0.stdout.take());
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "closed stdout must not stall cleanup");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(status.code(), Some(1));
+    let root = env.root().join("cli-closed-stdout");
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["workers"][0]["outcome"], "completed");
+    assert_eq!(report["workers"][0]["task"]["status"]["state"], "completed");
+    assert_ne!(report["workers"][0]["stop"], "unconfirmed");
+    assert!(report.to_string().contains("durable synthetic result"));
+    assert!(!root.join(".report.json.pending").exists());
+    for entry in std::fs::read_dir(root.join("agents")).unwrap() {
+        let bytes = std::fs::read_to_string(entry.unwrap().path().join("transcript.jsonl")).unwrap();
+        for line in bytes.lines() {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            if record["event"] == "spawned" {
+                let pid = record["details"]["processId"].as_u64().unwrap();
+                assert!(!Path::new(&format!("/proc/{pid}")).exists());
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -2075,6 +2125,10 @@ fn main() {
         ),
         ("orchestrate CLI Git worktrees", orchestrate_cli_git_worktrees),
         ("orchestrate CLI stalled stderr", orchestrate_cli_stalled_stderr),
+        (
+            "orchestrate CLI durable report with closed stdout",
+            orchestrate_cli_report_survives_closed_stdout,
+        ),
         (
             "orchestrate CLI structural input limits",
             orchestrate_cli_structural_input_limits,

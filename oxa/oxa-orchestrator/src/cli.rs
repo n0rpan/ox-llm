@@ -27,7 +27,8 @@ use std::time::Duration;
 pub const HELP: &str = r#"Usage: oxa orchestrate [options] <goal>
 
 Run local offline workers over A2A; tools are off unless files are approved. Print worker status to stderr
-and a final JSON report to stdout. Ctrl-C cancels and cleans up owned workers.
+and save report.json in the private directory before printing final JSON to stdout.
+Ctrl-C cancels and cleans up owned workers.
 
 Required:
   --engine <address:port>       Explicit literal loopback inference endpoint
@@ -450,7 +451,9 @@ pub fn execute(
     // Owned servers/supervisors are stopped before writing a potentially large
     // stdout report, including when a downstream consumer closes its pipe.
     drop(server);
-    report
+    let report = report?;
+    crate::checkpoint::save(&directory, &report)?;
+    Ok(report)
 }
 
 static SIGNAL: AtomicI32 = AtomicI32::new(0);
