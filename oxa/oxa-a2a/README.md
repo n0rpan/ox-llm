@@ -18,6 +18,14 @@ The client provides send, get, stream, cancel and resubscribe. Streams bind
 task/context IDs and reject disconnects before a final record. Tests exercise
 absolute deadlines, output limits, bad auth, malformed HTTP and protocol errors.
 
+`ResponseBudget` bounds aggregate incoming wire bytes across requests, including
+HTTP headers and optional fields that decoding ignores. Shared readers reserve
+before reading. Unused observation allowance can fund cleanup without increasing
+the aggregate allowance. `collect::Collector` binds task/context identity,
+assembles append/lastChunk artifacts, handles direct messages and paused
+streams, and bounds retained results. After a disconnect it cannot promote an
+incomplete artifact to a complete result using a snapshot that omits that artifact.
+
 The mock uses random ephemeral capability tokens, loopback ephemeral ports,
 bounded requests and task history, and joins its server thread on drop. It
 supports completed echo tasks or paused tasks that can be canceled or steered.
@@ -38,7 +46,7 @@ Connection: close framing for live updates. Chunked transfer encoding remains
 unsupported. No production TLS/remote adapter exists yet. Only explicitly
 registered loopback development agents are eligible; a loopback oxc proxy is
 not thereby proven local or offline. This crate itself launches no workers.
-Permission envelopes, production credentials, artifact accumulation and worker
+Permission envelopes, production credentials and worker
 budget enforcement belong to orchestration and are not supplied by wire types.
 
 Run `cargo test --locked -p oxa-a2a` from `oxa/`. The workspace registration

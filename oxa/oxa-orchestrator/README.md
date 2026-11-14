@@ -95,6 +95,45 @@ not promise hard monetary accounting. Process IDs stay in the local report.
 Dropping the server interrupts active HTTP sockets, joins handlers, cancels
 owned task supervisors and joins them. No provider credential enters a task.
 
+## A2A fan-out and fan-in
+
+`a2a_run::run_a2a` coordinates a bounded plan of registered local-only A2A
+agents. Each worker receives an explicit role and task as delegation data.
+The controller validates IDs, message sizes and aggregate byte reservations
+before launch. Each worker discovers and validates its card before sending
+task input. Independent discovery/execution failures preserve other workers'
+results; aggregate success still requires every worker to complete.
+
+The scheduler consumes live streams and assembles their artifacts. When a
+stream disconnects, it queries the known task and reconciles snapshots; it
+never repeats the initial send to recover observation. Direct Message replies
+have no invented task IDs. Input-required tasks keep their deadline while
+waiting for explicit steering. Context changes and malformed artifact appends
+fail closed. A final snapshot cannot silently turn retained incomplete chunks
+into a successful result when the full artifact is missing.
+
+Per-worker deadlines include discovery and active execution. A run deadline
+also bounds queued work. Wire-byte budgets count discovery, headers, optional
+fields, polling and cancellation responses. Part of each budget is reserved for
+cleanup, with unused observation bytes transferred when observation stops.
+Reported usage remains optional/unknown; requesting a reported-token cap
+requires the optional native usage extension and cannot establish a hard
+pre-request monetary limit.
+
+Cancellation and failure cleanup distinguish a verified terminal task from an
+unconfirmed stop. Refusing agents, lost task IDs or insufficient remaining
+wire allowance cannot produce a false canceled/completed result. The controller
+signals all active workers before joining them on error/drop, but cannot prove
+that an uncooperative external agent stopped. Reservations are not recycled
+within the run. Returned artifacts are untrusted data and never execute locally.
+
+The transcript records worker/task binding, status, steering hashes, counters,
+result hashes and stop confirmation. Raw goals, steering text, results and
+capabilities remain out of the audit log. Snapshot queries currently replace
+streaming after observation loss; automatic stream resubscription is future
+work. All eligible endpoints still require operator verification that they
+cannot route to cloud inference while offline.
+
 ## Verification
 
 Run `cargo test --locked -p oxa-orchestrator` from `oxa/` with working bubblewrap.
@@ -112,6 +151,11 @@ mismatch rejection, cancellation while streaming, resubscription after a
 disconnect, capacity rejection and shutdown with a stalled HTTP reader. All
 inference remains model-free through owned loopback fake engines.
 
+Scheduler tests additionally cover parallel A2A fan-out through real oxa RPC
+workers, attributed roles/results, steering/cancellation, partial failures,
+paused-task deadlines, slow controls, aggregate wire caps, direct replies,
+unknown usage, unsupported usage caps, refused cancellation and lost task IDs.
+
 No installed runtime, model, oxc service or another machine is used. The new
 workspace member and package lock entry are the only existing-file changes;
 manifest registration is subject to architect/coordinator review. All external
@@ -121,8 +165,8 @@ single-child cleanup do not provide this supervisor's guarantees.
 
 ## Remaining milestone work
 
-Remote A2A scheduling, streamed artifact
-assembly, stronger inference-network isolation, hard provider request/spend
+Production TLS/remote routing, automatic stream resubscription, stronger
+inference-network isolation, hard provider request/spend
 limits, approved file inputs/worktrees and patch review, restart reconciliation,
 and opt-in CLI/status UX remain required. This working local profile is a
 foundation, not a claim that the full orchestration brief is complete.

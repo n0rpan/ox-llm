@@ -141,3 +141,16 @@ fn close_delimited_sse_requires_explicit_framing_and_protocol_completion() {
         },
     );
 }
+
+#[test]
+fn aggregate_wire_budget_counts_ignored_response_fields_and_http_headers() {
+    use oxa_a2a::loopback::{Limits, ResponseBudget};
+    let body=serde_json::json!({"jsonrpc":"2.0","id":"1","result":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"small"}],"metadata":{"ignored":"x".repeat(2048)}}}).to_string();
+    let budget = ResponseBudget::new(512);
+    with_server(response("application/json", &body), |client| {
+        let mut limited = client.fork(Limits::default(), budget.clone()).unwrap();
+        assert!(limited.send(params()).is_err());
+    });
+    assert_eq!(budget.used(), 512);
+    assert_eq!(budget.remaining(), 0);
+}

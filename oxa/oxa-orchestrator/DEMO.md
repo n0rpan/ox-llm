@@ -1,6 +1,6 @@
 # Model-free supervisor demo log
 
-This is the local RPC foundation and A2A bridge, not the final CLI demo. Every
+This is the local RPC/A2A orchestration foundation, not the final CLI demo. Every
 inference request uses an owned loopback fake engine. No installed model or
 service is contacted. The worker fixture runs the actual oxa CLI/RPC code in a
 private bubblewrap sandbox; dedicated hostile fixtures exercise failure paths.
@@ -25,6 +25,8 @@ test inherited modes and task command wrapping ... ok
 test A2A RPC bridge streaming, steering and deduplication ... ok
 test A2A cancellation, resubscription and shutdown ... ok
 test cancellation bypasses full control queues ... ok
+test A2A scheduler coordinates real RPC workers ... ok
+test A2A scheduler steering, cancellation and wire caps ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -41,3 +43,14 @@ the A2A client, steer actual RPC workers while inference is running and stream
 their artifacts/usage. They also disconnect and resubscribe to a task without
 relaunching it, cancel while another HTTP connection is streaming, and verify
 worker cleanup when the server shuts down with a stalled connection.
+
+The scheduler scenario sends three role-specific jobs over A2A with two active
+workers, observes actual overlap at the fake inference engine, and verifies
+attributed terminal tasks, usage and process cleanup. Separate scheduler tests
+cover direct replies, failed peers, paused deadlines, unconfirmed stops, missing
+task IDs, slow steering calls and cleanup responses larger than the initially
+reserved wire allowance. Reproduce those with:
+
+```sh
+cargo test --locked -p oxa-orchestrator --test a2a_scheduler
+```

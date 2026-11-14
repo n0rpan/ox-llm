@@ -2,6 +2,7 @@
 //!
 //! This crate is inert unless explicitly used. It grants no permissions and
 //! accepts no executable/file parts. See README.md for scope and references.
+pub mod collect;
 pub mod loopback;
 pub mod mock;
 pub mod server;
