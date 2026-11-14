@@ -9,8 +9,8 @@ The following gaps remain visible rather than being represented by skipped tests
 
 - Cloud routing, three upstream providers, budget reservations, unknown-price
   refusal, remote ledger labels and redaction: no implementation exists on this
-  reference main. The user has been asked whether to wait for main or implement
-  the planned Rust functionality as a new feature after the existing contracts.
+  reference main. Implement the planned native functionality after the existing
+  runtime paths, keeping the absent Python baseline explicit.
 - Disk state/prefix/session caches: seed actual on-disk formats, budget/GC, clear
   scopes, preload, concurrent mutation and additional cross-implementation reads.
   Usage tests now read populated state formats, pending-write ages, overrides and
@@ -53,17 +53,22 @@ Fetch/merge main every few hours and before any completion claim. Review all
 then port the changed behavior. Keep the draft PR's first line and parity table
 in sync. Never merge, tag, release, push main or mark hardware readiness early.
 
-CI policy from the owner: keep PRs draft during iteration and test locally. Do
-not push repeatedly to trigger CI or poll CI status. When requesting a full
-public run/review, dispatch checks.yml once for the branch (or mark ready only
-when appropriate). If waiting is needed, use one blocking gh pr checks --watch.
+CI policy from the owner: keep PRs draft during iteration and test locally.
+Draft pushes run formatting and mandatory scans. When requesting a full public
+run/review, mark ready deliberately or dispatch checks.yml once for the branch.
+The merge queue runs full integration CI again. If waiting is needed, use one
+blocking gh pr checks --watch; never poll CI status.
 
-Next implementation step: the native request-ledger writer, then complete config/state round trips and remaining CLI
-commands. Rust now passes all 62 configured API and all 18 HTTP gate cases. Of
+Next implementation step: complete config/state round trips and remaining CLI
+commands. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
 opt-in learning, memory-only operation, streaming, bounded candidates/prefixes,
 prepare requests, compatibility counters and Python/Rust file reads.
-The native cache usage and storage inventory readers pass 14 additional cases. No tests are skipped to hide these gaps.
+The native request ledger passes 12 goldens and eight additional checks, including
+private salt/hash/file compatibility, history/reply tracking, cancellation,
+advisory failures and unload finalization. Optional turn diagnostics and
+queue/replay modes remain pending. The native cache usage and storage inventory
+readers pass 14 additional cases. No tests are skipped to hide these gaps.
 State-cache-capable engines and the automatic engine-ledger bridge currently
 refuse launch explicitly until their adapters are ported. Full Rust conformance
 remains FAIL, and no native deployment or readiness claim is made.

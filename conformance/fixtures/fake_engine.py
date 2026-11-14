@@ -81,6 +81,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
         event('request', method='POST', path=self.path, body=body)
+        if os.environ.get('FAKE_ENGINE_HEADERS') == '1':
+            # Only bounded synthetic hint headers; never authentication material.
+            names = ('X-Oxe-Session', 'X-Oxe-Turn-Kind', 'X-Oxe-Snapshot', 'X-Oxe-Probe')
+            event('hints', values={name: self.headers.get(name) for name in names})
         if not self.wait_gate(body):
             self.close_connection = True
             return

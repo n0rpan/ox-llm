@@ -140,39 +140,43 @@ pub fn write_config(value: &serde_json::Value) -> std::io::Result<()> {
 }
 
 pub fn python_json(value: &serde_json::Value) -> String {
-    spaced_json(value, true)
+    format_json(value, true, true)
 }
 pub fn unicode_json(value: &serde_json::Value) -> String {
-    spaced_json(value, false)
+    format_json(value, false, true)
 }
-fn spaced_json(value: &serde_json::Value, ascii: bool) -> String {
+pub fn compact_ascii_json(value: &serde_json::Value) -> String {
+    format_json(value, true, false)
+}
+fn format_json(value: &serde_json::Value, ascii: bool, spaced: bool) -> String {
     use serde_json::Value;
     match value {
         Value::Array(values) => format!(
             "[{}]",
             values
                 .iter()
-                .map(|value| spaced_json(value, ascii))
+                .map(|value| format_json(value, ascii, spaced))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(if spaced { ", " } else { "," })
         ),
         Value::Object(values) => format!(
             "{{{}}}",
             values
                 .iter()
                 .map(|(key, value)| format!(
-                    "{}: {}",
-                    spaced_json(&Value::String(key.clone()), ascii),
-                    spaced_json(value, ascii)
+                    "{}:{}{}",
+                    format_json(&Value::String(key.clone()), ascii, spaced),
+                    if spaced { " " } else { "" },
+                    format_json(value, ascii, spaced)
                 ))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(if spaced { ", " } else { "," })
         ),
         Value::String(_) => {
             let raw = value.to_string();
             let mut result = String::new();
             for ch in raw.chars() {
-                if !ascii || ch.is_ascii() {
+                if !ascii || (ch as u32) < 0x7f {
                     result.push(ch);
                 } else {
                     let mut units = [0_u16; 2];

@@ -1,9 +1,13 @@
 //! OpenAI request and reply translations, applied around the private engine hop.
-use crate::{daemon::Context, engine, models, paths};
-use axum::{body::Body, http::HeaderValue, response::Response};
+use crate::{daemon::Context, engine, models, paths, request_ledger};
+use axum::{
+    body::Body,
+    http::{HeaderMap, HeaderValue},
+    response::Response,
+};
 use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
-use std::{io, sync::Arc};
+use std::{io, sync::Arc, time::Instant};
 
 pub(crate) struct BadParam {
     pub(crate) message: String,
@@ -756,22 +760,63 @@ impl Observation {
             .complete(&self.key, &self.profile, self.cache, self.prompt);
     }
 }
+// Own the record and slot together: cancellation on any await/body drop still
+// records the outcome, and a blocked advisory write never blocks the executor.
+struct RequestRecord {
+    entry: Option<request_ledger::Entry>,
+    admission: Option<engine::Admission>,
+    status: u16,
+    error: Option<&'static str>,
+}
+impl RequestRecord {
+    fn observe(&mut self, bytes: &[u8]) {
+        if let Some(entry) = self.entry.as_mut() {
+            entry.observe(bytes);
+        }
+    }
+    fn complete(&mut self) {
+        if self.error == Some("client_disconnected") {
+            self.error = None;
+        }
+    }
+    fn fail(&mut self, status: u16, error: &'static str) {
+        self.status = status;
+        self.error = Some(error);
+    }
+}
+impl Drop for RequestRecord {
+    fn drop(&mut self) {
+        let mut admission = self.admission.take();
+        if let Some(admission) = admission.as_mut() {
+            admission.begin_finalizing();
+        }
+        let entry = self.entry.take();
+        let (status, error) = (self.status, self.error);
+        tokio::task::spawn_blocking(move || {
+            if let Some(entry) = entry {
+                entry.finish(status, error);
+            }
+            drop(admission);
+        });
+    }
+}
 fn finalize(
     mut response: Response,
-    admission: engine::Admission,
+    record: RequestRecord,
     observation: Option<Observation>,
 ) -> Response {
     let body = std::mem::replace(response.body_mut(), Body::empty());
     let stream = futures_util::stream::unfold(
-        (body.into_data_stream(), Some(admission), observation),
-        |(mut body, admission, observation)| async move {
+        (body.into_data_stream(), record, observation),
+        |(mut body, mut record, observation)| async move {
             match body.next().await {
-                Some(chunk) => Some((chunk, (body, admission, observation))),
+                Some(chunk) => Some((chunk, (body, record, observation))),
                 None => {
                     if let Some(observation) = observation {
                         observation.complete();
                     }
-                    drop(admission);
+                    record.complete();
+                    drop(record);
                     None
                 }
             }
@@ -930,7 +975,7 @@ pub async fn handle(
     config: &Value,
     path: &str,
     mut payload: Value,
-    user_agent: Option<String>,
+    headers: HeaderMap,
 ) -> Response {
     let profile = match models::resolve(config, payload["model"].as_str()) {
         Ok(profile) => profile,
@@ -1057,11 +1102,27 @@ pub async fn handle(
                 &payload,
                 &profile,
                 &crate::harness::settings(config),
-                user_agent.as_deref(),
+                request_ledger::header(&headers, "user-agent").as_deref(),
             )
         } else {
             None
         }
+    };
+    let ledger_path = if responses.is_some() {
+        "/v1/chat/completions"
+    } else {
+        path
+    };
+    let mut entry = manager
+        .ledger
+        .entry(ledger_path, &payload, &headers, &profile["model_alias"]);
+    entry.label(&payload, &headers, config, key.as_deref());
+    entry.prep(context.started.elapsed());
+    let mut record = RequestRecord {
+        entry: Some(entry),
+        admission: None,
+        status: 499,
+        error: Some("client_gone_queued"),
     };
     let mut observation = key.map(|key| Observation {
         manager: manager.clone(),
@@ -1073,17 +1134,32 @@ pub async fn handle(
     let (admission, backend) = match manager.admit(profile).await {
         Ok(value) => value,
         Err(error) => {
+            record.fail(
+                503,
+                if error.contains("running") {
+                    "busy"
+                } else {
+                    "unavailable"
+                },
+            );
             return context.error(
                 503,
                 &error,
                 "local_backend_busy",
                 "service_unavailable",
                 None,
-            )
+            );
         }
     };
+    if let Some(entry) = record.entry.as_mut() {
+        entry.admitted(admission.queue_seconds, admission.begin_seconds);
+    }
+    record.admission = Some(admission);
+    record.status = 503;
+    record.error = Some("client_disconnected");
+    let backend_prep = Instant::now();
     let client = engine::client(engine::seconds("LOCAL_LLM_BACKEND_READ_TIMEOUT", 3600.0));
-    let upstream = match client
+    let mut request = client
         .post(format!(
             "{}{}",
             backend.url,
@@ -1096,12 +1172,37 @@ pub async fn handle(
             }
         ))
         .bearer_auth(&backend.key)
-        .json(&payload)
-        .send()
-        .await
-    {
+        .json(&payload);
+    if chat {
+        if let Some(session) = record
+            .entry
+            .as_ref()
+            .and_then(|e| e.row["session"].as_str())
+        {
+            request = request.header("x-oxe-session", session);
+        }
+        if let Some(turn) = record
+            .entry
+            .as_ref()
+            .and_then(|e| e.row["turn_kind"].as_str())
+        {
+            request = request.header("x-oxe-turn-kind", turn);
+        }
+        if headers.get_all("x-oxe-snapshot").iter().any(|v| {
+            v.to_str()
+                .ok()
+                .is_some_and(|s| s.trim().eq_ignore_ascii_case("keep"))
+        }) {
+            request = request.header("x-oxe-snapshot", "keep");
+        }
+    }
+    if let Some(entry) = record.entry.as_mut() {
+        entry.backend_prep(backend_prep.elapsed());
+    }
+    let upstream = match request.send().await {
         Ok(reply) => reply,
         Err(_) => {
+            record.fail(503, "backend_died");
             return finalize(
                 context.error(
                     503,
@@ -1110,12 +1211,13 @@ pub async fn handle(
                     "service_unavailable",
                     None,
                 ),
-                admission,
+                record,
                 None,
-            )
+            );
         }
     };
     let status = upstream.status().as_u16();
+    record.status = status;
     if stream && status == 200 {
         let state = (
             upstream.bytes_stream(),
@@ -1126,31 +1228,40 @@ pub async fn handle(
                 responses: responses.map(crate::responses::Stream::new),
                 observation,
             },
-            Some(admission),
+            Some(record),
             false,
         );
         let output = futures_util::stream::unfold(
             state,
-            |(mut upstream, mut shim, mut admission, done)| async move {
+            move |(mut upstream, mut shim, mut record, done)| async move {
                 if done {
+                    if let Some(mut record) = record.take() {
+                        record.complete();
+                    }
                     return None;
                 }
                 loop {
                     match upstream.next().await {
                         Some(Ok(bytes)) => {
+                            if let Some(record) = record.as_mut() {
+                                record.observe(&bytes);
+                            }
                             let bytes = shim.feed(&bytes);
                             if !bytes.is_empty() {
                                 return Some((
                                     Ok::<_, io::Error>(bytes),
-                                    (upstream, shim, admission, false),
+                                    (upstream, shim, record, false),
                                 ));
                             }
                         }
                         Some(Err(_)) => {
-                            admission.take();
+                            if let Some(record) = record.as_mut() {
+                                record.fail(status, "backend_died");
+                            }
+                            record.take();
                             return Some((
                                 Err(io::Error::other("local backend stream interrupted")),
-                                (upstream, shim, admission, true),
+                                (upstream, shim, record, true),
                             ));
                         }
                         None => {
@@ -1158,11 +1269,13 @@ pub async fn handle(
                             if let Some(observation) = shim.observation.take() {
                                 observation.complete();
                             }
-                            admission.take();
                             return if tail.is_empty() {
+                                if let Some(mut record) = record.take() {
+                                    record.complete();
+                                }
                                 None
                             } else {
-                                Some((Ok(tail), (upstream, shim, admission, true)))
+                                Some((Ok(tail), (upstream, shim, record, true)))
                             };
                         }
                     }
@@ -1173,9 +1286,13 @@ pub async fn handle(
         meta.headers(&mut reply);
         return reply;
     }
-    let mut value = match upstream.json::<Value>().await {
-        Ok(value) => value,
-        Err(_) => {
+    let mut value = match upstream.bytes().await.ok().and_then(|bytes| {
+        record.observe(&bytes);
+        serde_json::from_slice::<Value>(&bytes).ok()
+    }) {
+        Some(value) => value,
+        None => {
+            record.fail(status, "backend_died");
             return finalize(
                 context.error(
                     502,
@@ -1184,9 +1301,9 @@ pub async fn handle(
                     "server_error",
                     None,
                 ),
-                admission,
+                record,
                 None,
-            )
+            );
         }
     };
     if let Some(observation) = observation.as_mut() {
@@ -1208,7 +1325,7 @@ pub async fn handle(
     }
     finalize(
         reply,
-        admission,
+        record,
         if status == 200 { observation } else { None },
     )
 }

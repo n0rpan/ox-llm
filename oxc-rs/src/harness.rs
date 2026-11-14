@@ -54,6 +54,20 @@ fn agent_label(agent: Option<&str>) -> String {
         24,
     )
 }
+pub fn client_label(payload: &Value, agent: Option<&str>) -> String {
+    let product = agent_label(agent)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || "._-".contains(*c))
+        .take(32)
+        .collect::<String>();
+    if !product.is_empty() {
+        product
+    } else {
+        parts(payload)
+            .map(|(systems, tools, _)| learned_id(&systems, &tools))
+            .unwrap_or_else(|| "other".into())
+    }
+}
 type PrefixParts = (Vec<Value>, Vec<Value>, Map<String, Value>);
 fn parts(payload: &Value) -> Option<PrefixParts> {
     let systems = payload["messages"]

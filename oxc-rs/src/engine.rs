@@ -24,7 +24,7 @@ use std::{
 use tokio::{
     io::AsyncReadExt,
     process::{Child, Command},
-    sync::{watch, Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore},
+    sync::{watch, Mutex as AsyncMutex, Notify, OwnedSemaphorePermit, Semaphore},
     task::JoinHandle,
 };
 
@@ -247,10 +247,13 @@ struct State {
 
 pub struct Manager {
     pub harness: Mutex<crate::harness::Registry>,
+    pub ledger: Arc<crate::request_ledger::Ledger>,
     state: AsyncMutex<State>,
     loaded: RwLock<Option<Value>>,
     phase: AtomicU8,
     active: AtomicUsize,
+    finalizing: AtomicUsize,
+    finished: Notify,
     queued: AtomicUsize,
     slot: Arc<Semaphore>,
     last_used: Mutex<Instant>,
@@ -268,15 +271,31 @@ impl Drop for Waiting {
 pub struct Admission {
     manager: Arc<Manager>,
     _permit: OwnedSemaphorePermit,
+    pub queue_seconds: f64,
+    pub begin_seconds: f64,
+    finalizing: bool,
+}
+impl Admission {
+    pub fn begin_finalizing(&mut self) {
+        if !self.finalizing {
+            self.finalizing = true;
+            self.manager.finalizing.fetch_add(1, Ordering::SeqCst);
+            self.manager.finished.notify_waiters();
+        }
+    }
 }
 impl Drop for Admission {
     fn drop(&mut self) {
-        self.manager.active.fetch_sub(1, Ordering::SeqCst);
         *self
             .manager
             .last_used
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Instant::now();
+        self.manager.active.fetch_sub(1, Ordering::SeqCst);
+        if self.finalizing {
+            self.manager.finalizing.fetch_sub(1, Ordering::SeqCst);
+        }
+        self.manager.finished.notify_waiters();
     }
 }
 pub struct Backend {
@@ -299,6 +318,7 @@ impl Manager {
         let (stop, _) = watch::channel(false);
         let manager = Arc::new(Self {
             harness: Mutex::new(crate::harness::Registry::new()),
+            ledger: Arc::new(crate::request_ledger::Ledger::default()),
             state: AsyncMutex::new(State {
                 running: None,
                 stop_pending: None,
@@ -307,6 +327,8 @@ impl Manager {
             loaded: RwLock::new(None),
             phase: AtomicU8::new(0),
             active: AtomicUsize::new(0),
+            finalizing: AtomicUsize::new(0),
+            finished: Notify::new(),
             queued: AtomicUsize::new(0),
             slot: Arc::new(Semaphore::new(1)),
             last_used: Mutex::new(Instant::now()),
@@ -495,6 +517,7 @@ impl Manager {
         }
     }
     pub async fn admit(self: &Arc<Self>, profile: Value) -> Result<(Admission, Backend), String> {
+        let queued_at = Instant::now();
         self.queued.fetch_add(1, Ordering::SeqCst);
         let waiting = Waiting(self.clone());
         let permit = tokio::time::timeout(
@@ -505,6 +528,8 @@ impl Manager {
         .map_err(|_| "The local model is still busy. Please try again in a moment.")?
         .map_err(|_| "The local model service is stopping.")?;
         drop(waiting);
+        let queue_seconds = queued_at.elapsed().as_secs_f64();
+        let begin_at = Instant::now();
         self.load(profile).await?;
         let state = self.state.lock().await;
         let running = state
@@ -520,6 +545,9 @@ impl Manager {
             Admission {
                 manager: self.clone(),
                 _permit: permit,
+                queue_seconds,
+                begin_seconds: begin_at.elapsed().as_secs_f64(),
+                finalizing: false,
             },
             backend,
         ))
@@ -895,6 +923,21 @@ impl Manager {
         Ok(())
     }
     pub async fn unload(&self, wanted: Option<&str>) -> Result<(), (u16, Value)> {
+        // Once every active request has finished forwarding, permit up to the
+        // reference's two seconds for advisory bookkeeping and slot release.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let notified = self.finished.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let active = self.active.load(Ordering::SeqCst);
+            if active == 0 || active != self.finalizing.load(Ordering::SeqCst) {
+                break;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                break;
+            }
+        }
         if self.busy() {
             return Err((
                 409,

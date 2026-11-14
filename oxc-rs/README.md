@@ -18,7 +18,9 @@ Local validation: 56 parser cases, five CLI ledger-file cases, seven empty-insta
 HTTP cases, all 18 HTTP gates, all 62 configured API cases, and API-key file
 rotation/fail-closed behavior pass in Rust. All 18 lifecycle tests and 13 harness registry cases pass. Read-only
 cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 29 runtime cases passes against the Python daemon.
-The Python reference suite has 265 passing scenarios in 41 unittest methods.
+The request ledger passes 12 golden scenarios and eight additional checks;
+Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
+The Python reference suite has 285 passing scenarios in 50 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
 cache controls, harness prepare/forget dispatch, load/unload dispatch, storage
@@ -48,11 +50,19 @@ approval/ignore/label/prepare controls and compatibility counters. Python/Rust
 round trips preserve registry state; completion finalizers survive a client
 closing after it receives the full response.
 
+The private request ledger uses an install salt and HMAC identities, records
+JSON/SSE counts and timings, and compares bounded in-memory history/reply digests
+without writing prompt or reply text. Cancellation and errors release the slot
+after recording their outcome. Unload waits up to two seconds for a completed
+request's bookkeeping, while generation remains busy. Failed advisory writes
+do not fail inference. Recent-row reads, medians, retention and engine hint
+headers follow the Python contracts, including existing file compatibility.
+
 Read-only cache usage walks recognized files through directory descriptors and
 reads bounded manifests. Storage inventory reads bounded identity headers, tracks
 configured references and open/mapped paths, and returns no private paths.
 
-Complete status/control state, request-ledger writes, disk-cache launch adapters,
+Complete status/control state, optional turn diagnostics, disk-cache launch adapters,
 qualified Flash/classic profiles, proof-gated long contexts, installers,
 update/rollback, sharing/cloud secrets and remaining CLI commands are pending.
 State-cache-capable binaries and automatic native engine-ledger capture explicitly
@@ -78,7 +88,7 @@ cargo fmt --manifest-path oxc-rs/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path oxc-rs/Cargo.toml --all-targets -- -D warnings
 ```
 
-Keep the PR draft while iterating. Test locally; do not push repeatedly to trigger
-public CI. Request a full CI/review deliberately, using one workflow dispatch
-(or mark ready only when appropriate). Use one blocking `gh pr checks --watch`
-when waiting is needed, never repeated polling.
+Keep the PR draft while iterating and test locally. Draft checkpoint pushes run
+formatting and mandatory scans. Request full PR CI/review deliberately by marking
+ready, or use one workflow dispatch when needed. Use one blocking
+`gh pr checks --watch` when waiting is needed, never repeated polling.

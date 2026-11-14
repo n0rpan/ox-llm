@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `25397f46f2eccc22b6fea102992bbaf1cc6d4261`.
-The current suite passes 265 scenarios in 41 unittest methods. This remains a
+The current suite passes 285 scenarios in 50 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -76,6 +76,7 @@ python3 conformance/test_http_gates.py --record-python
 python3 conformance/test_state_cache.py --record-python
 python3 conformance/test_storage.py --record-python
 python3 conformance/test_harnesses.py --record-python
+python3 conformance/test_ledger.py --record-python
 python3 conformance/test_cli_runtime.py --record-python
 python3 conformance/test_scans.py --record-python
 python3 conformance/test_update.py --record-python
@@ -96,9 +97,10 @@ do not refresh goldens merely because an alternate implementation fails them.
 | HTTP gates | PASS, 18 cases | PASS | LAN share listeners and rate limits |
 | Lifecycle | PASS, 18 tests | PASS | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
 | Harness registry | PASS, 13 cases | PASS: learning/privacy, controls, prepare, streaming, limits and Python/Rust file reads | More malformed/advisory-I/O cases |
-| Files | PASS, 3 tests | API-key refresh/fail-closed PASS; remaining round trips pending | Additional state stores and sharing secrets |
+| Request ledger | PASS, 12 goldens and 8 additional checks | PASS: private HMACs, JSON/SSE records, history/reply tracking, errors/cancel, retention, limits, engine hints, advisory I/O and unload finalization | Optional turn diagnostics, queue/replay modes and more malformed backend timings |
+| Files | PASS, 3 tests | Ledger and API-key refresh/fail-closed PASS; config round trip pending | Additional state stores and sharing secrets |
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
-| Cross-implementation file reads | Harness ready; Python/Python PASS | Not implemented | Run Python/selected/Python round trips with Rust |
+| Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |
 | Bootstrap/install | PASS, 4 scenarios | Not implemented | Transfer/build/install-journal edge cases |
 | Staged update/rollback | PASS, 6 scenarios / 9 CLI goldens | Not implemented | Release identity proof, created/removed files, interruption recovery |
 | Uninstall | PASS, dry-run and apply CLI cases | Not implemented | Installed release records and model deletion cases |
@@ -154,7 +156,8 @@ HTTP requests. The stored Python baseline is an executor measurement with the
 synthetic host files and fake engine, not laptop hardware validation. See
 [benchmarks/python-a1c683f.json](benchmarks/python-a1c683f.json).
 
-CI policy: keep the PR draft and test locally while iterating. Do not push
-repeatedly to trigger CI. Request a full public run deliberately with one
-workflow dispatch (or mark ready when appropriate); use one blocking
-`gh pr checks --watch` rather than polling.
+CI policy: keep the PR draft and test locally while iterating. Draft checkpoints
+run formatting and mandatory scans. Full PR CI starts when marked ready; the
+merge queue runs full integration CI again. Request a manual run deliberately
+with one workflow dispatch when needed; use one blocking `gh pr checks --watch`
+rather than polling.

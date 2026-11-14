@@ -23,6 +23,7 @@ pub(crate) struct Context {
     head: bool,
     id: String,
     cors: Option<String>,
+    pub started: std::time::Instant,
 }
 
 fn random_id() -> Result<String, getrandom::Error> {
@@ -186,6 +187,7 @@ fn presented_key(headers: &HeaderMap) -> Option<&str> {
 }
 
 async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
+    let started = std::time::Instant::now();
     let method = request.method().clone();
     let target = request.uri().to_string();
     let path = request.uri().path().trim_end_matches('/');
@@ -198,11 +200,10 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         head: method == Method::HEAD,
         id,
         cors: None,
+        started,
     };
     let headers = request.headers();
-    let user_agent = headers
-        .get("user-agent")
-        .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned());
+    let request_headers = headers.clone();
     let host = single_header(headers, "host").map(|s| s.trim().to_ascii_lowercase());
     let allowed = [
         format!("127.0.0.1:{}", app.port),
@@ -365,10 +366,24 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         return context.reply(200, json!({"object":"list","data":models::rows(&config)}));
     }
     if path == "/_local/ledger" {
-        return context.reply(
-            200,
-            json!({"object":"list","available":false,"rows":[],"medians":{}}),
-        );
+        let url = reqwest::Url::parse(&format!("http://localhost{target}")).ok();
+        let wanted = url
+            .as_ref()
+            .and_then(|url| {
+                url.query_pairs()
+                    .filter(|(name, value)| name == "limit" && !value.is_empty())
+                    .map(|(_, value)| value.into_owned())
+                    .last()
+            })
+            .unwrap_or_else(|| "50".into());
+        let limit =
+            if !wanted.is_empty() && wanted.len() < 5 && wanted.bytes().all(|b| b.is_ascii_digit())
+            {
+                wanted.parse().unwrap_or(50)
+            } else {
+                50
+            };
+        return context.reply(200, crate::request_ledger::recent(limit));
     }
     if path == "/_local/cache" && [Method::GET, Method::HEAD].contains(&method) {
         return match crate::state_cache::usage(fresh.as_ref().unwrap_or(&Value::Null)) {
@@ -755,7 +770,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             &config,
             &path,
             payload.unwrap_or(Value::Null),
-            user_agent,
+            request_headers,
         )
         .await;
     }

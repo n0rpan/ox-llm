@@ -10,7 +10,13 @@ use std::{
 
 pub fn directory() -> std::path::PathBuf {
     std::env::var_os("LOCAL_AI_LEDGER_DIR")
-        .map(std::path::PathBuf::from)
+        .map(|value| {
+            std::path::PathBuf::from(if value.is_empty() {
+                std::ffi::OsStr::new(".")
+            } else {
+                &value
+            })
+        })
         .unwrap_or_else(|| paths::home().join(".local/state/local-ai/ledger"))
 }
 fn number(value: &Value) -> Value {
