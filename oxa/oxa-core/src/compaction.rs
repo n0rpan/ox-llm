@@ -476,7 +476,8 @@ pub(crate) enum Counted {
     /// `Engine::count_prompt`: the engine's own render, what a request would report.
     Exact,
     /// No exact count from the engine: [`prefix_tokens`] + [`messages_tokens`] (message content
-    /// only, no template framing: slightly low).
+    /// only, no template framing). This can over-count on cloud models, whose tokenizer differs
+    /// from the local one used for the estimate.
     Estimate,
 }
 
@@ -842,9 +843,12 @@ fn run_compaction(st: &mut SessionState, spec: &Spec, sink: &mut dyn EventSink, 
             // Rebase clears transcript usage. Count the full request (including the
             // frozen system/tools prefix), not just the surviving message content.
             // The local estimate over-counts (about 2.5x on a small cloud session), so an
-            // estimated count never exceeds what the context was before compaction.
+            // estimated count never exceeds what the context was before compaction. But after a
+            // rebase without usage `tokens_before` is 0 (navigate::rebase_to_leaf), so capping
+            // then would force the estimate to 0 and CTX would show 0; keep the honest nonzero
+            // estimate in that case.
             let (counted, how) = prompt_tokens(st, &a.head);
-            let estimated = if how == Counted::Exact {
+            let estimated = if how == Counted::Exact || a.tokens_before == 0 {
                 counted
             } else {
                 counted.min(a.tokens_before)
