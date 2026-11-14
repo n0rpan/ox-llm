@@ -1458,6 +1458,130 @@ fn orchestrate_cli_approved_files() {
     }
 }
 
+fn orchestrate_cli_crash_inspection() {
+    use oxa_orchestrator::recovery::{InspectedRun, Phase, Transport};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("interrupted result")],
+        FakeOpts {
+            hold_headers_ms: 1500,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut child = CliChild(
+        cli_command(&env, &engine, "cli-crash")
+            .args(["--workers", "1", "synthetic crash goal"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = std::io::BufReader::new(child.0.stderr.take().unwrap());
+    let mut line = String::new();
+    let mut working = false;
+    while stderr.read_line(&mut line).unwrap() != 0 {
+        if line.contains("worker-1: working") {
+            working = true;
+            break;
+        }
+        line.clear();
+    }
+    assert!(working);
+    let native_log = std::fs::read_dir(env.root().join("cli-crash/agents"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("transcript.jsonl");
+    let native = InspectedRun::inspect(&native_log).unwrap();
+    assert_eq!(native.snapshot().transport, Transport::LocalRpc);
+    let pid = native.snapshot().workers[0].recorded_process_id.unwrap();
+    // Pin the test-owned live child's identity BEFORE terminating its owner.
+    // Recovery itself never opens a PID or sends a signal from journal data.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let parent: u32 = stat
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(parent, child.0.id());
+    // SAFETY: Linux pidfd_open for the verified test-owned direct child.
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    assert!(raw >= 0);
+    struct Pinned(std::fs::File);
+    impl Drop for Pinned {
+        fn drop(&mut self) {
+            // SAFETY: pinned descriptor identifies only our owned fixture process;
+            // on failure this also prevents a test leak without PID reuse hazards.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.0.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                );
+            }
+        }
+    }
+    // SAFETY: syscall returned a new owned descriptor.
+    let pinned = Pinned(unsafe { std::fs::File::from_raw_fd(raw as i32) });
+    child.0.kill().unwrap();
+    let status = child.0.wait().unwrap();
+    assert!(!status.success());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut exited = false;
+    while Instant::now() < deadline {
+        let mut poll = libc::pollfd {
+            fd: pinned.0.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one initialized pollfd with a live owned descriptor.
+        if unsafe { libc::poll(&mut poll, 1, 0) } > 0 && poll.revents & libc::POLLIN != 0 {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(exited, "bwrap worker exited when its controller died");
+    let original = env.root().join("cli-crash/run/transcript.jsonl");
+    let before = std::fs::read(&original).unwrap();
+    let inspected = InspectedRun::inspect(&original).unwrap();
+    assert!(!inspected.snapshot().recorded_run_finished);
+    assert_eq!(inspected.snapshot().workers[0].phase, Phase::Bound);
+    assert!(inspected.snapshot().workers[0].recorded_outcome.is_none());
+    let count = engine.requests().len();
+    let output = std::process::Command::new(cli_binary())
+        .env_clear()
+        .args(["orchestrate-inspect", "--journal"])
+        .arg(&original)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(snapshot["recorded_run_finished"], false);
+    assert_eq!(snapshot["workers"][0]["phase"], "bound");
+    assert!(snapshot["workers"][0]["recorded_outcome"].is_null());
+    assert_eq!(std::fs::read(&original).unwrap(), before);
+    assert_eq!(
+        engine.requests().len(),
+        count,
+        "inspection never replays a task or contacts inference"
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -1534,6 +1658,10 @@ fn main() {
         ),
         ("orchestrate CLI signal cleanup", orchestrate_cli_signal_cleanup),
         ("orchestrate CLI approved files", orchestrate_cli_approved_files),
+        (
+            "orchestrate CLI crash inspection",
+            orchestrate_cli_crash_inspection,
+        ),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {
             continue;

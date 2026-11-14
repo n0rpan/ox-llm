@@ -64,8 +64,8 @@ process IDs and result hashes. Raw prompts, credentials, diagnostics and model
 output do not enter that journal. Results are returned in memory; callers must
 decide whether and where to persist approved content. Audit failure stops the
 run and drops all owned workers. Existing run directories are never reused or
-replayed. Crash reconciliation is not implemented yet; a new run must not be
-treated as resuming an old task.
+replayed. Read-only crash inspection and explicit known-task reconciliation are described
+in [RECOVERY.md](RECOVERY.md). A new run must not be treated as resuming an old task.
 
 The role/task content is explicit delegation input. Do not supply secrets or
 private parent context. No parent transcript, filesystem grant or environment
@@ -174,6 +174,6 @@ single-child cleanup do not provide this supervisor's guarantees.
 
 Production TLS/remote routing, automatic stream resubscription, stronger
 inference-network isolation, hard provider request/spend
-limits, Git worktrees, apply into an existing checkout and merge coordination, restart reconciliation,
+limits, Git worktrees, apply into an existing checkout and merge coordination, persistent scheduler resume,
 and richer interactive worker controls remain required. This working local profile is a
 foundation, not a claim that the full orchestration brief is complete.
