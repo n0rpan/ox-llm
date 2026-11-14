@@ -1,0 +1,28 @@
+[package]
+name = "oxa-orchestrator"
+description = "Opt-in bounded local RPC worker orchestration for oxa"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oxa-a2a = { path = "../oxa-a2a" }
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+oxa-cli = { path = "../oxa-cli" }
+oxa-fake.workspace = true
+oxa-config.workspace = true
+
+[[test]]
+name = "real_workers"
+path = "tests/real_workers.rs"
+harness = false
+
+[lints]
+workspace = true
