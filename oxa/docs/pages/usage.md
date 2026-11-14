@@ -164,6 +164,22 @@ The footer has two lines:
 
 The permission mode is shown on the footer as well. A notice reports each cache miss when `showCacheMissNotices` is on ([compaction.md](compaction.md#cache-misses)).
 
+### The HUD (oxa skin)
+
+With the default `oxa` skin the footer is a single-line HUD instead of two lines. It shows the same status, laid out left to right:
+
+- `OXA` — the brand, always.
+- YOLO badge — a flame and the count of auto-approved questions, only when YOLO is on.
+- The model, with the thinking level and the thinking note.
+- `CTX` — a meter and the percentage of the window used, and `used/n_ctx` when the window is known.
+- `CACHE` — a meter and the percentage of the last request, when a cache hit is known.
+- Decode speed (`tok/s`), only while the engine reports timings.
+- The activity badge (`READY` when idle), only while active.
+- `repairs N` and `no summary`, only when they apply.
+- The permission mode and the profile word, only when set.
+
+Parts with no data are hidden, and on a narrow terminal parts are dropped in this order until the line fits: the profile word, the decode speed, the cache meter, the `used/n_ctx` figures, `repairs N` / `no summary`, then the context meter shrinks to 5 cells, then the thinking note, the whole `CACHE` part, the thinking level and finally the permission mode. The model name, the `CTX` percentage, the activity badge and `OXA` are kept; the model name is only cut when nothing else is left.
+
 ## Selectors
 
 - Model selector (`/model`, Ctrl+L): the models the engine serves. Enter switches. Ctrl+S saves the choice as `defaultModel`.
