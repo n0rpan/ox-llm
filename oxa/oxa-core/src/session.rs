@@ -1189,19 +1189,15 @@ fn restore(
 ) -> Result<(), OxaError> {
     let header = st.store.header(&sref)?;
     // One writer per session file: a session open in another oxa is refused before anything
-    // of this one is read. The lock is staged and only replaces the current session's on
-    // success; any failure keeps the session we are in locked.
+    // of this one is read. The lock is staged; `restore_locked` commits it at the moment the
+    // state adopts the target (after validation and load). A failure before that keeps the
+    // session we are in locked; a failure after it leaves the target current AND locked.
     st.store.acquire(&sref)?;
-    match restore_locked(st, sref, header, cli, start, sink, ui) {
-        Ok(()) => {
-            st.store.commit_lock();
-            Ok(())
-        }
-        Err(e) => {
-            st.store.abort_lock();
-            Err(e)
-        }
+    let r = restore_locked(st, sref, header, cli, start, sink, ui);
+    if r.is_err() {
+        st.store.abort_lock(); // a no-op once committed
     }
+    r
 }
 
 fn restore_locked(
@@ -1226,6 +1222,10 @@ fn restore_locked(
         let refs: Vec<&Entry> = branch.iter().collect();
         crate::replay_prefix(&refs)
     };
+    // The state adopts the target here, so the target's lock becomes the held one now: every
+    // later step (open_epoch, close_interrupted) may fail, and the state must not then point
+    // at a session this process does not hold.
+    st.store.commit_lock();
     st.transcript = Transcript::project(&branch);
     st.tree = tree;
     st.sref = sref;
