@@ -5,6 +5,7 @@ mod checkpoint;
 pub mod cli;
 mod git_worktrees;
 mod journal;
+pub mod lineage;
 mod namespace;
 mod ownership;
 mod process;

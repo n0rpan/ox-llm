@@ -731,7 +731,7 @@ fn invalid(message: &'static str) -> io::Error {
 fn read_journal(path: &Path) -> io::Result<Vec<u8>> {
     read_bounded(path, MAX_JOURNAL)
 }
-fn read_bounded(path: &Path, max: usize) -> io::Result<Vec<u8>> {
+pub(crate) fn read_bounded(path: &Path, max: usize) -> io::Result<Vec<u8>> {
     let handle = open_input(path, max)?;
     read_handle(&handle, max)
 }

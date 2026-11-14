@@ -115,26 +115,16 @@ pub fn resume_queued(
     }
     binding.response_reservation = reserved;
     let child_run = format!("resume-{}", &snapshot.journal_sha256[..32]);
-    #[derive(Serialize)]
-    struct Receipt<'a> {
-        version: u32,
-        journal_sha256: &'a str,
-        run: &'a str,
-        child_run: &'a str,
-        destination_sha256: String,
-        workers: Vec<&'a str>,
-        limits: &'a RunBinding,
-    }
     crate::checkpoint::consume_resume(
         &owner.directory,
-        &Receipt {
+        &ResumeReceipt {
             version: 1,
-            journal_sha256: &snapshot.journal_sha256,
-            run: &snapshot.run,
-            child_run: &child_run,
+            journal_sha256: snapshot.journal_sha256.clone(),
+            run: snapshot.run.clone(),
+            child_run: child_run.clone(),
             destination_sha256: hash(directory.as_os_str().as_bytes()),
-            workers: plan.iter().map(|s| s.id.as_str()).collect(),
-            limits: &binding,
+            workers: plan.iter().map(|s| s.id.clone()).collect(),
+            limits: binding.clone(),
         },
     )?;
     // Recheck after durable receipt I/O. A failure now intentionally leaves the
@@ -160,7 +150,7 @@ pub fn resume_queued(
     })
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RunBinding {
     pub version: u32,
@@ -174,6 +164,18 @@ pub struct RunBinding {
     pub poll_interval_ns: u64,
     pub cancel_grace_ns: u64,
     pub persist_results: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResumeReceipt {
+    pub version: u32,
+    pub journal_sha256: String,
+    pub run: String,
+    pub child_run: String,
+    pub destination_sha256: String,
+    pub workers: Vec<String>,
+    pub limits: RunBinding,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

@@ -29,7 +29,7 @@ test A2A RPC bridge streaming, steering and deduplication ... ok
 test A2A cancellation, resubscription and shutdown ... ok
 test cancellation bypasses full control queues ... ok
 test A2A scheduler coordinates real RPC workers ... ok
-test A2A scheduler resumes only never-started real workers ... ok
+test orchestrate CLI continuation lineage collection ... ok
 test A2A scheduler steering, cancellation and wire caps ... ok
 test orchestrate CLI success and inert validation ... ok
 test orchestrate CLI signal cleanup ... ok
@@ -152,3 +152,9 @@ starts only the second actual sandboxed worker, restores the first worker's resu
 returns both outcomes and verifies distinct task IDs and reaped processes. Separate
 recovery tests verify one-time parent consumption, substitution refusal and original
 deadline enforcement including controller downtime; see [RESUME.md](RESUME.md).
+
+The resume scenario now compares explicit lineage collection with the original
+full report through both the library and the default-off CLI hook. The inspector
+refuses live recovery owners and succeeds after they drop, without additional fake
+engine requests or journal changes. Three-generation tests retain ancestor results
+and a failed leaf; see [LINEAGE.md](LINEAGE.md).
