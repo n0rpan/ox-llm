@@ -1070,3 +1070,39 @@ fn zero_width_neither_panics_nor_overflows() {
         .iter()
         .all(|l| visible_width(l) == 0));
 }
+
+/// Thinking label in the oxa skin HUD: Claude 5.5 shows the effective effort, others the level.
+#[test]
+fn hud_thinking_label_claude_55_effective_effort() {
+    let hud_for = |model: &str, level| {
+        let st = StatusModel {
+            model: model.to_string(),
+            thinking: Some(level),
+            ..StatusModel::default()
+        };
+        strip_ansi(&plain_hud(&st, 160))
+    };
+    let all = [
+        ThinkingLevel::Off,
+        ThinkingLevel::Minimal,
+        ThinkingLevel::Low,
+        ThinkingLevel::Medium,
+        ThinkingLevel::High,
+        ThinkingLevel::Xhigh,
+        ThinkingLevel::Max,
+    ];
+    for level in all {
+        let want = if level == ThinkingLevel::Off {
+            "adaptive • low"
+        } else {
+            "adaptive • high"
+        };
+        let line = hud_for("anthropic/claude-haiku-5-5", level);
+        assert!(line.contains(want), "5.5 {level:?}: {line}");
+        assert!(!line.contains(" off"), "5.5 never shows off: {line}");
+    }
+    let line = hud_for("qwen-local", ThinkingLevel::High);
+    assert!(line.contains("high") && !line.contains("adaptive"), "{line}");
+    let line = hud_for("qwen-local", ThinkingLevel::Off);
+    assert!(line.contains("off") && !line.contains("adaptive"), "{line}");
+}
