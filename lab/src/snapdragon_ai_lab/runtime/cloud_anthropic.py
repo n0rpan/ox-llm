@@ -334,8 +334,7 @@ def response(message, item, history=None):
         assistant['reasoning_content'] = ''.join(reasoning)
     if calls:
         assistant['tool_calls'] = calls
-    if history is not None:
-        _remember_blocks(item, history, assistant, value.get('content'))
+    _remember_blocks(item, [] if history is None else history, assistant, value.get('content'))
     finish = STOP_REASONS.get(value.get('stop_reason'), 'stop')
     return {'id': value.get('id') or 'chatcmpl_anthropic', 'object': 'chat.completion',
             'created': int(time.time()), 'model': item['id'],
@@ -373,8 +372,6 @@ class _Stream:
                 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}
 
     def _remember(self):
-        if self.history is None:
-            return
         assistant = {'role': 'assistant', 'content': ''.join(self.text) or None}
         if self.thinking:
             assistant['reasoning_content'] = ''.join(self.thinking)
@@ -387,7 +384,7 @@ class _Stream:
                           'function': {'name': call['name'], 'arguments': call['args']}})
         if calls:
             assistant['tool_calls'] = calls
-        _remember_blocks(self.item, self.history, assistant, self.blocks)
+        _remember_blocks(self.item, [] if self.history is None else self.history, assistant, self.blocks)
 
     def _block(self, index, block):
         native = dict(block)

@@ -4,7 +4,7 @@ import importlib.util
 import json
 import unittest
 
-from snapdragon_ai_lab.runtime import cloud
+from snapdragon_ai_lab.runtime import cloud, cloud_anthropic
 
 from mock_cloud import MockAnthropic
 from test_cloud_remote import CloudCase, KEY
@@ -336,6 +336,24 @@ class ThinkingRoundTrip(AnthropicBase):
         self.assertEqual(sent[1]['content'], native)
         self.assertEqual(sent[1]['content'][0]['signature'], 'sig-abc-123')
         self.assertEqual(sent[1]['content'][1]['data'], 'opaque-encrypted-blob')
+
+    def test_response_then_messages_request_round_trips_without_gateway_history(self):
+        item = cloud.entry('anthropic/claude-sonnet-5-5',
+                           anthropic_models()['anthropic/claude-sonnet-5-5'])
+        message = {'id': 'msg_direct', 'type': 'message', 'role': 'assistant',
+                   'content': [{'type': 'thinking', 'thinking': 'plan', 'signature': 'sig-direct'},
+                               {'type': 'text', 'text': 'ok'}],
+                   'model': 'claude-sonnet-5-5', 'stop_reason': 'end_turn',
+                   'stop_sequence': None,
+                   'usage': {'input_tokens': 1, 'output_tokens': 1,
+                             'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}
+        reply = cloud_anthropic.response(message, item)
+        assistant = reply['choices'][0]['message']
+        params = cloud_anthropic.messages_request({'messages': [assistant]}, item)
+        self.assertEqual(params['messages'][0]['content'][0],
+                         {'type': 'thinking', 'thinking': 'plan', 'signature': 'sig-direct'})
+        self.assertEqual(params['messages'][0]['content'][1]['type'], 'text')
+        self.assertEqual(params['messages'][0]['content'][1]['text'], 'ok')
 
     def test_explicit_thinking_blocks_keep_the_rest_of_the_assistant_turn(self):
         upstream = MockAnthropic()
