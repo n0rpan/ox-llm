@@ -64,8 +64,12 @@ pub fn parse_info_for(
         })
         .unwrap_or_default();
 
+    // A cloud-only controller (`engine_mode: "none"`) still reports its default local alias as
+    // `model`; no engine runs it, so the first listed (remote) model is the one to use.
+    let no_engine = status.get("engine_mode").and_then(Value::as_str) == Some("none");
     let model = ["/model", "/model_alias"]
         .iter()
+        .filter(|_| !(no_engine && !ids.is_empty()))
         .find_map(|p| {
             status
                 .pointer(p)
