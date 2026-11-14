@@ -20,12 +20,12 @@ MAX_STREAM_BYTES = 64 * 1024 * 1024
 _budget_lock = threading.Lock()
 
 
-def _reply(self, st, status, message, code, error=None):
+def _reply(self, st, status, message, code, error=None, param='model'):
     if st.led is not None:
         st.led.finish(status, error or code)
     return self.json_reply(status, {'error': {'message': message, 'type': 'permission_error' if status == 403 else
                                               ('rate_limit_error' if status == 429 else 'cloud_error'),
-                                              'param': 'model', 'code': code}})
+                                              'param': param, 'code': code}})
 
 
 def _finish(self, st, item, meter, status, error=None):
@@ -73,14 +73,11 @@ def forward(self, st):
     try:
         key = cloud.secret(item['provider'], value)
     except cloud.CloudError as error:
-        return _reply(self, st, error.status, str(error), error.code, 'cloud_credentials_unavailable')
+        return _reply(self, st, error.status, str(error), error.code, 'cloud_credentials_unavailable', error.param)
     try:
-        body = cloud.remote_payload(st.payload, item)
+        body = cloud.upstream_payload(st.payload, item)
     except cloud.CloudError as error:
-        return _reply(self, st, error.status, str(error), error.code)
-    if body.get('stream') is True:
-        options = body.get('stream_options') if isinstance(body.get('stream_options'), dict) else {}
-        body['stream_options'] = {**options, 'include_usage': True}
+        return _reply(self, st, error.status, str(error), error.code, param=error.param)
     data = json.dumps(body, ensure_ascii=False).encode()
     meter = cloud.Meter()
     connection = None
@@ -105,6 +102,7 @@ def forward(self, st):
             self.end_headers()
             started = True
             total = 0
+            streamer = cloud.CloudStream(item['id'])
             try:
                 while chunk := response.read1(65536):
                     total += len(chunk)
@@ -113,10 +111,18 @@ def forward(self, st):
                         self.close_connection = True
                         break
                     meter.feed(chunk, sse=True)
+                    out = streamer.feed(chunk)
+                    if not out:
+                        continue
                     if st.led is not None:
-                        st.led.observe(chunk)
-                    self.wfile.write(('%x\r\n' % len(chunk)).encode() + chunk + b'\r\n')
+                        st.led.observe(out)
+                    self.wfile.write(('%x\r\n' % len(out)).encode() + out + b'\r\n')
                     self.wfile.flush()
+                out = streamer.finish()
+                if out:
+                    if st.led is not None:
+                        st.led.observe(out)
+                    self.wfile.write(('%x\r\n' % len(out)).encode() + out + b'\r\n')
                 self.wfile.write(b'0\r\n\r\n')
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
@@ -131,6 +137,11 @@ def forward(self, st):
             return self.json_reply(502, {'error': {'message': 'The cloud provider sent an oversized response.',
                                                    'type': 'cloud_error', 'code': 'cloud_response_too_large'}})
         meter.feed(payload)
+        try:
+            payload = cloud.normalize_response(json.loads(payload), item['id'])
+            payload = json.dumps(payload, ensure_ascii=False).encode()
+        except (ValueError, TypeError):
+            pass  # an upstream body that is not JSON is relayed as it arrived
         if st.led is not None:
             st.led.observe(payload)
         payload = cloud.redact(payload, key)
