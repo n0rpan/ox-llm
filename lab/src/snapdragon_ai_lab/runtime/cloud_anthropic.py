@@ -163,16 +163,21 @@ def _restore_blocks(item, messages, index):
         return json.loads(json.dumps(blocks, ensure_ascii=False))
 
 
-def _native_blocks(message):
-    """Thinking blocks a direct client may already have put on the wire, otherwise None."""
+def _explicit_thinking(message):
+    """Thinking blocks a direct client put in ``thinking_blocks``, or []."""
     explicit = message.get('thinking_blocks')
-    if isinstance(explicit, list) and explicit:
+    if isinstance(explicit, list):
         return [block for block in explicit if isinstance(block, dict)
                 and block.get('type') in THINKING_TYPES]
+    return []
+
+
+def _native_content(message):
+    """A full native content array supplied by a direct client, otherwise None."""
     content = message.get('content')
     if isinstance(content, list) and any(
             isinstance(block, dict) and block.get('type') in THINKING_TYPES for block in content):
-        return [block for block in content if isinstance(block, dict) and block.get('type') in THINKING_TYPES]
+        return [block for block in content if isinstance(block, dict)]
     return None
 
 
@@ -198,8 +203,11 @@ def messages_request(payload, item):
             converted.append(('user', [block]))
             continue
         if role == 'assistant':
-            native = _restore_blocks(item, raw_messages, position) or _native_blocks(message)
-            if native is not None:
+            restored = _restore_blocks(item, raw_messages, position)
+            native = _native_content(message)
+            if restored is not None:
+                blocks = restored
+            elif native is not None:
                 blocks = native
             else:
                 blocks = _text_parts(message.get('content'))
@@ -207,6 +215,7 @@ def messages_request(payload, item):
                     block = _tool_use(call)
                     if block is not None:
                         blocks.append(block)
+                blocks = _explicit_thinking(message) + blocks
             if blocks:
                 converted.append(('assistant', blocks))
             continue
