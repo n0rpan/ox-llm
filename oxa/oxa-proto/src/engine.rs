@@ -121,6 +121,12 @@ pub trait Engine: Send + Sync {
     /// target's, read before its first request even when it is not loaded
     /// (`EngineInfo::limits_for` says which). Never loads a model.
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError>;
+    /// One warning line when the server advertises a newer protocol than this oxa understands,
+    /// or lacks a capability oxa expects, as read by the last [`Engine::info`] (no request of
+    /// its own). `None` = nothing to say, or an engine that does not check.
+    fn handshake_warning(&self) -> Option<String> {
+        None
+    }
     /// Exact token count of `text` (`POST /tokenize`).
     fn count_tokens(&self, text: &str) -> Result<u32, OxaError>;
     /// Run one request to completion, calling `on` for each stream increment in order.

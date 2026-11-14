@@ -205,6 +205,9 @@ pub struct StatusModel {
     pub unknown_misses: u32,
     /// T2: malformed-call repairs of the session (`Stats::tool_repairs`); shown when not 0.
     pub tool_repairs: u32,
+    /// The last compaction had no model summary (`details.mechanical`); shown in the footer
+    /// until a compaction with a model summary, or a new session.
+    pub degraded_context: bool,
     /// O-182: YOLO is on (prompts are auto-approved) and how many were approved. Display only;
     /// set by the UI loop from the process's `YoloSwitch`.
     pub yolo: bool,
