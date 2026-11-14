@@ -516,12 +516,26 @@ class RecordedToolLoopTests(HarnessProbeTestCase):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         url = 'http://127.0.0.1:%d%s' % (recorder.server_address[1], CHAT)
 
+        completed = 0
+
         def call(messages):
+            nonlocal completed
             data = json.dumps({'model': 'probe-local', 'messages': messages, 'tools': TOOLS}).encode()
             req = urllib.request.Request(url, data=data, method='POST',
                                          headers={'Content-Type': 'application/json'})
             with opener.open(req, timeout=20) as resp:
-                return json.loads(resp.read())
+                result = json.loads(resp.read())
+            # Completion-order sequence numbers are assigned by the asynchronous recorder.
+            # Wait for this turn before submitting the next synthetic history turn.
+            completed += 1
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                text = Path(recorder.recording).read_text()
+                if text.count('\n') >= completed + 1:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(text.count('\n'), completed + 1)
+            return result
 
         system = {'role': 'system', 'content': SYS}
         first = call([system, {'role': 'user', 'content': USER}])
