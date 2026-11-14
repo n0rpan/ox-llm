@@ -69,7 +69,7 @@ places, so outputs can differ from those builds in the last bits of floating-poi
 (the "reorder" class of the project's correctness rules). The model-free tests and the Flash
 selftest pass on it; it has not been through the lab's model-based identity or quality gates.
 
-Usage, models and benchmarks: README.md of this repository and its lab/ directory
+Usage, models and benchmarks: README.md of this repository and its oxc/ directory
 https://github.com/n0rpan/ox-llm/tree/main/lab. No model weights are included.
 
 Verify this download:

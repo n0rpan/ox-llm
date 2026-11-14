@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "scope": "source acquisition and exact verification only; no compiler/model/install",
+  "status": "prepared_frozen_for_root_review_not_executed",
+  "files": {
+    "bootstrap/source-recipes.json": "a87e4cbfaca4b08df4486346f30a11c6a0cc91c8d4c13c0c5fca171c0b8090a4",
+    "src/oxc/bootstrap_sources.py": "6b891da2bf20c3cbec9ff4d348c259779b17e7625d8fbe6777e4d1daf83bf606",
+    "src/oxc/bootstrap_guard.py": "37778922d8bde5af04de2c2ec1c1e4e79f1d5ca9cbc7b0222f3301c949969349",
+    "src/oxc/bootstrap_jobs.py": "ff8a9a3b2cb1bc98afef0624226d0f77f647de021130e82834ddb337b9321958",
+    "src/oxc/bootstrap.py": "718032cf5b52210a997b2605bfd83f15bd9534c46a774396c66ac10dd91f79a0",
+    "src/oxc/power.py": "a453ebd095a2347ccc49bbb1be0086e18cf5bc5fa9773654b179cab72f38d4f5",
+    "tests/test_bootstrap_sources.py": "e8406f5ba61109ac6a4b99e408c50a8e268173ebc4c9ab763d65fe9d3872656d",
+    "patches/llama-small-batch-pool.patch": "7260e4d78dcda7b213bf7ee4539b4009262d2b3d8284b01582cc77059a3b6102",
+    "patches/sd-cpu-repack.patch": "64952ee28cee57cee8ad44fd4364845e8ebb6d7453ded162ae252770bcaa1ac0",
+    "patches/flash-demand-mapping.patch": "50eab1d270721d5e0d1215ad858324502308bb6be855af6b73108457b3d539cc",
+    "dependencies/flash-source-inventory.json": "d0c08bfdb3180747785866fe10dcbdf4e4934125494fad41536846cff265de1c",
+    "tools/verify-flash-source.py": "d46eda7e37534a070a005465baecf433ea50a8ce6610e0fcfa2d33c1ef315cab"
+  },
+  "guard": {
+    "unit": "oxc-bootstrap-sources.service",
+    "cpu_percent_max": 100,
+    "memory_max_bytes": 1073741824,
+    "swap_max_bytes": 0,
+    "tasks_max": 64,
+    "unit_deadline_seconds": 900,
+    "parent_deadline_seconds": 840,
+    "actual_live_ram_reserve_bytes": 2147483648,
+    "external_power": true,
+    "start_battery_percent": 30,
+    "stop_battery_percent": 20
+  },
+  "model_free_tests_passed": 9,
+  "native_compiler_run": false,
+  "network_run_by_preparer": false
+}

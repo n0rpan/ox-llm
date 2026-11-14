@@ -1,19 +1,19 @@
 # Changelog
 
 Release notes per version. Each public release is one squashed commit; its message carries the notes
-and the receipt ids (`lab/benchmarks/results/public/<id>.json`).
+and the receipt ids (`oxc/benchmarks/results/public/<id>.json`).
 
 ## v0.2.0 (unreleased)
 
 Combined release under one name, **ox-llm**: the engine oxe (`engine/`), the controller and tooling
-oxc (`lab/`; the controller and CLI, formerly local-ai) and the coding agent oxa (`oxa/`) ship together with one tag. Previous releases came
+oxc (`oxc/`; the controller and CLI, formerly oxc) and the coding agent oxa (`oxa/`) ship together with one tag. Previous releases came
 from two repositories.
 
 - **oxa is the coding client.** `oxc code` and the widget's code button start oxa (a Rust port of
   the pi coding agent, tuned for the engine). The OpenCode launcher, the OpenCode config that the
   bootstrap and installer generated and the OpenCode wording in the widget are removed. Your own
   OpenCode install and config are never touched; config an earlier release wrote gets a one-time
-  note. Other clients: `lab/docs/OTHER-CLIENTS.md`.
+  note. Other clients: `oxc/docs/OTHER-CLIENTS.md`.
 - **Releases and operations:** the oxa binary is part of install, update and rollback, the health
   digest reports the oxa version, and the OEM drills cover it. Install and update run
   `oxa identity --refresh` (best effort; `--offline` when the controller is not up). The oxa release asset ships with a
@@ -30,7 +30,7 @@ from two repositories.
 - **Lab:** a lab fix batch, the panel redesign, a client-free user-snapshots gate and a query string on
   the Rust Flash inference routes refused (403, consistent with the legacy route).
 - **Removed dead code:** `flash-iobench`, prompt-lookup drafting (`--spec-type lookup`, `--lookup-*`),
-  the no-op `--compaction-cut` flag and the explicit-routing module (`LOCAL_AI_ENABLE_ROUTING`,
+  the no-op `--compaction-cut` flag and the explicit-routing module (`OXC_ENABLE_ROUTING`,
   `local-auto`). `oxc plan` opens oxa on Flash with read-only tools.
 - **Licences:** the root NOTICE and `oxa/NOTICE` carry the pi (MIT) and QuickJS (MIT) licence texts.
 - Release tooling: one exporter for the whole repository. Private CI is self-hosted only. Version
@@ -40,7 +40,7 @@ from two repositories.
   SSE "queued" comment has one format for the engine and the controller queue:
   `: queued [pos=<n>] wait_s=<s>`.
 - Controller: the admission queue (early SSE headers, round-robin lanes, background pre-emption) and
-  the replay of a cut stream are on by default; `LOCAL_AI_QUEUE=0` / `LOCAL_AI_REPLAY=0` turn them off.
+  the replay of a cut stream are on by default; `OXC_QUEUE=0` / `OXC_REPLAY=0` turn them off.
 - Engine OpenAI v1 conformance: a default output limit for requests that name none
   (`--default-max-tokens`, default min(16384, ctx/4), published in `/v1/models` and `/props`);
   `GET /v1/models/{id}`; the OpenAI error object (string `code`, `param`; overflow =

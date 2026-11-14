@@ -6,7 +6,7 @@ use oxa_proto::{codes, Level, OxaError, ThinkingLevel};
 
 /// The endpoint name oxa gives the local engine (`OXA_PROVIDER` is always this).
 pub(crate) const ENGINE_ENDPOINT: &str = "oxe";
-/// Used when neither models.json nor `OXA_ENGINE_URL` names an endpoint: the local-ai
+/// Used when neither models.json nor `OXA_ENGINE_URL` names an endpoint: the oxc
 /// controller on loopback (its OpenAI-compatible API, `/_local/status` with the per-model
 /// limits and capabilities, the queue). A bare engine (`oxe-server`, default port 8080) is
 /// reached by naming it in models.json or `OXA_ENGINE_URL`.

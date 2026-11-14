@@ -1,7 +1,7 @@
 //! X3 regression tests: a model switch and `/reload` refresh the engine metadata and the
 //! compaction policy, and the runtime auto-compaction switch takes effect. Model-free: a fake
 //! controller serves two models with different limits and loads whichever model a chat request
-//! names (as the local-ai controller does). With `publish`, its status carries per-model limits
+//! names (as the oxc controller does). With `publish`, its status carries per-model limits
 //! (the controller's `model_limits`), so `Engine::info(Some(target))` describes a target that
 //! is not loaded; without it, `info` describes the loaded model only (an older controller).
 

@@ -1,4 +1,4 @@
-ox-llm (engine: oxe, controller: local-ai, coding agent: oxa)
+ox-llm (engine: oxe, controller: oxc, coding agent: oxa)
 Copyright (c) 2026 Oscar Nordström (n0rpan)
 
 Our own code is licensed under the MIT License (see LICENSE). Each product
@@ -10,7 +10,7 @@ directory also carries the same licence and its own notices:
                                               Flash binary distributions
                                               (BigMoeOnEdge, Apache-2.0; its
                                               llama.cpp fork, MIT)
-  lab/NOTICE, lab/THIRD_PARTY_NOTICES         patches to llama.cpp,
+  oxc/NOTICE, oxc/THIRD_PARTY_NOTICES         patches to llama.cpp,
                                               stable-diffusion.cpp and
                                               BigMoeOnEdge, under their licences
   oxa/NOTICE, oxa/LICENSE-QuickJS.txt         the pi coding agent (MIT), whose

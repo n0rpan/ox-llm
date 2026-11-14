@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "scope": "selected guarded model-asset acquisition only; no inference/install/profile enable",
+  "files": {
+    "src/oxc/bootstrap_download.py": "05387b6cd08ed2009b01122ab2980eaf8c327e4dfa045575c7fb18e63ecffa27",
+    "src/oxc/bootstrap_transfer.py": "a58dbdd2db77d64c9e4ba3fc1967fdba225aec8c8a1d134f444e74c679d2dec4",
+    "src/oxc/bootstrap_guard.py": "37778922d8bde5af04de2c2ec1c1e4e79f1d5ca9cbc7b0222f3301c949969349",
+    "src/oxc/bootstrap.py": "718032cf5b52210a997b2605bfd83f15bd9534c46a774396c66ac10dd91f79a0",
+    "src/oxc/power.py": "a453ebd095a2347ccc49bbb1be0086e18cf5bc5fa9773654b179cab72f38d4f5",
+    "dependencies/model-artifacts.json": "14bb621b4eb3b7b34abd2f816c9d87f40521f033775292185a77515bbaa8d53c",
+    "tests/test_bootstrap_transfer.py": "3763f6e34869c0f2607db12043ca1bfec929916ca3455deee9e0fad9e33e4095",
+    "tests/test_bootstrap_download.py": "987cab2e65e7b6d346533b8fdb9d1e276892d8561df94ceab3678aaddf4749e1"
+  },
+  "tests_passed": 10,
+  "default_assets": "MTP MoE + Q8 diffusion + image encoder + VAE",
+  "optional_assets": "explicit Dense/Q4/Flash selection only; fresh qualification remains false",
+  "unit": "oxc-bootstrap-fetch.service",
+  "cpu_percent_launch": 100,
+  "memory_max_bytes": 1073741824,
+  "swap_max_bytes": 0,
+  "deadline_seconds": 3700,
+  "global_swap_policy": "existing page-ins allowed; any new page-out stops",
+  "disk_headroom_bytes": 1073741824,
+  "download_cache_max_events": "record file-cache reclaim; reject OOM/pids/own swap/resource failure",
+  "actual_network_run_by_preparer": false,
+  "qualified": false
+}

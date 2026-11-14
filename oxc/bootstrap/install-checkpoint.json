@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "status": "source_checkpoint_not_release_parity",
+  "scope": "sandbox source payload only; no current-user HOME install, model placement, service activation or readiness changes",
+  "files": {
+    "src/oxc/bootstrap_install.py": "97b70e824899690f4e6d506e70ebf9492762c4b5d0a062f48931426d43f236d7",
+    "tests/test_bootstrap_install.py": "1a9bd5860b6d2ddb131ab8c7911e58f18a5fa3fce3410ed628d243662f1ff9bf",
+    "docs/BOOTSTRAP-INSTALL.md": "6d960978791de96c7fb1b88e9b87ba86bca15b38c00b23c4bcf7a2318a09bce0"
+  },
+  "source_dependencies": {
+    "src/oxc/bootstrap.py": "718032cf5b52210a997b2605bfd83f15bd9534c46a774396c66ac10dd91f79a0",
+    "src/oxc/bootstrap_transfer.py": "a58dbdd2db77d64c9e4ba3fc1967fdba225aec8c8a1d134f444e74c679d2dec4"
+  },
+  "focused_tests_passed": 11,
+  "tiny_fixture_mutation_failure_points": 15,
+  "host_config_changes": false,
+  "services_started": false,
+  "models_run": false,
+  "qualified": false,
+  "remaining": [
+    "actual host installer",
+    "native binary/model placement",
+    "client provider wiring",
+    "panel registration",
+    "qualification activation",
+    "isolated full-stack acceptance",
+    "power-loss/SIGKILL recovery acceptance"
+  ]
+}

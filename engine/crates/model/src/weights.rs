@@ -1136,7 +1136,7 @@ mod real_native_reader_tests {
     #[ignore = "explicit real-weight proof; requires canonical inference lease"]
     fn native_expert_tiles_match_real_original_gguf() {
         let home=PathBuf::from(std::env::var("HOME").unwrap());
-        assert!(!crate::load::lease_free(&home.join(".local/state/local-ai/inference.lock")),"hold canonical inference lease before touching real weights");
+        assert!(!crate::load::lease_free(&home.join(".local/state/oxc/inference.lock")),"hold canonical inference lease before touching real weights");
         let path=home.join(".local/share/ai-stack/models/llm/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf");
         let g=Gguf::open(&path).unwrap();let mut checked=0;
         for (name,ty) in [("blk.0.ffn_gate_exps.weight",QType::Q4K),("blk.5.ffn_down_exps.weight",QType::Q3K)]{
