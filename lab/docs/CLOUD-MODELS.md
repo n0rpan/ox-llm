@@ -67,17 +67,24 @@ echoes the key is redacted before it reaches the client.
   and code `offline`, before any DNS or socket call. Remote models are not listed while
   offline.
 - `cloud.daily_budget_usd` is a positive USD cap per local day. A missing or non-positive cap
-  fails closed (`budget_not_configured`). Once the sum of today's `cost_usd` ledger rows
-  reaches the cap, requests get `429` with code `budget_exceeded`.
+  fails closed (`budget_not_configured`). Admission atomically reserves the worst case
+  (`prompt estimate + max_tokens` at the model price) before forwarding, so concurrent
+  requests cannot all spend the same budget; the actual cost settles after the ledger row is
+  written. A request that would exceed `spent + reserved` gets `429` with code
+  `budget_exceeded`.
+- Missing usage charges the reserved worst case, never zero. An unreadable, corrupt or
+  unwritable ledger refuses remote calls with `503` and code `cloud_ledger_unavailable` until
+  it is repaired.
 - Every remote request writes one ledger row with `remote: true`, `remote_provider`, the
-  upstream model id, token usage when the provider reports it and `cost_usd`. The prompt and
-  reply text are never written.
+  upstream model id, token usage when the provider reports it and a settled `cost_usd`. The
+  prompt and reply text are never written. Streamed chunks, success bodies, errors and error
+  bodies are all redacted for the upstream key before they reach the client or the ledger.
 
 ## Tests
 
 `lab/tests/test_cloud_remote.py` runs a mock OpenRouter server on loopback: routing and the
 forced privacy prefs, the key boundary, cloud-off-by-default, the offline refusal, the budget
-cap, streamed usage metering and ledger rows. No test reads a real key or calls a real cloud
+cap, concurrent budget reservation, streamed usage metering and ledger rows. No test reads a real key or calls a real cloud
 API.
 
 ## OpenAI v1 normalisation
@@ -92,6 +99,10 @@ one:
   reach a remote upstream.
 - A stream asks for the final usage chunk (`stream_options.include_usage`), and tool calls
   keep the OpenAI streaming shape: same `index`, id and name, arguments always a JSON string.
+- The upstream stream is parsed with the SSE grammar, not LF-LF framing: LF, CRLF and lone-CR
+  line endings, comment/keep-alive lines ignored, multi-line `data:` fields joined and one
+  event dispatched per blank line. A partial event split across TCP reads is buffered only
+  until its line completes. Every dispatched event is normalised and redacted.
 - A provider `reasoning` field is exposed as `reasoning_content`. `usage` always carries
   `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`;
   provider values win, missing values are completed.

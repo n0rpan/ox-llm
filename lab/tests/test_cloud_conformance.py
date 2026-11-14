@@ -8,6 +8,8 @@ effort mapped, tool-call deltas kept (index, name, string arguments), reasoning 
 import json
 import unittest
 
+from snapdragon_ai_lab.runtime import cloud
+
 from mock_cloud import MockOpenRouter
 from openai_api_stack import Stack  # noqa: F401  (keeps the test import path uniform)
 from test_cloud_remote import CloudCase, REMOTE
@@ -120,6 +122,103 @@ class ResponseMapping(CloudCase):
         self.assertEqual(usage_event['choices'], [])
         self.assertEqual(usage_event['usage']['prompt_tokens'], 20)
         self.assertIn('reasoning_tokens', usage_event['usage']['completion_tokens_details'])
+
+
+class SSEParsing(CloudCase):
+    """The SSE grammar, not just LF-LF: CRLF/CR, comments, split reads and multiline data."""
+
+    def _event(self, payload, ending=b'\n'):
+        return b'data: ' + json.dumps(payload).encode() + ending + ending
+
+    def _chunk(self, delta, finish=None):
+        return {'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk', 'model': 'upstream',
+                'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}
+
+    def test_sse_decoder_accepts_every_line_ending_comment_and_split_boundary(self):
+        for ending in (b'\n', b'\r\n', b'\r'):
+            with self.subTest(ending=ending):
+                raw = (b': keep-alive' + ending + b'data: first' + ending
+                       + b'data: second' + ending + ending)
+                parser = cloud.SSEDecoder()
+                events = []
+                for index in range(len(raw)):
+                    events.extend(parser.feed(raw[index:index + 1]))
+                events.extend(parser.finish())
+                self.assertEqual(events, [(None, b'first\nsecond')])
+
+    def test_sse_decoder_emits_the_first_event_before_the_next_is_complete(self):
+        parser = cloud.SSEDecoder()
+        self.assertEqual(parser.feed(b'data: one\n\ndata: two\n'), [(None, b'one')])
+        self.assertEqual(parser.feed(b'\n'), [(None, b'two')])
+
+    def test_sse_decoder_finishes_a_final_line_without_a_blank_line(self):
+        parser = cloud.SSEDecoder()
+        self.assertEqual(parser.feed(b'data: last'), [])
+        self.assertEqual(parser.finish(), [(None, b'last')])
+
+    def test_each_line_ending_is_normalised_end_to_end(self):
+        for ending in (b'\n', b'\r\n', b'\r'):
+            with self.subTest(ending=ending):
+                chunks = [
+                    self._event(self._chunk({'content': 'ok'}), ending),
+                    self._event(self._chunk({}, 'stop'), ending),
+                    self._event({'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk',
+                                 'model': 'upstream', 'choices': [],
+                                 'usage': {'prompt_tokens': 4, 'completion_tokens': 2}}, ending),
+                    b'data: [DONE]' + ending + ending,
+                ]
+                upstream = MockOpenRouter(stream_chunks=chunks)
+                self.addCleanup(upstream.close)
+                self.start(mock=upstream)
+                status, body = self.chat(stream=True)
+                self.assertEqual(status, 200)
+                self.assertNotIn(b'\r', body)
+                events = [json.loads(line[5:]) for line in body.decode().splitlines()
+                          if line.startswith('data:') and line[5:].strip() not in ('', '[DONE]')]
+                self.assertTrue(events)
+                self.assertTrue(all(event['model'] == REMOTE for event in events))
+                self.assertEqual(events[0]['choices'][0]['delta']['content'], 'ok')
+                self.assertEqual(events[1]['choices'][0]['finish_reason'], 'stop')
+                self.assertIn('usage', events[2])
+                self.stack.close()
+                self.stack = None
+
+    def test_comments_interleaved_with_data_do_not_bypass_normalisation(self):
+        ending = b'\n'
+        payload = self._chunk({'content': 'after comment'})
+        raw = b': first keep-alive\n' + b'data: ' + json.dumps(payload).encode() + b'\n'
+        chunks = [raw + b': interleaved\n' + ending,
+                  b': another keep-alive\n',
+                  self._event(self._chunk({}, 'stop'), ending),
+                  b'data: [DONE]\n\n']
+        upstream = MockOpenRouter(stream_chunks=chunks, stream_delay=0.01)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat(stream=True)
+        self.assertEqual(status, 200)
+        self.assertNotIn(b'keep-alive', body)  # comments are never forwarded as data events
+        events = [json.loads(line[5:]) for line in body.decode().splitlines()
+                  if line.startswith('data:') and line[5:].strip() not in ('', '[DONE]')]
+        self.assertEqual(events[0]['model'], REMOTE)
+        self.assertEqual(events[0]['choices'][0]['delta']['content'], 'after comment')
+        self.assertEqual(events[1]['choices'][0]['finish_reason'], 'stop')
+
+    def test_an_event_split_across_tcp_chunks_is_normalised_once(self):
+        event = self._event(self._chunk({'reasoning': 'because', 'content': 'ok'}))
+        cut = len(event) // 2
+        upstream = MockOpenRouter(stream_chunks=[event[:cut], event[cut:],
+                                                 self._event(self._chunk({}, 'stop')),
+                                                 b'data: [DONE]\n\n'], stream_delay=0.02)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat(stream=True)
+        self.assertEqual(status, 200)
+        events = [json.loads(line[5:]) for line in body.decode().splitlines()
+                  if line.startswith('data:') and line[5:].strip() not in ('', '[DONE]')]
+        delta = events[0]['choices'][0]['delta']
+        self.assertEqual(delta['content'], 'ok')
+        self.assertEqual(delta['reasoning_content'], 'because')
+        self.assertEqual(events[0]['model'], REMOTE)
 
 
 if __name__ == '__main__':

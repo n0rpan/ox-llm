@@ -5,7 +5,6 @@ is open, instead of local admission.  The request never touches the local engine
 store or the local model lease.
 """
 import json
-import threading
 if __package__:
     from .ctl_proxy_prep import HOP_HEADERS
     from .ctl_seams import ctl
@@ -17,21 +16,37 @@ else:
     import openai_api
 
 MAX_STREAM_BYTES = 64 * 1024 * 1024
-_budget_lock = threading.Lock()
+
+
+def _close_row(st, status, error=None):
+    """Finish the ledger row and remember a write failure so cloud admission fails closed."""
+    if st.led is None:
+        return
+    st.led.finish(status, error)
+    if getattr(st.led, 'written', True) is False:
+        cloud.mark_ledger_failure()
 
 
 def _reply(self, st, status, message, code, error=None, param='model'):
     if st.led is not None:
-        st.led.finish(status, error or code)
+        # A refusal is a remote row with no spend, never a row that under-counts the cap.
+        st.led.row.setdefault('cost_usd', 0.0)
+        st.led.row.setdefault('settled', 'not_forwarded')
+    _close_row(st, status, error or code)
     return self.json_reply(status, {'error': {'message': message, 'type': 'permission_error' if status == 403 else
                                               ('rate_limit_error' if status == 429 else 'cloud_error'),
                                               'param': param, 'code': code}})
 
 
-def _finish(self, st, item, meter, status, error=None):
+def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, failed=False):
+    """Record one forwarded request.  Missing usage charges the reserved worst case."""
+    row = meter.row(item, secret)
+    cloud.conservative_cost(row, hold, failed=failed)
     if st.led is not None:
-        st.led.row.update(meter.row(item))
-        st.led.finish(status, error)
+        st.led.row.update(row)
+        _close_row(st, status, error)
+    if hold is not None:
+        hold.settle()
 
 
 def _safe_headers(response):
@@ -64,12 +79,6 @@ def forward(self, st):
         st.led.row.update({'remote': True, 'remote_provider': item['provider']})
     if cloud.offline():
         return _reply(self, st, 403, 'Cloud models are unavailable in offline mode.', 'offline')
-    cap, spend = cloud.budget(value)
-    if cap is None:
-        return _reply(self, st, 403, 'Cloud models need a per-day USD budget (`cloud.daily_budget_usd`).',
-                      'budget_not_configured')
-    if spend >= cap:
-        return _reply(self, st, 429, 'The daily cloud budget is exhausted.', 'budget_exceeded')
     try:
         key = cloud.secret(item['provider'], value)
     except cloud.CloudError as error:
@@ -78,6 +87,10 @@ def forward(self, st):
         body = cloud.upstream_payload(st.payload, item)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, param=error.param)
+    try:
+        hold = cloud.reserve(value, item, body)
+    except cloud.CloudError as error:
+        return _reply(self, st, error.status, str(error), error.code, error.code, param=error.param)
     data = json.dumps(body, ensure_ascii=False).encode()
     meter = cloud.Meter()
     connection = None
@@ -90,7 +103,7 @@ def forward(self, st):
         content_type, full_type = _safe_headers(response)
         if response.status >= 400:
             payload = _error_body(response.status, response.read(cloud.MAX_ERROR_BYTES), key)
-            _finish(self, st, item, meter, response.status, 'cloud_upstream_error')
+            _finish(self, st, item, meter, response.status, 'cloud_upstream_error', hold, key, failed=True)
             return self.reply(response.status, payload, 'application/json')
         if body.get('stream') is True or 'text/event-stream' in full_type.lower():
             self.send_response(response.status)
@@ -103,6 +116,19 @@ def forward(self, st):
             started = True
             total = 0
             streamer = cloud.CloudStream(item['id'])
+            redactor = cloud.StreamRedactor(key)
+
+            def write(data):
+                if not data:
+                    return
+                safe = redactor.feed(data)
+                if not safe:
+                    return
+                if st.led is not None:
+                    st.led.observe(safe)
+                self.wfile.write(('%x\r\n' % len(safe)).encode() + safe + b'\r\n')
+                self.wfile.flush()
+
             try:
                 while chunk := response.read1(65536):
                     total += len(chunk)
@@ -111,29 +137,26 @@ def forward(self, st):
                         self.close_connection = True
                         break
                     meter.feed(chunk, sse=True)
-                    out = streamer.feed(chunk)
-                    if not out:
-                        continue
+                    write(streamer.feed(chunk))
+                write(streamer.finish())
+                meter.finish_sse()
+                tail = redactor.finish()
+                if tail:
                     if st.led is not None:
-                        st.led.observe(out)
-                    self.wfile.write(('%x\r\n' % len(out)).encode() + out + b'\r\n')
-                    self.wfile.flush()
-                out = streamer.finish()
-                if out:
-                    if st.led is not None:
-                        st.led.observe(out)
-                    self.wfile.write(('%x\r\n' % len(out)).encode() + out + b'\r\n')
+                        st.led.observe(tail)
+                    self.wfile.write(('%x\r\n' % len(tail)).encode() + tail + b'\r\n')
                 self.wfile.write(b'0\r\n\r\n')
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 st.client_write_failed = True
                 st.request_error = 'client_disconnected'
                 self.close_connection = True
-            _finish(self, st, item, meter, response.status, st.request_error)
+            _finish(self, st, item, meter, response.status, st.request_error, hold, key,
+                    failed=st.request_error is not None)
             return
         payload = response.read(MAX_STREAM_BYTES + 1)
         if len(payload) > MAX_STREAM_BYTES:
-            _finish(self, st, item, meter, 502, 'cloud_response_too_large')
+            _finish(self, st, item, meter, 502, 'cloud_response_too_large', hold, key, failed=True)
             return self.json_reply(502, {'error': {'message': 'The cloud provider sent an oversized response.',
                                                    'type': 'cloud_error', 'code': 'cloud_response_too_large'}})
         meter.feed(payload)
@@ -142,24 +165,31 @@ def forward(self, st):
             payload = json.dumps(payload, ensure_ascii=False).encode()
         except (ValueError, TypeError):
             pass  # an upstream body that is not JSON is relayed as it arrived
+        payload = cloud.redact(payload, key)
         if st.led is not None:
             st.led.observe(payload)
-        payload = cloud.redact(payload, key)
         self.reply(response.status, payload, 'application/json')
-        _finish(self, st, item, meter, response.status)
+        _finish(self, st, item, meter, response.status, hold=hold, secret=key)
     except cloud.CloudError as error:
-        _finish(self, st, item, meter, error.status, error.code)
+        _finish(self, st, item, meter, error.status, error.code, hold, key, failed=True)
         self.json_reply(error.status, {'error': {'message': str(error), 'type': 'cloud_error',
                                                  'param': 'model', 'code': error.code}})
     except (OSError, ValueError, json.JSONDecodeError) as error:
         detail = cloud.redact(str(error), key)
-        _finish(self, st, item, meter, 503, 'cloud_unavailable')
+        _finish(self, st, item, meter, 503, 'cloud_unavailable', hold, key, failed=True)
         if not started:
             self.json_reply(503, {'error': {'message': 'The cloud provider is unavailable. ' + detail[:200],
                                             'type': 'cloud_error', 'param': 'model', 'code': 'cloud_unavailable'}})
         else:
             self.close_connection = True
     finally:
+        if hold is not None and not hold.settled:
+            if st.led is not None and getattr(st.led, 'written', None) is None:
+                # An unexpected failure escaped before the row was written; never release a
+                # reservation without recording spend.
+                _finish(self, st, item, meter, 503, 'cloud_unavailable', hold, key, failed=True)
+            else:
+                hold.settle()
         if connection is not None:
             try:
                 connection.close()

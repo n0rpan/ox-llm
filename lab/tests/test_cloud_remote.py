@@ -4,12 +4,14 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from snapdragon_ai_lab.runtime import cloud
+from snapdragon_ai_lab.runtime import cloud, request_ledger
 
 from mock_cloud import MockOpenRouter
 from openai_api_stack import Stack
@@ -66,9 +68,10 @@ class CloudCase(unittest.TestCase):
         finally:
             connection.close()
 
-    def chat(self, *, stream=False, model=REMOTE, text='hello'):
+    def chat(self, *, stream=False, model=REMOTE, text='hello', **extra):
         return self.call('POST', '/v1/chat/completions', {
-            'model': model, 'messages': [{'role': 'user', 'content': text}], 'stream': stream})
+            'model': model, 'messages': [{'role': 'user', 'content': text}],
+            'stream': stream, **extra})
 
     def rows(self):
         status, body = self.call('GET', '/v1/models')
@@ -198,7 +201,7 @@ class Budget(CloudCase):
     def test_the_daily_cap_refuses_the_next_request_and_records_cost(self):
         upstream = MockOpenRouter(usage={'prompt_tokens': 1000, 'completion_tokens': 1000, 'total_tokens': 2000})
         self.addCleanup(upstream.close)
-        self.start(budget=0.001, mock=upstream)
+        self.start(budget=0.005, mock=upstream)
         self.assertEqual(self.chat()[0], 200)
         rows = self.ledger_rows()
         self.assertEqual(rows[-1]['cost_usd'], 0.002)
@@ -235,6 +238,171 @@ class Secrets(CloudCase):
         self.assertEqual(status, 503)
         self.assertNotIn(str(self.secrets).encode(), body)
         self.assertNotIn(KEY.encode(), body)
+
+
+class Redaction(CloudCase):
+    def _event(self, **fields):
+        return b'data: ' + json.dumps(fields, ensure_ascii=False).encode() + b'\n\n'
+
+    def test_a_key_split_across_tcp_chunks_never_reaches_the_stream_or_the_ledger(self):
+        event = {'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk', 'model': 'upstream',
+                 'choices': [{'index': 0, 'delta': {'content': 'leak ' + KEY + ' end'},
+                              'finish_reason': None}]}
+        raw = self._event(**event)
+        cut = raw.index(KEY.encode()) + len(KEY) // 2
+        usage = self._event(id='chatcmpl-mock', object='chat.completion.chunk', model='upstream',
+                            choices=[], usage={'prompt_tokens': 3, 'completion_tokens': 2})
+        upstream = MockOpenRouter(stream_chunks=[raw[:cut], raw[cut:], usage, b'data: [DONE]\n\n'],
+                                  stream_delay=0.02)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat(stream=True)
+        self.assertEqual(status, 200)
+        self.assertNotIn(KEY.encode(), body)
+        self.assertIn(b'[redacted]', body)
+        self.assertNotIn(KEY, self.ledger_text())
+
+    def test_a_key_in_an_upstream_error_event_is_redacted(self):
+        error = self._event(error={'message': 'provider rejected Bearer ' + KEY})
+        upstream = MockOpenRouter(stream_chunks=[error, b'data: [DONE]\n\n'])
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat(stream=True)
+        self.assertEqual(status, 200)
+        self.assertNotIn(KEY.encode(), body)
+        self.assertIn(b'[redacted]', body)
+        self.assertNotIn(KEY, self.ledger_text())
+
+    def test_a_key_in_a_successful_non_streamed_reply_is_redacted(self):
+        upstream = MockOpenRouter(reply='leak ' + KEY)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat()
+        self.assertEqual(status, 200)
+        self.assertNotIn(KEY.encode(), body)
+        self.assertIn(b'[redacted]', body)
+        self.assertNotIn(KEY, self.ledger_text())
+        self.assertNotIn(KEY.encode(), self.call('GET', '/_local/status')[1])
+
+    def test_stream_redactor_holds_a_partial_key(self):
+        redactor = cloud.StreamRedactor(KEY)
+        out = redactor.feed(b'before ' + KEY[:7].encode())
+        out += redactor.feed(KEY[7:].encode() + b' after')
+        out += redactor.finish()
+        self.assertNotIn(KEY.encode(), out)
+        self.assertEqual(out, b'before [redacted] after')
+
+    def test_a_key_in_the_finish_reason_is_redacted_from_the_ledger(self):
+        event = self._event(id='chatcmpl-mock', object='chat.completion.chunk', model='upstream',
+                            choices=[{'index': 0, 'delta': {}, 'finish_reason': KEY}])
+        upstream = MockOpenRouter(stream_chunks=[event, b'data: [DONE]\n\n'])
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat(stream=True)
+        self.assertEqual(status, 200)
+        self.assertNotIn(KEY.encode(), body)
+        self.assertNotIn(KEY, self.ledger_text())
+
+
+class BudgetRace(CloudCase):
+    def test_concurrent_requests_reserve_the_worst_case_before_forwarding(self):
+        release = threading.Event()
+
+        def hold():
+            release.wait(10)
+
+        upstream = MockOpenRouter(hook=hold)
+        self.addCleanup(upstream.close)
+        self.start(budget=0.0015, mock=upstream)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(self.chat, max_tokens=1000) for _ in range(4)]
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                done = sum(future.done() for future in futures)
+                if len(upstream.requests) >= 4 or done >= 3:
+                    break
+                time.sleep(0.01)
+            release.set()
+            results = [future.result(timeout=10) for future in futures]
+        statuses = [status for status, _ in results]
+        self.assertEqual(statuses.count(200), 1, statuses)
+        self.assertEqual(statuses.count(429), 3, statuses)
+        self.assertEqual(len(upstream.requests), 1)
+        self.assertEqual(self.ledger_rows()[-1]['settled'], 'usage')
+
+    def test_missing_usage_charges_the_reserved_worst_case(self):
+        upstream = MockOpenRouter(usage_missing=True)
+        self.addCleanup(upstream.close)
+        self.start(budget=1.0, mock=upstream)
+        status, _ = self.chat(max_tokens=1000)
+        self.assertEqual(status, 200)
+        row = self.ledger_rows()[-1]
+        expected = cloud.worst_case_cost(
+            cloud.entry(REMOTE, profiles()[REMOTE]),
+            {'max_tokens': 1000, 'messages': [{'role': 'user', 'content': 'hello'}]})
+        self.assertEqual(row['cost_usd'], expected)
+        self.assertTrue(row['usage_missing'])
+        self.assertEqual(row['settled'], 'reserved')
+
+    def test_a_stream_without_usage_also_charges_the_reserved_worst_case(self):
+        event = (b'data: ' + json.dumps({'id': 'x', 'object': 'chat.completion.chunk',
+                                         'choices': [{'index': 0, 'delta': {'content': 'ok'},
+                                                      'finish_reason': 'stop'}]}).encode() + b'\n\n')
+        upstream = MockOpenRouter(stream_chunks=[event, b'data: [DONE]\n\n'])
+        self.addCleanup(upstream.close)
+        self.start(budget=1.0, mock=upstream)
+        status, _ = self.chat(stream=True, max_tokens=1000)
+        self.assertEqual(status, 200)
+        row = self.ledger_rows()[-1]
+        expected = cloud.worst_case_cost(
+            cloud.entry(REMOTE, profiles()[REMOTE]),
+            {'max_tokens': 1000, 'messages': [{'role': 'user', 'content': 'hello'}],
+             'stream': True})
+        self.assertEqual(row['cost_usd'], expected)
+        self.assertTrue(row['usage_missing'])
+
+
+class LedgerFailClosed(CloudCase):
+    def _today(self):
+        return self.ledger / ('requests-%s.jsonl' % time.strftime('%Y%m%d'))
+
+    def test_a_corrupt_ledger_refuses_remote_calls_before_forwarding(self):
+        self.ledger.mkdir()
+        self._today().write_text('{not json}\n')
+        self.start()
+        status, body = self.chat()
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)['error']['code'], 'cloud_ledger_unavailable')
+        self.assertEqual(self.upstream.requests, [])
+        status, status_body = self.call('GET', '/_local/status')
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(status_body)['cloud']['ledger_ok'])
+
+    def test_an_unreadable_ledger_refuses_remote_calls_before_forwarding(self):
+        self.ledger.write_text('not a directory')
+        self.start()
+        status, body = self.chat()
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)['error']['code'], 'cloud_ledger_unavailable')
+        self.assertEqual(self.upstream.requests, [])
+
+    def test_a_remote_row_without_a_settled_cost_fails_closed(self):
+        self.ledger.mkdir()
+        self._today().write_text(json.dumps({'remote': True, 'prompt_tokens': 3}) + '\n')
+        self.start()
+        status, body = self.chat()
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)['error']['code'], 'cloud_ledger_unavailable')
+
+    def test_a_failed_ledger_write_blocks_the_next_remote_call(self):
+        self.start()
+        with patch.object(request_ledger, 'write', return_value=False):
+            status, _ = self.chat()
+        self.assertEqual(status, 200)
+        status, body = self.chat()
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(body)['error']['code'], 'cloud_ledger_unavailable')
+        self.assertEqual(len(self.upstream.requests), 1)
 
 
 if __name__ == '__main__':

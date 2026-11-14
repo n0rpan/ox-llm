@@ -70,17 +70,35 @@ class _Base:
             handler.wfile.flush()
         handler.close_connection = True
 
+    def _raw_sse(self, handler, chunks, delay=0.0):
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'text/event-stream')
+        handler.send_header('Connection', 'close')
+        handler.end_headers()
+        import time
+        for chunk in chunks:
+            handler.wfile.write(chunk if isinstance(chunk, bytes) else chunk.encode())
+            handler.wfile.flush()
+            if delay:
+                time.sleep(delay)
+        handler.close_connection = True
+
 
 class MockOpenRouter(_Base):
     """An OpenAI-compatible upstream that records every request and its headers."""
 
     def __init__(self, status=200, error=None, reply='Cloud reply.', usage=None,
-                 response=None, stream_frames=None):
+                 response=None, stream_frames=None, stream_chunks=None, stream_delay=0.0,
+                 usage_missing=False, hook=None):
         super().__init__()
         self.status, self.error, self.reply = status, error, reply
         self.usage = usage or {'prompt_tokens': 11, 'completion_tokens': 4, 'total_tokens': 15}
         self.response = response
         self.stream_frames = stream_frames
+        self.stream_chunks = stream_chunks
+        self.stream_delay = stream_delay
+        self.usage_missing = usage_missing
+        self.hook = hook
         self.start()
 
     def handle(self, handler, method):
@@ -90,6 +108,8 @@ class MockOpenRouter(_Base):
         record = {'method': method, 'path': handler.path, 'body': body,
                   'headers': {k.lower(): v for k, v in handler.headers.items()}}
         self.requests.append(record)
+        if self.hook is not None:
+            self.hook()
         if method == 'GET':
             return self._json(handler, 200, {'data': []})
         if self.status >= 400:
@@ -99,9 +119,12 @@ class MockOpenRouter(_Base):
             return self._json(handler, self.status, error)
         model = body.get('model') if isinstance(body, dict) else None
         if isinstance(body, dict) and body.get('stream') is True:
+            if self.stream_chunks is not None:
+                return self._raw_sse(handler, self.stream_chunks, self.stream_delay)
             if self.stream_frames is not None:
                 frames = list(self.stream_frames)
-                if isinstance(body.get('stream_options'), dict) and body['stream_options'].get('include_usage'):
+                if (not self.usage_missing and isinstance(body.get('stream_options'), dict)
+                        and body['stream_options'].get('include_usage')):
                     frames.append({'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk', 'model': model,
                                    'choices': [], 'usage': self.usage})
                 return self._sse(handler, frames + ['[DONE]'])
@@ -113,13 +136,17 @@ class MockOpenRouter(_Base):
                 {'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk', 'model': model,
                  'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]},
             ]
-            if isinstance(body.get('stream_options'), dict) and body['stream_options'].get('include_usage'):
+            if (not self.usage_missing and isinstance(body.get('stream_options'), dict)
+                    and body['stream_options'].get('include_usage')):
                 frames.append({'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk', 'model': model,
                                'choices': [], 'usage': self.usage})
             return self._sse(handler, frames + ['[DONE]'])
         if self.response is not None:
-            return self._json(handler, 200, {**self.response, 'model': model} if 'model' not in self.response else self.response)
-        self._json(handler, 200, {
+            return self._json(handler, 200, {**self.response, 'model': model}
+                              if 'model' not in self.response else self.response)
+        reply = {
             'id': 'chatcmpl-mock', 'object': 'chat.completion', 'created': 1, 'model': model,
-            'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': self.reply}, 'finish_reason': 'stop'}],
-            'usage': self.usage})
+            'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': self.reply}, 'finish_reason': 'stop'}]}
+        if not self.usage_missing:
+            reply['usage'] = self.usage
+        self._json(handler, 200, reply)

@@ -237,9 +237,16 @@ class ModelsMixin:
                 value = {}
         except (OSError, ValueError):
             value = {}
-        cap, spend = cloud.budget(value)
+        try:
+            cap, spend = cloud.budget(value)
+            ledger_error = None
+        except cloud.CloudError as error:
+            # Status must stay alive: report the accounting fault instead of a 500, and cloud
+            # admission will refuse anyway until the ledger is repaired.
+            cap, spend, ledger_error = None, None, error.code
         return {'enabled': cloud.enabled(value), 'offline': cloud.offline(),
-                'daily_budget_usd': cap, 'spend_today_usd': spend,
+                'daily_budget_usd': cap, 'spend_today_usd': spend, 'ledger_ok': ledger_error is None,
+                'ledger_error': ledger_error,
                 'providers': cloud.configured(value), 'models': len(cloud.models(value))}
 
     def flash_qualification(self):
