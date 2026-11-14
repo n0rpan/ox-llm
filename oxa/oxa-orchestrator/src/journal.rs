@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::time::Instant;
 /// A bounded private audit journal. It never receives raw prompts, events,
 /// model output, environment values or transport error text.
 pub(crate) struct Journal {
-    file: File,
+    file: crate::ownership::Lease,
     sequence: u64,
     bytes: usize,
     limit: usize,
@@ -23,7 +23,7 @@ impl Journal {
             .create_new(true)
             .mode(0o600)
             .open(path)?;
-        crate::ownership::lock(&file)?;
+        let file = crate::ownership::Lease::acquire(file)?;
         Ok(Self {
             file,
             sequence: 0,

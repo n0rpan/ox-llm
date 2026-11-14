@@ -43,8 +43,11 @@ the journal inode before writing anything. Their first record declares
 `ownership: "journal-flock-v1"`; inspection reports
 `exclusive_ownership_supported`. The descriptor remains open across scheduling
 and owned cleanup. Audit failure does not release ownership early. Worker execs
-do not inherit it. Closing the descriptor, ordinary unwinding or controller death
-releases the kernel lock, without a PID file, timeout guess or stale-lock removal.
+do not inherit it. Normal drop/unwinding explicitly unlocks before closing the descriptor, so an
+unrelated concurrent fork cannot prolong ownership with a temporary inherited
+copy before exec. Fatal process death falls back to kernel release after the last
+inherited open-file description closes; a pre-exec copy can briefly yield
+`WouldBlock`. No PID file, timeout guess or stale-lock removal is used.
 
 `recovery::ExclusiveRun::claim(journal_path)` is the library ownership primitive
 for explicit scheduler recovery. It checks the protected output namespace and an

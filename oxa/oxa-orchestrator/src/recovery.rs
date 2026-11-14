@@ -83,7 +83,7 @@ pub struct InspectedRun {
 /// It does not prove that a remote task or native descendant has stopped.
 pub struct ExclusiveRun {
     inspected: InspectedRun,
-    _journal: File,
+    _journal: crate::ownership::Lease,
     pub(crate) directory: File,
 }
 impl ExclusiveRun {
@@ -105,7 +105,7 @@ impl ExclusiveRun {
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
             .open(format!("/proc/self/fd/{}", handle.as_raw_fd()))?;
-        crate::ownership::lock(&journal)?;
+        let journal = crate::ownership::Lease::acquire(journal)?;
         let inspected = InspectedRun::from_bytes(read_handle(&journal, MAX_JOURNAL)?)?;
         if !inspected.snapshot.exclusive_ownership_supported {
             return Err(invalid(
