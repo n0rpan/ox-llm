@@ -1912,6 +1912,44 @@ fn orchestrate_cli_stalled_stderr() {
     assert!(processes > 0);
 }
 
+fn orchestrate_cli_structural_input_limits() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let deep = (0..17).map(|i| format!("d{i}")).collect::<Vec<_>>().join("/");
+    std::fs::create_dir_all(env.work().join(&deep)).unwrap();
+    let deep = format!("{deep}/file.txt");
+    std::fs::write(env.work().join(&deep), "approved").unwrap();
+    let mut paths = Vec::new();
+    for i in 0..32 {
+        let directory = if i == 0 {
+            "e0/p/q/extra".to_owned()
+        } else {
+            format!("e{i}/p/q")
+        };
+        std::fs::create_dir_all(env.work().join(&directory)).unwrap();
+        let path = format!("{directory}/file.txt");
+        std::fs::write(env.work().join(&path), "approved").unwrap();
+        paths.push(path);
+    }
+    for (name, paths) in [("cli-deep-input", vec![deep]), ("cli-many-entries", paths)] {
+        let mut command = cli_command(&env, &engine, name);
+        command.arg("--source").arg(env.work());
+        for path in paths {
+            command.args(["--file", &path]);
+        }
+        let output = command.arg("synthetic structural input goal").output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            !env.root().join(name).exists(),
+            "validation precedes listener/run state creation"
+        );
+    }
+    assert!(
+        engine.requests().is_empty(),
+        "uncollectable input never starts a worker or probes inference"
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -2010,6 +2048,7 @@ fn main() {
         ),
         ("orchestrate CLI Git worktrees", orchestrate_cli_git_worktrees),
         ("orchestrate CLI stalled stderr",orchestrate_cli_stalled_stderr),
+        ("orchestrate CLI structural input limits",orchestrate_cli_structural_input_limits),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {
             continue;
