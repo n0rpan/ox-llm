@@ -1796,6 +1796,8 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             };
             st.info = EngineInfo {
                 prefill_only,
+                thinking: fresh.thinking,
+                images: fresh.images,
                 ..fresh
             };
         }
@@ -1815,6 +1817,8 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
                     hint_clear: old.caps.hint_clear && fresh.caps.hint_clear,
                     ..fresh.caps
                 },
+                thinking: fresh.thinking,
+                images: fresh.images,
                 ..fresh
             };
             if merged != st.info {

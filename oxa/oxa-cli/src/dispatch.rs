@@ -1100,8 +1100,8 @@ fn list_models(
                 id,
                 format_tokens(info.n_ctx as u64),
                 format_tokens(info.max_output as u64),
-                "yes".to_string(),
-                "no".to_string(),
+                info.thinking.map_or_else(|| "?".to_string(), bool_word),
+                info.images.map_or_else(|| "?".to_string(), bool_word),
             ]
         })
         .collect();
@@ -1141,6 +1141,15 @@ fn list_models(
 }
 
 /// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
+/// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`.
+fn bool_word(b: bool) -> String {
+    if b {
+        "yes".to_string()
+    } else {
+        "no".to_string()
+    }
+}
+
 fn format_tokens(count: u64) -> String {
     let scaled = |div: f64, unit: &str| {
         let v = count as f64 / div;
