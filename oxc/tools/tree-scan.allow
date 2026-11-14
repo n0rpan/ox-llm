@@ -52,5 +52,5 @@ benchmarks/o119/backend_stub.py	secret-assignment	Records header names and boole
 benchmarks/o119/gate1.py	secret-assignment	Placeholder key "local-only" for the loopback endpoint; a real key only by env-var name.
 benchmarks/o119/proxy_probe.py	secret-assignment	Per-run random client key passed by environment to a private test controller; never stored.
 benchmarks/o119/c3_user_snapshots.py	secret-assignment	Per-launch random credential passed by environment to a private test controller; never stored.
-tests/test_interim_codex_controls.py	secret-assignment	O170 control: a synthetic placeholder search-key variable must be stripped from server and client env; no real key.
+tests/test_ab_tooling_controls.py	secret-assignment	O170 control: a synthetic placeholder search-key variable must be stripped from server and client env; no real key.
 tests/test_prereview_fixes.py	secret-assignment	O170 control: a synthetic placeholder search-key variable must be stripped from the oxa client env; no real key.

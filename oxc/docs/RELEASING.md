@@ -2,7 +2,7 @@
 
 Development happens in the public [ox-llm repository](https://github.com/n0rpan/ox-llm).
 Changes go through small pull requests against protected `main`, with the required hosted
-checks green and the appropriate review. See [CONTRIBUTING](../../CONTRIBUTING.md). There is no private-to-public snapshot promotion step.
+checks green and the appropriate review. See [CONTRIBUTING](https://github.com/n0rpan/ox-llm/blob/main/CONTRIBUTING.md). There is no private-to-public snapshot promotion step.
 
 A change that reports performance or quality results needs a linked, scrubbed receipt and
 its measurement conditions. Benchmark results are historical evidence; preserve them when
@@ -11,7 +11,7 @@ checks intact. Hardware qualification is separate from model-free CI and is repo
 the maintainer when needed.
 
 The maintainer decides when to release, creates the version tag, and approves the protected
-`release` environment. The [release workflow](../../.github/workflows/release.yml) builds
+`release` environment. The [release workflow](https://github.com/n0rpan/ox-llm/blob/main/.github/workflows/release.yml) builds
 from that tagged source on GitHub-hosted runners, runs the model-free checks, packages the
 artifacts and publishes checksums and build attestations using the job token. Contributors
 and coding agents do not create tags, releases or publish artifacts.

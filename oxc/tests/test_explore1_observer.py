@@ -1,6 +1,7 @@
 """V020-EXPLORE-1 finding 5 (observer fixes before sealed cancellation measurements), model-free:
 (1) the recording proxy sees a client cancel on the client socket itself, not one heartbeat later;
-(2) RPC JSONL evidence lines are never truncated; (3) the unload response is logged and checked."""
+(2) RPC JSONL evidence lines are never truncated. Finding (3), the unload-response check, is tested
+with the lab-only controller tooling it belongs to."""
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -14,10 +15,9 @@ import time
 import unittest
 
 LAB = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(LAB / 'tools/tiny_real'), str(LAB / 'benchmarks/gatepack'), str(LAB / 'benchmarks/fixtures')]
-import tiny_ab as ab  # noqa: E402
+sys.path[:0] = [str(LAB / 'tools/interim'), str(LAB / 'tools/tiny_real')]
+import recording_proxy as ab  # noqa: E402
 import oxa_tiny_loop as oxl  # noqa: E402
-from scoped_controller import ScopedController  # noqa: E402
 
 
 class ProxyCancelTests(unittest.TestCase):
@@ -245,79 +245,6 @@ class RpcLogLineTests(unittest.TestCase):
         rpc.q.put({'type': 'message_end', 'text': 'y' * 9000})
         rpc.next(1)
         self.assertEqual(json.loads(rpc.log.getvalue().splitlines()[0])['text'], 'y' * 9000)
-
-
-class UnloadResponseTests(unittest.TestCase):
-    """Every unload response is logged and checked; since the I1 fix (Codex 03:58) a refused
-    unload RAISES (no capture may follow) and a 409 goes back through the status barrier."""
-    IDLE = {'active_requests': 0, 'queued_requests': 0, 'image_active': False, 'loaded_model': 'm',
-            'unload': {'available': True}}
-
-    def ctl(self, replies, statuses=None):
-        sc = ScopedController.__new__(ScopedController)
-        sc.log = []
-        sc.native_fd = None
-        sc.QUIESCE_POLL_S = 0.001
-        replies = list(replies)
-        statuses = list(statuses or [])
-        calls = []
-
-        def call(method, path, body=None, timeout=100, direct=False):
-            if method == 'GET' and path == '/_local/status':
-                return statuses.pop(0) if statuses else (200, dict(self.IDLE))
-            calls.append(path)
-            r = replies.pop(0)
-            if isinstance(r, Exception):
-                raise r
-            return r
-        sc.call = call
-        sc.note = lambda **row: sc.log.append(row)
-        sc._wait_native = lambda timeout: (sc.log.append({'event': 'native_waited'}), 'exited')[1]
-        return sc, calls
-
-    def test_accepted_first_response_is_logged(self):
-        sc, calls = self.ctl([(200, {'state': 'unloaded'})])
-        self.assertTrue(sc.unload())
-        resp = [r for r in sc.log if r['event'] == 'unload_response']
-        self.assertEqual([(r['attempt'], r['status'], r['ok']) for r in resp], [(1, 200, True)])
-        self.assertIsInstance(resp[0]['wall_s'], float)
-        self.assertEqual(len(calls), 1)
-        self.assertIn({'event': 'native_waited'}, sc.log)
-
-    def test_409_goes_back_through_the_barrier(self):
-        sc, calls = self.ctl([(409, {'error': 'A request is running.'}), (200, {'state': 'unloaded'})])
-        self.assertTrue(sc.unload(quiesce_s=5))
-        self.assertEqual([r['ok'] for r in sc.log if r['event'] == 'unload_response'], [False, True])
-        self.assertEqual(sum(1 for r in sc.log if r['event'] == 'quiesce'), 2)
-
-    def test_failed_or_silent_or_wrong_state_response_raises(self):
-        from scoped_controller import UnloadRefused
-        for first in ((500, {'error': 'x'}), TimeoutError('timed out'), (200, {'state': 'loading'})):
-            with self.subTest(first=first):
-                sc, calls = self.ctl([first, (200, {'state': 'unloaded'})])
-                with self.assertRaises(UnloadRefused):
-                    sc.unload(quiesce_s=5)
-                self.assertEqual(len(calls), 1)                       # no blind retry
-                self.assertNotIn({'event': 'native_waited'}, sc.log)  # native left to stop()
-                self.assertFalse(sc.last_unload)
-
-    def test_barrier_timeout_raises_without_posting(self):
-        from scoped_controller import UnloadRefused
-        busy = dict(self.IDLE, active_requests=1, unload={'available': False})
-        sc, calls = self.ctl([], statuses=[(200, busy)] * 100000)
-        with self.assertRaises(UnloadRefused) as cm:
-            sc.unload(quiesce_s=0.2)
-        self.assertEqual(str(cm.exception), 'quiesce_timeout')
-        self.assertEqual(calls, [])
-        q = [r for r in sc.log if r['event'] == 'quiesce']
-        self.assertEqual((q[-1]['ok'], q[-1]['status']['active_requests']), (False, 1))
-
-    def test_forced_native_kill_after_accepted_unload_raises(self):
-        from scoped_controller import UnloadRefused
-        sc, _ = self.ctl([(200, {'state': 'unloaded'})])
-        sc._wait_native = lambda timeout: 'forced'
-        with self.assertRaises(UnloadRefused):
-            sc.unload()
 
 
 class DoneThenCloseTests(unittest.TestCase):
