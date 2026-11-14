@@ -98,11 +98,17 @@ pub const PROTECTED_IN_HOME: &[&str] = &[
 ];
 
 /// Inside the cwd: project files that run outside the sandbox later (B4), bound read-only.
-pub const PROTECTED_IN_CWD: &[&str] = &[".oxa", ".agents/skills", ".git/hooks", ".git/config"];
+pub const PROTECTED_IN_CWD: &[&str] = &[
+    ".oxa",
+    ".agents/skills",
+    ".git/hooks",
+    ".git/config",
+    ".git/config.worktree",
+];
 
 /// Of [`PROTECTED_IN_CWD`]: the ones the file tools never write (git runs them unsandboxed on
 /// the user's next git command); the others ask.
-pub const GIT_PROTECTED_IN_CWD: &[&str] = &[".git/hooks", ".git/config"];
+pub const GIT_PROTECTED_IN_CWD: &[&str] = &[".git/hooks", ".git/config", ".git/config.worktree"];
 
 /// The deny-list for `home` and the agent directory `agent_dir` (which may live outside
 /// `$HOME`), every entry whether or not it exists.

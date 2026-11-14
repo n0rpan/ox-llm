@@ -59,8 +59,10 @@
 //! refuses to run commands in that repository (`bwrap.rs`).
 use crate::layout::{is_home_or_above, sensitive_paths};
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -493,6 +495,10 @@ fn canon(p: &Path) -> Option<PathBuf> {
 pub(crate) struct Includes {
     pub header: bool,
     pub paths: Vec<Vec<u8>>,
+    /// Every `core.hooksPath` value, in file order (git uses the last one). The sandbox
+    /// protects the directory a repository config names: git runs the hooks there outside
+    /// the sandbox later.
+    pub hooks_paths: Vec<Vec<u8>>,
 }
 
 /// A byte stream with git's `get_next_char`: CR LF reads as LF.
@@ -577,6 +583,12 @@ pub(crate) fn parse_includes(bytes: &[u8]) -> Result<Includes, String> {
             match value {
                 Some(v) if !v.is_empty() => out.paths.push(v),
                 _ => return Err("an include path without a value".into()),
+            }
+        } else if section == b"core" && key == b"hookspath" {
+            if let Some(v) = value {
+                if !v.is_empty() {
+                    out.hooks_paths.push(v);
+                }
             }
         }
     }
@@ -703,6 +715,60 @@ fn config_includes(p: &Path, repo: &Path) -> Result<Includes, String> {
         }
     }
     Ok(inc)
+}
+
+/// sbx-hooks: the `core.hooksPath` values of `dir`'s config and `config.worktree`, including
+/// the values in files they include (all `includeIf` conditions count: this only protects
+/// more). A value is returned as git wrote it; the caller resolves it against the worktree
+/// root (`cwd`). Unreadable or unparsable files are skipped here: [`unsafe_reason`] and
+/// [`alias_refusal`] already refuse a git directory whose config cannot be checked.
+pub(crate) fn configured_hooks_paths(dir: &Path, home: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for name in ["config", "config.worktree"] {
+        read_hooks_paths(&dir.join(name), home, 0, &mut seen, &mut out);
+    }
+    out
+}
+
+fn read_hooks_paths(
+    path: &Path,
+    home: &Path,
+    depth: usize,
+    seen: &mut BTreeSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+) {
+    if depth > MAX_INCLUDE_DEPTH {
+        return;
+    }
+    let Ok(real) = fs::canonicalize(path) else {
+        return;
+    };
+    if !seen.insert(real.clone()) {
+        return;
+    }
+    let Ok(bytes) = fs::read(&real) else {
+        return;
+    };
+    let Ok(inc) = parse_includes(&bytes) else {
+        return;
+    };
+    for raw in inc.hooks_paths {
+        out.push(PathBuf::from(OsString::from_vec(raw)));
+    }
+    for raw in inc.paths {
+        let raw = PathBuf::from(OsString::from_vec(raw));
+        let p = if raw == Path::new("~") {
+            home.to_path_buf()
+        } else if let Some(rest) = raw.to_str().and_then(|s| s.strip_prefix("~/")) {
+            home.join(rest)
+        } else if raw.is_absolute() {
+            raw
+        } else {
+            real.parent().unwrap_or(Path::new(".")).join(raw)
+        };
+        read_hooks_paths(&p, home, depth + 1, seen, out);
+    }
 }
 
 /// sbx-gitsym: how long the `git config` cross-check may take.

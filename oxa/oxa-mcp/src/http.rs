@@ -19,6 +19,11 @@ pub struct HttpTransport {
     pub(crate) protocol_version: Option<String>,
     pub(crate) queue: VecDeque<Value>,
     pub(crate) closed: bool,
+    /// P4: offline, a proxy that is not loopback is refused instead of used (a proxy would
+    /// turn a permitted loopback request into a connection to the proxy's host).
+    proxy_blocked: bool,
+    /// The proxy host, for the refusal text (`None` = direct).
+    proxy_host: Option<String>,
     /// Private: one agent per connection, so the connection pool is shared by all requests.
     agent: ureq::Agent,
 }
@@ -50,8 +55,25 @@ impl HttpTransport {
             .http_status_as_error(false)
             .timeout_global(Some(timeout));
         // SET-050: `httpProxy` applies to MCP HTTP (the engine connection is direct).
-        if let Some(proxy) = cfg.proxy.as_deref().and_then(|p| ureq::Proxy::new(p).ok()) {
-            builder = builder.proxy(Some(proxy));
+        //
+        // P4: offline, a proxy is used only when it is loopback too. A proxy resolves the
+        // target and makes the connection, so a non-loopback proxy would be a connection to
+        // its host whatever the target URL is. The environment proxy (ureq's default) is
+        // subject to the same rule. A blocked proxy is refused in `post` before any request.
+        let configured = cfg.proxy.as_deref().and_then(|p| ureq::Proxy::new(p).ok());
+        let proxy = configured.or_else(ureq::Proxy::try_from_env);
+        let proxy_host = proxy.as_ref().and_then(|p| p.uri().host()).map(str::to_string);
+        let proxy_blocked = oxa_proto::offline()
+            && proxy_host
+                .as_deref()
+                .is_some_and(|h| !oxa_proto::is_loopback_host(h));
+        let proxy = if proxy_blocked { None } else { proxy };
+        // Always set the proxy explicitly: `None` disables ureq's own environment lookup.
+        builder = builder.proxy(proxy);
+        // P4: offline never follows a redirect: the redirect target is not checked by the
+        // offline gate, and a loopback endpoint could name a remote one.
+        if oxa_proto::offline() {
+            builder = builder.max_redirects(0);
         }
         let config = builder.build();
         HttpTransport {
@@ -62,6 +84,8 @@ impl HttpTransport {
             protocol_version: None,
             queue: VecDeque::new(),
             closed: false,
+            proxy_blocked,
+            proxy_host,
             agent: ureq::Agent::new_with_config(config),
         }
     }
@@ -105,6 +129,10 @@ impl HttpTransport {
     /// One POST of `body`, read in full.
     fn post(&self, body: &[u8], token: Option<&str>) -> Result<Reply, OxaError> {
         crate::offline::check(&self.url)?;
+        if self.proxy_blocked {
+            let host = self.proxy_host.as_deref().unwrap_or("a proxy");
+            return Err(oxa_proto::offline_error(&format!("the MCP proxy ({host})")));
+        }
         let mut req = self.agent.post(self.url.as_str());
         if !self.has_header("accept") {
             req = req.header("Accept", "application/json, text/event-stream");
@@ -115,6 +143,14 @@ impl HttpTransport {
         let req = self.decorate(req, token);
         let mut resp = req.send(body).map_err(|e| self.transport_error(e))?;
         let status = resp.status().as_u16();
+        // P4: offline, redirects are not followed (the agent has `max_redirects(0)`); a
+        // redirect is refused here without looking at its target.
+        if oxa_proto::offline() && (300..400).contains(&status) {
+            return Err(oxa_proto::offline_error(&format!(
+                "the MCP redirect from {}",
+                self.url
+            )));
+        }
         let session = resp
             .headers()
             .get("mcp-session-id")
@@ -374,7 +410,7 @@ impl Transport for HttpTransport {
             return;
         }
         self.closed = true;
-        if self.session_id.is_some() && crate::offline::check(&self.url).is_ok() {
+        if self.session_id.is_some() && !self.proxy_blocked && crate::offline::check(&self.url).is_ok() {
             let source = self.token_source();
             let token = source.and_then(|src| src.token().ok().flatten());
             let req = self.decorate(self.agent.delete(self.url.as_str()), token.as_deref());

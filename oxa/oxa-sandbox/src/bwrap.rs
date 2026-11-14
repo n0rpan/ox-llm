@@ -1,11 +1,14 @@
 //! A9: the bwrap argv. Owner: task A9. Signatures below are frozen; bodies are yours.
-use crate::gitdirs::{alias_refusal, is_real_dir, protected_entries, unsafe_reason, Mounts};
+use crate::gitdirs::{
+    alias_refusal, configured_hooks_paths, is_real_dir, protected_entries, unsafe_reason, Mounts,
+};
 use crate::layout::{
     home_protected_paths, is_home_itself, is_home_or_above, protected_paths, sensitive_paths, Layout,
 };
 use crate::run::run_argv;
 use crate::Bwrap;
 use oxa_proto::{codes, CancelToken, ExecSpec, OxaError};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Fixed base environment inside the sandbox (the `PATH` is the layout's, B2).
@@ -167,6 +170,28 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
             push(&mut a, &["--ro-bind", &p, &p]);
         }
     }
+    // sbx-hooks: git runs the hooks of `core.hooksPath` (a repository config may name a
+    // directory inside the project or a writable cache). Protect it even in plan mode: the
+    // layout's read-write binds are writable there.
+    protect_hooks_paths(&mut a, cwd_path, &home_c, layout, mode);
+    // Host runtime IPC is not part of the project and not a network socket, so the network
+    // namespace does not contain it. A command can otherwise reach the user's session bus
+    // (which starts processes outside the sandbox), the system bus and the Docker/Podman
+    // sockets, and systemd-resolved (DNS with the network unshared). Mask them after every
+    // bind, before the deny-list.
+    if layout.mask_runtime_ipc {
+        for p in runtime_ipc_paths(&home_c) {
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            let ps = p.to_string_lossy();
+            if meta.is_dir() {
+                push(&mut a, &["--tmpfs", &ps, "--remount-ro", &ps]);
+            } else {
+                push(&mut a, &["--ro-bind", "/dev/null", &ps]);
+            }
+        }
+    }
     // B3: the deny-list, after every bind so no bind re-exposes it. sbx-symhome: each entry is
     // masked where it is shown: at its own path (as before), at its canonical path when that
     // lies outside the hidden home, and inside every mount whose canonical source holds it
@@ -318,8 +343,136 @@ cannot be checked; commands are not run",
     let cwd = canon(&s.cwd);
     let mode = cwd_mode(s, home, layout);
     let writable = mode == CwdMode::Writable;
-    let mut dirs = layout.git.dirs.clone();
     let dotgit = cwd.join(".git");
+    // sbx-hooks/sbx-gitsym: a `.git` that is not a real directory cannot be pinned and
+    // protected. A symlink can be repointed at a writable git directory, and a `.git` file
+    // can name one inside the cwd (a worktree in the project itself, or a forged `gitdir:`
+    // line): its `config` and `hooks` would stay writable while git outside the sandbox runs
+    // them. Both are refused rather than guessed at.
+    if let Ok(meta) = std::fs::symlink_metadata(&dotgit) {
+        if meta.file_type().is_symlink() {
+            return Some(format!(
+                "sandbox refused: {} is a symlink, so the git directory it names cannot be \
+protected; commands are not run here",
+                dotgit.display()
+            ));
+        }
+        if meta.is_dir() {
+            // A real `.git` can still move its common dir elsewhere (a linked-worktree
+            // layout). Git reads hooks and config from there.
+            if let Some(target) = commondir_target(&dotgit) {
+                let home_entries: Vec<PathBuf> = if mode == CwdMode::HomeWorkspace {
+                    home_workspace_entries(&canon(home), layout)
+                        .iter()
+                        .map(|p| canon(p))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let reachable = target.starts_with(&cwd)
+                    || layout.write.iter().any(|w| target.starts_with(canon(w)))
+                    || home_entries.iter().any(|e| target.starts_with(e));
+                if reachable {
+                    return Some(format!(
+                        "sandbox refused: {} names the common dir {}, which lies in what the \
+command can write; its hooks and config could be changed, so commands are not run here",
+                        dotgit.join("commondir").display(),
+                        target.display()
+                    ));
+                }
+                // A real `.git` with a common dir is not the plain repository layout the
+                // sandbox protects (a linked worktree has a `.git` file, not a dir). Its
+                // config is not read here, so a hooks path in it cannot be checked.
+                return Some(format!(
+                    "sandbox refused: {} names the common dir {}, which the sandbox does not \
+protect for a real .git directory; its hooks and config cannot be checked, so commands \
+are not run here",
+                    dotgit.join("commondir").display(),
+                    target.display()
+                ));
+            }
+        }
+        if meta.is_file() {
+            if let Some(target) = dotgit_file_target(&dotgit) {
+                let home_entries: Vec<PathBuf> = if mode == CwdMode::HomeWorkspace {
+                    home_workspace_entries(&canon(home), layout)
+                        .iter()
+                        .map(|p| canon(p))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let reachable = target.starts_with(&cwd)
+                    || layout.write.iter().any(|w| target.starts_with(canon(w)))
+                    || home_entries.iter().any(|e| target.starts_with(e));
+                // A `.git` file that `gitdirs::resolve` did not validate is not bound; its
+                // config could still name a hooks path inside this writable cwd, so it cannot
+                // be checked. Refuse rather than guess.
+                let validated = layout
+                    .git
+                    .dirs
+                    .iter()
+                    .any(|d| target == *d || target.starts_with(d));
+                if reachable || !validated {
+                    return Some(format!(
+                        "sandbox refused: the .git file names {}, which is not a git directory \
+the sandbox validated, or lies in what the command can write; its hooks and config cannot \
+be protected, so commands are not run here",
+                        target.display()
+                    ));
+                }
+            }
+        }
+    }
+    // A validated worktree can still name a common dir inside the cwd. The cwd bind exposes
+    // it, and only the plain `.git` directory layout is self-bound and protected. Refuse any
+    // worktree git dir (or common dir) that lies in what the command can write.
+    if !is_real_dir(&dotgit) {
+        let home_entries: Vec<PathBuf> = if mode == CwdMode::HomeWorkspace {
+            home_workspace_entries(&canon(home), layout)
+                .iter()
+                .map(|p| canon(p))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for d in &layout.git.dirs {
+            let reachable = d.starts_with(&cwd)
+                || layout.write.iter().any(|w| d.starts_with(canon(w)))
+                || home_entries.iter().any(|e| d.starts_with(e));
+            if reachable {
+                return Some(format!(
+                    "sandbox refused: the worktree's git directory {} lies in what the command \
+can write; its hooks and config cannot be protected, so commands are not run here",
+                    d.display()
+                ));
+            }
+        }
+    }
+    // sbx-hooks: a `core.hooksPath` inside what the command can write is protected by
+    // `protect_hooks_paths`. A symlink there, or a missing parent directory, cannot be
+    // pinned read-only; refuse rather than let a command replace it.
+    let home_c = canon(home);
+    let roots = writable_roots(&cwd, &home_c, layout, mode);
+    for p in configured_hook_paths(&cwd, &home_c, layout) {
+        let Some(root) = under_any(&p, &roots) else {
+            continue;
+        };
+        let symlink = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
+        if symlink || has_symlink_ancestor(&p, root) {
+            return Some(format!(
+                "sandbox refused: the repository's core.hooksPath {} is a symlink or lies below one, so its hooks cannot be pinned; commands are not run here",
+                p.display()
+            ));
+        }
+        if std::fs::symlink_metadata(&p).is_err() && !p.parent().is_some_and(is_real_dir) {
+            return Some(format!(
+                "sandbox refused: the repository's core.hooksPath {} does not exist and its parent is not a real directory, so it cannot be masked; commands are not run here",
+                p.display()
+            ));
+        }
+    }
+    let mut dirs = layout.git.dirs.clone();
     if is_real_dir(&dotgit) {
         dirs.push(canon(&dotgit));
     }
@@ -353,6 +506,185 @@ reaches what a command could change, so commands are not run here"
     })
 }
 
+/// sbx-ipc: the host runtime sockets a command must not reach. They live outside `$HOME`,
+/// so the deny-list does not cover them and `--unshare-net` does not either (a Unix socket is
+/// not a network socket).
+fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
+    let uid = std::fs::metadata(home)
+        .map(|m| m.uid())
+        .unwrap_or_else(|_| unsafe { libc::geteuid() });
+    [
+        format!("/run/user/{uid}"),
+        "/run/systemd/resolve".to_string(),
+        "/run/dbus/system_bus_socket".to_string(),
+        "/run/systemd/private".to_string(),
+        "/run/docker.sock".to_string(),
+        "/run/podman/podman.sock".to_string(),
+        "/run/containers".to_string(),
+        "/run/nscd/socket".to_string(),
+        "/run/avahi-daemon/socket".to_string(),
+        "/run/sssd".to_string(),
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect()
+}
+
+/// The writable roots of a command: the cwd (only when it is bound read-write), the layout's
+/// read-write binds and, for a home workspace, its plain entries.
+fn writable_roots(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if mode == CwdMode::Writable {
+        out.push(cwd.to_path_buf());
+    }
+    out.extend(layout.write.iter().map(|p| canon(p)));
+    if mode == CwdMode::HomeWorkspace {
+        out.extend(home_workspace_entries(home, layout).iter().map(|p| canon(p)));
+    }
+    out
+}
+
+/// The directory a configured `core.hooksPath` names, resolved as git resolves it: absolute
+/// as written, `~/` in the home directory, anything else from the worktree root (`cwd`).
+fn resolve_hooks_path(raw: &Path, home: &Path, cwd: &Path) -> PathBuf {
+    let p = if raw == Path::new("~") {
+        home.to_path_buf()
+    } else if let Some(rest) = raw.to_str().and_then(|s| s.strip_prefix("~/")) {
+        home.join(rest)
+    } else if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        cwd.join(raw)
+    };
+    lexical_normalize(&p)
+}
+
+/// Every `core.hooksPath` of the repository at `cwd`, from its git directories' configs.
+fn configured_hook_paths(cwd: &Path, home: &Path, layout: &Layout) -> Vec<PathBuf> {
+    let mut dirs = layout.git.dirs.clone();
+    let dotgit = cwd.join(".git");
+    if is_real_dir(&dotgit) {
+        dirs.push(canon(&dotgit));
+    }
+    dirs.sort();
+    dirs.dedup();
+    let mut out: Vec<PathBuf> = dirs
+        .iter()
+        .flat_map(|d| configured_hooks_paths(d, home))
+        .map(|raw| resolve_hooks_path(&raw, home, cwd))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A symlink between `root` and `p`: a mount on `p` would not pin a directory the command can
+/// rename (the target of the link is what git opens).
+/// `p` is inside one of `roots`, lexically or after resolving the existing part.
+fn under_any<'a>(p: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    roots.iter().find(|r| p.starts_with(r) || canon(p).starts_with(r))
+}
+
+fn has_symlink_ancestor(p: &Path, root: &Path) -> bool {
+    let Ok(rel) = p.strip_prefix(root) else {
+        return false;
+    };
+    let mut cur = root.to_path_buf();
+    for c in rel.components() {
+        cur.push(c.as_os_str());
+        if std::fs::symlink_metadata(&cur).is_ok_and(|m| m.file_type().is_symlink()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// sbx-hooks: bind a repository's `core.hooksPath` directory read-only (or mask it when it
+/// does not exist yet) so a command cannot plant a hook that git runs outside the sandbox.
+/// Only paths inside what the command can write are touched; a read-only or hidden path needs
+/// nothing. A symlink or a missing parent is refused by [`refusal`].
+fn protect_hooks_paths(a: &mut Vec<String>, cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) {
+    let roots = writable_roots(cwd, home, layout, mode);
+    let protected = protected_paths(cwd);
+    for p in configured_hook_paths(cwd, home, layout) {
+        let Some(root) = under_any(&p, &roots) else {
+            continue;
+        };
+        if protected.contains(&p) || has_symlink_ancestor(&p, root) {
+            continue;
+        }
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => {}
+            Ok(m) if m.is_dir() || m.is_file() => {
+                let p = p.to_string_lossy();
+                push(a, &["--ro-bind", &p, &p]);
+            }
+            Ok(_) => {
+                let p = p.to_string_lossy();
+                push(a, &["--ro-bind", "/dev/null", &p]);
+            }
+            Err(_) if p.parent().is_some_and(is_real_dir) => {
+                let p = p.to_string_lossy();
+                push(a, &["--tmpfs", &p, "--remount-ro", &p]);
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// The canonical (or, when it does not exist yet, lexical) directory named by a `.git` file.
+/// `None` when the file is unreadable or names nothing; git then has no repository to use.
+fn dotgit_file_target(dotgit: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dotgit).ok()?;
+    let line = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("gitdir:"))?
+        .trim();
+    if line.is_empty() {
+        return None;
+    }
+    let p = Path::new(line);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        dotgit.parent()?.join(p)
+    };
+    // A missing target cannot be canonicalised; normalise it lexically so `..` cannot make a
+    // writable directory look outside the cwd (git would resolve it to the same place).
+    Some(std::fs::canonicalize(&abs).unwrap_or_else(|_| lexical_normalize(&abs)))
+}
+
+/// The directory a real `.git`'s `commondir` file names (canonical, or lexically normalised
+/// when it does not exist yet).
+fn commondir_target(dotgit: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dotgit.join("commondir")).ok()?;
+    let line = text.lines().next()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let p = Path::new(line);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        dotgit.join(p)
+    };
+    Some(std::fs::canonicalize(&abs).unwrap_or_else(|_| lexical_normalize(&abs)))
+}
+
+/// `p` with `.` removed and `..` popped, without touching the file system.
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 /// How the cwd of a command is bound (B3, O-199).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CwdMode {
@@ -429,7 +761,10 @@ pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaErro
     Ok(Bwrap {
         bwrap,
         home: home.to_path_buf(),
-        layout: Layout::default(),
+        layout: Layout {
+            mask_runtime_ipc: true,
+            ..Layout::default()
+        },
     })
 }
 

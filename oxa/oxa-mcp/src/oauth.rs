@@ -1043,11 +1043,26 @@ struct Reply {
 }
 
 fn http_agent() -> ureq::Agent {
-    let config = ureq::Agent::config_builder()
+    let mut builder = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(30)))
-        .build();
-    ureq::Agent::new_with_config(config)
+        .timeout_global(Some(Duration::from_secs(30)));
+    // P4: offline, the sign-in requests are direct and never follow a redirect. A proxy
+    // (configured or from the environment) would be a connection to its host; a redirect
+    // target is not checked by the offline gate.
+    if oxa_proto::offline() {
+        builder = builder.proxy(None).max_redirects(0);
+    }
+    ureq::Agent::new_with_config(builder.build())
+}
+
+/// P4: offline, a redirect is refused before its target is used.
+fn check_offline_redirect(url: &str, status: u16) -> Result<(), OxaError> {
+    if oxa_proto::offline() && (300..400).contains(&status) {
+        return Err(oxa_proto::offline_error(&format!(
+            "the OAuth redirect from {url}"
+        )));
+    }
+    Ok(())
 }
 
 fn unreachable_error(url: &str, e: ureq::Error) -> OxaError {
@@ -1066,6 +1081,7 @@ fn get(url: &str, headers: &[(&str, &str)]) -> Result<Reply, OxaError> {
     }
     let mut resp = req.call().map_err(|e| unreachable_error(url, e))?;
     let status = resp.status().as_u16();
+    check_offline_redirect(url, status)?;
     let bytes = resp
         .body_mut()
         .read_to_vec()
@@ -1088,6 +1104,7 @@ fn post(url: &str, content_type: &str, body: String, headers: &[(&str, String)])
     }
     let mut resp = req.send(body.as_bytes()).map_err(|e| unreachable_error(url, e))?;
     let status = resp.status().as_u16();
+    check_offline_redirect(url, status)?;
     let bytes = resp
         .body_mut()
         .read_to_vec()
