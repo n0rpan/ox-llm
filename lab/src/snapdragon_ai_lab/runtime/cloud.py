@@ -498,6 +498,11 @@ class SSEDecoder:
 
     def finish(self):
         out = self._drain(final=True)
+        if self.buffer:
+            line, self.buffer = self.buffer, b''
+            event = self._line(line)
+            if event is not None:
+                out.append(event)
         event = self._dispatch()
         if event is not None:
             out.append(event)

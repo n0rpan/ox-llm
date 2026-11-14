@@ -151,6 +151,11 @@ class SSEParsing(CloudCase):
         self.assertEqual(parser.feed(b'data: one\n\ndata: two\n'), [(None, b'one')])
         self.assertEqual(parser.feed(b'\n'), [(None, b'two')])
 
+    def test_sse_decoder_finishes_a_final_line_without_a_blank_line(self):
+        parser = cloud.SSEDecoder()
+        self.assertEqual(parser.feed(b'data: last'), [])
+        self.assertEqual(parser.finish(), [(None, b'last')])
+
     def test_each_line_ending_is_normalised_end_to_end(self):
         for ending in (b'\n', b'\r\n', b'\r'):
             with self.subTest(ending=ending):

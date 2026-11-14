@@ -669,4 +669,10 @@ def forward(self, st, item, key):
         except Exception:
             pass
         if hold is not None and not hold.settled:
-            hold.settle()
+            if st.led is not None and getattr(st.led, 'written', None) is None:
+                # An unexpected failure escaped before the row was written; never release a
+                # reservation without recording spend.
+                _record(st, item, hold, translator.usage if translator else None, True,
+                        503, 'cloud_unavailable')
+            else:
+                hold.settle()
