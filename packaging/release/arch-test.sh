@@ -24,7 +24,7 @@ for variant in ox-llm-bin ox-llm; do
   namcap PKGBUILD 2>&1 | tee /tmp/namcap.log
   namcap "$package" 2>&1 | tee -a /tmp/namcap.log
   # Warnings remain visible; any namcap error fails the job.
-  if grep -qE '(^| )E: ' /tmp/namcap.log; then exit 1; fi
+  if grep -qE '(^| )E: |^Error:' /tmp/namcap.log; then exit 1; fi
   cp "$package" /packages/
   cp /tmp/namcap.log "/packages/namcap-$variant.txt"
   pacman -U --noconfirm "$package"

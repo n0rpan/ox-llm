@@ -37,6 +37,12 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
            'XDG_STATE_HOME': sandbox + '/state', 'XDG_CACHE_HOME': sandbox + '/cache',
            'XDG_DATA_HOME': sandbox + '/data', 'XDG_RUNTIME_DIR': sandbox + '/runtime',
            'PYTHONDONTWRITEBYTECODE': '1'}
+    subprocess.run(['/usr/bin/python3', '-B', '-c',
+        "import sys; sys.path.insert(0, '/usr/share/ox-llm/lab/src'); "
+        "from snapdragon_ai_lab import bootstrap; "
+        "from snapdragon_ai_lab.runtime import controller; "
+        "assert bootstrap.asset_plan(bootstrap.project_root()); assert controller.Manager"],
+        env=env, check=True)
     for binary in ('oxc', 'oxa', 'oxe'):
         result = subprocess.run([binary, '--version'], env=env, text=True, capture_output=True, check=True)
         assert '0.2.0' in result.stdout, (binary, result.stdout)

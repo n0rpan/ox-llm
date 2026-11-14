@@ -47,7 +47,8 @@ toolchain versions are essential and reproducibility across dates is not promise
 
 The fresh x86_64 `archlinux:latest` job builds both the binary package and the
 source package, runs the source package's model-free test subset, invokes namcap,
-installs each package, runs all three `--version` commands and CLI help, validates
+installs each package, checks the installed Python modules/bootstrap data, runs all three `--version`
+commands and CLI help, validates
 `oxe --check-args`, and sends a real loopback completion through `oxe-server`'s
 stub engine. It checks package integrity, uninstalls and verifies every package
 file and package-specific directory is gone. The two Arch packages, their
@@ -65,11 +66,18 @@ maintainer laptop is needed for the existing gates.
 
 ## Run and inspect, without publishing
 
-After the workflow exists on the default branch, dispatch **release-build** in
-Actions, selecting the exact reviewed branch/commit. GitHub requires a newly
-introduced workflow to exist on the default branch before manual dispatch is
-available. While it is still only in a draft PR, its path-filtered PR run provides
-the same build and install gates; do not bypass a required maintainer approval.
+Dispatch **release-build** on the reviewed branch, then record the resulting
+run's immutable source commit. The branch must remain at the reviewed commit.
+The CLI/API can dispatch this workflow while it is still in a draft PR; this was
+verified without putting the file on main. The Actions UI may not expose the
+manual button for a branch-only workflow. For example:
+
+```sh
+gh workflow run release-build.yml --repo n0rpan/ox-llm --ref release-build/v020-artifacts
+```
+
+The path-filtered PR trigger exercises the same build and install gates.
+Do not bypass a required maintainer approval.
 
 Download each architecture's artifact from that run, into separate directories.
 Check the workflow conclusion, source commit, and both platform jobs. In each
