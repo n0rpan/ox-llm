@@ -266,6 +266,10 @@ impl InspectedRun {
                     finished = true;
                 }
                 "control_rejected" => {}
+                "cancel_all"
+                    if transport == Transport::LocalRpc
+                        && record.worker.is_none()
+                        && workers.len() == expected => {}
                 "workspace" | "workspace_tool" | "workspace_review" | "stopping" | "policy_verified"
                 | "working" | "usage" | "permission_denied" | "steered" | "steer_requested"
                 | "steer_admitted" | "steer_unconfirmed" | "status" => {
