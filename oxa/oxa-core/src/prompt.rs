@@ -533,6 +533,28 @@ pub const LENGTH_CONTINUE: &str = "Continue.";
 /// (W4): the request after a resume is well-formed and the same on every resume.
 pub const TOOL_INTERRUPTED: &str = "Tool call was interrupted: oxa stopped before it returned a result, so it may or may not have run. Check its effect and re-issue the call if it is still needed.";
 
+// ---- the repeated-read guard (`repeat.rs`; oxa only) ----
+
+/// First words of every repeat notice; `repeat.rs` recognises an earlier notice by them.
+pub const REPEAT_NOTICE_HEAD: &str = "Not repeated:";
+
+/// The tool result that replaces a read whose identical result is already in the context
+/// `identical` times, the newest one `back` tool results ago (1 = the previous result).
+/// Deterministic (W4): the call is quoted as the model wrote it.
+pub fn repeat_notice(name: &str, args_raw: &str, identical: u32, back: u32) -> String {
+    let where_ = if back <= 1 {
+        "the previous tool result".to_string()
+    } else {
+        format!("the tool result {back} results back")
+    };
+    format!(
+        "{REPEAT_NOTICE_HEAD} this exact call ({name} {args_raw}) already returned the same content \
+         {identical} times; it is unchanged and is in {where_}. Do not call it again. Use that \
+         content and continue: make the edit or run the command the task needs, or read a \
+         different range or file."
+    )
+}
+
 // ---- T2: the tool-call repair turn (oxa only; pi never sees a malformed call) ----
 // One fixed user message per repair: `REPAIR_HEAD`, one cause line, `REPAIR_TAIL`, joined by
 // a space. Deterministic (W4): names and lists come from the reply and the declared schemas,

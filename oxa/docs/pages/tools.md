@@ -60,6 +60,12 @@ At most two repairs can follow each other. A valid tool call resets the count. T
 
 `oxa.toolRepair: false` turns repairs off, and a malformed reply then ends the run at once.
 
+## Repeated reads
+
+A model can get stuck calling the same read again and again. When a `read`, `grep`, `find` or `ls` call (or any other read-only tool) with the same arguments has already returned the same content three times since the last user message, and no edit, write or command ran in between, oxa still runs it but sends a short note instead of the content: the call is unchanged, its content is already in the conversation, go on with the task. The second note is the last: the next identical call ends the run with a stop message. A re-read after an edit, a different range, or the same read after a new prompt is never affected.
+
+`oxa.toolRepeatGuard: false` turns this off.
+
 ## subagent
 
 `subagent` lets the model hand a task to a child oxa that works in its own context and returns only its final answer. It keeps long searches out of the main conversation.

@@ -12,6 +12,8 @@
 - A `subagent` child process now dies with its parent: the child is started with the Linux parent-death signal (SIGTERM), so a killed or crashed parent no longer leaves a child holding an engine request. Abort still ends the child's process group (TERM, then KILL after 2 s).
 - A cache miss is never reported with the cause `unknown`: without a rebase it is `cold_start` on the first request and `engine_evicted` afterwards.
 - `rust-version` is 1.87; the release profile unwinds on panic.
+- Repeated reads: a read-only call that already returned the same content three times in a row (no edit, write or command in between, same prompt) gets a short note instead of the content; after two notes the next repeat stops the run (`oxa.toolRepeatGuard`, on by default). See [tools.md](docs/pages/tools.md#repeated-reads).
+- `oxa.sampling.mode: model` (opt-in) sends the model card's sampling for Qwen3.6 and Ornith instead of `temperature: 0`. The default stays greedy: the engine's speculative decoding runs on greedy requests only.
 
 ### Not in oxa (removed before the release)
 
