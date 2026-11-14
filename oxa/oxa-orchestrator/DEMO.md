@@ -111,3 +111,7 @@ Structural input validation uses the same bounds as output collection. Unit test
 materialize and collect unchanged snapshots at 16 directory levels and 128 total
 entries. The CLI rejects 17-level and 129-entry input layouts before creating run
 state or probing inference; eligible new-file scope is checked too.
+Candidate publication additionally rejects a group-writable destination parent
+before staging state is created. Namespace tests also reject a replaceable
+ancestor and symlink aliases, while private-parent publication still produces the
+exact approved candidate hash. No existing permissions are changed by staging.
