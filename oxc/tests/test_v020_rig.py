@@ -16,8 +16,8 @@ import threading
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'lab' / 'benchmarks' / 'req_path'))
-sys.path.insert(0, str(ROOT / 'lab' / 'benchmarks' / 'tokens'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmarks' / 'req_path'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'benchmarks' / 'tokens'))
 sys.path.insert(0, str(ROOT / 'tools' / 'gates'))
 import stub_bench as sb  # noqa: E402
 import token_harness as th  # noqa: E402
