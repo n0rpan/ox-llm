@@ -338,7 +338,7 @@ def path_for(item):
     return urllib.parse.urlsplit(item['base_url']).path.rstrip('/') + '/chat/completions'
 
 
-def connection(item, secret_key):
+def connection(item, key):
     """(connection, path, headers) for the upstream call.  Raises CloudError only."""
     parts = urllib.parse.urlsplit(item['base_url'])
     try:
@@ -354,9 +354,9 @@ def connection(item, secret_key):
     path = path_for(item)
     headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
     if item['provider'] == 'anthropic':
-        headers.update({'x-api-key': secret_key, 'anthropic-version': '2023-06-01'})
+        headers.update({'x-api-key': key, 'anthropic-version': '2023-06-01'})
     else:
-        headers['Authorization'] = 'Bearer ' + secret_key
+        headers['Authorization'] = 'Bearer ' + key
     return connection, path, headers
 
 
