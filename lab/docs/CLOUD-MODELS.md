@@ -166,3 +166,9 @@ are unaffected.
 Tests: `lab/tests/test_cloud_anthropic.py` runs a mock Messages server on loopback (request
 translation, tools, refusal, streaming tool calls, key redaction, budget and cloud-off). No test
 reads a real key or calls the real API.
+
+## Future: Sign in with ChatGPT
+
+A design for a participating-app OAuth flow (design only, not implemented) is in
+[SIGN-IN-WITH-CHATGPT.md](SIGN-IN-WITH-CHATGPT.md). It uses oxc's own registered client
+identity only and keeps the same cloud-off default, offline refusal, budget and ledger rules.
