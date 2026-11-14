@@ -113,20 +113,20 @@ jobs:
           python3 -c 'import sys; print(sys.executable, sys.version)
           assert sys.version_info >= (3, 12), "python3 >= 3.12 required"
           assert sys.executable.startswith("/usr/"), "python3 must live under /usr (bwrap screen)"'
-      - name: Anthropic SDK for the mock-only D6 tests
-        # The native Messages client is the official SDK; every test talks to a loopback mock,
-        # never a real API and never a real key. Install into the /usr interpreter the bwrap
-        # screen uses, not a separate setup-python toolchain.
-        run: sudo python3 -m pip install --break-system-packages --disable-pip-version-check 'anthropic==0.125.0'
       - name: bubblewrap + unprivileged user namespaces
         # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor
         # (kernel.apparmor_restrict_unprivileged_userns=1); bwrap needs them. Lifted for this
         # ephemeral runner VM only.
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo apt-get install -y -q --no-install-recommends bubblewrap python3-pip
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind / / true || { echo "::error::bwrap cannot create a sandbox on this runner"; exit 1; }
+      - name: Anthropic SDK for the mock-only D6 tests
+        # The native Messages client is the official SDK; every test talks to a loopback mock,
+        # never a real API and never a real key. Install into the /usr interpreter the bwrap
+        # screen uses, not a separate setup-python toolchain.
+        run: sudo python3 -m pip install --break-system-packages --disable-pip-version-check 'anthropic==0.125.0'
       - name: Unit tests (verbose, so skips are visible)
         run: |
           set -o pipefail
