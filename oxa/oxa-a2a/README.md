@@ -15,7 +15,10 @@ task identity checks, a bounded SSE data reader, authenticated loopback HTTP
 client and an owned mock agent. File parts and unknown
 required extensions fail closed. Cards cannot change the registered endpoint.
 The client provides send, get, stream, cancel and resubscribe. Streams bind
-task/context IDs and reject disconnects before a final record. Tests exercise
+task/context IDs and reject disconnects before a final record. Send and stream
+continuations retain each request-specified task/context constraint, including
+the first reply. Bound Message replies must carry the requested identity fields;
+unbound new-task/direct-reply requests remain supported. Tests exercise
 absolute deadlines, output limits, bad auth, malformed HTTP and protocol errors.
 
 The mock uses random ephemeral capability tokens, loopback ephemeral ports,
