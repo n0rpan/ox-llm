@@ -254,7 +254,7 @@ fn run_inner(
             if st.shared.cancel.is_cancelled() {
                 return Ok(RunEnd::Aborted);
             }
-            // The repeated-read guard gave up: the same read after its notices ends the run.
+            // The repeat guard gave up: the same call after its notices ends the run.
             if let Some(r) = results.iter().find(|r| r.stop) {
                 let text = crate::repeat::stop_text(&r.tool_name);
                 persist(

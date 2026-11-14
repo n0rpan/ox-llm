@@ -189,7 +189,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.thinking.policy", Kind::Enum(&["fixed", "auto"]), "null"),
     key("oxa.toolOutputCap", Kind::Number, "16384"),
     key("oxa.toolRepair", Kind::Bool, "true"),
-    // The repeated-read guard (oxa-core `repeat.rs`).
+    // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),

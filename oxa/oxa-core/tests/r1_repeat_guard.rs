@@ -1,7 +1,9 @@
-//! The repeated-read guard (`oxa-core/src/repeat.rs`) and opt-in model sampling
+//! The repeat guard (`oxa-core/src/repeat.rs`) and opt-in model sampling
 //! (`oxa-core/src/sampling.rs`). Block 1 (2026-11-14): a model under greedy decoding made 64
-//! identical `read` calls of one 10-line range and never edited. A scripted engine replays that
-//! loop here; re-reads after an edit, different ranges and a new prompt must never trip it.
+//! identical `read` calls of one 10-line range and never edited; with a read-only guard (Arm A)
+//! the loop moved to an identical `bash` command. A scripted engine replays both loops here;
+//! re-reads and re-runs after an edit, changing output, different ranges, mixed tools and a new
+//! prompt must never trip it.
 
 use oxa_compact::CompactPolicy;
 use oxa_config::{Dirs, QueueMode, Settings};
@@ -10,14 +12,39 @@ use oxa_core::{append_entry, prompt, run_loop, Queue, RunEnd, SessionState, Shar
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    shown_why, AgentEvent, CancelToken, Engine, EntryBody, FrozenPrefix, HeadlessUi, Mode, Policy, Role,
-    ThinkingLevel, Tool, Value, VecSink, WireMsg,
+    shown_why, AgentEvent, CancelToken, Engine, EntryBody, ExecResult, ExecSpec, FrozenPrefix, HeadlessUi,
+    Mode, OxaError, Policy, Role, Sandbox, ThinkingLevel, Tool, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
-use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore, Transcript, Tree};
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
+
+/// Runs `sh -c <command>` in the test's own work directory (as `l4_budget.rs`). Test-only.
+struct ShSandbox;
+impl Sandbox for ShSandbox {
+    fn check(&self) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+        Vec::new()
+    }
+    fn run(&self, s: &ExecSpec, _c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&s.command)
+            .current_dir(&s.cwd)
+            .output()
+            .expect("sh runs");
+        let mut output = out.stdout;
+        output.extend_from_slice(&out.stderr);
+        ExecResult {
+            output,
+            exit: out.status.code(),
+            timed_out: false,
+        }
+    }
+}
 
 fn tools() -> Vec<Arc<dyn Tool>> {
     let mut t = oxa_tools::builtin_tools();
@@ -61,7 +88,7 @@ fn state_for(
         store,
         hooks: Vec::new(),
         policy: Box::new(ModePolicy::new()) as Box<dyn Policy>,
-        sandbox: Arc::new(NoSandbox),
+        sandbox: Arc::new(ShSandbox),
         settings,
         dirs: Dirs::under(env.root()),
         cwd: cwd.clone(),
@@ -162,11 +189,9 @@ fn identical_read_loop_gets_notices_then_stops() {
     for r in &res[LIMIT as usize..] {
         assert!(is_notice(r), "{r}");
         assert!(r.contains(r#"read {"path":"a.txt","offset":5,"limit":3}"#), "{r}");
-        assert!(r.contains(&format!("same content {LIMIT} times")), "{r}");
+        assert!(r.contains(&format!("same result {LIMIT} times in a row")), "{r}");
         assert!(!r.contains("line 5"), "{r}");
     }
-    assert!(res[LIMIT as usize].contains("the previous tool result"));
-    assert!(res[LIMIT as usize + 1].contains("2 results back"));
     // The run ended with a shown stop message after the last notice; no further request.
     assert_eq!(eng.requests().len(), res.len());
     let shown: Vec<_> = st
@@ -374,4 +399,118 @@ fn a_read_after_an_edit_in_the_same_batch_is_not_a_repeat() {
     assert!(std::fs::read_to_string(env.work().join("a.txt"))
         .unwrap()
         .contains("line 30 edited"));
+}
+
+fn bash(id: &str, command: &str) -> ScriptTurn {
+    ScriptTurn::tool(id, "bash", &serde_json::json!({ "command": command }).to_string())
+}
+
+/// Block 1 Arm A: the loop moved to an identical bash command (here one that fails the same way
+/// each time: an error result is covered too).
+#[test]
+fn identical_bash_loop_gets_notices_then_stops() {
+    let env = TestEnv::new();
+    let turns: Vec<ScriptTurn> = (0..20)
+        .map(|i| bash(&format!("b{i}"), "echo 'test result: FAILED'; exit 101"))
+        .collect();
+    let (mut st, eng) = state(&env, turns, Settings::default());
+    let (end, _) = run(&mut st, "fix the failing test");
+    assert_eq!(end, RunEnd::Stopped);
+    let res = results(&st);
+    assert_eq!(res.len(), (LIMIT + NOTICES_BEFORE_STOP + 1) as usize, "{res:#?}");
+    for r in &res[..LIMIT as usize] {
+        assert!(r.contains("test result: FAILED") && !is_notice(r), "{r}");
+    }
+    for r in &res[LIMIT as usize..] {
+        assert!(is_notice(r) && r.contains("(bash {"), "{r}");
+    }
+    assert_eq!(eng.requests().len(), res.len());
+}
+
+/// `cargo test` re-run after each edit: the same failing output every time, but an edit sits
+/// between the runs, so the run of identical (call, result) pairs is never consecutive.
+#[test]
+fn test_reruns_after_edits_never_trip_the_guard() {
+    let env = TestEnv::new();
+    let mut turns = Vec::new();
+    for i in 0..6 {
+        turns.push(bash(&format!("t{i}"), "echo 'test result: FAILED'; exit 101"));
+        let args = format!(
+            r#"{{"path":"a.txt","oldText":"line {}\n","newText":"line {} edited\n"}}"#,
+            20 + i,
+            20 + i
+        );
+        turns.push(ScriptTurn::tool(&format!("e{i}"), "edit", &args));
+    }
+    turns.push(bash("t-last", "echo 'test result: FAILED'; exit 101"));
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    assert_eq!(run(&mut st, "fix the failing test").0, RunEnd::Stopped);
+    let res = results(&st);
+    assert_eq!(res.len(), 13);
+    assert!(res.iter().all(|r| !is_notice(r)), "{res:#?}");
+    assert!(
+        res[0].contains("test result: FAILED") && res[12] == res[0],
+        "{res:#?}"
+    );
+}
+
+/// A polling command whose output changes on every run is a legitimate re-run.
+#[test]
+fn polling_with_changing_output_never_trips_the_guard() {
+    let env = TestEnv::new();
+    let mut turns: Vec<ScriptTurn> = (0..8)
+        .map(|i| bash(&format!("p{i}"), "echo x >> n.txt; wc -l < n.txt"))
+        .collect();
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    assert_eq!(run(&mut st, "poll").0, RunEnd::Stopped);
+    let res = results(&st);
+    assert_eq!(res.len(), 8);
+    assert!(res.iter().all(|r| !is_notice(r)), "{res:#?}");
+    assert!(res[7].contains('8'), "{}", res[7]);
+}
+
+/// Different tools interleaved: no consecutive identical (call, result) pair, never a repeat.
+#[test]
+fn mixed_tools_never_trip_the_guard() {
+    let env = TestEnv::new();
+    let mut turns = Vec::new();
+    for i in 0..5 {
+        turns.push(read(&format!("r{i}"), RANGE));
+        turns.push(bash(&format!("b{i}"), "echo same"));
+        turns.push(ScriptTurn::tool(
+            &format!("g{i}"),
+            "grep",
+            r#"{"pattern":"line 1","path":"a.txt"}"#,
+        ));
+    }
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    assert_eq!(run(&mut st, "look around").0, RunEnd::Stopped);
+    let res = results(&st);
+    assert_eq!(res.len(), 15);
+    assert!(res.iter().all(|r| !is_notice(r)), "{res:#?}");
+    assert!(res[1].contains("same") && res[2].contains("line 1"), "{res:#?}");
+}
+
+/// The same call several times inside ONE batch counts like consecutive turns.
+#[test]
+fn identical_calls_inside_one_batch_count() {
+    let env = TestEnv::new();
+    let mut batch = bash("b0", "echo same");
+    for i in 1..=LIMIT {
+        batch.tool_calls.push(oxa_proto::ToolCall {
+            id: format!("b{i}"),
+            name: "bash".to_string(),
+            args_raw: r#"{"command":"echo same"}"#.to_string(),
+        });
+    }
+    let (mut st, _eng) = state(&env, vec![batch, ScriptTurn::text("done")], Settings::default());
+    assert_eq!(run(&mut st, "go").0, RunEnd::Stopped);
+    let res = results(&st);
+    assert_eq!(res.len(), LIMIT as usize + 1);
+    assert!(res[..LIMIT as usize].iter().all(|r| !is_notice(r)), "{res:#?}");
+    assert!(is_notice(&res[LIMIT as usize]), "{}", res[LIMIT as usize]);
+    assert!(res[0].contains("same"), "{}", res[0]);
 }

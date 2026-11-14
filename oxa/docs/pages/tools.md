@@ -60,9 +60,9 @@ At most two repairs can follow each other. A valid tool call resets the count. T
 
 `oxa.toolRepair: false` turns repairs off, and a malformed reply then ends the run at once.
 
-## Repeated reads
+## Repeated calls
 
-A model can get stuck calling the same read again and again. When a `read`, `grep`, `find` or `ls` call (or any other read-only tool) with the same arguments has already returned the same content three times since the last user message, and no edit, write or command ran in between, oxa still runs it but sends a short note instead of the content: the call is unchanged, its content is already in the conversation, go on with the task. The second note is the last: the next identical call ends the run with a stop message. A re-read after an edit, a different range, or the same read after a new prompt is never affected.
+A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. The second note is the last: the next identical call ends the run with a stop message. A re-run after an edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
 
 `oxa.toolRepeatGuard: false` turns this off.
 

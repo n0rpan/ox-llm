@@ -174,7 +174,7 @@ pub(crate) struct CallResult {
     pub msg: WireMsg,
     pub tool_name: String,
     pub is_error: bool,
-    /// The repeated-read guard asks to end the run after this batch (`repeat.rs`).
+    /// The repeat guard asks to end the run after this batch (`repeat.rs`).
     pub stop: bool,
 }
 
@@ -299,9 +299,8 @@ pub(crate) fn run_calls(
 
     // Phase 3, in call order: the ToolResult hook, shape, end events.
     let mut out = Vec::with_capacity(n);
-    // The repeated-read guard: a call after a non-read call of this same batch (an edit, a
-    // write, a command) is never a repeat; the wire does not hold this batch's results yet.
-    let mut mutated_in_batch = false;
+    // The repeat guard (`repeat.rs`): this batch's earlier calls and final result texts, in order.
+    let mut batch: Vec<(String, String, String)> = Vec::with_capacity(n);
     for (((p, res), ahead), call) in prepared.iter().zip(outputs).zip(early).zip(calls) {
         let (mut output, dur) = res.unwrap_or((ToolOutput::error(tool_errors::ABORTED), Duration::ZERO));
         output = apply_result_hook(st, p, output, sink, ui);
@@ -311,19 +310,22 @@ pub(crate) fn run_calls(
             Some(e) if e.raw == output.text && e.cap == cap => e.shaped,
             _ => oxa_tools::shape(output.text.as_bytes(), cap, p.exec, &st.spill_dir),
         };
-        // The repeated-read guard: an unchanged result already on the wire LIMIT times is
-        // replaced by a notice (the call ran; only its result text changes).
+        // The repeat guard: a call that ran and returned the same result LIMIT times in a row is
+        // answered with a notice (the call ran; only its result text changes).
         let mut stop = false;
-        let after_mutation = mutated_in_batch;
-        mutated_in_batch |= !crate::repeat::is_read(st, &p.name);
-        if !output.is_error && !after_mutation {
-            match crate::repeat::judge(st, &p.name, &call.args_raw, &output.text) {
+        let ran = matches!(p.plan, Plan::Run { .. });
+        if ran {
+            let earlier: Vec<(&str, &str, &str)> = batch
+                .iter()
+                .map(|(n, a, t)| (n.as_str(), a.as_str(), t.as_str()))
+                .collect();
+            match crate::repeat::judge(st, &p.name, &call.args_raw, &output.text, &earlier) {
                 crate::repeat::Verdict::Pass => {}
                 crate::repeat::Verdict::Notice(text) => {
                     sink.emit(&AgentEvent::Notice {
                         level: Level::Warning,
                         text: format!(
-                            "{} returned the same content again; the model was told to go on",
+                            "{} returned the same result again; the model was told to change approach",
                             p.name
                         ),
                     });
@@ -335,6 +337,7 @@ pub(crate) fn run_calls(
                 }
             }
         }
+        batch.push((p.name.clone(), call.args_raw.clone(), output.text.clone()));
         let ms = Some(dur.as_millis() as u64);
         crate::fire::tool_end(st, &p.id, &p.name, &output, ms, sink, ui);
         out.push(CallResult {

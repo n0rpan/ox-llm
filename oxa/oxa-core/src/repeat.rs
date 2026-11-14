@@ -1,4 +1,4 @@
-//! The repeated-read guard (`oxa.toolRepeatGuard`, default on).
+//! The repeat guard for identical tool calls (`oxa.toolRepeatGuard`, default on).
 //!
 //! A model can fall into a loop where every reply is the same read call and every result is the
 //! same text (Block 1, 2026-11-14: 64 identical `read` calls of one 10-line range under greedy
@@ -6,28 +6,33 @@
 //! bytes to the context and the next reply copies the last one again.
 //!
 //! ## Rule (exact)
-//! A call is a repeat when its tool is a read-class tool (`ToolClass::Read`), it succeeded, and
-//! an earlier tool result IN THE CURRENT WIRE answers a call with the same tool name, the same
-//! arguments (compared as JSON values, so key order does not matter) and byte-identical result
-//! text. Earlier results are counted walking back from the newest and the walk stops at:
-//! * a user message (a new instruction may legitimately need the same range again);
-//! * the result of any call that is NOT read-class, or of an unknown tool (an edit, a write or a
-//!   command may have changed what the read returns; this is what keeps a re-read after an edit
-//!   from ever being counted). The same holds inside one batch: a call that comes after a
-//!   non-read call of its own batch (`[read A, edit A, read A]`) is never judged, since the
-//!   wire does not hold that batch's results yet (`exec::run_calls`). This reset is wider than
-//!   per file: any edit, write or command resets every read.
+//! Every tool is covered (read, bash, grep/find/ls, web_search, MCP and extension tools): after
+//! Block 1 Arm A the read-only guard moved the loop to an identical `bash` command. A call that
+//! actually ran (not refused before running: unknown tool, bad JSON, a hook block, a denial) is
+//! a repeat when the results right before it, walking back from the newest, are an unbroken run
+//! of the SAME call (same tool name, same arguments compared as JSON values, so key order does
+//! not matter) with byte-identical result text (success or error alike: a command that fails
+//! the same way every time is still a loop). Only consecutive pairs count; the walk stops at:
+//! * a user message (a new instruction may legitimately need the same call again);
+//! * any other call's result (an edit, a write, another command, another range): this is what
+//!   keeps `cargo test` after an edit, and a read after an edit, from ever being counted;
+//! * a result of the same call with different text (a polling command whose output changes, a
+//!   test whose output changed): a legitimate re-run.
+//!
+//! Inside one batch the same applies in call order (`exec::run_calls`): the batch's earlier
+//! results are not on the wire yet, so `[read A, edit A, read A]` breaks the run at the edit,
+//! and earlier identical calls of the batch extend it.
 //!
 //! Compaction needs no rule: a summarised result is no longer on the wire, so it is not counted.
 //!
-//! With [`LIMIT`] identical results already on the wire the new result is replaced by a short
-//! notice ([`crate::prompt::repeat_notice`]) that says where the content already is and asks the
-//! model to go on. The call still runs (a read is cheap), so a file changed by something outside
-//! the session gives a different text and is never replaced. After [`NOTICES_BEFORE_STOP`]
-//! notices for the same call, the next repeat ends the run with a shown stop message.
-//! Nothing already sent is rewritten (W1): the notice is the tool result of the new call.
+//! With [`LIMIT`] identical consecutive results the new result is replaced by a short notice
+//! ([`crate::prompt::repeat_notice`]) that says the content is unchanged and already in context
+//! and asks the model to change approach. The call still runs, so a changed outcome is never
+//! hidden. After [`NOTICES_BEFORE_STOP`] notices in the same run, the next repeat ends the run
+//! with a shown stop message. Nothing already sent is rewritten (W1): the notice is the tool
+//! result of the new call.
 use crate::SessionState;
-use oxa_proto::{Role, ToolClass, Value, WireMsg};
+use oxa_proto::{Role, Value, WireMsg};
 
 /// The setting that turns the guard off (default on).
 pub const SETTING: &str = "oxa.toolRepeatGuard";
@@ -47,20 +52,41 @@ pub enum Verdict {
     Stop(String),
 }
 
-/// Judge one successful call `name(args)` whose shaped result is `text`.
-pub(crate) fn judge(st: &SessionState, name: &str, args_raw: &str, text: &str) -> Verdict {
-    if !st.settings.bool(SETTING, true) || class_of(st, name) != Some(ToolClass::Read) {
+/// Judge one call `name(args)` that ran and whose shaped result is `text`. `in_batch` = the
+/// earlier calls of the same batch with their final result texts, in call order.
+pub(crate) fn judge(
+    st: &SessionState,
+    name: &str,
+    args_raw: &str,
+    text: &str,
+    in_batch: &[(&str, &str, &str)],
+) -> Verdict {
+    if !st.settings.bool(SETTING, true) {
         return Verdict::Pass;
     }
     let Some(args) = parse(args_raw) else {
         return Verdict::Pass;
     };
-    let wire = st.transcript.wire();
-    let found = scan(wire, &|n| class_of(st, n), name, &args, text);
+    // The batch first (newest), then the wire, both walked back from the newest.
+    let mut found = Found::default();
+    for (n, a, t) in in_batch.iter().rev() {
+        if !same_call(n, a, name, &args) {
+            return Verdict::Pass;
+        }
+        match step(&mut found, t, text) {
+            Step::Go => {}
+            Step::Break => return finish(found, name, args_raw),
+        }
+    }
+    scan(st.transcript.wire(), name, &args, text, &mut found);
+    finish(found, name, args_raw)
+}
+
+fn finish(found: Found, name: &str, args_raw: &str) -> Verdict {
     if found.identical < LIMIT {
         return Verdict::Pass;
     }
-    let notice = crate::prompt::repeat_notice(name, args_raw, found.identical, found.back);
+    let notice = crate::prompt::repeat_notice(name, args_raw, found.identical);
     if found.notices >= NOTICES_BEFORE_STOP {
         Verdict::Stop(notice)
     } else {
@@ -72,60 +98,61 @@ pub(crate) fn judge(st: &SessionState, name: &str, args_raw: &str, text: &str) -
 pub fn stop_text(name: &str) -> String {
     oxa_proto::problem_text(
         "Run stopped: the model repeated the same tool call after being told its result is unchanged",
-        &format!("`{name}` returned the same content {} times in a row", LIMIT + 1),
+        &format!("`{name}` kept returning the same result ({LIMIT} times in a row, then {NOTICES_BEFORE_STOP} notices)"),
         "send a more specific instruction, or switch model with /model",
     )
 }
 
-/// What [`scan`] found on the wire for one call.
+/// What the walk found for one call.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Found {
-    /// Earlier results with the same call and byte-identical text.
+    /// Consecutive earlier results of the same call with byte-identical text.
     pub identical: u32,
-    /// Earlier results of the same call that were already replaced by the notice.
+    /// Earlier results of the same call in that run that were already replaced by the notice.
     pub notices: u32,
-    /// How many tool results back the newest identical one is (1 = the previous result).
-    pub back: u32,
+}
+
+enum Step {
+    Go,
+    Break,
+}
+
+/// One earlier result `content` of the same call.
+fn step(found: &mut Found, content: &str, text: &str) -> Step {
+    if content == text {
+        found.identical += 1;
+        Step::Go
+    } else if content.starts_with(crate::prompt::REPEAT_NOTICE_HEAD) {
+        found.notices += 1;
+        Step::Go
+    } else {
+        Step::Break
+    }
+}
+
+fn same_call(n: &str, a: &str, name: &str, args: &Value) -> bool {
+    n == name && parse(a).as_ref() == Some(args)
 }
 
 /// Walk the wire back from the newest message (rule in the module docs).
-pub(crate) fn scan(
-    wire: &[WireMsg],
-    class: &dyn Fn(&str) -> Option<ToolClass>,
-    name: &str,
-    args: &Value,
-    text: &str,
-) -> Found {
-    let mut found = Found::default();
-    let mut results_back = 0u32;
+pub(crate) fn scan(wire: &[WireMsg], name: &str, args: &Value, text: &str, found: &mut Found) {
     for (i, m) in wire.iter().enumerate().rev() {
         match m.role {
-            Role::User => break,
+            Role::User => return,
             Role::Tool => {
-                results_back += 1;
                 let Some(call) = m.tool_call_id.as_deref().and_then(|id| find_call(&wire[..i], id)) else {
-                    break;
+                    return;
                 };
-                if class(&call.name) != Some(ToolClass::Read) {
-                    break;
+                if !same_call(&call.name, &call.args_raw, name, args) {
+                    return;
                 }
-                if call.name != name || parse(&call.args_raw).as_ref() != Some(args) {
-                    continue;
-                }
-                let content = m.content.as_deref().unwrap_or("");
-                if content == text {
-                    found.identical += 1;
-                    if found.back == 0 {
-                        found.back = results_back;
-                    }
-                } else if content.starts_with(crate::prompt::REPEAT_NOTICE_HEAD) {
-                    found.notices += 1;
+                if let Step::Break = step(found, m.content.as_deref().unwrap_or(""), text) {
+                    return;
                 }
             }
             _ => {}
         }
     }
-    found
 }
 
 /// The call `id` answers: the newest assistant message before it that carries it.
@@ -135,18 +162,6 @@ fn find_call<'a>(before: &'a [WireMsg], id: &str) -> Option<&'a oxa_proto::ToolC
         .rev()
         .filter(|m| m.role == Role::Assistant)
         .find_map(|m| m.tool_calls.iter().find(|c| c.id == id))
-}
-
-/// Whether `name` is a read-class tool of the session (an unknown tool is not).
-pub(crate) fn is_read(st: &SessionState, name: &str) -> bool {
-    class_of(st, name) == Some(ToolClass::Read)
-}
-
-fn class_of(st: &SessionState, name: &str) -> Option<ToolClass> {
-    st.active
-        .get(name)
-        .or_else(|| st.active.get_indirect(name))
-        .map(|t| t.spec().class)
 }
 
 fn parse(raw: &str) -> Option<Value> {
