@@ -286,7 +286,7 @@ impl World {
             // (and therefore the OXA skin) moved to `local`.
             env: vec![("OXA_SKIN".to_string(), "pi".to_string())],
             caps: Some(TermCaps::BASIC),
-            reopen: Box::new(move |how| {
+            reopen: Box::new(move |how, _carry| {
                 let open = match how {
                     Reopen::New => Open::New,
                     Reopen::Resume(sref) => Open::Resume(sref),
