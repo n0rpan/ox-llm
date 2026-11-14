@@ -60,6 +60,17 @@ pub struct Server<B: Backend> {
 
 impl<B: Backend> Server<B> {
     pub fn start(backend: Arc<B>, limits: ServerLimits) -> io::Result<Self> {
+        Self::start_with_capability(backend, limits, Capability::generate()?)
+    }
+
+    /// Explicit operator-owned authentication for a separately hosted agent.
+    /// Callers must supply an unpredictable private capability; cards/results
+    /// never select it. Binding remains literal loopback on an ephemeral port.
+    pub fn start_with_capability(
+        backend: Arc<B>,
+        limits: ServerLimits,
+        capability: Capability,
+    ) -> io::Result<Self> {
         if !(2..=32).contains(&limits.connections)
             || limits.timeout.is_zero()
             || limits.timeout > Duration::from_secs(60)
@@ -75,7 +86,6 @@ impl<B: Backend> Server<B> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
-        let capability = Capability::generate()?;
         let stopped = Arc::new(AtomicBool::new(false));
         let sockets = Arc::new(Mutex::new(BTreeMap::new()));
         let (stop, connections, auth, service) = (

@@ -189,7 +189,7 @@ Pending temporary output is not treated as a completed report.
 This page covers inspection and reconciliation. The explicit library
 [queued-plan resume API](RESUME.md) can continue never-started jobs under original
 input/budget bindings; it does not reattach ambiguous or already-started tasks.
-Persistent authenticated agent registration, active-task artifact checkpoints,
+Host-restart/distributed agent identity, active-task artifact checkpoints,
 automatic reattachment/resubscription, mixed active/queued-plan resume, distributed-controller
 ownership and recovery across machine reboot remain unfinished. No cloud/provider
 route or paid-call authorization is introduced.
@@ -209,3 +209,8 @@ scenario kills its owned controller during inference, checks worker exit through
 a PID descriptor pinned while ownership is known, then inspects the surviving
 journal without changing it, probing inference or claiming a terminal outcome.
 The feature-built binary smoke check also runs that scenario.
+
+The explicit [foreground agent host](AGENT_HOST.md) can outlive separate
+controllers and publish a private registration file. Reconnecting still requires
+an operator-selected original registration and a known durable task binding; it
+never reconstructs a dead host, discovers credentials or relaxes no-replay rules.

@@ -43,6 +43,7 @@ test orchestrate CLI result persistence requires opt-in ... ok
 test orchestrate CLI completed worker checkpoint after crash ... ok
 test orchestrate CLI structural input limits ... ok
 test orchestrate CLI protected run namespace ... ok
+test orchestrate CLI independent agent registration ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -158,3 +159,9 @@ full report through both the library and the default-off CLI hook. The inspector
 refuses live recovery owners and succeeds after they drop, without additional fake
 engine requests or journal changes. Three-generation tests retain ancestor results
 and a failed leaf; see [LINEAGE.md](LINEAGE.md).
+
+The independent-agent scenario starts a separate foreground host with no initial
+engine requests and authenticates through private registration. Its submitting
+controller process exits during work; a new client reconnects to the same task. A second active task is
+canceled/reaped when the owned host receives TERM; the listener closes and no
+capability appears in stdout/stderr/audit output. See [AGENT_HOST.md](AGENT_HOST.md).

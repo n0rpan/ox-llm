@@ -140,3 +140,8 @@ worker/checkpoint pair it can recover a journal-bound worker result even if no
 final report was published. See [RECOVERY.md](RECOVERY.md). `orchestrate-review --report <directory>/report.json` accepts saved
 reports within its separate 16 MiB review-input bound; larger diagnostic reports
 are retained but cannot be passed directly to that review command.
+
+For an agent that can outlive a controller, the explicit
+[`orchestrate-agent` foreground host](AGENT_HOST.md) publishes private registration
+for operator-owned clients. It does not change this command's default internal
+server lifetime, discover credentials or install an OS service.

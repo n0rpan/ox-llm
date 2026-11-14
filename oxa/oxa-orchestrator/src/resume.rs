@@ -297,7 +297,7 @@ impl Clock {
         })
     }
 }
-fn boot_time_ns() -> io::Result<u64> {
+pub(crate) fn boot_time_ns() -> io::Result<u64> {
     let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
     // SAFETY: a writable timespec; CLOCK_BOOTTIME survives controller exits
     // and includes suspend, while the boot identity detects machine reboot.
