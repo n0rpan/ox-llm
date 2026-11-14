@@ -21,10 +21,12 @@ for variant in ox-llm-bin ox-llm; do
   cd "/build/$variant"
   runuser -u builder -- makepkg --noconfirm --cleanbuild
   package=$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print)
-  namcap PKGBUILD
-  namcap "$package" | tee /tmp/namcap.log
+  namcap PKGBUILD 2>&1 | tee /tmp/namcap.log
+  namcap "$package" 2>&1 | tee -a /tmp/namcap.log
   # Warnings remain visible; any namcap error fails the job.
   if grep -qE '(^| )E: ' /tmp/namcap.log; then exit 1; fi
+  cp "$package" /packages/
+  cp /tmp/namcap.log "/packages/namcap-$variant.txt"
   pacman -U --noconfirm "$package"
   pacman -Ql "$variant" | awk '{print $2}' | while read -r path; do
     if [[ ! -d $path ]]; then echo "$path"; fi
@@ -35,8 +37,11 @@ for variant in ox-llm-bin ox-llm; do
   while read -r path; do
     [[ ! -e $path && ! -L $path ]] || { echo "left behind: $path"; exit 1; }
   done < /tmp/installed-files
-  for path in /usr/bin/oxc /usr/bin/oxa /usr/bin/oxe /usr/bin/oxe-server /usr/share/ox-llm /usr/share/licenses/ox-llm; do
+  for path in /usr/bin/oxc /usr/bin/oxa /usr/bin/oxe /usr/bin/oxe-server /usr/share/ox-llm /usr/share/licenses/ox-llm /usr/share/licenses/ox-llm-bin; do
     [[ ! -e $path && ! -L $path ]] || { echo "left behind: $path"; exit 1; }
   done
   cd /build
 done
+
+cd /packages
+sha256sum -- *.pkg.tar.zst namcap-*.txt > SHA256SUMS

@@ -1,3 +1,4 @@
+# All-zero defaults permit static linting; they cannot validate a source artifact.
 # Supply the exact source artifact and its checksum from an inspected workflow run.
 pkgname=ox-llm
 pkgver=0.2.0
@@ -9,10 +10,10 @@ license=('MIT')
 depends=('glibc' 'gcc-libs' 'python' 'bubblewrap')
 makedepends=('cargo' 'cmake' 'ninja' 'git')
 options=('!lto' '!debug' '!strip')
-_commit=${OX_SOURCE_COMMIT:?set OX_SOURCE_COMMIT from the workflow artifact}
+_commit=${OX_SOURCE_COMMIT:-0000000000000000000000000000000000000000}
 [[ $_commit =~ ^[0-9a-f]{40}$ ]] || return 1
 source=("ox-llm-${_commit}.tar.gz")
-sha256sums=("${OX_SOURCE_SHA256:?set OX_SOURCE_SHA256 from verified SHA256SUMS}")
+sha256sums=("${OX_SOURCE_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}")
 
 build() {
   cd "$srcdir/ox-llm-$_commit"

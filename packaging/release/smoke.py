@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import urllib.error
 
 def tokenizer_fixture(path):
     """GGUF metadata only: a synthetic byte vocabulary, no tensors or weights."""
@@ -20,9 +21,11 @@ def tokenizer_fixture(path):
         data = value.encode()
         return struct.pack('<Q', len(data)) + data
     rows = []
-    for name, value in [('tokenizer.ggml.model', 'gpt2'), ('tokenizer.ggml.pre', 'qwen2')]:
+    for name, value in [('tokenizer.ggml.model', 'gpt2'), ('tokenizer.ggml.pre', 'qwen2'),
+                        ('tokenizer.chat_template', "{% for message in messages %}<|im_start|>{{ message['role'] }}\n{{ message['content'] }}<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}")]:
         rows.append(string(name) + struct.pack('<I', 8) + string(value))
     rows.append(string('tokenizer.ggml.tokens') + struct.pack('<IIQ', 9, 8, len(tokens)) + b''.join(map(string, tokens)))
+    rows.append(string('tokenizer.ggml.merges') + struct.pack('<IIQ', 9, 8, 0))
     rows.append(string('tokenizer.ggml.eos_token_id') + struct.pack('<II', 4, 257))
     path.write_bytes(b'GGUF' + struct.pack('<IQQ', 3, 0, len(rows)) + b''.join(rows))
 
@@ -48,7 +51,7 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
         port = sock.getsockname()[1]
     with tempfile.TemporaryFile() as log:
         process = subprocess.Popen(['oxe-server', '--engine', 'stub', '--model', str(model),
-                                    '--alias', 'synthetic', '--stub-reply', 'ok', '--host', '127.0.0.1',
+                                    '--alias', 'synthetic', '--stub-reply', 'ok', '--reasoning', 'off', '--host', '127.0.0.1',
                                     '--port', str(port)], env=env, stdout=log, stderr=log)
         try:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -70,8 +73,12 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
                 data=json.dumps({'model': models['data'][0]['id'],
                     'messages': [{'role': 'user', 'content': 'hello'}], 'max_tokens': 4}).encode(),
                 headers={'Content-Type': 'application/json'})
-            with opener.open(request, timeout=10) as response:
-                completion = json.load(response)
+            try:
+                with opener.open(request, timeout=10) as response:
+                    completion = json.load(response)
+            except urllib.error.HTTPError as error:
+                log.seek(0)
+                raise AssertionError((error.read().decode(), log.read().decode())) from error
             assert completion['choices'], completion
         finally:
             process.terminate()

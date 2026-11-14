@@ -1,3 +1,4 @@
+# The all-zero fallback permits static recipe linting but cannot validate an artifact.
 # CI artifacts stay local: download, inspect and verify them before invoking makepkg.
 pkgname=ox-llm-bin
 pkgver=0.2.0
@@ -11,8 +12,10 @@ provides=("ox-llm=$pkgver")
 conflicts=('ox-llm')
 options=('!lto' '!debug' '!strip')
 source=("ox-llm-${pkgver}-linux-${CARCH}.tar.gz")
-sha256sums=("${OX_BINARY_SHA256:?set OX_BINARY_SHA256 from verified SHA256SUMS}")
+sha256sums=("${OX_BINARY_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}")
 
 package() {
   cp -a "$srcdir/usr" "$pkgdir/"
+  install -Dm644 "$pkgdir/usr/share/licenses/ox-llm/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

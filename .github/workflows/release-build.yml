@@ -124,10 +124,18 @@ jobs:
           path: artifacts
       - name: Fresh Arch container (official image is x86_64 only)
         run: |
+          mkdir packages
           docker run --rm \
             -e SOURCE_DATE_EPOCH -e OX_SOURCE_COMMIT \
             -v "$GITHUB_WORKSPACE/artifacts:/artifacts:ro" \
+            -v "$GITHUB_WORKSPACE/packages:/packages" \
             -v "$GITHUB_WORKSPACE/packaging/arch:/recipes:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/smoke.py:/smoke.py:ro" \
             -v "$GITHUB_WORKSPACE/packaging/release/arch-test.sh:/arch-test.sh:ro" \
             archlinux:latest bash /arch-test.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arch-packages-x86_64
+          path: packages/
+          if-no-files-found: error
+          retention-days: 7

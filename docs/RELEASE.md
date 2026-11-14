@@ -50,7 +50,13 @@ source package, runs the source package's model-free test subset, invokes namcap
 installs each package, runs all three `--version` commands and CLI help, validates
 `oxe --check-args`, and sends a real loopback completion through `oxe-server`'s
 stub engine. It checks package integrity, uninstalls and verifies every package
-file and package-specific directory is gone. Tests use a fresh HOME and an
+file and package-specific directory is gone. The two Arch packages, their
+checksums and namcap logs are retained as a separate seven-day workflow artifact.
+Namcap warnings about private Python source modules and optional QML panel imports
+are expected: these are bootstrap payload sources outside system site-packages,
+and panel activation is optional. The required Python interpreter and all sibling
+runtime modules are shipped or declared. Bubblewrap is invoked dynamically, so
+namcap may also report its declared runtime dependency as unused. Errors fail CI. Tests use a fresh HOME and an
 allowlisted environment with no cloud credentials. The official Arch Linux Docker
 image currently has no ARM64 variant. ARM binaries are natively built and their
 model-free source tests run on ARM; a clean ARM Arch install remains unavailable
@@ -93,8 +99,9 @@ makepkg --cleanbuild
 namcap PKGBUILD ./*.pkg.tar.zst
 ```
 
-The source checksum must first have passed `SHA256SUMS` verification. No recipe
-uses `SKIP` checksums, a mutable branch archive, or a network installer. The local
+The source checksum must first have passed `SHA256SUMS` verification. Recipes have all-zero checksum/commit defaults solely so namcap can parse them
+with its sanitized environment; those defaults cannot validate any real input.
+No recipe uses `SKIP` checksums, a mutable branch archive, or a network installer. The local
 source artifact is mandatory; there is intentionally no release URL before the
 owner publishes a release. On ARM install GCC 16 or newer and the pinned Rust
 version before building; do not replace the documented CPU flags with `native`.
