@@ -17,6 +17,7 @@
 //! * **Layout.** `<sessions_dir>/--<cwd with '/' -> '-'>--/<timestamp>_<id>.jsonl` (pi's scheme),
 //!   first line = the session header.
 
+mod clock;
 mod durable;
 mod meta;
 mod migrate;
@@ -25,6 +26,7 @@ mod store;
 mod transcript;
 mod tree;
 
+pub use clock::{local_time, LocalTime};
 pub use meta::{meta_of, search_sessions, sort_sessions, SessionSort};
 pub use migrate::{import_pi, import_session, migrate_lines};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};

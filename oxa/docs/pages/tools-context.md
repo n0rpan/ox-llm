@@ -89,6 +89,10 @@ follow the same rule.
 - **Prefill.** While you type, a draft message is prefilled; while a long tool call runs, the
   results before it are prefilled (`oxa.prefill.paste`, `oxa.prefill.tools`; timing only, the
   bytes do not change).
+- **Date and environment.** Each prompt you send ends with a short environment note
+  (`oxa.envNote`): the first one in a session carries the date, time zone, model, context size
+  and permission mode, later ones only the local time. The note is appended to your message,
+  never put in the system prompt, so earlier requests stay byte-identical and the cache is reused.
 
 ## If no summary can be made
 

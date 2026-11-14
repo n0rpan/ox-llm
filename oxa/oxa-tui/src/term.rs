@@ -32,6 +32,11 @@ pub trait Terminal {
     fn colors(&self) -> Option<TerminalColors> {
         None
     }
+    /// The terminal answered the kitty graphics query at start (`gfx_query`). `false` = no
+    /// reply within the query timeout, or an error reply.
+    fn graphics(&self) -> bool {
+        false
+    }
 }
 
 /// Options of [`ProcessTerminal::open`].
@@ -90,6 +95,8 @@ pub struct ProcessTerminal {
     suspended: bool,
     /// OSC 10 / OSC 11 answers to the start-up colour query.
     colors: TerminalColors,
+    /// The kitty graphics query was answered with `OK`.
+    graphics: bool,
 }
 
 impl ProcessTerminal {
@@ -119,6 +126,7 @@ impl ProcessTerminal {
             last_size: (0, 0),
             pending_since: None,
             colors: TerminalColors::default(),
+            graphics: false,
             suspended: false,
         };
         term.last_size = term.size();
@@ -144,6 +152,8 @@ impl ProcessTerminal {
         // Kitty flags, cell size, then the OSC 10/11 colours; `COLOR_QUERY` ends with the device
         // attributes request that closes the wait.
         self.write(b"\x1b[?u\x1b[16t");
+        // The kitty graphics query: answered before the device attributes, or not at all.
+        self.write(crate::gfx_query().as_bytes());
         self.write(crate::COLOR_QUERY.as_bytes());
         self.flush();
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -161,6 +171,11 @@ impl ProcessTerminal {
                     InputEvent::CellSize { w, h } => self.caps.cell_px = Some((w, h)),
                     InputEvent::OscReply { code: 10, data } => self.colors.fg = parse_osc_color(&data),
                     InputEvent::OscReply { code: 11, data } => self.colors.bg = parse_osc_color(&data),
+                    InputEvent::Apc(body) => {
+                        if let Some(ok) = crate::parse_gfx_reply(&body) {
+                            self.graphics = ok;
+                        }
+                    }
                     InputEvent::DeviceAttributes(_) => done = true,
                     other => self.queued.push(other),
                 }
@@ -263,6 +278,9 @@ impl Terminal for ProcessTerminal {
     fn colors(&self) -> Option<TerminalColors> {
         (self.colors != TerminalColors::default()).then_some(self.colors)
     }
+    fn graphics(&self) -> bool {
+        self.graphics
+    }
     fn flush(&mut self) {
         if !self.out.is_empty() {
             write_fd(1, &self.out);
@@ -294,18 +312,23 @@ impl Terminal for ProcessTerminal {
             }
             return;
         }
-        let is_on = self.active.contains(&mode);
-        if is_on == on {
+        let Some(pos) = (match (self.active.iter().position(|m| *m == mode), on) {
+            (None, true) => Some(self.active.len()),
+            (Some(at), false) => Some(at),
+            _ => None,
+        }) else {
             return;
-        }
+        };
+        let bytes = switch_sequence(&self.active[..pos], mode, on);
         if on {
             self.active.push(mode);
         } else {
             self.active.retain(|m| *m != mode);
         }
         if !self.suspended {
-            self.write(mode_sequence(mode, on).as_bytes());
+            self.write(bytes.as_bytes());
         }
+        ALT_KITTY.store(alt_kitty(&self.active), Ordering::SeqCst);
     }
     fn suspend(&mut self) {
         if self.suspended {
@@ -316,6 +339,7 @@ impl Terminal for ProcessTerminal {
         self.flush();
         restore_termios();
         self.suspended = true;
+        ALT_KITTY.store(false, Ordering::SeqCst);
     }
     fn resume(&mut self) {
         if !self.suspended {
@@ -327,10 +351,11 @@ impl Terminal for ProcessTerminal {
             let _ = set_attr(&raw);
         }
         self.suspended = false;
-        let modes = self.active.clone();
-        for mode in modes {
-            self.out.extend_from_slice(mode_sequence(mode, true).as_bytes());
+        for (i, mode) in self.active.iter().enumerate() {
+            let bytes = switch_sequence(&self.active[..i], *mode, true);
+            self.out.extend_from_slice(bytes.as_bytes());
         }
+        ALT_KITTY.store(alt_kitty(&self.active), Ordering::SeqCst);
         if self.cursor_hidden {
             self.out
                 .extend_from_slice(mode_sequence(TermMode::CursorVisible, false).as_bytes());
@@ -359,9 +384,9 @@ impl Drop for ProcessTerminal {
 /// "off" on the way out: the cursor is visible on entry).
 pub fn leave_sequence(active: &[TermMode], cursor_hidden: bool) -> Vec<u8> {
     let mut out = Vec::new();
-    for mode in active.iter().rev() {
+    for (i, mode) in active.iter().enumerate().rev() {
         if *mode != TermMode::CursorVisible {
-            out.extend_from_slice(mode_sequence(*mode, false).as_bytes());
+            out.extend_from_slice(switch_sequence(&active[..i], *mode, false).as_bytes());
         }
     }
     if cursor_hidden {
@@ -387,6 +412,38 @@ pub fn mode_sequence(mode: TermMode, on: bool) -> &'static str {
         (TermMode::FocusReporting, false) => "\x1b[?1004l",
         (TermMode::CursorVisible, true) => "\x1b[?25h",
         (TermMode::CursorVisible, false) => "\x1b[?25l",
+    }
+}
+
+/// The bytes that switch `mode` on or off when `earlier` are the modes switched on before it.
+/// [`mode_sequence`], except for the alternate screen while the kitty keyboard protocol is
+/// on: the protocol keeps a separate flags stack per screen (kitty, foot), so a push made on
+/// the main screen does not reach the alternate one, where every shift chord would arrive as
+/// its legacy byte (ctrl+shift+f as ctrl+f). Entering pushes the same flags there; leaving pops
+/// them first, so the main screen's stack is untouched.
+pub fn switch_sequence(earlier: &[TermMode], mode: TermMode, on: bool) -> String {
+    let alt = mode_sequence(mode, on);
+    if mode == TermMode::AltScreen && earlier.contains(&TermMode::KittyKeyboard) {
+        let kitty = mode_sequence(TermMode::KittyKeyboard, on);
+        if on {
+            format!("{alt}{kitty}")
+        } else {
+            format!("{kitty}{alt}")
+        }
+    } else {
+        alt.to_string()
+    }
+}
+
+/// `true` when `active` has the kitty flags pushed on the alternate screen as well (the
+/// protocol was on before the alternate screen was entered).
+fn alt_kitty(active: &[TermMode]) -> bool {
+    match (
+        active.iter().position(|m| *m == TermMode::KittyKeyboard),
+        active.iter().position(|m| *m == TermMode::AltScreen),
+    ) {
+        (Some(k), Some(a)) => k < a,
+        _ => false,
     }
 }
 
@@ -441,6 +498,9 @@ static SAVED: OnceLock<libc::termios> = OnceLock::new();
 static PANIC_HOOK: AtomicBool = AtomicBool::new(false);
 static PANIC_OWNER: OnceLock<std::thread::ThreadId> = OnceLock::new();
 static SIGNALS: Once = Once::new();
+/// The terminal has kitty keyboard flags pushed on the alternate screen (for the emergency
+/// restore of a panic or a signal, which cannot see the terminal's mode list).
+static ALT_KITTY: AtomicBool = AtomicBool::new(false);
 
 enum Polled {
     Ready,
@@ -515,6 +575,10 @@ fn restore_termios() {
 
 /// Restore everything a terminal can be left with: the modes, the screen attributes and termios.
 fn emergency_restore() {
+    // The alternate screen's own kitty push is popped before it is left (`switch_sequence`).
+    if ALT_KITTY.load(Ordering::SeqCst) {
+        write_fd(1, mode_sequence(TermMode::KittyKeyboard, false).as_bytes());
+    }
     write_fd(1, restore_sequence().as_bytes());
     restore_termios();
 }

@@ -33,6 +33,7 @@
 mod agent_loop;
 mod commands;
 mod compaction;
+pub mod envnote;
 mod epoch;
 mod exec;
 mod fire;
@@ -43,8 +44,10 @@ pub mod prompt;
 mod queue;
 pub mod reload;
 pub mod repair;
+pub mod repeat;
 mod resume;
 mod retry;
+pub mod sampling;
 mod session;
 mod state;
 mod subagent;

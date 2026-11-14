@@ -41,6 +41,7 @@ fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hin
         max_tokens,
         thinking: false,
         preserve_thinking: true,
+        sampling: None,
         hints: h,
     }
 }

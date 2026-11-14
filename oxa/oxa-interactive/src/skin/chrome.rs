@@ -518,6 +518,28 @@ pub fn oxa_activity_line_with(
     theme: &Theme,
     skin: Skin,
 ) -> Option<String> {
+    let lead = if motion && skin == Skin::Oxa && !theme.is_plain() {
+        activity_sprite(st).map(|sprite| {
+            let (_, token) = activity_style(&st.activity).unwrap_or(("", "muted"));
+            let hot = if sprite == Sprite::Fire { "error" } else { token };
+            theme.fg(hot, sprite_frame(sprite, st.activity_ms))
+        })
+    } else {
+        None
+    };
+    activity_line_lead(st, keymap, lead, width, theme, skin)
+}
+
+/// The activity line behind `lead` (a sprite or a scene, already styled; `None` = the badge
+/// comes first): badge, detail, elapsed time and the cancel key. `None` when idle.
+pub(super) fn activity_line_lead(
+    st: &StatusModel,
+    keymap: &Keymap,
+    lead: Option<String>,
+    width: u16,
+    theme: &Theme,
+    skin: Skin,
+) -> Option<String> {
     let (word, token) = activity_style(&st.activity)?;
     let g = glyphs(skin);
     let mut tail: Vec<String> = Vec::new();
@@ -536,17 +558,8 @@ pub fn oxa_activity_line_with(
             ));
         }
     }
-    let sprite = if motion && skin == Skin::Oxa && !theme.is_plain() {
-        activity_sprite(st)
-    } else {
-        None
-    };
-    let mut line = match sprite {
-        Some(sprite) => {
-            let hot = if sprite == Sprite::Fire { "error" } else { token };
-            let frame = theme.fg(hot, sprite_frame(sprite, st.activity_ms));
-            format!(" {frame} {}", badge(word, token, theme))
-        }
+    let mut line = match lead {
+        Some(lead) => format!(" {lead} {}", badge(word, token, theme)),
         None => format!(" {}", badge(word, token, theme)),
     };
     if !tail.is_empty() {
@@ -557,7 +570,7 @@ pub fn oxa_activity_line_with(
 }
 
 /// The badge word and colour token of an activity (sec. 4.4); `None` when idle.
-fn activity_style(activity: &Activity) -> Option<(&'static str, &'static str)> {
+pub(super) fn activity_style(activity: &Activity) -> Option<(&'static str, &'static str)> {
     Some(match activity {
         Activity::Idle => return None,
         Activity::Prefill { .. } => ("PREFILL", "accent"),

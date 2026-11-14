@@ -46,6 +46,7 @@ fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hin
         max_tokens,
         thinking: false,
         preserve_thinking: true,
+        sampling: None,
         hints: h,
     }
 }
@@ -209,6 +210,29 @@ fn body_prefill_max_tokens_zero() {
     let r = request(&p, &[], 0, hints("s1", ""));
     let expected = r#"{"model":"fake-model","messages":[{"role":"system","content":"SYS"}],"stream":true,"stream_options":{"include_usage":true},"temperature":0,"cache_prompt":true,"max_tokens":0,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":false}}"#;
     assert_eq!(body_of(&r), expected);
+}
+
+/// Opt-in sampling (`oxa.sampling.mode = model`): the card's keys replace the greedy `0` in place
+/// and the result is valid JSON the engine's validator accepts (numbers, top_k an integer).
+#[test]
+fn body_with_model_sampling() {
+    let p = prefix("SYS", "[]");
+    let msgs = [WireMsg::user("hi")];
+    let mut r = request(&p, &msgs, 5, hints("", ""));
+    r.sampling = Some(oxa_proto::Sampling {
+        temperature: 0.7,
+        top_p: 0.8,
+        top_k: 20,
+        min_p: 0.0,
+        presence_penalty: 1.5,
+        seed: Some(7),
+    });
+    let expected = r#"{"model":"fake-model","messages":[{"role":"system","content":"SYS"},{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true},"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0,"presence_penalty":1.5,"seed":7,"cache_prompt":true,"max_tokens":5,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":false}}"#;
+    assert_eq!(body_of(&r), expected);
+    let v: Value = serde_json::from_str(&body_of(&r)).unwrap();
+    assert_eq!(v["top_k"].as_i64(), Some(20));
+    r.sampling.as_mut().unwrap().seed = None;
+    assert!(!body_of(&r).contains("\"seed\""));
 }
 
 /// build_headers per hint combination

@@ -446,6 +446,19 @@ mod tui {
     }
 
     /// The first row whose text (without the fullscreen scrollbar column) is exactly `needle`.
+    /// The numbered reply is completely drawn at the bottom and the turn is over: the closing
+    /// code fence row sits right after the `last` line and the "Working..." loader (blank line
+    /// plus spinner above the editor) is gone. Both arrive/leave after the last line while the
+    /// turn ends, and each shifts every transcript row above by one or two.
+    pub fn reply_closed(s: &Screen, last: &str) -> bool {
+        !s.contains("Working")
+            && row_index(s, last).is_some_and(|r| {
+                s.rows()
+                    .get(r + 1)
+                    .is_some_and(|f| f.trim_end().trim_end_matches(['│', '█']).trim() == "```")
+            })
+    }
+
     pub fn row_index(s: &Screen, needle: &str) -> Option<usize> {
         s.rows()
             .iter()
@@ -597,6 +610,13 @@ mod tui {
         pub fn wait(&self, what: &str, pred: impl Fn(&Screen) -> bool) -> Screen {
             self.pty.wait_for_named(what, pred, DEFAULT_TIMEOUT).unwrap()
         }
+        /// Content-based: wait until `pred` holds on a complete frame (input read, bounded by
+        /// `DEFAULT_TIMEOUT`), then until it still holds after 250 ms of quiet. Use it for a
+        /// baseline measured before the next input: a frame that merely looks right while the
+        /// transcript is still being drawn must not end the wait.
+        pub fn wait_steady(&self, what: &str, pred: impl Fn(&Screen) -> bool) -> Screen {
+            self.pty.wait_steady(what, pred, 250, DEFAULT_TIMEOUT).unwrap()
+        }
         pub fn wait_text(&self, needle: &str) -> Screen {
             self.pty.wait_for_text(needle).unwrap()
         }
@@ -646,6 +666,9 @@ mod tui {
             self.type_text(text);
             self.key("enter");
             self.wait_text(reply);
+            // The reply text is on screen before the turn ends; the next input must not be
+            // sent into the still-working turn (it would be queued or swallowed under load).
+            self.wait("the turn finished", |s| !s.contains("Working"));
         }
         /// The user prompts the engine got (chat requests only), in order.
         pub fn prompts(&self) -> Vec<String> {
@@ -2025,21 +2048,30 @@ fn set_036() {
         let t = r.trim_end().trim_end_matches(['│', '█']).trim();
         t.strip_prefix('R')?.parse().ok()
     };
-    let moved = |settings: Value, button: u32| {
+    let moved = |settings: Value, button: u32, want: i64| {
         let t = Setup::new()
             .settings(settings)
             .script(&[numbered_reply("R", 80)])
             .start();
         t.prompt("count", "R80");
-        let before = number_at(&t.settle(), 10).expect("a numbered line in row 10");
+        // The baseline is the steady bottom view: R80 on screen and row 10 unchanged for a
+        // quiet period (the numbered line in row 10 is the one measured).
+        let s = t.wait_steady("the bottom view drawn", |s| {
+            reply_closed(s, "R80") && number_at(s, 10).is_some()
+        });
+        let before = number_at(&s, 10).expect("a numbered line in row 10");
         t.pty.send_bytes(format!("\x1b[<{button};5;5M").as_bytes());
-        let s = t.wait("the view moved", |s| number_at(s, 10) != Some(before));
+        // Wait for the frame with the exact expected position (bounded; a wrong distance times
+        // out with the screen dump), then assert it unchanged after the redraw is quiet.
+        let s = t.wait_steady("the view moved by the expected distance", |s| {
+            number_at(s, 10) == Some(before - want)
+        });
         number_at(&s, 10).map(|n| before - n)
     };
-    assert_eq!(moved(json!({}), 64), Some(1), "auto: one line");
-    assert_eq!(moved(json!({ "fullscreenWheelScrollLines": 5 }), 64), Some(5));
+    assert_eq!(moved(json!({}), 64, 1), Some(1), "auto: one line");
+    assert_eq!(moved(json!({ "fullscreenWheelScrollLines": 5 }), 64, 5), Some(5));
     assert_eq!(
-        moved(json!({ "fullscreenWheelScrollLines": 2 }), 64 + 8),
+        moved(json!({ "fullscreenWheelScrollLines": 2 }), 64 + 8, 10),
         Some(10),
         "alt: x5"
     );
@@ -2049,7 +2081,7 @@ fn set_036() {
         .script(&[numbered_reply("R", 80)])
         .start();
     t.prompt("count", "R80");
-    t.settle();
+    t.wait_steady("the bottom view drawn", |s| reply_closed(s, "R80"));
     t.pty.send_bytes(b"\x1b[<64;5;5M");
     t.wait("the top in one event", |s| s.row(0).starts_with("oxa v"));
 }
@@ -3085,7 +3117,9 @@ fn key_007() {
         .start();
     t.prompt("count", "R80");
     let row_of = |s: &Screen, needle: &str| row_index(s, needle);
-    let at_bottom = t.wait("R80 shown", |s| row_of(s, "R80").is_some());
+    let at_bottom = t.wait_steady("the reply drawn to its closing fence", |s| {
+        reply_closed(s, "R80") && row_of(s, "R70").is_some()
+    });
     let r70 = row_of(&at_bottom, "R70").unwrap();
     t.key("pageUp");
     let s = t.wait("a page up", |s| row_of(s, "R80").is_none());
@@ -3098,7 +3132,9 @@ fn key_007() {
     t.key("ctrl+home");
     t.wait("the top", |s| s.row(0).starts_with("oxa v"));
     t.key("ctrl+end");
-    t.wait("the bottom", |s| row_of(s, "R80").is_some());
+    t.wait_steady("the bottom", |s| {
+        reply_closed(s, "R80") && row_of(s, "R70") == Some(r70)
+    });
     // lineUp moves the transcript down by exactly one row; lineDown back.
     t.key("f5");
     t.wait("one line up", |s| row_of(s, "R70") == Some(r70 + 1));
@@ -3183,6 +3219,9 @@ fn key_009() {
     // searchNext (enter, ctrl+g), searchPrevious (shift+enter, ctrl+shift+g), searchClose
     // (escape). ctrl+shift+f and shift+enter need the kitty protocol (a legacy terminal sends
     // ctrl+f / CR for them).
+    // invariant: oxa adds `alt+s` to `tui.altScreen.search`, which a legacy terminal can send;
+    // ctrl+shift+f keeps working with the kitty protocol (asserted below), and OXA's footer
+    // shows only keys the terminal can send (`key_009_legacy_terminal_shows_and_takes_the_fallback`).
     let row_of = |s: &Screen, needle: &str| row_index(s, needle);
     let t = Setup::new()
         .profile(TermProfile::kitty())
@@ -3239,6 +3278,87 @@ fn key_009() {
     t.key("f4");
     t.pty.send_text("R05");
     t.wait("R05 revealed", |s| row_of(s, "R05").is_some());
+    assert_eq!(t.editor(), "", "the query went to the search, not the editor");
+    drop(t);
+    // Adapted (oxa): the default `alt+s` opens the search on a legacy terminal.
+    let t = Setup::new().script(&[numbered_reply("R", 80)]).start();
+    t.prompt("count", "R80");
+    t.key("alt+s");
+    t.pty.send_text("R03");
+    t.wait("R03 revealed", |s| row_of(s, "R03").is_some());
+    assert_eq!(t.editor(), "", "the query went to the search, not the editor");
+}
+
+/// KEY-009 (O-199 first run, foot): the kitty keyboard protocol keeps one flags stack per
+/// screen, so the push must be made on the alternate screen too; then ctrl+shift+f arrives as
+/// CSI-u and opens the search. (Pushed on the main screen only, the alternate screen stays
+/// legacy and ctrl+shift+f arrives as ctrl+f, the cursor key.)
+#[test]
+fn key_009_kitty_protocol_on_the_alternate_screen() {
+    let foot = TermProfile {
+        name: "foot",
+        env: vec![("TERM".into(), "foot".into())],
+        ..TermProfile::kitty()
+    };
+    // The footer's key hints are OXA's look (the harness drives pi's look by default).
+    let t = Setup::new()
+        .profile(foot)
+        .env("OXA_SKIN", "oxa")
+        .size(30, 200)
+        .script(&[numbered_reply("R", 40)])
+        .start();
+    let m = t.pty.modes();
+    assert!(m.alt_screen, "fullscreen by default: {m:?}");
+    assert_eq!(
+        m.kitty_flags(),
+        7,
+        "the alternate screen has the flags pushed: {m:?}"
+    );
+    t.prompt("count", "R40");
+    let s = t.wait("the footer advertises ctrl+shift+f", |s| {
+        s.contains("ctrl+shift+f search")
+    });
+    assert!(!s.contains("alt+s search"), "the first key is shown\n{s:?}");
+    // The CSI-u bytes a kitty-protocol terminal sends (flags 7: `CSI 102 ; 6 u`).
+    let bytes = t
+        .pty
+        .key_bytes("ctrl+shift+f", KeyEncoding::Auto)
+        .expect("encodable");
+    assert!(
+        bytes.starts_with(b"\x1b[102"),
+        "{:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    t.pty.send_bytes(&bytes);
+    t.wait("search open", |s| s.contains("Search:"));
+    t.pty.send_text("R07");
+    t.wait("R07 revealed", |s| row_index(s, "R07").is_some());
+    assert_eq!(t.editor(), "", "the query went to the search, not the editor");
+}
+
+/// KEY-009 (O-199 first run): a terminal without the kitty keyboard protocol cannot send
+/// ctrl+shift+f (it sends ctrl+f). The footer then shows the fallback `alt+s`, which works.
+#[test]
+fn key_009_legacy_terminal_shows_and_takes_the_fallback() {
+    // The footer's key hints are OXA's look (the harness drives pi's look by default).
+    let t = Setup::new()
+        .env("OXA_SKIN", "oxa")
+        .size(30, 200)
+        .script(&[numbered_reply("R", 40)])
+        .start();
+    assert_eq!(t.pty.modes().kitty_flags(), 0, "legacy terminal");
+    t.prompt("count", "R40");
+    let s = t.wait("the footer advertises the fallback", |s| {
+        s.contains("alt+s search")
+    });
+    assert!(
+        !s.contains("ctrl+shift+f"),
+        "a key the terminal cannot send is not advertised\n{s:?}"
+    );
+    t.key_as("alt+s", KeyEncoding::Legacy);
+    t.wait("search open", |s| s.contains("Search:"));
+    t.pty.send_text("R05");
+    t.wait("R05 revealed", |s| row_index(s, "R05").is_some());
     assert_eq!(t.editor(), "", "the query went to the search, not the editor");
 }
 
