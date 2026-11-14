@@ -491,3 +491,47 @@ fn set_text_insert_and_is_empty() {
     t.press("ctrl+-");
     assert_eq!(t.text(), "abc", "undo restores the text before set_text");
 }
+
+/// First run: Enter on a list the user did not touch sends the text as typed; a moved
+/// selection is applied as before.
+#[test]
+fn enter_on_an_untouched_list_sends_the_text() {
+    let mut t = Ed::new();
+    t.e.set_autocomplete(Some(Box::new(Files)));
+    t.type_str("see @src");
+    assert!(t.e.autocomplete_open());
+    assert_eq!(t.press("enter"), EditorAction::Submit("see @src".to_string()));
+    assert!(!t.e.autocomplete_open());
+
+    t.type_str("see @src");
+    t.press("down");
+    assert_eq!(
+        t.press("enter"),
+        EditorAction::Changed,
+        "a moved selection is applied"
+    );
+    assert_eq!(t.text(), "see @src/lib.rs ");
+}
+
+/// First run: prose with an apostrophe never opens the file list in the real provider.
+#[test]
+fn prose_apostrophe_opens_no_list_in_the_editor() {
+    let env = oxa_fake::TestEnv::new();
+    env.write("work/.cargo/config.toml", "");
+    env.write("work/src/main.rs", "");
+    let work = env.work();
+    let p =
+        oxa_tui::CombinedProvider::new(vec![], oxa_tui::FileIndex::build(&work, 1000), &work, &env.home());
+    let mut t = Ed::new();
+    t.e.set_autocomplete(Some(Box::new(p)));
+    t.type_str("what's ");
+    assert!(!t.e.autocomplete_open(), "what's  opened the list");
+    t.type_str("it's \"fine\" ");
+    assert!(!t.e.autocomplete_open());
+    assert_eq!(
+        t.press("enter"),
+        EditorAction::Submit("what's it's \"fine\" ".to_string())
+    );
+    t.type_str("@src/");
+    assert!(t.e.autocomplete_open(), "@src/ opens the list");
+}

@@ -107,6 +107,9 @@ struct Suggest {
     items: Vec<AutocompleteItem>,
     prefix: String,
     selected: usize,
+    /// The user moved the selection (up / down / page). Until then Enter sends the text as
+    /// typed; only a moved selection (or Tab) is applied.
+    touched: bool,
 }
 
 /// The prompt editor.
@@ -363,7 +366,17 @@ impl Editor {
                 return Changed;
             }
             if is("tui.select.confirm") {
-                let slash = self.suggest.as_ref().is_some_and(|s| s.prefix.starts_with('/'));
+                let (slash, touched) = self
+                    .suggest
+                    .as_ref()
+                    .map_or((false, false), |s| (s.prefix.starts_with('/'), s.touched));
+                // A slash command (its name or an argument) keeps pi's Enter. A file list (`@`,
+                // a path, Tab) never replaces what was typed unless the user moved the
+                // selection: Enter sends the text as typed.
+                if !self.in_slash_command() && !touched {
+                    self.suggest = None;
+                    return self.submit();
+                }
                 if self.accept_suggestion() && !slash {
                     return Changed;
                 }
@@ -1124,9 +1137,21 @@ impl Editor {
                 items: s.items,
                 prefix: s.prefix,
                 selected: 0,
+                touched: false,
             }),
             _ => None,
         };
+    }
+
+    /// The cursor is in a slash command line (`/name args`, first line), where the provider
+    /// offers command names and arguments rather than files.
+    fn in_slash_command(&self) -> bool {
+        self.st.line == 0
+            && self
+                .st
+                .lines
+                .first()
+                .is_some_and(|l| l.trim_start().starts_with('/'))
     }
 
     fn suggest_move(&mut self, delta: isize, wrap: bool) {
@@ -1137,6 +1162,7 @@ impl Editor {
         if n == 0 {
             return;
         }
+        s.touched = true;
         let target = s.selected as isize + delta;
         s.selected = if wrap {
             target.rem_euclid(n) as usize
