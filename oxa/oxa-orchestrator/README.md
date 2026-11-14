@@ -202,8 +202,10 @@ turn reply does not finish the goal. Pausing an active turn requests abort and
 remains visibly in flight until settlement. The native `goal_session` adapter and `oxa orchestrate --goal` now drive the same
 process/conversation across multiple turns; see [SESSION_GOALS.md](SESSION_GOALS.md).
 
-Next priority: expose that exact native session owner through local status,
-steer, goal and event control to both the existing TUI integration and external
-clients, with no exclusive writer lock held by the TUI. Background-task wake-ups
+`--goal --control` now exposes that native owner through a private Unix socket
+for concurrent external status, pause/resume, goal redirection, steering and
+event polling; see [SHARED_SESSION.md](SHARED_SESSION.md). Existing interactive
+TUI attachment to this shared owner is still the next integration, with no
+exclusive writer lock held by either client. Background-task wake-ups
 and worker-lane integration follow. All implementation stays in the new crates
 plus small default-off hooks; cloud execution and merging retain the brief's gates.

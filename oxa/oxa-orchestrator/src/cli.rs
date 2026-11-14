@@ -39,6 +39,7 @@ Required:
 Options:
   --goal                       Pursue one goal across turns in the SAME session
   --goal-turns <n>             Goal prompt-turn cap, 1..10000 (default 128)
+  --control                    Attach clients via private <directory>/session.sock (requires --goal)
   --workers <n>                 Number of workers, 1..16 (default: 3)
   --parallel <n>                Concurrent workers (default: min(workers, 4))
   --role <text>                 Repeat per worker, or repeat one role for all
@@ -65,6 +66,7 @@ source files are never changed or merged. Private edits return review data. Toke
 pub struct Options {
     pursue_goal: bool,
     goal_turns: u32,
+    control: bool,
     engine: SocketAddr,
     model: String,
     directory: PathBuf,
@@ -87,6 +89,7 @@ pub struct Options {
 pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     let mut pursue_goal = false;
     let mut goal_turns = None;
+    let mut control = false;
     let mut source = None;
     let mut files = Vec::new();
     let mut new_files = Vec::new();
@@ -143,6 +146,10 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
         }
         if flag == "--goal" {
             pursue_goal = true;
+            continue;
+        }
+        if flag == "--control" {
+            control = true;
             continue;
         }
         if flag == "--edit" {
@@ -247,6 +254,9 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     if goal_turns.is_some() && !pursue_goal {
         return Err("--goal-turns requires --goal");
     }
+    if control && !pursue_goal {
+        return Err("--control requires --goal");
+    }
     if pursue_goal && git_worktrees {
         return Err("goal sessions currently use private workspace copies; omit --git-worktrees");
     }
@@ -296,6 +306,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     Ok(Some(Options {
         pursue_goal,
         goal_turns: goal_turns.unwrap_or(128),
+        control,
         engine,
         model,
         directory,
@@ -525,6 +536,9 @@ fn run_goal_command(options: Options) -> i32 {
         }
     };
     let result = execute_goal(options, cancel, |event| {
+        if event.kind == "goal_status" {
+            return;
+        }
         let tokens = event
             .goal
             .reported_tokens
@@ -575,7 +589,7 @@ fn run_goal_command(options: Options) -> i32 {
 pub fn execute_goal(
     options: Options,
     cancel: Arc<AtomicBool>,
-    observe: impl FnMut(crate::goal_session::Event),
+    mut observe: impl FnMut(crate::goal_session::Event),
 ) -> io::Result<crate::goal_session::Report> {
     if !options.pursue_goal {
         return Err(io::Error::other("--goal is required"));
@@ -639,8 +653,11 @@ pub fn execute_goal(
         },
         workspace,
     };
-    let (sender, controls) = mpsc::sync_channel(1);
-    drop(sender);
+    let (sender, controls) = mpsc::sync_channel(64);
+    let mut sender = options.control.then_some(sender);
+    let mut control_server = None;
+    let mut control_error = None;
+    let cancel_on_error = cancel.clone();
     let report = crate::goal_session::pursue(
         settings,
         spec,
@@ -651,11 +668,41 @@ pub fn execute_goal(
         },
         controls,
         cancel,
-        observe,
+        |event| {
+            if let Some(sender) = sender.take() {
+                match crate::control::Server::start(&directory, sender) {
+                    Ok(server) => control_server = Some(server),
+                    Err(error) => {
+                        control_error = Some(error);
+                        cancel_on_error.store(true, Ordering::Release);
+                    }
+                }
+            }
+            if let Some(server) = &control_server {
+                server.publisher().publish(&event);
+            }
+            observe(event);
+        },
     )?;
+    if let Some(error) = control_error {
+        return Err(error);
+    }
     if options.save_results {
         crate::checkpoint::save(&directory, &report)?;
     }
+    if let Some(server) = &control_server {
+        server.complete();
+        // Inference is already stopped/reaped. Preserve the final replies and
+        // cleanup event for attached clients instead of racing their next poll.
+        let terminal_at = std::time::Instant::now();
+        while !server.is_closed()
+            && !cancel_on_error.load(Ordering::Acquire)
+            && terminal_at.elapsed() < Duration::from_secs(30)
+        {
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    drop(control_server);
     Ok(report)
 }
 

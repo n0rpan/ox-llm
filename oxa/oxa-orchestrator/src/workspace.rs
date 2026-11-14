@@ -89,6 +89,8 @@ fn protected(part: &str) -> bool {
             | "credentials"
             | "credentials.json"
             | "registration.json"
+            | "session.sock"
+            | "goal.jsonl"
             | ".registration.json.pending"
             | "secrets.json"
             | "id_rsa"
