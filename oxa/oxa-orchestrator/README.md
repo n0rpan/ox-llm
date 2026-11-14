@@ -193,18 +193,17 @@ local control API shared with the TUI, background-task wake-ups, and role/model/
 budget worker lanes whose results are session events. Further protocol breadth
 and registered-controller polish are deferred behind those priorities.
 
-The in-progress `goals` module is the session-owned lifecycle core: one goal
+The `goals` module is the session-owned lifecycle core: one goal
 survives turn boundaries, accumulates time/token/turn budgets, distinguishes
 active/pausing/paused/DONE/blocked/budget-exhausted/canceled state, retains unknown
 usage, and exposes bounded sequenced events plus revision-checked control. DONE
 needs an explicit structured declaration with agent-reported evidence; a normal
 turn reply does not finish the goal. Pausing an active turn requests abort and
-remains visibly in flight until settlement. This is not yet the native runtime
-adapter or an end-user milestone.
+remains visibly in flight until settlement. The native `goal_session` adapter and `oxa orchestrate --goal` now drive the same
+process/conversation across multiple turns; see [SESSION_GOALS.md](SESSION_GOALS.md).
 
-Next acceptance check: drive multiple turns in the SAME native oxa session,
-continue automatically, steer/pause without restarting it, and stop on explicit
-DONE/blocked or the original cumulative budget. Then expose that exact session
-owner to both the existing TUI integration and external control, with no exclusive
-writer ownership tied to the TUI. All implementation stays in the new crates plus
-small default-off hooks; cloud execution and merging retain the brief's gates.
+Next priority: expose that exact native session owner through local status,
+steer, goal and event control to both the existing TUI integration and external
+clients, with no exclusive writer lock held by the TUI. Background-task wake-ups
+and worker-lane integration follow. All implementation stays in the new crates
+plus small default-off hooks; cloud execution and merging retain the brief's gates.
