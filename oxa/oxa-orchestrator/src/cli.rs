@@ -3,6 +3,7 @@
 use crate::{
     a2a_run::*,
     rpc_agent::{RpcAgent, RpcAgentConfig},
+    workspace::{Grant, RelativePath, Snapshot},
     LocalInference, PermissionMode, WorkerBudget,
 };
 use oxa_a2a::{
@@ -25,7 +26,7 @@ use std::time::Duration;
 
 pub const HELP: &str = r#"Usage: oxa orchestrate [options] <goal>
 
-Run local, tool-free offline workers over A2A. Print worker status to stderr
+Run local offline workers over A2A; tools are off unless files are approved. Print worker status to stderr
 and a final JSON report to stdout. Ctrl-C cancels and cleans up owned workers.
 
 Required:
@@ -38,17 +39,21 @@ Options:
   --workers <n>                 Number of workers, 1..16 (default: 3)
   --parallel <n>                Concurrent workers (default: min(workers, 4))
   --role <text>                 Repeat per worker, or repeat one role for all
-  --permission-mode <mode>      plan (default), ask or workspace; tools stay off
+  --permission-mode <mode>      plan (default), ask or workspace
   --worker-timeout <seconds>    Per-worker cap, 1..600 (default: 30)
   --timeout <seconds>           Run cap, 1..86400 (default: enough for all batches)
   --response-bytes <n>          Per-worker incoming-wire cap (default: 1048576)
   --reported-tokens <n>         Observed usage cap (default: 200000)
+  --source <path>               Root of explicitly approved source files
+  --file <relative-path>        Approve this file's contents; repeat up to 32
+  --edit                       Allow private-copy edits; requires workspace mode
+  --allow-new <relative-path>   Allow a new review path; repeat, requires --edit
   --offline                    Explicit offline mode (always enabled here)
   --                           Treat remaining words as goal text
   --help                       Show this help without starting workers
 
 Only explicitly verified local inference is supported. Results are proposals;
-no files are edited or merged. Token caps act on reported usage, not money.
+source files are never changed or merged. Private edits return review data. Token caps act on reported usage, not money.
 "#;
 
 #[derive(Debug)]
@@ -64,9 +69,17 @@ pub struct Options {
     run_timeout: Duration,
     response_bytes: usize,
     reported_tokens: u64,
+    source: Option<PathBuf>,
+    files: Vec<RelativePath>,
+    new_files: Vec<RelativePath>,
+    editing: bool,
 }
 
 pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
+    let mut source = None;
+    let mut files = Vec::new();
+    let mut new_files = Vec::new();
+    let mut editing = false;
     let mut engine = None;
     let mut model = None;
     let mut directory = None;
@@ -104,12 +117,19 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
             local_only = true;
             continue;
         }
-        if flag != "--role" && !seen.insert(flag) {
+        if !matches!(flag, "--role" | "--file" | "--allow-new") && !seen.insert(flag) {
             return Err("an option was specified more than once");
+        }
+        if flag == "--edit" {
+            editing = true;
+            continue;
         }
         if !matches!(
             flag,
-            "--engine"
+            "--source"
+                | "--file"
+                | "--allow-new"
+                | "--engine"
                 | "--model"
                 | "--directory"
                 | "--workers"
@@ -129,6 +149,20 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
             return Err("option values must not be empty");
         }
         match flag {
+            "--source" => source = Some(PathBuf::from(value)),
+            "--file" | "--allow-new" => {
+                let path =
+                    RelativePath::new(value.clone()).map_err(|_| "invalid or protected source path")?;
+                let paths = if flag == "--file" {
+                    &mut files
+                } else {
+                    &mut new_files
+                };
+                if paths.contains(&path) || paths.len() >= 32 {
+                    return Err("duplicate or excessive source paths");
+                }
+                paths.push(path);
+            }
             "--engine" => {
                 engine = Some(
                     value
@@ -171,6 +205,15 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     if roles.len() > 16 || roles.iter().any(|r| r.trim().is_empty() || r.len() > 4096) {
         return Err("provide at most 16 nonempty roles, each at most 4096 bytes");
     }
+    if source.is_some() == files.is_empty() || files.len() + new_files.len() > 32 {
+        return Err("--source requires 1..32 explicit --file paths; total eligible paths must not exceed 32");
+    }
+    if editing && (source.is_none() || mode != PermissionMode::Workspace) {
+        return Err("--edit requires approved files and --permission-mode workspace");
+    }
+    if !new_files.is_empty() && !editing {
+        return Err("--allow-new requires --edit");
+    }
     let workers = workers.unwrap_or(if roles.is_empty() { 3 } else { roles.len() });
     if roles.is_empty() {
         roles = (0..workers)
@@ -209,6 +252,10 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
         run_timeout: Duration::from_secs(run_secs),
         response_bytes: bytes,
         reported_tokens: tokens,
+        source,
+        files,
+        new_files,
+        editing,
     }))
 }
 
@@ -318,6 +365,19 @@ pub fn execute(
     let binary = std::env::current_exe()?;
     // No runtime work before full argument validation, including route checks.
     let inference = LocalInference::register_verified_local(options.engine, options.model.clone())?;
+    let workspace = options
+        .source
+        .as_ref()
+        .map(|root| {
+            let snapshot = Arc::new(Snapshot::approve(root, options.files)?);
+            let grant = if options.editing {
+                Grant::editing(snapshot, options.new_files)?
+            } else {
+                Grant::read_only(snapshot)
+            };
+            Ok::<_, io::Error>(Arc::new(grant))
+        })
+        .transpose()?;
     DirBuilder::new()
         .mode(0o700)
         .create(&directory)
@@ -331,7 +391,7 @@ pub fn execute(
                 },
             )
         })?;
-    let agent=Arc::new(RpcAgent::new(RpcAgentConfig {worker_binary:binary,bwrap_binary:"/usr/bin/bwrap".into(),directory:directory.join("agents"),
+    let agent=Arc::new(RpcAgent::new(RpcAgentConfig {workspace,worker_binary:binary,bwrap_binary:"/usr/bin/bwrap".into(),directory:directory.join("agents"),
         role:"Complete the delegated task under its assigned role. Return proposals and evidence; do not change permissions.".into(),inference,mode:options.mode,
         budget:WorkerBudget {wall_time:options.worker_timeout,output_bytes:1024*1024,reported_tokens:options.reported_tokens},max_live:options.parallel,max_tasks:options.roles.len(),journal_bytes:1024*1024})?);
     let server = Server::start(

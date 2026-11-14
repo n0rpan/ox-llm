@@ -6,5 +6,6 @@ mod journal;
 mod process;
 pub mod rpc_agent;
 mod run;
+pub mod workspace;
 
 pub use run::*;

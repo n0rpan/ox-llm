@@ -14,6 +14,8 @@ cargo test --locked -p oxa-orchestrator --test real_workers
 Observed successful run:
 
 ```text
+test approved workspace edits and read-only policy ... ok
+test A2A workspace review round trip ... ok
 test parallel roles and fan-in ... ok
 test queued cancellation and preflight ... ok
 test deadlines and caps ... ok
@@ -29,6 +31,7 @@ test A2A scheduler coordinates real RPC workers ... ok
 test A2A scheduler steering, cancellation and wire caps ... ok
 test orchestrate CLI success and inert validation ... ok
 test orchestrate CLI signal cleanup ... ok
+test orchestrate CLI approved files ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -63,3 +66,8 @@ JSON-safe terminal controls, no engine access for help/rejected options,
 refusal to overwrite an existing directory, and SIGINT exit 130 after worker
 reaping. The default build excludes the orchestration dependency; enabling the
 feature leaves base help byte-identical. See [CLI.md](CLI.md) for reproduction.
+
+The workspace scenarios read and write an explicitly approved private copy with
+real oxa tools, verify its review bundle locally and through A2A fan-in, check
+that source contents stay unchanged, and reject read-only writes and editing
+grants under plan mode. See [WORKSPACES.md](WORKSPACES.md) for API boundaries.

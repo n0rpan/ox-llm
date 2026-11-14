@@ -92,6 +92,8 @@ pub struct WorkerSpec {
     pub task: String,
     pub inference: LocalInference,
     pub budget: WorkerBudget,
+    /// Immutable operator-approved snapshot; never derived from task messages.
+    pub workspace: Option<Arc<crate::workspace::Grant>>,
 }
 
 #[derive(Clone, Debug)]
@@ -231,9 +233,9 @@ pub fn run_cancellable(
     let directory = parent.join(name);
     DirBuilder::new().mode(0o700).create(&directory)?;
     let mut journal = Journal::create(&directory.join("transcript.jsonl"), settings.journal_bytes)?;
-    journal.record(None, "run_started", json!({"run":settings.id,"workers":plan.len(),"parallelism":settings.parallelism,"mode":settings.mode,"offline":true,"tools":[]}))?;
+    journal.record(None, "run_started", json!({"run":settings.id,"workers":plan.len(),"parallelism":settings.parallelism,"mode":settings.mode,"offline":true,"toolPolicy":"explicit-per-worker-grants"}))?;
     for spec in &plan {
-        journal.record(Some(&spec.id), "queued", json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"route":"verified-local","reservedTokens":spec.budget.reported_tokens,"reservedBytes":spec.budget.output_bytes}))?;
+        journal.record(Some(&spec.id), "queued", json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"route":"verified-local","reservedTokens":spec.budget.reported_tokens,"reservedBytes":spec.budget.output_bytes,"tools":spec.workspace.as_ref().map(|w|w.tools()).unwrap_or(&[])}))?;
         observe(status(spec, "queued", None, 0));
     }
     let mut pending = VecDeque::from(plan);
@@ -348,6 +350,18 @@ pub fn run_cancellable(
             observe(status(&spec, "starting", None, 0));
             let endpoint = format!("http://{}", spec.inference.address);
             let worker_deadline = (Instant::now() + spec.budget.wall_time).min(run_deadline);
+            let workspace = spec
+                .workspace
+                .as_ref()
+                .map(|grant| grant.materialize(&directory.join(format!("workspace-{}", spec.id))))
+                .transpose()?;
+            if let Some(workspace) = &workspace {
+                journal.record(
+                    Some(&spec.id),
+                    "workspace",
+                    json!({"manifestSha256":workspace.manifest(),"editing":workspace.editing()}),
+                )?;
+            }
             match Process::spawn(
                 &worker_binary,
                 &bwrap_binary,
@@ -356,6 +370,7 @@ pub fn run_cancellable(
                 &spec.role,
                 settings.mode.as_str(),
                 spec.budget.output_bytes,
+                workspace.as_ref(),
             ) {
                 Ok(mut process) => {
                     let queued = process.queue(&json!({"id":"check","type":"get_state"}));
@@ -364,6 +379,7 @@ pub fn run_cancellable(
                         deadline: worker_deadline,
                         spec,
                         process,
+                        workspace,
                         checking: true,
                         configuration: BTreeSet::new(),
                         running: false,
@@ -406,7 +422,41 @@ pub fn run_cancellable(
                         .saturating_duration_since(Instant::now())
                         .min(Duration::from_millis(20)),
                 );
-                let report = worker.report(&settings.id, outcome);
+                let (outcome, review) = match worker
+                    .workspace
+                    .as_ref()
+                    .map(|w| w.collect(&worker.spec.id))
+                    .transpose()
+                {
+                    Ok(review) => (outcome, review),
+                    Err(error) => (
+                        if error.kind() == io::ErrorKind::FileTooLarge {
+                            Outcome::OutputBudget
+                        } else {
+                            Outcome::PolicyViolation
+                        },
+                        None,
+                    ),
+                };
+                let mut report = worker.report(&settings.id, outcome);
+                if let Some(review) = review.filter(|r| !r.changes.is_empty()) {
+                    journal.record(
+                        Some(&worker.spec.id),
+                        "workspace_review",
+                        json!({"manifestSha256":review.manifest_sha256,"changes":review.changes.len()}),
+                    )?;
+                    report.task.artifacts.push(Artifact {
+                        artifact_id: format!("{}-review", worker.spec.id),
+                        parts: vec![Part::Data {
+                            data: std::collections::BTreeMap::from([
+                                ("kind".into(), json!("oxa.workspace.review.v1")),
+                                ("review".into(), json!(review)),
+                            ]),
+                        }],
+                        name: Some("proposed workspace changes".into()),
+                        description: None,
+                    });
+                }
                 terminal(&mut journal, &report, &mut observe)?;
                 reports.push(report);
             } else {
@@ -435,6 +485,7 @@ pub fn run_cancellable(
 struct Worker {
     spec: WorkerSpec,
     process: Process,
+    workspace: Option<crate::workspace::WorkingCopy>,
     deadline: Instant,
     checking: bool,
     configuration: BTreeSet<String>,
@@ -453,6 +504,11 @@ struct Worker {
 }
 
 impl Worker {
+    fn tool_allowed(&self, name: Option<&str>) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|w| name.is_some_and(|name| w.tools().contains(&name)))
+    }
     fn tokens(&self) -> Option<u64> {
         self.usage_seen.then(|| {
             self.completed_tokens
@@ -558,7 +614,7 @@ impl Worker {
                     journal.record(
                         Some(&self.spec.id),
                         "policy_verified",
-                        json!({"mode":mode,"offline":true,"tools":[]}),
+                        json!({"mode":mode,"offline":true,"toolPolicy":"explicit-per-worker-grants"}),
                     )?;
                 } else if self.configuration.remove(id) {
                     if self.configuration.is_empty() {
@@ -596,7 +652,7 @@ impl Worker {
                         .ok_or_else(|| invalid("invalid assistant content"))?;
                     let mut text = String::new();
                     for part in content {
-                        if part["type"] == "toolCall" {
+                        if part["type"] == "toolCall" && !self.tool_allowed(part["name"].as_str()) {
                             return Ok(Some(Outcome::PolicyViolation));
                         }
                         if part["type"] == "text" {
@@ -628,7 +684,16 @@ impl Worker {
             "model_select" if record["model"].as_str() != Some(&self.spec.inference.model) => {
                 return Ok(Some(Outcome::PolicyViolation))
             }
-            "tool_execution_start" => return Ok(Some(Outcome::PolicyViolation)),
+            "tool_execution_start" => {
+                if !self.tool_allowed(record["toolName"].as_str()) {
+                    return Ok(Some(Outcome::PolicyViolation));
+                }
+                journal.record(
+                    Some(&self.spec.id),
+                    "workspace_tool",
+                    json!({"tool":record["toolName"],"argumentsSha256":hash(&record["args"].to_string())}),
+                )?;
+            }
             "extension_ui_request" => {
                 if let Some(id) = record.get("id") {
                     self.process.queue(&json!({"type":"extension_ui_response","id":id,"value":false,"confirmed":false,"cancelled":true}))?;
@@ -724,6 +789,10 @@ pub(crate) fn validate(settings: &RunSettings, plan: &[WorkerSpec]) -> io::Resul
             || worker.budget.wall_time > Duration::from_secs(86400)
             || worker.budget.output_bytes == 0
             || worker.budget.reported_tokens == 0
+            || worker
+                .workspace
+                .as_ref()
+                .is_some_and(|w| w.is_editing() && settings.mode != PermissionMode::Workspace)
         {
             return Err(invalid("invalid worker plan"));
         }

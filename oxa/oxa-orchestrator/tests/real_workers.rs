@@ -34,6 +34,7 @@ fn settings(env: &TestEnv, name: &str) -> RunSettings {
 
 fn worker(server: &FakeServer, id: &str) -> WorkerSpec {
     WorkerSpec {
+        workspace: None,
         id: id.into(),
         role: format!("role-{id}"),
         task: format!("synthetic task for {id}"),
@@ -471,6 +472,7 @@ fn native_agent(env: &TestEnv, engine: &FakeServer, name: &str, max_live: usize)
     let spec = worker(engine, "template");
     Arc::new(
         RpcAgent::new(RpcAgentConfig {
+            workspace: None,
             worker_binary: config.worker_binary,
             bwrap_binary: config.bwrap_binary,
             directory: config.directory,
@@ -1100,6 +1102,261 @@ fn orchestrate_cli_signal_cleanup() {
     assert!(spawned > 0);
 }
 
+fn approved_workspace_edit_and_read_only_policy() {
+    use oxa_orchestrator::workspace::{Grant, RelativePath, ReviewBundle, Snapshot};
+    let env = TestEnv::new();
+    std::fs::write(env.root().join("input.txt"), "original\n").unwrap();
+    let snapshot = Arc::new(
+        Snapshot::approve(env.root(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+    );
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool("read-1", "read", r#"{"path":"input.txt"}"#),
+            ScriptTurn::tool(
+                "write-1",
+                "write",
+                r#"{"path":"input.txt","content":"proposed\n"}"#,
+            ),
+            ScriptTurn::text("proposal ready"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let mut spec = worker(&server, "editor");
+    spec.workspace = Some(Arc::new(Grant::editing(snapshot.clone(), vec![]).unwrap()));
+    let mut config = settings(&env, "workspace-edit");
+    config.mode = PermissionMode::Workspace;
+    let (_tx, rx) = mpsc::sync_channel(4);
+    let report = run(config, vec![spec], rx, |_| {}).unwrap();
+    assert!(report.succeeded(), "{report:?}");
+    assert_reaped(&report);
+    let review = report.workers[0]
+        .task
+        .artifacts
+        .iter()
+        .flat_map(|a| &a.parts)
+        .find_map(|p| match p {
+            Part::Data { data } => data.get("review").cloned(),
+            _ => None,
+        })
+        .expect("review artifact");
+    let review: ReviewBundle = serde_json::from_value(review).unwrap();
+    review.verify(&snapshot, &[]).unwrap();
+    review.verify_current_base(env.root()).unwrap();
+    assert_eq!(review.changes[0].after.as_deref(), Some("proposed\n"));
+    assert_eq!(
+        std::fs::read_to_string(env.root().join("input.txt")).unwrap(),
+        "original\n"
+    );
+    let log = std::fs::read_to_string(env.root().join("workspace-edit/transcript.jsonl")).unwrap();
+    assert!(!log.contains("proposed"));
+    assert!(log.contains("workspace_review"));
+    let server = FakeServer::start(
+        vec![ScriptTurn::tool(
+            "write-2",
+            "write",
+            r#"{"path":"input.txt","content":"denied"}"#,
+        )],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let mut spec = worker(&server, "reader");
+    spec.workspace = Some(Arc::new(Grant::read_only(snapshot.clone())));
+    let (_tx, rx) = mpsc::sync_channel(4);
+    let report = run(settings(&env, "workspace-read"), vec![spec], rx, |_| {}).unwrap();
+    assert_eq!(report.workers[0].outcome, Outcome::PolicyViolation);
+    assert_reaped(&report);
+    let mut spec = worker(&server, "invalid");
+    spec.workspace = Some(Arc::new(Grant::editing(snapshot, vec![]).unwrap()));
+    let (_tx, rx) = mpsc::sync_channel(4);
+    assert!(run(settings(&env, "workspace-preflight"), vec![spec], rx, |_| {}).is_err());
+    assert!(!env.root().join("workspace-preflight").exists());
+}
+
+fn a2a_workspace_review_round_trip() {
+    use oxa_orchestrator::workspace::{Grant, RelativePath, ReviewBundle, Snapshot};
+    let env = TestEnv::new();
+    std::fs::write(env.root().join("input.txt"), "baseline\n").unwrap();
+    let snapshot = Arc::new(
+        Snapshot::approve(env.root(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+    );
+    let engine = FakeServer::start(
+        vec![
+            ScriptTurn::tool(
+                "edit-1",
+                "edit",
+                r#"{"path":"input.txt","oldText":"baseline","newText":"reviewed"}"#,
+            ),
+            ScriptTurn::text("review this proposal"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let config = settings(&env, "workspace-agent");
+    let template = worker(&engine, "template");
+    let agent = Arc::new(
+        RpcAgent::new(RpcAgentConfig {
+            workspace: Some(Arc::new(Grant::editing(snapshot.clone(), vec![]).unwrap())),
+            worker_binary: config.worker_binary,
+            bwrap_binary: config.bwrap_binary,
+            directory: config.directory,
+            role: "editing worker".into(),
+            inference: template.inference,
+            mode: PermissionMode::Workspace,
+            budget: template.budget,
+            max_live: 1,
+            max_tasks: 2,
+            journal_bytes: config.journal_bytes,
+        })
+        .unwrap(),
+    );
+    let server = Server::start(agent.clone(), ServerLimits::default()).unwrap();
+    let (_tx, rx) = mpsc::sync_channel(4);
+    let report = run_a2a(
+        a2a_settings(&env, "workspace-controller"),
+        vec![a2a_worker(&server, "editor")],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert!(report.succeeded(), "{report:?}");
+    let task = report.workers[0].task.as_ref().unwrap();
+    let review = task
+        .artifacts
+        .iter()
+        .flat_map(|a| &a.parts)
+        .find_map(|p| match p {
+            Part::Data { data } => data.get("review").cloned(),
+            _ => None,
+        })
+        .expect("review survived A2A serialization and collection");
+    let review: ReviewBundle = serde_json::from_value(review).unwrap();
+    review.verify(&snapshot, &[]).unwrap();
+    review.verify_current_base(env.root()).unwrap();
+    assert_eq!(review.changes[0].after.as_deref(), Some("reviewed\n"));
+    assert_eq!(
+        std::fs::read_to_string(env.root().join("input.txt")).unwrap(),
+        "baseline\n"
+    );
+    let native = agent.report(&task.id).unwrap();
+    assert!(!Path::new(&format!("/proc/{}", native.process_id.unwrap())).exists());
+}
+
+fn orchestrate_cli_approved_files() {
+    use oxa_orchestrator::workspace::{RelativePath, ReviewBundle, Snapshot};
+    let env = TestEnv::new();
+    std::fs::write(env.work().join("input.txt"), "source stays unchanged\n").unwrap();
+    let snapshot =
+        Snapshot::approve(&env.work(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap();
+    let engine = FakeServer::start(
+        vec![
+            ScriptTurn::tool("read-1", "read", r#"{"path":"input.txt"}"#),
+            ScriptTurn::tool(
+                "write-1",
+                "write",
+                r#"{"path":"input.txt","content":"proposed CLI edit\n"}"#,
+            ),
+            ScriptTurn::tool(
+                "write-2",
+                "write",
+                r#"{"path":"new.txt","content":"proposed new file\n"}"#,
+            ),
+            ScriptTurn::text("CLI review ready"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = cli_command(&env, &engine, "cli-files")
+        .args(["--workers", "1", "--source"])
+        .arg(env.work())
+        .args([
+            "--file",
+            "input.txt",
+            "--edit",
+            "--permission-mode",
+            "workspace",
+            "--allow-new",
+            "new.txt",
+            "propose changes",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let artifact = report["workers"][0]["task"]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["parts"][0]["data"]["kind"] == "oxa.workspace.review.v1")
+        .expect("CLI review artifact");
+    let review: ReviewBundle =
+        serde_json::from_value(artifact["parts"][0]["data"]["review"].clone()).unwrap();
+    review
+        .verify(&snapshot, &[RelativePath::new("new.txt".into()).unwrap()])
+        .unwrap();
+    review.verify_current_base(&env.work()).unwrap();
+    assert_eq!(review.changes.len(), 2);
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("input.txt")).unwrap(),
+        "source stays unchanged\n"
+    );
+    assert!(!env.work().join("new.txt").exists());
+    let count = engine.requests().len();
+    let output = cli_command(&env, &engine, "cli-files-invalid")
+        .args(["--source"])
+        .arg(env.work())
+        .args(["--file", ".env", "goal"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!env.root().join("cli-files-invalid").exists());
+    assert_eq!(count, engine.requests().len());
+    std::os::unix::fs::symlink("input.txt", env.work().join("link.txt")).unwrap();
+    let output = cli_command(&env, &engine, "cli-files-link")
+        .args(["--source"])
+        .arg(env.work())
+        .args(["--file", "link.txt", "goal"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!env.root().join("cli-files-link").exists());
+    assert_eq!(count, engine.requests().len());
+    let engine = FakeServer::start(
+        vec![
+            ScriptTurn::tool("read-2", "read", r#"{"path":"input.txt"}"#),
+            ScriptTurn::text("read-only complete"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = cli_command(&env, &engine, "cli-files-read")
+        .args(["--workers", "1", "--source"])
+        .arg(env.work())
+        .args(["--file", "input.txt", "summarize"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for request in engine.requests().iter().filter(|r| r.max_tokens > 0) {
+        let tools: serde_json::Value = serde_json::from_str(&request.tools_json).unwrap();
+        let names: Vec<_> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["read"]);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -1122,6 +1379,14 @@ fn main() {
     }
     std::env::set_var("OXA_PARENT_PRIVATE_MARKER", "synthetic-parent-value");
     for (name, test) in [
+        (
+            "approved workspace edits and read-only policy",
+            approved_workspace_edit_and_read_only_policy as fn(),
+        ),
+        (
+            "A2A workspace review round trip",
+            a2a_workspace_review_round_trip as fn(),
+        ),
         ("parallel roles and fan-in", parallel_roles_and_fan_in as fn()),
         (
             "queued cancellation and preflight",
@@ -1167,6 +1432,7 @@ fn main() {
             orchestrate_cli_success_and_validation,
         ),
         ("orchestrate CLI signal cleanup", orchestrate_cli_signal_cleanup),
+        ("orchestrate CLI approved files", orchestrate_cli_approved_files),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {
             continue;

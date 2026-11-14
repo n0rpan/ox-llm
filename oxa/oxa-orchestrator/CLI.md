@@ -27,11 +27,25 @@ endpoint cannot forward to cloud inference; a loopback address alone does
 not prove that. Production/cloud routes and paid calls remain unsupported.
 
 Workers receive explicit role/goal data through A2A and run oxa RPC sessions
-in private bubblewrap sandboxes. They are always offline, with no tools,
+in private bubblewrap sandboxes. They are always offline, with tools disabled by default, and no
 extensions, MCP, skills, project context discovery or saved sessions. The
 selected permission mode is passed through and verified, with `plan` as the
-command default. `workspace` and `ask` still have no filesystem tools here.
+command default. Permission mode alone does not expose files or tools.
 Results are proposals; this profile does not edit or merge a checkout.
+
+To delegate selected file contents, add `--source ./checkout --file src/main.rs`.
+Repeat `--file` for each explicitly approved UTF-8 file. They are copied into
+separate read-only worker workspaces; only the `read` tool is enabled. Add both
+`--edit --permission-mode workspace` to enable `read`, `edit` and `write` in each
+private copy. `--allow-new relative/path` registers a new path for review and
+requires `--edit`. Selected file contents are delegation input: approve them for
+disclosure and do not select secrets. There is no recursive source discovery.
+
+The final Task includes structured `oxa.workspace.review.v1` Data artifacts for
+changed files, with hashes, before/after content and display diffs. Source files
+are never written. Multiple workers may propose overlapping changes; no merge or
+apply occurs. File capture errors happen before run state or inference starts.
+See [WORKSPACES.md](WORKSPACES.md) for exact bounds, validation and limitations.
 
 Worker status appears on stderr as state changes. Stdout contains one final
 JSON report, including each outcome, task/result, usage and stop confirmation.
@@ -40,7 +54,8 @@ Redirect stdout explicitly if results should be saved. Audit logs contain
 hashes and metadata, rather than raw goals, results or transport capabilities.
 
 The output directory must be new, with an existing parent. It is private and
-contains `run/transcript.jsonl` plus per-task logs under `agents/`. Existing
+contains `run/transcript.jsonl` plus per-task logs under `agents/`. Approved
+private workspace copies also persist under those per-task directories. Existing
 directories are refused without overwriting their files. The ephemeral server
 capability never goes into these logs or into worker prompts.
 
@@ -63,7 +78,7 @@ Native worker pipe output is separately bounded to 1 MiB.
 Default hosted workspace tests exercise command parsing and the full command
 implementation through the real-worker fixture, with owned loopback fake
 engines. Local validation also builds the actual feature-enabled `oxa` binary
-and runs the same success, help/validation and SIGINT scenarios through its
+and runs the same success, help/validation, approved-file proposal and SIGINT scenarios through its
 four-line main hook. To reproduce that smoke check from `oxa/`:
 
 ```sh
