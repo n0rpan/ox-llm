@@ -1,6 +1,6 @@
 # oxc drop-in conformance
 
-Reference: main `16a307c73d24157a38fb9c462b7a00c632416079`.
+Reference: main `2d5825e19301dead4703362c556ddc11c4635662`.
 The current suite passes 305 scenarios in 52 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
