@@ -381,6 +381,8 @@ def forward(self, st, item, key):
         if not started:
             _error(self, st, item, error.status, str(error), key, error.code)
         else:
+            if st.led is not None:
+                st.led.finish(error.status, error.code)
             self.close_connection = True
     except Exception as error:  # the SDK's own status/connection errors, redacted
         status = getattr(error, 'status_code', None) or 503
@@ -390,6 +392,8 @@ def forward(self, st, item, key):
         if not started:
             _error(self, st, item, status, message or 'The Anthropic provider is unavailable.', key)
         else:
+            if st.led is not None:
+                st.led.finish(status, 'cloud_stream_error')
             self.close_connection = True
     finally:
         try:
