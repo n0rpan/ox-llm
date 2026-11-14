@@ -1,0 +1,590 @@
+//! B3: the agent loop. Owner: task B3. Signatures below are frozen; bodies are yours.
+// ported from pi packages/agent/src/agent-loop.ts
+use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
+use crate::host::observe_hooks;
+use crate::retry::chat_with_retry;
+use crate::SessionState;
+use oxa_proto::{
+    miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
+    HookPoint, Level, OxaError, Part, Role, StopReason, TurnKind, Ui, Usage, Value, WireMsg,
+};
+use oxa_session::new_entry_id;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// How a run ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunEnd {
+    /// The assistant stopped without tool calls and no steering was pending.
+    Stopped,
+    /// Cancelled; the partial reply (if any) was stored as `Shown { why: aborted }`.
+    Aborted,
+    /// A request failed after retries; stored as `Shown { why: failed | cut }`.
+    Failed(OxaError),
+}
+
+/// Persist `body` as a new entry under the current leaf, add it to the tree and fold it into
+/// the transcript. The only way an entry is created. Emits nothing; callers emit events.
+/// A store failure is returned and leaves tree and transcript unchanged.
+pub fn append_entry(st: &mut SessionState, body: EntryBody) -> Result<Entry, OxaError> {
+    let id = {
+        let tree = &st.tree;
+        new_entry_id(&|candidate: &str| tree.get(candidate).is_some())
+    };
+    let leaf = st.tree.leaf();
+    let parent = if leaf.is_empty() {
+        None
+    } else {
+        Some(leaf.to_string())
+    };
+    let entry = Entry {
+        id,
+        parent,
+        ts_ms: now_ms(),
+        body,
+    };
+    st.store.append(&st.sref, &entry)?;
+    st.tree.push(entry.clone());
+    st.transcript.apply(&entry);
+    Ok(entry)
+}
+
+/// Run from the current wire (the user message is already appended) until the assistant stops.
+/// Implements the loop of the crate docs: `chat_with_retry` -> push reply -> `execute_calls`
+/// -> push results -> drain steering (`Shared::take_steering`, each as a user message) ->
+/// repeat. Emits `AgentStart`, `TurnStart`/`TurnEnd`, `Message*`, `AgentEnd` and after each
+/// reply `CacheMiss` when `usage.cached < transcript.expected_cache()` (cause from the last
+/// `RebaseLog`, else `cold_start` on the first request, else `unknown`). Appends a `Usage`
+/// entry per request. Mid-run compaction (`When::MidRun`) is delegated to `maybe_compact`
+/// between turns. Fires the observer hooks of each step.
+///
+/// `Finish::Length` (the reply hit the output limit), as in pi: there is no automatic
+/// continuation. Continuing would send a request that ends in the cut assistant message with
+/// `max_tokens > 0`, which the engine refuses (400; only an H6 prefill may end in an assistant
+/// message), and W1 forbids rewriting the reply or inventing a user turn. A cut reply without
+/// tool calls ends the run like a normal stop (its stop reason `length` is shown); a cut reply
+/// with tool calls never runs them: each gets the error result `tool_errors::TRUNCATED` and
+/// the loop goes on, so the model re-issues them with complete arguments.
+pub fn run_loop(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<RunEnd, OxaError> {
+    sink.emit(&AgentEvent::AgentStart);
+    observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
+    let mut run_msgs: Vec<EventMessage> = Vec::new();
+    // pi's loop starts with the run's prompt messages (the user messages appended since the
+    // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
+    let opening = crate::fire::opening_messages(st);
+    let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    sink.emit(&AgentEvent::AgentEnd {
+        messages: run_msgs.clone(),
+        will_retry: false,
+    });
+    let all: Vec<EventMessage> = opening.into_iter().chain(run_msgs).collect();
+    crate::fire::agent_end(st, &all, sink, ui);
+    result
+}
+
+fn run_inner(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+    opening: &[EventMessage],
+) -> Result<RunEnd, OxaError> {
+    let mut turn_index: u32 = 0;
+    loop {
+        // E-INT 1: host requests that arrived since the last step (queries, appends) are
+        // served between steps; session-shape actions wait for settlement.
+        crate::host::serve_host(st, false, sink, ui);
+        sink.emit(&AgentEvent::TurnStart);
+        crate::fire::turn_start(st, turn_index, sink, ui);
+        // The records of the user messages sent for the first time, then their hooks.
+        announce_user_messages(st, sink);
+        if turn_index == 0 {
+            for m in opening {
+                crate::fire::message(st, HookPoint::MessageStart, m, sink, ui);
+                crate::fire::message(st, HookPoint::MessageEnd, m, sink, ui);
+            }
+        }
+        let first = st.stats.requests == 0;
+        let expected = expected_cached(st);
+
+        let pending = pending_message();
+        sink.emit(&AgentEvent::MessageStart {
+            message: pending.clone(),
+        });
+        crate::fire::message(st, HookPoint::MessageStart, &pending, sink, ui);
+
+        let opts = RequestOpts {
+            kind: TurnKind::Chat,
+            max_tokens: None,
+            thinking: None,
+            background: false,
+            snapshot_keep: false,
+            extra: Vec::new(),
+            events: true,
+            idem_key: String::new(),
+        };
+        let mut capture = Capture {
+            inner: &mut *sink,
+            text: String::new(),
+            got_data: false,
+        };
+        let res = chat_with_retry(st, &opts, &mut capture, ui);
+        let partial = std::mem::take(&mut capture.text);
+        let got_data = capture.got_data;
+
+        let turn = match res {
+            Ok(t) => t,
+            Err(e) => {
+                let why = failure_why(&e, got_data);
+                // Partial text is shown, never sent (W2); the wire keeps the user message.
+                let text = if partial.is_empty() {
+                    e.to_string()
+                } else {
+                    partial
+                };
+                persist(st, EntryBody::Shown { text, why }, sink)?;
+                return Ok(if why == shown_why::ABORTED {
+                    RunEnd::Aborted
+                } else {
+                    RunEnd::Failed(e)
+                });
+            }
+        };
+
+        let usage: Usage = turn.usage;
+        note_cache(st, expected, &usage, first, sink);
+        if !usage.cached_missing {
+            crate::reload::after_reply(st, first, expected, usage.cached, sink);
+            // R2
+        }
+
+        // W2: the reply is pushed exactly as streamed, then its usage (which sets the next
+        // expected cache).
+        let ts = now_ms();
+        let reply_entry = persist(
+            st,
+            EntryBody::Msg {
+                wire: turn.msg.clone(),
+                parts: Vec::new(),
+            },
+            sink,
+        )?
+        .id;
+        persist(
+            st,
+            EntryBody::Usage {
+                kind: TurnKind::Chat.as_str().to_string(),
+                usage,
+            },
+            sink,
+        )?;
+        let reply = reply_event(&turn, ts);
+        sink.emit(&AgentEvent::MessageEnd {
+            message: reply.clone(),
+        });
+        crate::fire::message(st, HookPoint::MessageEnd, &reply, sink, ui);
+        run_msgs.push(reply.clone());
+        account_reply(st, turn.timings, usage);
+        st.last_usage = Some(usage);
+        // F4: capabilities that only a loaded engine reports (`/props` `oxe_hints`): re-read
+        // once after the first reply while `prefill_only` is still false, and after a request
+        // that recovered from a model load or restart. Never per request otherwise.
+        let gate = &st.shared.gate;
+        let reread = gate.reread_info.swap(false, std::sync::atomic::Ordering::SeqCst)
+            || (!st.info.prefill_only
+                && !gate
+                    .info_rechecked
+                    .swap(true, std::sync::atomic::Ordering::SeqCst));
+        if reread {
+            crate::session::refresh_budget(st, None, sink);
+        }
+
+        let calls = turn.msg.tool_calls.clone();
+        if !calls.is_empty() {
+            // A reply cut by the output limit may carry truncated arguments: fail, never run.
+            let results = if turn.finish == Finish::Length {
+                fail_truncated_calls(st, &calls, sink, ui)
+            } else {
+                run_calls(st, &calls, sink, ui)
+            };
+            let mut tool_msgs = Vec::with_capacity(results.len());
+            let mut tool_entries = Vec::with_capacity(results.len());
+            for r in &results {
+                let entry = persist(
+                    st,
+                    EntryBody::Msg {
+                        wire: r.msg.clone(),
+                        parts: Vec::new(),
+                    },
+                    sink,
+                )?;
+                tool_entries.push(entry.id);
+                let msg = EventMessage {
+                    msg: r.msg.clone(),
+                    ts_ms: now_ms(),
+                    stop: None,
+                    usage: None,
+                    model: None,
+                    tool_name: Some(r.tool_name.clone()),
+                    is_error: r.is_error,
+                    error_message: None,
+                };
+                // pi emits message_start / message_end for each tool result message.
+                crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
+                crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
+                tool_msgs.push(msg);
+            }
+            st.stats.tool_calls += calls.len() as u32;
+            st.stats.tool_results += results.len() as u32;
+            st.stats.context_tokens = st.transcript.context();
+            run_msgs.extend(tool_msgs.iter().cloned());
+            turn_end(
+                st,
+                sink,
+                ui,
+                reply,
+                tool_msgs,
+                (turn_index, &reply_entry, &tool_entries),
+            );
+            turn_index += 1;
+
+            if st.shared.cancel.is_cancelled() {
+                return Ok(RunEnd::Aborted);
+            }
+            // Steering drains after the tool batch, each message as a user message.
+            deliver_steering(st, sink, ui, run_msgs)?;
+            // L5 mid-run (`oxa.compaction.midRun`): past the soft limit, compact before the next
+            // request, keeping this unanswered batch verbatim. A failed or cancelled attempt
+            // leaves the wire unchanged and the run goes on (the hard-limit check below still
+            // protects it); a user abort during the summary request ends the run.
+            if crate::compaction::compact_mid_run(st, sink, ui) != crate::compaction::MidRun::NotRun
+                && st.shared.cancel.is_cancelled()
+            {
+                return Ok(RunEnd::Aborted);
+            }
+            // Above the hard limit the next request would overflow: compact between turns (W5).
+            if let Err(e) = crate::compaction::maybe_compact(st, false, sink, ui) {
+                persist(
+                    st,
+                    EntryBody::Shown {
+                        text: e.to_string(),
+                        why: shown_why::FAILED,
+                    },
+                    sink,
+                )?;
+                return Ok(RunEnd::Failed(e));
+            }
+            continue;
+        }
+
+        turn_end(st, sink, ui, reply, Vec::new(), (turn_index, &reply_entry, &[]));
+        turn_index += 1;
+        if crate::repair::repair_turn(st, &turn, sink)? {
+            continue;
+        }
+        if deliver_steering(st, sink, ui, run_msgs)? {
+            continue;
+        }
+        return Ok(RunEnd::Stopped);
+    }
+}
+
+/// pi's agent loop opens a turn with `message_start` / `message_end` for each user message it
+/// sends for the first time (the prompt, a delivered steering or follow-up message), right
+/// after `turn_start` (json.md "Event sequence"). Those are the user `Msg` entries of the
+/// active branch since the last reply or failed request; hidden custom messages are not
+/// announced (they are not user messages in pi either).
+fn announce_user_messages(st: &mut SessionState, sink: &mut dyn EventSink) {
+    let mut fresh: Vec<EventMessage> = Vec::new();
+    for e in st.tree.branch(st.tree.leaf()).iter().rev() {
+        match &e.body {
+            EntryBody::Msg { wire, .. } if wire.role == Role::User => fresh.push(EventMessage {
+                msg: wire.clone(),
+                ts_ms: e.ts_ms,
+                stop: None,
+                usage: None,
+                model: None,
+                tool_name: None,
+                is_error: false,
+                error_message: None,
+            }),
+            // The previous reply, tool result, failed request or rebase ends the search.
+            EntryBody::Msg { .. }
+            | EntryBody::Shown { .. }
+            | EntryBody::Compaction { .. }
+            | EntryBody::BranchSummary { .. }
+            | EntryBody::Prefix(_) => break,
+            _ => {}
+        }
+    }
+    for message in fresh.into_iter().rev() {
+        sink.emit(&AgentEvent::MessageStart {
+            message: message.clone(),
+        });
+        sink.emit(&AgentEvent::MessageEnd { message });
+    }
+}
+
+/// Append every queued steering message as a user message. `true` when there was one.
+fn deliver_steering(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+) -> Result<bool, OxaError> {
+    let taken = drain_steering(st, sink);
+    if taken.is_empty() {
+        return Ok(false);
+    }
+    for text in taken {
+        let wire = WireMsg::user(text.clone());
+        let msg = EventMessage {
+            msg: wire.clone(),
+            ts_ms: now_ms(),
+            stop: None,
+            usage: None,
+            model: None,
+            tool_name: None,
+            is_error: false,
+            error_message: None,
+        };
+        run_msgs.push(msg.clone());
+        persist(
+            st,
+            EntryBody::Msg {
+                wire,
+                parts: vec![Part::Text(text)],
+            },
+            sink,
+        )?;
+        crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
+        crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
+    }
+    Ok(true)
+}
+
+/// Take steering messages from the shared queue (`Shared::take_steering` applies the mode)
+/// and announce the queue that is left.
+fn drain_steering(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
+    // A change no front end has reported yet (a steer queued during this turn) is announced
+    // first, so the queue that held the message is seen (pi emits `queue_update` on steer).
+    if st.shared.dirty.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    let taken = st.shared.take_steering();
+    if !taken.is_empty() {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    taken
+}
+
+/// Persist a body and announce the entry.
+pub(crate) fn persist(
+    st: &mut SessionState,
+    body: EntryBody,
+    sink: &mut dyn EventSink,
+) -> Result<Entry, OxaError> {
+    let entry = append_entry(st, body)?;
+    sink.emit(&AgentEvent::EntryAppended { entry: entry.clone() });
+    Ok(entry)
+}
+
+fn turn_end(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    message: EventMessage,
+    tool_results: Vec<EventMessage>,
+    ids: (u32, &str, &[String]),
+) {
+    sink.emit(&AgentEvent::TurnEnd {
+        message: message.clone(),
+        tool_results: tool_results.clone(),
+    });
+    crate::resume::sync_turn(st, sink); // R1: the turn's appends are durable
+    crate::fire::turn_end(st, ids.0, &message, &tool_results, (ids.1, ids.2), sink, ui);
+}
+
+fn account_reply(st: &mut SessionState, timings: Option<oxa_proto::Timings>, usage: Usage) {
+    st.stats.requests += 1;
+    st.stats.assistant_messages += 1;
+    st.stats.prompt_tokens += usage.prompt as u64;
+    st.stats.completion_tokens += usage.completion as u64;
+    st.stats.cached_tokens += usage.cached as u64;
+    st.stats.context_tokens = st.transcript.context();
+    if let Some(t) = timings {
+        if t.predicted_ms > 0.0 {
+            st.stats.last_tok_s = t.predicted_n as f64 / (t.predicted_ms / 1000.0);
+        }
+    }
+}
+
+/// THE cache expectation (one rule for every request over the session's wire: chat turns, the
+/// idle prefill, the park and the boot preload). Prompt tokens the engine should report as
+/// cached on the next request:
+///
+/// 1. `Transcript::expected_cache()` when it is set: the last request over this wire
+///    (`prompt + completion - 1`, F1; `prompt` after an H6 prefill), also after a resume (the
+///    fold replays the usage entries).
+/// 2. Otherwise, after a rebase (compaction, fork / leaf move, model switch epoch, context edit,
+///    extension rewrite) or on any request after the first one of this process: the frozen
+///    prefix (system text + tools, counted by the engine's tokenizer), the anchor the engine
+///    keeps for every session of the model. What the server's flags or advertised capabilities
+///    say does not change it: a server that does not keep the anchor is reported.
+/// 3. A true cold start (a new session's first request, no rebase, nothing sent yet): 0, silent.
+///
+/// The anchor count is a lower bound (raw text, no template framing); when the engine cannot
+/// count, nothing is expected.
+pub(crate) fn expected_cached(st: &SessionState) -> u32 {
+    let set = st.transcript.expected_cache();
+    if set > 0 {
+        return reasoning_bound(st, set);
+    }
+    if st.stats.requests == 0 && st.transcript.rebases().is_empty() {
+        return 0;
+    }
+    let text = format!("{}{}", st.prefix.system_text(), st.prefix.tools_json);
+    st.engine.count_tokens(&text).unwrap_or(0)
+}
+
+/// B6: the template's opener of an assistant turn (`<think>\n`, or `<think>\n\n</think>\n\n`
+/// with thinking off) is part of the prompt of the request that generated the turn, and is the
+/// part a template that drops reasoning renders differently. An upper bound of its tokens on
+/// the Qwen templates.
+pub(crate) const REASONING_OPENER_TOKENS: u32 = 8;
+
+/// B6: what the engine can keep at a new user message on a model whose capabilities say it
+/// does not keep reasoning (`preserve_thinking: false`, Flash). Its template, when it is told
+/// to drop reasoning, re-renders every assistant turn at or before the last user message
+/// without its think block, so the history departs from the engine's state at the first
+/// assistant turn of the previous user turn: right after `turn_base` minus the opener. A
+/// template that keeps reasoning (the Qwen default when the key is absent, what oxa sends to
+/// Flash) or the engine's ECHO restoring it reports the full `prompt + completion - 1`, which
+/// is above the bound: either way no false miss. Inside a tool loop (no new user message) the
+/// reasoning is kept by every template, so the rule is unchanged there.
+fn reasoning_bound(st: &SessionState, set: u32) -> u32 {
+    if st.info.caps.preserve_thinking != Some(false) {
+        return set;
+    }
+    let new_query = st.transcript.wire().last().map(|m| m.role) == Some(Role::User);
+    let base = st.transcript.turn_base();
+    if !new_query || base == 0 {
+        return set;
+    }
+    set.min(base.saturating_sub(REASONING_OPENER_TOKENS))
+}
+
+/// B6: shown once per session when the server never reports `cached_tokens`.
+pub(crate) const CACHED_UNREPORTED_TEXT: &str = "The engine does not report cached prompt tokens (usage.prompt_tokens_details.cached_tokens); cache misses cannot be detected for this session.";
+
+/// Report a reply whose `cached` is below [`expected_cached`] (computed before the request) as
+/// one `CacheMiss` with its cause. A reply without `cached_tokens` (B6) is neither a miss nor a
+/// hit: one notice per session says so.
+pub(crate) fn note_cache(
+    st: &mut SessionState,
+    expected: u32,
+    usage: &Usage,
+    first: bool,
+    sink: &mut dyn EventSink,
+) {
+    if usage.cached_missing {
+        if !st.stats.cached_unreported {
+            st.stats.cached_unreported = true;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: CACHED_UNREPORTED_TEXT.to_string(),
+            });
+        }
+        return;
+    }
+    let cached = usage.cached;
+    if cached < expected {
+        let cause = miss_cause_for(st, first);
+        sink.emit(&AgentEvent::CacheMiss {
+            expected,
+            cached,
+            cause,
+        });
+        st.stats.cache_misses += 1;
+    }
+}
+
+/// The cause of a cache miss, from where [`expected_cached`] took its value: the rebase since
+/// the last request over this wire (rule 2), else `cold_start` on the process's first request
+/// (a resume on an engine that no longer holds the session), else `engine_evicted` (the
+/// engine lost state it held for this exact wire; an oxa wire change would be a rebase or a
+/// W1 violation, which `oxa_fake::check_w1` reports separately).
+fn miss_cause_for(st: &SessionState, first: bool) -> &'static str {
+    let after_rebase = st.transcript.expected_cache() == 0;
+    match st.transcript.rebases().last() {
+        Some(r) if after_rebase => match r.why {
+            rebase_why::COMPACTION => miss_cause::COMPACTION,
+            rebase_why::LEAF_MOVE => miss_cause::LEAF_MOVE,
+            rebase_why::CONTEXT_EDIT => miss_cause::CONTEXT_EDIT,
+            rebase_why::EPOCH => miss_cause::EPOCH,
+            rebase_why::EXTENSION => miss_cause::EXTENSION,
+            _ => miss_cause::UNKNOWN,
+        },
+        _ if first => miss_cause::COLD_START,
+        _ => miss_cause::ENGINE_EVICTED,
+    }
+}
+
+/// Stored reason for a failed request (W2): cut when a data byte already arrived.
+fn failure_why(e: &OxaError, got_data: bool) -> &'static str {
+    match e.code {
+        oxa_proto::codes::ABORTED => shown_why::ABORTED,
+        oxa_proto::codes::STREAM_BROKEN if got_data => shown_why::CUT,
+        _ => shown_why::FAILED,
+    }
+}
+
+/// The placeholder of the assistant message a request is about to stream.
+pub(crate) fn pending_message() -> EventMessage {
+    EventMessage {
+        msg: WireMsg::assistant(""),
+        ts_ms: now_ms(),
+        stop: Some(StopReason::Pending),
+        usage: None,
+        model: None,
+        tool_name: None,
+        is_error: false,
+        error_message: None,
+    }
+}
+
+/// Records the text of a streaming reply so an aborted or cut reply can be shown. A new
+/// `MessageStart` (the retry after a context-full cut, F6) starts over.
+struct Capture<'a> {
+    inner: &'a mut dyn EventSink,
+    text: String,
+    got_data: bool,
+}
+
+impl EventSink for Capture<'_> {
+    fn emit(&mut self, e: &AgentEvent) {
+        if let AgentEvent::MessageStart { .. } = e {
+            self.text.clear();
+            self.got_data = false;
+        }
+        if let AgentEvent::MessageUpdate { delta, .. } = e {
+            self.got_data = true;
+            if let oxa_proto::MessageDelta::TextDelta { delta, .. } = delta {
+                self.text.push_str(delta);
+            }
+        }
+        self.inner.emit(e);
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}

@@ -1,0 +1,81 @@
+# oxa: a Rust reimplementation of the pi 1.5.2 coding agent for the oxe engine.
+# W0-FROZEN: this file, every crate's Cargo.toml and Cargo.lock are architect-owned.
+# A task that needs a new dependency sends a note to the architect; it does not edit manifests.
+[workspace]
+resolver = "2"
+members = [
+    "oxa-proto",
+    "oxa-engine", "oxa-session", "oxa-tools", "oxa-sandbox", "oxa-perm",
+    "oxa-compact", "oxa-config", "oxa-resources", "oxa-script",
+    "oxa-ext", "oxa-codemode", "oxa-mcp", "oxa-web",
+    "oxa-core",
+    "oxa-tui",
+    "oxa-interactive", "oxa-rpc", "oxa-export",
+    "oxa-cli",
+    "oxa-fake", "oxa-parity",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# internal
+oxa-proto = { path = "oxa-proto" }
+oxa-engine = { path = "oxa-engine" }
+oxa-session = { path = "oxa-session" }
+oxa-tools = { path = "oxa-tools" }
+oxa-sandbox = { path = "oxa-sandbox" }
+oxa-perm = { path = "oxa-perm" }
+oxa-compact = { path = "oxa-compact" }
+oxa-config = { path = "oxa-config" }
+oxa-resources = { path = "oxa-resources" }
+oxa-script = { path = "oxa-script" }
+oxa-ext = { path = "oxa-ext" }
+oxa-codemode = { path = "oxa-codemode" }
+oxa-mcp = { path = "oxa-mcp" }
+oxa-web = { path = "oxa-web" }
+oxa-core = { path = "oxa-core" }
+oxa-tui = { path = "oxa-tui" }
+oxa-interactive = { path = "oxa-interactive" }
+oxa-rpc = { path = "oxa-rpc" }
+oxa-export = { path = "oxa-export" }
+oxa-cli = { path = "oxa-cli" }
+oxa-fake = { path = "oxa-fake" }
+# external (plan sec. 4); no async runtime anywhere
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+regex = "1"
+globset = "0.4"
+ignore = "0.4"
+similar = "2"
+crossterm = "0.28"
+libc = "0.2"
+unicode-width = "0.2"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+rquickjs = { version = "0.9", features = ["loader"] }
+ureq = "3"
+base64 = "0.22"
+# test-only: the terminal emulator behind the PARITY pty harness (oxa-parity)
+vt100 = "0.16"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Three functions take eight or nine arguments; a parameter struct would change every caller.
+too_many_arguments = "allow"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 4
+# A1/A2 (wave H lane harden): unwind, so a panic in an extension, a tool or a hook is caught
+# where it happens (`oxa_proto::panic::contain`) and the session goes on. Guarded by
+# `oxa-cli/tests/h_panic_binary.rs`.
+panic = "unwind"
+strip = true

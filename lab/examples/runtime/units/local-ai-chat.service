@@ -1,0 +1,32 @@
+[Unit]
+Description=Local private AI (controller.py)
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/ai-stack/runtime
+ExecStart=/usr/bin/python3 %h/.local/share/ai-stack/runtime/controller.py
+Environment=LOCAL_AI_LEASE=%h/.local/state/local-ai/inference.lock
+Environment=LOCAL_LLM_CONFIG=%h/.config/local-ai/llm/runtime.json
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Engine selection (docs/ENGINE-SELECTION.md). The Rust engines are the default
+# even without these lines; set one to 0 for the classic llama.cpp / BigMoe fallback.
+Environment=LOCAL_AI_ENABLE_OXE=1
+Environment=LOCAL_AI_ENABLE_OXE_FLASH=1
+# Admission queue with early SSE headers and the replay of a cut stream (v0.2.0: on by
+# default even without these lines; set one to 0 to get the v0.1.3 behaviour back).
+Environment=LOCAL_AI_QUEUE=1
+Environment=LOCAL_AI_REPLAY=1
+# NPU images need your own Hexagon SDK / QAIRT build; off unless set to 1.
+#Environment=LOCAL_AI_IMAGE_NPU=1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+CPUQuota=800%
+MemoryHigh=24G
+MemoryMax=25G
+MemorySwapMax=0
+Nice=15
+LimitCORE=0
+UMask=0077
+TasksMax=256
+[Install]
+WantedBy=default.target

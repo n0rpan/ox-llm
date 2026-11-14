@@ -1,0 +1,56 @@
+# Exemptions for: export_receipt.py scan --profile tree --allow-file tools/tree-scan.allow <tracked files>
+# Columns are separated by TABs: GLOB, RULE, REASON. Every line needs a reason. Keep this list short.
+!allow-exact	Yoga	Product name of the test laptop.
+!allow-word	yoga	The host name of the development machine equals the product name, which is part of file and device-tree names.
+tests/test_export_receipt.py	*	Scanner test: invented paths, addresses and keys are the test input.
+tests/test_mac_reproduce.py	*	Scanner test: invented paths, addresses and keys are the test input.
+tests/test_backup_sanitize.py	*	Scanner test: invented paths, addresses and keys are the test input (incl. plain-literal synthetic dotted credential controls, P63; export-excluded).
+tests/test_backup_private.py	*	Scanner test: invented paths, addresses and keys are the test input.
+tests/test_release_scrub.py	*	Scanner test: invented paths, addresses and keys are the test input.
+tests/test_public_results.py	*	Scanner test: invented paths, addresses and keys are the test input.
+tools/export_receipt.py	*	The scanner itself: rule text and help examples.
+tools/backup_sanitize.py	*	The pre-push scanner itself: rule text.
+tests/test_bootstrap.py	home-path	Invented path used as test input.
+tests/test_health_digest.py	home-path	Privacy test: asserts the digest/messages never leak a home path or prompt text; literals are test inputs.
+tests/test_health_digest.py	secret-assignment	Privacy test: asserts the digest/messages never leak a home path or prompt text; literals are test inputs.
+tests/test_oem_drills.py	home-path	Privacy test: asserts the digest/messages never leak a home path or prompt text; literals are test inputs.
+tests/test_bootstrap.py	email	Git identity of a synthetic fixture (example.invalid).
+tests/test_source_archive.py	email	Git identity of a synthetic fixture (example.invalid).
+tests/test_flash_memory.py	user-slice	Invented cgroup and runtime paths used as test input.
+tests/test_flash_transport.py	secret-assignment	Reads a header in a local stub server; no value.
+tests/test_idle_output_defaults.py	secret-assignment	Synthetic placeholder value in a fixture.
+tests/test_backend_token.py	secret-assignment	Synthetic per-launch token and client header values in a fixture.
+examples/runtime/opencode-v2.json	secret-assignment	Placeholder key "local-only" for the loopback endpoint.
+benchmarks/hard-tasks/run_hard_task.py	secret-assignment	Placeholder key "local-only" for the loopback endpoint.
+benchmarks/classic/normal13.py	secret-assignment	Placeholder key "local-only" for the loopback endpoint.
+benchmarks/classic/normal13/opencode-base.synthetic.json	secret-assignment	Placeholder key in a synthetic config.
+patches/llama-*.patch	email	Patch author lines with GitHub noreply addresses; author lines keep the name (owner decision O-23).
+patches/llama-*.patch	user-name	Patch author lines; author lines keep the name (owner decision O-23).
+LICENSE	user-name	Copyright line (owner decision O-23).
+NOTICE	user-name	Copyright line (owner decision O-23).
+THIRD_PARTY_NOTICES	user-name	"Modified by" attribution lines (owner decision O-23).
+docs/DEPENDENCIES.md	user-name	Copyright line (owner decision O-23).
+docs/MEMLAT.md	email	Message ID inside the public link to the upstream RFC.
+docs/PRIVATE-BACKUP.md	*	Private operations document; proposed for exclusion from the public snapshot.
+tools/backup_private.sh	*	Private backup tool; proposed for exclusion from the public snapshot.
+docs/PAUSE-20261110.md	user-name	Quotes a field name from a private receipt; proposed for exclusion from the public snapshot.
+docs/RELEASE-CHECKLIST-v0.1.md	*	Internal checklist that names the patterns being removed; excluded from the public snapshot.
+docs/README-DRAFT-v0.1.md	user-name	Copyright line in the licence section (owner decision O-23).
+src/snapdragon_ai_lab/runtime/ctl_http.py	secret-assignment	Assigns the result of the API settings lookup, with no literal credential (moved from controller.py).
+src/snapdragon_ai_lab/runtime/ctl_lifecycle.py	secret-assignment	Keeps the per-launch engine token on the process object, with no literal credential (moved from controller.py).
+tests/test_harness_probe.py	secret-assignment	Synthetic credential in the request-log redaction test.
+tests/test_openai_api.py	secret-assignment	Synthetic credential in the local key test.
+tools/openai_api_check.py	secret-assignment	SDK key parameter uses the caller's argument with a loopback placeholder.
+README.md	user-name	copyright holder in the licence line (O-23)
+crates/server/src/tests.rs	home-path	Engine: invented home-directory paths (user "user") inside synthetic tool-call arguments.
+tools/mtp_multiturn_check.py	home-path	Engine: invented home-directory paths (user "user") in a synthetic multi-turn prompt.
+crates/tokenizer/tests/fixtures/qwen35_llama_tokenize.jsonl	*	Engine: tokenizer input text from the upstream llama.cpp README (UUIDs and a sample path are upstream text; editing breaks the fixture).
+crates/image-vae/src/decoder/nhwc.rs	device-serial	Engine: a variable named _serial (mutex guard), not a serial number.
+tests/adapters/test_opencode_compaction_live.py	*	Binding test: invented non-loopback addresses (must be refused) and a synthetic token (must be redacted).
+crates/model/src/tests.rs	device-serial	Engine: a variable named serial (the serial engine beside the batch engine), not a serial number.
+benchmarks/o119/backend_stub.py	secret-assignment	Records header names and booleans in a local stub; no value.
+benchmarks/o119/gate1.py	secret-assignment	Placeholder key "local-only" for the loopback endpoint; a real key only by env-var name.
+benchmarks/o119/proxy_probe.py	secret-assignment	Per-run random client key passed by environment to a private test controller; never stored.
+benchmarks/o119/c3_user_snapshots.py	secret-assignment	Per-launch random credential passed by environment to a private test controller; never stored.
+tests/test_interim_codex_controls.py	secret-assignment	O170 control: a synthetic placeholder search-key variable must be stripped from server and client env; no real key.
+tests/test_prereview_fixes.py	secret-assignment	O170 control: a synthetic placeholder search-key variable must be stripped from the oxa client env; no real key.

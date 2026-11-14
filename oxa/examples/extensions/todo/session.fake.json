@@ -1,0 +1,4 @@
+# F9 todo: the model adds a todo, then lists them
+{"tool_calls":[{"id":"call_td1","name":"todo","args":"{\"action\": \"add\", \"text\": \"buy milk\"}"}]}
+{"tool_calls":[{"id":"call_td2","name":"todo","args":"{\"action\": \"list\"}"}]}
+{"text":"One todo is open.\n"}

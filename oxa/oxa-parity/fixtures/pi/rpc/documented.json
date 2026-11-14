@@ -1,0 +1,535 @@
+{
+  "RPC-001": {
+    "source": "rpc.md#correlate-commands-and-responses + rpc-commands.md#get_state",
+    "response": {
+      "type": "response",
+      "command": "get_state",
+      "success": true,
+      "data": {
+        "?model": {},
+        "thinkingLevel": "",
+        "isStreaming": false,
+        "isCompacting": false,
+        "steeringMode": "",
+        "followUpMode": "",
+        "sessionFile": null,
+        "sessionId": "",
+        "?sessionName": "",
+        "autoCompactionEnabled": false,
+        "messageCount": 0,
+        "pendingMessageCount": 0
+      }
+    }
+  },
+  "RPC-002": {
+    "source": "rpc.md#framing",
+    "rule": "one JSON object per LF-terminated record; split only on LF; strip an optional CR before it; no header record (RPC has no session header, json.md)"
+  },
+  "RPC-003": {
+    "source": "rpc.md#run-lifecycle + json.md#event-sequence",
+    "rule": "response, then agent_start ... agent_end, then agent_settled; the response is written before the run's events",
+    "order": [
+      "response",
+      "agent_start",
+      "agent_end",
+      "agent_settled"
+    ]
+  },
+  "RPC-004": {
+    "source": "rpc.md#errors + rpc-commands.md#prompt",
+    "failed_command": {
+      "type": "response",
+      "command": "set_model",
+      "success": false,
+      "error": ""
+    },
+    "parse_error": {
+      "type": "response",
+      "command": "parse",
+      "success": false,
+      "error": "Failed to parse command: "
+    },
+    "busy": "prompt during a run without streamingBehavior returns an error"
+  },
+  "RPC-005": {
+    "source": "rpc.md#shutdown",
+    "rule": "closing stdin requests an orderly shutdown; the process exits after pending work finishes"
+  },
+  "RPC-006": {
+    "source": "rpc-commands.md#prompt",
+    "response": {
+      "type": "response",
+      "command": "prompt",
+      "success": true,
+      "data": {
+        "disposition": "started"
+      }
+    },
+    "rule": "disposition handled = extension command or input handler consumed it; queued = queued during a run; started = accepted to start a run; streamingBehavior steer or followUp queues during a run"
+  },
+  "RPC-007": {
+    "source": "rpc-commands.md#steer",
+    "response": {
+      "type": "response",
+      "command": "steer",
+      "success": true,
+      "data": {
+        "disposition": "queued"
+      }
+    }
+  },
+  "RPC-008": {
+    "source": "rpc-commands.md#follow_up",
+    "response": {
+      "type": "response",
+      "command": "follow_up",
+      "success": true,
+      "data": {
+        "disposition": "queued"
+      }
+    }
+  },
+  "RPC-009": {
+    "source": "rpc-commands.md#abort",
+    "response": {
+      "type": "response",
+      "command": "abort",
+      "success": true
+    },
+    "rule": "the response is written after the session is idle (agent_settled with aborted true comes first)"
+  },
+  "RPC-010": {
+    "source": "rpc-commands.md#clear_queue",
+    "response": {
+      "type": "response",
+      "command": "clear_queue",
+      "success": true,
+      "data": {
+        "steering": [
+          ""
+        ],
+        "followUp": [
+          ""
+        ]
+      }
+    }
+  },
+  "RPC-011": {
+    "source": "rpc-commands.md#new_session",
+    "response": {
+      "type": "response",
+      "command": "new_session",
+      "success": true,
+      "data": {
+        "cancelled": false
+      }
+    }
+  },
+  "RPC-013": {
+    "source": "rpc-commands.md#get_messages",
+    "response": {
+      "type": "response",
+      "command": "get_messages",
+      "success": true,
+      "data": {
+        "messages": [
+          {
+            "role": "",
+            "content": null
+          }
+        ]
+      }
+    }
+  },
+  "RPC-020": {
+    "source": "rpc-commands.md#set_steering_mode",
+    "response": {
+      "type": "response",
+      "command": "set_steering_mode",
+      "success": true
+    }
+  },
+  "RPC-021": {
+    "source": "rpc-commands.md#set_follow_up_mode",
+    "response": {
+      "type": "response",
+      "command": "set_follow_up_mode",
+      "success": true
+    }
+  },
+  "RPC-022": {
+    "source": "rpc-commands.md#compact",
+    "response": {
+      "type": "response",
+      "command": "compact",
+      "success": true,
+      "data": {
+        "summary": "",
+        "firstKeptEntryId": "",
+        "tokensBefore": 0,
+        "estimatedTokensAfter": 0,
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 0,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "details": {}
+      }
+    }
+  },
+  "RPC-023": {
+    "source": "rpc-commands.md#set_auto_compaction",
+    "response": {
+      "type": "response",
+      "command": "set_auto_compaction",
+      "success": true
+    }
+  },
+  "RPC-024": {
+    "source": "rpc-commands.md#set_auto_retry",
+    "response": {
+      "type": "response",
+      "command": "set_auto_retry",
+      "success": true
+    }
+  },
+  "RPC-025": {
+    "source": "rpc-commands.md#abort_retry",
+    "response": {
+      "type": "response",
+      "command": "abort_retry",
+      "success": true
+    }
+  },
+  "RPC-026": {
+    "source": "rpc-commands.md#bash",
+    "response": {
+      "type": "response",
+      "command": "bash",
+      "success": true,
+      "data": {
+        "output": "",
+        "exitCode": 0,
+        "cancelled": false,
+        "truncated": false
+      }
+    },
+    "rule": "output reaches the next prompt as a user message 'Ran `<command>`' unless excludeFromContext"
+  },
+  "RPC-027": {
+    "source": "rpc-commands.md#abort_bash",
+    "response": {
+      "type": "response",
+      "command": "abort_bash",
+      "success": true
+    }
+  },
+  "RPC-028": {
+    "source": "rpc-commands.md#get_session_stats",
+    "response": {
+      "type": "response",
+      "command": "get_session_stats",
+      "success": true,
+      "data": {
+        "sessionFile": null,
+        "sessionId": "",
+        "userMessages": 0,
+        "assistantMessages": 0,
+        "toolCalls": 0,
+        "toolResults": 0,
+        "totalMessages": 0,
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        },
+        "cost": 0,
+        "?contextUsage": {
+          "tokens": null,
+          "contextWindow": 0,
+          "percent": null
+        }
+      }
+    }
+  },
+  "RPC-029": {
+    "source": "rpc-commands.md#export_html",
+    "response": {
+      "type": "response",
+      "command": "export_html",
+      "success": true,
+      "data": {
+        "path": ""
+      }
+    }
+  },
+  "RPC-030": {
+    "source": "rpc-commands.md#switch_session",
+    "response": {
+      "type": "response",
+      "command": "switch_session",
+      "success": true,
+      "data": {
+        "cancelled": false
+      }
+    }
+  },
+  "RPC-031": {
+    "source": "rpc-commands.md#fork",
+    "response": {
+      "type": "response",
+      "command": "fork",
+      "success": true,
+      "data": {
+        "text": "",
+        "cancelled": false
+      }
+    }
+  },
+  "RPC-032": {
+    "source": "rpc-commands.md#clone",
+    "response": {
+      "type": "response",
+      "command": "clone",
+      "success": true,
+      "data": {
+        "cancelled": false
+      }
+    }
+  },
+  "RPC-033": {
+    "source": "rpc-commands.md#get_fork_messages",
+    "response": {
+      "type": "response",
+      "command": "get_fork_messages",
+      "success": true,
+      "data": {
+        "messages": [
+          {
+            "entryId": "",
+            "text": ""
+          }
+        ]
+      }
+    }
+  },
+  "RPC-034": {
+    "source": "rpc-commands.md#get_entries",
+    "response": {
+      "type": "response",
+      "command": "get_entries",
+      "success": true,
+      "data": {
+        "entries": [
+          {
+            "type": null,
+            "id": "",
+            "parentId": null,
+            "timestamp": ""
+          }
+        ],
+        "leafId": null
+      }
+    },
+    "rule": "since is an exclusive cursor; an unknown since is success false"
+  },
+  "RPC-035": {
+    "source": "rpc-commands.md#get_tree",
+    "response": {
+      "type": "response",
+      "command": "get_tree",
+      "success": true,
+      "data": {
+        "tree": [
+          {
+            "entry": {
+              "type": null,
+              "id": "",
+              "parentId": null
+            },
+            "children": []
+          }
+        ],
+        "leafId": null
+      }
+    }
+  },
+  "RPC-036": {
+    "source": "rpc-commands.md#get_last_assistant_text",
+    "response": {
+      "type": "response",
+      "command": "get_last_assistant_text",
+      "success": true,
+      "data": {
+        "text": null
+      }
+    },
+    "rule": "text is null when no assistant text exists"
+  },
+  "RPC-037": {
+    "source": "rpc-commands.md#set_session_name",
+    "response": {
+      "type": "response",
+      "command": "set_session_name",
+      "success": true
+    },
+    "rule": "the name is reported by get_state.sessionName"
+  },
+  "RPC-038": {
+    "source": "rpc-commands.md#get_commands",
+    "response": {
+      "type": "response",
+      "command": "get_commands",
+      "success": true,
+      "data": {
+        "commands": [
+          {
+            "name": "",
+            "?description": "",
+            "source": "",
+            "?sourceInfo": {}
+          }
+        ]
+      }
+    }
+  },
+  "RPC-041": {
+    "source": "rpc-extension-ui.md#select",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "select",
+      "title": "",
+      "options": [
+        ""
+      ],
+      "?timeout": 0
+    }
+  },
+  "RPC-042": {
+    "source": "rpc-extension-ui.md#confirm",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "confirm",
+      "title": "",
+      "message": "",
+      "?timeout": 0
+    }
+  },
+  "RPC-043": {
+    "source": "rpc-extension-ui.md#input",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "input",
+      "title": "",
+      "placeholder": ""
+    }
+  },
+  "RPC-044": {
+    "source": "rpc-extension-ui.md#editor",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "editor",
+      "title": "",
+      "prefill": ""
+    }
+  },
+  "RPC-045": {
+    "source": "rpc-extension-ui.md#notify",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "notify",
+      "message": "",
+      "notifyType": "warning"
+    }
+  },
+  "RPC-046": {
+    "source": "rpc-extension-ui.md#setstatus",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "setStatus",
+      "statusKey": "",
+      "statusText": ""
+    }
+  },
+  "RPC-047": {
+    "source": "rpc-extension-ui.md#setwidget",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "setWidget",
+      "widgetKey": "",
+      "widgetLines": [
+        ""
+      ],
+      "widgetPlacement": "aboveEditor"
+    }
+  },
+  "RPC-048": {
+    "source": "rpc-extension-ui.md#settitle",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "setTitle",
+      "title": ""
+    }
+  },
+  "RPC-049": {
+    "source": "rpc-extension-ui.md#set_editor_text",
+    "request": {
+      "type": "extension_ui_request",
+      "id": "",
+      "method": "set_editor_text",
+      "text": ""
+    }
+  },
+  "RPC-050": {
+    "source": "rpc-extension-ui.md#responses-to-pi",
+    "value_response": {
+      "type": "extension_ui_response",
+      "id": "",
+      "value": ""
+    },
+    "confirmation_response": {
+      "type": "extension_ui_response",
+      "id": "",
+      "confirmed": true
+    },
+    "cancellation_response": {
+      "type": "extension_ui_response",
+      "id": "",
+      "cancelled": true
+    },
+    "rule": "cancelled: select/input/editor get undefined, confirm gets false; a dialog with timeout auto-resolves with undefined when the client does not answer in time"
+  },
+  "RPC-019": {
+    "source": "rpc-commands.md#get_available_thinking_levels",
+    "response": {
+      "type": "response",
+      "command": "get_available_thinking_levels",
+      "success": true,
+      "data": {
+        "levels": [
+          "off"
+        ]
+      }
+    },
+    "rule": "returns [\"off\"] for a model without reasoning support"
+  }
+}

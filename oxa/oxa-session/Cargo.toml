@@ -1,0 +1,21 @@
+# W0-FROZEN (architect-owned). Need a dependency? Send a note to the architect.
+[package]
+name = "oxa-session"
+description = "Session files (pi v3 JSONL tree), the transcript fold (W1) and tree operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oxa-proto.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+oxa-fake.workspace = true
+
+[lints]
+workspace = true

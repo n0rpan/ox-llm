@@ -1,0 +1,31 @@
+# W0-FROZEN (architect-owned). Need a dependency? Send a note to the architect.
+[package]
+name = "oxa-parity"
+description = "Test-only PARITY suite against pi 1.5.2 documented behaviour"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oxa-proto.workspace = true
+oxa-fake.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+vt100.workspace = true
+
+[dev-dependencies]
+oxa-rpc.workspace = true
+oxa-mcp.workspace = true
+oxa-session.workspace = true
+oxa-tui.workspace = true
+oxa-config.workspace = true
+oxa-core.workspace = true
+oxa-interactive.workspace = true
+oxa-ext.workspace = true
+oxa-tools.workspace = true
+oxa-codemode.workspace = true
+
+[lints]
+workspace = true

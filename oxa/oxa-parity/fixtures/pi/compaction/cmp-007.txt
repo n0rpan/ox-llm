@@ -1,0 +1,9 @@
+<read-files>
+{read joined by newline}
+</read-files>
+
+<modified-files>
+{modified joined by newline}
+</modified-files>
+
+# pi utils.ts formatFileOperations: sections joined by a blank line, prefixed by two newlines; a section is omitted when its list is empty

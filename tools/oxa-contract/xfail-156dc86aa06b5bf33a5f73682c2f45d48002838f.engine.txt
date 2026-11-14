@@ -1,0 +1,9 @@
+# Expected failures of the oxa contract job at oxa-bootstrap 156dc86 (the pinned snapshot): the oxa
+# lane's target list from the v0.2.0 fit review (handoff FIT-REVIEW-OXA-ENGINE.md). Each line is a test
+# in stub_contract.rs. Remove a line when oxa fixes it (the job fails while a listed test passes).
+# Measured 2026-11-13, engine mode (direct to the oxe-server stub). f3 passes here (the status form); its in-stream form is a controller-mode target.
+f1_plain_continuation_is_not_a_cache_miss          # F1: expected = prompt + completion; engine cached = that - 1 (e.g. 97 vs 96)
+f2_prefill_progress_reaches_oxa                    # F2: ': prefill 1024/8431 0s' is dropped (total parse fails on ' 0s')
+f6_max_tokens_beyond_the_remaining_context_is_not_refused  # F6: fake 400s prompt+max_tokens > n_ctx; the server accepts
+f7_h6_reply_matches_the_server                     # F7: fake H6 = (stop, no role chunk, usage in the finish chunk); server = (length, role, finish, usage chunk)
+f9_trailing_assistant_gets_a_new_turn              # F9: fake still 400s a trailing assistant message; the server now answers with a new turn (OpenAI v1)

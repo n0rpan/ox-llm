@@ -1,0 +1,212 @@
+oxa
+===
+W0-FROZEN (architect-owned). Extend the list below when a task ports a further pi file.
+
+oxa is an independent Rust reimplementation of the pi coding agent for the oxe engine.
+It is not affiliated with, endorsed by, or supported by pi or its authors. oxa itself is
+released under the MIT licence (see LICENSE).
+
+oxa ports designs, formats, texts and some files from pi:
+
+  Project:  pi (https://github.com/earendil-works/pi)
+  Version:  pi 1.5.2
+  Commit:   47e9d74f9186de37e700693fac0f6e56a499657a
+  Licence:  MIT, Copyright (c) 2025 Mario Zechner
+
+Rule for the source tree: every oxa source file that ports a pi file starts with a
+one-line comment `// ported from pi <path>` naming the pi path at the commit above.
+Files copied without translation keep their content and are listed as "copied" below.
+
+Ported designs and files (pi paths are relative to the pi repository root)
+--------------------------------------------------------------------------
+
+Agent loop
+  packages/agent/src/agent-loop.ts, packages/agent/src/agent.ts, packages/agent/src/types.ts
+  packages/coding-agent/src/core/agent-session.ts
+  -> oxa-core (agent_loop, session, queue, retry)
+
+Tool schemas, descriptions and behaviour
+  packages/coding-agent/src/core/tools/{read,write,edit,bash,grep,find,ls}.ts
+  packages/coding-agent/src/core/tools/{path-utils,file-mutation-queue,output-accumulator}.ts
+  -> oxa-tools (descriptions.rs holds the texts and schemas)
+
+edit-diff (matching, BOM / CRLF / mixed line endings, error texts)
+  packages/coding-agent/src/core/tools/edit-diff.ts
+  -> oxa-tools/src/{edit,diff}.rs
+
+Truncation rules
+  packages/coding-agent/src/core/tools/truncate.ts
+  -> oxa-tools/src/shape.rs (adapted: one deterministic 16 KiB cap)
+
+System prompt
+  packages/coding-agent/src/core/system-prompt.ts, packages/coding-agent/src/core/skills.ts
+  (formatSkillsForPrompt), packages/ai/src/utils/text.ts (getSystemMessageText)
+  -> oxa-core/src/prompt.rs
+
+Summary formats (compaction, branch summary, file lists, summary wrappers)
+  packages/coding-agent/src/core/compaction/{compaction,branch-summarization,utils}.ts
+  packages/coding-agent/src/core/messages.ts
+  -> oxa-compact (prompt.rs holds the texts)
+
+Session format v3
+  packages/coding-agent/src/core/session-manager.ts, packages/coding-agent/src/migrations.ts
+  packages/coding-agent/docs/session-format.md
+  -> oxa-session
+
+JSON and RPC protocol
+  packages/coding-agent/src/modes/json-event.ts, packages/coding-agent/src/modes/print-mode.ts
+  packages/coding-agent/src/modes/rpc/{rpc-mode,rpc-types,rpc-client,jsonl}.ts
+  packages/coding-agent/docs/{json,rpc,rpc-commands,rpc-extension-ui}.md
+  packages/coding-agent/examples/{rpc-client,rpc-extension-ui}.ts
+  -> oxa-rpc
+
+Keybinding ids and defaults
+  packages/coding-agent/src/core/{keybindings,keybindings-schema,key-id-schema}.ts
+  packages/tui/src/{keybindings,keys}.ts
+  -> oxa-config/src/keybindings.rs, oxa-tui/src/keys.rs, oxa-proto/src/key.rs
+
+Settings keys and defaults
+  packages/coding-agent/src/core/{settings-schema,settings-defaults,settings-manager,settings-diagnostics}.ts
+  -> oxa-config/src/{settings,schema}.rs
+
+Theme schema and the two built-in themes
+  packages/coding-agent/src/modes/interactive/theme/{theme-schema,theme-tokens,theme}.ts
+  packages/coding-agent/src/modes/interactive/theme/dark.json   (copied)
+  packages/coding-agent/src/modes/interactive/theme/light.json  (copied)
+  -> oxa-tui/src/theme.rs
+
+HTML export template (copied)
+  packages/coding-agent/src/core/export-html/template.html      (copied)
+  packages/coding-agent/src/core/export-html/template.css       (copied)
+  packages/coding-agent/src/core/export-html/template.js        (copied)
+  packages/coding-agent/src/core/export-html/{index,ansi-to-html,tool-renderer}.ts
+  The template embeds third-party scripts from
+  packages/coding-agent/src/core/export-html/vendor/ (highlight.min.js, marked.min.js,
+  marked-cjk-friendly.min.js); these keep their own licences and notices.
+  -> oxa-export
+
+TUI component model (components render lines for a width; the renderer diffs lines)
+  packages/tui/src/{tui,tui-main-screen,tui-alt-screen,terminal,stdin-buffer,utils}.ts
+  packages/tui/src/{editor-component,kill-ring,undo-stack,word-navigation,autocomplete,fuzzy}.ts
+  packages/tui/src/{terminal-image,terminal-colors,wheel-scroll,alt-screen-search}.ts
+  packages/tui/src/components/*
+  packages/coding-agent/src/modes/interactive/{interactive-mode,chat-viewport,tui-renderer,external-editor}.ts
+  packages/coding-agent/src/modes/interactive/components/*
+  -> oxa-tui, oxa-interactive
+
+Extension API shape
+  packages/coding-agent/src/core/extensions/{types,runner,loader,wrapper}.ts
+  packages/coding-agent/docs/extensions.md
+  -> oxa-ext (JavaScript in QuickJS; same API shape, `export default function (oxa)`)
+
+Ported example extensions
+  packages/coding-agent/examples/extensions/plan-mode/
+  packages/coding-agent/examples/extensions/subagent/
+  packages/coding-agent/examples/extensions/{permission-gate,custom-compaction,todo,status-line}.ts
+  packages/coding-agent/examples/extensions/{tools,commands,input-transform,question,git-checkpoint,trigger-compact,protected-paths}.ts
+  -> examples/extensions/, oxa-core/src/subagent.rs
+
+Also ported by design: skills and prompt templates
+  (packages/coding-agent/src/core/{skills,prompt-templates}.ts), project trust
+  (packages/coding-agent/src/core/{project-trust,trust-manager}.ts), slash commands
+  (packages/coding-agent/src/core/slash-commands.ts), codemode (packages/codemode/src/),
+  the MCP client (packages/mcp/src/, packages/coding-agent/src/core/mcp-servers.ts), the
+  package manager (packages/coding-agent/src/core/package-manager.ts), and the documentation
+  pages under packages/coding-agent/docs/ that oxa's docs/ adapt.
+
+pi licence text
+---------------
+
+MIT License
+
+Copyright (c) 2025 Mario Zechner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-party files vendored with the HTML export template
+--------------------------------------------------------
+
+oxa-export/assets/vendor/ holds three files copied unchanged from pi's export template.
+Each keeps its own licence header:
+
+- marked v18.0.11. Copyright (c) 2018-2026, MarkedJS; Copyright (c) 2011-2018,
+  Christopher Jeffrey. MIT License. https://github.com/markedjs/marked
+- marked-cjk-friendly v0.1.2. Copyright (c) 2024 Tatsunori Uchino, and authors and
+  contributors of original packages. MIT License.
+  https://github.com/tats-u/markdown-cjk-friendly
+- Highlight.js v11.9.0. Copyright (c) 2006-2023 Highlight.js contributors.
+  BSD-3-Clause License. https://github.com/highlightjs/highlight.js
+  Its licence text follows.
+
+Highlight.js licence text (BSD 3-Clause)
+----------------------------------------
+
+BSD 3-Clause License
+
+Copyright (c) 2006, Ivan Sagalaev.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the copyright holder nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Third-party components linked into the oxa binary
+-------------------------------------------------
+
+Rust crates are not vendored; Cargo fetches them from crates.io under their own licences and
+Cargo.lock pins the exact versions. Two of them embed third-party material in the binary beyond
+their own Rust code, and their licence texts ship with oxa:
+
+  QuickJS (QuickJS-ng), through rquickjs-sys: MIT.           Full text: LICENSE-QuickJS.txt
+  syntect and its default syntax set (Sublime Text syntax
+  definitions, sublimehq/Packages): MIT + the Packages
+  permission notice.                                         Full text: LICENSE-syntect.txt
+
+The TLS client behind `web_search` and remote MCP servers (ureq with rustls) brings components
+under further licences, some with third-party material inside:
+
+  ring (ISC and Apache-2.0; code derived from BoringSSL and
+  OpenSSL), webpki-roots (Mozilla's root certificates,
+  CDLA-Permissive-2.0), rustls-webpki and untrusted (ISC),
+  subtle (BSD-3-Clause).                                     Full texts: LICENSE-TLS.txt
+
+Other crates in the binary whose licence is not "MIT OR Apache-2.0" or MIT alone: similar
+(Apache-2.0), foldhash (Zlib). `cargo tree -p oxa-cli --edges normal --format '{p} {l}'` prints
+the licence of every linked crate.

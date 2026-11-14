@@ -1,0 +1,25 @@
+# W0-FROZEN (architect-owned). Need a dependency? Send a note to the architect.
+[package]
+name = "oxa-tools"
+description = "The seven built-in tools and shape, the deterministic output cap (W4)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oxa-proto.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+regex.workspace = true
+globset.workspace = true
+ignore.workspace = true
+similar.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+oxa-fake.workspace = true
+
+[lints]
+workspace = true

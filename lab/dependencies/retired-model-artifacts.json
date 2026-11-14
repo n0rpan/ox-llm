@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "scope": "Historical identities only; excluded from model selection, qualification and acquisition plans",
+  "models": [
+    {
+      "id": "arete27b-q4-k-m-candidate",
+      "role": "requested dense alternative; payload verified, runtime qualification pending",
+      "base_model": "Qwen3.8-27B",
+      "publisher": "NousResearch/Arete-27B",
+      "repository": "bartowski/NousResearch_Arete-27B-GGUF",
+      "revision": "9762c8502a79bd2b8634735d75f426b9febe092c",
+      "quantization": "Q4_K_M",
+      "files": [
+        {
+          "filename": "NousResearch_Arete-27B-Q4_K_M.gguf",
+          "bytes": 17203416064,
+          "sha256": "6f186a1fe0c4f741acb3a35b5df96bc2fc7279651f48500246e56079418f091b"
+        }
+      ],
+      "publisher_url": "https://huggingface.co/bartowski/NousResearch_Arete-27B-GGUF/resolve/9762c8502a79bd2b8634735d75f426b9febe092c/NousResearch_Arete-27B-Q4_K_M.gguf",
+      "license": "Apache-2.0",
+      "local_payload_verified": true,
+      "qualified": false,
+      "note": "Expected identity from pinned publisher metadata. Existing DevQuasar dense Qwen remains available; different quantizer and roughly 4% larger payload limit causal attribution. No MTP or vision support assumed.",
+      "download_receipt": "benchmarks/results/arete27b-download.json",
+      "status": "retired",
+      "retired_at": "2026-11-09",
+      "retirement_reason": "Removed from active support at user request; retained only for historical measurement and license provenance"
+    },
+    {
+      "id": "qwen38-dense-q4-k-m",
+      "role": "dense profile and historical FP16-kernel controls",
+      "status": "retired",
+      "retired_in": "v0.1.2",
+      "repository": "DevQuasar/Qwen.Qwen3.8-27B-GGUF",
+      "revision": "b677217fc76a6823c000b4903d3ff2d2665dac16",
+      "quantization": "Q4_K_M",
+      "files": [
+        {
+          "filename": "Q4_K_M/Qwen.Qwen3.8-27B.f16.gguf.Q4_K_M.gguf",
+          "bytes": 16547400064,
+          "sha256": "9f27cff95dd7cfcb721aa7a581504fdba72d1b9cad7aaf58b4b332f7d38184f3"
+        }
+      ],
+      "publisher_url": "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-27B-GGUF/resolve/b677217fc76a6823c000b4903d3ff2d2665dac16/Q4_K_M/Qwen.Qwen3.8-27B.f16.gguf.Q4_K_M.gguf",
+      "identity_evidence": "Pinned publisher tree metadata size/LFS oid matches the measured local identity; metadata-only check, no weight download or rehash.",
+      "historical_download_revision_recorded": false,
+      "note": "Historical download URL usedmain. This content-matched pinned revision supports reproduction; do not substitute Unsloth UD-Q4_K_M, which has a different SHA.",
+      "publisher_tree_api": "https://huggingface.co/api/models/DevQuasar/Qwen.Qwen3.8-27B-GGUF/tree/b677217fc76a6823c000b4903d3ff2d2665dac16/Q4_K_M?recursive=false&expand=false"
+    }
+  ]
+}

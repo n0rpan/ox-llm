@@ -1,0 +1,3 @@
+# F9 plan-mode (`--plan`): read-only exploration; the reply is a numbered plan
+{"tool_calls":[{"id":"call_pm1","name":"read","args":"{\"path\": \"README.md\"}"}]}
+{"text":"Plan:\n1. Read the parser module\n2. Update the config loader\n3. Run the tests\n"}

@@ -1,0 +1,10 @@
+# Every test of stub_contract.rs, exactly. The job fails when the executed set differs (a test is
+# missing, extra, ignored or filtered). Update together with stub_contract.rs.
+f10_comment_grammar
+f1_plain_continuation_is_not_a_cache_miss
+f2_prefill_progress_reaches_oxa
+f3_error_after_early_headers_keeps_its_meaning
+f6_max_tokens_beyond_the_remaining_context_is_not_refused
+f7_h6_reply_matches_the_server
+f9_trailing_assistant_gets_a_new_turn
+info_reads_limits_and_capabilities

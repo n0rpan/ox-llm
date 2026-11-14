@@ -1,0 +1,3 @@
+# F10 tools: the engine reads the README, then answers (the /tools toggles are driven by the test)
+{"tool_calls":[{"id":"call_t1","name":"read","args":"{\"path\": \"README.md\"}"}]}
+{"text":"The README is read; the tool selection is unchanged.\n"}

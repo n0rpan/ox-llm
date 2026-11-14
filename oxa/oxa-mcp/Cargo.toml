@@ -1,0 +1,25 @@
+# W0-FROZEN (architect-owned). Need a dependency? Send a note to the architect.
+[package]
+name = "oxa-mcp"
+description = "MCP client: stdio, streamable HTTP, OAuth, exposure modes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oxa-proto.workspace = true
+oxa-config.workspace = true
+oxa-sandbox.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+base64.workspace = true
+sha2.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+oxa-fake.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,47 @@
+# W0-FROZEN (architect-owned). Need a dependency? Send a note to the architect.
+[package]
+name = "oxa-cli"
+description = "The oxa binary: argument parsing and mode dispatch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "oxa_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "oxa"
+path = "src/main.rs"
+
+[dependencies]
+oxa-proto.workspace = true
+oxa-engine.workspace = true
+oxa-session.workspace = true
+oxa-tools.workspace = true
+oxa-sandbox.workspace = true
+oxa-perm.workspace = true
+oxa-compact.workspace = true
+oxa-config.workspace = true
+oxa-resources.workspace = true
+oxa-script.workspace = true
+oxa-ext.workspace = true
+oxa-codemode.workspace = true
+oxa-mcp.workspace = true
+oxa-web.workspace = true
+oxa-core.workspace = true
+oxa-tui.workspace = true
+oxa-interactive.workspace = true
+oxa-rpc.workspace = true
+oxa-export.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+oxa-fake.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+Third-party notices for ox-llm (index)
+======================================
+
+Each product keeps its detailed notices next to its code. Paths inside those
+files are relative to the product directory. Licence texts are kept
+unchanged in the locations named there.
+
+engine/THIRD_PARTY_NOTICES
+  1. ggml CPU backend subset (llama.cpp), MIT        engine/vendor/ggml-subset/LICENSE
+  2. ggml CPU backend with Flash expert kernels
+     (BigMoeOnEdge's llama.cpp fork), MIT             engine/vendor/ggml-flash/LICENSE
+  3. code ported from llama.cpp, MIT                  engine/vendor/ggml-subset/LICENSE
+  4. code ported from stable-diffusion.cpp, MIT       engine/third_party/stable-diffusion.cpp-LICENSE
+  5. CI-built Flash binary distributions:
+     BigMoeOnEdge (Apache-2.0) and its llama.cpp
+     fork (MIT)                                       engine/third_party/ (reference copies);
+                                                      licenses/ inside each Flash tarball
+
+lab/THIRD_PARTY_NOTICES
+  1. llama.cpp and ggml patches, q3k-i8mm experiment, MIT
+                                                      lab/third_party/llama.cpp-LICENSE,
+                                                      lab/experiments/q3k-i8mm/LICENSE.llama.cpp
+  2. stable-diffusion.cpp patch, MIT                  lab/third_party/stable-diffusion.cpp-LICENSE
+  3. BigMoeOnEdge patches, Apache-2.0                 lab/third_party/BigMoeOnEdge-LICENSE
+
+oxa/NOTICE
+  1. pi coding agent (design reference pi 1.5.2), MIT, Copyright (c) 2025
+     Mario Zechner                                    full text in oxa/NOTICE and NOTICE
+  2. QuickJS, statically linked into the oxa binary
+     through the rquickjs-sys 0.9.0 crate, MIT,
+     Copyright (c) 2017-2021 Fabrice Bellard,
+     Charlie Gordon and others                        full text in oxa/NOTICE and NOTICE
+
+Rust crates are not vendored. Cargo fetches them from crates.io under their
+own licences; engine/Cargo.lock and oxa/Cargo.lock pin the exact versions.
+Python and system packages used by the tools are installed separately under
+their own licences.

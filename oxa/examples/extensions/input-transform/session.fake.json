@@ -1,0 +1,2 @@
+# F10 input-transform: "?quick" is rewritten before the model sees it; the reply is brief
+{"text":"TypeScript is a typed superset of JavaScript.\n"}

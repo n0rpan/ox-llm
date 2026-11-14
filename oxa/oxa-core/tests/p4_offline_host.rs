@@ -1,0 +1,153 @@
+//! P4 (wave H lane `local`): offline, the session host refuses an extension / codemode
+//! `fetch` to a host that is not loopback and any `exec` with network access, before the user
+//! is asked (the error code proves the order: the policy would answer `denied`). One process,
+//! one policy.
+
+use oxa_compact::CompactPolicy;
+use oxa_config::{Dirs, QueueMode, Settings};
+use oxa_core::{CoreHost, Queue, SessionState, Shared, Stats, Toolset};
+use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
+use oxa_perm::ModePolicy;
+use oxa_proto::{
+    codes, set_net_policy, CancelToken, Engine, ExecSpec, FrozenPrefix, HeadlessUi, Host, HostAction, Mode,
+    OxaError, Policy, ThinkingLevel, Tool, Value, VecSink,
+};
+use oxa_resources::Resources;
+use oxa_sandbox::NoSandbox;
+use oxa_session::{MemStore, SessionStore, Transcript, Tree};
+use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
+
+fn tools() -> Vec<Arc<dyn Tool>> {
+    let mut t = oxa_tools::builtin_tools();
+    t.sort_by(|a, b| a.spec().name.cmp(&b.spec().name));
+    t
+}
+
+fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionState, Arc<ScriptedEngine>) {
+    let eng = Arc::new(ScriptedEngine::new(turns));
+    let engine: Arc<dyn Engine> = eng.clone();
+    let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
+    let cwd = env.work();
+    std::fs::write(cwd.join("a.txt"), "alpha\n").unwrap();
+    let sref = store.create(&cwd, None, None).unwrap();
+    let info = engine.info(None).unwrap();
+    // A fixed prefix without the cwd: the request hashes do not depend on the temp path.
+    let mut prefix = FrozenPrefix {
+        sections: vec![("preamble".to_string(), "You are a test agent.".to_string())],
+        tools_json: "[]".to_string(),
+        sha256: [0u8; 32],
+    };
+    prefix.sha256 = Sha256::digest(prefix.hash_input()).into();
+    let shared = Arc::new(Shared {
+        queue: Mutex::new(Queue::default()),
+        cancel: CancelToken::new(),
+        cancel_retry: CancelToken::new(),
+        busy: std::sync::atomic::AtomicBool::new(false),
+        modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
+        dirty: std::sync::atomic::AtomicBool::new(false),
+        gate: Default::default(),
+    });
+    let tools = tools();
+    let st = SessionState {
+        engine,
+        store,
+        hooks: Vec::new(),
+        policy: Box::new(ModePolicy::new()) as Box<dyn Policy>,
+        sandbox: Arc::new(NoSandbox),
+        settings,
+        dirs: Dirs::under(env.root()),
+        cwd: cwd.clone(),
+        all_tools: tools.clone(),
+        selection: Default::default(),
+        active: Toolset {
+            direct: tools,
+            indirect: Vec::new(),
+        },
+        resources: Resources::default(),
+        sref,
+        tree: Tree::new(Vec::new()),
+        transcript: Transcript::default(),
+        prefix,
+        info,
+        model: "fake-model".to_string(),
+        thinking: ThinkingLevel::Off,
+        mode: Mode::Workspace,
+        compact: CompactPolicy {
+            soft: u32::MAX,
+            hard: u32::MAX,
+            keep_tokens: 4000,
+            summary_max: 1024,
+            enabled: true,
+        },
+        shared,
+        next_turn: Vec::new(),
+        last_usage: None,
+        stats: Stats::default(),
+        spill_dir: env.tmp(),
+        tool_env: Vec::new(),
+        tune: Default::default(),
+        auto_compaction: true,
+        auto_retry: true,
+        host_rx: None,
+        host_deferred: Vec::new(),
+        compact_memo: Default::default(),
+    };
+    (st, eng)
+}
+
+/// Run `action` through the session's host on a helper thread while this thread serves it.
+fn through_host(st: &mut SessionState, action: HostAction) -> Result<Value, OxaError> {
+    let (host, rx) = CoreHost::new(st.shared.clone());
+    st.host_rx = Some(rx);
+    let worker = std::thread::spawn(move || host.call(action));
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    while !worker.is_finished() {
+        oxa_core::serve_host(st, false, &mut sink, &mut ui);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    worker.join().unwrap()
+}
+
+#[test]
+fn offline_refuses_remote_fetch_and_network_exec_before_asking() {
+    let env = TestEnv::new();
+    let (mut st, _eng) = state(&env, vec![ScriptTurn::text("x")], Settings::default());
+    set_net_policy(true, false);
+    let fetch = through_host(
+        &mut st,
+        HostAction::Fetch {
+            url: "http://10.255.0.2:9/x".to_string(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+        },
+    );
+    let exec = through_host(
+        &mut st,
+        HostAction::Exec(ExecSpec {
+            command: "true".to_string(),
+            cwd: env.work(),
+            writable: true,
+            net: true,
+            timeout_s: None,
+            env: Vec::new(),
+        }),
+    );
+    set_net_policy(false, false);
+    let e = fetch.unwrap_err();
+    assert_eq!(e.code, codes::OFFLINE, "{e}");
+    assert!(
+        e.message
+            .starts_with("Refused: extension fetch (10.255.0.2) needs the network"),
+        "{e}"
+    );
+    let e = exec.unwrap_err();
+    assert_eq!(e.code, codes::OFFLINE, "{e}");
+    assert!(
+        e.message
+            .starts_with("Refused: a command with network access needs the network"),
+        "{e}"
+    );
+}

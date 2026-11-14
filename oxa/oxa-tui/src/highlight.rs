@@ -1,0 +1,210 @@
+//! B11: syntax highlighting of code. Owner: task B11. Signatures below are frozen; bodies are yours.
+// ported from pi packages/coding-agent/src/modes/interactive/theme/theme.ts (highlightCode, getLanguageFromPath)
+use crate::Theme;
+use std::sync::OnceLock;
+use syntect::easy::ScopeRegionIterator;
+use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
+use syntect::util::LinesWithEndings;
+
+/// Token for text without a mapped scope (and for every line of an unknown language).
+const PLAIN: &str = "mdCodeBlock";
+
+/// The bundled syntax set, loaded once on first use.
+fn syntaxes() -> &'static SyntaxSet {
+    static SET: OnceLock<SyntaxSet> = OnceLock::new();
+    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+/// pi-style language names that syntect knows only by another token (extension or name).
+fn alias(lang: &str) -> &str {
+    match lang {
+        "typescript" | "tsx" => "ts",
+        "javascript" | "jsx" | "mjs" | "cjs" => "js",
+        "python" => "py",
+        "ruby" => "rb",
+        "rust" => "rs",
+        "csharp" => "cs",
+        "bash" | "zsh" | "shell" => "sh",
+        "powershell" => "ps1",
+        "markdown" => "md",
+        "kotlin" => "kt",
+        "yml" => "yaml",
+        "golang" => "go",
+        "c++" => "cpp",
+        _ => lang,
+    }
+}
+
+/// The syntax for a fence info string or a language name. The first word counts, so
+/// `rust title=x` finds Rust. `None` for an empty or unknown name.
+fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
+    let token = lang.split_whitespace().next()?;
+    let ss = syntaxes();
+    ss.find_syntax_by_token(token)
+        .or_else(|| ss.find_syntax_by_token(alias(&token.to_ascii_lowercase())))
+}
+
+/// The theme token for one syntax scope, or `None` when the scope is not mapped.
+fn token_for_scope(scope: &str) -> Option<&'static str> {
+    if scope.starts_with("comment") {
+        Some("syntaxComment")
+    } else if scope.starts_with("string") {
+        Some("syntaxString")
+    } else if scope.starts_with("keyword.operator") {
+        Some("syntaxOperator")
+    } else if scope.starts_with("keyword")
+        || scope.starts_with("storage")
+        || scope.starts_with("constant.language")
+    {
+        Some("syntaxKeyword")
+    } else if scope.starts_with("constant") {
+        Some("syntaxNumber")
+    } else if scope.starts_with("entity.name.function")
+        || scope.starts_with("support.function")
+        || scope.starts_with("variable.function")
+    {
+        Some("syntaxFunction")
+    } else if scope.starts_with("entity.name.type")
+        || scope.starts_with("entity.name.class")
+        || scope.starts_with("support.type")
+        || scope.starts_with("support.class")
+    {
+        Some("syntaxType")
+    } else if scope.starts_with("variable") {
+        Some("syntaxVariable")
+    } else if scope.starts_with("punctuation") {
+        Some("syntaxPunctuation")
+    } else {
+        None
+    }
+}
+
+/// The token of the innermost mapped scope on `stack`, or [`PLAIN`].
+fn token_for_stack(stack: &ScopeStack) -> &'static str {
+    for scope in stack.as_slice().iter().rev() {
+        let name = scope.build_string();
+        if let Some(token) = token_for_scope(&name) {
+            return token;
+        }
+    }
+    PLAIN
+}
+
+/// Every line of `code` in the plain code colour (no tokenising).
+fn plain_lines(code: &str, theme: &Theme) -> Vec<String> {
+    code.lines().map(|l| theme.fg(PLAIN, l)).collect()
+}
+
+/// Tokenise `code` with `syntax`. A line the grammar cannot parse is emitted plain.
+fn highlight_with(syntax: &SyntaxReference, code: &str, theme: &Theme) -> Vec<String> {
+    let ss = syntaxes();
+    let mut state = ParseState::new(syntax);
+    let mut stack = ScopeStack::new();
+    let mut out = Vec::new();
+    for raw in LinesWithEndings::from(code) {
+        let ops = match state.parse_line(raw, ss) {
+            Ok(ops) => ops,
+            Err(_) => {
+                out.push(theme.fg(PLAIN, raw.trim_end_matches(['\r', '\n'])));
+                continue;
+            }
+        };
+        let mut line = String::new();
+        for (region, op) in ScopeRegionIterator::new(&ops, raw) {
+            // A failing op leaves the stack as it was; the text is still shown.
+            let _ = stack.apply(op);
+            let text: String = region.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            if text.is_empty() {
+                continue;
+            }
+            line.push_str(&theme.fg(token_for_stack(&stack), &text));
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// Highlight `code` and return one styled line per input line (no wrapping, no truncation).
+///
+/// Uses `syntect`'s bundled syntaxes for tokenising and maps scopes to the theme's `syntax*`
+/// tokens (comment, keyword, function, variable, string, number, type, operator, punctuation);
+/// text without a mapped scope uses `mdCodeBlock`. `lang` is a fence info string or a name
+/// from [`language_from_path`]; an unknown or missing language returns the lines in
+/// `mdCodeBlock` unhighlighted. Never panics; deterministic. Tabs are replaced by 3 spaces.
+pub fn highlight_code(code: &str, lang: Option<&str>, theme: &Theme) -> Vec<String> {
+    let code = code.replace('\t', "   ");
+    match lang.and_then(find_syntax) {
+        Some(syntax) => highlight_with(syntax, &code, theme),
+        None => plain_lines(&code, theme),
+    }
+}
+
+/// The language name for a file path by extension or file name (`foo.rs` -> `rust`,
+/// `Makefile` -> `makefile`), pi's table. `None` when unknown.
+pub fn language_from_path(path: &str) -> Option<&'static str> {
+    let base = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    if base == "cmakelists.txt" {
+        return Some("cmake");
+    }
+    // A name without a dot is its own "extension" (`Makefile`, `Dockerfile`), as in pi.
+    let ext = base.rsplit('.').next()?;
+    let lang = match ext {
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "py" => "python",
+        "rb" => "ruby",
+        "rs" => "rust",
+        "go" => "go",
+        "java" => "java",
+        "kt" => "kotlin",
+        "swift" => "swift",
+        "dart" => "dart",
+        "groovy" | "gradle" => "groovy",
+        "nix" => "nix",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        "cs" => "csharp",
+        "php" => "php",
+        "sh" | "bash" | "zsh" => "bash",
+        "fish" => "fish",
+        "ps1" => "powershell",
+        "sql" => "sql",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "scss" => "scss",
+        "sass" => "sass",
+        "less" => "less",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "xml" => "xml",
+        "md" | "markdown" => "markdown",
+        "dockerfile" => "dockerfile",
+        "makefile" => "makefile",
+        "cmake" => "cmake",
+        "lua" => "lua",
+        "perl" => "perl",
+        "r" => "r",
+        "scala" => "scala",
+        "clj" => "clojure",
+        "ex" | "exs" => "elixir",
+        "erl" => "erlang",
+        "hs" => "haskell",
+        "ml" => "ocaml",
+        "vim" => "vim",
+        "graphql" => "graphql",
+        "proto" => "protobuf",
+        "tf" | "hcl" => "hcl",
+        _ => return None,
+    };
+    Some(lang)
+}
+
+/// `true` when [`highlight_code`] knows `lang`.
+pub fn language_supported(lang: &str) -> bool {
+    find_syntax(lang).is_some()
+}

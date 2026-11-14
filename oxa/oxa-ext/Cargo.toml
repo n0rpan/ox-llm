@@ -1,0 +1,21 @@
+# W0-FROZEN (architect-owned). Need a dependency? Send a note to the architect.
+[package]
+name = "oxa-ext"
+description = "JavaScript extensions and exec hooks behind dyn Hooks, with the W-guard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oxa-proto.workspace = true
+oxa-script.workspace = true
+oxa-config.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+oxa-fake.workspace = true
+
+[lints]
+workspace = true

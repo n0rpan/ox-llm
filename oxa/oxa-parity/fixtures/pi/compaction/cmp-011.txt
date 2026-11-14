@@ -1,0 +1,3 @@
+A provider context-overflow error or an early final `stopReason: "length"` can select one compact-and-retry recovery attempt. Length responses with tool calls retain their synthetic failed tool results and follow the ordinary tool/queue scheduler rather than forcing the run to end.
+### Overflow and Length Recovery Ordering
+→ for overflow/length: run session_before_compact and append compaction on success

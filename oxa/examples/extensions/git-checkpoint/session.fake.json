@@ -1,0 +1,3 @@
+# F10 git-checkpoint: one edit (a checkpoint is taken at turn start), then the reply
+{"tool_calls":[{"id":"call_g1","name":"write","args":"{\"path\": \"notes.txt\", \"content\": \"hello\\n\"}"}]}
+{"text":"Wrote notes.txt.\n"}

@@ -1,0 +1,2588 @@
+# WAVES.toml: the oxa wave / task manifest (W0-FROZEN, architect-owned).
+# Generated from HARNESS-RS-PLAN.md sec. 5 by the W0 architect. Machine-readable: an
+# orchestration workflow fans out one implementer agent per [[task]] of a wave.
+#
+# Rules (plan sec. 5)
+# - Every task consumes oxa-proto and the stubs frozen in W0. Public signatures do not change;
+#   a needed change is a note to the architect, never an edit.
+# - One owner per file. `owns` lists every file a task may create or edit; nothing else.
+#   lib.rs, mod.rs, Cargo.toml, Cargo.lock, prompt/description files and everything marked
+#   W0-FROZEN are architect-owned.
+# - `needs` = tasks whose IMPLEMENTATION (not stub) the acceptance tests require. Same-wave
+#   entries mean: write the code against the stub, the test runs green at the wave checkpoint.
+# - Each acceptance bullet is one #[test] in `test_file` (skeleton already present, #[ignore]d
+#   with the task id). A task is done when every test of its file is un-ignored and green,
+#   plus its own unit tests.
+# - size: S <= 25 min, M 25-40 min, L 40-45 min (a split candidate; reserve <= 25 split tasks).
+# - Checkpoint after each wave (plan sec. 5): `cargo public-api` diff empty vs the W0 tag, no
+#   file touched by two tasks, fmt, clippy -D warnings, tests on both helper runners, the
+#   fake invariant suite from wave 2 on, prompt text untouched outside the architect files.
+
+[meta]
+plan = "HARNESS-RS-PLAN.md"
+proto_version = 2
+pi_commit = "47e9d74f9186de37e700693fac0f6e56a499657a"
+planned_tasks = 92
+fix_slots = 15
+check = "cargo check --workspace --all-targets"
+test = "cargo test --workspace"
+architect_files = ["Cargo.toml", "Cargo.lock", "*/Cargo.toml", "*/src/lib.rs", "oxa-proto/**", "oxa-core/src/prompt.rs", "oxa-core/src/state.rs", "oxa-tools/src/descriptions.rs", "oxa-compact/src/prompt.rs", "oxa-fake/src/{turn,scripted,testenv,main}.rs", "oxa-parity/src/lib.rs", "oxa-tui/src/{caps,testterm,theme_core,builtin_themes}.rs", "oxa-tui/src/components/mod.rs", "oxa-interactive/src/{model}.rs", "oxa-interactive/src/{views,selectors}/mod.rs", "oxa-export/src/template.rs", "oxa-export/assets/**", "oxa-ext/src/state.rs", "oxa-codemode/src/hooks.rs", "oxa-mcp/src/{types,transport}.rs", "oxa-resources/src/{resources,frontmatter}.rs", "PARITY.md", "WAVES.toml", "NOTICE", "docs/fake-script.md"]
+
+
+[[wave]]
+id = "A"
+n = 1
+name = "leaves"
+tasks = ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12", "A13", "A14", "A15"]
+
+
+[[wave]]
+id = "B"
+n = 2
+name = "mechanics"
+tasks = ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10", "B11", "B12", "B13", "B14", "B15"]
+
+
+[[wave]]
+id = "C"
+n = 3
+name = "session runtime + headless modes"
+tasks = ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14"]
+
+
+[[wave]]
+id = "D"
+n = 4
+name = "interactive mode (checkpoint M4 = daily driver)"
+tasks = ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13"]
+
+
+[[wave]]
+id = "E"
+n = 5
+name = "extensibility core"
+tasks = ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "E11", "E12"]
+
+
+[[wave]]
+id = "F"
+n = 6
+name = "extensibility surface"
+tasks = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11"]
+
+
+[[wave]]
+id = "G"
+n = 7
+name = "PARITY suite (written from pi's docs by agents that did not write the code)"
+tasks = ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12"]
+
+
+[[wave]]
+id = "H"
+n = 8
+name = "fix wave (<= 15 slots)"
+tasks = ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15"]
+
+
+[[task]]
+id = "A1"
+wave = "A"
+title = "HTTP/1.1 client and SSE stream reader"
+crate = "oxa-engine"
+owns = ["oxa-engine/src/http.rs", "oxa-engine/src/sse.rs", "oxa-engine/tests/a1_http_1_1_client_and_sse_stream_reader.rs"]
+consumes = ["oxa_proto::{CancelToken, OxaError}"]
+provides = ["Url", "http_request", "SseParser", "post_sse"]
+needs = []
+size = "M"
+est_min = 35
+test_file = "oxa-engine/tests/a1_http_1_1_client_and_sse_stream_reader.rs"
+test_cmd = "cargo test -p oxa-engine --test a1_http_1_1_client_and_sse_stream_reader"
+acceptance = [
+  { test = "sse_split_at_every_byte_offset", text = "a fixed SSE byte stream fed split at every offset yields the same events" },
+  { test = "prefill_comments_are_delivered", text = "`: prefill 10/200` arrives as SseEvent::Comment" },
+  { test = "early_close_after_done_is_clean", text = "server closes right after [DONE] -> Ok, done = true" },
+  { test = "comments_count_as_liveness", text = "comments every second past the silence limit -> no abort; total silence -> stream_broken" },
+  { test = "no_wall_clock_limit", text = "a stream kept alive by comments for longer than the silence limit completes" },
+  { test = "refused_is_engine_down_with_hint", text = "connect to a closed port -> engine_down + hint" },
+  { test = "cancel_closes_within_200ms", text = "cancel during a held stream -> aborted quickly" },
+  { test = "http_request_content_length_and_chunked", text = "both body framings decode" },
+  { test = "https_url_rejected", text = "Url::parse(\"https://..\") -> invalid + hint" },
+]
+
+
+[[task]]
+id = "A2"
+wave = "A"
+title = "Request builder, reply assembly, HttpEngine"
+crate = "oxa-engine"
+owns = ["oxa-engine/src/chat.rs", "oxa-engine/src/info.rs", "oxa-engine/src/hints.rs", "oxa-engine/tests/a2_request_builder_reply_assembly_httpengin.rs"]
+consumes = ["post_sse (A1 stub)", "oxa_proto::{Engine, ChatRequest, Hints, AssistantTurn}"]
+provides = ["build_body", "build_headers", "ReplyAssembler", "HttpEngine: Engine", "fetch_info", "count_tokens"]
+needs = ["A1", "A14"]
+size = "M"
+est_min = 40
+test_file = "oxa-engine/tests/a2_request_builder_reply_assembly_httpengin.rs"
+test_cmd = "cargo test -p oxa-engine --test a2_request_builder_reply_assembly_httpengin"
+acceptance = [
+  { test = "args_raw_is_concatenated_deltas", text = "tool-call argument deltas concatenate verbatim, incl. odd whitespace" },
+  { test = "content_and_reasoning_untrimmed", text = "leading/trailing whitespace survives assembly" },
+  { test = "body_bytes_golden", text = "build_body output equals the golden bytes (key order, W6 fields)" },
+  { test = "body_omits_tools_when_empty", text = "tools_json `[]` -> no tools key" },
+  { test = "body_prefill_max_tokens_zero", text = "H6 body golden" },
+  { test = "header_bytes_golden_h1_to_h5", text = "build_headers per hint combination" },
+  { test = "retry_only_before_first_data_byte", text = "refused twice then ok -> one reply, same Idempotency-Key on every attempt" },
+  { test = "no_retry_after_data", text = "drop after first data chunk -> stream_broken, exactly one request" },
+  { test = "overflow_maps_to_context_overflow", text = "400 exceed_context_size_error -> context_overflow" },
+  { test = "info_parses_models_and_status", text = "missing queue = 0" },
+  { test = "finish_without_usage_is_stream_broken", text = "[DONE] without finish_reason/usage" },
+]
+
+
+[[task]]
+id = "A3"
+wave = "A"
+title = "Session file store and entry codec"
+crate = "oxa-session"
+owns = ["oxa-session/src/store.rs", "oxa-session/tests/a3_session_file_store_and_entry_codec.rs"]
+consumes = ["oxa_proto::{Entry, EntryBody}"]
+provides = ["FsStore", "MemStore", "encode_entry/decode_entry", "encode_header/decode_header", "session_dir_name", "new_entry_id"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-session/tests/a3_session_file_store_and_entry_codec.rs"
+test_cmd = "cargo test -p oxa-session --test a3_session_file_store_and_entry_codec"
+acceptance = [
+  { test = "roundtrip_every_entry_body_bytewise", text = "decode(encode(x)) == x for every EntryBody variant, odd strings included" },
+  { test = "assistant_wire_strings_exact", text = "content/reasoning/args_raw survive untouched (W2)" },
+  { test = "torn_last_line_dropped", text = "truncated final line is ignored on load, earlier entries intact" },
+  { test = "file_mode_0600_dir_0700", text = "created modes" },
+  { test = "symlink_refused", text = "a symlinked session file or directory -> unsafe_path" },
+  { test = "pi_path_scheme", text = "`--<path>--/<ts>_<id>.jsonl`" },
+  { test = "append_is_single_write_o_append", text = "concurrent appends never interleave within a line" },
+  { test = "resolve_by_path_id_and_prefix", text = "unique prefix ok, ambiguous prefix = invalid" },
+  { test = "memstore_same_semantics", text = "create/append/load/list/resolve/delete" },
+  { test = "header_roundtrip_with_parent_session", text = "header codec" },
+]
+
+
+[[task]]
+id = "A4"
+wave = "A"
+title = "Transcript fold (W1) and session tree"
+crate = "oxa-session"
+owns = ["oxa-session/src/transcript.rs", "oxa-session/src/tree.rs", "oxa-session/tests/a4_transcript_fold_w1_and_session_tree.rs"]
+consumes = ["oxa_proto::{Entry, WireMsg, rebase_why}"]
+provides = ["Transcript", "RebaseLog", "Tree"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-session/tests/a4_transcript_fold_w1_and_session_tree.rs"
+test_cmd = "cargo test -p oxa-session --test a4_transcript_fold_w1_and_session_tree"
+acceptance = [
+  { test = "fold_is_append_only_for_non_rebase_entries", text = "property test over random entry sequences" },
+  { test = "project_equals_incremental_apply", text = "project(branch) == fold of apply" },
+  { test = "chain_hash_changes_with_every_push", text = "and is reproducible from the wire" },
+  { test = "rebase_requires_known_cause", text = "unknown why panics; known why logs RebaseLog" },
+  { test = "expected_cache_follows_usage", text = "prompt + completion after set_usage; 0 after rebase" },
+  { test = "compaction_entry_folds_to_summary_plus_tail", text = "[user:summary] + messages from first_kept" },
+  { test = "excluded_bash_not_in_wire", text = "`!!` entries leave the wire untouched; `!` entries append one user message" },
+  { test = "later_prefix_entry_is_epoch_rebase", text = "messages kept, prefix replaced" },
+  { test = "tree_branch_children_roots", text = "structure queries" },
+  { test = "common_ancestor_cases", text = "sibling leaves, ancestor/descendant, unrelated roots" },
+  { test = "labels_last_wins_and_clear", text = "Tree::label" },
+]
+
+
+[[task]]
+id = "A5"
+wave = "A"
+title = "shape: the W4 output cap"
+crate = "oxa-tools"
+owns = ["oxa-tools/src/shape.rs", "oxa-tools/tests/a5_shape_the_w4_output_cap.rs"]
+consumes = []
+provides = ["shape", "strip_ansi"]
+needs = []
+size = "S"
+est_min = 25
+test_file = "oxa-tools/tests/a5_shape_the_w4_output_cap.rs"
+test_cmd = "cargo test -p oxa-tools --test a5_shape_the_w4_output_cap"
+acceptance = [
+  { test = "deterministic_same_input_same_bytes", text = "two runs, identical output" },
+  { test = "never_exceeds_cap", text = "for caps 256..64K and random inputs" },
+  { test = "valid_utf8_no_split_emoji", text = "cuts never land inside a UTF-8 sequence or a ZWJ emoji" },
+  { test = "ansi_stripped", text = "CSI/OSC sequences removed, text kept" },
+  { test = "spill_holds_every_byte", text = "spill file content == raw, name = sha256(raw)" },
+  { test = "under_cap_unchanged", text = "no mark, no spill" },
+  { test = "keep_tail_gives_tail_three_quarters", text = "bash shape" },
+  { test = "unwritable_spill_dir_still_returns", text = "mark says not saved" },
+]
+
+
+[[task]]
+id = "A6"
+wave = "A"
+title = "read and write tools"
+crate = "oxa-tools"
+owns = ["oxa-tools/src/read.rs", "oxa-tools/src/write.rs", "oxa-tools/tests/a6_read_and_write_tools.rs"]
+consumes = ["oxa_proto::Tool", "descriptions::{READ, WRITE, errors, limits}"]
+provides = ["ReadTool", "WriteTool"]
+needs = []
+size = "M"
+est_min = 35
+test_file = "oxa-tools/tests/a6_read_and_write_tools.rs"
+test_cmd = "cargo test -p oxa-tools --test a6_read_and_write_tools"
+acceptance = [
+  { test = "read_paging_offset_limit", text = "pi's continuation notices" },
+  { test = "read_streams_large_file", text = "a 200 MB sparse file reads its first page without loading it" },
+  { test = "read_binary_refused", text = "fixed error text" },
+  { test = "read_image_returns_placeholder_line", text = "exactly image_placeholder(name, w, h)" },
+  { test = "read_offset_beyond_end_error", text = "pi's text" },
+  { test = "write_is_atomic_and_keeps_mode", text = "temp + rename; existing mode preserved" },
+  { test = "write_creates_parents", text = "nested directories" },
+  { test = "access_reports_normalised_paths", text = "`..` resolved lexically" },
+]
+
+
+[[task]]
+id = "A7"
+wave = "A"
+title = "edit tool and edit-diff port"
+crate = "oxa-tools"
+owns = ["oxa-tools/src/edit.rs", "oxa-tools/src/diff.rs", "oxa-tools/tests/a7_edit_tool_and_edit_diff_port.rs"]
+consumes = ["oxa_proto::Tool", "descriptions::{EDIT, errors}"]
+provides = ["EditTool", "apply_edits", "unified_diff", "strip_bom", "detect_line_ending"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-tools/tests/a7_edit_tool_and_edit_diff_port.rs"
+test_cmd = "cargo test -p oxa-tools --test a7_edit_tool_and_edit_diff_port"
+acceptance = [
+  { test = "pi_edit_cases_ported", text = "the cases of pi's edit tests (exact, fuzzy whitespace, smart quotes)" },
+  { test = "non_unique_error_text", text = "pi's text with the occurrence count" },
+  { test = "not_found_error_text", text = "pi's text" },
+  { test = "overlap_error_text", text = "pi's text" },
+  { test = "bom_preserved", text = "file with BOM keeps it" },
+  { test = "crlf_preserved", text = "CRLF file stays CRLF" },
+  { test = "mixed_endings_untouched_lines_kept", text = "only edited lines change" },
+  { test = "multi_edit_matches_against_original", text = "not sequential" },
+  { test = "diff_format_matches_pi", text = "line numbers and context" },
+]
+
+
+[[task]]
+id = "A8"
+wave = "A"
+title = "grep, find, ls tools"
+crate = "oxa-tools"
+owns = ["oxa-tools/src/grep.rs", "oxa-tools/src/find.rs", "oxa-tools/src/ls.rs", "oxa-tools/tests/a8_grep_find_ls_tools.rs"]
+consumes = ["oxa_proto::Tool", "descriptions::{GREP, FIND, LS, limits, errors}"]
+provides = ["GrepTool", "FindTool", "LsTool"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-tools/tests/a8_grep_find_ls_tools.rs"
+test_cmd = "cargo test -p oxa-tools --test a8_grep_find_ls_tools"
+acceptance = [
+  { test = "results_sorted", text = "grep by path then line; find and ls sorted" },
+  { test = "gitignore_respected", text = "ignored files absent from grep and find" },
+  { test = "limits_100_1000_500", text = "default limits with pi's notices" },
+  { test = "limit_below_one_is_one", text = "0 and negative" },
+  { test = "glob_relative_to_path", text = "find pattern is relative to `path`" },
+  { test = "identical_bytes_on_two_runs", text = "W4" },
+  { test = "grep_literal_and_ignore_case_and_context", text = "options" },
+  { test = "ls_dirs_have_slash_and_dotfiles_listed", text = "format" },
+  { test = "long_lines_truncated", text = "grep line cap with notice" },
+]
+
+
+[[task]]
+id = "A9"
+wave = "A"
+title = "bwrap sandbox and bash tool"
+crate = "oxa-sandbox"
+owns = ["oxa-sandbox/src/bwrap.rs", "oxa-sandbox/src/run.rs", "oxa-tools/src/bash.rs", "oxa-sandbox/tests/a9_bwrap_sandbox_and_bash_tool.rs"]
+consumes = ["oxa_proto::{Sandbox, ExecSpec, ExecResult}", "descriptions::{BASH, errors}"]
+provides = ["bwrap_args", "run_argv", "run_unsandboxed", "Bwrap::detect/check", "BashTool"]
+needs = []
+size = "L"
+est_min = 45
+test_file = "oxa-sandbox/tests/a9_bwrap_sandbox_and_bash_tool.rs"
+test_cmd = "cargo test -p oxa-sandbox --test a9_bwrap_sandbox_and_bash_tool"
+acceptance = [
+  { test = "argv_golden_per_writable_net", text = "four goldens" },
+  { test = "write_outside_cwd_fails", text = "needs bwrap; skipped with a notice when absent" },
+  { test = "home_ssh_absent", text = "`ls ~/.ssh` fails inside" },
+  { test = "no_network_by_default", text = "needs bwrap" },
+  { test = "timeout_kills_process_tree", text = "child of child is gone" },
+  { test = "cancel_kills_process_tree", text = "within 3 s" },
+  { test = "background_writer_does_not_hang", text = "`sleep 100 &` returns promptly" },
+  { test = "no_bwrap_is_no_sandbox_error", text = "detect with an empty PATH" },
+  { test = "bash_tool_refuses_without_sandbox", text = "NoSandbox -> is_error with the fixed text" },
+  { test = "bash_tool_exit_code_and_timeout_lines", text = "pi's texts, no timings" },
+  { test = "plan_mode_is_read_only", text = "writable = false" },
+]
+
+
+[[task]]
+id = "A10"
+wave = "A"
+title = "Mode policy table and path containment"
+crate = "oxa-perm"
+owns = ["oxa-perm/src/policy.rs", "oxa-perm/src/paths.rs", "oxa-perm/tests/a10_mode_policy_table_and_path_containment.rs"]
+consumes = ["oxa_proto::{Policy, Access, Decision, Mode}"]
+provides = ["ModePolicy", "normalize", "is_inside", "is_read_only_command"]
+needs = []
+size = "S"
+est_min = 30
+test_file = "oxa-perm/tests/a10_mode_policy_table_and_path_containment.rs"
+test_cmd = "cargo test -p oxa-perm --test a10_mode_policy_table_and_path_containment"
+acceptance = [
+  { test = "table_mode_x_access", text = "one assertion per cell of the crate-doc table" },
+  { test = "dotdot_escape_is_outside", text = "cwd/../x" },
+  { test = "symlink_escape_is_outside", text = "link inside cwd pointing out" },
+  { test = "plan_denies_write", text = "with the fixed reason" },
+  { test = "grants_are_per_session_and_scoped", text = "remember turns Ask into Allow for the scope only; never overrides Deny" },
+  { test = "read_only_command_list", text = "allow and reject cases incl. redirection and substitution" },
+  { test = "nonexistent_path_judged_by_parent", text = "new file in cwd is inside" },
+]
+
+
+[[task]]
+id = "A11"
+wave = "A"
+title = "settings.json schema, merge and typed access"
+crate = "oxa-config"
+owns = ["oxa-config/src/settings.rs", "oxa-config/src/schema.rs", "oxa-config/tests/a11_settings_json_schema_merge_and_typed_acc.rs"]
+consumes = ["oxa_proto::Value", "Dirs"]
+provides = ["Settings", "schema", "validate", "merge_settings", "apply_list_patch"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-config/tests/a11_settings_json_schema_merge_and_typed_acc.rs"
+test_cmd = "cargo test -p oxa-config --test a11_settings_json_schema_merge_and_typed_acc"
+acceptance = [
+  { test = "every_settings_md_key_parses", text = "a file with every documented key yields no diagnostic for supported keys" },
+  { test = "user_project_merge", text = "nested objects merge, scalars override" },
+  { test = "plus_minus_lists", text = "+x / -x patches" },
+  { test = "bad_value_is_diagnostic_not_failure", text = "wrong type falls back to default" },
+  { test = "unknown_key_warns", text = "one diagnostic" },
+  { test = "unsupported_pi_key_warns", text = "verdict-O keys accepted with a warning" },
+  { test = "untrusted_project_file_not_read", text = "project_trusted = false" },
+  { test = "oxa_defaults", text = "keepRecentTokens 4000, toolOutputCap 16384, all tools" },
+  { test = "set_persists_and_keeps_other_keys", text = "user and project files" },
+]
+
+
+[[task]]
+id = "A12"
+wave = "A"
+title = "Terminal raw mode and key parser"
+crate = "oxa-tui"
+owns = ["oxa-tui/src/term.rs", "oxa-tui/src/keys.rs", "oxa-tui/tests/a12_terminal_raw_mode_and_key_parser.rs"]
+consumes = ["oxa_proto::KeyId"]
+provides = ["Key", "InputEvent", "parse_input", "Terminal", "TestTerminal", "raw mode guard"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-tui/tests/a12_terminal_raw_mode_and_key_parser.rs"
+test_cmd = "cargo test -p oxa-tui --test a12_terminal_raw_mode_and_key_parser"
+acceptance = [
+  { test = "legacy_sequences_table", text = "arrows, home/end, F-keys, ctrl and alt combos" },
+  { test = "kitty_protocol_table", text = "CSI u with modifiers, press/repeat/release" },
+  { test = "esc_timeout_disambiguates", text = "lone ESC vs alt+key" },
+  { test = "bracketed_paste_is_one_event", text = "paste markers" },
+  { test = "mouse_and_resize_and_focus_events", text = "SGR mouse" },
+  { test = "partial_sequence_is_not_consumed", text = "consumed count leaves the tail" },
+  { test = "panic_restores_terminal", text = "the hook writes the restore sequence" },
+  { test = "osc_reply_parsed", text = "OSC 10/11 colour replies" },
+]
+
+
+[[task]]
+id = "A13"
+wave = "A"
+title = "Line-diff renderer and width functions"
+crate = "oxa-tui"
+owns = ["oxa-tui/src/render.rs", "oxa-tui/src/width.rs", "oxa-tui/tests/a13_line_diff_renderer_and_width_functions.rs"]
+consumes = ["Component", "Theme (stub)"]
+provides = ["Renderer", "visible_width", "wrap", "truncate", "slice_by_column"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-tui/tests/a13_line_diff_renderer_and_width_functions.rs"
+test_cmd = "cargo test -p oxa-tui --test a13_line_diff_renderer_and_width_functions"
+acceptance = [
+  { test = "line_diff_minimal_writes_golden", text = "changed line only is rewritten (golden byte stream)" },
+  { test = "wide_chars_width", text = "CJK and emoji widths" },
+  { test = "ansi_aware_wrap", text = "SGR state carried across wrapped lines" },
+  { test = "ansi_aware_truncate", text = "ellipsis and reset" },
+  { test = "resize_full_redraw", text = "width change" },
+  { test = "shrink_clears_removed_lines", text = "fewer lines than before" },
+  { test = "first_render_and_append_only", text = "appended lines do not rewrite earlier ones" },
+  { test = "zero_width_and_combining", text = "width 0 code points" },
+]
+
+
+[[task]]
+id = "A14"
+wave = "A"
+title = "Fake engine over HTTP"
+crate = "oxa-fake"
+owns = ["oxa-fake/src/server.rs", "oxa-fake/src/script.rs", "oxa-fake/src/record.rs", "oxa-fake/tests/a14_fake_engine_over_http.rs"]
+consumes = ["ScriptTurn", "Recorded", "cache_bytes"]
+provides = ["FakeServer", "oxa-fake binary", "parse_script", "parse_recorded", "write_log"]
+needs = []
+size = "L"
+est_min = 45
+test_file = "oxa-fake/tests/a14_fake_engine_over_http.rs"
+test_cmd = "cargo test -p oxa-fake --test a14_fake_engine_over_http"
+acceptance = [
+  { test = "implements_engine_contract_m1_m2_m3", text = "chat SSE, usage with cached_tokens, timings, /tokenize, /v1/models, /_local/status" },
+  { test = "cache_model_matches_scripted_engine", text = "same script and requests -> same usage numbers" },
+  { test = "prefill_comments_emitted", text = "`: prefill done/total`" },
+  { test = "h2_idempotent_replay", text = "same key + same body replays without consuming a turn" },
+  { test = "h6_max_tokens_zero_no_turn", text = "prefill consumes nothing" },
+  { test = "done_gap_ms", text = "pause before [DONE]" },
+  { test = "hold_headers", text = "delayed headers" },
+  { test = "comments_only", text = "comment-only period then reply" },
+  { test = "drop_at", text = "connection closed mid-stream" },
+  { test = "overflow_400", text = "exceed_context_size_error body" },
+  { test = "script_roundtrip", text = "parse(script_to_text(x)) == x; bad line reports its number" },
+  { test = "record_keeps_raw_tools_and_args", text = "parse_recorded" },
+]
+
+
+[[task]]
+id = "A15"
+wave = "A"
+title = "QuickJS runtime"
+crate = "oxa-script"
+owns = ["oxa-script/src/runtime.rs", "oxa-script/src/host.rs", "oxa-script/src/module.rs", "oxa-script/tests/a15_quickjs_runtime.rs"]
+consumes = ["rquickjs", "oxa_proto::{OxaError, Value}"]
+provides = ["Runtime", "RuntimeThread", "HostFn", "FnRef", "ModuleLoader"]
+needs = []
+size = "L"
+est_min = 45
+test_file = "oxa-script/tests/a15_quickjs_runtime.rs"
+test_cmd = "cargo test -p oxa-script --test a15_quickjs_runtime"
+acceptance = [
+  { test = "host_function_binding", text = "JS calls a registered host fn and gets its JSON result" },
+  { test = "host_error_becomes_js_exception", text = "and back to a script error" },
+  { test = "es_module_loader", text = "import through the embedder's loader; unknown module fails" },
+  { test = "memory_cap_interrupts", text = "allocation loop -> script error, runtime usable afterwards or cleanly dead" },
+  { test = "deadline_interrupts_runaway", text = "`while(true){}` stops at the deadline" },
+  { test = "no_ambient_fs_or_net", text = "no require/fetch/process/std globals" },
+  { test = "callbacks_as_fnref", text = "a JS closure passed to a host fn can be called later" },
+  { test = "promises_are_pumped", text = "async function result is awaited" },
+  { test = "runtime_thread_is_send", text = "calls from another thread" },
+  { test = "ts_rejected_with_hint", text = "strip_types -> unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "B1"
+wave = "B"
+title = "Compaction policy and summary shapes"
+crate = "oxa-compact"
+owns = ["oxa-compact/src/policy.rs", "oxa-compact/src/summary.rs", "oxa-compact/src/files.rs", "oxa-compact/tests/b1_compaction_policy_and_summary_shapes.rs"]
+consumes = ["Transcript (A4)", "prompt.rs"]
+provides = ["CompactPolicy", "decide", "policy_from", "summary_request", "first_kept_index", "head_after", "file_lists"]
+needs = ["A4"]
+size = "M"
+est_min = 35
+test_file = "oxa-compact/tests/b1_compaction_policy_and_summary_shapes.rs"
+test_cmd = "cargo test -p oxa-compact --test b1_compaction_policy_and_summary_shapes"
+acceptance = [
+  { test = "decide_after_reply", text = "soft crossed at run end" },
+  { test = "decide_mid_run_only_above_hard", text = "also when disabled" },
+  { test = "summary_request_is_pure_append", text = "wire is a prefix of the request" },
+  { test = "mid_run_prompt_is_own_message", text = "the current prompt is kept verbatim, never folded" },
+  { test = "repeated_compaction", text = "old summary is not kept; update instruction used" },
+  { test = "cut_never_splits_tool_results", text = "valid cut points only" },
+  { test = "keep_tokens_budget", text = "tail size bound" },
+  { test = "file_lists_accumulate", text = "across earlier compaction details" },
+  { test = "policy_from_clamps", text = "soft < hard, minimums" },
+]
+
+
+[[task]]
+id = "B2"
+wave = "B"
+title = "Branch summaries"
+crate = "oxa-compact"
+owns = ["oxa-compact/src/branch.rs", "oxa-compact/tests/b2_branch_summaries.rs"]
+consumes = ["Tree (A4)", "prompt.rs"]
+provides = ["branch_entries", "budget_newest_first", "branch_summary_request"]
+needs = ["A4"]
+size = "S"
+est_min = 25
+test_file = "oxa-compact/tests/b2_branch_summaries.rs"
+test_cmd = "cargo test -p oxa-compact --test b2_branch_summaries"
+acceptance = [
+  { test = "entries_old_leaf_back_to_ancestor", text = "order and bounds" },
+  { test = "target_descendant_gives_empty", text = "nothing abandoned" },
+  { test = "budget_newest_first", text = "stops at the first entry that does not fit" },
+  { test = "nested_summaries_carry_file_lists", text = "details of nested entries are kept whole" },
+  { test = "request_is_pure_append", text = "old wire is a prefix" },
+]
+
+
+[[task]]
+id = "B3"
+wave = "B"
+title = "Agent loop"
+crate = "oxa-core"
+owns = ["oxa-core/src/agent_loop.rs", "oxa-core/src/exec.rs", "oxa-core/tests/b3_agent_loop.rs"]
+consumes = ["SessionState", "Engine", "Tool", "Hooks", "Policy", "shape (A5)", "chat_with_retry (C2 stub)"]
+provides = ["append_entry", "run_loop", "request", "execute_calls"]
+needs = ["A3", "A4", "A5"]
+size = "L"
+est_min = 45
+test_file = "oxa-core/tests/b3_agent_loop.rs"
+test_cmd = "cargo test -p oxa-core --test b3_agent_loop"
+acceptance = [
+  { test = "tool_loop_scripted", text = "read call -> result -> final text; wire checked with oxa_fake::check_w1" },
+  { test = "deny_path", text = "policy Deny and user Deny produce the fixed texts and the loop continues" },
+  { test = "abort_mid_stream_nothing_on_wire", text = "Shown entry stored, wire unchanged (W2)" },
+  { test = "parallel_reads_in_call_order", text = "results pushed in call order" },
+  { test = "length_continue_once", text = "a length-cut reply ends the run with stop reason length; tool calls inside a cut reply are not executed and get the re-issue error" },
+  { test = "unknown_tool_and_bad_json_fixed_errors", text = "tool_errors texts" },
+  { test = "steering_delivered_after_tool_batch", text = "as a user message" },
+  { test = "cache_miss_event_with_cause", text = "cached < expected emits CacheMiss" },
+  { test = "tool_result_goes_through_shape", text = "over-cap output is capped with a spill" },
+  { test = "hook_tool_call_block_and_replace_args", text = "wire keeps the original args_raw" },
+  { test = "guard_refuses_non_prefix_context", text = "Notice + unchanged wire" },
+  { test = "append_entry_failure_leaves_state", text = "store error" },
+]
+
+
+[[task]]
+id = "B4"
+wave = "B"
+title = "Frozen prefix builder"
+crate = "oxa-core"
+owns = ["oxa-core/src/prefix.rs", "oxa-core/tests/b4_frozen_prefix_builder.rs"]
+consumes = ["prompt.rs", "Resources", "ToolSpec"]
+provides = ["build_prefix", "tools_json"]
+needs = []
+size = "S"
+est_min = 25
+test_file = "oxa-core/tests/b4_frozen_prefix_builder.rs"
+test_cmd = "cargo test -p oxa-core --test b4_frozen_prefix_builder"
+acceptance = [
+  { test = "section_order_fixed", text = "SECTION_ORDER with extras after skills" },
+  { test = "same_inputs_same_sha", text = "determinism" },
+  { test = "cwd_is_last", text = "last section and last line" },
+  { test = "no_date_or_git_text", text = "negative test greps the bytes" },
+  { test = "tools_sorted_and_schema_verbatim", text = "tools_json golden" },
+  { test = "only_direct_tools_declared", text = "other exposures absent" },
+  { test = "system_override_replaces_preamble", text = "SYSTEM.md" },
+  { test = "sha_matches_hash_input", text = "sha256(hash_input)" },
+]
+
+
+[[task]]
+id = "B5"
+wave = "B"
+title = "Keybindings"
+crate = "oxa-config"
+owns = ["oxa-config/src/keybindings.rs", "oxa-config/tests/b5_keybindings.rs"]
+consumes = ["KeyId", "Dirs"]
+provides = ["Keymap", "ActionDef"]
+needs = []
+size = "M"
+est_min = 35
+test_file = "oxa-config/tests/b5_keybindings.rs"
+test_cmd = "cargo test -p oxa-config --test b5_keybindings"
+acceptance = [
+  { test = "every_id_and_default_of_keybindings_md", text = "table test against the doc list" },
+  { test = "mode_cycle_alt_m_and_shift_tab_thinking", text = "oxa defaults" },
+  { test = "user_overrides", text = "string and list forms, empty list unbinds" },
+  { test = "unknown_id_is_diagnostic", text = "default stays" },
+  { test = "conflict_report", text = "same key, same context" },
+  { test = "matches_and_keys_for", text = "lookups" },
+]
+
+
+[[task]]
+id = "B6"
+wave = "B"
+title = "Model resolution, env table, dirs"
+crate = "oxa-config"
+owns = ["oxa-config/src/models.rs", "oxa-config/src/env.rs", "oxa-config/src/dirs.rs", "oxa-config/tests/b6_model_resolution_env_table_dirs.rs"]
+consumes = ["Env", "Dirs"]
+provides = ["ModelsConfig", "resolve_model", "resolve_scoped", "ENV_TABLE", "dirs_from_env"]
+needs = []
+size = "M"
+est_min = 35
+test_file = "oxa-config/tests/b6_model_resolution_env_table_dirs.rs"
+test_cmd = "cargo test -p oxa-config --test b6_model_resolution_env_table_dirs"
+acceptance = [
+  { test = "exact_fuzzy_glob_patterns", text = "resolution order" },
+  { test = "thinking_suffix", text = "`model:high`" },
+  { test = "scoped_list_order_no_duplicates", text = "--models" },
+  { test = "non_engine_provider_clear_error", text = "unsupported_in_oxa + hint" },
+  { test = "oxa_env_table_complete", text = "every variable of environment-variables.md has an OXA_ row" },
+  { test = "agent_dir_override_and_tilde", text = "OXA_AGENT_DIR" },
+  { test = "pi_dirs_never_read", text = "~/.pi present, not used" },
+  { test = "default_endpoint", text = "OXA_ENGINE_URL or 127.0.0.1:8092 (the controller)" },
+]
+
+
+[[task]]
+id = "B7"
+wave = "B"
+title = "Context files"
+crate = "oxa-resources"
+owns = ["oxa-resources/src/context.rs", "oxa-resources/tests/b7_context_files.rs"]
+consumes = ["Dirs", "Settings"]
+provides = ["context files loader"]
+needs = []
+size = "S"
+est_min = 30
+test_file = "oxa-resources/tests/b7_context_files.rs"
+test_cmd = "cargo test -p oxa-resources --test b7_context_files"
+acceptance = [
+  { test = "agent_dir_then_parents_then_cwd_order", text = "load order" },
+  { test = "agents_override_same_dir_rule", text = "AGENTS.override.md" },
+  { test = "claude_md_read_as_pi", text = "CLAUDE.md fallback rule" },
+  { test = "system_md_and_append_system_precedence", text = "project over user, flag over file" },
+  { test = "no_context_flag", text = "-nc loads none" },
+  { test = "untrusted_project_skips_gated", text = "SYSTEM.md gated, AGENTS.md not" },
+]
+
+
+[[task]]
+id = "B8"
+wave = "B"
+title = "Skills and prompt templates"
+crate = "oxa-resources"
+owns = ["oxa-resources/src/skills.rs", "oxa-resources/src/templates.rs", "oxa-resources/tests/b8_skills_and_prompt_templates.rs"]
+consumes = ["parse_frontmatter", "Dirs", "Settings"]
+provides = ["skills loader", "templates loader", "expand_template"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-resources/tests/b8_skills_and_prompt_templates.rs"
+test_cmd = "cargo test -p oxa-resources --test b8_skills_and_prompt_templates"
+acceptance = [
+  { test = "skill_frontmatter_rules_warn_not_fail", text = "name/description limits" },
+  { test = "skills_section_text", text = "matches prompt.rs format inputs" },
+  { test = "agents_skills_dir_read", text = ".agents/skills" },
+  { test = "template_positional_args", text = "$1 $2" },
+  { test = "template_all_args", text = "$@ and $ARGUMENTS" },
+  { test = "template_default_value", text = "${1:-x}" },
+  { test = "apostrophe_and_quote_cases", text = "CHANGELOG cases" },
+  { test = "name_collision_diagnostic", text = "first wins" },
+  { test = "disable_model_invocation_hidden_from_prompt", text = "still a command" },
+]
+
+
+[[task]]
+id = "B9"
+wave = "B"
+title = "Project trust"
+crate = "oxa-perm"
+owns = ["oxa-perm/src/trust.rs", "oxa-perm/tests/b9_project_trust.rs"]
+consumes = ["Dirs"]
+provides = ["TrustStore", "resolve_trust", "gated_resources"]
+needs = []
+size = "S"
+est_min = 25
+test_file = "oxa-perm/tests/b9_project_trust.rs"
+test_cmd = "cargo test -p oxa-perm --test b9_project_trust"
+acceptance = [
+  { test = "flag_beats_extension_beats_saved_beats_default", text = "precedence" },
+  { test = "closest_parent_wins", text = "saved decisions" },
+  { test = "non_interactive_ask_is_skip", text = "Untrusted with gated resources skipped" },
+  { test = "nothing_gated_is_trusted", text = "no prompt" },
+  { test = "gated_resource_list", text = "fixed order" },
+  { test = "save_keeps_other_entries_0600", text = "trust.json" },
+]
+
+
+[[task]]
+id = "B10"
+wave = "B"
+title = "Prompt editor"
+crate = "oxa-tui"
+owns = ["oxa-tui/src/editor.rs", "oxa-tui/tests/b10_prompt_editor.rs"]
+consumes = ["Key (A12)", "Renderer (A13)", "Keymap (B5 stub)"]
+provides = ["Editor"]
+needs = ["A12", "A13"]
+size = "L"
+est_min = 45
+test_file = "oxa-tui/tests/b10_prompt_editor.rs"
+test_cmd = "cargo test -p oxa-tui --test b10_prompt_editor"
+acceptance = [
+  { test = "key_tables", text = "cursor, word and line movement, deletion" },
+  { test = "kill_ring_and_yank_pop", text = "ctrl+k / ctrl+y / alt+y" },
+  { test = "undo_redo", text = "grouping as pi" },
+  { test = "history_navigation", text = "up/down at buffer edges" },
+  { test = "paste_markers_survive_delete", text = "large paste collapses to a marker and expands on submit" },
+  { test = "ime_cursor_position", text = "reported cursor cell with wide chars" },
+  { test = "multiline_wrap_and_scroll", text = "render snapshots at 40 and 80 cols" },
+  { test = "submit_and_newline_keys", text = "enter vs shift+enter" },
+]
+
+
+[[task]]
+id = "B11"
+wave = "B"
+title = "Markdown and syntax highlight"
+crate = "oxa-tui"
+owns = ["oxa-tui/src/markdown.rs", "oxa-tui/src/highlight.rs", "oxa-tui/tests/b11_markdown_and_syntax_highlight.rs"]
+consumes = ["Renderer (A13)", "Theme (B13 stub)"]
+provides = ["Markdown component", "highlight"]
+needs = ["A13"]
+size = "L"
+est_min = 45
+test_file = "oxa-tui/tests/b11_markdown_and_syntax_highlight.rs"
+test_cmd = "cargo test -p oxa-tui --test b11_markdown_and_syntax_highlight"
+acceptance = [
+  { test = "snapshot_80_cols", text = "lists, tables, nested code, quotes, headings" },
+  { test = "snapshot_120_cols", text = "same document" },
+  { test = "links_osc8", text = "hyperlinks" },
+  { test = "code_block_indent_setting", text = "codeBlockIndent" },
+  { test = "streaming_partial_never_panics", text = "every prefix of a document renders" },
+  { test = "mermaid_as_code_block", text = "highlighted block, no layout" },
+  { test = "syntax_highlight_known_and_unknown_lang", text = "fallback" },
+]
+
+
+[[task]]
+id = "B12"
+wave = "B"
+title = "Basic components"
+crate = "oxa-tui"
+owns = ["oxa-tui/src/components/text.rs", "oxa-tui/src/components/boxed.rs", "oxa-tui/src/components/select_list.rs", "oxa-tui/src/components/input.rs", "oxa-tui/src/components/loader.rs", "oxa-tui/src/components/border.rs", "oxa-tui/src/components/scrollbar.rs", "oxa-tui/tests/b12_basic_components.rs"]
+consumes = ["Component", "width fns (A13)"]
+provides = ["Text", "Box", "SelectList", "Input", "Loader", "Border", "Scrollbar"]
+needs = ["A13"]
+size = "M"
+est_min = 40
+test_file = "oxa-tui/tests/b12_basic_components.rs"
+test_cmd = "cargo test -p oxa-tui --test b12_basic_components"
+acceptance = [
+  { test = "text_wrap_snapshots", text = "padding and wrap" },
+  { test = "box_snapshots", text = "padding and background" },
+  { test = "select_list_scroll_window", text = "selection keeps in view; keys" },
+  { test = "select_list_filter", text = "typed filter" },
+  { test = "input_keys", text = "single-line editing" },
+  { test = "loader_frames", text = "deterministic frame sequence" },
+  { test = "border_and_scrollbar_snapshots", text = "all styles" },
+]
+
+
+[[task]]
+id = "B13"
+wave = "B"
+title = "Themes"
+crate = "oxa-tui"
+owns = ["oxa-tui/src/theme.rs", "oxa-tui/tests/b13_themes.rs"]
+consumes = []
+provides = ["Theme"]
+needs = []
+size = "M"
+est_min = 35
+test_file = "oxa-tui/tests/b13_themes.rs"
+test_cmd = "cargo test -p oxa-tui --test b13_themes"
+acceptance = [
+  { test = "pi_dark_and_light_load_unchanged", text = "both built-in JSON files" },
+  { test = "vars_resolve", text = "variable references" },
+  { test = "fallback_256_colour", text = "truecolor -> 256" },
+  { test = "system_theme_from_osc_10_11", text = "light/dark detection from replies" },
+  { test = "invalid_theme_diagnostic", text = "missing token falls back" },
+  { test = "fg_bg_apply_and_reset", text = "SGR output" },
+]
+
+
+[[task]]
+id = "B14"
+wave = "B"
+title = "Fork, clone, import, picker metadata"
+crate = "oxa-session"
+owns = ["oxa-session/src/ops.rs", "oxa-session/src/migrate.rs", "oxa-session/src/meta.rs", "oxa-session/tests/b14_fork_clone_import_picker_metadata.rs"]
+consumes = ["SessionStore (A3)", "Tree (A4)"]
+provides = ["fork_session", "clone_session", "set_name", "set_label", "import_pi", "migrate_lines", "meta_of", "search_sessions", "sort_sessions"]
+needs = ["A3", "A4"]
+size = "M"
+est_min = 40
+test_file = "oxa-session/tests/b14_fork_clone_import_picker_metadata.rs"
+test_cmd = "cargo test -p oxa-session --test b14_fork_clone_import_picker_metadata"
+acceptance = [
+  { test = "fork_header_has_parent_session", text = "and the branch up to the entry" },
+  { test = "clone_copies_active_branch", text = "ids kept" },
+  { test = "pi_v1_fixture_imports", text = "fixture file" },
+  { test = "pi_v2_fixture_imports", text = "fixture file" },
+  { test = "pi_v3_fixture_imports", text = "fixture file" },
+  { test = "labels_set_and_clear", text = "entries appended" },
+  { test = "names", text = "SessionInfo entry and meta name" },
+  { test = "list_sort_modes", text = "recent / threaded / relevance" },
+  { test = "search_terms_phrases_regex", text = "picker search" },
+]
+
+
+[[task]]
+id = "B15"
+wave = "B"
+title = "Invariant checker and golden runner"
+crate = "oxa-fake"
+owns = ["oxa-fake/src/check.rs", "oxa-fake/src/golden.rs", "oxa-fake/tests/b15_invariant_checker_and_golden_runner.rs"]
+consumes = ["Recorded (A14)"]
+provides = ["check_all", "check_w1..w6", "check_hints", "request_hashes", "compare_golden"]
+needs = ["A14"]
+size = "M"
+est_min = 40
+test_file = "oxa-fake/tests/b15_invariant_checker_and_golden_runner.rs"
+test_cmd = "cargo test -p oxa-fake --test b15_invariant_checker_and_golden_runner"
+acceptance = [
+  { test = "w1_negative_control", text = "a mutated earlier message is flagged, clean log is green" },
+  { test = "w2_negative_control", text = "a trimmed assistant echo is flagged" },
+  { test = "w3_negative_control", text = "a date line in the system text and a mid-epoch tool change are flagged" },
+  { test = "w5_negative_control", text = "a folded prompt and a non-append summary request are flagged" },
+  { test = "w6_negative_control", text = "missing cache_prompt / temperature is flagged" },
+  { test = "hints_negative_control", text = "background on chat, missing session header" },
+  { test = "rebase_marks_allow_change", text = "marked rebase is not a W1 violation" },
+  { test = "golden_hash_stable_and_update", text = "compare and rewrite" },
+  { test = "hashes_exclude_random_ids", text = "session id and idem key do not change hashes" },
+]
+
+
+[[task]]
+id = "C1"
+wave = "C"
+title = "Session object, queues, Handle"
+crate = "oxa-core"
+owns = ["oxa-core/src/session.rs", "oxa-core/src/queue.rs", "oxa-core/tests/c1_session_object_queues_handle.rs"]
+consumes = ["run_loop (B3)", "epoch (C8 stub)", "commands (C5 stub)"]
+provides = ["Session", "Deps", "Open", "State", "Stats", "Handle", "Shared", "Queue"]
+needs = ["B3", "B4"]
+size = "L"
+est_min = 45
+test_file = "oxa-core/tests/c1_session_object_queues_handle.rs"
+test_cmd = "cargo test -p oxa-core --test c1_session_object_queues_handle"
+acceptance = [
+  { test = "steering_vs_follow_up_order", text = "steering after the tool batch, follow-up at stop" },
+  { test = "mode_all", text = "all queued messages delivered at once" },
+  { test = "mode_one_at_a_time", text = "one per turn" },
+  { test = "dequeue_returns_all", text = "steering first" },
+  { test = "abort_returns_queued_text", text = "queue intact after abort" },
+  { test = "settle_event_last", text = "AgentSettled closes every prompt" },
+  { test = "open_new_writes_prefix_entry_first", text = "W3" },
+  { test = "open_continue_and_resume_restore_model_thinking_mode", text = "from entries" },
+  { test = "ephemeral_writes_nothing", text = "MemStore" },
+  { test = "set_mode_never_touches_wire", text = "W3" },
+  { test = "next_turn_messages_appended_with_prompt", text = "Delivery::NextTurn" },
+  { test = "image_part_adds_placeholder_line", text = "wire text" },
+]
+
+
+[[task]]
+id = "C2"
+wave = "C"
+title = "Auto-retry and overflow recovery"
+crate = "oxa-core"
+owns = ["oxa-core/src/retry.rs", "oxa-core/tests/c2_auto_retry_and_overflow_recovery.rs"]
+consumes = ["request (B3)"]
+provides = ["chat_with_retry", "backoff_ms", "RetryPolicy"]
+needs = ["B3"]
+size = "S"
+est_min = 30
+test_file = "oxa-core/tests/c2_auto_retry_and_overflow_recovery.rs"
+test_cmd = "cargo test -p oxa-core --test c2_auto_retry_and_overflow_recovery"
+acceptance = [
+  { test = "backoff_table", text = "pi's delays" },
+  { test = "abort_retry_cancels_wait_only", text = "run continues to settle as failed" },
+  { test = "overflow_one_compact_and_retry", text = "second overflow is returned" },
+  { test = "dropped_stream_after_output_no_duplicate_body", text = "exactly one request" },
+  { test = "retry_before_data_reuses_idem_key", text = "same key" },
+  { test = "retry_events", text = "AutoRetryStart/End fields" },
+  { test = "disabled_retry", text = "auto_retry false" },
+]
+
+
+[[task]]
+id = "C3"
+wave = "C"
+title = "Compaction orchestration"
+crate = "oxa-core"
+owns = ["oxa-core/src/compaction.rs", "oxa-core/tests/c3_compaction_orchestration.rs"]
+consumes = ["oxa_compact (B1)", "request (B3)"]
+provides = ["maybe_compact", "compact_now", "idle_prefill"]
+needs = ["B1", "B3"]
+size = "M"
+est_min = 40
+test_file = "oxa-core/tests/c3_compaction_orchestration.rs"
+test_cmd = "cargo test -p oxa-core --test c3_compaction_orchestration"
+acceptance = [
+  { test = "auto_after_reply", text = "soft limit crossed -> compaction at run end, next prompt delivered live" },
+  { test = "mid_run_above_hard", text = "prompt kept as its own message" },
+  { test = "idle_prefill_headers_golden", text = "H3 + H4 + H6" },
+  { test = "manual_compact_instructions", text = "/compact text appended to the instruction" },
+  { test = "hook_cancel", text = "SessionBeforeCompact Cancel" },
+  { test = "hook_custom_summary_lands_as_head", text = "from_hook" },
+  { test = "summary_request_is_whole_wire_plus_one", text = "check_w5 green" },
+  { test = "failure_leaves_wire_unchanged", text = "CompactionEnd error" },
+  { test = "compaction_entry_details_have_file_lists", text = "readFiles / modifiedFiles" },
+  { test = "events_sequence", text = "CompactionStart/End fields" },
+]
+
+
+[[task]]
+id = "C4"
+wave = "C"
+title = "Tree navigation, fork, clone"
+crate = "oxa-core"
+owns = ["oxa-core/src/navigate.rs", "oxa-core/tests/c4_tree_navigation_fork_clone.rs"]
+consumes = ["oxa_compact::branch (B2)", "Tree (A4)", "oxa_session ops (B14)"]
+provides = ["navigate", "fork_at", "clone_current"]
+needs = ["B2", "B3", "B14"]
+size = "M"
+est_min = 40
+test_file = "oxa-core/tests/c4_tree_navigation_fork_clone.rs"
+test_cmd = "cargo test -p oxa-core --test c4_tree_navigation_fork_clone"
+acceptance = [
+  { test = "leaf_move_is_one_rebase", text = "exactly one RebaseLog with leaf_move" },
+  { test = "optional_branch_summary_entry", text = "with and without summarize" },
+  { test = "model_and_thinking_recorded_on_new_branch", text = "entries appended" },
+  { test = "park_prefill_issued", text = "prefill request after the move" },
+  { test = "user_message_target_refills_editor", text = "returns its text" },
+  { test = "hook_before_tree_cancel_and_summary", text = "hook replies" },
+  { test = "fork_keeps_prefix_bytes", text = "W3 across fork" },
+  { test = "clone_switches_session", text = "new file, same wire" },
+  { test = "move_back_to_earlier_leaf_w1_marked", text = "check_w1 green with the mark" },
+]
+
+
+[[task]]
+id = "C5"
+wave = "C"
+title = "Slash-command registry"
+crate = "oxa-core"
+owns = ["oxa-core/src/commands.rs", "oxa-core/tests/c5_slash_command_registry.rs"]
+consumes = ["Resources", "Hooks::commands"]
+provides = ["builtin_commands", "all_commands", "expand_input", "Expanded"]
+needs = []
+size = "S"
+est_min = 30
+test_file = "oxa-core/tests/c5_slash_command_registry.rs"
+test_cmd = "cargo test -p oxa-core --test c5_slash_command_registry"
+acceptance = [
+  { test = "builtins_list", text = "every kept command of slash-commands.md + /engine + /mode" },
+  { test = "templates_expand_before_message", text = "Expanded::Prompt with arguments applied" },
+  { test = "skill_command", text = "/skill:name" },
+  { test = "hook_commands_listed_and_dispatched", text = "Expanded::Hook" },
+  { test = "name_clash_order_as_pi", text = "builtin > extension > template > skill" },
+  { test = "get_commands_shape", text = "CommandSpec fields" },
+  { test = "unknown_slash_is_prompt_text", text = "pi behaviour" },
+  { test = "bang_and_double_bang", text = "Expanded::Bash" },
+  { test = "omitted_commands_unsupported", text = "/login /share" },
+]
+
+
+[[task]]
+id = "C6"
+wave = "C"
+title = "!cmd and !!cmd"
+crate = "oxa-core"
+owns = ["oxa-core/src/user_bash.rs", "oxa-core/tests/c6_cmd_and_cmd.rs"]
+consumes = ["run_unsandboxed (A9)", "append_entry (B3)"]
+provides = ["user_bash"]
+needs = ["A9", "B3"]
+size = "S"
+est_min = 25
+test_file = "oxa-core/tests/c6_cmd_and_cmd.rs"
+test_cmd = "cargo test -p oxa-core --test c6_cmd_and_cmd"
+acceptance = [
+  { test = "bang_output_enters_context_at_next_prompt_as_append", text = "W1 green" },
+  { test = "double_bang_never_in_context", text = "excluded" },
+  { test = "truncation_notice_and_full_output_file", text = "pi's notice" },
+  { test = "streams_bash_execution_update", text = "events" },
+  { test = "hook_user_bash_block_and_replace", text = "replies" },
+  { test = "busy_is_refused", text = "during a run" },
+]
+
+
+[[task]]
+id = "C7"
+wave = "C"
+title = "Tool selection and mutation queue"
+crate = "oxa-core"
+owns = ["oxa-core/src/toolset.rs", "oxa-core/tests/c7_tool_selection_and_mutation_queue.rs"]
+consumes = ["Settings (A11)", "Tool"]
+provides = ["resolve_toolset", "Toolset", "ToolSelection", "MutationQueue"]
+needs = []
+size = "S"
+est_min = 30
+test_file = "oxa-core/tests/c7_tool_selection_and_mutation_queue.rs"
+test_cmd = "cargo test -p oxa-core --test c7_tool_selection_and_mutation_queue"
+acceptance = [
+  { test = "default_tools_and_cli_matrix", text = "the table of cli.md" },
+  { test = "exclusion_wins", text = "--exclude-tools over --tools" },
+  { test = "globs_match_names", text = "mcp__*" },
+  { test = "no_builtin_keeps_named", text = "-nbt with --tools" },
+  { test = "hidden_dropped_indirect_separated", text = "exposures" },
+  { test = "unknown_names_warn", text = "warnings returned" },
+  { test = "mutation_queue_serialises_per_path", text = "same path sequential, different paths parallel" },
+  { test = "all_seven_default", text = "oxa default" },
+]
+
+
+[[task]]
+id = "C8"
+wave = "C"
+title = "Prefix epochs"
+crate = "oxa-core"
+owns = ["oxa-core/src/epoch.rs", "oxa-core/tests/c8_prefix_epochs.rs"]
+consumes = ["build_prefix (B4)", "append_entry (B3)"]
+provides = ["open_epoch", "reload", "replay_prefix", "epoch_inputs"]
+needs = ["B3", "B4"]
+size = "S"
+est_min = 30
+test_file = "oxa-core/tests/c8_prefix_epochs.rs"
+test_cmd = "cargo test -p oxa-core --test c8_prefix_epochs"
+acceptance = [
+  { test = "reload_without_change_no_epoch", text = "returns false, no entry" },
+  { test = "change_is_one_prefix_entry_and_notice", text = "PrefixEpoch event with cost" },
+  { test = "resume_replays_stored_bytes", text = "changed AGENTS.md not picked up until /reload" },
+  { test = "epoch_refused_during_run", text = "busy" },
+  { test = "model_switch_is_epoch", text = "via Session::set_model" },
+  { test = "w3_constant_within_epoch", text = "check_w3 green over a run with hooks" },
+]
+
+
+[[task]]
+id = "C9"
+wave = "C"
+title = "JSON records, print and json modes"
+crate = "oxa-rpc"
+owns = ["oxa-rpc/src/events.rs", "oxa-rpc/src/print.rs", "oxa-rpc/tests/c9_json_records_print_and_json_modes.rs"]
+consumes = ["AgentEvent", "Session (C1 stub)"]
+provides = ["event_to_json", "message_to_json", "entry_to_json", "write_record", "JsonSink", "run_print", "run_json"]
+needs = ["C1"]
+size = "M"
+est_min = 40
+test_file = "oxa-rpc/tests/c9_json_records_print_and_json_modes.rs"
+test_cmd = "cargo test -p oxa-rpc --test c9_json_records_print_and_json_modes"
+acceptance = [
+  { test = "every_json_md_record_roundtrips", text = "each example of json.md field for field" },
+  { test = "message_update_is_delta_only", text = "no partial" },
+  { test = "lf_only_framing", text = "no CR, one record per line" },
+  { test = "print_final_text_only", text = "stdout has only the last assistant text" },
+  { test = "stdin_prepend", text = "piped text + prompt" },
+  { test = "session_header_first_in_json_mode", text = "record shape" },
+  { test = "usage_mapping", text = "input = prompt - cached, cacheRead = cached" },
+  { test = "exit_codes", text = "0 / 1" },
+  { test = "own_events_additive", text = "prefill, cache_miss shapes" },
+]
+
+
+[[task]]
+id = "C10"
+wave = "C"
+title = "RPC server, run-control commands"
+crate = "oxa-rpc"
+owns = ["oxa-rpc/src/server.rs", "oxa-rpc/src/cmd_run.rs", "oxa-rpc/tests/c10_rpc_server_run_control_commands.rs"]
+consumes = ["Session, Handle (C1)", "events (C9 stub)"]
+provides = ["serve", "parse_command", "response_ok/err", "run-control commands"]
+needs = ["C1", "C9"]
+size = "L"
+est_min = 45
+test_file = "oxa-rpc/tests/c10_rpc_server_run_control_commands.rs"
+test_cmd = "cargo test -p oxa-rpc --test c10_rpc_server_run_control_commands"
+acceptance = [
+  { test = "prompt_fixture", text = "docs example request/response/events" },
+  { test = "steer_and_follow_up_fixtures", text = "during a run" },
+  { test = "abort_fixture", text = "agent_settled aborted" },
+  { test = "clear_queue_fixture", text = "returns queued" },
+  { test = "new_session_fixture", text = "state changes" },
+  { test = "get_state_fixture", text = "fields" },
+  { test = "get_messages_fixture", text = "message shapes" },
+  { test = "model_commands_fixtures", text = "set/cycle/get_available" },
+  { test = "thinking_commands_fixtures", text = "set/cycle/levels" },
+  { test = "queue_mode_commands_fixtures", text = "steering/follow-up modes" },
+  { test = "set_mode_command", text = "oxa addition" },
+  { test = "parse_error_response_keeps_running", text = "bad line" },
+  { test = "id_echoed", text = "correlation id" },
+]
+
+
+[[task]]
+id = "C11"
+wave = "C"
+title = "RPC session commands"
+crate = "oxa-rpc"
+owns = ["oxa-rpc/src/cmd_session.rs", "oxa-rpc/tests/c11_rpc_session_commands.rs"]
+consumes = ["Session (C1)", "oxa_export (E12 stub)"]
+provides = ["session commands"]
+needs = ["C1", "C9", "C10"]
+size = "M"
+est_min = 40
+test_file = "oxa-rpc/tests/c11_rpc_session_commands.rs"
+test_cmd = "cargo test -p oxa-rpc --test c11_rpc_session_commands"
+acceptance = [
+  { test = "compact_fixture", text = "result fields" },
+  { test = "bash_fixture_and_updates", text = "bash_execution_update events" },
+  { test = "stats_fixture", text = "get_session_stats" },
+  { test = "export_html_fixture", text = "path returned" },
+  { test = "switch_fork_clone_fixtures", text = "session changes" },
+  { test = "entries_and_tree_fixtures", text = "get_entries / get_tree / get_fork_messages" },
+  { test = "last_text_and_name_fixtures", text = "get_last_assistant_text / set_session_name" },
+  { test = "get_commands_fixture", text = "shape" },
+  { test = "error_shapes", text = "success false + error" },
+  { test = "shutdown_on_stdin_close", text = "exit code 0" },
+]
+
+
+[[task]]
+id = "C12"
+wave = "C"
+title = "Argument parsing"
+crate = "oxa-cli"
+owns = ["oxa-cli/src/args.rs", "oxa-cli/tests/c12_argument_parsing.rs"]
+consumes = ["FlagSpec"]
+provides = ["Args", "parse_args", "usage_text"]
+needs = []
+size = "M"
+est_min = 35
+test_file = "oxa-cli/tests/c12_argument_parsing.rs"
+test_cmd = "cargo test -p oxa-cli --test c12_argument_parsing"
+acceptance = [
+  { test = "every_flag_of_cli_md", text = "table test, long and short spellings" },
+  { test = "documented_conflicts_rejected", text = "each conflict with pi's message" },
+  { test = "at_file_collected", text = "@path" },
+  { test = "double_dash_stops_parsing", text = "prompt starting with -" },
+  { test = "unknown_short_flag_error", text = "usage error" },
+  { test = "extension_flags_second_pass", text = "unknown long flags resolved" },
+  { test = "omitted_flags_unsupported", text = "--api-key, auth" },
+  { test = "invalid_thinking_and_mode_values", text = "usage error" },
+  { test = "subcommands_split", text = "mcp / install / config words" },
+]
+
+
+[[task]]
+id = "C13"
+wave = "C"
+title = "Autocomplete and fuzzy matching"
+crate = "oxa-tui"
+owns = ["oxa-tui/src/autocomplete.rs", "oxa-tui/src/fuzzy.rs", "oxa-tui/tests/c13_autocomplete_and_fuzzy_matching.rs"]
+consumes = ["Editor (B10)"]
+provides = ["autocomplete providers", "fuzzy_match"]
+needs = ["B10"]
+size = "M"
+est_min = 35
+test_file = "oxa-tui/tests/c13_autocomplete_and_fuzzy_matching.rs"
+test_cmd = "cargo test -p oxa-tui --test c13_autocomplete_and_fuzzy_matching"
+acceptance = [
+  { test = "slash_command_completion", text = "prefix and fuzzy" },
+  { test = "at_file_fuzzy_gitignore", text = "ignored files absent" },
+  { test = "tab_path_completion", text = "directories get a slash" },
+  { test = "max_visible_setting", text = "autocompleteMaxVisible" },
+  { test = "fuzzy_scoring_order", text = "pi's ranking cases" },
+  { test = "argument_hint_shown", text = "command argument hints" },
+]
+
+
+[[task]]
+id = "C14"
+wave = "C"
+title = "Images and OSC sequences"
+crate = "oxa-tui"
+owns = ["oxa-tui/src/image.rs", "oxa-tui/src/osc.rs", "oxa-tui/tests/c14_images_and_osc_sequences.rs"]
+consumes = []
+provides = ["image encoders", "OSC writers", "capability detection"]
+needs = []
+size = "S"
+est_min = 30
+test_file = "oxa-tui/tests/c14_images_and_osc_sequences.rs"
+test_cmd = "cargo test -p oxa-tui --test c14_images_and_osc_sequences"
+acceptance = [
+  { test = "kitty_encoder_golden", text = "chunked base64" },
+  { test = "iterm2_encoder_golden", text = "OSC 1337" },
+  { test = "detection_overrides", text = "env-driven table (passed in, not read)" },
+  { test = "osc8_hyperlink", text = "open/close" },
+  { test = "osc52_clipboard", text = "base64 payload" },
+  { test = "image_dimensions_from_header", text = "png/jpeg/gif/webp" },
+]
+
+
+[[task]]
+id = "D1"
+wave = "D"
+title = "Main loop and regular mode"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/app.rs", "oxa-interactive/src/regular.rs", "oxa-interactive/tests/d1_main_loop_and_regular_mode.rs"]
+consumes = ["Session, Handle (C1)", "model.rs", "views (D4/D5 stubs)"]
+provides = ["run", "App", "frames"]
+needs = ["C1", "B10", "B12"]
+size = "L"
+est_min = 45
+test_file = "oxa-interactive/tests/d1_main_loop_and_regular_mode.rs"
+test_cmd = "cargo test -p oxa-interactive --test d1_main_loop_and_regular_mode"
+acceptance = [
+  { test = "event_list_to_frames_80", text = "snapshot" },
+  { test = "event_list_to_frames_120", text = "snapshot" },
+  { test = "regular_mode_prints_finished_blocks_once", text = "no reprint" },
+  { test = "exit_output", text = "resume hint line" },
+  { test = "enter_steers_alt_enter_follows_up", text = "while running" },
+  { test = "escape_aborts_and_restores_queue", text = "editor refilled" },
+  { test = "bang_commands_dispatch", text = "! and !!" },
+]
+
+
+[[task]]
+id = "D2"
+wave = "D"
+title = "Fullscreen viewport"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/fullscreen.rs", "oxa-interactive/tests/d2_fullscreen_viewport.rs"]
+consumes = ["Renderer (A13)", "model.rs"]
+provides = ["fullscreen viewport"]
+needs = ["A13"]
+size = "M"
+est_min = 40
+test_file = "oxa-interactive/tests/d2_fullscreen_viewport.rs"
+test_cmd = "cargo test -p oxa-interactive --test d2_fullscreen_viewport"
+acceptance = [
+  { test = "alt_screen_enter_leave", text = "sequences" },
+  { test = "follow_and_scroll", text = "follow mode breaks on scroll up, resumes at bottom" },
+  { test = "scrollbar_modes", text = "settings values" },
+  { test = "wheel_lines", text = "wheel scroll amount" },
+  { test = "prompt_jump", text = "jump to previous/next prompt" },
+  { test = "resize_keeps_position", text = "anchor line stable" },
+]
+
+
+[[task]]
+id = "D3"
+wave = "D"
+title = "Selection, copy, search"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/select.rs", "oxa-interactive/src/search.rs", "oxa-interactive/tests/d3_selection_copy_search.rs"]
+consumes = ["fullscreen (D2 stub)"]
+provides = ["mouse selection", "transcript search"]
+needs = ["D2"]
+size = "M"
+est_min = 35
+test_file = "oxa-interactive/tests/d3_selection_copy_search.rs"
+test_cmd = "cargo test -p oxa-interactive --test d3_selection_copy_search"
+acceptance = [
+  { test = "mouse_selection_to_clipboard", text = "selected text without ANSI" },
+  { test = "copy_on_select", text = "setting" },
+  { test = "search_next_previous", text = "wraps, highlights" },
+  { test = "selection_across_wrapped_lines", text = "joins soft wraps" },
+  { test = "search_case_rules", text = "smart case" },
+]
+
+
+[[task]]
+id = "D4"
+wave = "D"
+title = "Message views"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/views/messages.rs", "oxa-interactive/tests/d4_message_views.rs"]
+consumes = ["Markdown (B11)", "model.rs"]
+provides = ["message views"]
+needs = ["B11"]
+size = "M"
+est_min = 40
+test_file = "oxa-interactive/tests/d4_message_views.rs"
+test_cmd = "cargo test -p oxa-interactive --test d4_message_views"
+acceptance = [
+  { test = "user_message_view", text = "snapshot" },
+  { test = "assistant_message_view", text = "markdown" },
+  { test = "thinking_hide_and_collapse", text = "hideThinkingBlock and ctrl+t" },
+  { test = "compaction_and_branch_summary_views", text = "collapsed and expanded" },
+  { test = "custom_message_view", text = "display flag" },
+  { test = "bash_execution_view", text = "command, output, exit code, excluded marker" },
+  { test = "shown_entry_view", text = "aborted / failed / cut notices" },
+]
+
+
+[[task]]
+id = "D5"
+wave = "D"
+title = "Tool views"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/views/tools.rs", "oxa-interactive/tests/d5_tool_views.rs"]
+consumes = ["model.rs", "unified_diff (A7)"]
+provides = ["tool views"]
+needs = ["B11", "B12"]
+size = "M"
+est_min = 40
+test_file = "oxa-interactive/tests/d5_tool_views.rs"
+test_cmd = "cargo test -p oxa-interactive --test d5_tool_views"
+acceptance = [
+  { test = "per_tool_call_renderers", text = "read, bash, edit, write, grep, find, ls headers" },
+  { test = "diff_view", text = "edit result" },
+  { test = "expand_collapse", text = "ctrl+o" },
+  { test = "live_output", text = "partial updates" },
+  { test = "error_state", text = "is_error styling" },
+  { test = "unknown_tool_generic_view", text = "MCP / extension tools" },
+]
+
+
+[[task]]
+id = "D6"
+wave = "D"
+title = "Footer, header, title"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/chrome.rs", "oxa-interactive/tests/d6_footer_header_title.rs"]
+consumes = ["Stats, State (C1)"]
+provides = ["footer", "header", "title/progress"]
+needs = ["B12"]
+size = "S"
+est_min = 30
+test_file = "oxa-interactive/tests/d6_footer_header_title.rs"
+test_cmd = "cargo test -p oxa-interactive --test d6_footer_header_title"
+acceptance = [
+  { test = "footer_context_percent_and_cache_hit", text = "numbers from Stats" },
+  { test = "prefill_progress", text = "Prefill events" },
+  { test = "tok_s_and_mode_shown", text = "fields" },
+  { test = "thinking_border_colour", text = "level -> token" },
+  { test = "quiet_startup", text = "quietStartup hides the header" },
+  { test = "title_and_progress_osc", text = "sequences" },
+  { test = "status_entries_from_extensions", text = "set_status keys sorted" },
+]
+
+
+[[task]]
+id = "D7"
+wave = "D"
+title = "Model, thinking, theme, settings selectors"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/selectors/model.rs", "oxa-interactive/src/selectors/thinking.rs", "oxa-interactive/src/selectors/theme.rs", "oxa-interactive/src/selectors/settings.rs", "oxa-interactive/tests/d7_model_thinking_theme_settings_selectors.rs"]
+consumes = ["SelectList (B12)", "Settings (A11)"]
+provides = ["model, thinking, theme, settings selectors"]
+needs = ["B12"]
+size = "M"
+est_min = 40
+test_file = "oxa-interactive/tests/d7_model_thinking_theme_settings_selectors.rs"
+test_cmd = "cargo test -p oxa-interactive --test d7_model_thinking_theme_settings_selectors"
+acceptance = [
+  { test = "model_selector_search_and_select", text = "filter and choose" },
+  { test = "model_cycle_scoped", text = "ctrl+p over scoped models" },
+  { test = "thinking_selector_clamps", text = "levels offered per model" },
+  { test = "theme_selector_live_preview_and_save", text = "saved to settings" },
+  { test = "settings_selector_toggles_save", text = "values persisted" },
+  { test = "scoped_models_editor_keys", text = "enable/disable/reorder/save" },
+]
+
+
+[[task]]
+id = "D8"
+wave = "D"
+title = "Session picker"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/selectors/sessions.rs", "oxa-interactive/tests/d8_session_picker.rs"]
+consumes = ["meta/search (B14)", "SelectList (B12)"]
+provides = ["session picker"]
+needs = ["B14", "B12"]
+size = "M"
+est_min = 35
+test_file = "oxa-interactive/tests/d8_session_picker.rs"
+test_cmd = "cargo test -p oxa-interactive --test d8_session_picker"
+acceptance = [
+  { test = "search", text = "filters as typed" },
+  { test = "sort_cycle", text = "three modes" },
+  { test = "named_filter", text = "toggle" },
+  { test = "paths_toggle", text = "show paths" },
+  { test = "rename_in_place", text = "appends SessionInfo" },
+  { test = "delete_with_confirm", text = "trash, list updated" },
+  { test = "other_directory_tab", text = "all sessions scope" },
+]
+
+
+[[task]]
+id = "D9"
+wave = "D"
+title = "Tree navigator"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/selectors/tree.rs", "oxa-interactive/tests/d9_tree_navigator.rs"]
+consumes = ["Tree (A4)"]
+provides = ["tree navigator"]
+needs = ["B12"]
+size = "M"
+est_min = 40
+test_file = "oxa-interactive/tests/d9_tree_navigator.rs"
+test_cmd = "cargo test -p oxa-interactive --test d9_tree_navigator"
+acceptance = [
+  { test = "fold_unfold", text = "keys and state" },
+  { test = "five_filters", text = "pi's filter modes" },
+  { test = "labels_and_timestamps", text = "toggles" },
+  { test = "user_message_select_refills_editor", text = "return value" },
+  { test = "current_leaf_marked", text = "active path highlight" },
+  { test = "label_edit", text = "set and clear" },
+]
+
+
+[[task]]
+id = "D10"
+wave = "D"
+title = "Dialogs and the TUI Ui"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/dialogs.rs", "oxa-interactive/tests/d10_dialogs_and_the_tui_ui.rs"]
+consumes = ["oxa_proto::Ui", "components (B12)"]
+provides = ["TuiUi: Ui"]
+needs = ["B12"]
+size = "M"
+est_min = 35
+test_file = "oxa-interactive/tests/d10_dialogs_and_the_tui_ui.rs"
+test_cmd = "cargo test -p oxa-interactive --test d10_dialogs_and_the_tui_ui"
+acceptance = [
+  { test = "permission_prompt_once_session_deny", text = "Answer mapping" },
+  { test = "mode_cycle", text = "alt+m cycles plan/workspace/ask" },
+  { test = "trust_selector", text = "choices and save" },
+  { test = "missing_cwd_continue_fork_cancel", text = "three outcomes" },
+  { test = "timed_dialogs", text = "timeout returns None with countdown" },
+  { test = "select_confirm_input_editor", text = "Ui methods" },
+  { test = "custom_component_hosting", text = "Ui::custom until Done" },
+]
+
+
+[[task]]
+id = "D11"
+wave = "D"
+title = "Slash command handlers"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/slash.rs", "oxa-interactive/tests/d11_slash_command_handlers.rs"]
+consumes = ["commands (C5)", "selectors (D7-D9 stubs)"]
+provides = ["slash handlers"]
+needs = ["C5"]
+size = "M"
+est_min = 40
+test_file = "oxa-interactive/tests/d11_slash_command_handlers.rs"
+test_cmd = "cargo test -p oxa-interactive --test d11_slash_command_handlers"
+acceptance = [
+  { test = "every_kept_command_has_handler", text = "slash-commands.md list" },
+  { test = "engine_command", text = "/engine status and load" },
+  { test = "debug_writes_file", text = "/debug" },
+  { test = "hotkeys_reflects_keymap", text = "/hotkeys with overrides" },
+  { test = "compact_name_session_copy_export", text = "handlers" },
+  { test = "new_resume_tree_fork_clone_import", text = "handlers" },
+  { test = "reload_reports_epoch_cost", text = "notice" },
+  { test = "omitted_commands_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "D12"
+wave = "D"
+title = "External editor and clipboard"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/external.rs", "oxa-interactive/src/clipboard.rs", "oxa-interactive/tests/d12_external_editor_and_clipboard.rs"]
+consumes = ["Terminal (A12)", "osc (C14)"]
+provides = ["external editor", "clipboard", "paste"]
+needs = ["A12"]
+size = "S"
+est_min = 30
+test_file = "oxa-interactive/tests/d12_external_editor_and_clipboard.rs"
+test_cmd = "cargo test -p oxa-interactive --test d12_external_editor_and_clipboard"
+acceptance = [
+  { test = "ctrl_g_round_trip", text = "editor command with temp file" },
+  { test = "suspend_resume_restores_screen", text = "ctrl+z" },
+  { test = "clipboard_backends", text = "wl-copy, xclip, OSC 52 fallback order" },
+  { test = "image_paste_becomes_part", text = "Part::Image with sha256" },
+  { test = "file_paste_becomes_at_path", text = "path insertion" },
+]
+
+
+[[task]]
+id = "D13"
+wave = "D"
+title = "Binary and dispatch"
+crate = "oxa-cli"
+owns = ["oxa-cli/src/main.rs", "oxa-cli/src/dispatch.rs", "oxa-cli/src/config_cmd.rs", "oxa-cli/tests/d13_binary_and_dispatch.rs"]
+consumes = ["Args (C12)", "everything"]
+provides = ["run", "choose_mode", "Stdio", "run_config"]
+needs = ["C1", "C9", "C10", "C12", "D1"]
+size = "L"
+est_min = 45
+test_file = "oxa-cli/tests/d13_binary_and_dispatch.rs"
+test_cmd = "cargo test -p oxa-cli --test d13_binary_and_dispatch"
+acceptance = [
+  { test = "mode_choice_by_tty_rules", text = "table of cli.md" },
+  { test = "exit_codes", text = "0 / 1 / 2" },
+  { test = "no_engine_one_line_exit_2", text = "message + hint" },
+  { test = "list_models", text = "output format" },
+  { test = "export_flag", text = "--export input [output]" },
+  { test = "help_and_version", text = "output" },
+  { test = "config_import_pi_once", text = "copies, never overwrites" },
+  { test = "print_mode_end_to_end_with_fake", text = "`oxa -p` against oxa-fake" },
+  { test = "continue_resume_session_flags", text = "open modes" },
+  { test = "no_sandbox_notice", text = "bwrap missing" },
+]
+
+
+[[task]]
+id = "E1"
+wave = "E"
+title = "Extension loader"
+crate = "oxa-ext"
+owns = ["oxa-ext/src/loader.rs", "oxa-ext/src/manifest.rs", "oxa-ext/oxa.d.ts", "oxa-ext/tests/e1_extension_loader.rs"]
+consumes = ["Runtime (A15)", "Dirs", "Settings"]
+provides = ["extension loading", "oxa.d.ts"]
+needs = ["A15"]
+size = "M"
+est_min = 40
+test_file = "oxa-ext/tests/e1_extension_loader.rs"
+test_cmd = "cargo test -p oxa-ext --test e1_extension_loader"
+acceptance = [
+  { test = "discovery_dirs_and_order", text = "user, project (trusted), -e paths, packages" },
+  { test = "sync_and_async_factory", text = "default export forms" },
+  { test = "load_error_isolates_one_extension", text = "others still load, ExtensionError reported" },
+  { test = "reload_drops_contexts", text = "old closures unreachable" },
+  { test = "d_ts_lists_api", text = "oxa.d.ts covers every registered API name" },
+  { test = "no_extensions_flag", text = "-ne" },
+  { test = "ts_file_rejected_with_hint", text = "unsupported" },
+  { test = "node_import_fails_loudly", text = "`import fs from 'node:fs'`" },
+]
+
+
+[[task]]
+id = "E2"
+wave = "E"
+title = "Extension bus and W-guard"
+crate = "oxa-ext"
+owns = ["oxa-ext/src/bus.rs", "oxa-ext/src/guard.rs", "oxa-ext/tests/e2_extension_bus_and_w_guard.rs"]
+consumes = ["ExtState", "HookPoint::guard"]
+provides = ["ExtensionHost: Hooks", "guard::check"]
+needs = ["A15"]
+size = "M"
+est_min = 40
+test_file = "oxa-ext/tests/e2_extension_bus_and_w_guard.rs"
+test_cmd = "cargo test -p oxa-ext --test e2_extension_bus_and_w_guard"
+acceptance = [
+  { test = "handler_order_as_extensions_md", text = "load order, per event composition" },
+  { test = "composition_rules", text = "transforming replies chain, cancel stops" },
+  { test = "guard_non_prefix_context_refused", text = "guard_refused" },
+  { test = "guard_prefix_extension_accepted_as_append", text = "silent" },
+  { test = "declared_rebase_logged", text = "miss cause extension" },
+  { test = "observer_reply_ignored", text = "Observer points" },
+  { test = "handler_throw_is_extension_error", text = "Continue" },
+  { test = "deadline_per_handler", text = "runaway handler interrupted" },
+]
+
+
+[[task]]
+id = "E3"
+wave = "E"
+title = "Registration API"
+crate = "oxa-ext"
+owns = ["oxa-ext/src/api_register.rs", "oxa-ext/tests/e3_registration_api.rs"]
+consumes = ["ExtState", "Runtime (A15)"]
+provides = ["oxa.register*", "sendMessage", "appendEntry", "active tools"]
+needs = ["A15", "E2"]
+size = "M"
+est_min = 40
+test_file = "oxa-ext/tests/e3_registration_api.rs"
+test_cmd = "cargo test -p oxa-ext --test e3_registration_api"
+acceptance = [
+  { test = "register_tool_schema_validation", text = "bad schema rejected at load" },
+  { test = "registered_tool_runs_through_policy_and_shape", text = "access declared" },
+  { test = "register_command_shortcut_flag", text = "listed through Hooks" },
+  { test = "send_message_delivery_modes", text = "steer / followUp / nextTurn" },
+  { test = "send_user_message", text = "delivery" },
+  { test = "append_entry", text = "Custom entry + EntryAppended" },
+  { test = "active_tools_get_set", text = "applied at settle (epoch)" },
+  { test = "omitted_registrations_fail_loudly", text = "registerProvider" },
+]
+
+
+[[task]]
+id = "E4"
+wave = "E"
+title = "ctx API and the core Host"
+crate = "oxa-ext"
+owns = ["oxa-ext/src/api_ctx.rs", "oxa-core/src/host.rs", "oxa-ext/tests/e4_ctx_api_and_the_core_host.rs"]
+consumes = ["Host, HostAction", "Ui", "Policy"]
+provides = ["ctx.*", "CoreHost", "serve_pending"]
+needs = ["A15", "C1"]
+size = "L"
+est_min = 45
+test_file = "oxa-ext/tests/e4_ctx_api_and_the_core_host.rs"
+test_cmd = "cargo test -p oxa-ext --test e4_ctx_api_and_the_core_host"
+acceptance = [
+  { test = "ui_dialogs", text = "select / confirm / input / editor / notify" },
+  { test = "session_read_api", text = "entries, branch, leaf" },
+  { test = "compact_and_context_usage", text = "values" },
+  { test = "session_shape_actions_deferred_to_settle", text = "newSession / fork / navigateTree / switchSession / reload" },
+  { test = "wait_for_idle", text = "resolves at settle" },
+  { test = "exec_through_policy_and_sandbox", text = "Ask path and Deny path" },
+  { test = "fs_through_policy", text = "read and write" },
+  { test = "fetch_needs_net_grant", text = "Deny in plan mode" },
+  { test = "host_queries_answer_mid_run", text = "GetState during a run" },
+  { test = "dropped_session_answers_internal", text = "no hang" },
+]
+
+
+[[task]]
+id = "E5"
+wave = "E"
+title = "Exec hooks"
+crate = "oxa-ext"
+owns = ["oxa-ext/src/exec_hooks.rs", "oxa-ext/tests/e5_exec_hooks.rs"]
+consumes = ["Sandbox", "Settings::exec_hooks"]
+provides = ["ExecHooks: Hooks"]
+needs = ["A9"]
+size = "S"
+est_min = 30
+test_file = "oxa-ext/tests/e5_exec_hooks.rs"
+test_cmd = "cargo test -p oxa-ext --test e5_exec_hooks"
+acceptance = [
+  { test = "json_in_out_contract", text = "stdin payload, stdout reply mapping" },
+  { test = "runs_in_bwrap", text = "argv through Sandbox" },
+  { test = "timeout", text = "hook killed, treated as Continue with a notice" },
+  { test = "failing_hook_blocks_only_where_documented", text = "tool_call blocks, observers do not" },
+  { test = "unknown_event_name_diagnostic", text = "settings typo" },
+]
+
+
+[[task]]
+id = "E6"
+wave = "E"
+title = "codemode"
+crate = "oxa-codemode"
+owns = ["oxa-codemode/src/tool.rs", "oxa-codemode/src/api.rs", "oxa-codemode/src/pool.rs", "oxa-codemode/tests/e6_codemode.rs"]
+consumes = ["Runtime (A15)", "Tool"]
+provides = ["codemode tool", "CodemodeHooks: Hooks"]
+needs = ["A15"]
+size = "L"
+est_min = 45
+test_file = "oxa-codemode/tests/e6_codemode.rs"
+test_cmd = "cargo test -p oxa-codemode --test e6_codemode"
+acceptance = [
+  { test = "codemode_md_examples", text = "each example script" },
+  { test = "options_line_only_on_line_1", text = "parsing rule" },
+  { test = "output_cap_and_temp_file", text = "text() over the cap" },
+  { test = "worker_cap", text = "concurrent scripts limited" },
+  { test = "promise_all_settled_over_tools", text = "parallel tool calls" },
+  { test = "store_persists_within_session", text = "store()" },
+  { test = "search_and_describe_tools", text = "searchTools / describeTool / ALL_TOOLS" },
+  { test = "image_and_models_unsupported", text = "unsupported_in_oxa" },
+  { test = "tool_calls_pass_policy", text = "Deny surfaces as a rejected promise" },
+  { test = "memory_cap_256mb_setting", text = "limit applied" },
+]
+
+
+[[task]]
+id = "E7"
+wave = "E"
+title = "MCP core and stdio transport"
+crate = "oxa-mcp"
+owns = ["oxa-mcp/src/proto.rs", "oxa-mcp/src/stdio.rs", "oxa-mcp/tests/e7_mcp_core_and_stdio_transport.rs"]
+consumes = ["Transport", "Sandbox"]
+provides = ["JSON-RPC types", "StdioTransport", "client core"]
+needs = []
+size = "L"
+est_min = 45
+test_file = "oxa-mcp/tests/e7_mcp_core_and_stdio_transport.rs"
+test_cmd = "cargo test -p oxa-mcp --test e7_mcp_core_and_stdio_transport"
+acceptance = [
+  { test = "initialize_handshake", text = "capabilities and version" },
+  { test = "tools_list_and_call", text = "with pagination" },
+  { test = "progress_resets_timeout", text = "long call with progress stays alive" },
+  { test = "resources_list_and_read", text = "resources tools" },
+  { test = "stop_sequence", text = "stdin close, SIGTERM, SIGKILL of the group" },
+  { test = "server_stderr_to_log", text = "not to the terminal" },
+  { test = "malformed_message_is_mcp_error", text = "no panic" },
+  { test = "spawn_passes_policy", text = "Exec access asked per plan sec. 2" },
+]
+
+
+[[task]]
+id = "E8"
+wave = "E"
+title = "MCP streamable HTTP"
+crate = "oxa-mcp"
+owns = ["oxa-mcp/src/http.rs", "oxa-mcp/tests/e8_mcp_streamable_http.rs"]
+consumes = ["Transport", "ureq"]
+provides = ["HttpTransport"]
+needs = ["E7"]
+size = "M"
+est_min = 40
+test_file = "oxa-mcp/tests/e8_mcp_streamable_http.rs"
+test_cmd = "cargo test -p oxa-mcp --test e8_mcp_streamable_http"
+acceptance = [
+  { test = "post_json_response", text = "plain JSON reply" },
+  { test = "post_sse_response", text = "streamed reply" },
+  { test = "sse_type_rejected", text = "legacy `sse` transport type -> clear error" },
+  { test = "headers_and_env_expansion", text = "${VAR} in headers" },
+  { test = "bearer_token_env_var", text = "Authorization header" },
+  { test = "session_id_header_kept", text = "Mcp-Session-Id" },
+  { test = "http_error_is_mcp_error", text = "status mapping, 401 distinct" },
+]
+
+
+[[task]]
+id = "E9"
+wave = "E"
+title = "mcp.json, names, oxa mcp"
+crate = "oxa-mcp"
+owns = ["oxa-mcp/src/config.rs", "oxa-mcp/src/names.rs", "oxa-cli/src/mcp_cmd.rs", "oxa-mcp/tests/e9_mcp_json_names_oxa_mcp.rs"]
+consumes = ["Dirs"]
+provides = ["mcp.json model", "tool name mangling", "oxa mcp CLI"]
+needs = []
+size = "M"
+est_min = 40
+test_file = "oxa-mcp/tests/e9_mcp_json_names_oxa_mcp.rs"
+test_cmd = "cargo test -p oxa-mcp --test e9_mcp_json_names_oxa_mcp"
+acceptance = [
+  { test = "user_project_replace_and_partial_override", text = "merge rules of mcp.md" },
+  { test = "bang_command_values", text = "`!command` resolved values" },
+  { test = "name_mangling", text = "mcp__server__tool, invalid characters" },
+  { test = "collision_hash", text = "long or colliding names" },
+  { test = "add_keeps_unrelated_content", text = "file edit" },
+  { test = "remove_keeps_unrelated_content", text = "file edit" },
+  { test = "list_json_and_exit_code", text = "invalid entry -> 1" },
+  { test = "invalid_entry_diagnostic", text = "other servers still load" },
+  { test = "untrusted_project_file_skipped", text = "trust gate" },
+]
+
+
+[[task]]
+id = "E10"
+wave = "E"
+title = "Packages"
+crate = "oxa-resources"
+owns = ["oxa-resources/src/packages.rs", "oxa-resources/src/sources.rs", "oxa-cli/src/pkg_cmd.rs", "oxa-resources/tests/e10_packages.rs"]
+consumes = ["Dirs", "Settings"]
+provides = ["package manager", "oxa install/remove/update/list"]
+needs = []
+size = "L"
+est_min = 45
+test_file = "oxa-resources/tests/e10_packages.rs"
+test_cmd = "cargo test -p oxa-resources --test e10_packages"
+acceptance = [
+  { test = "install_git", text = "clone at ref into the packages dir" },
+  { test = "install_local", text = "path reference" },
+  { test = "remove_and_list", text = "settings updated" },
+  { test = "update_git", text = "fetch and checkout" },
+  { test = "filters", text = "`!x +x -x` resource filters" },
+  { test = "local_flag", text = "project settings" },
+  { test = "npm_source_unsupported", text = "npm: sources are refused (O-175)" },
+  { test = "self_update_unsupported", text = "unsupported_in_oxa" },
+  { test = "package_resources_discovered", text = "extensions, skills, prompts, themes" },
+]
+
+
+[[task]]
+id = "E11"
+wave = "E"
+title = "builtin:subagent"
+crate = "oxa-core"
+owns = ["oxa-core/src/subagent.rs", "oxa-core/tests/e11_builtin_subagent.rs"]
+consumes = ["Host", "json mode (C9)"]
+provides = ["SubagentHooks", "discover_agents"]
+needs = ["C9", "D13"]
+size = "M"
+est_min = 40
+test_file = "oxa-core/tests/e11_builtin_subagent.rs"
+test_cmd = "cargo test -p oxa-core --test e11_builtin_subagent"
+acceptance = [
+  { test = "agent_discovery", text = "user and trusted project agents, override rule" },
+  { test = "single", text = "one child, final text returned" },
+  { test = "chain", text = "{previous} substitution" },
+  { test = "parallel_is_queued", text = "concurrency 1: at most one child process alive; more than 8 tasks refused with pi's error text" },
+  { test = "child_events_streamed", text = "live updates" },
+  { test = "abort_kills_children", text = "process groups" },
+  { test = "park_request_precedes_first_child", text = "one H6+H4 request per batch, skipped without prefill_only; the parent's next request has cached = the park's prompt_tokens on the fake" },
+  { test = "children_are_background", text = "X-Oxe-Priority on child requests" },
+  { test = "child_session_ids_distinct", text = "X-Session-Id <parent>.s<n> per child, turn kind subagent" },
+  { test = "no_nested_subagents", text = "depth 1: a child never loads builtin:subagent" },
+  { test = "agent_model_other_than_session_ignored", text = "an agent model other than the session's is ignored with a warning" },
+  { test = "child_limits_from_model_limits", text = "child soft limit = min(oxa.subagent.softTokens, compact_at, cap - 1)" },
+  { test = "result_capped_with_spill", text = "final text only, capped at oxa.subagent.resultCap, rest in the spill file" },
+  { test = "not_declared_below_min_context", text = "no tool on a model below 32K context unless oxa.subagent.smallContext" },
+  { test = "cleanup_clears_child_hint_also_on_abort", text = "EG5 hint clear after every child" },
+  { test = "cancel_stops_queued_tasks", text = "a cancel starts no further child" },
+  { test = "cap_eight_tasks_ok_ninth_refused", text = "O-146: eight tasks run, the ninth is refused" },
+  { test = "cap_chain_of_eight_ok_nine_refused", text = "O-146: the cap also holds for chains" },
+  { test = "cap_counts_running_and_queued_children_across_calls", text = "O-146: eight children per parent session over every call in flight" },
+]
+
+
+[[task]]
+id = "E12"
+wave = "E"
+title = "HTML export"
+crate = "oxa-export"
+owns = ["oxa-export/src/html.rs", "oxa-export/src/ansi.rs", "oxa-export/src/names.rs", "oxa-export/tests/e12_html_export.rs"]
+consumes = ["SessionHeader, Entry", "template.rs"]
+provides = ["export_html", "ansi_to_html", "default_output_name"]
+needs = ["B14"]
+size = "M"
+est_min = 40
+test_file = "oxa-export/tests/e12_html_export.rs"
+test_cmd = "cargo test -p oxa-export --test e12_html_export"
+acceptance = [
+  { test = "template_filled_from_fixture_session", text = "golden HTML" },
+  { test = "tool_renderers", text = "per-tool blocks" },
+  { test = "ansi_to_html", text = "colours and reset" },
+  { test = "derived_output_name", text = "from the session file name" },
+  { test = "html_escaping", text = "content cannot inject markup" },
+  { test = "jsonl_export", text = "/export .jsonl copies the session" },
+  { test = "oxa_only_entries_filtered", text = "shown / mode_change entries are left out of the embedded session data (pi's template.js is not edited)" },
+]
+
+
+[[task]]
+id = "F1"
+wave = "F"
+title = "Extension UI setters"
+crate = "oxa-ext"
+owns = ["oxa-ext/src/api_ui.rs", "oxa-ext/tests/f1_extension_ui_setters.rs"]
+consumes = ["Ui", "ExtState"]
+provides = ["ctx.ui setters", "autocomplete providers"]
+needs = ["E1", "E2"]
+size = "S"
+est_min = 30
+test_file = "oxa-ext/tests/f1_extension_ui_setters.rs"
+test_cmd = "cargo test -p oxa-ext --test f1_extension_ui_setters"
+acceptance = [
+  { test = "set_status_widget_footer_header_title", text = "Ui calls" },
+  { test = "autocomplete_provider", text = "Hooks::complete" },
+  { test = "working_message", text = "set and restore" },
+  { test = "headless_ui_calls_are_noops", text = "no throw" },
+]
+
+
+[[task]]
+id = "F2"
+wave = "F"
+title = "Custom UI components"
+crate = "oxa-ext"
+owns = ["oxa-ext/src/api_components.rs", "oxa-ext/js/tui.js", "oxa-ext/tests/f2_custom_ui_components.rs"]
+consumes = ["UiComponent", "Renderer (A13)"]
+provides = ["JS components", "overlays", "custom editor", "pi-tui class shim"]
+needs = ["E1", "E2"]
+size = "L"
+est_min = 45
+test_file = "oxa-ext/tests/f2_custom_ui_components.rs"
+test_cmd = "cargo test -p oxa-ext --test f2_custom_ui_components"
+acceptance = [
+  { test = "js_component_render_width", text = "lines fit the width" },
+  { test = "handle_input_and_done", text = "ComponentAction mapping" },
+  { test = "overlay", text = "CustomOpts.overlay" },
+  { test = "custom_editor", text = "as_editor" },
+  { test = "pi_tui_class_shim", text = "Text, Box, Container, SelectList usable from JS" },
+  { test = "component_throw_closes_cleanly", text = "ExtensionError" },
+]
+
+
+[[task]]
+id = "F3"
+wave = "F"
+title = "Renderers"
+crate = "oxa-ext"
+owns = ["oxa-ext/src/api_render.rs", "oxa-ext/tests/f3_renderers.rs"]
+consumes = ["RenderKind", "views (D4, D5)"]
+provides = ["message, entry, tool renderers", "markdown transformers"]
+needs = ["E1", "E2"]
+size = "M"
+est_min = 35
+test_file = "oxa-ext/tests/f3_renderers.rs"
+test_cmd = "cargo test -p oxa-ext --test f3_renderers"
+acceptance = [
+  { test = "message_renderer", text = "custom_message drawn by JS" },
+  { test = "entry_renderer", text = "custom entry" },
+  { test = "tool_call_and_result_renderers", text = "expanded and partial" },
+  { test = "markdown_transformer_message_types", text = "only listed types" },
+  { test = "no_renderer_returns_none", text = "built-in view used" },
+]
+
+
+[[task]]
+id = "F4"
+wave = "F"
+title = "tool_search and call_tool"
+crate = "oxa-codemode"
+owns = ["oxa-codemode/src/search.rs", "oxa-codemode/tests/f4_tool_search_and_call_tool.rs"]
+consumes = ["codemode (E6)", "Tool"]
+provides = ["tool_search", "call_tool"]
+needs = ["E6"]
+size = "M"
+est_min = 35
+test_file = "oxa-codemode/tests/f4_tool_search_and_call_tool.rs"
+test_cmd = "cargo test -p oxa-codemode --test f4_tool_search_and_call_tool"
+acceptance = [
+  { test = "ranking_includes_ref_properties", text = "$ref schema properties searched" },
+  { test = "deferred_callable_only_after_match", text = "call_tool refuses unknown names" },
+  { test = "prefix_sha_unchanged_across_search", text = "W3" },
+  { test = "results_returned_as_text", text = "not declared" },
+  { test = "call_tool_passes_policy_and_shape", text = "same path as direct tools" },
+  { test = "tools_declared_only_when_enabled", text = "tool_search off = absent" },
+]
+
+
+[[task]]
+id = "F5"
+wave = "F"
+title = "MCP OAuth"
+crate = "oxa-mcp"
+owns = ["oxa-mcp/src/oauth.rs", "oxa-mcp/tests/f5_mcp_oauth.rs"]
+consumes = ["HttpTransport (E8)"]
+provides = ["OAuth flow"]
+needs = ["E8"]
+size = "L"
+est_min = 45
+test_file = "oxa-mcp/tests/f5_mcp_oauth.rs"
+test_cmd = "cargo test -p oxa-mcp --test f5_mcp_oauth"
+acceptance = [
+  { test = "pkce", text = "verifier and challenge" },
+  { test = "dynamic_registration", text = "against a local test server" },
+  { test = "configured_client", text = "client id from mcp.json" },
+  { test = "callback_server", text = "loopback redirect" },
+  { test = "token_file_0600", text = "storage" },
+  { test = "refresh_on_401", text = "one refresh then retry" },
+  { test = "pasted_redirect_url", text = "terminal paste path" },
+  { test = "logout_deletes_tokens", text = "credentials removed" },
+]
+
+
+[[task]]
+id = "F6"
+wave = "F"
+title = "MCP manager"
+crate = "oxa-mcp"
+owns = ["oxa-mcp/src/manager.rs", "oxa-mcp/tests/f6_mcp_manager.rs"]
+consumes = ["client core (E7)", "config (E9)"]
+provides = ["McpManager: Hooks"]
+needs = ["E7", "E9"]
+size = "L"
+est_min = 45
+test_file = "oxa-mcp/tests/f6_mcp_manager.rs"
+test_cmd = "cargo test -p oxa-mcp --test f6_mcp_manager"
+acceptance = [
+  { test = "background_connect", text = "startup does not block" },
+  { test = "first_prompt_waits_10s", text = "bounded wait" },
+  { test = "exposure_modes", text = "codemode / deferred / direct / hidden" },
+  { test = "mcp_servers_section", text = "prompt section text" },
+  { test = "mcp_log_rotation", text = "size bound" },
+  { test = "late_server_next_epoch", text = "direct tools offered only at the next epoch (W3)" },
+  { test = "tool_results_shaped", text = "W4; image / audio / binary content blocks become the fixed placeholder line (O-144: text-only engine)" },
+  { test = "write_tools_ask_in_workspace", text = "Access::Mcp class" },
+  { test = "no_mcp_flag", text = "nothing connects" },
+  { test = "sampling_request_refused", text = "O-144: a server's sampling/createMessage gets JSON-RPC -32601; the manager never calls the engine (one slot)" },
+]
+
+
+[[task]]
+id = "F7"
+wave = "F"
+title = "/mcp selector"
+crate = "oxa-interactive"
+owns = ["oxa-interactive/src/selectors/mcp.rs", "oxa-interactive/tests/f7_mcp_selector.rs"]
+consumes = ["McpManager (F6 stub)", "SelectList (B12)"]
+provides = ["/mcp selector"]
+needs = ["B12"]
+size = "S"
+est_min = 30
+test_file = "oxa-interactive/tests/f7_mcp_selector.rs"
+test_cmd = "cargo test -p oxa-interactive --test f7_mcp_selector"
+acceptance = [
+  { test = "list_order", text = "as mcp.md" },
+  { test = "reconnect", text = "action" },
+  { test = "enable_disable", text = "saved" },
+  { test = "exposure_change_saved_to_defining_file", text = "user vs project file" },
+  { test = "error_state_shown", text = "failed server" },
+]
+
+
+[[task]]
+id = "F8"
+wave = "F"
+title = "RPC extension UI and Rust client"
+crate = "oxa-rpc"
+owns = ["oxa-rpc/src/ext_ui.rs", "oxa-rpc/src/client.rs", "oxa-rpc/tests/f8_rpc_extension_ui_and_rust_client.rs"]
+consumes = ["server (C10)", "Ui"]
+provides = ["RpcUi", "UiRouter", "RpcClient"]
+needs = ["C10"]
+size = "M"
+est_min = 40
+test_file = "oxa-rpc/tests/f8_rpc_extension_ui_and_rust_client.rs"
+test_cmd = "cargo test -p oxa-rpc --test f8_rpc_extension_ui_and_rust_client"
+acceptance = [
+  { test = "every_record_of_rpc_extension_ui_md", text = "request/response shapes" },
+  { test = "permission_ask_relayed_as_confirm", text = "Answer mapping" },
+  { test = "dialog_timeout_returns_none", text = "no hang" },
+  { test = "client_drives_rpc_client_example_flow", text = "spawn, prompt, events, close" },
+  { test = "client_error_response_is_err", text = "success false" },
+  { test = "fire_and_forget_methods", text = "notify, setStatus, setWidget, setTitle" },
+]
+
+
+[[task]]
+id = "F9"
+wave = "F"
+title = "Example ports 1"
+crate = "examples"
+owns = ["examples/extensions/plan-mode/index.js", "examples/extensions/permission-gate/index.js", "examples/extensions/custom-compaction/index.js", "examples/extensions/todo/index.js", "examples/extensions/status-line/index.js", "oxa-ext/tests/f9_example_ports_1.rs"]
+consumes = ["oxa.* (E3)", "ctx.* (E4)"]
+provides = ["5 ported example extensions"]
+needs = ["E1", "E2", "E3", "E4", "F1"]
+size = "M"
+est_min = 40
+test_file = "oxa-ext/tests/f9_example_ports_1.rs"
+test_cmd = "cargo test -p oxa-ext --test f9_example_ports_1"
+acceptance = [
+  { test = "plan_mode_loads_and_passes_scripted_session", text = "port" },
+  { test = "permission_gate_loads_and_passes_scripted_session", text = "port" },
+  { test = "custom_compaction_loads_and_passes_scripted_session", text = "summary lands as the W5 head; O-144: the port sends NO model request of its own (pi's uses a second model): the fake records exactly the W5 summary request, carrying the port's custom instructions" },
+  { test = "todo_loads_and_passes_scripted_session", text = "port" },
+  { test = "status_line_loads_and_passes_scripted_session", text = "port" },
+]
+
+
+[[task]]
+id = "F10"
+wave = "F"
+title = "Example ports 2"
+crate = "examples"
+owns = ["examples/extensions/tools/index.js", "examples/extensions/commands/index.js", "examples/extensions/input-transform/index.js", "examples/extensions/question/index.js", "examples/extensions/git-checkpoint/index.js", "examples/extensions/trigger-compact/index.js", "examples/extensions/protected-paths/index.js", "oxa-ext/tests/f10_example_ports_2.rs"]
+consumes = ["oxa.* (E3)", "ctx.* (E4)"]
+provides = ["7 ported example extensions"]
+needs = ["E1", "E2", "E3", "E4", "F1"]
+size = "M"
+est_min = 40
+test_file = "oxa-ext/tests/f10_example_ports_2.rs"
+test_cmd = "cargo test -p oxa-ext --test f10_example_ports_2"
+acceptance = [
+  { test = "tools_loads_and_passes_scripted_session", text = "port" },
+  { test = "commands_loads_and_passes_scripted_session", text = "port" },
+  { test = "input_transform_loads_and_passes_scripted_session", text = "port" },
+  { test = "question_loads_and_passes_scripted_session", text = "port" },
+  { test = "git_checkpoint_loads_and_passes_scripted_session", text = "port" },
+  { test = "trigger_compact_loads_and_passes_scripted_session", text = "port" },
+  { test = "protected_paths_loads_and_passes_scripted_session", text = "port" },
+]
+
+
+[[task]]
+id = "F11"
+wave = "F"
+title = "Docs"
+crate = "docs"
+owns = ["docs/README.md", "docs/pages/", "README.md", "SECURITY.md", "oxa-cli/tests/f11_docs.rs"]
+consumes = ["PARITY.md", "pi docs"]
+provides = ["ported docs", "difference table"]
+needs = ["D13"]
+size = "L"
+est_min = 45
+test_file = "oxa-cli/tests/f11_docs.rs"
+test_cmd = "cargo test -p oxa-cli --test f11_docs"
+acceptance = [
+  { test = "every_doc_command_line_runs_against_fake", text = "fenced `oxa ..` lines extracted and run" },
+  { test = "difference_table_generated_from_parity_md", text = "docs/differences.md is in sync" },
+  { test = "no_pi_names_left", text = "no `~/.pi`, `PI_` or `pi ` command in ported pages" },
+  { test = "engine_support_page_in_sync", text = "O-144: docs/pages/engine-support.md lists every PARITY.md ENG row and every A/O row whose note names O-144 (one slot, queue, subagents serial, text-only, thinking on/off, per-model limits, Flash)" },
+]
+
+
+[[task]]
+id = "G1"
+wave = "G"
+title = "PARITY: tools"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/tools.rs", "oxa-parity/fixtures/pi/tools/"]
+consumes = ["PARITY.md rows: TOOLS, CM", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: tools"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/tools.rs"
+test_cmd = "cargo test -p oxa-parity --test tools"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G2"
+wave = "G"
+title = "PARITY: cli"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/cli.rs", "oxa-parity/fixtures/pi/cli/"]
+consumes = ["PARITY.md rows: CLI, ENV, MOD", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: cli"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/cli.rs"
+test_cmd = "cargo test -p oxa-parity --test cli"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G3"
+wave = "G"
+title = "PARITY: sessions"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/sessions.rs", "oxa-parity/fixtures/pi/sessions/"]
+consumes = ["PARITY.md rows: SES", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: sessions"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/sessions.rs"
+test_cmd = "cargo test -p oxa-parity --test sessions"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G4"
+wave = "G"
+title = "PARITY: tree"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/tree.rs", "oxa-parity/fixtures/pi/tree/"]
+consumes = ["PARITY.md rows: TREE, ENG (engine support, O-144; fake engine with a held slot and `: queued` comments)", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: tree"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/tree.rs"
+test_cmd = "cargo test -p oxa-parity --test tree"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G5"
+wave = "G"
+title = "PARITY: compaction"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/compaction.rs", "oxa-parity/fixtures/pi/compaction/"]
+consumes = ["PARITY.md rows: CMP", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: compaction"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/compaction.rs"
+test_cmd = "cargo test -p oxa-parity --test compaction"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G6"
+wave = "G"
+title = "PARITY: json"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/json.rs", "oxa-parity/fixtures/pi/json/"]
+consumes = ["PARITY.md rows: JSON", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: json"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/json.rs"
+test_cmd = "cargo test -p oxa-parity --test json"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G7"
+wave = "G"
+title = "PARITY: rpc"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/rpc.rs", "oxa-parity/fixtures/pi/rpc/"]
+consumes = ["PARITY.md rows: RPC", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: rpc"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/rpc.rs"
+test_cmd = "cargo test -p oxa-parity --test rpc"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G8"
+wave = "G"
+title = "PARITY: tui"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/tui.rs", "oxa-parity/fixtures/pi/tui/"]
+consumes = ["PARITY.md rows: TUI, THM", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: tui"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/tui.rs"
+test_cmd = "cargo test -p oxa-parity --test tui"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G9"
+wave = "G"
+title = "PARITY: keys_settings"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/keys_settings.rs", "oxa-parity/fixtures/pi/keys_settings/"]
+consumes = ["PARITY.md rows: KEY, SET", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: keys_settings"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/keys_settings.rs"
+test_cmd = "cargo test -p oxa-parity --test keys_settings"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G10"
+wave = "G"
+title = "PARITY: resources"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/resources.rs", "oxa-parity/fixtures/pi/resources/"]
+consumes = ["PARITY.md rows: SKL, TPL, PKG, SLASH, SEC", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: resources"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/resources.rs"
+test_cmd = "cargo test -p oxa-parity --test resources"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G11"
+wave = "G"
+title = "PARITY: mcp"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/mcp.rs", "oxa-parity/fixtures/pi/mcp/"]
+consumes = ["PARITY.md rows: MCP", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: mcp"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/mcp.rs"
+test_cmd = "cargo test -p oxa-parity --test mcp"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "G12"
+wave = "G"
+title = "PARITY: extensions"
+crate = "oxa-parity"
+owns = ["oxa-parity/tests/extensions.rs", "oxa-parity/fixtures/pi/extensions/"]
+consumes = ["PARITY.md rows: EXT", "pi docs", "pi 1.5.2 fixtures"]
+provides = ["PARITY tests: extensions"]
+needs = ["D13", "F11"]
+size = "L"
+est_min = 45
+test_file = "oxa-parity/tests/extensions.rs"
+test_cmd = "cargo test -p oxa-parity --test extensions"
+acceptance = [
+  { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
+  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
+  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
+]
+
+
+[[task]]
+id = "H1"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H2"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H3"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H4"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H5"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H6"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H7"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H8"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H9"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H10"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H11"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H12"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H13"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H14"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]
+
+
+[[task]]
+id = "H15"
+wave = "H"
+title = "Fix slot (files triaged by the architect from the red list)"
+crate = "(triaged)"
+owns = []
+consumes = ["red list from wave G"]
+provides = ["fix for one failing area"]
+needs = []
+size = "M"
+est_min = 30
+acceptance = [
+  { test = "area_parity_green_or_reclassified", text = "PARITY rows of the area green, or reclassified by the architect" },
+  { test = "stub_contract_and_golden_replay_green", text = "no regression" },
+]

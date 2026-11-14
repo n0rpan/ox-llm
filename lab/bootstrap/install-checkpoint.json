@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "status": "source_checkpoint_not_release_parity",
+  "scope": "sandbox source payload only; no current-user HOME install, model placement, service activation or readiness changes",
+  "files": {
+    "src/snapdragon_ai_lab/bootstrap_install.py": "8b38e147aac3201d3515b63d662a49d8289b4c8b082d497c086e34ea56aff268",
+    "tests/test_bootstrap_install.py": "db7d882b9391232b9f52a60e8f0ed8f3efaf84d641e19f4e5418784de24102a3",
+    "docs/BOOTSTRAP-INSTALL.md": "9f5bb97ecbc272f4071ecce04df567e50217b0165ce1727c0af151d122e030de"
+  },
+  "source_dependencies": {
+    "src/snapdragon_ai_lab/bootstrap.py": "b17049ca2a7dcbb54086faa9389f975444d0a34d2d14748ee06044fb32ddbfd6",
+    "src/snapdragon_ai_lab/bootstrap_transfer.py": "a58dbdd2db77d64c9e4ba3fc1967fdba225aec8c8a1d134f444e74c679d2dec4"
+  },
+  "focused_tests_passed": 11,
+  "tiny_fixture_mutation_failure_points": 15,
+  "host_config_changes": false,
+  "services_started": false,
+  "models_run": false,
+  "qualified": false,
+  "remaining": [
+    "actual host installer",
+    "native binary/model placement",
+    "client provider wiring",
+    "panel registration",
+    "qualification activation",
+    "isolated full-stack acceptance",
+    "power-loss/SIGKILL recovery acceptance"
+  ]
+}

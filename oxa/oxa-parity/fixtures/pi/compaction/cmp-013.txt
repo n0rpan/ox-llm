@@ -1,0 +1,37 @@
+#### session_before_compact / session_compact / session_compact_failed
+
+Fired on compaction. See [compaction.md](compaction.md) for details.
+
+```typescript
+pi.on("session_before_compact", async (event, ctx) => {
+  const { preparation, branchEntries, customInstructions, reason, willRetry, signal } = event;
+
+  // reason - "manual" (/compact), "threshold", or "overflow"
+  // willRetry - whether the aborted turn is retried after compaction (overflow recovery)
+
+  // Cancel:
+  return { cancel: true };
+
+  // Custom summary:
+  return {
+    compaction: {
+      summary: "...",
+      firstKeptEntryId: preparation.firstKeptEntryId,
+      tokensBefore: preparation.tokensBefore,
+      // usage: summaryResponse.usage, // Optional; included in session totals
+    }
+  };
+});
+
+pi.on("session_compact", async (event, ctx) => {
+  // event.compactionEntry - the saved compaction
+  // event.fromExtension - whether extension provided it
+  // event.reason - "manual" (/compact), "threshold", or "overflow"
+  // event.willRetry - whether the aborted turn is retried after compaction (overflow recovery)
+});
+
+pi.on("session_compact_failed", async (event, ctx) => {
+  // event.reason - "manual" (/compact), "threshold", or "overflow"
+  // event.errorMessage - present for non-abort failures
+  // event.aborted - true for cancelled/aborted compactions
+  // event.willRetry - whether the aborted turn would have retrie

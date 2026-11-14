@@ -1,0 +1,22 @@
+{
+ "state": "idle",
+ "validated": true,
+ "download_state": "ready",
+ "model": "qwen3.6-35b-a3b-local",
+ "selected_model": "qwen3.6-35b-a3b-local",
+ "selection_error": null,
+ "backend": "cpu",
+ "context_size": 16384,
+ "active_requests": 0,
+ "queued_requests": 0,
+ "idle_unload_seconds": 600,
+ "loaded_model": null,
+ "backend_kind": "oxe",
+ "engine": "rust",
+ "engine_note": null,
+ "capabilities": ["models", "storage", "harness", "harness_learning", "ledger", "active", "openai_aliases", "state_cache", "context_modes", "preload"],
+ "active": {"phase": "idle", "model": null, "seconds": null, "queued_requests": 0, "prompt_tokens_done": null, "prompt_tokens_total": null, "tokens_out": null, "tokens_per_second": null},
+ "context": {"cap": 16384, "mode": null, "modes": []},
+ "chat_url": "http://127.0.0.1:8092",
+ "api_base": "http://127.0.0.1:8092/v1"
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Local AI health digest
+
+[Timer]
+OnCalendar=*-*-* 00:20
+RandomizedDelaySec=20min
+Persistent=true
+Unit=local-ai-digest.service
+
+[Install]
+WantedBy=timers.target

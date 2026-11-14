@@ -1,0 +1,20 @@
+```typescript
+interface CompactionEntry<T = unknown> {
+  type: "compaction";
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  summary: string;
+  firstKeptEntryId: string;
+  tokensBefore: number;
+  usage?: Usage;       // LLM usage that generated the summary
+  fromHook?: boolean;  // true if provided by extension (legacy field name)
+  details?: T;         // implementation-specific data
+}
+
+// Default compaction uses this for details (from compaction.ts):
+interface CompactionDetails {
+  readFiles: string[];
+  modifiedFiles: string[];
+}
+```

@@ -1,0 +1,28 @@
+# W0-FROZEN (architect-owned). Need a dependency? Send a note to the architect.
+[package]
+name = "oxa-core"
+description = "The agent loop, session runtime and SDK surface of oxa"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oxa-proto.workspace = true
+oxa-engine.workspace = true
+oxa-session.workspace = true
+oxa-tools.workspace = true
+oxa-sandbox.workspace = true
+oxa-perm.workspace = true
+oxa-compact.workspace = true
+oxa-config.workspace = true
+oxa-resources.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+oxa-fake.workspace = true
+
+[lints]
+workspace = true

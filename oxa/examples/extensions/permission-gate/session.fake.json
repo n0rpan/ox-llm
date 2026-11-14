@@ -1,0 +1,3 @@
+# F9 permission-gate: the model tries a dangerous command; without a UI it is blocked
+{"tool_calls":[{"id":"call_pg1","name":"bash","args":"{\"command\": \"rm -rf build\"}"}]}
+{"text":"The command was blocked.\n"}

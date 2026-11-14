@@ -1,0 +1,46 @@
+//! W0-FROZEN (architect-owned).
+//!
+//! # oxa-cli: the `oxa` binary
+//! Argument parsing (hand-written, no clap), mode dispatch and the `oxa mcp` / package /
+//! `config` subcommands, and (O-152) `oxa identity` and `oxa report-issue`.
+//!
+//! ## Contracts
+//! * Flags, conflicts and messages follow pi's cli.md with `pi` -> `oxa`. Omitted pi flags
+//!   (`--api-key` for providers, `oxa auth ..`, `--offline` version checks) fail with the
+//!   `unsupported_in_oxa` error and exit code 2.
+//! * Mode choice (cli.md tty rules): `--mode rpc` -> RPC; `--mode json` -> JSON; `-p` or stdin
+//!   not a terminal or stdout not a terminal -> print; otherwise interactive.
+//! * Exit codes: 0 ok; 1 runtime failure; 2 usage error and "no engine" (one line on stderr:
+//!   the `engine_down` message and its hint).
+//! * `main` is the only place that reads the process environment (`Env::from_process`), the
+//!   terminal state and the real clock for file names.
+//! * No network unless asked: no update check, no telemetry.
+
+mod approval;
+mod args;
+mod child;
+mod config_cmd;
+mod dispatch;
+mod home_cwd;
+mod hooks;
+mod identity_cmd;
+mod mcp_cmd;
+mod netguard;
+mod pkg_cmd;
+mod report_cmd;
+mod sandbox_layout;
+mod themes;
+mod wipe_cmd;
+
+pub use args::{parse_args, usage_text, ApiKey, Args, ModeArg, Subcommand};
+pub use config_cmd::run_config;
+pub use dispatch::{choose_mode, run, RunMode, Stdio};
+pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
+pub use identity_cmd::{identity_facts, run_identity, write_identity};
+pub use mcp_cmd::run_mcp;
+pub use pkg_cmd::run_pkg;
+pub use report_cmd::{
+    clean_notes, parse_draft, report_repo, run_report_issue, save_draft, scrub, submit, Confirm, Runner,
+    ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED, SETTING_REPORT_REPO,
+};
+pub use wipe_cmd::{run_wipe, WipeIo};

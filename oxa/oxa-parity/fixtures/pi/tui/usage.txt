@@ -1,0 +1,12 @@
+# pi 1.5.2 documented behaviour, packages/coding-agent/docs/usage.md (model-free fact sheet, not session data).
+# Format: <PARITY id> | <documented pi behaviour>. Names are mapped pi -> oxa when compared.
+USE-001 | Press Enter to send it. Use Shift+Enter to add a line. Paste: multi-line text is collapsed into a paste marker.
+USE-002 | Type @ to search for a file and add it to your prompt. Press Tab to complete a path.
+USE-003 | Type a message and press Enter (adjust current task, waits for the response to finish). Alt+Enter adds work after the current task. Alt+Up returns queued messages to the editor.
+USE-004 | Press Escape to stop the current task. Aborting returns queued messages to the editor.
+USE-005 | Prefix a command with ! to run it and include its output in the conversation.
+USE-006 | Use !! when you want to run a command without sending its output to the model.
+USE-007 | Press Ctrl+O to expand or collapse tool output. Press Ctrl+T to show or hide thinking blocks.
+USE-008 | Press Ctrl+G to work on a longer prompt in your configured external editor.
+USE-009 | Ctrl+Z suspends the terminal and resumes it with the screen restored (pi: job control).
+USE-011 | Run /debug to write the rendered terminal lines and current session messages to pi-debug.log in the agent directory (oxa: oxa-debug.log).

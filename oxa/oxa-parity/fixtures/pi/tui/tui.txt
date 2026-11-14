@@ -1,0 +1,22 @@
+# pi 1.5.2 documented behaviour, packages/coding-agent/docs/tui.md, terminal-setup.md, tmux.md, themes.md (display rows).
+# Format: <PARITY id> | <documented pi behaviour>. Names are mapped pi -> oxa when compared.
+TUI-001 | A component renders an array of terminal lines for an available width; the renderer writes minimal updates.
+TUI-002 | Built-in components: Text, Markdown, Image, TruncatedText, Container, VStack, HStack, Box, Spacer, Input, Editor, SelectList, SettingsList, ScrollView, Loader, CancellableLoader, MouseRegion.
+TUI-003 | Editor with kill ring and yank, undo, input history, paste markers, word navigation (pi: Editor).
+TUI-004 | A component that displays a text cursor implements Focusable and places CURSOR_MARKER; the TUI positions the hardware cursor for IME.
+TUI-005 | Autocomplete: / commands, @ fuzzy files, Tab path completion, autocompleteMaxVisible (settings.md).
+TUI-006 | Markdown rendering with syntax highlighting, tables, lists, nested code; markdown.codeBlockIndent setting.
+TUI-009 | Hyperlinks (OSC 8) are detected and can be overridden (terminal-setup.md).
+TUI-010 | Clipboard copy with OSC 52, wl-copy and xclip.
+TUI-011 | Terminal progress via OSC 9;4 and program status via OSC 7501 (terminal-setup.md).
+TUI-012 | Inline images with kitty and iTerm2 protocols; detection with overrides; display only.
+TUI-013 | Fullscreen mode (default): alt screen, transcript scrolls while editor and status stay fixed, scrollbar modes, wheel lines, prompt jump, resize keeps position.
+TUI-014 | Fullscreen: mouse selection, copy-on-select, transcript search with next and previous match.
+TUI-015 | Regular mode uses the terminal's normal scrollback; finished blocks are printed once.
+TUI-016 | On exit pi prints the transcript or a resume hint.
+TUI-017 | Thinking blocks hide and collapse; tool output expand and collapse; live output; diff view for edits.
+TUI-018 | Startup header and loaded-resource listing, suppressed by quietStartup.
+TUI-019 | Selectors: model, thinking, theme, settings, sessions, tree, scoped models, MCP.
+TUI-020 | Keyboard: kitty keyboard protocol, legacy sequences, ESC timeout (PI_ESC_TIMEOUT_MS).
+TUI-022 | Wide characters, ANSI-aware wrap and truncate, clear on shrink.
+TUI-023 | tmux setup: extended keys and passthrough (tmux.md).

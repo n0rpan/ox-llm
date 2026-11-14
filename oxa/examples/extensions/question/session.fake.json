@@ -1,0 +1,3 @@
+# F10 question: the model asks, the user picks option 1, the model answers from the pick
+{"tool_calls":[{"id":"call_q1","name":"question","args":"{\"question\": \"Which database?\", \"options\": [{\"label\": \"SQLite\"}, {\"label\": \"Postgres\", \"description\": \"needs a server\"}]}"}]}
+{"text":"Using SQLite, as chosen.\n"}

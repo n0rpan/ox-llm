@@ -1,0 +1,9 @@
+| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+type: "compaction_end";
+this._emit({ type: "compaction_start", reason: "manual" });
+type: "compaction_end",
+type: "compaction_end",
+type: "compaction_end",
+this._emit({ type: "compaction_start", reason });
+this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
+type: "compaction_end",

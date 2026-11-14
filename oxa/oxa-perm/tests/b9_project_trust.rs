@@ -1,0 +1,239 @@
+//! B9 acceptance tests: Project trust. Owner: task B9.
+//! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
+//! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
+//! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
+
+use oxa_fake::TestEnv;
+use oxa_perm::{gated_resources, resolve_trust, DefaultTrust, TrustInputs, TrustOutcome, TrustStore};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+
+fn inputs(default: DefaultTrust) -> TrustInputs {
+    TrustInputs {
+        flag: None,
+        extension: None,
+        saved: None,
+        default,
+        interactive: false,
+        has_gated: true,
+    }
+}
+
+/// precedence
+#[test]
+fn flag_beats_extension_beats_saved_beats_default() {
+    // default alone decides
+    assert_eq!(resolve_trust(&inputs(DefaultTrust::Trust)), TrustOutcome::Trusted);
+    assert_eq!(
+        resolve_trust(&inputs(DefaultTrust::Untrusted)),
+        TrustOutcome::Untrusted
+    );
+    // saved beats default
+    let saved = TrustInputs {
+        saved: Some(true),
+        ..inputs(DefaultTrust::Untrusted)
+    };
+    assert_eq!(resolve_trust(&saved), TrustOutcome::Trusted);
+    let saved = TrustInputs {
+        saved: Some(false),
+        ..inputs(DefaultTrust::Trust)
+    };
+    assert_eq!(resolve_trust(&saved), TrustOutcome::Untrusted);
+    // extension beats saved
+    let ext = TrustInputs {
+        extension: Some(false),
+        saved: Some(true),
+        ..inputs(DefaultTrust::Trust)
+    };
+    assert_eq!(resolve_trust(&ext), TrustOutcome::Untrusted);
+    let ext = TrustInputs {
+        extension: Some(true),
+        saved: Some(false),
+        ..inputs(DefaultTrust::Untrusted)
+    };
+    assert_eq!(resolve_trust(&ext), TrustOutcome::Trusted);
+    // flag beats extension and saved
+    let flag = TrustInputs {
+        flag: Some(true),
+        extension: Some(false),
+        saved: Some(false),
+        ..inputs(DefaultTrust::Untrusted)
+    };
+    assert_eq!(resolve_trust(&flag), TrustOutcome::Trusted);
+    let flag = TrustInputs {
+        flag: Some(false),
+        extension: Some(true),
+        saved: Some(true),
+        ..inputs(DefaultTrust::Trust)
+    };
+    assert_eq!(resolve_trust(&flag), TrustOutcome::Untrusted);
+    // ask: a saved decision beats it, and only an interactive run prompts
+    let ask = TrustInputs {
+        interactive: true,
+        ..inputs(DefaultTrust::Ask)
+    };
+    assert_eq!(resolve_trust(&ask), TrustOutcome::AskUser);
+    let ask_saved = TrustInputs {
+        saved: Some(true),
+        interactive: true,
+        ..inputs(DefaultTrust::Ask)
+    };
+    assert_eq!(resolve_trust(&ask_saved), TrustOutcome::Trusted);
+}
+
+/// saved decisions
+#[test]
+fn closest_parent_wins() {
+    let env = TestEnv::new();
+    let parent = env.work().join("proj");
+    let child = parent.join("sub");
+    std::fs::create_dir_all(&child).expect("mkdir");
+    let file = env.agent_dir().join("trust.json");
+
+    let mut store = TrustStore::load(&file);
+    assert_eq!(store.lookup(&child), None);
+    store.save(&file, &parent, true).expect("save parent");
+    store.save(&file, &child, false).expect("save child");
+
+    let reloaded = TrustStore::load(&file);
+    assert_eq!(reloaded.lookup(&child), Some(false));
+    assert_eq!(reloaded.lookup(&child.join("deeper/not-yet")), Some(false));
+    assert_eq!(reloaded.lookup(&parent), Some(true));
+    assert_eq!(reloaded.lookup(&parent.join("other")), Some(true));
+    assert_eq!(reloaded.lookup(&env.work().join("elsewhere")), None);
+}
+
+/// Untrusted with gated resources skipped
+#[test]
+fn non_interactive_ask_is_skip() {
+    let env = TestEnv::new();
+    let work = env.work();
+    std::fs::create_dir_all(work.join(".oxa/extensions")).expect("mkdir");
+    let gated = gated_resources(&work);
+    assert!(!gated.is_empty());
+
+    let base = TrustInputs {
+        has_gated: true,
+        ..inputs(DefaultTrust::Ask)
+    };
+    assert_eq!(resolve_trust(&base), TrustOutcome::Untrusted);
+    let interactive = TrustInputs {
+        interactive: true,
+        ..base
+    };
+    assert_eq!(resolve_trust(&interactive), TrustOutcome::AskUser);
+}
+
+/// no prompt
+#[test]
+fn nothing_gated_is_trusted() {
+    let env = TestEnv::new();
+    // a project with only a context file: AGENTS.md is not gated
+    std::fs::write(env.work().join("AGENTS.md"), "rules").expect("write");
+    let gated = gated_resources(&env.work());
+    assert!(gated.is_empty(), "unexpected gated resources: {gated:?}");
+
+    let quiet = TrustInputs {
+        has_gated: !gated.is_empty(),
+        interactive: true,
+        ..inputs(DefaultTrust::Ask)
+    };
+    assert_eq!(resolve_trust(&quiet), TrustOutcome::Trusted);
+    let untrusted_default = TrustInputs {
+        has_gated: false,
+        ..inputs(DefaultTrust::Untrusted)
+    };
+    assert_eq!(resolve_trust(&untrusted_default), TrustOutcome::Trusted);
+}
+
+/// fixed order
+#[test]
+fn gated_resource_list() {
+    let env = TestEnv::new();
+    let work = env.work();
+    // written in a different order than the expected list
+    for rel in [
+        ".oxa/APPEND_SYSTEM.md",
+        ".oxa/SYSTEM.md",
+        ".oxa/mcp.json",
+        ".oxa/themes/dark.json",
+        ".oxa/prompts/review.md",
+        ".oxa/skills/x/SKILL.md",
+        ".oxa/extensions/ext.js",
+        "AGENTS.md",
+    ] {
+        env.write(&format!("work/{rel}"), "x");
+    }
+    env.write("work/.oxa/settings.json", r#"{"hooks": {"tool_call": "true"}}"#);
+
+    let got = gated_resources(&work);
+    let expected: Vec<String> = [
+        ".oxa/settings.json",
+        ".oxa/extensions",
+        ".oxa/skills",
+        ".oxa/prompts",
+        ".oxa/themes",
+        ".oxa/mcp.json",
+        ".oxa/SYSTEM.md",
+        ".oxa/APPEND_SYSTEM.md",
+    ]
+    .iter()
+    .map(|rel| work.join(rel).display().to_string())
+    .chain(std::iter::once(format!(
+        "{} (hooks)",
+        work.join(".oxa/settings.json").display()
+    )))
+    .collect();
+    assert_eq!(got, expected);
+}
+
+/// trust.json
+#[test]
+fn save_keeps_other_entries_0600() {
+    let env = TestEnv::new();
+    let work = env.work();
+    std::fs::create_dir_all(&work).expect("mkdir");
+    let file = env.agent_dir().join("trust.json");
+    env.write(
+        "home/.oxa/agent/trust.json",
+        r#"{"/elsewhere/proj": true, "/elsewhere/other": false, "/elsewhere/gone": null}"#,
+    );
+
+    let mut store = TrustStore::load(&file);
+    assert_eq!(store.lookup(Path::new("/elsewhere/other/x")), Some(false));
+    store.save(&file, &work, true).expect("save");
+
+    let text = std::fs::read_to_string(&file).expect("read trust.json");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+    let object = value.as_object().expect("object");
+    let key = std::fs::canonicalize(&work).expect("canonical work");
+    assert_eq!(
+        object.get("/elsewhere/proj"),
+        Some(&serde_json::Value::Bool(true))
+    );
+    assert_eq!(
+        object.get("/elsewhere/other"),
+        Some(&serde_json::Value::Bool(false))
+    );
+    assert_eq!(
+        object.get(key.to_str().expect("utf8")),
+        Some(&serde_json::Value::Bool(true))
+    );
+    assert!(text.ends_with('\n'));
+
+    let mode = std::fs::metadata(&file).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    assert_eq!(TrustStore::load(&file).lookup(&work), Some(true));
+}
+
+/// A malformed trust store loads as empty, and `save` refuses to overwrite it.
+#[test]
+fn malformed_trust_json_is_empty_and_never_clobbered() {
+    let env = TestEnv::new();
+    let file: PathBuf = env.write("home/.oxa/agent/trust.json", "[not, an, object");
+    assert_eq!(TrustStore::load(&file), TrustStore::default());
+
+    let mut store = TrustStore::default();
+    assert!(store.save(&file, &env.work(), true).is_err());
+    assert_eq!(std::fs::read_to_string(&file).expect("read"), "[not, an, object");
+}

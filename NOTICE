@@ -1,0 +1,91 @@
+ox-llm (engine: oxe, controller: local-ai, coding agent: oxa)
+Copyright (c) 2026 Oscar Nordström (n0rpan)
+
+Our own code is licensed under the MIT License (see LICENSE). Each product
+directory also carries the same licence and its own notices:
+
+  engine/NOTICE, engine/THIRD_PARTY_NOTICES   vendored ggml subsets (MIT), code
+                                              ported from llama.cpp and
+                                              stable-diffusion.cpp (MIT), and the
+                                              Flash binary distributions
+                                              (BigMoeOnEdge, Apache-2.0; its
+                                              llama.cpp fork, MIT)
+  lab/NOTICE, lab/THIRD_PARTY_NOTICES         patches to llama.cpp,
+                                              stable-diffusion.cpp and
+                                              BigMoeOnEdge, under their licences
+  oxa/NOTICE, oxa/LICENSE-QuickJS.txt         the pi coding agent (MIT), whose
+                                              design oxa reimplements, and
+                                              QuickJS (MIT), which the oxa binary
+                                              links statically
+
+Vendored or ported code keeps the licence of its source, and its licence text
+is kept unchanged where the product notices say. Flash binary tarballs also
+carry the Apache-2.0 licence of their pinned BigMoeOnEdge build source and the
+MIT licence of its pinned llama.cpp fork (FLASH-SOURCE-LICENSES.json in each
+tarball).
+
+No model weights, prebuilt binaries, or Qualcomm SDK, firmware or runtime files
+are part of this repository. Model artifacts have separate publisher licences.
+
+The licence texts that the oxa binary must carry follow, so that this file can
+ship next to the binary unchanged.
+
+---------------------------------------------------------------------------
+pi coding agent
+Source: https://github.com/earendil-works/pi (design reference: pi 1.5.2, commit 47e9d74)
+oxa reimplements the design of pi and ports some of its files; see oxa/NOTICE.
+
+MIT License
+
+Copyright (c) 2025 Mario Zechner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---------------------------------------------------------------------------
+QuickJS
+The oxa binary statically links the QuickJS JavaScript engine (its extension
+runtime). The C sources are bundled in the Rust crate rquickjs-sys 0.9.0
+(crates.io; the version pinned in oxa's Cargo.lock). The licence below is
+quickjs/LICENSE from that crate, reproduced unchanged (also in oxa/LICENSE-QuickJS.txt, which the oxa
+import carries).
+
+The MIT License (MIT)
+ 
+Copyright (c) 2017-2021 Fabrice Bellard
+Copyright (c) 2017-2021 Charlie Gordon
+Copyright (c) 2023 Ben Noordhuis
+Copyright (c) 2023 Saúl Ibarra Corretgé
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
