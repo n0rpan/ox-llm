@@ -1,0 +1,6 @@
+data: {"content":"hi"}
+
+data: {"content":" there","stop":true,"tokens_evaluated":2,"tokens_predicted":2}
+
+data: [DONE]
+

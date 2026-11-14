@@ -1,0 +1,2 @@
+# Optional: the Task 61 property-based fuzzing smoke (not needed by the product or the normal suite).
+hypothesis==6.170.15

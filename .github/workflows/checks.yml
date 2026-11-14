@@ -127,6 +127,13 @@ jobs:
         run: |
           set -o pipefail
           ./tools/run_lab_tests.sh discover -s tests -v 2>&1 | tee unittest.log
+      - name: Fuzz smoke (hypothesis, seconds)
+        # Task 61: the fast properties over the SSE translators, request normalisers and file
+        # readers. The long runs stay local; this step only proves the targets still run.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/oxc-fuzz-venv"
+          "$RUNNER_TEMP/oxc-fuzz-venv/bin/pip" install -q --disable-pip-version-check -r tests/fuzz/requirements.txt
+          PATH="$RUNNER_TEMP/oxc-fuzz-venv/bin:$PATH" ./tools/run_lab_tests.sh discover -s tests/fuzz -v
       - name: Report skipped tests
         if: always()
         # every skip is surfaced as an annotation instead of a silent pass (e.g. tests that need
