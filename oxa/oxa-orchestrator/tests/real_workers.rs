@@ -1306,6 +1306,107 @@ fn orchestrate_cli_approved_files() {
         "source stays unchanged\n"
     );
     assert!(!env.work().join("new.txt").exists());
+    // Review the real A2A report through the same default-off binary hook.
+    let saved = env.root().join("saved-report.json");
+    std::fs::write(&saved, &output.stdout).unwrap();
+    let review_command = || {
+        let mut command = std::process::Command::new(cli_binary());
+        command
+            .env_clear()
+            .current_dir(env.work())
+            .args(["orchestrate-review", "--report"])
+            .arg(&saved)
+            .arg("--source")
+            .arg(env.work())
+            .args([
+                "--file",
+                "input.txt",
+                "--allow-new",
+                "new.txt",
+                "--select",
+                "worker-1",
+            ]);
+        command
+    };
+    let before_review = engine.requests().len();
+    let preview = review_command().output().unwrap();
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let preview: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+    let approval = preview["approval_sha256"].as_str().unwrap();
+    assert!(preview["conflicts"].as_array().unwrap().is_empty());
+    let candidate = env.root().join("reviewed-candidate");
+    let rejected = review_command()
+        .arg("--directory")
+        .arg(&candidate)
+        .args(["--approve", &"0".repeat(64)])
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(!candidate.exists());
+    let staged = review_command()
+        .arg("--directory")
+        .arg(&candidate)
+        .args(["--approve", approval])
+        .output()
+        .unwrap();
+    assert!(
+        staged.status.success(),
+        "{}",
+        String::from_utf8_lossy(&staged.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(candidate.join("input.txt")).unwrap(),
+        "proposed CLI edit\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(candidate.join("new.txt")).unwrap(),
+        "proposed new file\n"
+    );
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(candidate.join(".oxa-review.json")).unwrap()).unwrap();
+    assert_eq!(receipt["approval_sha256"], approval);
+    let repeated = review_command()
+        .arg("--directory")
+        .arg(&candidate)
+        .args(["--approve", approval])
+        .output()
+        .unwrap();
+    assert_eq!(repeated.status.code(), Some(1));
+    std::fs::write(env.work().join("input.txt"), "concurrent edit\n").unwrap();
+    let stale = review_command()
+        .arg("--directory")
+        .arg(env.root().join("stale-candidate"))
+        .args(["--approve", approval])
+        .output()
+        .unwrap();
+    assert_eq!(stale.status.code(), Some(1));
+    assert!(!env.root().join("stale-candidate").exists());
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("input.txt")).unwrap(),
+        "concurrent edit\n"
+    );
+    std::fs::write(env.work().join("input.txt"), "source stays unchanged\n").unwrap();
+    // Overlaps require a new explicit selection, including identical edits.
+    let mut conflicted = report.clone();
+    let mut other = conflicted["workers"][0].clone();
+    other["worker"] = serde_json::json!("worker-2");
+    other["task"]["id"] = serde_json::json!("other-task");
+    conflicted["workers"].as_array_mut().unwrap().push(other);
+    std::fs::write(&saved, serde_json::to_vec(&conflicted).unwrap()).unwrap();
+    let conflict = review_command().args(["--select", "worker-2"]).output().unwrap();
+    assert_eq!(conflict.status.code(), Some(1));
+    let conflict: serde_json::Value = serde_json::from_slice(&conflict.stdout).unwrap();
+    assert_eq!(conflict["conflicts"].as_array().unwrap().len(), 2);
+    assert!(conflict["candidate_manifest_sha256"].is_null());
+    assert_eq!(
+        before_review,
+        engine.requests().len(),
+        "review never contacts inference"
+    );
     let count = engine.requests().len();
     let output = cli_command(&env, &engine, "cli-files-invalid")
         .args(["--source"])

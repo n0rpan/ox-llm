@@ -272,6 +272,9 @@ fn number(text: &str, min: u64, max: u64) -> Result<u64, &'static str> {
 /// Intended for the gated binary shim. Returns None for every other command.
 /// It does not discover user/project configuration or inherit model credentials.
 pub fn maybe_run(args: &[String]) -> Option<i32> {
+    if args.first().map(String::as_str) == Some("orchestrate-review") {
+        return Some(crate::review_cli::run(&args[1..]));
+    }
     if args.first().map(String::as_str) != Some("orchestrate") {
         return None;
     }
@@ -550,7 +553,7 @@ impl Write for Descriptor {
     }
 }
 
-struct TerminalJson;
+pub(crate) struct TerminalJson;
 impl serde_json::ser::Formatter for TerminalJson {
     fn write_string_fragment<W: Write + ?Sized>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()> {
         let mut start = 0;
