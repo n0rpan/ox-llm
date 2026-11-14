@@ -1635,6 +1635,167 @@ fn native_control_cancel_journal_inspection() {
     assert!(engine.requests().is_empty());
 }
 
+fn owned_git_admin(root: &Path) -> std::path::PathBuf {
+    let entries = std::fs::read_dir(root.join("git-workspaces"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "one owned repository for this approved snapshot"
+    );
+    entries[0].path().join("repository.git")
+}
+fn assert_git_worktrees(admin: &Path, count: usize) {
+    let output = std::process::Command::new("/usr/bin/git")
+        .env_clear()
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .arg("--git-dir")
+        .arg(admin)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text.matches("detached").count(), count);
+}
+fn native_git_worktree_isolation() {
+    use oxa_orchestrator::workspace::{Grant, RelativePath, Snapshot};
+    let env = TestEnv::new();
+    std::fs::write(env.root().join("input.txt"), "approved source\n").unwrap();
+    let snapshot = Arc::new(
+        Snapshot::approve(env.root(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+    );
+    let grant = Arc::new(
+        Grant::editing(snapshot, vec![])
+            .unwrap()
+            .with_git_worktrees()
+            .unwrap(),
+    );
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("separate worktree result"); 2],
+        FakeOpts {
+            hold_headers_ms: 100,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut specs = vec![worker(&server, "one"), worker(&server, "two")];
+    for spec in &mut specs {
+        spec.workspace = Some(grant.clone());
+        spec.role = "git-metadata-probe".into();
+    }
+    let mut config = settings(&env, "native-worktrees");
+    config.mode = PermissionMode::Workspace;
+    let (_tx, rx) = mpsc::sync_channel(4);
+    let report = run(config, specs, rx, |_| {}).unwrap();
+    assert!(report.succeeded(), "{report:?}");
+    assert_reaped(&report);
+    assert_git_worktrees(&owned_git_admin(&env.root().join("native-worktrees")), 2);
+    assert_eq!(
+        std::fs::read_to_string(env.root().join("input.txt")).unwrap(),
+        "approved source\n"
+    );
+}
+fn orchestrate_cli_git_worktrees() {
+    let env = TestEnv::new();
+    std::fs::write(env.work().join("input.txt"), "approved CLI source\n").unwrap();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("parallel worktree result"); 2],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = cli_command(&env, &engine, "cli-git-pair")
+        .args(["--workers", "2", "--source"])
+        .arg(env.work())
+        .args([
+            "--file",
+            "input.txt",
+            "--edit",
+            "--permission-mode",
+            "workspace",
+            "--git-worktrees",
+            "review in separate worktrees",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_git_worktrees(&owned_git_admin(&env.root().join("cli-git-pair/agents")), 2);
+    let engine = FakeServer::start(
+        vec![
+            ScriptTurn::tool("git-read", "read", r#"{"path":".git"}"#),
+            ScriptTurn::tool(
+                "git-write",
+                "write",
+                r#"{"path":".git","content":"tamper pointer"}"#,
+            ),
+            ScriptTurn::tool(
+                "source-write",
+                "write",
+                r#"{"path":"input.txt","content":"worktree proposal\n"}"#,
+            ),
+            ScriptTurn::text("worktree review ready"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = cli_command(&env, &engine, "cli-git-edit")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_0", "/nonexistent-poisoned-git-command")
+        .env("GIT_DIR", env.root().join("nonexistent-user-repository"))
+        .env("GIT_OBJECT_DIRECTORY", env.root().join("must-not-be-used"))
+        .args(["--workers", "1", "--source"])
+        .arg(env.work())
+        .args([
+            "--file",
+            "input.txt",
+            "--edit",
+            "--permission-mode",
+            "workspace",
+            "--git-worktrees",
+            "propose edit",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let artifacts = report["workers"][0]["task"]["artifacts"].as_array().unwrap();
+    let proposal = artifacts
+        .iter()
+        .find(|a| a["parts"][0]["data"]["kind"] == "oxa.workspace.review.v1")
+        .unwrap();
+    assert_eq!(
+        proposal["parts"][0]["data"]["review"]["changes"][0]["after"],
+        "worktree proposal\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("input.txt")).unwrap(),
+        "approved CLI source\n"
+    );
+    let request_text = engine
+        .requests()
+        .iter()
+        .flat_map(|r| r.messages.iter())
+        .filter_map(|m| m.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!request_text.contains("gitdir: "));
+    assert!(!request_text.contains("repository.git"));
+    assert_git_worktrees(&owned_git_admin(&env.root().join("cli-git-edit/agents")), 1);
+    assert!(!env.root().join("must-not-be-used").exists());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -1643,6 +1804,14 @@ fn main() {
     if args.first().map(String::as_str) == Some("--mode") {
         assert_eq!(std::env::var("HOME").unwrap(), "/home/worker");
         assert!(std::env::var("OXA_PARENT_PRIVATE_MARKER").is_err());
+        if args
+            .last()
+            .is_some_and(|role| role.contains("git-metadata-probe"))
+        {
+            assert_eq!(std::fs::read("/work/.git").unwrap(), b"");
+            assert!(std::fs::write("/work/.git", b"tamper").is_err());
+            assert!(!Path::new("/work/.git/objects").exists());
+        }
         if args.last().is_some_and(|s| s.contains("\nfixture-")) {
             hostile_fixture(&args);
         }
@@ -1664,6 +1833,10 @@ fn main() {
         (
             "A2A workspace review round trip",
             a2a_workspace_review_round_trip as fn(),
+        ),
+        (
+            "native Git worktree isolation",
+            native_git_worktree_isolation as fn(),
         ),
         ("parallel roles and fan-in", parallel_roles_and_fan_in as fn()),
         (
@@ -1719,6 +1892,7 @@ fn main() {
             "native cancellation journal inspection",
             native_control_cancel_journal_inspection,
         ),
+        ("orchestrate CLI Git worktrees", orchestrate_cli_git_worktrees),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {
             continue;

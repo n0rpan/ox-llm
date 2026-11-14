@@ -16,6 +16,7 @@ Observed successful run:
 ```text
 test approved workspace edits and read-only policy ... ok
 test A2A workspace review round trip ... ok
+test native Git worktree isolation ... ok
 test parallel roles and fan-in ... ok
 test queued cancellation and preflight ... ok
 test deadlines and caps ... ok
@@ -34,6 +35,7 @@ test orchestrate CLI signal cleanup ... ok
 test orchestrate CLI approved files ... ok
 test orchestrate CLI crash inspection ... ok
 test native cancellation journal inspection ... ok
+test orchestrate CLI Git worktrees ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -93,3 +95,8 @@ producer and the active CLI SIGINT/cancellation-flag producer. Both completed
 canceled journals and copies interrupted immediately after their cancellation
 record remain inspectable; source journal bytes are unchanged. Worker-scoped,
 A2A and incomplete-manifest cancellation records are rejected.
+The native Git worktree scenario verifies two registered detached worktrees at a
+shared approved base while the actual workers see only masked read-only Git
+metadata. The CLI worktree scenario verifies shared controller metadata across
+A2A tasks, refused metadata writes, review proposals, unchanged source and ignored
+ambient Git configuration/object-store injection. See [GIT_WORKTREES.md](GIT_WORKTREES.md).

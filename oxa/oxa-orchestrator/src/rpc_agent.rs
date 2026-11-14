@@ -2,8 +2,7 @@
 //! tools, permissions, budgets and executable paths are fixed by the operator;
 //! A2A messages only provide task data and bounded steering text.
 use crate::{
-    run_cancellable, Control, LocalInference, Outcome, PermissionMode, RunSettings, WorkerBudget,
-    WorkerReport, WorkerSpec,
+    Control, LocalInference, Outcome, PermissionMode, RunSettings, WorkerBudget, WorkerReport, WorkerSpec,
 };
 use oxa_a2a::server::{error, Backend};
 use oxa_a2a::wire::*;
@@ -44,6 +43,7 @@ pub struct RpcAgent {
     prefix: String,
     state: Arc<Mutex<State>>,
     shutdown_gate: Mutex<()>,
+    workspaces: Option<Arc<Mutex<crate::git_worktrees::Pool>>>,
 }
 
 struct State {
@@ -94,8 +94,16 @@ impl RpcAgent {
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         let prefix = random.iter().map(|b| format!("{b:02x}")).collect();
         DirBuilder::new().mode(0o700).create(&config.directory)?;
+        let workspaces = if config.workspace.as_ref().is_some_and(|w| w.uses_git_worktrees()) {
+            Some(Arc::new(Mutex::new(crate::git_worktrees::Pool::new(
+                config.directory.join("git-workspaces"),
+            )?)))
+        } else {
+            None
+        };
         Ok(Self {
             shutdown_gate: Mutex::new(()),
+            workspaces,
             config,
             prefix,
             state: Arc::new(Mutex::new(State {
@@ -166,6 +174,7 @@ impl RpcAgent {
             },
         );
         let shared = self.state.clone();
+        let workspaces = self.workspaces.clone();
         let mut worker_settings = settings(&self.config, &id);
         let accepted_deadline = Instant::now() + self.config.budget.wall_time;
         let plan = vec![spec(&self.config, text)];
@@ -178,20 +187,27 @@ impl RpcAgent {
                     worker_settings.wall_time = accepted_deadline
                         .saturating_duration_since(Instant::now())
                         .max(Duration::from_nanos(1));
-                    run_cancellable(worker_settings, plan, receiver, cancel, |status| {
-                        // Publish terminal states only after run() returns, so the
-                        // final artifact and audit result cannot arrive too late.
-                        if status.state == "working" {
-                            if let Some(entry) = observe_state
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .tasks
-                                .get_mut(&task_id)
-                            {
-                                entry.task.status.state = TaskState::Working;
+                    crate::run::run_with_workspaces(
+                        worker_settings,
+                        plan,
+                        receiver,
+                        cancel,
+                        workspaces,
+                        |status| {
+                            // Publish terminal states only after run() returns, so the
+                            // final artifact and audit result cannot arrive too late.
+                            if status.state == "working" {
+                                if let Some(entry) = observe_state
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .tasks
+                                    .get_mut(&task_id)
+                                {
+                                    entry.task.status.state = TaskState::Working;
+                                }
                             }
-                        }
-                    })
+                        },
+                    )
                 }));
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(entry) = state.tasks.get_mut(&task_id) {

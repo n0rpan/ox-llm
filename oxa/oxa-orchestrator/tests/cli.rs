@@ -67,6 +67,7 @@ fn malformed_counts_roles_and_oversized_goals_are_rejected() {
 #[test]
 fn source_grants_require_explicit_files_and_editing_mode() {
     for extra in [
+        vec!["--git-worktrees", "goal"],
         vec!["--source", "unused", "goal"],
         vec!["--file", "a.txt", "goal"],
         vec!["--source", "unused", "--file", "../bad", "goal"],
@@ -101,6 +102,32 @@ fn source_grants_require_explicit_files_and_editing_mode() {
         "workspace",
         "--allow-new",
         "b.txt",
+        "goal"
+    ]))
+    .unwrap()
+    .is_some());
+}
+
+#[test]
+fn git_worktrees_require_editing_and_remain_inert_during_parse() {
+    assert!(parse(&args(&[
+        "--source",
+        "unused",
+        "--file",
+        "a.txt",
+        "--git-worktrees",
+        "goal"
+    ]))
+    .is_err());
+    assert!(parse(&args(&[
+        "--source",
+        "unused",
+        "--file",
+        "a.txt",
+        "--edit",
+        "--permission-mode",
+        "workspace",
+        "--git-worktrees",
         "goal"
     ]))
     .unwrap()

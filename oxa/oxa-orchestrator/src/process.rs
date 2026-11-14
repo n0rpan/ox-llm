@@ -87,6 +87,9 @@ impl Process {
                 })
                 .arg(workspace.path())
                 .arg("/work");
+            if let Some(mask) = workspace.git_mask() {
+                command.arg("--ro-bind").arg(mask).arg("/work/.git");
+            }
         } else {
             command.args(["--tmpfs", "/work"]);
         }
@@ -336,7 +339,7 @@ impl Drop for Process {
     }
 }
 
-fn nonblocking(fd: RawFd) -> io::Result<()> {
+pub(crate) fn nonblocking(fd: RawFd) -> io::Result<()> {
     // SAFETY: live owned pipe descriptor; fcntl only changes its status flags.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags == -1 {

@@ -17,7 +17,8 @@ and worker identity. Unknown execution outcomes are not success.
 
 The default profile is **local inference with no tools**. An explicit
 workspace grant can instead enable approved private file copies and review
-proposals; see [WORKSPACES.md](WORKSPACES.md). The inert
+proposals; see [WORKSPACES.md](WORKSPACES.md). Editing workers can explicitly use
+[controller-owned Git worktrees](GIT_WORKTREES.md) without exposing the source repository. The inert
 `oxa orchestrate-review` command previews explicitly selected saved proposals and
 stages an exactly approved new candidate; see [REVIEW.md](REVIEW.md).
 An operator must register
@@ -174,6 +175,6 @@ single-child cleanup do not provide this supervisor's guarantees.
 
 Production TLS/remote routing, automatic stream resubscription, stronger
 inference-network isolation, hard provider request/spend
-limits, Git worktrees, apply into an existing checkout and merge coordination, persistent scheduler resume,
+limits, apply into an existing checkout and merge coordination, persistent scheduler resume,
 and richer interactive worker controls remain required. This working local profile is a
 foundation, not a claim that the full orchestration brief is complete.

@@ -38,7 +38,9 @@ Repeat `--file` for each explicitly approved UTF-8 file. They are copied into
 separate read-only worker workspaces; only the `read` tool is enabled. Add both
 `--edit --permission-mode workspace` to enable `read`, `edit` and `write` in each
 private copy. `--allow-new relative/path` registers a new path for review and
-requires `--edit`. Selected file contents are delegation input: approve them for
+requires `--edit`. `--git-worktrees` additionally selects an owned snapshot Git
+worktree per editing worker; see [GIT_WORKTREES.md](GIT_WORKTREES.md).
+Selected file contents are delegation input: approve them for
 disclosure and do not select secrets. There is no recursive source discovery.
 
 The final Task includes structured `oxa.workspace.review.v1` Data artifacts for
