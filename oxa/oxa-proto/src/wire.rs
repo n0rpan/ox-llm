@@ -178,6 +178,11 @@ pub fn wire_is_prefix(shorter: &[WireMsg], longer: &[WireMsg]) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Part {
     Text(String),
+    /// Provenance, not content: the environment note oxa appended to this user message's wire
+    /// text (`oxa_core::envnote`), byte for byte. Recorded only when oxa appended one, so the
+    /// typed text is the wire text minus exactly this suffix; a user message without it is shown
+    /// and refilled as its wire text. Never sent, never shown.
+    EnvNote(String),
     /// Never serialised to the wire today (the engine is text-only).
     Image {
         path: PathBuf,

@@ -868,7 +868,10 @@ impl Session {
             )?;
         }
         let images = crate::fire::images_json(&parts);
-        let wire = crate::envnote::with_note(st, user_message(&text, &parts));
+        let (wire, note) = crate::envnote::add_note(st, user_message(&text, &parts));
+        // The note's provenance is stored with the entry (refill and display strip exactly it).
+        let mut parts = parts;
+        parts.extend(note.map(Part::EnvNote));
         st.stats.user_messages += 1;
         persist(st, EntryBody::Msg { wire, parts }, sink)?;
 
@@ -1439,6 +1442,8 @@ fn wire_text(text: &str, parts: &[Part]) -> String {
     for part in parts {
         match part {
             Part::Text(t) => lines.push(t.clone()),
+            // Provenance of a stored message; never among a prompt's parts.
+            Part::EnvNote(_) => {}
             Part::Image { path, w, h, .. } => {
                 let name = path
                     .file_name()

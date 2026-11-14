@@ -7,8 +7,12 @@
 //! bytes are appended. The first prompt of a session (and the first after the wire lost the
 //! block, e.g. to a compaction, or after midnight) carries the full [`ENV_OPEN`] block; every
 //! other prompt carries the short time line ([`TIME_NOTE`]).
+//!
+//! Provenance: the prompt stores the note it appended as a [`Part::EnvNote`] of the same entry,
+//! so the editor refill and the display drop exactly that suffix ([`strip_note`]) and nothing a
+//! user typed (a literal `<env>` block, an older session, `envNote` off).
 use crate::SessionState;
-use oxa_proto::{Profile, Role, WireMsg};
+use oxa_proto::{Part, Profile, Role, WireMsg};
 use oxa_session::LocalTime;
 
 /// First line of the full block; a wire message containing it carries the date.
@@ -105,19 +109,28 @@ pub fn append_note(text: &str, note: &str) -> String {
     }
 }
 
-/// The typed text of a user message without a trailing note (for the editor refill).
-pub fn strip_note(content: &str) -> &str {
-    if let Some(i) = content.rfind(&format!("\n\n{ENV_OPEN}\n")) {
-        if content.ends_with(ENV_CLOSE) {
-            return &content[..i];
-        }
-    }
-    if let Some(i) = content.rfind("\n\n[local time ") {
-        if content.ends_with(']') && !content[i + 2..].contains('\n') {
-            return &content[..i];
-        }
+/// The note oxa recorded for a stored user message (its [`Part::EnvNote`]), if it appended one.
+pub fn recorded_note(parts: &[Part]) -> Option<&str> {
+    parts.iter().rev().find_map(|p| match p {
+        Part::EnvNote(note) => Some(note.as_str()),
+        _ => None,
+    })
+}
+
+/// The typed text of a stored user message (editor refill, display): its wire `content`
+/// without the note recorded in `parts` (exactly the [`append_note`] suffix). Without a
+/// recorded note, or when the content does not end with it, `content` is returned unchanged.
+pub fn strip_note<'a>(content: &'a str, parts: &[Part]) -> &'a str {
+    let Some(note) = recorded_note(parts) else {
+        return content;
+    };
+    if content == note {
+        return "";
     }
     content
+        .strip_suffix(note)
+        .and_then(|typed| typed.strip_suffix("\n\n"))
+        .unwrap_or(content)
 }
 
 /// `LC_ALL` > `LC_MESSAGES` > `LANG`, without the encoding (`nb_NO.UTF-8` -> `nb_NO`).
@@ -175,20 +188,35 @@ pub fn facts(st: &SessionState) -> EnvFacts {
     }
 }
 
-/// The user message `msg` with the note appended when the note is on (else `msg` unchanged).
-pub fn with_note(st: &SessionState, msg: WireMsg) -> WireMsg {
+/// The note a user message added now gets; `None` when the note is off (or the clock is
+/// unknown).
+fn note_now(st: &SessionState) -> Option<String> {
     if !enabled(st) {
-        return msg;
+        return None;
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let Some(t) = oxa_session::local_time(now) else {
-        return msg;
-    };
-    let note = note_for(st.transcript.wire(), &t, &facts(st));
-    WireMsg::user(append_note(msg.content.as_deref().unwrap_or(""), &note))
+    let t = oxa_session::local_time(now)?;
+    Some(note_for(st.transcript.wire(), &t, &facts(st)))
+}
+
+/// The user message `msg` with the note appended when the note is on, and the note appended
+/// (to store as [`Part::EnvNote`]); `(msg, None)` unchanged when it is off.
+pub fn add_note(st: &SessionState, msg: WireMsg) -> (WireMsg, Option<String>) {
+    match note_now(st) {
+        Some(note) => (
+            WireMsg::user(append_note(msg.content.as_deref().unwrap_or(""), &note)),
+            Some(note),
+        ),
+        None => (msg, None),
+    }
+}
+
+/// [`add_note`] without the provenance (the draft prefill: same bytes, never stored).
+pub fn with_note(st: &SessionState, msg: WireMsg) -> WireMsg {
+    add_note(st, msg).0
 }
 
 #[cfg(test)]
@@ -248,11 +276,27 @@ mod tests {
     }
 
     #[test]
-    fn strip_returns_the_typed_text() {
+    fn strip_removes_only_the_recorded_note() {
         let full = full_block(&t("2026-11-14", "13:42"), &f());
-        assert_eq!(strip_note(&append_note("hi\nthere", &full)), "hi\nthere");
-        assert_eq!(strip_note(&append_note("hi", "[local time 13:42 CET]")), "hi");
-        assert_eq!(strip_note("plain [local time] text"), "plain [local time] text");
+        let noted = |n: &str| vec![Part::EnvNote(n.to_string())];
+        assert_eq!(
+            strip_note(&append_note("hi\nthere", &full), &noted(&full)),
+            "hi\nthere"
+        );
+        let short = "[local time 13:42 CET]";
+        assert_eq!(strip_note(&append_note("hi", short), &noted(short)), "hi");
+        assert_eq!(strip_note(&append_note("", short), &noted(short)), "");
+        // A typed text that itself ends like a note keeps it: only the recorded suffix goes.
+        let literal = "Explain this format:\n\n<env>\nexample\n</env>";
+        assert_eq!(strip_note(&append_note(literal, short), &noted(short)), literal);
+        // No recorded note (note off, pi profile, an older session): the text as stored.
+        assert_eq!(strip_note(literal, &[]), literal);
+        assert_eq!(
+            strip_note("hi\n\n[local time 13:42 CET]", &[]),
+            "hi\n\n[local time 13:42 CET]"
+        );
+        // A recorded note that is not the suffix changes nothing.
+        assert_eq!(strip_note("hi", &noted(short)), "hi");
     }
 
     #[test]

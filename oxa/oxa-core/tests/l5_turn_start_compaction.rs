@@ -227,7 +227,7 @@ fn aborted_big_read_is_compacted_before_the_next_prompt() {
             .messages
             .last()
             .and_then(|m| m.content.as_deref())
-            .map(oxa_core::envnote::strip_note),
+            .map(|c| c.split_once("\n\n").map_or(c, |(typed, _)| typed)),
         Some("next task")
     );
     assert!(sink

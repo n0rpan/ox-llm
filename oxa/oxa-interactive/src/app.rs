@@ -790,12 +790,12 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             vm.status.activity_ms = 0;
         }
         AgentEvent::MessageStart { message } => match message.msg.role {
-            // The core announces a user message twice: its stored entry (with images) and
-            // pi's `message_start` at the turn that sends it. One block.
-            // Shown without the environment note oxa appended (`oxa_core::envnote`).
-            Role::User if !user_block_pending(vm, shown_user_text(&message.msg)) => {
+            // The core announces a user message twice: its stored entry (with images and the
+            // provenance of the environment note, `oxa_core::envnote`) and pi's `message_start`
+            // at the turn that sends it. One block: the entry's, shown as typed.
+            Role::User if !user_block_pending(vm, message.msg.content.as_deref().unwrap_or_default()) => {
                 vm.blocks.push(Block::User {
-                    text: shown_user_text(&message.msg).to_string(),
+                    text: message.msg.content.clone().unwrap_or_default(),
                     images: Vec::new(),
                 })
             }
@@ -1173,11 +1173,19 @@ pub fn blocks_from_entries(branch: &[Entry]) -> Vec<Block> {
 }
 
 /// The block of a stored user message: its wire text and its attached images.
-/// A `User` block with `text` was added since the last reply (its entry was stored).
-fn user_block_pending(vm: &ViewModel, text: &str) -> bool {
+/// A `User` block for the wire text `content` was added since the last reply (its entry was
+/// stored): its text is `content`, or `content` without the note the entry recorded (the
+/// block's text then ends where the `\n\n` before the note starts).
+fn user_block_pending(vm: &ViewModel, content: &str) -> bool {
+    let shown_from = |t: &str| {
+        content == t
+            || content
+                .strip_prefix(t)
+                .is_some_and(|note| note.starts_with("\n\n"))
+    };
     for b in vm.blocks.iter().rev() {
         match b {
-            Block::User { text: t, .. } if t == text => return true,
+            Block::User { text: t, .. } if shown_from(t) => return true,
             Block::Assistant { .. } | Block::Tool(_) => return false,
             _ => {}
         }
@@ -1185,14 +1193,10 @@ fn user_block_pending(vm: &ViewModel, text: &str) -> bool {
     false
 }
 
-/// A user message's text as typed: without the environment note oxa appended.
-fn shown_user_text(msg: &oxa_proto::WireMsg) -> &str {
-    oxa_core::envnote::strip_note(msg.content.as_deref().unwrap_or_default())
-}
-
+/// A stored user message as typed: without the environment note oxa recorded appending.
 fn user_block(text: &str, parts: &[Part]) -> Block {
     Block::User {
-        text: oxa_core::envnote::strip_note(text).to_string(),
+        text: oxa_core::envnote::strip_note(text, parts).to_string(),
         images: parts
             .iter()
             .filter_map(|p| match p {
@@ -1202,7 +1206,7 @@ fn user_block(text: &str, parts: &[Part]) -> Block {
                     w: *w,
                     h: *h,
                 }),
-                Part::Text(_) => None,
+                Part::Text(_) | Part::EnvNote(_) => None,
             })
             .collect(),
     }
