@@ -176,6 +176,7 @@ single-child cleanup do not provide this supervisor's guarantees.
 
 Production TLS/remote routing, automatic stream resubscription, stronger
 inference-network isolation, hard provider request/spend
-limits, apply into an existing checkout and merge coordination, persistent scheduler resume,
+limits, apply into an existing checkout and merge coordination, automatic mixed-task scheduler resume (explicit never-started job resume is
+available in [RESUME.md](RESUME.md)),
 and richer interactive worker controls remain required. This working local profile is a
 foundation, not a claim that the full orchestration brief is complete.

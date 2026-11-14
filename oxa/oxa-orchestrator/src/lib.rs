@@ -10,6 +10,7 @@ mod ownership;
 mod process;
 pub mod recovery;
 mod recovery_cli;
+pub mod resume;
 pub mod review;
 mod review_cli;
 pub mod rpc_agent;

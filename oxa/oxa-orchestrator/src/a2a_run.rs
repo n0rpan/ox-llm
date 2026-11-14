@@ -34,6 +34,9 @@ impl LocalAgent {
     pub(crate) fn into_client(self) -> Client {
         self.client
     }
+    pub(crate) fn endpoint(&self) -> String {
+        self.client.url()
+    }
 }
 
 pub struct A2AWorkerSpec {
@@ -168,10 +171,28 @@ pub fn run_a2a(
     plan: Vec<A2AWorkerSpec>,
     controls: Receiver<Control>,
     cancel: Arc<AtomicBool>,
+    observe: impl FnMut(A2AStatus),
+) -> io::Result<A2ARunReport> {
+    run_bound(settings, plan, controls, cancel, observe, None)
+}
+
+pub(crate) fn run_bound(
+    settings: A2ARunSettings,
+    plan: Vec<A2AWorkerSpec>,
+    controls: Receiver<Control>,
+    cancel: Arc<AtomicBool>,
     mut observe: impl FnMut(A2AStatus),
+    inherited: Option<crate::resume::RunBinding>,
 ) -> io::Result<A2ARunReport> {
     validate(&settings, &plan)?;
-    let deadline = Instant::now() + settings.wall_time;
+    let run_binding = match inherited {
+        Some(binding) => binding,
+        None => crate::resume::RunBinding::capture(&settings)?,
+    };
+    // Bracket the boot-clock read conservatively: metadata/syscall/preemption
+    // overhead cannot turn a remaining allowance into a later deadline.
+    let started = Instant::now();
+    let deadline = started + run_binding.remaining()?.min(settings.wall_time);
     let parent = settings
         .directory
         .parent()
@@ -186,9 +207,9 @@ pub fn run_a2a(
     );
     DirBuilder::new().mode(0o700).create(directory.clone())?;
     let mut journal = Journal::create(&directory.join("transcript.jsonl"), settings.journal_bytes)?;
-    journal.record(None,"run_started",json!({"run":settings.id,"transport":"A2A-0.3.0","workers":plan.len(),"parallelism":settings.parallelism,"offline":true}))?;
+    journal.record(None,"run_started",json!({"run":settings.id,"transport":"A2A-0.3.0","workers":plan.len(),"parallelism":settings.parallelism,"offline":true,"resumeBinding":run_binding}))?;
     for spec in &plan {
-        journal.record(Some(&spec.id),"queued",json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"reservedBytes":spec.response_bytes,"agentUrlSha256":hash(&spec.agent.client.url())}))?;
+        journal.record(Some(&spec.id),"queued",json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"reservedBytes":spec.response_bytes,"agentUrlSha256":hash(&spec.agent.client.url()),"resumeBinding":crate::resume::WorkerBinding::capture(spec)?}))?;
         observe(A2AStatus {
             worker: spec.id.clone(),
             state: "queued".into(),
@@ -255,7 +276,7 @@ pub fn run_a2a(
                 Err(_) => break,
             }
         }
-        let expired = Instant::now() >= deadline;
+        let expired = Instant::now() >= deadline || run_binding.expired()?;
         if cancel_all || expired {
             let reason = if expired {
                 Outcome::Deadline
@@ -278,7 +299,11 @@ pub fn run_a2a(
                 reports.push(report);
             }
         }
-        while active.len() < settings.parallelism && !cancel_all && Instant::now() < deadline {
+        while active.len() < settings.parallelism
+            && !cancel_all
+            && Instant::now() < deadline
+            && !run_binding.expired()?
+        {
             let Some(mut spec) = pending.pop_front() else {
                 break;
             };

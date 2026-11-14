@@ -47,7 +47,7 @@ do not inherit it. Closing the descriptor, ordinary unwinding or controller deat
 releases the kernel lock, without a PID file, timeout guess or stale-lock removal.
 
 `recovery::ExclusiveRun::claim(journal_path)` is the library ownership primitive
-for future scheduler recovery. It checks the protected output namespace and an
+for explicit scheduler recovery. It checks the protected output namespace and an
 operator-owned private, bounded plain single-link journal, pins its inode, opens
 an independent descriptor and tries the same lock without waiting. A live writer
 or another recovery owner yields `WouldBlock`. While holding the lock it captures
@@ -69,9 +69,10 @@ This is cooperative exclusion on one host/filesystem. Same-UID processes and
 root remain trusted; advisory locks do not stop a malicious noncooperating writer,
 replacement by an authorized operator or edits to both journal and protocol tag.
 It is not a distributed lease, authorization to resume, reattachment capability,
-proof of remote stop or a completed queued-plan resume implementation. Original
-budgets, explicit plan/input binding and task reconciliation still need to govern
-any later resume API. The CLI exposes inspection/recovery only, not takeover.
+or proof of remote stop. Original
+budgets and explicit plan/input binding govern the limited
+[queued-plan resume API](RESUME.md); task reconciliation remains necessary for
+ambiguous starts. The CLI exposes inspection/recovery only, not takeover.
 
 ## Recover completed worker artifacts offline
 
@@ -121,7 +122,7 @@ agent reconciliation. They cannot load an unbound local checkpoint. Checksums
 prove consistency with the selected journal, not authenticity against an operator
 or root modifying both files, nor a universal power-loss guarantee. Checkpoints
 contain delegated result/source text and must stay private. There is still no
-automatic directory scan, active-stream checkpoint, queued-plan resume or takeover
+automatic directory scan, active-stream checkpoint, automatic queue resume or CLI takeover
 of an interrupted controller.
 
 ## Explicit A2A reconciliation API
@@ -182,10 +183,12 @@ for publication and failure semantics. This preserves completed results when a
 stdout consumer closes, but cannot recover a controller killed before publication.
 Pending temporary output is not treated as a completed report.
 
-This is recovery inspection and explicit task reconciliation, not scheduler resume.
+This page covers inspection and reconciliation. The explicit library
+[queued-plan resume API](RESUME.md) can continue never-started jobs under original
+input/budget bindings; it does not reattach ambiguous or already-started tasks.
 Persistent authenticated agent registration, active-task artifact checkpoints,
-automatic reattachment/resubscription, queued-plan resume, concurrent-controller
-ownership and recovery after machine failure remain unfinished. No cloud/provider
+automatic reattachment/resubscription, mixed active/queued-plan resume, distributed-controller
+ownership and recovery across machine reboot remain unfinished. No cloud/provider
 route or paid-call authorization is introduced.
 
 ## Validation

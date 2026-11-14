@@ -56,6 +56,7 @@ pub struct WorkerSnapshot {
     pub recorded_process_id: Option<u32>,
     pub result_sha256: Option<String>,
     pub checkpoint_sha256: Option<String>,
+    pub resume_binding: Option<crate::resume::WorkerBinding>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
@@ -70,6 +71,7 @@ pub struct Snapshot {
     pub recorded_run_finished: bool,
     /// New writers hold an exclusive kernel lock for the journal's lifetime.
     pub exclusive_ownership_supported: bool,
+    pub resume_binding: Option<crate::resume::RunBinding>,
     pub workers: Vec<WorkerSnapshot>,
 }
 pub struct InspectedRun {
@@ -82,6 +84,7 @@ pub struct InspectedRun {
 pub struct ExclusiveRun {
     inspected: InspectedRun,
     _journal: File,
+    pub(crate) directory: File,
 }
 impl ExclusiveRun {
     pub fn claim(path: &Path) -> io::Result<Self> {
@@ -89,7 +92,7 @@ impl ExclusiveRun {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
-        let _namespace = crate::namespace::protected_directory(parent)?;
+        let directory = crate::namespace::protected_directory(parent)?;
         let handle = open_input(path, MAX_JOURNAL)?;
         let metadata = handle.metadata()?;
         // SAFETY: geteuid only returns the effective user identity.
@@ -112,6 +115,7 @@ impl ExclusiveRun {
         Ok(Self {
             inspected,
             _journal: journal,
+            directory,
         })
     }
     pub fn inspected(&self) -> &InspectedRun {
@@ -150,6 +154,7 @@ impl InspectedRun {
         let mut records = 0;
         let mut finished = false;
         let mut exclusive_ownership_supported = false;
+        let mut resume_binding = None;
         for line in bytes[..end - 1].split(|b| *b == b'\n') {
             if line.len() > MAX_LINE || records >= MAX_RECORDS {
                 return Err(invalid("journal record bound exceeded"));
@@ -190,6 +195,21 @@ impl InspectedRun {
                     Some(Value::String(value)) if value == crate::ownership::PROTOCOL => true,
                     _ => return Err(invalid("unsupported controller ownership protocol")),
                 };
+                resume_binding = match record.details.get("resumeBinding") {
+                    None => None,
+                    Some(value) => {
+                        let binding: crate::resume::RunBinding = serde_json::from_value(value.clone())
+                            .map_err(|_| invalid("invalid recorded run binding"))?;
+                        binding.validate()?;
+                        if transport != Transport::A2a
+                            || !exclusive_ownership_supported
+                            || record.details["parallelism"].as_u64() != Some(binding.parallelism as u64)
+                        {
+                            return Err(invalid("run binding disagrees with the journal"));
+                        }
+                        Some(binding)
+                    }
+                };
                 continue;
             }
             match record.event.as_str() {
@@ -207,6 +227,26 @@ impl InspectedRun {
                         return Err(invalid("invalid queued worker manifest"));
                     }
                     let route = optional_hash(&record.details, "agentUrlSha256")?;
+                    let binding = match record.details.get("resumeBinding") {
+                        None if resume_binding.is_none() => None,
+                        Some(value) if resume_binding.is_some() => {
+                            let binding: crate::resume::WorkerBinding = serde_json::from_value(value.clone())
+                                .map_err(|_| invalid("invalid recorded worker binding"))?;
+                            binding.validate()?;
+                            if route.as_ref() != Some(&binding.endpoint_sha256)
+                                || optional_hash(&record.details, "roleSha256")?.as_ref()
+                                    != Some(&binding.role_sha256)
+                                || optional_hash(&record.details, "taskSha256")?.as_ref()
+                                    != Some(&binding.task_sha256)
+                                || record.details["reservedBytes"].as_u64()
+                                    != Some(binding.response_bytes as u64)
+                            {
+                                return Err(invalid("worker binding disagrees with the journal"));
+                            }
+                            Some(binding)
+                        }
+                        _ => return Err(invalid("incomplete recorded resume bindings")),
+                    };
                     workers.insert(
                         id.into(),
                         WorkerSnapshot {
@@ -220,6 +260,7 @@ impl InspectedRun {
                             recorded_process_id: None,
                             result_sha256: None,
                             checkpoint_sha256: None,
+                            resume_binding: binding,
                         },
                     );
                 }
@@ -341,6 +382,15 @@ impl InspectedRun {
             }
         }
         let unlisted_workers = expected - workers.len();
+        if let Some(binding) = &resume_binding {
+            let reserved = workers.values().try_fold(0usize, |sum, worker| {
+                sum.checked_add(worker.resume_binding.as_ref().unwrap().response_bytes)
+                    .ok_or_else(|| invalid("worker reservation overflow"))
+            })?;
+            if reserved > binding.response_reservation {
+                return Err(invalid("worker reservations exceed recorded run binding"));
+            }
+        }
         Ok(Self {
             snapshot: Snapshot {
                 version: 1,
@@ -353,6 +403,7 @@ impl InspectedRun {
                 truncated_tail,
                 recorded_run_finished: finished,
                 exclusive_ownership_supported,
+                resume_binding,
                 workers: workers.into_values().collect(),
             },
         })
