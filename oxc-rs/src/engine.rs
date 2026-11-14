@@ -476,6 +476,75 @@ impl Manager {
                 ))
             })
     }
+    pub async fn clear_cache(self: &Arc<Self>, control: Value) -> Result<Value, (u16, Value)> {
+        let manager = self.clone();
+        tokio::spawn(async move { manager.clear_cache_inner(control).await })
+            .await
+            .unwrap_or_else(|_| Err((503, json!({"error":"Saved state could not be cleared."}))))
+    }
+    async fn clear_cache_inner(&self, control: Value) -> Result<Value, (u16, Value)> {
+        let scope = control["scope"].as_str().unwrap_or("all");
+        let state = self.state.lock().await;
+        if self.busy() {
+            return Err((
+                409,
+                json!({"error":"A request is running. Try again when it finishes."}),
+            ));
+        }
+        let failure = || (503, json!({"error":"Saved state could not be cleared."}));
+        let config = paths::read_config().ok_or_else(failure)?;
+        if scope == "all" {
+            let profile = models::resolve(&config, None).map_err(|_| failure())?;
+            if profile["backend_kind"] == "bigmoe-cpu-stream" {
+                return Err((
+                    409,
+                    json!({"error":"Unload Flash to clear its resident cache."}),
+                ));
+            }
+            if profile["prefix_cache"]["enabled"] == true {
+                return Err((
+                    503,
+                    json!({"error":"Prefix cache could not be cleared. Try again in a moment."}),
+                ));
+            }
+            self.harness
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cleared();
+        }
+        let hint = if scope == "hint" {
+            let hint = self
+                .ledger
+                .session_hint(control["hint"].as_str().unwrap_or(""))
+                .ok_or_else(failure)?;
+            Some(format!("{:x}", Sha256::digest(hint.as_bytes()))[..32].to_owned())
+        } else {
+            None
+        };
+        let lease = if state.running.is_none() {
+            let path = std::env::var_os("LOCAL_AI_LEASE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/inference.lock")
+                });
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|_| failure())?;
+            }
+            let file=OpenOptions::new().append(true).create(true).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC).open(&path)
+                .map_err(|error|if error.raw_os_error()==Some(libc::ELOOP){(409,json!({"error":format!("The inference lease {} is a symbolic link; refusing to use it. Remove the link and retry.",path.display())}))}else{failure()})?;
+            file.try_lock().map_err(|_|(409,json!({"error":"Another image, chat or setup job is running. Try again when it finishes."})))?;
+            Some(file)
+        } else {
+            None
+        };
+        tokio::task::spawn_blocking(move ||{
+            let _lease=lease;
+            let scope=control["scope"].as_str().unwrap_or("all");
+            let mut freed=crate::state_cache::clear(&config,scope,control["model"].as_str(),control["session"].as_str(),hint.as_deref())?;
+            if scope=="all"{freed+=crate::storage::clear_legacy_prefix(&config)?;}
+            Ok::<_,std::io::Error>(json!({"cleared":true,"state_cache":{"scope":scope,"freed_bytes":freed,"applied_by":"controller"}}))
+        }).await.map_err(|_|failure())?.map_err(|_|failure())
+    }
     pub async fn set_mode(
         self: &Arc<Self>,
         alias: Value,

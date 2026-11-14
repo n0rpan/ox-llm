@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{self, Read},
+    io::{self, Read, Write},
     os::{
         fd::AsRawFd,
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -174,6 +174,7 @@ struct Session {
     hint: Option<String>,
     pin: bool,
     tokens: u64,
+    owners: Vec<String>,
 }
 struct Model {
     files: BTreeMap<String, Entry>,
@@ -210,7 +211,7 @@ fn walk(dir: &File, prefix: &str, depth: u8, out: &mut BTreeMap<String, Entry>) 
     }
     Ok(())
 }
-fn manifest(dir: &File, name: &str) -> Option<Session> {
+fn read_manifest(dir: &File, name: &str) -> Option<Value> {
     let sessions = open_dir(Path::new("sessions"), Some(dir)).ok()?;
     let fd = openat(
         &sessions,
@@ -226,8 +227,15 @@ fn manifest(dir: &File, name: &str) -> Option<Session> {
     }
     let mut raw = Vec::new();
     file.take((8 << 20) + 1).read_to_end(&mut raw).ok()?;
-    let value: Value = serde_json::from_slice(&raw).ok()?;
-    if value["version"] != 1 && value["version"] != true {
+    serde_json::from_slice(&raw).ok()
+}
+fn manifest(dir: &File, name: &str) -> Option<Session> {
+    let value = read_manifest(dir, name)?;
+    parse_manifest(&value)
+}
+fn parse_manifest(value: &Value) -> Option<Session> {
+    // Match Python's numeric equality for the persisted version field.
+    if value["version"].as_f64() != Some(1.0) && value["version"] != true {
         return None;
     }
     let blocks = value["blocks"].as_array()?;
@@ -255,15 +263,33 @@ fn manifest(dir: &File, name: &str) -> Option<Session> {
         }
     }
     let atime = value["atime"].as_f64().filter(|v| v.is_finite())?;
+    let hint = value["hint"]
+        .as_str()
+        .filter(|s| hex(s, 32))
+        .map(str::to_owned);
+    let mut owners = Vec::new();
+    let mut seen = BTreeSet::new();
+    for owner in value["owners"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|s| hex(s, 32) || *s == "-")
+    {
+        if seen.insert(owner) {
+            owners.push(owner.to_owned());
+        }
+    }
+    if owners.is_empty() {
+        owners.push(hint.clone().unwrap_or_else(|| "-".into()));
+    }
     Some(Session {
         atime,
         refs,
-        hint: value["hint"]
-            .as_str()
-            .filter(|s| hex(s, 32))
-            .map(str::to_owned),
+        hint,
         pin: value["pin"] == true,
         tokens: value["n_tokens"].as_u64().unwrap_or(0),
+        owners,
     })
 }
 fn scan(path: &Path) -> io::Result<BTreeMap<String, Model>> {
@@ -473,6 +499,7 @@ fn apply(
     models: &mut BTreeMap<String, Model>,
     victims: Vec<(String, String)>,
     now: f64,
+    everything: &BTreeSet<String>,
 ) -> io::Result<u64> {
     let root = match open_dir(path, None) {
         Ok(root) => root,
@@ -483,12 +510,24 @@ fn apply(
     for (key, id) in victims {
         by_model.entry(key).or_default().push(id);
     }
+    for key in everything {
+        by_model.entry(key.clone()).or_default();
+    }
     let mut freed = 0;
     for (key, ids) in by_model {
         let Ok(dir) = open_dir(Path::new(&key), Some(&root)) else {
             continue;
         };
         let model = models.get_mut(&key).expect("planned model");
+        if everything.contains(&key) {
+            for rel in model.files.keys() {
+                freed += unlink(&dir, rel);
+            }
+            prune_dirs(&dir);
+            let _ =
+                nix::unistd::unlinkat(&root, key.as_str(), nix::unistd::UnlinkatFlags::RemoveDir);
+            continue;
+        }
         let mut released = BTreeSet::new();
         let mut hints = BTreeSet::new();
         for id in ids {
@@ -534,7 +573,7 @@ pub fn gc(config: &Value) -> io::Result<u64> {
         .as_secs_f64();
     let mut models = scan(&path)?;
     let victims = plan(&models, settings.budget, settings.ttl, now);
-    let mut freed = apply(&path, &mut models, victims, now)?;
+    let mut freed = apply(&path, &mut models, victims, now, &BTreeSet::new())?;
     // Re-scan after session removal: only orphan echo files older than the TTL
     // can be swept, and an opaque manifest protects its entire model.
     let models = scan(&path)?;
@@ -566,4 +605,194 @@ pub fn gc(config: &Value) -> io::Result<u64> {
         }
     }
     Ok(freed)
+}
+
+fn prune_dirs(model: &File) {
+    use nix::unistd::{unlinkat, UnlinkatFlags};
+    if let Ok(blocks) = open_dir(Path::new("blocks"), Some(model)) {
+        if let Ok(entries) = fs::read_dir(descriptor_path(&blocks)) {
+            for entry in entries.filter_map(Result::ok) {
+                if let Some(name) = entry.file_name().to_str().filter(|s| hex(s, 2)) {
+                    let _ = unlinkat(&blocks, name, UnlinkatFlags::RemoveDir);
+                }
+            }
+        }
+    }
+    for name in ["snaps", "sessions", "echo", "blocks"] {
+        let _ = unlinkat(model, name, UnlinkatFlags::RemoveDir);
+    }
+}
+fn release_owner(path: &Path, key: &str, id: &str, hint: &str) -> io::Result<()> {
+    let root = open_dir(path, None)?;
+    let model = open_dir(Path::new(key), Some(&root))?;
+    let name = format!("{id}.json");
+    let Some(mut value) = read_manifest(&model, &name).filter(Value::is_object) else {
+        return Ok(());
+    };
+    let Some(parsed) = parse_manifest(&value) else {
+        return Ok(());
+    };
+    let rest = parsed
+        .owners
+        .into_iter()
+        .filter(|o| o != hint)
+        .collect::<Vec<_>>();
+    if rest.is_empty() {
+        return Ok(());
+    }
+    value["owners"] = json!(rest);
+    if value["hint"].is_null() || value["hint"] == hint {
+        value["hint"] = json!(rest.iter().find(|s| *s != "-"));
+    }
+    let sessions = open_dir(Path::new("sessions"), Some(&model))?;
+    let mut random = [0; 4];
+    getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
+    let suffix = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let temporary = format!("{id}.json.{suffix}.pending");
+    let file = openat(
+        &sessions,
+        temporary.as_str(),
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::from_bits_truncate(0o600),
+    )
+    .map_err(io::Error::from)?;
+    let mut file = File::from(file);
+    file.write_all(paths::compact_ascii_json(&value).as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(
+        descriptor_path(&sessions).join(&temporary),
+        descriptor_path(&sessions).join(name),
+    )?;
+    let _ = sessions.sync_all();
+    Ok(())
+}
+pub fn clear(
+    config: &Value,
+    scope: &str,
+    model: Option<&str>,
+    session: Option<&str>,
+    hint: Option<&str>,
+) -> io::Result<u64> {
+    let path = root(config)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs_f64();
+    let mut models = scan(&path)?;
+    let everything = match scope {
+        "all" => models.keys().cloned().collect(),
+        "model" => model
+            .filter(|k| models.contains_key(*k))
+            .map(str::to_owned)
+            .into_iter()
+            .collect(),
+        _ => BTreeSet::new(),
+    };
+    if matches!(scope, "all" | "model") {
+        return apply(&path, &mut models, Vec::new(), now, &everything);
+    }
+    if scope == "hint" {
+        let hint = hint.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "state_cache_hint_required")
+        })?;
+        let owned = models
+            .iter()
+            .filter(|(key, _)| model.is_none_or(|m| m == key.as_str()))
+            .flat_map(|(key, m)| {
+                m.sessions
+                    .iter()
+                    .filter(|(_, s)| {
+                        s.owners.iter().any(|o| o == hint) || s.hint.as_deref() == Some(hint)
+                    })
+                    .map(move |(id, s)| {
+                        (key.clone(), id.clone(), s.owners.iter().any(|o| o != hint))
+                    })
+            })
+            .collect::<Vec<_>>();
+        for (key, id, shared) in &owned {
+            if *shared {
+                release_owner(&path, key, id, hint)?;
+            }
+        }
+        let victims = owned
+            .iter()
+            .filter(|(_, _, shared)| !*shared)
+            .map(|(key, id, _)| (key.clone(), id.clone()))
+            .collect();
+        let mut freed = apply(&path, &mut models, victims, now, &BTreeSet::new())?;
+        let after = scan(&path)?;
+        for key in owned
+            .into_iter()
+            .map(|(key, _, _)| key)
+            .collect::<BTreeSet<_>>()
+        {
+            let Some(model) = after.get(&key).filter(|m| {
+                !m.opaque && !m.sessions.values().any(|s| s.hint.as_deref() == Some(hint))
+            }) else {
+                continue;
+            };
+            let _ = model;
+            if let Ok(root) = open_dir(&path, None) {
+                if let Ok(dir) = open_dir(Path::new(&key), Some(&root)) {
+                    freed += unlink(&dir, &format!("echo/{hint}.jsonl"));
+                }
+            }
+        }
+        return Ok(freed);
+    }
+    let victims = models
+        .iter()
+        .filter(|(key, m)| {
+            model.is_none_or(|v| v == key.as_str())
+                && session.is_some_and(|s| m.sessions.contains_key(s))
+        })
+        .map(|(key, _)| (key.clone(), session.expect("session").into()))
+        .collect();
+    apply(&path, &mut models, victims, now, &BTreeSet::new())
+}
+pub fn valid_control(control: &Value) -> bool {
+    let Some(object) = control.as_object() else {
+        return false;
+    };
+    if object
+        .keys()
+        .any(|k| !["scope", "model", "session", "hint"].contains(&k.as_str()))
+    {
+        return false;
+    }
+    let scope =
+        control
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or(if object.contains_key("scope") {
+                ""
+            } else {
+                "all"
+            });
+    if !["all", "model", "session", "hint"].contains(&scope) {
+        return false;
+    }
+    if !control["model"].is_null() && !control["model"].as_str().is_some_and(|s| hex(s, 16)) {
+        return false;
+    }
+    if scope == "model" && control["model"].is_null() {
+        return false;
+    }
+    if scope == "session" && !control["session"].as_str().is_some_and(sid) {
+        return false;
+    }
+    if (scope == "hint") != !control["hint"].is_null() {
+        return false;
+    }
+    scope != "hint"
+        || control["hint"].as_str().is_some_and(|s| {
+            !s.is_empty()
+                && s.len() <= 128
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        })
 }

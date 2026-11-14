@@ -423,6 +423,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         "/_local/harness/label",
         "/_local/harness/prepare",
         "/_local/cache/budget",
+        "/_local/cache/clear",
         "/_local/mode",
     ]
     .contains(&path.as_str())
@@ -449,6 +450,15 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             },
             Err(_) => return context.error(400, "Invalid control request.", "", "", None),
         };
+        if path == "/_local/cache/clear" {
+            if !crate::state_cache::valid_control(&control) {
+                return context.reply(400,json!({"error":"Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."}));
+            }
+            return match app.engine.clear_cache(control).await {
+                Ok(value) => context.reply(200, value),
+                Err((code, value)) => context.reply(code, value),
+            };
+        }
         if path == "/_local/mode" {
             if !control
                 .as_object()

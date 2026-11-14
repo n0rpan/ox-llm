@@ -332,6 +332,11 @@ pub struct Entry {
     previous: Option<Value>,
 }
 impl Ledger {
+    pub fn session_hint(&self, hint: &str) -> Option<String> {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let salt = salt(&mut state)?;
+        Some(hex(&mac(&salt, format!("h:{hint}").as_bytes()))[..16].into())
+    }
     pub fn entry(
         self: &Arc<Self>,
         path: &str,

@@ -91,6 +91,61 @@ fn prefixes(path: &Path, rust: bool) -> BTreeMap<Pair, Vec<PathBuf>> {
     }
     groups
 }
+pub fn clear_legacy_prefix(config: &Value) -> std::io::Result<u64> {
+    let state = crate::state_cache::root(config)?;
+    let mut directories = HashSet::from([state.parent().expect("state directory").join("prefix")]);
+    let override_root = std::env::var_os("LOCAL_AI_STATE_CACHE_ROOT")
+        .is_some_and(|s| !s.is_empty())
+        || !config["cache"]["root"].is_null();
+    if !override_root {
+        for profile in config["profiles"]
+            .as_object()
+            .into_iter()
+            .flat_map(|p| p.values())
+            .chain(std::iter::once(config))
+        {
+            if profile["backend_kind"] != "oxe" || profile["oxe_flash"].is_object() {
+                continue;
+            }
+            let args = profile["oxe_args"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let mut directory = None;
+            for (index, arg) in args.iter().enumerate() {
+                if arg == "--prefix-cache" {
+                    directory = args.get(index + 1).and_then(Value::as_str);
+                } else if let Some(value) =
+                    arg.as_str().and_then(|s| s.strip_prefix("--prefix-cache="))
+                {
+                    directory = Some(value);
+                }
+            }
+            if let Some(directory) = directory.filter(|s| !s.is_empty()) {
+                if directory == "default" {
+                    directories
+                        .insert(paths::home().join(".cache/local-ai/snapdragon-engine/prefix"));
+                } else if Path::new(directory).is_absolute() {
+                    directories.insert(PathBuf::from(directory));
+                }
+            }
+        }
+    }
+    let mut freed = 0;
+    for directory in directories {
+        for path in prefixes(&directory, true).into_values().flatten() {
+            if let Ok(info) = fs::symlink_metadata(&path) {
+                if info.is_file()
+                    && info.uid() == Uid::current().as_raw()
+                    && fs::remove_file(&path).is_ok()
+                {
+                    freed += info.len();
+                }
+            }
+        }
+    }
+    Ok(freed)
+}
 #[derive(Default)]
 struct References {
     models: BTreeMap<String, String>,

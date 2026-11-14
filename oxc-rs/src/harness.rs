@@ -457,6 +457,12 @@ impl Registry {
             }
         }
     }
+    pub fn cleared(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry["warm_identity"] = Value::Null;
+        }
+        self.save();
+    }
     pub fn record_compat(&mut self, notes: &[&str]) {
         for note in notes {
             let count = self.compat.get(*note).and_then(Value::as_u64).unwrap_or(0) + 1;

@@ -1,0 +1,1095 @@
+{
+  "all": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 520,
+          "scope": "all"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 0
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 0
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/echo"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "busy": [
+    {
+      "body": {
+        "error": "A request is running. Try again when it finishes."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 269
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 269
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/32945703e0f21e3b6fbc997171959d8b.jsonl": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/first.json": {
+          "bytes": 219,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": "32945703e0f21e3b6fbc997171959d8b",
+            "n_tokens": 256,
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "empty": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 2,
+          "scope": "all"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {},
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 0
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [],
+      "files": {}
+    }
+  ],
+  "harness-warm": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 1,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 1,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 269,
+          "scope": "all"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 0
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 0
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/echo"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 1,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 1,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": false
+              }
+            ],
+            "warm": 0
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "hint-anonymous": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 15,
+          "scope": "hint"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 252
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 252
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/901dfbd67c6215929544dd8a80e404a0.jsonl": {
+          "bytes": 27,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/first.json": {
+          "bytes": 190,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": null,
+            "n_tokens": 256,
+            "owners": [
+              "-"
+            ],
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "hint-only-owner": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 249,
+          "scope": "hint"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 20
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 20
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "hint-shared-owners": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 15,
+          "scope": "hint"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 313
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 313
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/901dfbd67c6215929544dd8a80e404a0.jsonl": {
+          "bytes": 27,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/first.json": {
+          "bytes": 251,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": "901dfbd67c6215929544dd8a80e404a0",
+            "n_tokens": 256,
+            "owners": [
+              "901dfbd67c6215929544dd8a80e404a0"
+            ],
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 269
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 269
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/32945703e0f21e3b6fbc997171959d8b.jsonl": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/first.json": {
+          "bytes": 219,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": "32945703e0f21e3b6fbc997171959d8b",
+            "n_tokens": 256,
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "lease-busy": [
+    {
+      "body": {
+        "error": "Another image, chat or setup job is running. Try again when it finishes."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 269
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 269
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/32945703e0f21e3b6fbc997171959d8b.jsonl": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/first.json": {
+          "bytes": 219,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": "32945703e0f21e3b6fbc997171959d8b",
+            "n_tokens": 256,
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "legacy-prefix": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 452,
+          "scope": "all"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 0
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 0
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/echo"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    },
+    {
+      "legacy_files": {
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.bin": 24,
+        "synthetic-unknown.bin": 14
+      }
+    }
+  ],
+  "manifest-float-version": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 251,
+          "scope": "session"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 20
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 20
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "model": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 269,
+          "scope": "model"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 0,
+          "eeeeeeeeeeeeeeee": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/echo",
+        "eeeeeeeeeeeeeeee",
+        "eeeeeeeeeeeeeeee/blocks",
+        "eeeeeeeeeeeeeeee/blocks/bb",
+        "eeeeeeeeeeeeeeee/echo",
+        "eeeeeeeeeeeeeeee/sessions"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        },
+        "eeeeeeeeeeeeeeee/blocks/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "eeeeeeeeeeeeeeee/echo/901dfbd67c6215929544dd8a80e404a0.jsonl": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "eeeeeeeeeeeeeeee/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "eeeeeeeeeeeeeeee/sessions/second.json": {
+          "bytes": 219,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": "901dfbd67c6215929544dd8a80e404a0",
+            "n_tokens": 256,
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "opaque": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 219,
+          "scope": "session"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 63
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 63
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/32945703e0f21e3b6fbc997171959d8b.jsonl": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/opaque.json": {
+          "bytes": 13,
+          "manifest": {
+            "version": 2
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ],
+  "session-shared": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 234,
+          "scope": "session"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 269
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 269
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/901dfbd67c6215929544dd8a80e404a0.jsonl": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/second.json": {
+          "bytes": 219,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": "901dfbd67c6215929544dd8a80e404a0",
+            "n_tokens": 256,
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    }
+  ]
+}
