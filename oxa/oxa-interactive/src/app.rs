@@ -1485,7 +1485,13 @@ fn execute(
             s.set_mode(m, sink);
             (Ok(()), false)
         }
-        SessionCmd::SetName(n) => (s.set_name(&n, sink), false),
+        SessionCmd::SetName(n) => {
+            let set = s.set_name(&n, sink);
+            if set.is_ok() && !n.trim().is_empty() {
+                sink.emit(&notice_event(&format!("Session name set to: {n}")));
+            }
+            (set, false)
+        }
         SessionCmd::Export { path } => {
             export_html_file(s, &path, sink);
             (Ok(()), false)
