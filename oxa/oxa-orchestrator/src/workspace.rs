@@ -20,6 +20,8 @@ const MAX_FILES: usize = 32;
 const MAX_FILE: usize = 256 * 1024;
 const MAX_TOTAL: usize = 1024 * 1024;
 const MAX_REVIEW: usize = 128 * 1024;
+const MAX_DEPTH: usize = 16;
+const MAX_ENTRIES: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
@@ -46,6 +48,28 @@ impl<'de> Deserialize<'de> for RelativePath {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         Self::new(String::deserialize(de)?).map_err(serde::de::Error::custom)
     }
+}
+
+// Count the virtual materialized tree, not the source root's unrelated entries.
+// These are the same nesting/entry bounds used when collecting worker output.
+fn validate_structure<'a>(paths: impl Iterator<Item = &'a RelativePath>) -> io::Result<()> {
+    let mut entries = BTreeSet::new();
+    for path in paths {
+        let value = path.as_str();
+        let mut depth = 0;
+        for (index, _) in value.match_indices('/') {
+            depth += 1;
+            if depth > MAX_DEPTH {
+                return Err(limit("workspace nesting limit exceeded"));
+            }
+            entries.insert(value[..index].to_owned());
+        }
+        entries.insert(value.to_owned());
+        if entries.len() > MAX_ENTRIES {
+            return Err(limit("workspace entry limit exceeded"));
+        }
+    }
+    Ok(())
 }
 
 fn protected(part: &str) -> bool {
@@ -91,6 +115,7 @@ impl Snapshot {
         if paths.is_empty() || paths.len() > MAX_FILES {
             return Err(denied("workspace needs 1..32 approved files"));
         }
+        validate_structure(paths.iter())?;
         let root = root.canonicalize()?;
         let directory = open_directory(&root)?;
         let mut files = BTreeMap::new();
@@ -157,6 +182,7 @@ impl Grant {
                 return Err(denied("workspace file/parent path collision"));
             }
         }
+        validate_structure(snapshot.paths().chain(new_files.iter()))?;
         Ok(Self {
             snapshot,
             editing: true,
@@ -448,13 +474,13 @@ fn scan(
     count: &mut usize,
     depth: usize,
 ) -> io::Result<()> {
-    if depth > 16 {
+    if depth > MAX_DEPTH {
         return Err(limit("workspace nesting limit exceeded"));
     }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         *count += 1;
-        if *count > 128 {
+        if *count > MAX_ENTRIES {
             return Err(limit("workspace entry limit exceeded"));
         }
         let ty = entry.file_type()?;
@@ -672,6 +698,61 @@ mod tests {
         fs::write(work.path().join("input.txt"), "x".repeat(MAX_REVIEW)).unwrap();
         assert_eq!(
             work.collect("writer").unwrap_err().kind(),
+            io::ErrorKind::FileTooLarge
+        );
+    }
+    #[test]
+    fn approved_layout_matches_collection_depth_and_entry_boundaries() {
+        let env = TestEnv::new();
+        let directory = (0..MAX_DEPTH)
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        fs::create_dir_all(env.root().join(&directory)).unwrap();
+        let valid = format!("{directory}/file.txt");
+        fs::write(env.root().join(&valid), "approved").unwrap();
+        let snapshot = Arc::new(Snapshot::approve(env.root(), vec![path(&valid)]).unwrap());
+        let copy = Arc::new(Grant::read_only(snapshot.clone()))
+            .materialize(&env.root().join("depth-copy"))
+            .unwrap();
+        assert!(copy.collect("reader").unwrap().changes.is_empty());
+        let invalid = format!("{directory}/extra/file.txt");
+        fs::create_dir_all(env.root().join(&directory).join("extra")).unwrap();
+        fs::write(env.root().join(&invalid), "approved").unwrap();
+        assert_eq!(
+            Snapshot::approve(env.root(), vec![path(&invalid)])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::FileTooLarge
+        );
+        assert_eq!(
+            Grant::editing(snapshot, vec![path(&invalid)]).unwrap_err().kind(),
+            io::ErrorKind::FileTooLarge
+        );
+        let mut paths = Vec::new();
+        for i in 0..32 {
+            let name = format!("e{i}/p/q/file.txt");
+            fs::create_dir_all(env.root().join(format!("e{i}/p/q"))).unwrap();
+            fs::write(env.root().join(&name), "approved").unwrap();
+            paths.push(path(&name));
+        }
+        let snapshot = Arc::new(Snapshot::approve(env.root(), paths.clone()).unwrap());
+        let copy = Arc::new(Grant::read_only(snapshot))
+            .materialize(&env.root().join("entry-copy"))
+            .unwrap();
+        assert!(copy.collect("reader").unwrap().changes.is_empty());
+        fs::create_dir_all(env.root().join("e0/p/q/extra")).unwrap();
+        fs::write(env.root().join("e0/p/q/extra/file.txt"), "approved").unwrap();
+        paths[0] = path("e0/p/q/extra/file.txt");
+        let baseline = Arc::new(Snapshot::approve(env.root(), paths[1..].to_vec()).unwrap());
+        assert_eq!(
+            Grant::editing(baseline, vec![paths[0].clone()])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::FileTooLarge
+        );
+        assert_eq!(
+            Snapshot::approve(env.root(), paths).unwrap_err().kind(),
             io::ErrorKind::FileTooLarge
         );
     }

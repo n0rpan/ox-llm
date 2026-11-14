@@ -60,7 +60,9 @@ apply operation, shell execution, automatic approval or merge in this module.
 Revalidate again at any future apply boundary: a prior check does not lock files.
 
 Bounds: 32 total eligible files, 256 KiB per file, 1 MiB snapshot/collected text,
-128 KiB serialized review, 128 output entries, 16 nested directory levels. Oversize
+128 KiB serialized review, 128 total entries including parent directories, and
+16 nested directory levels. Selected input layout and the complete eligible
+new-file layout are validated against those same collection bounds before launch. Oversize
 reviews yield an output-budget outcome; invalid filesystem output yields a policy
 violation. A review cannot silently turn either outcome into success. These bounds
 are separate from accepted RPC-wire output limits and reported-token limits.

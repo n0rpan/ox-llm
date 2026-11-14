@@ -32,6 +32,7 @@ test A2A scheduler steering, cancellation and wire caps ... ok
 test orchestrate CLI success and inert validation ... ok
 test orchestrate CLI signal cleanup ... ok
 test orchestrate CLI approved files ... ok
+test orchestrate CLI structural input limits ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -71,3 +72,8 @@ The workspace scenarios read and write an explicitly approved private copy with
 real oxa tools, verify its review bundle locally and through A2A fan-in, check
 that source contents stay unchanged, and reject read-only writes and editing
 grants under plan mode. See [WORKSPACES.md](WORKSPACES.md) for API boundaries.
+
+Structural input validation uses the same bounds as output collection. Unit tests
+materialize and collect unchanged snapshots at 16 directory levels and 128 total
+entries. The CLI rejects 17-level and 129-entry input layouts before creating run
+state or probing inference; eligible new-file scope is checked too.
