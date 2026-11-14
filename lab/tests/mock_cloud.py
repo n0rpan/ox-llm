@@ -74,10 +74,13 @@ class _Base:
 class MockOpenRouter(_Base):
     """An OpenAI-compatible upstream that records every request and its headers."""
 
-    def __init__(self, status=200, error=None, reply='Cloud reply.', usage=None):
+    def __init__(self, status=200, error=None, reply='Cloud reply.', usage=None,
+                 response=None, stream_frames=None):
         super().__init__()
         self.status, self.error, self.reply = status, error, reply
         self.usage = usage or {'prompt_tokens': 11, 'completion_tokens': 4, 'total_tokens': 15}
+        self.response = response
+        self.stream_frames = stream_frames
         self.start()
 
     def handle(self, handler, method):
@@ -96,6 +99,12 @@ class MockOpenRouter(_Base):
             return self._json(handler, self.status, error)
         model = body.get('model') if isinstance(body, dict) else None
         if isinstance(body, dict) and body.get('stream') is True:
+            if self.stream_frames is not None:
+                frames = list(self.stream_frames)
+                if isinstance(body.get('stream_options'), dict) and body['stream_options'].get('include_usage'):
+                    frames.append({'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk', 'model': model,
+                                   'choices': [], 'usage': self.usage})
+                return self._sse(handler, frames + ['[DONE]'])
             frames = [
                 {'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk', 'model': model,
                  'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]},
@@ -108,6 +117,8 @@ class MockOpenRouter(_Base):
                 frames.append({'id': 'chatcmpl-mock', 'object': 'chat.completion.chunk', 'model': model,
                                'choices': [], 'usage': self.usage})
             return self._sse(handler, frames + ['[DONE]'])
+        if self.response is not None:
+            return self._json(handler, 200, {**self.response, 'model': model} if 'model' not in self.response else self.response)
         self._json(handler, 200, {
             'id': 'chatcmpl-mock', 'object': 'chat.completion', 'created': 1, 'model': model,
             'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': self.reply}, 'finish_reason': 'stop'}],

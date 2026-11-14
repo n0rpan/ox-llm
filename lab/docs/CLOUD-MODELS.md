@@ -79,3 +79,20 @@ echoes the key is redacted before it reaches the client.
 forced privacy prefs, the key boundary, cloud-off-by-default, the offline refusal, the budget
 cap, streamed usage metering and ledger rows. No test reads a real key or calls a real cloud
 API.
+
+## OpenAI v1 normalisation
+
+The controller applies oxc's existing OpenAI v1 rules to a remote reply as well as a local
+one:
+
+- `reasoning_effort` is the standard switch: `none`/`minimal` = off, `low`/`medium`/`high` =
+  on, `xhigh` = `high`; a non-string is a 400 with `param: "reasoning_effort"`. The local
+  `chat_template_kwargs.enable_thinking` switch maps the same way when no effort is sent.
+  Local-only fields (`chat_template_kwargs`, `cache_prompt`, slot/sampling controls) never
+  reach a remote upstream.
+- A stream asks for the final usage chunk (`stream_options.include_usage`), and tool calls
+  keep the OpenAI streaming shape: same `index`, id and name, arguments always a JSON string.
+- A provider `reasoning` field is exposed as `reasoning_content`. `usage` always carries
+  `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`;
+  provider values win, missing values are completed.
+- The reply's `model` is the catalog id the client asked for, not the upstream id.
