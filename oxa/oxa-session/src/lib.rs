@@ -18,6 +18,7 @@
 //!   first line = the session header.
 
 mod durable;
+mod lock;
 mod meta;
 mod migrate;
 mod ops;
@@ -25,6 +26,7 @@ mod store;
 mod transcript;
 mod tree;
 
+pub use lock::{lock_path_of, SessionLock, LOCKED};
 pub use meta::{meta_of, search_sessions, sort_sessions, SessionSort};
 pub use migrate::{import_pi, import_session, migrate_lines};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
@@ -96,6 +98,12 @@ pub trait SessionStore: Send + Sync {
     /// the end of each turn, not per entry: a power loss costs at most the turn in progress.
     /// The default (in-memory stores) has nothing to sync.
     fn sync(&self, _s: &SessionRef) -> Result<(), OxaError> {
+        Ok(())
+    }
+    /// Become the one writer of `s`: refuse (code `LOCKED`) when another process has it open.
+    /// The lock is held until another session is acquired or the store is dropped. In-memory
+    /// stores have nothing to lock.
+    fn acquire(&self, _s: &SessionRef) -> Result<(), OxaError> {
         Ok(())
     }
     /// [`SessionStore::delete`], telling how the file went (pi's picker says "Session moved

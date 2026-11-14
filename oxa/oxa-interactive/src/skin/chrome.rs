@@ -142,6 +142,7 @@ struct HudParts {
     /// Context: percent, fraction and `used/n_ctx`; `None` when the window is unknown.
     ctx: Option<(u64, f64, String)>,
     repairs: u32,
+    degraded: bool,
     model: String,
     level: Option<&'static str>,
     note: Option<String>,
@@ -182,6 +183,7 @@ impl HudParts {
             cache,
             ctx,
             repairs: st.tool_repairs,
+            degraded: st.degraded_context,
             model: if model.is_empty() {
                 "no-model".to_string()
             } else {
@@ -280,6 +282,11 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     // 7: repairs, only when there are some.
     if p.repairs > 0 && shown(5) {
         segs.push(theme.fg("warning", &format!("repairs {}", p.repairs)));
+    }
+
+    // 7b: the last compaction had no model summary.
+    if p.degraded && shown(5) {
+        segs.push(theme.fg("warning", "no summary"));
     }
 
     // 8: permission mode.

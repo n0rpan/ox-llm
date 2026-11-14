@@ -19,11 +19,13 @@
 
 mod chat;
 mod hints;
+mod handshake;
 mod http;
 mod info;
 mod sse;
 
 pub use chat::{build_body, HttpEngine, ReplyAssembler};
+pub use handshake::{handshake_warning, NEEDED_CAPABILITIES, PROTOCOL_UNDERSTOOD};
 pub use hints::{build_headers, new_idem_key};
 pub use http::{http_request, HttpRequest, HttpResponse, Url};
 pub use info::{count_tokens, fetch_info, fetch_info_for, parse_info, parse_info_for, DEFAULT_MAX_OUTPUT};

@@ -158,7 +158,7 @@ Skills (`/skill:name`), prompt templates and extension commands are also typed w
 The footer has two lines:
 
 - Line 1: the working directory, the git branch in parentheses, and the session name after a bullet.
-- Line 2, left: `↑` input tokens and `↓` output tokens for the session, `cache cached/prompt` for the last request, `prefill done/total` while the engine is prefilling, queue position, the context use as a percentage of the context window (`(auto)` when automatic compaction is on), and tokens per second. A `repairs N` item appears after malformed tool calls were repaired ([tools.md](tools.md#repair-turn)). Above 70 % and 90 % the context figure turns yellow and red.
+- Line 2, left: `↑` input tokens and `↓` output tokens for the session, `cache cached/prompt` for the last request, `prefill done/total` while the engine is prefilling, queue position, the context use as a percentage of the context window (`(auto)` when automatic compaction is on), and tokens per second. A `no summary` item appears while the last compaction had no model summary (under `local` oxa then also prints a notice with the number of assistant and tool turns dropped from memory). A `repairs N` item appears after malformed tool calls were repaired ([tools.md](tools.md#repair-turn)). Above 70 % and 90 % the context figure turns yellow and red.
 - Line 2, right: the model and the thinking level.
 
 The permission mode is shown on the footer as well. A notice reports each cache miss when `showCacheMissNotices` is on ([compaction.md](compaction.md#cache-misses)).

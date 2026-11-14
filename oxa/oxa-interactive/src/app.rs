@@ -892,6 +892,7 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             result, will_retry, ..
         } => {
             if let Some(r) = result {
+                vm.status.degraded_context = r.details["mechanical"] == serde_json::json!(true);
                 vm.blocks.push(Block::Compaction {
                     summary: r.summary.clone(),
                     tokens_before: r.tokens_before,
@@ -1323,6 +1324,7 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         auto_compact: state.auto_compaction,
         unknown_misses: prev.unknown_misses,
         tool_repairs: stats.tool_repairs,
+        degraded_context: prev.degraded_context,
         yolo: prev.yolo,
         yolo_approved: prev.yolo_approved,
     }

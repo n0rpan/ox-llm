@@ -1151,6 +1151,7 @@ fn start_new(
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
     let sref = st.store.create(&st.cwd, session_id, None)?;
+    st.store.acquire(&sref)?;
     st.sref = sref;
     st.tree = Tree::new(Vec::new());
     st.transcript = Transcript::default();
@@ -1186,6 +1187,9 @@ fn restore(
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
     let header = st.store.header(&sref)?;
+    // One writer per session file: a session open in another oxa is refused before anything
+    // of this one is read.
+    st.store.acquire(&sref)?;
     if !header.cwd.is_dir() {
         return Err(OxaError::new(
             codes::NOT_FOUND,

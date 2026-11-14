@@ -5,6 +5,9 @@
 ### Added
 
 - First public release of oxa: a Rust reimplementation of the pi 1.5.2 coding agent for the oxe engine.
+- Session files have one writer: a second oxa opening a session that is open elsewhere stops with a clear message and `--fork` as the way out. Stale locks cannot occur (the lock dies with its process).
+- A compaction without a model summary (`local` profile) now says how many assistant/tool turns it dropped and shows `no summary` in the footer.
+- One warning line at start when the server advertises a newer protocol than oxa understands, or lacks a capability oxa expects (read from the existing status/props calls; no new request).
 
 ### Engine-facing behaviour (for anyone running oxa against a real engine)
 

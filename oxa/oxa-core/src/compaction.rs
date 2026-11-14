@@ -1007,13 +1007,20 @@ fn compact_inner(
                     // R4: under `local` a summary that could not be made is replaced by
                     // the mechanical one, so the session never blocks on it.
                     Err(e) if st.stats.profile == Profile::Local => {
+                        // Self-feedback: say how much memory this cost (the assistant and
+                        // tool turns are what the record leaves out) and that it is degraded.
+                        let dropped = st.transcript.wire()[..cut]
+                            .iter()
+                            .filter(|m| matches!(m.role, Role::Assistant | Role::Tool))
+                            .count();
                         sink.emit(&AgentEvent::Notice {
-                                level: Level::Warning,
-                                text: format!(
-                                    "compaction: no summary could be made ({}); an automatic record of the user's messages and files is used instead",
-                                    e.message
-                                ),
-                            });
+                            level: Level::Warning,
+                            text: format!(
+                                "context compacted without a model summary: {dropped} assistant/tool turns were dropped from memory ({}); an automatic record of the user's messages and files is used instead",
+                                e.message
+                            ),
+                        });
+                        details["droppedTurns"] = json!(dropped);
                         details["mechanical"] = json!(true);
                         summary_error = Some(e.message.clone());
                         let summary =

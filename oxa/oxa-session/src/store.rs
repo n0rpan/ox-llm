@@ -115,12 +115,17 @@ pub fn new_entry_id(taken: &dyn Fn(&str) -> bool) -> String {
 #[derive(Debug, Clone)]
 pub struct FsStore {
     root: PathBuf,
+    /// The session this process holds open for writing (shared by clones of the store).
+    held: std::sync::Arc<std::sync::Mutex<Option<crate::SessionLock>>>,
 }
 
 impl FsStore {
     /// `root` is created lazily (0700) on first `create`.
     pub fn new(root: PathBuf) -> FsStore {
-        FsStore { root }
+        FsStore {
+            root,
+            held: Default::default(),
+        }
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -164,6 +169,17 @@ impl SessionStore for FsStore {
         f.write_all(&line)
             .map_err(|e| OxaError::io(&format!("cannot write session {}", path.display()), &e))?;
         Ok(SessionRef { path, id })
+    }
+
+    fn acquire(&self, s: &SessionRef) -> Result<(), OxaError> {
+        check_safe(&s.path)?;
+        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        if held.as_ref().is_some_and(|l| l.session() == s.path) {
+            return Ok(());
+        }
+        // The new lock first: a refused switch keeps the old session held.
+        *held = Some(crate::SessionLock::acquire(&s.path)?);
+        Ok(())
     }
 
     fn append(&self, s: &SessionRef, e: &Entry) -> Result<(), OxaError> {
@@ -1257,6 +1273,7 @@ pub fn session_files_under(root: &Path) -> Vec<(PathBuf, Option<SessionHeader>)>
 /// `Ok` (the wipe is idempotent).
 pub fn purge_session_file(path: &Path) -> Result<(), OxaError> {
     check_safe(path)?;
+    let _ = fs::remove_file(crate::lock_path_of(path));
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
