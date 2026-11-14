@@ -212,6 +212,16 @@ pub fn run_cancellable(
     plan: Vec<WorkerSpec>,
     controls: Receiver<Control>,
     canceled: Arc<AtomicBool>,
+    observe: impl FnMut(WorkerStatus),
+) -> io::Result<RunReport> {
+    run_with_workspaces(settings, plan, controls, canceled, None, observe)
+}
+pub(crate) fn run_with_workspaces(
+    settings: RunSettings,
+    plan: Vec<WorkerSpec>,
+    controls: Receiver<Control>,
+    canceled: Arc<AtomicBool>,
+    shared_workspaces: Option<Arc<std::sync::Mutex<crate::git_worktrees::Pool>>>,
     mut observe: impl FnMut(WorkerStatus),
 ) -> io::Result<RunReport> {
     validate(&settings, &plan)?;
@@ -238,11 +248,26 @@ pub fn run_cancellable(
         journal.record(Some(&spec.id), "queued", json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"route":"verified-local","reservedTokens":spec.budget.reported_tokens,"reservedBytes":spec.budget.output_bytes,"tools":spec.workspace.as_ref().map(|w|w.tools()).unwrap_or(&[])}))?;
         observe(status(spec, "queued", None, 0));
     }
+    let workspaces = if plan
+        .iter()
+        .any(|s| s.workspace.as_ref().is_some_and(|w| w.uses_git_worktrees()))
+    {
+        Some(match shared_workspaces {
+            Some(pool) => pool,
+            None => Arc::new(std::sync::Mutex::new(crate::git_worktrees::Pool::new(
+                directory.join("git-workspaces"),
+            )?)),
+        })
+    } else {
+        None
+    };
     let mut pending = VecDeque::from(plan);
+    let mut preparing = Preparations(Vec::new());
+    let mut ready = VecDeque::<Ready>::new();
     let mut active: Vec<Worker> = Vec::new();
     let mut reports = Vec::new();
     let mut cancel_all = false;
-    while !pending.is_empty() || !active.is_empty() {
+    while !pending.is_empty() || !active.is_empty() || !preparing.0.is_empty() || !ready.is_empty() {
         if canceled.load(Ordering::Acquire) && !cancel_all {
             cancel_all = true;
             journal.record(None, "cancel_all", json!({}))?;
@@ -259,6 +284,9 @@ pub fn run_cancellable(
                         let report = empty_report(&settings.id, &spec, Outcome::Canceled);
                         terminal(&mut journal, &report, &mut observe)?;
                         reports.push(report);
+                    } else if let Some(job) = preparing.0.iter_mut().find(|j| j.spec.id == worker) {
+                        job.forced = Some(Outcome::Canceled);
+                        job.cancel.store(true, Ordering::Release);
                     } else if let Some(worker) = active.iter_mut().find(|w| w.spec.id == worker) {
                         worker.canceled = true;
                     } else {
@@ -342,25 +370,144 @@ pub fn run_cancellable(
                 reports.push(report);
             }
         }
-        while active.len() < settings.parallelism && !cancel_all && Instant::now() < run_deadline {
+        let mut index = 0;
+        while index < preparing.0.len() {
+            let job = &mut preparing.0[index];
+            if job.forced.is_none() && (cancel_all || Instant::now() >= job.deadline) {
+                job.forced = Some(if run_expired || Instant::now() >= job.deadline {
+                    Outcome::Deadline
+                } else {
+                    Outcome::Canceled
+                });
+                job.cancel.store(true, Ordering::Release);
+            }
+            if job.thread.as_ref().unwrap().is_finished() {
+                let mut job = preparing.0.remove(index);
+                let result = job
+                    .thread
+                    .take()
+                    .unwrap()
+                    .join()
+                    .unwrap_or_else(|_| Err(invalid("workspace preparation failed")));
+                ready.push_back(Ready {
+                    spec: job.spec,
+                    deadline: job.deadline,
+                    workspace: result.map(Some),
+                    forced: job.forced,
+                });
+            } else {
+                index += 1;
+            }
+        }
+        while active.len() + preparing.0.len() + ready.len() < settings.parallelism
+            && !cancel_all
+            && !canceled.load(Ordering::Acquire)
+            && Instant::now() < run_deadline
+        {
             let Some(spec) = pending.pop_front() else {
                 break;
             };
             journal.record(Some(&spec.id), "starting", json!({}))?;
             observe(status(&spec, "starting", None, 0));
+            let deadline = (Instant::now() + spec.budget.wall_time).min(run_deadline);
+            if let Some(grant) = spec.workspace.clone() {
+                let path = directory.join(format!("workspace-{}", spec.id));
+                let pool = workspaces.clone();
+                let flag = Arc::new(AtomicBool::new(false));
+                let worker_flag = flag.clone();
+                let task = std::thread::Builder::new()
+                    .name("oxa-workspace-prepare".into())
+                    .spawn(move || {
+                        if grant.uses_git_worktrees() {
+                            crate::git_worktrees::prepare(
+                                pool.as_ref().unwrap(),
+                                &grant,
+                                &path,
+                                deadline,
+                                &worker_flag,
+                            )
+                        } else {
+                            grant.materialize(&path)
+                        }
+                    });
+                match task {
+                    Ok(thread) => preparing.0.push(Preparation {
+                        spec,
+                        deadline,
+                        cancel: flag,
+                        forced: None,
+                        thread: Some(thread),
+                    }),
+                    Err(_) => ready.push_back(Ready {
+                        spec,
+                        deadline,
+                        workspace: Err(invalid("cannot start workspace preparation")),
+                        forced: None,
+                    }),
+                }
+            } else {
+                ready.push_back(Ready {
+                    spec,
+                    deadline,
+                    workspace: Ok(None),
+                    forced: None,
+                });
+            }
+        }
+        while let Some(job) = ready.pop_front() {
+            let spec = job.spec;
+            let worker_deadline = job.deadline;
+            let forced = job.forced.or_else(|| {
+                if canceled.load(Ordering::Acquire) || cancel_all {
+                    Some(if run_expired {
+                        Outcome::Deadline
+                    } else {
+                        Outcome::Canceled
+                    })
+                } else if Instant::now() >= worker_deadline {
+                    Some(Outcome::Deadline)
+                } else {
+                    None
+                }
+            });
+            if let Some(outcome) = forced {
+                let report = empty_report(&settings.id, &spec, outcome);
+                terminal(&mut journal, &report, &mut observe)?;
+                reports.push(report);
+                continue;
+            }
+            let workspace = match job.workspace {
+                Ok(workspace) => workspace,
+                Err(error) => {
+                    let outcome = match error.kind() {
+                        io::ErrorKind::TimedOut => Outcome::Deadline,
+                        io::ErrorKind::Interrupted => Outcome::Canceled,
+                        _ => Outcome::Failed,
+                    };
+                    let report = empty_report(&settings.id, &spec, outcome);
+                    terminal(&mut journal, &report, &mut observe)?;
+                    reports.push(report);
+                    continue;
+                }
+            };
             let endpoint = format!("http://{}", spec.inference.address);
-            let worker_deadline = (Instant::now() + spec.budget.wall_time).min(run_deadline);
-            let workspace = spec
-                .workspace
-                .as_ref()
-                .map(|grant| grant.materialize(&directory.join(format!("workspace-{}", spec.id))))
-                .transpose()?;
             if let Some(workspace) = &workspace {
                 journal.record(
                     Some(&spec.id),
                     "workspace",
-                    json!({"manifestSha256":workspace.manifest(),"editing":workspace.editing()}),
+                    json!({"manifestSha256":workspace.manifest(),"editing":workspace.editing(),"gitBaseCommit":workspace.base_commit()}),
                 )?;
+            }
+            if canceled.load(Ordering::Acquire) || Instant::now() >= worker_deadline {
+                let outcome = if canceled.load(Ordering::Acquire) {
+                    Outcome::Canceled
+                } else {
+                    Outcome::Deadline
+                };
+                let report = empty_report(&settings.id, &spec, outcome);
+                terminal(&mut journal, &report, &mut observe)?;
+                reports.push(report);
+                continue;
             }
             match Process::spawn(
                 &worker_binary,
@@ -470,7 +617,7 @@ pub fn run_cancellable(
                 i += 1;
             }
         }
-        if !active.is_empty() {
+        if !active.is_empty() || !preparing.0.is_empty() {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -480,6 +627,33 @@ pub fn run_cancellable(
         run: settings.id,
         workers: reports,
     })
+}
+
+struct Ready {
+    spec: WorkerSpec,
+    deadline: Instant,
+    workspace: io::Result<Option<crate::workspace::WorkingCopy>>,
+    forced: Option<Outcome>,
+}
+struct Preparation {
+    spec: WorkerSpec,
+    deadline: Instant,
+    cancel: Arc<AtomicBool>,
+    forced: Option<Outcome>,
+    thread: Option<std::thread::JoinHandle<io::Result<crate::workspace::WorkingCopy>>>,
+}
+struct Preparations(Vec<Preparation>);
+impl Drop for Preparations {
+    fn drop(&mut self) {
+        for job in &self.0 {
+            job.cancel.store(true, Ordering::Release);
+        }
+        for job in &mut self.0 {
+            if let Some(thread) = job.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
 }
 
 struct Worker {
@@ -796,6 +970,9 @@ pub(crate) fn validate(settings: &RunSettings, plan: &[WorkerSpec]) -> io::Resul
         {
             return Err(invalid("invalid worker plan"));
         }
+        if let Some(workspace) = &worker.workspace {
+            workspace.validate_backend()?;
+        }
         bytes = bytes
             .checked_add(worker.budget.output_bytes)
             .ok_or_else(|| invalid("output reservation overflow"))?;
@@ -843,4 +1020,143 @@ fn terminal(
         output_bytes: report.output_bytes,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    use crate::workspace::{Grant, RelativePath, Snapshot};
+    use oxa_fake::{FakeOpts, FakeServer, TestEnv};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn blocked_workspace_preparation_cannot_delay_a_running_workers_deadline() {
+        let env = TestEnv::new();
+        // Owned protocol stub only: it acknowledges startup and then waits.
+        // No model, shell, source code or network request is executed.
+        let binary = env.root().join("rpc-fixture.py");
+        fs::write(
+            &binary,
+            r#"#!/usr/bin/python3
+import sys, json
+for line in sys.stdin:
+    request = json.loads(line)
+    command = request['type']
+    if command == 'abort':
+        break
+    response = {'type':'response','id':request['id'],'command':command,'success':True}
+    if command == 'get_state':
+        response['data'] = {'mode':'workspace','model':{'id':'fake-model'},'isStreaming':False}
+    print(json.dumps(response), flush=True)
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(env.root().join("input.txt"), "approved source\n").unwrap();
+        let snapshot = Arc::new(
+            Snapshot::approve(env.root(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+        );
+        let grant = Arc::new(
+            Grant::editing(snapshot, vec![])
+                .unwrap()
+                .with_git_worktrees()
+                .unwrap(),
+        );
+        let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+        let inference = LocalInference::register_verified_local(
+            engine.url().trim_start_matches("http://").parse().unwrap(),
+            "fake-model".into(),
+        )
+        .unwrap();
+        let spec = |id: &str, duration: Duration, workspace| WorkerSpec {
+            id: id.into(),
+            role: "synthetic".into(),
+            task: "synthetic".into(),
+            inference: inference.clone(),
+            workspace,
+            budget: WorkerBudget {
+                wall_time: duration,
+                output_bytes: 64 * 1024,
+                reported_tokens: 1000,
+            },
+        };
+        let pool = Arc::new(std::sync::Mutex::new(
+            crate::git_worktrees::Pool::new(env.root().join("pool")).unwrap(),
+        ));
+        let (locked, got_lock) = std::sync::mpsc::sync_channel(1);
+        let (release, wait_release) = std::sync::mpsc::sync_channel(1);
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let settings = RunSettings {
+            id: "fairness".into(),
+            worker_binary: binary,
+            bwrap_binary: "/usr/bin/bwrap".into(),
+            directory: env.root().join("run"),
+            parallelism: 2,
+            mode: PermissionMode::Workspace,
+            wall_time: Duration::from_secs(4),
+            output_reservation: 128 * 1024,
+            token_reservation: 2000,
+            journal_bytes: 128 * 1024,
+        };
+        let mut deadline_seen = None;
+        let mut canceled_second = false;
+        let started = Instant::now();
+        let report = std::thread::scope(|scope| {
+            let held_pool = pool.clone();
+            scope.spawn(move || {
+                let _held = held_pool.lock().unwrap();
+                locked.send(()).unwrap();
+                // Timeout is a test deadlock guard, not the normal release path.
+                let _ = wait_release.recv_timeout(Duration::from_secs(2));
+            });
+            got_lock.recv().unwrap();
+            run_with_workspaces(
+                settings,
+                vec![
+                    spec("running", Duration::from_millis(100), None),
+                    spec("preparing", Duration::from_secs(3), Some(grant)),
+                ],
+                rx,
+                Arc::new(AtomicBool::new(false)),
+                Some(pool.clone()),
+                |status| {
+                    if status.worker == "running" && status.state == "deadline" {
+                        deadline_seen = Some(started.elapsed());
+                        let _ = release.try_send(());
+                    }
+                    if status.worker == "preparing" && status.state == "working" && !canceled_second {
+                        canceled_second = true;
+                        tx.try_send(Control::Cancel {
+                            worker: "preparing".into(),
+                        })
+                        .unwrap();
+                    }
+                },
+            )
+            .unwrap()
+        });
+        assert!(
+            deadline_seen.unwrap() < Duration::from_millis(700),
+            "active deadline must be serviced while the other preparation is blocked"
+        );
+        assert_eq!(
+            report
+                .workers
+                .iter()
+                .find(|w| w.worker == "running")
+                .unwrap()
+                .outcome,
+            Outcome::Deadline
+        );
+        assert_eq!(
+            report
+                .workers
+                .iter()
+                .find(|w| w.worker == "preparing")
+                .unwrap()
+                .outcome,
+            Outcome::Canceled
+        );
+        assert!(engine.requests().is_empty());
+    }
 }

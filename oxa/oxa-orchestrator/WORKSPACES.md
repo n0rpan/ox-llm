@@ -4,9 +4,10 @@ The library can give a trusted local RPC worker a private copy of explicitly
 selected UTF-8 text files. The source checkout is never mounted into the worker.
 The library and default-off `oxa orchestrate` command support explicit grants.
 Without `--source`/`--file`, the command still has no file inputs or tools. These
-copies are not Git worktrees. [REVIEW.md](REVIEW.md) describes explicit proposal
-selection, conflict detection and approved candidate staging. Git worktree lifecycle,
-apply into an existing checkout and merge coordination remain future work.
+copies remain the default. Editing grants can explicitly use controller-owned
+Git worktrees seeded only from approved files; see [GIT_WORKTREES.md](GIT_WORKTREES.md).
+[REVIEW.md](REVIEW.md) describes proposal selection, conflicts and approved candidate
+staging. Applying into an existing checkout and merge coordination remain future work.
 
 The CLI requires a source root and repeated `--file` paths; see [CLI.md](CLI.md).
 `--edit --permission-mode workspace` authorizes private edits, and repeated

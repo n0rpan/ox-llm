@@ -48,6 +48,7 @@ Options:
   --file <relative-path>        Approve this file's contents; repeat up to 32
   --edit                       Allow private-copy edits; requires workspace mode
   --allow-new <relative-path>   Allow a new review path; repeat, requires --edit
+  --git-worktrees               Use owned snapshot Git worktrees; requires --edit
   --offline                    Explicit offline mode (always enabled here)
   --                           Treat remaining words as goal text
   --help                       Show this help without starting workers
@@ -73,6 +74,7 @@ pub struct Options {
     files: Vec<RelativePath>,
     new_files: Vec<RelativePath>,
     editing: bool,
+    git_worktrees: bool,
 }
 
 pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
@@ -80,6 +82,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     let mut files = Vec::new();
     let mut new_files = Vec::new();
     let mut editing = false;
+    let mut git_worktrees = false;
     let mut engine = None;
     let mut model = None;
     let mut directory = None;
@@ -119,6 +122,10 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
         }
         if !matches!(flag, "--role" | "--file" | "--allow-new") && !seen.insert(flag) {
             return Err("an option was specified more than once");
+        }
+        if flag == "--git-worktrees" {
+            git_worktrees = true;
+            continue;
         }
         if flag == "--edit" {
             editing = true;
@@ -211,6 +218,9 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     if editing && (source.is_none() || mode != PermissionMode::Workspace) {
         return Err("--edit requires approved files and --permission-mode workspace");
     }
+    if git_worktrees && !editing {
+        return Err("--git-worktrees requires --edit");
+    }
     if !new_files.is_empty() && !editing {
         return Err("--allow-new requires --edit");
     }
@@ -256,6 +266,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
         files,
         new_files,
         editing,
+        git_worktrees,
     }))
 }
 
@@ -381,6 +392,12 @@ pub fn execute(
             } else {
                 Grant::read_only(snapshot)
             };
+            let grant = if options.git_worktrees {
+                grant.with_git_worktrees()?
+            } else {
+                grant
+            };
+            grant.validate_backend()?;
             Ok::<_, io::Error>(Arc::new(grant))
         })
         .transpose()?;

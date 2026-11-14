@@ -2,6 +2,7 @@
 //! The initial executable profile is local, tool-free oxa over bounded RPC.
 pub mod a2a_run;
 pub mod cli;
+mod git_worktrees;
 mod journal;
 mod process;
 pub mod recovery;

@@ -82,7 +82,8 @@ new worker path. The original checkout is never mounted or overwritten. The
 candidate may be inspected or explicitly delegated to a later reviewer; its receipt
 is not automatically forwarded to that reviewer.
 
-This advances the review/merge workflow; Git worktree lifecycle, applying into an
+The optional [snapshot Git worktree backend](GIT_WORKTREES.md) isolates editing
+workers. This advances the review/merge workflow; applying into an
 existing checkout with concurrent-writer protection, running validation under a
 separately authorized tool grant, committing and merging remain unfinished.
 Nothing here authorizes a cloud call or changes the brief's coordinator gates.
