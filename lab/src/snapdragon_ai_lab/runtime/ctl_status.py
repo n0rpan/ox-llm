@@ -169,6 +169,7 @@ class StatusMixin:
                                        'unit': self.flash_idle_qos_unit, 'started': self.flash_idle_qos_started,
                                        'error': self.flash_idle_qos_error},
                     'capabilities': list(CAPABILITIES),
+                    'cloud': self.cloud_status(),
                     'active': self.active_block(),
                     'last_error': self.last_failure,
                     'last_failure': dict(self.last_failure_info) if self.last_failure_info else None,

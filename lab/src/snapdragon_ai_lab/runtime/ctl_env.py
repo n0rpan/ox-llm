@@ -140,7 +140,7 @@ _log = logging.getLogger('local_ai.controller')
 # Control routes this controller answers itself (status `capabilities`); the panel asks
 # for a route only when it is listed.
 CAPABILITIES = ('models', 'storage', 'harness', 'harness_learning', 'ledger', 'active', 'openai_aliases', 'state_cache',
-                'context_modes', 'preload', 'model_preload')
+                'context_modes', 'preload', 'model_preload', 'cloud')
 
 # Harness prefix registry (which system-prompt + tools prefixes were seen, and primers to
 # re-warm them). LOCAL_AI_HARNESS_STATE='' keeps it in memory only (no primers, no prepare).
