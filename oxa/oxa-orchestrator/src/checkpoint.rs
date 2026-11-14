@@ -1,0 +1,159 @@
+//! Publish the final report before stdout, without exposing a partial file.
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::Path;
+
+// Hard diagnostic-output bound, independent of per-worker incoming wire caps.
+// Terminal escaping/envelopes can expand results. Serialize without copying it.
+const MAX_REPORT: usize = 272 * 1024 * 1024;
+
+pub(crate) fn save(directory: &Path, report: &impl serde::Serialize) -> io::Result<()> {
+    let anchor = crate::namespace::protected_directory(directory)?;
+    let metadata = anchor.metadata()?;
+    // SAFETY: geteuid only returns the current effective user identity.
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "report directory must be private",
+        ));
+    }
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open(format!("/proc/self/fd/{}", anchor.as_raw_fd()))?;
+    let parent = format!("/proc/self/fd/{}", directory.as_raw_fd());
+    let temporary = Path::new(&parent).join(".report.json.pending");
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temporary)?;
+    let pending = Pending(temporary);
+    let mut writer = Bounded {
+        file,
+        remaining: MAX_REPORT,
+    };
+    report.serialize(&mut serde_json::Serializer::with_formatter(
+        &mut writer,
+        crate::cli::TerminalJson,
+    ))?;
+    writer.write_all(b"\n")?;
+    writer.file.sync_all()?;
+    // SAFETY: live directory descriptor and static NUL-terminated file names.
+    let result = unsafe {
+        libc::renameat2(
+            directory.as_raw_fd(),
+            c".report.json.pending".as_ptr(),
+            directory.as_raw_fd(),
+            c"report.json".as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // A sync failure can leave a complete published report. Never remove it or
+    // turn a storage failure into permission to repeat inference.
+    directory.sync_all()?;
+    drop(pending);
+    Ok(())
+}
+
+struct Pending(std::path::PathBuf);
+impl Drop for Pending {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+struct Bounded {
+    file: File,
+    remaining: usize,
+}
+impl Write for Bounded {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            return Err(io::Error::other("final report exceeds the checkpoint bound"));
+        }
+        let written = self.file.write(bytes)?;
+        self.remaining -= written;
+        Ok(written)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxa_fake::TestEnv;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    #[test]
+    fn publication_is_private_complete_and_never_replaces_existing_data() {
+        let env = TestEnv::new();
+        let root = env.root().join("checkpoint");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let report = serde_json::json!({"result":"terminal\u{001b} data"});
+        save(&root, &report).unwrap();
+        let bytes = fs::read(root.join("report.json")).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            report
+        );
+        assert!(!bytes.contains(&0x1b));
+        assert_eq!(
+            fs::metadata(root.join("report.json")).unwrap().mode() & 0o777,
+            0o600
+        );
+        assert!(save(&root, &serde_json::json!({"replacement":true})).is_err());
+        assert_eq!(fs::read(root.join("report.json")).unwrap(), bytes);
+        assert!(!root.join(".report.json.pending").exists());
+    }
+
+    #[test]
+    fn serialization_failure_and_unsafe_paths_never_publish_or_overwrite() {
+        struct Fails;
+        impl serde::Serialize for Fails {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("synthetic serialization failure"))
+            }
+        }
+        let env = TestEnv::new();
+        let root = env.root().join("checkpoint");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        assert!(save(&root, &Fails).is_err());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let target = env.root().join("keep");
+        fs::write(&target, b"keep").unwrap();
+        std::os::unix::fs::symlink(&target, root.join(".report.json.pending")).unwrap();
+        assert!(save(&root, &serde_json::json!({})).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        assert!(fs::symlink_metadata(root.join(".report.json.pending"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_file(root.join(".report.json.pending")).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(save(&root, &serde_json::json!({})).is_err());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn output_bound_is_enforced_before_writing_excess_bytes() {
+        let env = TestEnv::new();
+        let path = env.root().join("bounded");
+        let mut writer = Bounded {
+            file: File::create(&path).unwrap(),
+            remaining: 4,
+        };
+        writer.write_all(b"123").unwrap();
+        assert!(writer.write_all(b"45").is_err());
+        writer.write_all(b"4").unwrap();
+        assert!(writer.write_all(b"5").is_err());
+        assert_eq!(fs::read(path).unwrap(), b"1234");
+    }
+}

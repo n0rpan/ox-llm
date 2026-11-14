@@ -109,3 +109,28 @@ still inspects optional dependency paths conservatively and rejects new
 connect sites outside the reviewed files. No Actions workflow/settings change.
 Manifest ownership and the new connect-site review entries require coordinator
 review before any merge. This command remains part of an unmerged draft lane.
+
+## Saved final report
+
+After owned servers and workers stop, the command saves the same terminal-safe
+JSON it prints to stdout as `<directory>/report.json`. This includes partial and
+canceled run reports. A consumer closing stdout can cause exit 1 while the saved
+report still records completed workers; a nonzero command exit alone does not
+justify repeating inference. SIGINT/SIGTERM exit codes remain 130/143.
+
+The file is 0600 inside the new private run directory. The controller serializes
+directly to `.report.json.pending`, caps output at 272 MiB, syncs the file, publishes
+with a no-replace rename using a pinned directory descriptor, then syncs the
+parent. It refuses an existing destination or temporary entry. Ordinary write or
+serialization failure removes its own pending file, returns failure, and never
+restarts a task. A parent-sync failure can leave a complete published report.
+A controller killed before publication can leave only the pending file; that is
+not a completed checkpoint and is never consumed automatically.
+
+Reports contain delegated results and approved source/proposal text, unlike the
+hash-only audit journal. Keep the directory private. The report is not a signed
+receipt or a persistent scheduler: it does not checkpoint active streams, restore
+lost tasks, or authorize replay. `orchestrate-inspect` remains journal-only and
+read-only. `orchestrate-review --report <directory>/report.json` accepts saved
+reports within its separate 16 MiB review-input bound; larger diagnostic reports
+are retained but cannot be passed directly to that review command.
