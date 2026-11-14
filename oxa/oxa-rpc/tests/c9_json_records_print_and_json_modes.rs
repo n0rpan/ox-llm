@@ -57,7 +57,8 @@ fn open(env: &TestEnv, engine: &Arc<ScriptedEngine>) -> Session {
         hooks: Vec::new(),
         policy: Box::new(DenyAll),
         sandbox: Arc::new(NoBwrap),
-        settings: Settings::default(),
+        // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+        settings: Settings::default().with_override("oxa.envNote", serde_json::json!(false)),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),

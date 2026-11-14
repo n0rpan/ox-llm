@@ -267,7 +267,8 @@ impl World {
         InteractiveOpts {
             fullscreen,
             dirs: Dirs::under(self.env.root()),
-            settings: Settings::default(),
+            // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+            settings: Settings::default().with_override("oxa.envNote", serde_json::json!(false)),
             keymap: Keymap::defaults(),
             store: self.store.clone(),
             hooks: Vec::new(),
@@ -317,7 +318,8 @@ fn deps_with(engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, root: &Path,
         hooks: Vec::new(),
         policy: Box::new(AllowAll),
         sandbox: Arc::new(NoBash),
-        settings: Settings::default(),
+        // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+        settings: Settings::default().with_override("oxa.envNote", serde_json::json!(false)),
         dirs: Dirs::under(root),
         cwd: work.to_path_buf(),
         selection: ToolSelection::default(),
