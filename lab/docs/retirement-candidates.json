@@ -1,0 +1,1652 @@
+{
+  "schema": 1,
+  "mode": "draft_proposal_only",
+  "base_commit": "a1c683f9e3783fdac4716bef53241833babe60a6",
+  "deletions_applied": false,
+  "constraints": [
+    "Do not edit or delete measured benchmark receipts in this draft.",
+    "Preserve candidate-engine allowlists, exact hash binding, receipt verification and refusal behavior.",
+    "Preserve licences and attribution for any retained or moved code.",
+    "A missing literal citation is only a review candidate, not proof that evidence is disposable."
+  ],
+  "code_candidates": [
+    {
+      "path": "lab/src/snapdragon_ai_lab/runtime/classic_beta.py",
+      "proposal": "Move model qualification metadata and unchanged proof requirements into model_catalog before removing the legacy module.",
+      "referenced_by": [
+        "lab/src/snapdragon_ai_lab/bootstrap.py",
+        "lab/src/snapdragon_ai_lab/runtime/controller.py",
+        "lab/src/snapdragon_ai_lab/runtime/ctl_engines.py",
+        "lab/src/snapdragon_ai_lab/runtime/ctl_lifecycle.py",
+        "lab/src/snapdragon_ai_lab/runtime/ctl_models.py",
+        "lab/src/snapdragon_ai_lab/runtime/ctl_proxy.py",
+        "lab/tests/test_backend_token.py",
+        "lab/tests/test_beta_selector.py",
+        "lab/tests/test_controller_contract.py",
+        "lab/tests/test_memlat_engine_override.py",
+        "lab/tests/test_oxe_production.py",
+        "lab/tests/test_runtime_sources.py",
+        "lab/tests/test_ui_data.py",
+        "lab/tests/test_v013_begin_golden.py",
+        "lab/tests/test_v013_proxy_contract.py"
+      ]
+    }
+  ],
+  "requested_symbol_status": {
+    "RETIRED_MODELS": "absent",
+    "RETIRED_ALIASES": "present in classic_beta; preserve retired-model refusal until a reviewed replacement exists"
+  },
+  "experiment_candidate": {
+    "path": "lab/experiments/",
+    "files": [
+      "lab/experiments/q3k-i8mm/INTEGRATION.md",
+      "lab/experiments/q3k-i8mm/LICENSE.llama.cpp",
+      "lab/experiments/q3k-i8mm/Q3K-MOE-GEMM.md",
+      "lab/experiments/q3k-i8mm/README.md",
+      "lab/experiments/q3k-i8mm/RESULTS.md",
+      "lab/experiments/q3k-i8mm/bench_q3k_i8mm.c",
+      "lab/experiments/q3k-i8mm/q3k_i8mm.h",
+      "lab/experiments/q3k-i8mm/run_test_ggml_repack_moe.sh",
+      "lab/experiments/q3k-i8mm/test_ggml_repack_moe.cpp",
+      "lab/experiments/q3k-i8mm/test_q3k_i8mm.c",
+      "lab/experiments/q3k-i8mm/upstream_ref.h"
+    ],
+    "external_markdown_references": [
+      "lab/docs/BEFORE-AFTER.md",
+      "lab/docs/SCOREBOARD.md",
+      "lab/docs/SPEEDUP-ATTRIBUTION.md"
+    ],
+    "proposal": "Review q3k-i8mm CPU experiment code and its notices before any directory deletion."
+  },
+  "receipt_method": "Literal relative path or basename in tracked Markdown outside the results directory; other references are also recorded. Historical and qualification evidence still requires review.",
+  "receipts_to_keep": [
+    {
+      "path": "lab/benchmarks/results/arete27b-download.json",
+      "public_markdown_references": [
+        "lab/docs/ARETE-27B-COMPARISON.md"
+      ],
+      "other_tracked_references": [
+        "lab/dependencies/retired-model-artifacts.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/arete27b-loading-smokes.json",
+      "public_markdown_references": [
+        "lab/docs/ARETE-27B-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/before-after.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/bootstrap-flash-build.json",
+      "public_markdown_references": [
+        "lab/docs/BOOTSTRAP-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/bootstrap-flash-source.json",
+      "public_markdown_references": [
+        "lab/docs/BOOTSTRAP-BUILD.md",
+        "lab/docs/BOOTSTRAP-PARITY.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/bootstrap-flash-build.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/bootstrap-selected-downloads.json",
+      "public_markdown_references": [
+        "lab/docs/BOOTSTRAP-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/classic-quota-batch8-complete.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/CLASSIC-QUOTA-SCREEN.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/classic-quota-batch8-incomplete.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/CLASSIC-QUOTA-SCREEN.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/classic-quota-unlimited11-screen.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/CLASSIC-QUOTA-UNLIMITED11.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/classic-quota1200-screen.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/CLASSIC-QUOTA1200.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/controller-cache.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/cpu-screen-preliminary.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/DEPLOYMENT-AND-EVIDENCE.md",
+        "lab/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/disabled-paths.json",
+      "public_markdown_references": [
+        "lab/docs/FAILED-PATHS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/final-coding-comparison.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/final-image-comparison.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-balanced-placement-screen.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-DECODE-THREADS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-cache-full-deferred.json",
+      "public_markdown_references": [
+        "lab/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-cache-policy-native-tests.json",
+      "public_markdown_references": [
+        "lab/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-cache13-screen.json",
+      "public_markdown_references": [
+        "lab/docs/RESEARCH-ENGINE-OPPORTUNITIES.md",
+        "lab/docs/lab-notes/FLASH-CACHE13-SCREEN.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-coalescing-screen.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-IO-SCREENS.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-cpu-quota-screen.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-CPU-QUOTA.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-decode6-output-identity-stop.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-DECODE-THREADS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-decode8-output-identity-stop.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-DECODE-THREADS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-dense-q4-artifacts-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-DENSE-Q4.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-dense-q4-quality-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-DENSE-Q4.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-dense-repack-allocation-v3.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-DENSE-REPACK.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-dense-repack-screen.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-DENSE-REPACK.md",
+        "lab/docs/FLASH-SOURCE-MAPPING.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-reclaim-meta66-readiness.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-early-expert-random-native45.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-early-expert-random-startup.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-f123-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-F123.md",
+        "lab/docs/FLASH-PACKAGE2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-harness-growth-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-PACKAGE2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-hot-cache-screen.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-HOT-CACHE.md",
+        "lab/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-io-uring-fixed-screen.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-io-uring-native44.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-io-uring-raw-admission.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-io-uring-probe.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-IO-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-io-uring-raw-admission.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-kleidiai-source-eligibility.json",
+      "public_markdown_references": [
+        "lab/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-lookahead-screen-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-WAVE5-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-m0-authoritative.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-M0.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-m0-tuning-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-M0-TUNING.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-mtp-acceptance-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MTP-ACCEPTANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-mtp-allocation-diagnostic.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MTP-ASSESSMENT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-mtp-common-hybrid-native.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-SPECULATION-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-mtp-fixed-partial-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MTP-ACCEPTANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-mtp-head-integrity.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MTP-ASSESSMENT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-mtp-loaded-head-startup.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MTP-ASSESSMENT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-agent-client-abort.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-agent-deadline.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-cache.json",
+      "public_markdown_references": [
+        "lab/docs/MEMORY-AND-PERFORMANCE.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-client-replay.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-demand-mapping.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-SPLIT.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-final-agent.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/BENCHMARKS.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PLANNING.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md",
+        "lab/docs/lab-notes/FLASH-NEXT-SPLIT.md",
+        "lab/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-historical-attribution.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-io-depth-abba.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/roofline/quality-corpus.txt"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-io-depth-agent.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/roofline/quality-corpus.txt"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-io-workers.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "lab/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-normal-lifecycle.json",
+      "public_markdown_references": [
+        "lab/docs/APP-SETTINGS-AUDIT.md",
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/BENCHMARKS.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PLANNING.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "lab/docs/lab-notes/FLASH-NEXT-SPLIT.md",
+        "lab/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-next-final-agent.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-overlap-code.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-prefill.json",
+      "public_markdown_references": [
+        "lab/docs/STREAMING-MEMORY.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-profile-agent-incomplete.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-profile-agent.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md",
+        "lab/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-profile-fixed.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MEMLAT-PREREQUISITES.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-profile-output-parity.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-runtime-feature-status.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-storage-reference.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-thp.json",
+      "public_markdown_references": [
+        "lab/docs/STREAMING-MEMORY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-wide-prefill.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-ngram-draft2-strict-stop.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-SPECULATION-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-ngram-ready-capture.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-SPECULATION-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-ngram-rollback-prerequisite.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-SPECULATION-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-pkg2-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-PACKAGE2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-post-memlat-header-audit.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MEMLAT-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-post-memlat-route-locality.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MEMLAT-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-post-memlat-storage-kernel.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MEMLAT-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-post-memlat-storage-summary.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-MEMLAT-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-predictive-prefetch-waste-stop.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-prefetch-coalescing-native.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-IO-PREREQUISITES.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-prefetch-coalescing-off-parity.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-prefetch-coalescing-off-parity.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-IO-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-prefill-policy-screen-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-WAVE5-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-prefix-prerequisite-v3.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-PREFIX-STATE.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-prefix-prerequisite-v4.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-prefix-prerequisite-v4.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-PREFIX-STATE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-prefix2-postboot-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-PREFIX-2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-reclaim-meta66-readiness.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-DENSE-REPACK.md",
+        "lab/docs/FLASH-SOURCE-MAPPING.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-dense-repack-screen.json",
+        "lab/benchmarks/results/flash-reclaim-native43.json",
+        "lab/benchmarks/results/flash-source-reclaim-ready-pair.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-reclaim-native43.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-SOURCE-MAPPING.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-ring-source-reclaim-ready.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-source-reclaim-ready-pair.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-SOURCE-MAPPING.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-vulkan-precision-prerequisites.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-GPU-PREFILL-GATE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-vulkan-prefill-source-gate.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-GPU-PREFILL-GATE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/image-attention-fimgattn1-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/IMAGE-ATTENTION.md",
+        "lab/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/image-large-screen-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/IMAGE-LARGE-SCREEN.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/image-noise-fast-gate-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/image-parity-bisect-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/image-parity-full-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/image-parity-noise-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/image-ship-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/IMAGE-SHIP.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/moe-normal-reference.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/MOE-NORMAL-REFERENCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/mtp-context-vl15-20261111.json",
+      "public_markdown_references": [
+        "lab/docs/MTP-CONTEXT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/native-q8-runtime.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/normal-dense-opencode.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/normal-lifecycle.json",
+      "public_markdown_references": [
+        "lab/docs/APP-SETTINGS-AUDIT.md",
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/BENCHMARKS.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PLANNING.md",
+        "lab/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "lab/docs/lab-notes/FLASH-NEXT-SPLIT.md",
+        "lab/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-next-final-agent.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/normal-moe-opencode.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/normal-moe-port-opencode.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/BENCHMARKS.md",
+        "lab/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-idle-retirement-build.json",
+      "public_markdown_references": [
+        "lab/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-bbc2990-qualification.json",
+      "public_markdown_references": [
+        "lab/docs/lab-notes/MOE-CANDIDATE2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-moe-download.json",
+      "public_markdown_references": [
+        "lab/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-moe-first-smoke.json",
+      "public_markdown_references": [
+        "lab/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-moe-normal13.json",
+      "public_markdown_references": [
+        "lab/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-moe-v2-smokes.json",
+      "public_markdown_references": [
+        "lab/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-moe-v3-screen.json",
+      "public_markdown_references": [
+        "lab/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-controller-token-audit.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-long-sync.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-pthread.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-thread-profile-summary.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-pthread-affinity-diagnosis.json",
+      "public_markdown_references": [
+        "lab/docs/FAILED-PATHS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-pthread-controller-comparison.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-pthread-fixed8-paired.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/portable-moe-screen.json",
+      "public_markdown_references": [
+        "lab/docs/BEFORE-AFTER.md",
+        "lab/docs/BENCHMARKS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/production-prefix-fairness.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-SERVER-UPGRADE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/063.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "lab/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/FLASH-PREFIX-2.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-PREFIX-2.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-prefix2-postboot-20261111.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/public/G1-prime.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "lab/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/G1.json",
+      "public_markdown_references": [
+        "lab/README.md"
+      ],
+      "other_tracked_references": [
+        "lab/benchmarks/results/public/V013-INSTALL-G1.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/public/G3-prime.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "lab/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/G3.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "lab/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/IMG-SHIP-1.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "lab/README.md",
+        "lab/docs/IMAGE-SHIP.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/RAM-MEMLAT.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "lab/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/ST-1.json",
+      "public_markdown_references": [
+        "lab/docs/SESSION-TRUTH-ST1.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/V012-CHAT.json",
+      "public_markdown_references": [
+        "engine/docs/RELEASE-NOTES-v0.1.2.md",
+        "lab/docs/RELEASE-NOTES-v0.1.2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/V013-INSTALL-G1.json",
+      "public_markdown_references": [
+        "lab/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/VAE-1.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "lab/README.md",
+        "lab/docs/IMAGE-VAE.md",
+        "lab/docs/RESULTS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/o32-cache18.json",
+      "public_markdown_references": [
+        "lab/docs/FLASH-CACHE18.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/v011-hotfix.json",
+      "public_markdown_references": [
+        "lab/docs/V011-HOTFIX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/repository-software-tests.json",
+      "public_markdown_references": [
+        "lab/docs/BOOTSTRAP-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq001-flash-m3-exact-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq002-flash-m3-kld-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq002-flash-m3-prefill-abort-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq004-server-bench-split-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq005-head-dumps-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq008-sessions-context-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-attention-crossover-repeats.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-ATTENTION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-attention-fixed-screen.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-ATTENTION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-grouped-prefill-2k.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-GROUPED-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-integrated-sampling.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-SERVER-QUALIFICATION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-integrated-server-qualification.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-SERVER-QUALIFICATION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-integrated-upgrade-qualification.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-SERVER-UPGRADE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-m0-decision.json",
+      "public_markdown_references": [
+        "lab/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-mtp-seed-fast-single-pair.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-SERVER-QUALIFICATION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/rust-production-deployment-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/RUST-DEPLOYMENT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/source-archive-roundtrip.json",
+      "public_markdown_references": [
+        "lab/docs/SELECTED-SETUP-REPRODUCIBILITY.md",
+        "lab/docs/SOURCE-ARCHIVE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/upstream-followups-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/UPSTREAM-EVIDENCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/upstream-single-patches-20261110.json",
+      "public_markdown_references": [
+        "lab/docs/UPSTREAM-EVIDENCE.md"
+      ],
+      "other_tracked_references": []
+    }
+  ],
+  "uncited_receipt_candidates_for_review": [
+    {
+      "path": "lab/benchmarks/results/arete27b-metadata.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/batch1-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/disk-retire-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-cache13-power-interruption.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-dense-repack-allocation.json",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-dense-repack-allocation-v3.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-dense-repack-native-prerequisite.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-dynamic31-identity.json",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "lab/benchmarks/roofline/quality-corpus.txt"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-m3-timing-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-mtp-cache8-native46.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-mtp-chatml4096-native46.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-agent-interruption.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-baseline.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-native-http.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-next-overlap.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-plain-sidecar-quick-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-power-guard-20261111.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-selective-conversion-power-stop.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-selective-converter-native-checks.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-selective-q8-artifact.json",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "lab/benchmarks/results/flash-selective-q8-screen.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/flash-selective-q8-screen.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-source-mapping-prerequisite.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-uring-build-v2.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/flash-uring-build-v3.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/guard2-model-free-20261111.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/guard2b-model-free-20261111.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/hwchar-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-dispatch-env.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-fastrpc-fixed-prefix-static.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-fixed-prefix-stage.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-guidance-buffer-failure.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-heap-access-and-idle-failure.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-native-device-failure.json",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "lab/benchmarks/results/npu-helper-prefix-trial.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-prefix-trial.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-streaming-recorder-control.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-tokenizer-cache-build.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-tokenizer-count-parity.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-helper-v7-readiness.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-phi4mini-native-load-failure.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/npu-qwen-policy-screen-closed.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-beta-installed.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-decode-t12-perf.txt",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "lab/benchmarks/results/ornith-patched-thread-profile-summary.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-decode-t8-perf.txt",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "lab/benchmarks/results/ornith-patched-thread-profile-summary.json"
+      ]
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-final-decode30s-perf.txt",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-final-decode30s-symbols.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-final-prefill4096-perf.txt",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/ornith-patched-final-prefill4096-symbols.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/DISK-CLEANUP-20261112.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/F-IMG-ATTN-1.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/G0-prime.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/G2-prime.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/G2.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/G4-prime.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/PORT-PREFLIGHT.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/QC-7.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/QC-CTX2-Q.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/QC-CTX2.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/QC-LA.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/QC-VL.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/STABLE-HISTORY-B.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/TEST-ISOLATION-20261112.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/V013-AP1.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/V013-BATCH.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/V013-INSTALL.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/V013-SOURCE-DELTA.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/V013-SPLIT-SMOKE.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/V013-TOOL-OUTPUT-CAP.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/W4-J.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/W5-G-R2.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/public/W5-G-R3.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/quick045-verify-cost-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq003-flash-m3-code-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq006-prefill-exactness-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq006-prefill-timings-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq008-session-test-boundary-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq010-static-a-abba-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq010-static-a-correctness-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq011-prefill-profile-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq014-ornith-donor-mtp-exactness-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq017-attention-numeric-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq035-config-screen-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq036-fusion-correctness-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq036-fusion-screen-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/runq041-sidecar-copy-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/storage-cleanup-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "lab/benchmarks/results/storage-timer-qualification.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    }
+  ]
+}
