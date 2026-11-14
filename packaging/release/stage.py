@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Stage a standard /usr tree, including the source layout the bootstrap installer needs."""
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('destination', type=Path)
@@ -49,6 +52,25 @@ for product in ('engine', 'oxa', 'lab'):
         if source.is_dir():
             shutil.copytree(source, licenses / (product + '-' + directory))
 shutil.copy2(root / 'LICENSE', licenses / 'LICENSE')
+# Use the repository's existing license collector for every linked Rust closure.
+collector = root / 'engine/tools/ci/crate_licenses.py'
+for workspace, packages in [('engine', ('oxe-cli', 'server')), ('oxa', ('oxa-cli',))]:
+    for package in packages:
+        subprocess.run([sys.executable, '-I', str(collector), package,
+                        str(licenses / 'crates' / package)], cwd=root / workspace, check=True)
+for workspace in ('oxc', 'oxc-rs'):
+    if (root / workspace / 'Cargo.toml').is_file():
+        metadata = json.loads(subprocess.check_output(
+            ['cargo', 'metadata', '--locked', '--format-version', '1'], cwd=root / workspace))
+        for package in metadata['packages']:
+            if package['id'] in metadata['workspace_members'] and any(
+                    'bin' in target['kind'] for target in package['targets']):
+                subprocess.run([sys.executable, '-I', str(collector), package['name'],
+                    str(licenses / 'crates' / (workspace + '-' + package['name']))],
+                    cwd=root / workspace, check=True)
+shutil.copy2(root / 'engine/vendor/ggml-subset/LICENSE', licenses / 'ggml-subset-LICENSE')
 for path in dest.rglob('*'):
-    if path.is_file() and not path.is_symlink():
+    if path.is_dir():
+        path.chmod(0o755)
+    elif path.is_file() and not path.is_symlink():
         path.chmod(0o755 if path.parent == dest / 'usr/bin' else 0o644)

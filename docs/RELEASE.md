@@ -22,7 +22,9 @@ Main currently has no Rust controller workspace. Python remains authoritative.
 If `oxc/Cargo.toml` or `oxc-rs/Cargo.toml` exists, the builder also builds and ships
 its binaries with locked dependencies. The Python source payload remains present.
 The `oxc` packaging entry point invokes the existing `local-ai` runtime script;
-module names and product defaults are preserved. `snapdragon-ai-lab` remains the
+module names and product defaults are preserved. Runtime Rust dependency license
+texts and the vendored ggml license are collected using the existing repository
+license collector, alongside product and Python payload notices. `snapdragon-ai-lab` remains the
 source diagnostics command. Bootstrap data, patches, Python modules and notices
 retain the layout expected by `snapdragon_ai_lab.bootstrap`. Nothing configures a
 user account, starts a service or downloads a model during package installation.

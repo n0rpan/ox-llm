@@ -19,6 +19,7 @@ build() {
   cd "$srcdir/ox-llm-$_commit"
   export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:?use the source commit timestamp}
   bash packaging/release/build.sh
+  python -B packaging/release/stage.py "$srcdir/payload"
 }
 
 check() {
@@ -27,7 +28,5 @@ check() {
 }
 
 package() {
-  cd "$srcdir/ox-llm-$_commit"
-  python -B packaging/release/stage.py "$srcdir/payload"
   cp -a "$srcdir/payload/usr" "$pkgdir/"
 }
