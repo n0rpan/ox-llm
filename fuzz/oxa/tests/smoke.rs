@@ -39,7 +39,9 @@ fn mutate(seed: &mut u64, data: &[u8]) -> Vec<u8> {
         match *seed % 4 {
             0 if at < out.len() => out[at] = (*seed & 0xff) as u8,
             1 => out.insert(at, (*seed & 0xff) as u8),
-            2 if at < out.len() => { out.remove(at); }
+            2 if at < out.len() => {
+                out.remove(at);
+            }
             _ => out.truncate(at),
         }
     }
@@ -110,8 +112,16 @@ fn sse_parser_is_split_invariant_on_the_corpus() {
 #[test]
 fn markdown_does_not_pass_control_characters_through() {
     let text = "hello \u{1b}[2Jworld <https://example.invalid/\u{1b}]0;pwned\u{7}>";
-    let lines = oxa_tui::render_markdown(text, 80, &oxa_tui::Theme::plain(), &oxa_tui::MarkdownOpts::default());
+    let lines = oxa_tui::render_markdown(
+        text,
+        80,
+        &oxa_tui::Theme::plain(),
+        &oxa_tui::MarkdownOpts::default(),
+    );
     for line in lines {
-        assert!(!line.chars().any(char::is_control), "raw control character in {line:?}");
+        assert!(
+            !line.chars().any(char::is_control),
+            "raw control character in {line:?}"
+        );
     }
 }

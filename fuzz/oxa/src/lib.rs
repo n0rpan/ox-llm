@@ -38,17 +38,34 @@ pub fn reply(data: &[u8]) {
 pub fn repair(data: &[u8]) {
     let text = String::from_utf8_lossy(data);
     let tools = [
-        Declared { name: "read", schema_json: r#"{"properties":{"path":{"type":"string"},"limit":{"type":"integer"}},"required":["path"]}"# },
-        Declared { name: "bash", schema_json: r#"{"properties":{"command":{"type":"string"}},"required":["command"]}"# },
+        Declared {
+            name: "read",
+            schema_json: r#"{"properties":{"path":{"type":"string"},"limit":{"type":"integer"}},"required":["path"]}"#,
+        },
+        Declared {
+            name: "bash",
+            schema_json: r#"{"properties":{"command":{"type":"string"}},"required":["command"]}"#,
+        },
     ];
     let _ = repair::find_opener(&text);
     if let Some(at) = repair::find_opener(&text) {
         let _ = repair::classify(&text[at..], &tools);
     }
     let turn = AssistantTurn {
-        msg: WireMsg { role: oxa_proto::Role::Assistant, content: Some(text.to_string()), reasoning: None, tool_calls: Vec::new(), tool_call_id: None },
+        msg: WireMsg {
+            role: oxa_proto::Role::Assistant,
+            content: Some(text.to_string()),
+            reasoning: None,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        },
         finish: Finish::Stop,
-        usage: Usage { prompt: 0, completion: 0, cached: 0, cached_missing: true },
+        usage: Usage {
+            prompt: 0,
+            completion: 0,
+            cached: 0,
+            cached_missing: true,
+        },
         timings: None,
         model: String::new(),
         level: ThinkingLevel::Off,
@@ -66,11 +83,20 @@ pub fn markdown(data: &[u8]) {
     };
     let lines = render_markdown(&text, width, &Theme::plain(), &opts);
     for line in &lines {
-        assert!(!line.contains('\n') && !line.contains('\r'), "line break in a rendered line");
-        assert!(visible_width(line) <= usize::from(width), "rendered line wider than the requested width");
+        assert!(
+            !line.contains('\n') && !line.contains('\r'),
+            "line break in a rendered line"
+        );
+        assert!(
+            visible_width(line) <= usize::from(width),
+            "rendered line wider than the requested width"
+        );
         if !opts.hyperlinks {
             // Theme::plain() emits no SGR/OSC: any control character here came from the text.
-            assert!(!line.chars().any(char::is_control), "untrusted text reached the terminal raw");
+            assert!(
+                !line.chars().any(char::is_control),
+                "untrusted text reached the terminal raw"
+            );
         }
     }
 }
@@ -94,13 +120,19 @@ pub fn path(data: &[u8]) {
     let arg = String::from_utf8_lossy(data);
     let resolved = oxa_tools::resolve_path(Path::new("/workspace/project"), &arg);
     // The lexical resolver must never return a path whose components still contain `..`.
-    assert!(!resolved.components().any(|c| matches!(c, std::path::Component::ParentDir)));
+    assert!(!resolved
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir)));
 }
 
 /// The committed seeds, used by the short normal-CI smoke. Missing files are a test failure.
 pub fn corpus(name: &str) -> Vec<u8> {
-    std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus").join(name))
-        .unwrap_or_else(|e| panic!("read corpus {name}: {e}"))
+    std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("corpus")
+            .join(name),
+    )
+    .unwrap_or_else(|e| panic!("read corpus {name}: {e}"))
 }
 
 pub fn sse_event_name(e: &SseEvent) -> &'static str {
