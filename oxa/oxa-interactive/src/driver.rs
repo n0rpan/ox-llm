@@ -2439,8 +2439,10 @@ impl<'a> Loop<'a> {
                 status.working_message =
                     crate::skin::tool_queue_detail(&self.vm.blocks, &status.activity, self.view.skin);
             }
-            let running = self.running();
-            self.arcade.observe(running, &self.vm.blocks, now_ms());
+            // A run for the arcade is what the line shows: from the first activity to idle
+            // (the handle may stay busy a moment longer; that is not a second run).
+            let active = status.activity != Activity::Idle;
+            self.arcade.observe(active, &self.vm.blocks, now_ms());
             let scene = ArcadeScene::from_setting(self.opts.settings.string("ui.animationScene").as_deref());
             let line = oxa_arcade_line(
                 &status,

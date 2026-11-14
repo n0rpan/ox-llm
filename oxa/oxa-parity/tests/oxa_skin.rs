@@ -125,8 +125,9 @@ fn quiet_startup_hides_the_splash() {
     let _ = &rig.env;
 }
 
-/// O-184: while a run is active the activity line shows a moving sprite; the moment the run
-/// ends the line is gone and the idle UI writes nothing at all.
+/// O-184: while a run is active the activity line shows a moving sprite; when the run ends
+/// the line is gone (after the arcade's short closing scene) and the idle UI writes nothing
+/// at all.
 #[test]
 fn animation_runs_while_working_and_stops_when_idle() {
     let rig = start(
@@ -167,15 +168,25 @@ fn animation_runs_while_working_and_stops_when_idle() {
         )
         .unwrap();
     let _ = idle;
+    // The closing scene ("stage clear") shows for a moment, then that line is gone too.
+    rig.pty
+        .wait_for_named(
+            "the closing scene to end",
+            |s| s.find_row(" CLEAR ").is_none(),
+            WAIT,
+        )
+        .unwrap();
     let _ = done;
-    // Idle: nothing is written for a whole second (no timer keeps drawing).
-    rig.pty.wait_stable(300, WAIT).unwrap();
+    // Idle: nothing is written for a whole second (no timer keeps drawing). The closing
+    // scene draws every 250 ms, so "quiet" must be clearly longer than that.
+    rig.pty.wait_stable(700, WAIT).unwrap();
     let mark = rig.pty.mark();
     std::thread::sleep(Duration::from_millis(1000));
     assert!(
         rig.pty.raw_since(mark).is_empty(),
-        "the idle UI wrote {} bytes",
-        rig.pty.raw_since(mark).len()
+        "the idle UI wrote {} bytes: {:?}",
+        rig.pty.raw_since(mark).len(),
+        String::from_utf8_lossy(rig.pty.raw_since(mark).as_ref())
     );
 }
 

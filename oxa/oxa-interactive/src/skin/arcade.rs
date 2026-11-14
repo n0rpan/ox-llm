@@ -97,7 +97,7 @@ pub struct ArcadeState {
 }
 
 impl ArcadeState {
-    /// Note the state of the run. `running` is the loop's "a run is active"; `blocks` is the
+    /// Note the state of the run. `running` is "the activity line shows a state"; `blocks` is the
     /// transcript: the coins are the tool calls since the user's last message, and how the
     /// run ended is read from the last block when the run stops.
     pub fn observe(&mut self, running: bool, blocks: &[Block], now_ms: u64) {
