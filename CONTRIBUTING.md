@@ -39,6 +39,19 @@ cd oxa && cargo test --locked                            # oxa
 python3 -I -m unittest discover -s tools/release/tests   # release tooling (repository root)
 ```
 
-In the development repository, CI runs only on self-hosted helper machines: `ci-engine.yml`,
-`ci-oxa.yml`, `ci-lab.yml` and `ci-repo.yml`. Each is path-filtered to its product. Start a run on any
-branch with `gh workflow run <file> --ref <branch>`.
+Hosted CI runs in three tiers:
+
+- Branch pushes run formatting, clippy and unit tests for changed products; unknown or shared
+  tooling paths select all products. Engine pushes exercise the x86_64 stub; oxa pushes run
+  workspace library tests; lab pushes run the model-free lab suite.
+- Source pull requests (including stacked PRs) and main pushes run the full x86_64/aarch64
+  builds, oxa workspace and behavior suite, release-profile tests with required bwrap, lab
+  tests and the OpenAI contract against loopback servers.
+- Nightly on main and manual runs execute the full set. Docs-only changes run local Markdown
+  link checks. Secret, SDK-material, product-isolation and receipt scans run on every event,
+  including docs-only changes.
+
+Workflows use GitHub-hosted runners and pinned actions. Branch concurrency cancels superseded
+runs. Cargo registry/git/build caches and pip download caches contain no credential files.
+The path classifier's unit tests run in the classification job. No real cloud key or paid API
+is used by tests.
