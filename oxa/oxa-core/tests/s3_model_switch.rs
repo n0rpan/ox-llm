@@ -112,14 +112,18 @@ impl Hooks for Probe {
     }
 }
 
-fn write_settings(env: &TestEnv) {
+/// `profile` = `Some(..)` pins `oxa.profile` (a pi-specific test); `None` uses the default.
+fn write_settings_profile(env: &TestEnv, profile: Option<&str>) {
     let path = Dirs::under(env.root()).settings_file();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(
-        path,
+    let mut settings: serde_json::Value = serde_json::from_str(
         r#"{"compaction": {"reserveTokens": 256, "keepRecentTokens": 200}, "retry": {"enabled": false}}"#,
     )
     .unwrap();
+    if let Some(profile) = profile {
+        settings["oxa"] = serde_json::json!({"profile": profile});
+    }
+    std::fs::write(path, settings.to_string()).unwrap();
 }
 
 fn deps(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> Deps {
@@ -164,7 +168,16 @@ struct Rig {
 /// A fake controller with both models (`publish_flash = false`: Flash has no `model_limits`
 /// row, an engine that does not publish the target's limits) and a session on "moe".
 fn rig(env: &TestEnv, script: Vec<ScriptTurn>, publish_flash: bool) -> Rig {
-    write_settings(env);
+    rig_with_profile(env, script, publish_flash, None)
+}
+
+fn rig_with_profile(
+    env: &TestEnv,
+    script: Vec<ScriptTurn>,
+    publish_flash: bool,
+    profile: Option<&str>,
+) -> Rig {
+    write_settings_profile(env, profile);
     let flash_cap = prefix_len(env) + 4000;
     let mut models = vec![FakeModel::moe(MOE, 1 << 20)];
     if publish_flash {
@@ -407,7 +420,8 @@ fn extension_set_model_compacts_first_through_the_host() {
 #[test]
 fn failed_summary_keeps_the_model() {
     let env = TestEnv::new();
-    let mut r = rig(
+    // `local` falls back to a mechanical summary; the failure policy tested here is pi's.
+    let mut r = rig_with_profile(
         &env,
         script_big(vec![
             ScriptTurn::fault(Fault::Http {
@@ -417,6 +431,7 @@ fn failed_summary_keeps_the_model() {
             ScriptTurn::text("still moe"),
         ]),
         true,
+        Some("pi"),
     );
     big_conversation(&mut r.session);
     let mut sink = VecSink::default();

@@ -410,3 +410,76 @@ fn fuzzy_scores_match_pi_reference() {
         }
     }
 }
+
+// ---- first-run: prose never opens the file list -------------------------------------------
+
+/// A work directory with dotfiles and a few project entries.
+fn prose_env() -> (TestEnv, CombinedProvider) {
+    let env = TestEnv::new();
+    let work = env.work();
+    env.write("work/.cargo/config.toml", "");
+    env.write("work/.config/x.toml", "");
+    env.write("work/.claude/notes.md", "");
+    env.write("work/src/main.rs", "");
+    env.write("work/fine.txt", "");
+    let index = FileIndex::build(&work, 10_000);
+    let p = CombinedProvider::new(vec![], index, &work, &env.home());
+    (env, p)
+}
+
+/// An apostrophe, a quote or a trailing space in prose is no path trigger (it listed the cwd,
+/// dotfiles first).
+#[test]
+fn prose_with_quotes_opens_no_list() {
+    let (_env, mut p) = prose_env();
+    for text in ["what's ", "it's \"fine\" ", "it's \"fi", "hello ", "what's"] {
+        let s = suggest(&mut p, text, false);
+        assert!(s.is_none(), "{text:?} opened {:?}", values(&s));
+    }
+}
+
+/// Explicit triggers still open the list: `@src/`, a `./` / `~/` / `/` token, and Tab.
+#[test]
+fn explicit_triggers_still_open_the_list() {
+    let (env, mut p) = prose_env();
+    let s = suggest(&mut p, "look @src/", false).expect("@src/ lists src");
+    assert!(values(&Some(s)).contains(&"@src/main.rs".to_string()));
+    let s = suggest(&mut p, "cat ./sr", false).expect("./sr lists src");
+    assert_eq!(values(&Some(s)), vec!["./src/"]);
+    env.write("home/notes.txt", "");
+    let s = suggest(&mut p, "read ~/no", false).expect("~/no");
+    assert_eq!(values(&Some(s)), vec!["~/notes.txt"]);
+    // Tab on a quoted prefix is still a path completion.
+    let s = suggest(&mut p, "cat \"fi", true).expect("Tab on \"fi");
+    assert_eq!(values(&Some(s)), vec!["\"fine.txt\""]);
+    // Tab after a space lists the cwd, without dotfiles.
+    let s = suggest(&mut p, "cat ", true).expect("Tab on an empty token");
+    let v = labels(&Some(s));
+    assert!(v.contains(&"src/".to_string()), "{v:?}");
+    assert!(!v.iter().any(|l| l.starts_with('.')), "no dotfiles: {v:?}");
+}
+
+/// Dotfiles are offered only when the typed name starts with `.`.
+#[test]
+fn dotfiles_only_for_a_dot_prefix() {
+    let (_env, mut p) = prose_env();
+    let v = values(&suggest(&mut p, "@.c", false));
+    for d in ["@.cargo/", "@.config/", "@.claude/"] {
+        assert!(v.contains(&d.to_string()), "{d} missing: {v:?}");
+    }
+    let v = values(&suggest(&mut p, "@c", false));
+    assert!(
+        !v.iter().any(|x| x.contains("/.") || x.starts_with("@.")),
+        "@c: {v:?}"
+    );
+    let v = values(&suggest(&mut p, "@", false));
+    assert!(
+        !v.iter().any(|x| x.contains("/.") || x.starts_with("@.")),
+        "@: {v:?}"
+    );
+    // Tab paths: the same rule.
+    let v = labels(&suggest(&mut p, "cat .c", true));
+    assert!(v.contains(&".cargo/".to_string()), "{v:?}");
+    let v = labels(&suggest(&mut p, "cat ./", false));
+    assert!(!v.iter().any(|l| l.starts_with('.')), "./ hides dotfiles: {v:?}");
+}

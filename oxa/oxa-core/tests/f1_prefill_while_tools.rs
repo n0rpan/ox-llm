@@ -571,7 +571,7 @@ fn off_arm_profile_pi_unset_sends_no_prefill() {
     let _g = serial(Duration::from_millis(1));
     let env = TestEnv::new();
     let eng = Arc::new(ScriptedEngine::new(script(reads_then_slow())));
-    let settings = Settings::from_values(json!({}), json!({}));
+    let settings = Settings::from_values(json!({"oxa": {"profile": "pi"}}), json!({}));
     let mut s = open(
         &env,
         eng.clone(),

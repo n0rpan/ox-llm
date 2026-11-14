@@ -11,7 +11,7 @@ use crate::prompt::{self, McpReach, SkillReader};
 /// `local` leaves `<tools>` out of the preamble) and `oxa.diet.output` (V020-OPTIMIZE #1, #10),
 /// resolved by the caller from the settings. `child` (L4-SUBVERIFY): this process is a subagent
 /// child; it adds [`crate::prompt::RULE_CHILD_VERIFY`] under `local` with the diet on. `Default` =
-/// `pi`, diet off, not a child: [`build_prefix`]'s bytes.
+/// [`Profile::DEFAULT`], diet off, not a child: [`build_prefix`]'s bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PrefixOpts {
     pub profile: Profile,
@@ -19,7 +19,7 @@ pub struct PrefixOpts {
     pub child: bool,
 }
 
-/// Build the prefix of an epoch under the default options (`pi`, diet off). Pure: same inputs =
+/// Build the prefix of an epoch under the default options (the default profile, diet off). Pure: same inputs =
 /// same bytes = same sha. See [`build_prefix_with`] for the sections.
 pub fn build_prefix(
     cwd: &Path,

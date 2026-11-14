@@ -1,6 +1,8 @@
 //! A9: the bwrap argv. Owner: task A9. Signatures below are frozen; bodies are yours.
 use crate::gitdirs::{alias_refusal, is_real_dir, protected_entries, unsafe_reason, Mounts};
-use crate::layout::{is_home_or_above, protected_paths, sensitive_paths, Layout};
+use crate::layout::{
+    home_protected_paths, is_home_itself, is_home_or_above, protected_paths, sensitive_paths, Layout,
+};
 use crate::run::run_argv;
 use crate::Bwrap;
 use oxa_proto::{codes, CancelToken, ExecSpec, OxaError};
@@ -27,8 +29,9 @@ pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
 /// deterministic; golden per case. Order: the fixed flags (`--unshare-all`, `--share-net` only
 /// when `net`, `--die-with-parent`, `--new-session`, `--cap-drop ALL`), `--ro-bind / /`,
 /// `--dev /dev`, `--proc /proc`, `--tmpfs /tmp`, `--tmpfs <home>`, the cwd (`--bind`, or
-/// `--ro-bind` when not writable or when cwd is `$HOME` / `/` / a parent of `$HOME` without
-/// `allow_home_write`, B3), the layout's binds sorted by path (read-only toolchains, read-write
+/// `--ro-bind` when not writable or when cwd is `$HOME` / `/` / a parent of `$HOME`, B3; in a
+/// home workspace (O-199, [`cwd_mode`]) followed by `--bind` of each of
+/// [`home_workspace_entries`]), the layout's binds sorted by path (read-only toolchains, read-write
 /// caches, B2; a bind that holds the cwd is left out), the git data outside the cwd (sbx-git:
 /// read-write dirs (read-only when one of them has a protected entry that is not plain,
 /// sbx-gitsym), read-only alternates, then the protected entries: read-only when they exist,
@@ -44,8 +47,13 @@ pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
 /// passed-through variables (sorted), then `s.env` in order, then `-- bash -c <command>`.
 pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String> {
     let home_s = home.to_string_lossy().into_owned();
-    let cwd_path = s.cwd.as_path();
-    let cwd = s.cwd.to_string_lossy().into_owned();
+    // sbx-symhome: every decision and every mount uses the canonical cwd and home, so a cwd
+    // that only resolves to `$HOME` (or into it) gets the masks of the real one. An
+    // unresolvable path stays as given here; `refusal` refuses to run then (fail closed).
+    let home_c = canon(home);
+    let cwd_c = canon(&s.cwd);
+    let cwd_path = cwd_c.as_path();
+    let cwd = cwd_c.to_string_lossy().into_owned();
     let mut a: Vec<String> = Vec::new();
     push(&mut a, &["--unshare-all"]);
     if s.net {
@@ -60,18 +68,29 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
         &["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"],
     );
     push(&mut a, &["--tmpfs", "/tmp"]);
-    push(&mut a, &["--tmpfs", &home_s]);
-    let home_root = is_home_or_above(cwd_path, home);
-    let writable = s.writable && (!home_root || layout.allow_home_write);
+    push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
+    let mode = cwd_mode(s, home, layout);
+    let writable = mode == CwdMode::Writable;
     let bind = if writable { "--bind" } else { "--ro-bind" };
     push(&mut a, &[bind, &cwd, &cwd]);
+    // O-199: a home workspace: the home root stays read-only, its plain folders and files
+    // become writable (never a dot-entry, a symlink or a protected name such as `~/bin`).
+    let home_entries = if mode == CwdMode::HomeWorkspace {
+        home_workspace_entries(&home_c, layout)
+    } else {
+        Vec::new()
+    };
+    for p in &home_entries {
+        let p = p.to_string_lossy();
+        push(&mut a, &["--bind", &p, &p]);
+    }
     // B2: toolchains read-only, caches read-write, in path order (a parent before its child).
     let mut binds: Vec<(&Path, bool)> = layout
         .read
         .iter()
         .map(|p| (p.as_path(), false))
         .chain(layout.write.iter().map(|p| (p.as_path(), true)))
-        .filter(|(p, _)| !cwd_path.starts_with(p))
+        .filter(|(p, _)| !cwd_path.starts_with(p) && !cwd_path.starts_with(canon(p)))
         .collect();
     binds.sort();
     for (p, rw) in &binds {
@@ -148,23 +167,54 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
             push(&mut a, &["--ro-bind", &p, &p]);
         }
     }
-    // B3: the deny-list, after every bind so no bind re-exposes it.
+    // B3: the deny-list, after every bind so no bind re-exposes it. sbx-symhome: each entry is
+    // masked where it is shown: at its own path (as before), at its canonical path when that
+    // lies outside the hidden home, and inside every mount whose canonical source holds it
+    // (the cwd, the home workspace's entries, the layout's binds at their own destinations,
+    // the git data), so a symlink in the way never leaves a second, unmasked route.
     let shown = |p: &Path| {
-        !p.starts_with(home)
+        (!p.starts_with(home) && !p.starts_with(&home_c))
             || p.starts_with(cwd_path)
             || binds.iter().any(|(b, _)| p.starts_with(b))
             || layout.git.paths().any(|b| p.starts_with(b))
     };
+    let mut mounts: Vec<(PathBuf, PathBuf)> = vec![(cwd_c.clone(), cwd_c.clone())];
+    mounts.extend(home_entries.iter().map(|p| (p.clone(), canon(p))));
+    mounts.extend(binds.iter().map(|(b, _)| (b.to_path_buf(), canon(b))));
+    mounts.extend(layout.git.paths().map(|b| (b.to_path_buf(), canon(b))));
+    let mut masks: Vec<(PathBuf, bool)> = Vec::new();
     for p in sensitive_paths(home, layout.agent_dir.as_deref()) {
         let Ok(meta) = std::fs::metadata(&p) else {
             continue;
         };
-        if !shown(&p) {
+        let dir = meta.is_dir();
+        if shown(&p) {
+            masks.push((p.clone(), dir));
+        }
+        let Ok(pc) = std::fs::canonicalize(&p) else {
+            continue;
+        };
+        if !pc.starts_with(&home_c) && !pc.starts_with(home) {
+            masks.push((pc.clone(), dir));
+        }
+        for (dest, src) in &mounts {
+            if let Ok(rest) = pc.strip_prefix(src) {
+                masks.push((dest.join(rest), dir));
+            }
+        }
+    }
+    masks.sort();
+    masks.dedup_by(|x, y| x.0 == y.0);
+    let mut hidden: Vec<PathBuf> = Vec::new();
+    for (p, dir) in masks {
+        // Inside a directory masked already: hidden, and nothing can be mounted in there.
+        if hidden.iter().any(|h| p.starts_with(h)) {
             continue;
         }
         let ps = p.to_string_lossy();
-        if meta.is_dir() {
+        if dir {
             push(&mut a, &["--tmpfs", &ps, "--remount-ro", &ps]);
+            hidden.push(p);
         } else {
             push(&mut a, &["--ro-bind", "/dev/null", &ps]);
         }
@@ -183,6 +233,12 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a
+}
+
+/// `p` canonical, or `p` itself when it cannot be resolved (the argv stays deterministic; the
+/// sandbox refuses to run a command then, [`refusal`]).
+fn canon(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// A real file or directory (not a symlink: binding over one would follow it).
@@ -217,8 +273,9 @@ fn mask_missing(a: &mut Vec<String>, p: &Path) {
 /// are ignored (the argv then masks the file with `/dev/null`). The `hooks` directory needs
 /// no such step: its tmpfs mask is readable.
 pub(crate) fn create_missing_git_files(s: &ExecSpec, home: &Path, layout: &Layout) {
-    let cwd = s.cwd.as_path();
-    if !(s.writable && (!is_home_or_above(cwd, home) || layout.allow_home_write)) {
+    let cwd_c = canon(&s.cwd);
+    let cwd = cwd_c.as_path();
+    if cwd_mode(s, home, layout) != CwdMode::Writable {
         return;
     }
     // sbx-gitsym: nothing is created for git directories that are bound read-only.
@@ -248,12 +305,21 @@ pub(crate) fn create_missing_git_files(s: &ExecSpec, home: &Path, layout: &Layou
 /// (`gitdirs::alias_refusal`) against what the command could still write (the writable cwd, the
 /// layout's read-write binds), with the git directories read-only.
 pub(crate) fn refusal(s: &ExecSpec, home: &Path, layout: &Layout) -> Option<String> {
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let cwd_raw = s.cwd.as_path();
-    let cwd = canon(cwd_raw);
-    let writable = s.writable && (!is_home_or_above(cwd_raw, home) || layout.allow_home_write);
+    // sbx-symhome: the masks are decided on canonical paths; without them, nothing runs.
+    for (what, p) in [("working directory", s.cwd.as_path()), ("home directory", home)] {
+        if let Err(e) = std::fs::canonicalize(p) {
+            return Some(format!(
+                "sandbox refused: the {what} {} cannot be resolved ({e}), so its protections \
+cannot be checked; commands are not run",
+                p.display()
+            ));
+        }
+    }
+    let cwd = canon(&s.cwd);
+    let mode = cwd_mode(s, home, layout);
+    let writable = mode == CwdMode::Writable;
     let mut dirs = layout.git.dirs.clone();
-    let dotgit = cwd_raw.join(".git");
+    let dotgit = cwd.join(".git");
     if is_real_dir(&dotgit) {
         dirs.push(canon(&dotgit));
     }
@@ -265,6 +331,13 @@ pub(crate) fn refusal(s: &ExecSpec, home: &Path, layout: &Layout) -> Option<Stri
     let mut rw: Vec<PathBuf> = layout.write.iter().map(|p| canon(p)).collect();
     if writable {
         rw.push(cwd.clone());
+    }
+    if mode == CwdMode::HomeWorkspace {
+        rw.extend(
+            home_workspace_entries(&canon(home), layout)
+                .iter()
+                .map(|p| canon(p)),
+        );
     }
     let dotgit_c = canon(&dotgit);
     let ro: Vec<PathBuf> = dirs
@@ -278,6 +351,68 @@ pub(crate) fn refusal(s: &ExecSpec, home: &Path, layout: &Layout) -> Option<Stri
 reaches what a command could change, so commands are not run here"
         )
     })
+}
+
+/// How the cwd of a command is bound (B3, O-199).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CwdMode {
+    /// A project directory of a writable command: bound read-write (B4 protections inside).
+    Writable,
+    /// Plan mode, or a home root without a home workspace: bound read-only.
+    ReadOnly,
+    /// The home directory itself, the user confirmed it (`Layout::allow_home_write`): the
+    /// home root and its dot-entries read-only, its plain entries read-write
+    /// ([`home_workspace_entries`]), the deny-list masked.
+    HomeWorkspace,
+}
+
+/// The [`CwdMode`] of `s`. A home root is `/`, the home directory or a parent of it, also when
+/// the cwd only resolves to one (a symlink). A parent of the home directory or `/` is never a
+/// workspace, whatever the settings.
+pub(crate) fn cwd_mode(s: &ExecSpec, home: &Path, layout: &Layout) -> CwdMode {
+    if !s.writable {
+        return CwdMode::ReadOnly;
+    }
+    let cwd = s.cwd.as_path();
+    let home_root = is_home_or_above(cwd, home) || is_home_or_above(&canon(cwd), &canon(home));
+    if !home_root {
+        CwdMode::Writable
+    } else if layout.allow_home_write && is_home_itself(cwd, home) {
+        CwdMode::HomeWorkspace
+    } else {
+        CwdMode::ReadOnly
+    }
+}
+
+/// O-199: what bash may write in a home workspace: the plain top-level entries of `home`
+/// (real directories and regular files, by name), sorted. Never a dot-entry (shell startup
+/// files, `.config`, `.local`, `.ssh`, the agents' settings all live there), a symlink (it may
+/// lead out of the home), a name of `oxa_proto::guard::PROTECTED_IN_HOME` (`bin`) or an entry
+/// inside the deny-list. The home root itself stays read-only, so nothing new can appear next
+/// to the dotfiles.
+pub(crate) fn home_workspace_entries(home: &Path, layout: &Layout) -> Vec<PathBuf> {
+    let protected = home_protected_paths(home);
+    let mut deny = sensitive_paths(home, layout.agent_dir.as_deref());
+    deny.extend(
+        deny.iter()
+            .filter_map(|d| std::fs::canonicalize(d).ok())
+            .collect::<Vec<_>>(),
+    );
+    let Ok(rd) = std::fs::read_dir(home) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+        .filter(|e| {
+            std::fs::symlink_metadata(e.path())
+                .is_ok_and(|m| m.file_type().is_dir() || m.file_type().is_file())
+        })
+        .map(|e| e.path())
+        .filter(|p| !protected.contains(p) && !deny.iter().any(|d| p.starts_with(d)))
+        .collect();
+    out.sort();
+    out
 }
 
 fn push(a: &mut Vec<String>, xs: &[&str]) {

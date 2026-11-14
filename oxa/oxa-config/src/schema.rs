@@ -153,6 +153,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    // The per-prompt environment note (date, time, runtime facts): unset = off under `pi`, on
+    // under `local`.
+    key("oxa.envNote", Kind::Bool, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
@@ -164,7 +167,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
     // OXA-LOCAL-FIRST sec. 6; the default is `Profile::DEFAULT` (a test keeps them equal).
-    key("oxa.profile", Kind::Enum(&["pi", "local"]), "\"pi\""),
+    key("oxa.profile", Kind::Enum(&["pi", "local"]), "\"local\""),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).
     // `greedy` = W6 `temperature: 0` (MTP on); `model` = the model card's sampling (oxa-core
@@ -180,6 +183,8 @@ const SCHEMA: &[KeyDef] = &[
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
+    // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
+    key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
@@ -254,6 +259,17 @@ const SCHEMA: &[KeyDef] = &[
         "tuiMode",
         Kind::Enum(&["regular", "fullscreen"]),
         "\"fullscreen\"",
+    ),
+    key(
+        "ui.animation",
+        Kind::Enum(&["arcade", "minimal", "off"]),
+        "\"arcade\"",
+    ),
+    key("ui.animationGraphics", Kind::Enum(&["auto", "off"]), "\"auto\""),
+    key(
+        "ui.animationScene",
+        Kind::Enum(&["graphics", "stack", "stars", "charge"]),
+        "null",
     ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa"]), "\"auto\""),

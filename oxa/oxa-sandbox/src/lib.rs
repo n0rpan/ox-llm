@@ -22,8 +22,8 @@ mod run;
 pub use bwrap::{bwrap_args, bwrap_args_with};
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
 pub use layout::{
-    expand_home, is_home_or_above, is_secret_name, protected_paths, sensitive_paths, Layout, LayoutInputs,
-    SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS, SETTING_WRITE_PATHS,
+    expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_secret_name, protected_paths,
+    sensitive_paths, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS, SETTING_WRITE_PATHS,
 };
 pub use net::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 pub use offline::{no_network_argv, offline_argv};

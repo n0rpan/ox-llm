@@ -58,15 +58,17 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
 }
 
 /// The profile word of the start-up header: `local` under the `local` profile
-/// (`OXA_PROFILE`, else the `oxa.profile` setting), nothing under the default `pi` profile.
+/// (`OXA_PROFILE`, else the `oxa.profile` setting, else the default), nothing under `pi`.
 pub fn profile_word(env: &[(String, String)], settings: &oxa_config::Settings) -> Option<String> {
     let valid = |v: &str| matches!(v, "pi" | "local").then(|| v.to_string());
     let from_env = env
         .iter()
         .find(|(k, _)| k == "OXA_PROFILE")
         .and_then(|(_, v)| valid(v.trim()));
-    let profile = from_env.or_else(|| settings.string("oxa.profile").and_then(|v| valid(v.trim())));
-    profile.filter(|p| p == "local")
+    let profile = from_env
+        .or_else(|| settings.string("oxa.profile").and_then(|v| valid(v.trim())))
+        .unwrap_or_else(|| oxa_proto::Profile::DEFAULT.as_str().to_string());
+    (profile == "local").then(|| profile)
 }
 
 /// pi interactive-mode.ts `showLoadedResources`, compact form: `Context` (the context files
@@ -790,8 +792,9 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             vm.status.activity_ms = 0;
         }
         AgentEvent::MessageStart { message } => match message.msg.role {
-            // The core announces a user message twice: its stored entry (with images) and
-            // pi's `message_start` at the turn that sends it. One block.
+            // The core announces a user message twice: its stored entry (with images and the
+            // provenance of the environment note, `oxa_core::envnote`) and pi's `message_start`
+            // at the turn that sends it. One block: the entry's, shown as typed.
             Role::User if !user_block_pending(vm, message.msg.content.as_deref().unwrap_or_default()) => {
                 vm.blocks.push(Block::User {
                     text: message.msg.content.clone().unwrap_or_default(),
@@ -885,7 +888,12 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                     vm.blocks.push(Block::Tool(t));
                 }
             }
-            vm.status.activity = Activity::Thinking;
+            // Calls of one reply may run side by side: while another one runs, a tool runs.
+            let running = vm.blocks.iter().rev().find_map(|b| match b {
+                Block::Tool(t) if t.state == ToolState::Running => Some(t.name.clone()),
+                _ => None,
+            });
+            vm.status.activity = running.map_or(Activity::Thinking, Activity::Tool);
         }
         AgentEvent::CompactionStart { .. } => vm.status.activity = Activity::Compacting,
         AgentEvent::CompactionEnd {
@@ -1172,11 +1180,19 @@ pub fn blocks_from_entries(branch: &[Entry]) -> Vec<Block> {
 }
 
 /// The block of a stored user message: its wire text and its attached images.
-/// A `User` block with `text` was added since the last reply (its entry was stored).
-fn user_block_pending(vm: &ViewModel, text: &str) -> bool {
+/// A `User` block for the wire text `content` was added since the last reply (its entry was
+/// stored): its text is `content`, or `content` without the note the entry recorded (the
+/// block's text then ends where the `\n\n` before the note starts).
+fn user_block_pending(vm: &ViewModel, content: &str) -> bool {
+    let shown_from = |t: &str| {
+        content == t
+            || content
+                .strip_prefix(t)
+                .is_some_and(|note| note.starts_with("\n\n"))
+    };
     for b in vm.blocks.iter().rev() {
         match b {
-            Block::User { text: t, .. } if t == text => return true,
+            Block::User { text: t, .. } if shown_from(t) => return true,
             Block::Assistant { .. } | Block::Tool(_) => return false,
             _ => {}
         }
@@ -1184,9 +1200,10 @@ fn user_block_pending(vm: &ViewModel, text: &str) -> bool {
     false
 }
 
+/// A stored user message as typed: without the environment note oxa recorded appending.
 fn user_block(text: &str, parts: &[Part]) -> Block {
     Block::User {
-        text: text.to_string(),
+        text: oxa_core::envnote::strip_note(text, parts).to_string(),
         images: parts
             .iter()
             .filter_map(|p| match p {
@@ -1196,7 +1213,7 @@ fn user_block(text: &str, parts: &[Part]) -> Block {
                     w: *w,
                     h: *h,
                 }),
-                Part::Text(_) => None,
+                Part::Text(_) | Part::EnvNote(_) => None,
             })
             .collect(),
     }
@@ -2102,7 +2119,11 @@ mod profile_word_tests {
 
     #[test]
     fn profile_word_only_for_local() {
-        assert_eq!(profile_word(&env(&[]), &settings(json!({}))), None);
+        assert_eq!(
+            profile_word(&env(&[]), &settings(json!({}))),
+            Some("local".to_string()),
+            "the default profile is local"
+        );
         assert_eq!(
             profile_word(&env(&[]), &settings(json!({"oxa": {"profile": "pi"}}))),
             None

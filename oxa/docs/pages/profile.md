@@ -4,18 +4,18 @@ A profile sets the formats and defaults oxa uses for a model. Both profiles have
 
 | Profile | Use it for |
 |---|---|
-| `pi` (default) | the formats the earlier agent used. Use it with engines and models that expect that shape |
-| `local` | the local ox-llm engine and its models. Formats and defaults are tuned to the local engine and its models |
+| `pi` | the formats the earlier agent used. Select it explicitly for engines and models that expect that shape |
+| `local` (default) | the local ox-llm engine and its models. Formats and defaults are tuned to the local engine and its models |
 
 ## Selecting a profile
 
-Set it in a settings file:
+The default is `local`. Set another in a settings file:
 
 ```json
 { "oxa": { "profile": "local" } }
 ```
 
-in `~/.oxa/agent/settings.json`, or in the project's `.oxa/settings.json` (the project file wins, if the project is trusted). The environment variable `OXA_PROFILE=local` wins over both settings files. Any value other than `pi` or `local` is reported as a warning that names both values, and the next layer decides.
+in `~/.oxa/agent/settings.json`, or in the project's `.oxa/settings.json` (the project file wins, if the project is trusted). The environment variable `OXA_PROFILE=pi` (or `=local`) wins over both settings files. Any value other than `pi` or `local` is reported as a warning that names both values, and the next layer decides.
 
 A session keeps the profile it was created with. A change of profile takes effect at the next prefix epoch: after `/reload` (when the change alters the system prompt or the tool list), after a model switch, or in a new session. `/reload` opens a new epoch when only the profile changed, because the declared tool text is different.
 
@@ -82,6 +82,7 @@ On an engine model that does not keep reasoning in its history, `auto` behaves a
 - **Idle summary.** Under `local` the summary of the next compaction is written in idle time when the context is between 80 % and 100 % of the soft limit, and reused when nothing it covers has changed (`oxa.compaction.idleSummary`).
 - **Compaction during a run.** Under `local` a run whose context passes the soft limit is compacted between two tool steps, before its next request, keeping the unanswered tool calls and results verbatim (`oxa.compaction.midRun`).
 - **Mechanical record.** Under `local`, when a compaction cannot get its summary, because the request fails or is cancelled twice in a row, oxa writes a record built without the model: the user's messages in order and the files touched. A warning says so, and the session goes on. Under `pi` the failure is an error. See [compaction.md](compaction.md#if-no-summary-can-be-made).
+- **Date and environment.** Under `local` each prompt you send ends with a short environment note (`oxa.envNote`): the first one in a session carries the date, time zone, model, context size and permission mode, later ones only the local time. The note is appended to your message, never put in the system prompt, so earlier requests stay byte-identical and the cache is reused.
 - **Prefill.** Under `local` oxa prefills a long draft while you type it (`oxa.prefill.paste`), and the results of the calls before a slow tool call while that call runs (`oxa.prefill.tools`). Both need an engine that supports prefill-only requests; without one they do nothing.
 
 These defaults are the only ones that differ. A setting that is set explicitly always wins over the profile's default.

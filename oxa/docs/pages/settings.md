@@ -42,6 +42,9 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 |---|---|---|---|
 | `$schema` | string | `null` | editor schema hint; ignored |
 | `theme` | string | `"system"` | `system`, `dark`, `light` or a name from a theme file; also `oxa` (OXA's own dark palette) and `oxa-omarchy` (follows the current Omarchy desktop theme, read-only; `system` when there is none). With the `oxa` skin the default is `oxa-omarchy` |
+| `ui.animation` | `arcade` / `minimal` / `off` | `arcade` | what moves on the activity line of the `oxa` skin while a run is in progress: `arcade` is a one-row animated scene with a short `CLEAR` when the run is done; `minimal` is the small six-cell sprite; `off` is the static text badge. Never any sound. `ui.reducedMotion`, `NO_COLOR` and `TERM=dumb` give `off` |
+| `ui.animationGraphics` | `auto` / `off` | `auto` | `auto` draws the scene as pixel art when the terminal answers the kitty graphics query at start and is kitty or Ghostty (every frame is sent once and deleted again on exit); `off` keeps the scene in text everywhere |
+| `ui.animationScene` | `graphics` / `stack` / `stars` / `charge` | `null` | the scene of `ui.animation = "arcade"`. Unset: the pixel-art scene where the terminal can draw it, else `stack` (stacking columns). `stack`, `stars` (a ship in a starfield) and `charge` (the ox, in block characters) are the text scenes; `graphics` asks for the pixel-art scene on any terminal that answers the graphics query |
 | `ui.reducedMotion` | bool | `false` | no animation in the `oxa` skin: the working sprite and the YOLO flames are replaced by the static text badge. The environment variable `OXA_REDUCED_MOTION=1` does the same for one run; `NO_COLOR` and `TERM=dumb` imply it |
 | `ui.skin` | `auto` / `pi` / `oxa` | `auto` | the look of the interactive UI: `pi` is pi's look, `oxa` is OXA's own (frames, a status line with meters, a key hint bar); `auto` is `oxa` under the `local` profile and `pi` under the `pi` profile. With the `oxa` skin, `NO_COLOR` turns all colour off |
 | `themes` | list | `[]` | extra theme files or directories |
@@ -159,8 +162,9 @@ The compaction rules are in [compaction.md](compaction.md).
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
+| `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is off under `pi` and on under `local`; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
-| `oxa.sandbox.allowHomeWrite` | bool | `false` | let bash write to the working directory when oxa starts in the home directory or above it (a start in `/` makes the whole system writable); user settings only |
+| `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.sandbox.readPaths` | list | `[]` | extra read-only paths for bash; `~/` is expanded; user settings only |
 | `oxa.sandbox.writePaths` | list | `[]` | extra writable paths for bash; `~/` is expanded; user settings only |
 
@@ -171,6 +175,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `externalEditor` | string | `null` | editor for Ctrl+G; wins over `VISUAL` and `EDITOR` |
 | `oxa.reportIssue.repo` | string | `null` | repository for `oxa report-issue submit`, as `OWNER/NAME` |
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
+| `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
 
 ## Example
 
