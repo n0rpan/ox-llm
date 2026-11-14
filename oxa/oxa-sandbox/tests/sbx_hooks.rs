@@ -289,11 +289,17 @@ fn worktree_common_dir_without_hooks_masks_them() {
     let b = bwrap_value(&env).with_git_dirs(&w.wt);
     let args = args_of(&b, &w.wt, true, &env);
     assert!(contains_run(&args, &ro("<root>/main/.git/config")), "{args:?}");
-    assert!(contains_run(&args, &tmpfs_mask("<root>/main/.git/hooks")), "{args:?}");
+    assert!(
+        contains_run(&args, &tmpfs_mask("<root>/main/.git/hooks")),
+        "{args:?}"
+    );
     let m = masked(&args);
     assert!(m.contains(&"<root>/main/.git/hooks".to_string()), "{args:?}");
     assert!(m.contains(&"<root>/main/.git/info".to_string()), "{args:?}");
-    assert!(m.contains(&"<root>/main/.git/worktrees/wt1/hooks".to_string()), "{args:?}");
+    assert!(
+        m.contains(&"<root>/main/.git/worktrees/wt1/hooks".to_string()),
+        "{args:?}"
+    );
 }
 
 #[test]
