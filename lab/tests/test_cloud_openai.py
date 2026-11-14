@@ -309,6 +309,26 @@ class Responses(CloudCase):
             'model': REMOTE, 'messages': history})[0], 409)
         self.assertEqual(len(upstream.requests), 2)
 
+    def test_native_history_scope_includes_image_content(self):
+        item = cloud.entry(REMOTE, models('gpt-6.1-sol')[REMOTE])
+        history = [{'role': 'user', 'content': [
+            {'type': 'text', 'text': 'inspect this synthetic image'},
+            {'type': 'image_url', 'image_url': {'url': 'https://example.invalid/first.png'}}]}]
+        assistant = {'role': 'assistant', 'content': None, 'tool_calls': [{
+            'id': 'call_image', 'type': 'function',
+            'function': {'name': 'lookup', 'arguments': '{}'}}]}
+        native = [{'type': 'function_call', 'call_id': 'call_image',
+                   'name': 'lookup', 'arguments': '{}'}]
+        cloud_openai.remember(item, history, assistant, native, 'synthetic-history-scope')
+        continuation = history + [assistant, {'role': 'tool', 'tool_call_id': 'call_image',
+                                              'content': 'synthetic result'}]
+        self.assertEqual(cloud_openai.responses_request(
+            {'messages': continuation}, item, 'synthetic-history-scope')['input'][1], native[0])
+        history[0]['content'][1]['image_url']['url'] = 'https://example.invalid/second.png'
+        with self.assertRaises(cloud.CloudError) as caught:
+            cloud_openai.responses_request({'messages': continuation}, item, 'synthetic-history-scope')
+        self.assertEqual(caught.exception.code, 'cloud_continuation_unavailable')
+
     def test_all_gpt6_models_bind_responses_and_reasoning_contract(self):
         for upstream, none_supported in cloud_openai.RESPONSES_MODELS.items():
             item = cloud.entry(REMOTE, models(upstream)[REMOTE])

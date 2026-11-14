@@ -93,7 +93,10 @@ _HISTORY_TTL = 1800
 
 def _canonical(message):
     content = message.get('content')
-    if isinstance(content, list):
+    if (isinstance(content, list)
+            and all(isinstance(part, dict) and part.get('type') == 'text' for part in content)):
+        # Text arrays and plain text are equivalent; images and other typed content
+        # must retain their full identity when scoping native reasoning continuations.
         content = ''.join(part.get('text', '') for part in content
                           if isinstance(part, dict) and part.get('type') == 'text')
     calls = []
