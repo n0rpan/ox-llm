@@ -46,7 +46,8 @@ fn run(settings: Settings) -> Vec<oxa_fake::Recorded> {
     let mut s = open(&env, eng.clone(), settings);
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     for p in ["what's the latest news in norway?", "and the weather?", "thanks"] {
-        s.prompt(p.into(), Vec::new(), &mut sink, &mut ui).expect("prompt");
+        s.prompt(p.into(), Vec::new(), &mut sink, &mut ui)
+            .expect("prompt");
     }
     eng.requests().into_iter().filter(|r| r.max_tokens > 0).collect()
 }
@@ -61,7 +62,10 @@ fn user_texts(r: &oxa_fake::Recorded) -> Vec<String> {
 
 #[test]
 fn local_profile_notes_are_appended_and_history_bytes_never_change() {
-    let reqs = run(Settings::from_values(json!({"oxa": {"profile": "local"}}), json!({})));
+    let reqs = run(Settings::from_values(
+        json!({"oxa": {"profile": "local"}}),
+        json!({}),
+    ));
     assert_eq!(reqs.len(), 3);
     // The frozen prefix is the same bytes in every request and carries no clock.
     for r in &reqs {

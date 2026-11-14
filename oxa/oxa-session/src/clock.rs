@@ -16,7 +16,15 @@ pub struct LocalTime {
     pub offset_min: i32,
 }
 
-const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const WEEKDAYS: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
 
 impl LocalTime {
     /// `UTC+01:00`, `UTC-03:30`, `UTC`.
@@ -42,6 +50,8 @@ impl LocalTime {
 
 /// The local time at `unix_secs`; `None` when the C library cannot convert it.
 pub fn local_time(unix_secs: i64) -> Option<LocalTime> {
+    // `time_t` is `i64` on the 64-bit targets oxa ships for; the conversion keeps 32-bit honest.
+    #[allow(clippy::useless_conversion)]
     let t: libc::time_t = unix_secs.try_into().ok()?;
     // SAFETY: `tm` is plain old data; `localtime_r` writes it and returns null on failure.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };

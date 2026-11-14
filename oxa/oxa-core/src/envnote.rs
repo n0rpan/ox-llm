@@ -65,14 +65,18 @@ pub fn full_block(t: &LocalTime, f: &EnvFacts) -> String {
         if f.bash_network { "on" } else { "off" },
         if f.offline { "yes" } else { "no" }
     ));
-    lines.push("Use this date for \"today\", \"latest\" and \"recent\" (also for web_search freshness).".to_string());
+    lines.push(
+        "Use this date for \"today\", \"latest\" and \"recent\" (also for web_search freshness).".to_string(),
+    );
     lines.push(ENV_CLOSE.to_string());
     lines.join("\n")
 }
 
 /// The short note.
 pub fn time_note(t: &LocalTime) -> String {
-    TIME_NOTE.replace("{hm}", &t.hm).replace("{zone}", &t.zone_label())
+    TIME_NOTE
+        .replace("{hm}", &t.hm)
+        .replace("{zone}", &t.zone_label())
 }
 
 /// The note for a new user message after `wire`: the full block unless a user message on
@@ -121,7 +125,11 @@ pub fn locale_from(get: impl Fn(&str) -> Option<String>) -> String {
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Some(v) = get(key).filter(|v| !v.trim().is_empty()) {
             let base = v.split(['.', '@']).next().unwrap_or("").trim().to_string();
-            return if base == "C" || base == "POSIX" { String::new() } else { base };
+            return if base == "C" || base == "POSIX" {
+                String::new()
+            } else {
+                base
+            };
         }
     }
     String::new()
@@ -135,7 +143,8 @@ fn kernel() -> String {
 
 /// Whether the note is on for this session (`oxa.envNote`; unset = on under `local`).
 pub fn enabled(st: &SessionState) -> bool {
-    st.settings.bool("oxa.envNote", st.stats.profile == Profile::Local)
+    st.settings
+        .bool("oxa.envNote", st.stats.profile == Profile::Local)
 }
 
 /// The facts of `st` now.
@@ -238,7 +247,10 @@ mod tests {
             move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
         };
         assert_eq!(locale_from(env(&[("LANG", "nb_NO.UTF-8")])), "nb_NO");
-        assert_eq!(locale_from(env(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "de_DE@euro")])), "de_DE");
+        assert_eq!(
+            locale_from(env(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "de_DE@euro")])),
+            "de_DE"
+        );
         assert_eq!(locale_from(env(&[("LANG", "C.UTF-8")])), "");
         assert_eq!(locale_from(env(&[])), "");
     }
