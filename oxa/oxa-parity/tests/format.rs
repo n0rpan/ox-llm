@@ -1535,8 +1535,12 @@ fn fn_body(id: &str) -> &'static str {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = fmt_rows();
-    assert_eq!(rows.len(), 20, "the FMT area has 20 rows: {rows:?}");
+    assert_eq!(rows.len(), 21, "the FMT area has 21 rows: {rows:?}");
     for (id, verdict, test) in &rows {
+        if test == "omission" {
+            assert_eq!(verdict, "O", "{id}: only O rows may be omitted");
+            continue;
+        }
         let fn_name = id.to_ascii_lowercase().replace('-', "_");
         assert!(
             SELF.contains(&format!("fn {fn_name}()")),
@@ -1590,8 +1594,8 @@ fn a_rows_name_their_invariant() {
 /// unsupported_in_oxa
 #[test]
 fn o_rows_assert_unsupported_error() {
-    for (id, verdict, _) in fmt_rows() {
-        if verdict != "O" {
+    for (id, verdict, test) in fmt_rows() {
+        if test == "omission" || verdict != "O" {
             continue;
         }
         assert!(

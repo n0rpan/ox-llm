@@ -129,11 +129,7 @@ fn parity_rows() -> Vec<ParityRow> {
             test: cells[5].trim_matches('`').to_string(),
         });
     }
-    assert_eq!(
-        rows.len(),
-        29,
-        "SLASH-001..SLASH-030 (minus SLASH-016) of PARITY.md"
-    );
+    assert_eq!(rows.len(), 30, "SLASH-001..SLASH-030 of PARITY.md");
     rows
 }
 

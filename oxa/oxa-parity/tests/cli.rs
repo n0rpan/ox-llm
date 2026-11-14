@@ -236,7 +236,7 @@ fn test_fn(row: &Row) -> Option<String> {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = parity_rows();
-    assert_eq!(rows.len(), 91, "CLI 63 + MOD 11 + ENV 17");
+    assert_eq!(rows.len(), 92, "CLI 64 + MOD 11 + ENV 17");
     let src = include_str!("cli.rs");
     for row in &rows {
         if row.test == "omission" {

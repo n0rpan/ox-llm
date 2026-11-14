@@ -1817,8 +1817,8 @@ fn every_row_has_test_or_recorded_omission() {
     let rows = parity_rows();
     assert_eq!(
         rows.len(),
-        42,
-        "resources area rows (SKL 7, TPL 4, PKG 10, SEC 8, THM 6, CFG 7)"
+        43,
+        "resources area rows (SKL 7, TPL 4, PKG 10, SEC 8, THM 6, CFG 8)"
     );
     for row in &rows {
         if row.test == "omission" {

@@ -86,6 +86,7 @@ pi page(s): cli.md. Tests: `oxa-parity/tests/cli.rs`.
 | CLI-050 | Mode choice by tty rules (TUI only when stdin and stdout are terminals) | P |  | `cli.rs::cli_050` |
 | CLI-051 | `pi install <source>` / `pi remove <source>` (`uninstall` alias) / `pi list` | A | `oxa install\|remove\|list`; git and local sources; `npm:` is refused (O-175) | `cli.rs::cli_051` |
 | CLI-052 | `pi config`: choose which package resources load | P | `oxa config` | `cli.rs::cli_052` |
+| CLI-053 | `oxa config --import-pi` | O | omitted (removed with pi import) | omission |
 | CLI-054 | `pi update` (self), `--self`, `self`, `pi`, `--all`, `PI_SELF_UPDATE_COMMAND`, `selfUpdateCommand` | O | no self-update, no version check (no network unless asked) | `cli.rs::cli_054` |
 | CLI-055 | `pi update --extensions` / `pi update <source>` / `--extension <source>` | A | `oxa update` for git + local packages | `cli.rs::cli_055` |
 | CLI-056 | `pi update --models` | O | no model catalogs | `cli.rs::cli_056` |
@@ -309,6 +310,7 @@ pi page(s): slash-commands.md. Tests: `oxa-parity/tests/slash.rs`.
 | SLASH-013 | `/fork` | P |  | `slash.rs::slash_013` |
 | SLASH-014 | `/clone` | P |  | `slash.rs::slash_014` |
 | SLASH-015 | `/compact [instructions]` | A | W5 summary request | `slash.rs::slash_015` |
+| SLASH-016 | `/import <path>` | O | omitted (removed with pi import) | omission |
 | SLASH-017 | `/copy` | P |  | `slash.rs::slash_017` |
 | SLASH-018 | `/export [path]` HTML or JSONL | P |  | `slash.rs::slash_018` |
 | SLASH-019 | `/share` | O | no third-party upload from a local-first tool | `slash.rs::slash_019` |
@@ -337,6 +339,7 @@ pi page(s): sessions.md. Tests: `oxa-parity/tests/sessions.rs`.
 | SES-005 | `/new`, `/resume`, `/name`, `/session` | P |  | `sessions.rs::ses_005` |
 | SES-006 | `/fork` creates a new session file with a `parentSession` header | P |  | `sessions.rs::ses_006` |
 | SES-007 | `/clone` duplicates the session at its position | P |  | `sessions.rs::ses_007` |
+| SES-008 | `/import <path>` preserves id and cwd | O | omitted (removed with pi import) | omission |
 | SES-009 | `--no-session` keeps nothing on disk | P |  | `sessions.rs::ses_009` |
 | SES-010 | `sessionDir` / env / flag precedence | P |  | `sessions.rs::ses_010` |
 | SES-011 | Labels on entries (`/tree` Shift+L) | P |  | `sessions.rs::ses_011` |
@@ -370,6 +373,7 @@ pi page(s): session-format.md, message-types.md. Tests: `oxa-parity/tests/sessio
 | FMT-016 | `BashExecutionMessage` (`command`, `output`, `exitCode`, `cancelled`, `truncated`, `excludeFromContext`) | P |  | `format.rs::fmt_016` |
 | FMT-017 | Tree structure: `id`/`parentId`; the leaf is the last entry; context building walks leaf to root | P | the wire is a pure fold of the active branch (W1) | `format.rs::fmt_017` |
 | FMT-018 | Context building: compaction replaces entries before `firstKeptEntryId` | A | W5 rebase | `format.rs::fmt_018` |
+| FMT-019 | Session versions 1 and 2 are migrated on load | O | omitted (removed with pi import) | omission |
 | FMT-020 | `ImageContent` blocks in user messages | A | `Part::Image` stored; never serialised to the wire | `format.rs::fmt_020` |
 | FMT-021 | oxa entry types `shown` and `mode_change` | A | oxa only: aborted/failed/cut replies (W2) and mode changes; ignored by pi tooling | `format.rs::fmt_021` |
 
@@ -572,6 +576,7 @@ pi page(s): configuration.md. Tests: `oxa-parity/tests/resources.rs`.
 | CFG-005 | `SYSTEM.md` replaces and `APPEND_SYSTEM.md` appends to the system prompt; project over user | P |  | `resources.rs::cfg_005` |
 | CFG-006 | `.agents/skills` is read | P |  | `resources.rs::cfg_006` |
 | CFG-007 | `auth.json` | O | no credentials store | omission |
+| CFG-008 | pi directories are not read implicitly | O | omitted (removed with pi import) | omission |
 
 ## SKL: Skills
 

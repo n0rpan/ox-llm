@@ -1287,8 +1287,12 @@ fn fn_body(id: &str) -> &'static str {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = ses_rows();
-    assert_eq!(rows.len(), 15, "the SES area has 15 rows: {rows:?}");
+    assert_eq!(rows.len(), 16, "the SES area has 16 rows: {rows:?}");
     for (id, verdict, test) in &rows {
+        if test == "omission" {
+            assert_eq!(verdict, "O", "{id}: only O rows may be omitted");
+            continue;
+        }
         let fn_name = id.to_ascii_lowercase().replace('-', "_");
         assert!(
             test.contains(&format!("sessions.rs::{fn_name}")),
@@ -1342,8 +1346,8 @@ fn a_rows_name_their_invariant() {
 /// unsupported_in_oxa
 #[test]
 fn o_rows_assert_unsupported_error() {
-    for (id, verdict, _) in ses_rows() {
-        if verdict != "O" {
+    for (id, verdict, test) in ses_rows() {
+        if test == "omission" || verdict != "O" {
             continue;
         }
         assert!(

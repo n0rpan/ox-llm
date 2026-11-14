@@ -37,6 +37,7 @@ rows does not cite the internal work items.
 |---|---|---|
 | CLI-011 | `--provider <name>` | one provider type (the engine); a non-engine provider is a clear error |
 | CLI-033 | Built-in tool `powershell` | Linux only |
+| CLI-053 | `oxa config --import-pi` | omitted (removed with pi import) |
 | CLI-054 | `oxa update` (self), `--self`, `self`, `pi`, `--all`, `OXA_SELF_UPDATE_COMMAND`, `selfUpdateCommand` | no self-update, no version check (no network unless asked) |
 | CLI-056 | `oxa update --models` | no model catalogs |
 | CLI-057 | `oxa auth check\|print-api-key\|print-bearer-token` and their options | no provider credentials, no OAuth |
@@ -193,6 +194,7 @@ rows does not cite the internal work items.
 |---|---|---|
 | SLASH-005 | `/login [provider]` | `unsupported_in_oxa` |
 | SLASH-006 | `/logout` | `unsupported_in_oxa` |
+| SLASH-016 | `/import <path>` | omitted (removed with pi import) |
 | SLASH-019 | `/share` | no third-party upload from a local-first tool |
 | SLASH-025 | `/changelog` | pi-specific, not in oxa: `/changelog` removed |
 
@@ -210,6 +212,7 @@ rows does not cite the internal work items.
 
 | id | behaviour | reason |
 |---|---|---|
+| SES-008 | `/import <path>` preserves id and cwd | omitted (removed with pi import) |
 | SES-014 | `/share` uploads a session | no uploads |
 
 ## FMT: Session file format
@@ -227,6 +230,12 @@ rows does not cite the internal work items.
 | FMT-018 | Context building: compaction replaces entries before `firstKeptEntryId` | rebase |
 | FMT-020 | `ImageContent` blocks in user messages | `Part:Image` stored; never serialised to the wire |
 | FMT-021 | oxa entry types `shown` and `mode_change` | oxa only: aborted/failed/cut replies and mode changes; ignored by pi tooling |
+
+### Not in oxa
+
+| id | behaviour | reason |
+|---|---|---|
+| FMT-019 | Session versions 1 and 2 are migrated on load | omitted (removed with pi import) |
 
 ## TREE: Tree navigation and branching
 
@@ -320,6 +329,7 @@ rows does not cite the internal work items.
 | id | behaviour | reason |
 |---|---|---|
 | CFG-007 | `auth.json` | no credentials store |
+| CFG-008 | pi directories are not read implicitly | omitted (removed with pi import) |
 
 ## PKG: Packages
 
