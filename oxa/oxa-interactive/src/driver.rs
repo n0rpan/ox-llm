@@ -14,8 +14,8 @@ use crate::selectors::{
     TreeFilter, TreePick, TreeSelector,
 };
 use crate::skin::{
-    env_reduced_motion, frame_box, frame_inner_width, hot_theme, oxa_activity_line_with, oxa_footer,
-    oxa_splash, oxa_title_text, oxa_yolo_banner, HintContext, SPRITE_FRAME_MS,
+    env_reduced_motion, frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash,
+    oxa_title_text, oxa_yolo_banner, Animation, ArcadeScene, ArcadeState, HintContext, SPRITE_FRAME_MS,
 };
 use crate::{
     activity_text, choose_clip_method, compose_fullscreen, copy_text, debug_dump, dispatch_slash,
@@ -270,6 +270,19 @@ pub(crate) struct Loop<'a> {
     /// O-184: the animation step that was last drawn (OXA's look redraws once per step, not
     /// once per loop turn, so an idle or busy engine costs the UI next to nothing).
     anim_step: u64,
+    /// The arcade scene's counters of the run (coins, the closing scene).
+    arcade: ArcadeState,
+    /// OXA's fullscreen look: the editor's suggestion panel of this frame and the editor's
+    /// first row among the bottom lines (the panel floats above it, over the transcript).
+    popup_overlay: Option<(usize, Vec<String>)>,
+    /// The graphics tier of the arcade: the frames the terminal holds, whether the terminal
+    /// answered the graphics query and draws placeholders, image bytes waiting to be written
+    /// before the next frame, and "delete everything first" (resize, back from a suspend).
+    pixel: crate::skin::PixelStage,
+    gfx_answered: bool,
+    gfx_placeholders: bool,
+    gfx_out: String,
+    gfx_reset: bool,
     /// O-182: the theme as loaded; `theme` is its hot variant while YOLO is on (OXA's look).
     cool_theme: Theme,
     /// O-182: what the screen last showed of the YOLO switch, and until when its banner shows.
@@ -298,6 +311,8 @@ impl<'a> Loop<'a> {
     ) -> Loop<'a> {
         let caps = opts.caps.unwrap_or_else(|| term.caps());
         let term_colors = crate::app::terminal_colors(&*opts, term.colors());
+        let gfx_answered = term.graphics();
+        let gfx_placeholders = oxa_tui::env_gfx_placeholders(&opts.env);
         let theme = load_theme(&*opts, caps, term_colors.as_ref());
         let theme_name = theme_name(&*opts);
         let view = view_settings(&*opts, &caps);
@@ -390,6 +405,13 @@ impl<'a> Loop<'a> {
             theme_label: String::new(),
             palette: None,
             anim_step: 0,
+            arcade: ArcadeState::default(),
+            popup_overlay: None,
+            pixel: crate::skin::PixelStage::new(caps.cell_px),
+            gfx_answered,
+            gfx_placeholders,
+            gfx_out: String::new(),
+            gfx_reset: false,
             cool_theme: Theme::plain(),
             yolo_shown: false,
             yolo_banner_since: 0,
@@ -422,9 +444,45 @@ impl<'a> Loop<'a> {
             && !env_reduced_motion(&self.opts.env)
     }
 
+    /// The `ui.animation` setting (`arcade`, `minimal`, `off`); `Off` whenever motion is.
+    /// Like [`Self::motion`], but the ASCII glyph set animates too (in ASCII).
+    fn animation(&self) -> Animation {
+        let reduced =
+            self.opts.settings.bool("ui.reducedMotion", false) || env_reduced_motion(&self.opts.env);
+        if self.view.skin.is_oxa() && !self.theme.is_plain() && !reduced {
+            Animation::from_setting(self.opts.settings.string("ui.animation").as_deref())
+        } else {
+            Animation::Off
+        }
+    }
+
+    /// The arcade plays as pixel art (the graphics tier): the terminal can, and the settings
+    /// do not say otherwise.
+    fn pixels(&self) -> bool {
+        self.animation() == Animation::Arcade
+            && self.view.skin == crate::Skin::Oxa
+            && crate::skin::graphics_wanted(
+                self.opts.settings.string("ui.animationScene").as_deref(),
+                self.opts.settings.string("ui.animationGraphics").as_deref(),
+                self.gfx_answered,
+                self.gfx_placeholders,
+            )
+    }
+
+    /// Delete every image of the graphics tier from the terminal, now (exit, suspend).
+    fn drop_images(&mut self, term: &mut dyn Terminal) {
+        self.gfx_out.clear();
+        let mut out = String::new();
+        self.pixel.clear(&mut out);
+        if !out.is_empty() {
+            term.write(out.as_bytes());
+            term.flush();
+        }
+    }
+
     /// How long one animation step of OXA's look lasts.
     fn anim_step_ms(&self) -> u64 {
-        if self.motion() {
+        if self.animation() != Animation::Off {
             SPRITE_FRAME_MS
         } else {
             1000
@@ -539,6 +597,7 @@ impl<'a> Loop<'a> {
             || self.dialogs.is_open()
             || self.mouse_sel.dragging
             || now_ms() < self.yolo_banner_until
+            || self.arcade.finishing(now_ms())
     }
 
     fn send(&mut self, cmd: SessionCmd) {
@@ -855,7 +914,7 @@ impl<'a> Loop<'a> {
         } else {
             animating
         };
-        if self.dialogs.tick(now_ms()) || animating {
+        if self.dialogs.tick(now_ms()) || animating || self.arcade.take_expired(now_ms()) {
             self.dirty = true;
         }
         self.draft_tick();
@@ -981,7 +1040,10 @@ impl<'a> Loop<'a> {
             InputEvent::Key(key) => self.key(term, key),
             InputEvent::Paste(text) => self.paste(&text),
             InputEvent::Mouse(m) => self.mouse(term, m),
-            InputEvent::Resize { .. } => self.dirty = true,
+            InputEvent::Resize { .. } => {
+                self.dirty = true;
+                self.gfx_reset = true;
+            }
             _ => {}
         }
     }
@@ -1607,6 +1669,7 @@ impl<'a> Loop<'a> {
         match self.editor_command() {
             None => self.push_notice(Level::Warning, NO_EDITOR.to_string()),
             Some(cmd) => {
+                self.drop_images(term);
                 match edit_externally(&text, &cmd, &self.opts.dirs.tmp_dir, term) {
                     Ok(Some(edited)) => {
                         self.dialogs.set_editor_text(&edited);
@@ -2255,6 +2318,7 @@ impl<'a> Loop<'a> {
                 None => self.push_notice(Level::Warning, NO_EDITOR.to_string()),
                 Some(cmd) => {
                     let text = self.editor.expanded_text();
+                    self.drop_images(term);
                     match edit_externally(&text, &cmd, &self.opts.dirs.tmp_dir, term) {
                         Ok(Some(edited)) => self.editor.set_text(&edited),
                         Ok(None) => {}
@@ -2264,6 +2328,7 @@ impl<'a> Loop<'a> {
                 }
             },
             AppAction::Suspend => {
+                self.drop_images(term);
                 suspend_process(term);
                 self.after_external();
             }
@@ -2412,16 +2477,46 @@ impl<'a> Loop<'a> {
             self.vm.status.clone()
         };
         let oxa = self.view.skin.is_oxa();
-        let status = if oxa { self.timed_status(status) } else { status };
+        let mut status = if oxa { self.timed_status(status) } else { status };
         if oxa {
-            let line = oxa_activity_line_with(
-                &status,
-                &self.opts.keymap,
-                self.motion(),
-                width,
-                &self.theme,
-                self.view.skin,
-            );
+            // The tool queue of the reply at hand (an extension's working text comes first).
+            if status.working_message.is_none() {
+                status.working_message =
+                    crate::skin::tool_queue_detail(&self.vm.blocks, &status.activity, self.view.skin);
+            }
+            // A run for the arcade is what the line shows: from the first activity to idle
+            // (the handle may stay busy a moment longer; that is not a second run).
+            let active = status.activity != Activity::Idle;
+            self.arcade.observe(active, &self.vm.blocks, now_ms());
+            let scene = ArcadeScene::from_setting(self.opts.settings.string("ui.animationScene").as_deref());
+            let run = self.arcade.run(now_ms());
+            let pixel_line = if self.pixels() {
+                crate::skin::oxa_pixel_line(
+                    &status,
+                    &self.opts.keymap,
+                    &run,
+                    width,
+                    &self.theme,
+                    self.view.skin,
+                    &mut self.pixel,
+                    self.theme_epoch,
+                    &mut self.gfx_out,
+                )
+            } else {
+                None
+            };
+            let line = pixel_line.or_else(|| {
+                oxa_arcade_line(
+                    &status,
+                    &self.opts.keymap,
+                    self.animation(),
+                    scene,
+                    &run,
+                    width,
+                    &self.theme,
+                    self.view.skin,
+                )
+            });
             lines.extend(line);
         } else if let Some(text) = activity_text(&status) {
             lines.push(self.theme.dim(&text));
@@ -2477,6 +2572,14 @@ impl<'a> Loop<'a> {
         } else {
             editor_border_token(&self.vm.status, &text).to_string()
         };
+        // OXA's look: the suggestions are a panel; in fullscreen it floats over the transcript.
+        self.editor_opts.popup = match self.view.skin {
+            crate::Skin::Pi => oxa_tui::PopupStyle::List,
+            crate::Skin::Oxa => oxa_tui::PopupStyle::Panel,
+            crate::Skin::OxaAscii => oxa_tui::PopupStyle::PanelAscii,
+        };
+        self.editor_opts.popup_detached = oxa && self.fullscreen;
+        self.popup_overlay = None;
         self.editor.set_opts(self.editor_opts.clone());
         let top = lines.len();
         // OXA's look: selectors sit in a closed frame (dialogs and the tree draw their own).
@@ -2511,6 +2614,9 @@ impl<'a> Loop<'a> {
             }
         } else {
             let body = self.editor.render(width, &self.theme);
+            if self.editor_opts.popup_detached && self.editor.autocomplete_open() {
+                self.popup_overlay = Some((top, self.editor.popup(width, &self.theme)));
+            }
             (
                 body,
                 if self.search_open {
@@ -2547,11 +2653,21 @@ impl<'a> Loop<'a> {
             // The footer shows the live state: the HUD's state segment and spinner.
             let ctx = self.hint_context();
             let saved = std::mem::replace(&mut self.vm.status, status);
+            // The footer names only keys this terminal can send: without the kitty keyboard
+            // protocol a shift chord arrives as its legacy byte (ctrl+shift+f as ctrl+f), so
+            // the next bound key of the action is shown (alt+s for search), or none.
+            let sendable;
+            let keymap = if self.caps.kitty_keyboard {
+                &self.opts.keymap
+            } else {
+                sendable = self.opts.keymap.retain_keys(oxa_tui::legacy_sendable);
+                &sendable
+            };
             lines.extend(oxa_footer(
                 &self.vm,
                 self.profile.as_deref(),
                 ctx,
-                &self.opts.keymap,
+                keymap,
                 self.fullscreen,
                 width,
                 &self.theme,
@@ -2568,6 +2684,10 @@ impl<'a> Loop<'a> {
     pub(crate) fn draw(&mut self, term: &mut dyn Terminal) {
         self.dirty = false;
         self.report_status(term);
+        if self.gfx_reset {
+            self.gfx_reset = false;
+            self.pixel.clear(&mut self.gfx_out);
+        }
         if self.fullscreen {
             self.draw_fullscreen(term);
         } else {
@@ -2618,6 +2738,11 @@ impl<'a> Loop<'a> {
             self.renderer.repaint();
         }
         self.last_frame = live.clone();
+        if !self.gfx_out.is_empty() {
+            // New frames of the pixel scene: they must be there before the row that shows them.
+            term.write(self.gfx_out.as_bytes());
+            self.gfx_out.clear();
+        }
         self.renderer.draw(&Frame { lines: live, cursor }, term);
     }
 
@@ -2701,13 +2826,21 @@ impl<'a> Loop<'a> {
         } else {
             self.viewport.render(&self.cache.content, &self.theme)
         };
-        let (frame, _) = compose_fullscreen(&lines, &bottom, rows);
+        let (mut frame, _) = compose_fullscreen(&lines, &bottom, rows);
         let cut = bottom.len() - bottom_rows;
+        if let Some((top, popup)) = self.popup_overlay.take() {
+            crate::skin::float_above(&mut frame, (vp_rows + top).saturating_sub(cut), &popup);
+        }
         let cursor = cursor.filter(|p| p.row >= cut).map(|p| CursorPos {
             row: vp_rows + p.row - cut,
             col: p.col,
         });
         self.last_frame = frame.clone();
+        if !self.gfx_out.is_empty() {
+            // New frames of the pixel scene: they must be there before the row that shows them.
+            term.write(self.gfx_out.as_bytes());
+            self.gfx_out.clear();
+        }
         self.renderer.draw(&Frame { lines: frame, cursor }, term);
     }
 
@@ -2722,6 +2855,7 @@ impl<'a> Loop<'a> {
         if self.running() {
             self.handle.abort();
         }
+        self.drop_images(term);
         if self.fullscreen {
             self.renderer.clear(term);
             term.set_mode(TermMode::Mouse, false);

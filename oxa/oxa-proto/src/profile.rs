@@ -7,16 +7,16 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Profile {
     /// pi 1.5.2's texts and behaviour (the PARITY reference).
-    #[default]
     Pi,
     /// Tuned to the local engine's tool-call format and cache.
+    #[default]
     Local,
 }
 
 impl Profile {
     /// The default when neither `OXA_PROFILE` nor a settings layer names one. The owner decides
     /// the default; this constant is the only place it is spelled.
-    pub const DEFAULT: Profile = Profile::Pi;
+    pub const DEFAULT: Profile = Profile::Local;
     pub const ALL: [Profile; 2] = [Profile::Pi, Profile::Local];
     /// The settings key.
     pub const SETTING: &'static str = "oxa.profile";

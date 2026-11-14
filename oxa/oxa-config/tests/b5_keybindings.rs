@@ -59,7 +59,7 @@ const DOC_TABLE: &[(&str, &[&str])] = &[
     ("tui.altScreen.lineDown", &[]),
     ("tui.altScreen.previousPrompt", &["ctrl+shift+up", "ctrl+up"]),
     ("tui.altScreen.nextPrompt", &["ctrl+shift+down", "ctrl+down"]),
-    ("tui.altScreen.search", &["ctrl+shift+f"]),
+    ("tui.altScreen.search", &["ctrl+shift+f", "alt+s"]),
     ("tui.altScreen.searchNext", &["enter", "ctrl+g"]),
     ("tui.altScreen.searchPrevious", &["shift+enter", "ctrl+shift+g"]),
     ("tui.altScreen.searchClose", &["escape"]),

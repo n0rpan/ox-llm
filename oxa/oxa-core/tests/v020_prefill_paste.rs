@@ -276,7 +276,8 @@ fn edit_cancels_the_draft_prefill() {
 fn setting_off_sends_nothing() {
     let env = TestEnv::new();
     let eng = Arc::new(ScriptedEngine::new(Vec::new()));
-    let mut s = open(&env, eng.clone(), Settings::default());
+    let pi = Settings::from_values(json!({"oxa": {"profile": "pi"}}), json!({}));
+    let mut s = open(&env, eng.clone(), pi);
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     assert!(!s.prefill_draft(&paste(5000), &[], &never, &mut sink, &mut ui));
     let off = Settings::from_values(json!({"oxa": {"prefill": {"paste": false}}}), json!({}));

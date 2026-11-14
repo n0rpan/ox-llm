@@ -168,14 +168,18 @@ fn auto_thinks_on_the_first_reply_after_each_prompt_only() {
 
 #[test]
 fn fixed_reproduces_todays_requests() {
-    let today = run(None, ThinkingLevel::High, FakeOpts::default());
+    let today = run(
+        Some(r#"{"oxa": {"profile": "pi"}}"#),
+        ThinkingLevel::High,
+        FakeOpts::default(),
+    );
     assert_eq!(
         today.reqs.iter().map(kwargs).collect::<Vec<_>>(),
         golden(&[true, true, true, true, false, true])
     );
     for settings in [
         r#"{"oxa": {"profile": "pi"}}"#,
-        r#"{"oxa": {"thinking": {"policy": "fixed"}}}"#,
+        r#"{"oxa": {"profile": "pi", "thinking": {"policy": "fixed"}}}"#,
     ] {
         let r = run(Some(settings), ThinkingLevel::High, FakeOpts::default());
         assert_eq!(

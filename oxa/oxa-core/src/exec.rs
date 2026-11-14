@@ -97,6 +97,10 @@ pub fn request(
         thinking,
         // F8: never forced on a model that does not keep reasoning (Flash).
         preserve_thinking: st.info.caps.preserve_thinking != Some(false),
+        sampling: match opts.kind {
+            TurnKind::Chat | TurnKind::Subagent => crate::sampling::for_request(st, thinking),
+            _ => None,
+        },
         hints,
     };
     let mut stream = StreamState::default();
@@ -170,6 +174,8 @@ pub(crate) struct CallResult {
     pub msg: WireMsg,
     pub tool_name: String,
     pub is_error: bool,
+    /// The repeat guard asks to end the run after this batch (`repeat.rs`).
+    pub stop: bool,
 }
 
 /// What became of a call before anything ran.
@@ -225,6 +231,7 @@ pub(crate) fn fail_truncated_calls(
                 msg: WireMsg::tool_result(call.id.clone(), output.text),
                 tool_name: call.name.clone(),
                 is_error: true,
+                stop: false,
             }
         })
         .collect()
@@ -292,7 +299,9 @@ pub(crate) fn run_calls(
 
     // Phase 3, in call order: the ToolResult hook, shape, end events.
     let mut out = Vec::with_capacity(n);
-    for ((p, res), ahead) in prepared.iter().zip(outputs).zip(early) {
+    // The repeat guard (`repeat.rs`): this batch's earlier calls and final result texts, in order.
+    let mut batch: Vec<(String, String, String)> = Vec::with_capacity(n);
+    for (((p, res), ahead), call) in prepared.iter().zip(outputs).zip(early).zip(calls) {
         let (mut output, dur) = res.unwrap_or((ToolOutput::error(tool_errors::ABORTED), Duration::ZERO));
         output = apply_result_hook(st, p, output, sink, ui);
         let cap = crate::tune::output_cap(st);
@@ -301,12 +310,41 @@ pub(crate) fn run_calls(
             Some(e) if e.raw == output.text && e.cap == cap => e.shaped,
             _ => oxa_tools::shape(output.text.as_bytes(), cap, p.exec, &st.spill_dir),
         };
+        // The repeat guard: a call that ran and returned the same result LIMIT times in a row is
+        // answered with a notice (the call ran; only its result text changes).
+        let mut stop = false;
+        let ran = matches!(p.plan, Plan::Run { .. });
+        if ran {
+            let earlier: Vec<(&str, &str, &str)> = batch
+                .iter()
+                .map(|(n, a, t)| (n.as_str(), a.as_str(), t.as_str()))
+                .collect();
+            match crate::repeat::judge(st, &p.name, &call.args_raw, &output.text, &earlier) {
+                crate::repeat::Verdict::Pass => {}
+                crate::repeat::Verdict::Notice(text) => {
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Warning,
+                        text: format!(
+                            "{} returned the same result again; the model was told to change approach",
+                            p.name
+                        ),
+                    });
+                    output = ToolOutput::error(text);
+                }
+                crate::repeat::Verdict::Stop(text) => {
+                    output = ToolOutput::error(text);
+                    stop = true;
+                }
+            }
+        }
+        batch.push((p.name.clone(), call.args_raw.clone(), output.text.clone()));
         let ms = Some(dur.as_millis() as u64);
         crate::fire::tool_end(st, &p.id, &p.name, &output, ms, sink, ui);
         out.push(CallResult {
             msg: WireMsg::tool_result(p.id.clone(), output.text.clone()),
             tool_name: p.name.clone(),
             is_error: output.is_error,
+            stop,
         });
     }
     out
@@ -597,6 +635,7 @@ fn start_tool_prefill(
                 max_tokens: 0,
                 thinking,
                 preserve_thinking,
+                sampling: None,
                 hints: Hints {
                     session: &session,
                     idem_key: &idem,

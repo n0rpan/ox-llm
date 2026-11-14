@@ -38,6 +38,7 @@ pub fn parse_recorded(seq: usize, headers: &[(String, String)], body: &[u8]) -> 
         .get("chat_template_kwargs")
         .and_then(|k| k.get("preserve_thinking"))
         .and_then(Value::as_bool);
+    let temperature = obj.get("temperature").and_then(Value::as_f64).unwrap_or(0.0);
 
     let msgs = obj
         .get("messages")
@@ -84,6 +85,7 @@ pub fn parse_recorded(seq: usize, headers: &[(String, String)], body: &[u8]) -> 
         background,
         snapshot_keep,
         preserve_thinking,
+        temperature,
         headers: headers
             .iter()
             .map(|(k, v)| (k.to_ascii_lowercase(), v.clone()))

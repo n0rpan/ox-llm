@@ -84,6 +84,7 @@ fn chat_cancelled(e: &HttpEngine, token: &CancelToken, h: Hints) -> Result<(), O
         max_tokens: 64,
         thinking: false,
         preserve_thinking: true,
+        sampling: None,
         hints: h,
     };
     let mut seen: Vec<StreamEvent> = Vec::new();
@@ -100,6 +101,7 @@ fn prefill(e: &HttpEngine, token: &CancelToken, h: Hints) -> Result<(), OxaError
         max_tokens: 0,
         thinking: false,
         preserve_thinking: true,
+        sampling: None,
         hints: h,
     };
     e.chat(&r, token, &mut |_| {}).map(|_| ())
