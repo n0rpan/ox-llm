@@ -224,3 +224,55 @@ fn approval_follows_the_content() {
     assert!(v.get(APPROVED_KEY).is_some(), "save keeps the approvals");
     assert_eq!(TrustStore::load(&file).lookup(&cwd), Some(true));
 }
+
+/// O-199: with oxa started in `$HOME` (a home workspace), the file tools still ask before
+/// writing what runs or configures something outside the sandbox later (shell startup files,
+/// `~/.local/bin`, `~/.config/systemd`, `~/.oxa`, ...), also under YOLO; the home's folders
+/// are the workspace. Keys stay denied.
+#[test]
+fn started_in_home_the_startup_files_ask_and_the_folders_are_the_workspace() {
+    let env = TestEnv::new();
+    env.write("home/.bashrc", "# rc\n");
+    env.write("home/project/keep", "");
+    env.write("home/.config/systemd/user/a.service", "");
+    let home = env.home();
+    let switch = oxa_proto::YoloSwitch::new(true);
+    for p in [guarded(&env), guarded(&env).with_yolo(switch)] {
+        for rel in [
+            ".bashrc",
+            ".profile",
+            ".bash_profile",
+            ".zshrc",
+            ".local/bin/tool",
+            ".local/share/applications/a.desktop",
+            ".config/systemd/user/a.service",
+            ".config/autostart/a.desktop",
+            ".config/hypr/hyprland.conf",
+            ".oxa/settings.json",
+            ".claude/settings.json",
+            ".codex/config.toml",
+            ".dsh/profiles/x",
+            "bin/tool",
+        ] {
+            let a = Access::Write(home.join(rel));
+            assert_eq!(p.decide(Mode::Workspace, &a, &home), Decision::Ask, "{rel}");
+            assert_eq!(
+                p.decide(Mode::Plan, &a, &home),
+                Decision::Deny(deny_reasons::PLAN_WRITE),
+                "{rel}"
+            );
+        }
+        let a = Access::Write(home.join("project/x"));
+        assert_eq!(p.decide(Mode::Workspace, &a, &home), Decision::Allow);
+        let a = Access::Write(home.join(".ssh/authorized_keys"));
+        assert_eq!(p.decide(Mode::Workspace, &a, &home), SENSITIVE);
+        let a = Access::Read(home.join(".codex/auth.json"));
+        assert_eq!(p.decide(Mode::Workspace, &a, &home), SENSITIVE);
+    }
+    // A project of its own under `~/.config` is still the user's workspace there.
+    let p = guarded(&env);
+    let nvim = home.join(".config/nvim");
+    std::fs::create_dir_all(&nvim).unwrap();
+    let a = Access::Write(nvim.join("init.lua"));
+    assert_eq!(p.decide(Mode::Workspace, &a, &nvim), Decision::Allow);
+}

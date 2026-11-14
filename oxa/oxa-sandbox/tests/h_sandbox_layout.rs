@@ -1,7 +1,7 @@
 //! Wave H lane `harden`: the sandbox's view of the machine (pre-flight B2, B3, B4).
 //!
-//! Argv goldens per case (a project, `$HOME` as cwd with and without
-//! `oxa.sandbox.allowHomeWrite`, `/`, plan mode), and real-bwrap runs: a PATH tool and a
+//! Argv goldens per case (a project, `$HOME` as cwd with and without a home workspace
+//! (O-199), `/` and a parent of `$HOME` (never a workspace), plan mode), and real-bwrap runs: a PATH tool and a
 //! toolchain under `$HOME` run, a cache is writable and a toolchain is not, a denied file is
 //! neither readable nor writable, the protected project files are read-only for bash.
 //! Real-bwrap tests follow A5: with `OXA_REQUIRE_BWRAP=1` an unusable bwrap fails them.
@@ -254,15 +254,45 @@ fn golden_home_cwd_is_read_only_and_masked() {
     want.extend(tail("<root>/home", PATH_IN));
     assert_eq!(shown(&a, &env), want);
 
-    // With the user's explicit setting the cwd is writable; the deny-list still holds and
-    // the protected project files of the home directory (none here) would stay read-only.
+    // O-199: a home workspace (the user confirmed, or the setting): the home root stays
+    // read-only, its plain folders and files are bound read-write (never a dot-entry, a
+    // symlink or `~/bin`), the deny-list still holds after them.
+    env.write("home/project/readme", "");
+    env.write("home/notes.txt", "");
+    env.write("home/bin/tool", "");
+    std::os::unix::fs::symlink(env.work(), home.join("linked")).expect("symlink");
     let allowed = Layout {
         allow_home_write: true,
         ..l
     };
     let a = bwrap_args_with(&spec("true", &home, true), &home, &allowed);
-    assert_eq!(shown(&a, &env)[HEAD.len()], "--bind");
     let s = shown(&a, &env);
+    assert_eq!(
+        s[HEAD.len()..HEAD.len() + 9],
+        strs(&[
+            "--ro-bind",
+            "<root>/home",
+            "<root>/home",
+            "--bind",
+            "<root>/home/notes.txt",
+            "<root>/home/notes.txt",
+            "--bind",
+            "<root>/home/project",
+            "<root>/home/project",
+        ])[..],
+        "{s:?}"
+    );
+    assert!(
+        !s.iter()
+            .any(|x| x.ends_with("/home/bin") || x.ends_with("/home/linked")),
+        "{s:?}"
+    );
+    // Plan mode in the same layout: nothing writable.
+    let ro = shown(
+        &bwrap_args_with(&spec("true", &home, false), &home, &allowed),
+        &env,
+    );
+    assert!(!ro.iter().any(|x| x.ends_with("/home/project")), "{ro:?}");
     let masked = masks();
     assert!(
         s.windows(masked.len()).any(|w| w == masked.as_slice()),
@@ -274,12 +304,36 @@ fn golden_home_cwd_is_read_only_and_masked() {
 fn golden_root_and_parent_cwd_are_read_only() {
     let env = TestEnv::new();
     let home = env.home();
-    for cwd in [PathBuf::from("/"), env.root().to_path_buf()] {
-        let a = bwrap_args_with(&spec("true", &cwd, true), &home, &Layout::default());
-        let c = cwd.display().to_string();
-        let at = a.iter().position(|x| x == &c).expect("the cwd is bound");
-        assert_eq!(a[at - 1], "--ro-bind", "{cwd:?}: {a:?}");
+    env.write("project/readme", "");
+    // O-199: a parent of `$HOME` or `/` is never a workspace, even with the setting.
+    let allowed = Layout {
+        allow_home_write: true,
+        ..Layout::default()
+    };
+    for layout in [Layout::default(), allowed] {
+        for cwd in [PathBuf::from("/"), env.root().to_path_buf()] {
+            let a = bwrap_args_with(&spec("true", &cwd, true), &home, &layout);
+            let c = cwd.display().to_string();
+            let at = a.iter().position(|x| x == &c).expect("the cwd is bound");
+            assert_eq!(a[at - 1], "--ro-bind", "{cwd:?}: {a:?}");
+            assert!(!a.iter().any(|x| x == "--bind"), "{cwd:?}: {a:?}");
+        }
     }
+}
+
+#[test]
+fn golden_a_symlink_to_home_is_a_home_root() {
+    // A cwd that only resolves to the home directory is the home directory: read-only
+    // without a workspace (on main it was bound read-write with no deny-list masks).
+    let env = TestEnv::new();
+    env.write("home/.ssh/id_test", "KEY");
+    let home = env.home();
+    let link = env.root().join("homelink");
+    std::os::unix::fs::symlink(&home, &link).expect("symlink");
+    let a = bwrap_args_with(&spec("true", &link, true), &home, &Layout::default());
+    let c = link.display().to_string();
+    let at = a.iter().position(|x| x == &c).expect("the cwd is bound");
+    assert_eq!(a[at - 1], "--ro-bind", "{a:?}");
 }
 
 #[test]
@@ -387,10 +441,111 @@ fn real_denied_files_are_neither_readable_nor_writable() {
         "machine example.com password hunter2"
     );
     assert!(!home.join(".oxa/agent/planted").exists());
-    // A file elsewhere in the home is writable (the user allowed it).
-    let (exit, out) = run(&b, "touch ~/notes.txt", &home);
+}
+
+/// O-199: started in `$HOME` and confirmed (or the setting): the home's folders are the
+/// workspace; the startup files, `~/.local/bin`, `~/.config/systemd`, `~/.ssh`, `~/.oxa` and
+/// the home root itself stay as they are on the host, byte for byte.
+#[test]
+fn real_home_workspace_writes_projects_and_never_startup_files_or_keys() {
+    let env = TestEnv::new();
+    let l = Layout {
+        allow_home_write: true,
+        ..machine(&env)
+    };
+    env.write("home/project/keep", "");
+    let originals: Vec<(&str, &str)> = vec![
+        (".bashrc", "# rc\n"),
+        (".profile", "# profile\n"),
+        (".zshrc", "# zsh\n"),
+        (".local/bin/mytool", "#!/bin/sh\necho mytool-ran\n"),
+        (".config/systemd/user/a.service", "[Unit]\n"),
+        (".config/autostart/a.desktop", "[Desktop Entry]\n"),
+        (".ssh/id_test", "PRIVATE-KEY-MATERIAL"),
+        (".oxa/settings.json", "{}"),
+        (".oxa/agent/trust.json", "{}"),
+        ("bin/tool", "#!/bin/sh\n"),
+    ];
+    for (rel, body) in &originals {
+        env.write(&format!("home/{rel}"), body);
+    }
+    let Some(b) = real(&env, l) else { return };
+    let home = env.home();
+    let (exit, out) = run(
+        &b,
+        "mkdir -p ~/project/sub && echo hi > ~/project/x && echo deep > ~/project/sub/y",
+        &home,
+    );
     assert_eq!(exit, Some(0), "{out}");
-    assert!(home.join("notes.txt").exists());
+    assert_eq!(std::fs::read_to_string(home.join("project/x")).unwrap(), "hi\n");
+    assert_eq!(
+        std::fs::read_to_string(home.join("project/sub/y")).unwrap(),
+        "deep\n"
+    );
+    for cmd in [
+        "echo evil >> ~/.bashrc",
+        "echo evil > ~/.profile",
+        "rm -f ~/.zshrc",
+        "echo evil > ~/.bash_profile",
+        "echo evil > ~/.local/bin/mytool",
+        "touch ~/.local/bin/planted",
+        "echo evil > ~/.config/systemd/user/a.service",
+        "touch ~/.config/systemd/user/planted.service",
+        "touch ~/.config/autostart/planted.desktop",
+        "echo x > ~/.ssh/authorized_keys",
+        "echo evil > ~/.oxa/settings.json",
+        "echo evil > ~/bin/tool",
+        "touch ~/planted-at-root",
+        "mv ~/project ~/moved",
+    ] {
+        let (exit, out) = run(&b, cmd, &home);
+        assert_ne!(exit, Some(0), "{cmd} must fail: {out}");
+    }
+    for (rel, body) in &originals {
+        assert_eq!(
+            std::fs::read_to_string(home.join(rel)).unwrap_or_default(),
+            *body,
+            "{rel} changed on the host"
+        );
+    }
+    for planted in [
+        ".bash_profile",
+        ".local/bin/planted",
+        ".config/systemd/user/planted.service",
+        ".config/autostart/planted.desktop",
+        ".ssh/authorized_keys",
+        "planted-at-root",
+        "moved",
+    ] {
+        assert!(!home.join(planted).exists(), "{planted} appeared on the host");
+    }
+    // Keys stay unreadable.
+    let (_, out) = run(&b, "cat ~/.ssh/id_test; echo done", &home);
+    assert!(
+        out.contains("done") && !out.contains("PRIVATE-KEY-MATERIAL"),
+        "{out}"
+    );
+}
+
+/// O-199: `/` and a parent of `$HOME` give bash no writable directory, even with the setting.
+#[test]
+fn real_parent_of_home_is_never_writable() {
+    let env = TestEnv::new();
+    let l = Layout {
+        allow_home_write: true,
+        ..machine(&env)
+    };
+    env.write("home/project/keep", "");
+    let Some(b) = real(&env, l) else { return };
+    let parent = env.root().to_path_buf();
+    for cwd in [parent.clone(), PathBuf::from("/")] {
+        let (exit, out) = run(&b, &format!("touch {}/planted", parent.display()), &cwd);
+        assert_ne!(exit, Some(0), "{cwd:?}: {out}");
+        let (exit, out) = run(&b, "touch ~/project/planted", &cwd);
+        assert_ne!(exit, Some(0), "{cwd:?}: {out}");
+    }
+    assert!(!parent.join("planted").exists());
+    assert!(!env.home().join("project/planted").exists());
 }
 
 #[test]

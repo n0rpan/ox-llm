@@ -186,6 +186,30 @@ fn started_in_home_bash_gets_no_writable_directory() {
     let (code, err) = go(&env, env.home(), &["-p", "hi"], vec![ScriptTurn::text("ok")]);
     assert_eq!(code, 0, "{err}");
     assert!(!err.contains("Bash has no writable directory"), "{err}");
+    // O-199: one clear notice says what the workspace is and what stays protected.
+    assert_eq!(err.matches("workspace = your home directory").count(), 1, "{err}");
+    assert!(err.contains("(protected: ") && err.contains(".bashrc"), "{err}");
+}
+
+/// O-199: a parent of `$HOME` is never a workspace, even with the home-write setting.
+#[test]
+fn started_above_home_bash_gets_no_writable_directory_even_with_the_setting() {
+    let env = TestEnv::new();
+    if !bwrap_usable(&env) {
+        return;
+    }
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"allowHomeCwd":true,"sandbox":{"allowHomeWrite":true}}}"#,
+    );
+    let parent = env.home().parent().expect("home has a parent").to_path_buf();
+    let (code, err) = go(&env, parent, &["-p", "hi"], vec![ScriptTurn::text("ok")]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("Bash has no writable directory") && err.contains("a parent of your home directory"),
+        "{err}"
+    );
+    assert!(!err.contains("workspace = your home directory"), "{err}");
 }
 
 /// B4 a: an extension's `project_trust` yes approves the project as it is (the first record);
