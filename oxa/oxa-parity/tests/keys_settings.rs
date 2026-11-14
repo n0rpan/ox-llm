@@ -451,11 +451,12 @@ mod tui {
     /// plus spinner above the editor) is gone. Both arrive/leave after the last line while the
     /// turn ends, and each shifts every transcript row above by one or two.
     pub fn reply_closed(s: &Screen, last: &str) -> bool {
-        !s.contains("Working") && row_index(s, last).is_some_and(|r| {
-            s.rows()
-                .get(r + 1)
-                .is_some_and(|f| f.trim_end().trim_end_matches(['│', '█']).trim() == "```")
-        })
+        !s.contains("Working")
+            && row_index(s, last).is_some_and(|r| {
+                s.rows()
+                    .get(r + 1)
+                    .is_some_and(|f| f.trim_end().trim_end_matches(['│', '█']).trim() == "```")
+            })
     }
 
     pub fn row_index(s: &Screen, needle: &str) -> Option<usize> {
@@ -665,6 +666,9 @@ mod tui {
             self.type_text(text);
             self.key("enter");
             self.wait_text(reply);
+            // The reply text is on screen before the turn ends; the next input must not be
+            // sent into the still-working turn (it would be queued or swallowed under load).
+            self.wait("the turn finished", |s| !s.contains("Working"));
         }
         /// The user prompts the engine got (chat requests only), in order.
         pub fn prompts(&self) -> Vec<String> {
