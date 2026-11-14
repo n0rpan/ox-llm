@@ -70,11 +70,8 @@ fn user_texts(r: &oxa_fake::Recorded) -> Vec<String> {
 }
 
 #[test]
-fn local_profile_notes_are_appended_and_history_bytes_never_change() {
-    let reqs = run(Settings::from_values(
-        json!({"oxa": {"profile": "local"}}),
-        json!({}),
-    ));
+fn default_local_notes_are_appended_and_history_bytes_never_change() {
+    let reqs = run(Settings::default());
     assert_eq!(reqs.len(), 3);
     // The frozen prefix is the same bytes in every request and carries no clock.
     for r in &reqs {
@@ -111,7 +108,7 @@ fn local_profile_notes_are_appended_and_history_bytes_never_change() {
 #[test]
 fn pi_profile_and_the_off_switch_send_the_typed_text_only() {
     for settings in [
-        Settings::default(),
+        Settings::from_values(json!({"oxa": {"profile": "pi"}}), json!({})),
         Settings::from_values(json!({"oxa": {"profile": "local", "envNote": false}}), json!({})),
     ] {
         let reqs = run(settings);
