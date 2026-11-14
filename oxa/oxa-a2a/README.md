@@ -15,7 +15,10 @@ task identity checks, a bounded SSE data reader, authenticated loopback HTTP
 client, an owned mock agent and a bounded server for owned backends. File parts and unknown
 required extensions fail closed. Cards cannot change the registered endpoint.
 The client provides send, get, stream, cancel and resubscribe. Streams bind
-task/context IDs and reject disconnects before a final record. Tests exercise
+task/context IDs and reject disconnects before a final record. Send and stream
+continuations retain each request-specified task/context constraint, including
+the first reply. Bound Message replies must carry the requested identity fields;
+unbound new-task/direct-reply requests remain supported. Tests exercise
 absolute deadlines, output limits, bad auth, malformed HTTP and protocol errors.
 
 `ResponseBudget` bounds aggregate incoming wire bytes across requests, including

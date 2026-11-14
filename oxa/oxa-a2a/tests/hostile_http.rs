@@ -154,3 +154,111 @@ fn aggregate_wire_budget_counts_ignored_response_fields_and_http_headers() {
     assert_eq!(budget.used(), 512);
     assert_eq!(budget.remaining(), 0);
 }
+
+fn continuation(task: Option<&str>, context: Option<&str>) -> SendParams {
+    let mut params = params();
+    let MessageObject::Message(message) = &mut params.message;
+    message.task_id = task.map(str::to_owned);
+    message.context_id = context.map(str::to_owned);
+    params
+}
+fn task_result(task: &str, context: &str) -> serde_json::Value {
+    serde_json::json!({"kind":"task","id":task,"contextId":context,"status":{"state":"completed"}})
+}
+fn message_result(task: Option<&str>, context: Option<&str>) -> serde_json::Value {
+    let mut result = serde_json::json!({"kind":"message","messageId":"reply","role":"agent","parts":[{"kind":"text","text":"synthetic reply"}]});
+    if let Some(task) = task {
+        result["taskId"] = task.into();
+    }
+    if let Some(context) = context {
+        result["contextId"] = context.into();
+    }
+    result
+}
+fn envelope(result: serde_json::Value) -> String {
+    serde_json::json!({"jsonrpc":"2.0","id":"1","result":result}).to_string()
+}
+#[test]
+fn first_continuation_reply_must_keep_the_requested_task_and_context() {
+    for result in [
+        task_result("wrong-task", "context-x"),
+        task_result("task-a", "wrong-context"),
+        message_result(Some("wrong-task"), Some("context-x")),
+        message_result(Some("task-a"), Some("wrong-context")),
+        message_result(None, Some("context-x")),
+        message_result(Some("task-a"), None),
+        serde_json::json!({"kind":"status-update","taskId":"wrong-task","contextId":"context-x","status":{"state":"completed"},"final":true}),
+        serde_json::json!({"kind":"artifact-update","taskId":"task-a","contextId":"wrong-context","artifact":{"artifactId":"a","parts":[{"kind":"text","text":"synthetic"}]}}),
+    ] {
+        let body = envelope(result);
+        with_server(response("application/json", &body), |client| {
+            assert!(client
+                .send(continuation(Some("task-a"), Some("context-x")))
+                .is_err())
+        });
+        with_server(
+            response("text/event-stream", &format!("data: {body}\n\n")),
+            |client| {
+                let mut stream = client
+                    .stream(continuation(Some("task-a"), Some("context-x")))
+                    .unwrap();
+                assert!(stream.next_event().is_err());
+                assert!(stream.next_event().is_err());
+            },
+        );
+    }
+}
+#[test]
+fn valid_continuations_and_unbound_new_task_replies_remain_supported() {
+    for (task, context, result) in [
+        (
+            Some("task-a"),
+            Some("context-x"),
+            task_result("task-a", "context-x"),
+        ),
+        (
+            Some("task-a"),
+            Some("context-x"),
+            message_result(Some("task-a"), Some("context-x")),
+        ),
+        (Some("task-a"), None, task_result("task-a", "context-new")),
+        (Some("task-a"), None, message_result(Some("task-a"), None)),
+        (None, Some("context-x"), task_result("new-task", "context-x")),
+        (None, Some("context-x"), message_result(None, Some("context-x"))),
+        (None, None, task_result("new-task", "new-context")),
+        (None, None, message_result(None, None)),
+    ] {
+        let body = envelope(result);
+        with_server(response("application/json", &body), |client| {
+            assert!(client.send(continuation(task, context)).is_ok())
+        });
+        with_server(
+            response("text/event-stream", &format!("data: {body}\n\n")),
+            |client| {
+                let mut stream = client.stream(continuation(task, context)).unwrap();
+                assert!(stream.next_event().unwrap().is_some());
+                assert!(stream.next_event().unwrap().is_none());
+            },
+        );
+    }
+    // Each constraint also applies when it is the only supplied identity field.
+    for (task, context, result) in [
+        (Some("task-a"), None, task_result("wrong", "any")),
+        (None, Some("context-x"), task_result("any", "wrong")),
+    ] {
+        let body = envelope(result);
+        with_server(response("application/json", &body), |client| {
+            assert!(client.send(continuation(task, context)).is_err())
+        });
+        with_server(
+            response("text/event-stream", &format!("data: {body}\n\n")),
+            |client| {
+                assert!(client
+                    .stream(continuation(task, context))
+                    .unwrap()
+                    .next_event()
+                    .is_err())
+            },
+        );
+    }
+}

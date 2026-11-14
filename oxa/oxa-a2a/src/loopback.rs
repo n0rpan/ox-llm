@@ -226,6 +226,7 @@ impl Client {
     }
 
     pub fn send(&mut self, params: SendParams) -> io::Result<Event> {
+        let expected = requested_identity(&params);
         let result = self.call(
             "message/send",
             serde_json::to_value(params).map_err(|_| invalid("invalid params"))?,
@@ -234,6 +235,7 @@ impl Client {
         if !matches!(event, Event::Message(_) | Event::Task(_)) {
             return Err(invalid("invalid send result kind"));
         }
+        check_requested_identity(&event, expected.0.as_deref(), expected.1.as_deref())?;
         Ok(event)
     }
 
@@ -259,10 +261,14 @@ impl Client {
     }
 
     pub fn stream(&mut self, params: SendParams) -> io::Result<EventStream> {
-        self.open_stream(
+        let expected = requested_identity(&params);
+        let mut stream = self.open_stream(
             "message/stream",
             serde_json::to_value(params).map_err(|_| invalid("invalid params"))?,
-        )
+        )?;
+        stream.expected_task = expected.0;
+        stream.expected_context = expected.1;
+        Ok(stream)
     }
 
     pub fn resubscribe(&mut self, task: &str) -> io::Result<EventStream> {
@@ -279,6 +285,8 @@ impl Client {
             id,
             binding: None,
             expected_task: None,
+            expected_context: None,
+            allow_message: method == "message/stream",
             done: false,
             failed: false,
         })
@@ -326,6 +334,24 @@ impl Client {
     }
 }
 
+fn requested_identity(params: &SendParams) -> (Option<String>, Option<String>) {
+    let MessageObject::Message(message) = &params.message;
+    (message.task_id.clone(), message.context_id.clone())
+}
+fn check_requested_identity(event: &Event, task: Option<&str>, context: Option<&str>) -> io::Result<()> {
+    let (actual_task, actual_context) = match event {
+        Event::Task(t) => (Some(t.id.as_str()), Some(t.context_id.as_str())),
+        Event::Status(s) => (Some(s.task_id.as_str()), Some(s.context_id.as_str())),
+        Event::Artifact(a) => (Some(a.task_id.as_str()), Some(a.context_id.as_str())),
+        Event::Message(m) => (m.task_id.as_deref(), m.context_id.as_deref()),
+    };
+    if task.is_some_and(|id| Some(id) != actual_task) || context.is_some_and(|id| Some(id) != actual_context)
+    {
+        return Err(invalid("response changed requested task identity"));
+    }
+    Ok(())
+}
+
 fn rpc_error(error: RpcError) -> io::Error {
     // Preserve the protocol code without disclosing arbitrary remote error text.
     io::Error::other(ProtocolFailure(error.code))
@@ -348,6 +374,8 @@ pub struct EventStream {
     id: RequestId,
     binding: Option<(String, String)>,
     expected_task: Option<String>,
+    expected_context: Option<String>,
+    allow_message: bool,
     done: bool,
     failed: bool,
 }
@@ -376,6 +404,11 @@ impl EventStream {
         let value: Value = serde_json::from_str(&data).map_err(|_| invalid("invalid streaming JSON"))?;
         let event: Event = serde_json::from_value(response_result(value, &self.id).map_err(rpc_error)?)
             .map_err(|_| invalid("invalid streaming result"))?;
+        check_requested_identity(
+            &event,
+            self.expected_task.as_deref(),
+            self.expected_context.as_deref(),
+        )?;
         if let Some((task, context)) = &self.binding {
             if !event.belongs_to(task, context) {
                 return Err(invalid("stream changed task identity"));
@@ -385,7 +418,7 @@ impl EventStream {
                 Event::Task(t) => (&t.id, &t.context_id),
                 Event::Status(e) => (&e.task_id, &e.context_id),
                 Event::Artifact(e) => (&e.task_id, &e.context_id),
-                Event::Message(_) if self.expected_task.is_none() => {
+                Event::Message(_) if self.allow_message => {
                     self.done = true;
                     return Ok(Some(event));
                 }
