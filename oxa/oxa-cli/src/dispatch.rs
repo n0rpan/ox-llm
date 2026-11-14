@@ -1096,20 +1096,32 @@ fn list_models(
         })
         .map(|id| {
             let model_info = if id == info.limits_for {
-                info.clone()
+                Ok(info.clone())
             } else {
-                engine.info(Some(&id))?
+                engine.info(Some(&id))
             };
-            Ok([
-                provider.to_string(),
-                id,
-                format_tokens(model_info.n_ctx as u64),
-                format_tokens(model_info.max_output as u64),
-                model_info.thinking.map_or_else(|| "?".to_string(), bool_word),
-                model_info.images.map_or_else(|| "?".to_string(), bool_word),
-            ])
+            match model_info {
+                Ok(model_info) => [
+                    provider.to_string(),
+                    id,
+                    format_tokens(model_info.n_ctx as u64),
+                    format_tokens(model_info.max_output as u64),
+                    model_info.thinking.map_or_else(|| "?".to_string(), bool_word),
+                    model_info.images.map_or_else(|| "?".to_string(), bool_word),
+                ],
+                // A failing per-model info call degrades only this row: '?' in the limits
+                // columns (never another model's limits), and the listing continues.
+                Err(_) => [
+                    provider.to_string(),
+                    id,
+                    "?".to_string(),
+                    "?".to_string(),
+                    "?".to_string(),
+                    "?".to_string(),
+                ],
+            }
         })
-        .collect::<Result<_, OxaError>>()?;
+        .collect();
     let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
     if rows.is_empty() {
         match search {
@@ -1534,5 +1546,60 @@ mod model_limits_tests {
         let text = String::from_utf8(out).unwrap();
         let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
         assert_eq!(&row[1..4], &["local", "131.1K", "16.4K"]);
+    }
+
+    /// A failing per-model `info(Some(id))` degrades only that row: '?' in the context,
+    /// max-out, thinking and images columns, while every other model still lists.
+    struct FailingInfoEngine {
+        fail_id: String,
+    }
+
+    impl Engine for FailingInfoEngine {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            if target == Some(self.fail_id.as_str()) {
+                return Err(OxaError::new(codes::ENGINE_HTTP, "boom"));
+            }
+            CatalogEngine.info(target)
+        }
+
+        fn count_tokens(&self, _: &str) -> Result<u32, OxaError> {
+            panic!("listing models must not tokenize")
+        }
+
+        fn chat(
+            &self,
+            _: &ChatRequest,
+            _: &CancelToken,
+            _: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            panic!("listing models must not generate")
+        }
+    }
+
+    #[test]
+    fn list_models_degrades_a_failing_info_row() {
+        let engine = FailingInfoEngine {
+            fail_id: "anthropic/claude-sonnet-5-5".to_string(),
+        };
+        let mut out = Vec::new();
+        list_models(&engine, "oxe", None, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        // The listing succeeds and still contains every model id.
+        for id in ["local", "anthropic/claude-sonnet-5-5"] {
+            assert!(
+                text.lines().any(|l| l.split_whitespace().nth(1) == Some(id)),
+                "missing {id}"
+            );
+        }
+
+        // The failing row shows '?' in the context, max-out, thinking and images columns.
+        let row: Vec<_> = text
+            .lines()
+            .find(|l| l.split_whitespace().nth(1) == Some("anthropic/claude-sonnet-5-5"))
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        assert_eq!(&row[2..], &["?", "?", "?", "?"]);
     }
 }
