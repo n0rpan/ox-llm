@@ -196,7 +196,7 @@ class HopProbeParsers(unittest.TestCase):
     def test_rpc_events_real_schema_fixture(self):
         """Fixture in oxc/tests/fixtures/oxa_rpc/tool_events.jsonl, field names from oxa-rpc/src/events.rs
         (toolName, durationMs, isError, done/total/secs) and oxa-rpc tests c9_json_records_*.rs."""
-        path = ROOT / 'lab' / 'tests' / 'fixtures' / 'oxa_rpc' / 'tool_events.jsonl'
+        path = Path(__file__).resolve().parents[1] / 'tests' / 'fixtures' / 'oxa_rpc' / 'tool_events.jsonl'
         r = hp.parse_rpc_events(path.read_text().splitlines())
         self.assertEqual(len(r['tools']), 3)
         self.assertEqual([t['tool'] for t in r['tools']], ['read', 'bash', 'edit'])
