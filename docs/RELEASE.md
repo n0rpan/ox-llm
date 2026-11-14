@@ -77,7 +77,7 @@ verified without putting the file on main. The Actions UI may not expose the
 manual button for a branch-only workflow. For example:
 
 ```sh
-gh workflow run release-build.yml --repo n0rpan/ox-llm --ref release-build/v020-artifacts
+gh workflow run release-build.yml --repo oxstack/ox-llm --ref release-build/v020-artifacts
 ```
 
 The path-filtered PR trigger exercises the same build and install gates.
