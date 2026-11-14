@@ -526,6 +526,20 @@ fn prepare(
             notices.push((Level::Warning, e.message));
         }
     }
+    // O-152 self-heal: the identity section is written by the ox-llm install
+    // (`oxa identity --refresh`). An install that skipped it leaves the model with the generic
+    // "nothing is known about this machine" text, so the first start writes it from this
+    // machine's facts and the engine's model list (never under test isolation; a failure only
+    // keeps the generic text). Written once: later starts read the same bytes (W3).
+    if oxa_resources::read_identity(dirs).is_none()
+        && env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1")
+    {
+        let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
+        let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
+        if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
+            notices.push((Level::Warning, e.message));
+        }
+    }
     // Resources, package sources included (E10).
     let resources = discover(dirs, cwd, &settings, &opts);
     notices.extend(resources.diagnostics.iter().map(|d| {
