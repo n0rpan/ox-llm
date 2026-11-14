@@ -34,10 +34,11 @@ _TRUE = ('1', 'true', 'yes')
 class CloudError(Exception):
     """A remote request the controller refuses.  The message is safe to show a client."""
 
-    def __init__(self, message, status=503, code='cloud_unavailable'):
+    def __init__(self, message, status=503, code='cloud_unavailable', param='model'):
         super().__init__(message)
         self.status = status
         self.code = code
+        self.param = param
 
 
 def truthy(value):
@@ -321,7 +322,7 @@ def remote_payload(payload, item):
         raise CloudError('Invalid cloud request.', 400, 'invalid_request')
     body = dict(payload)
     body['model'] = item['upstream_model']
-    for field in ('cache_prompt', 'chat_template_kwargs', 'n_predict', 'id_slot', 'slot',
+    for field in ('cache_prompt', 'n_predict', 'id_slot', 'slot',
                   'ignore_eos', 'typical_p', 'min_p', 'repeat_penalty', 'top_k'):
         body.pop(field, None)
     if item['provider'] == 'openrouter':
@@ -424,4 +425,141 @@ class Meter:
         usd = cost(item, prompt, completion)
         if usd is not None:
             out['cost_usd'] = usd
+        return out
+
+
+# ---------------------------------------------------------------- D3 normalisation
+REASONING_EFFORT = {'none': 'none', 'minimal': 'none', 'low': 'low', 'medium': 'medium',
+                    'high': 'high', 'xhigh': 'high'}
+
+
+def upstream_payload(payload, item):
+    """The normalised upstream body: the remote catalog swap plus the OpenAI v1 mapping.
+
+    Local-only fields (``chat_template_kwargs``, cache/slot controls) are removed; an OpenAI
+    ``reasoning_effort`` becomes the upstream effort (``none``/``minimal`` = off, ``xhigh`` =
+    ``high``); a local ``enable_thinking`` switch is mapped the same way.  A stream asks for
+    the final usage chunk so the ledger and budget see the provider's own numbers.
+    """
+    body = remote_payload(payload, item)
+    effort = body.get('reasoning_effort')
+    kwargs = body.pop('chat_template_kwargs', None)
+    if effort is not None:
+        if not isinstance(effort, str):
+            raise CloudError('"reasoning_effort" must be a string.', 400, 'invalid_value', 'reasoning_effort')
+        if effort in REASONING_EFFORT:
+            body['reasoning_effort'] = REASONING_EFFORT[effort]
+        else:
+            body.pop('reasoning_effort', None)
+    elif isinstance(kwargs, dict) and isinstance(kwargs.get('enable_thinking'), bool):
+        body['reasoning_effort'] = 'high' if kwargs['enable_thinking'] else 'none'
+    if body.get('stream') is True:
+        options = body.get('stream_options') if isinstance(body.get('stream_options'), dict) else {}
+        body['stream_options'] = {**options, 'include_usage': True}
+    return body
+
+
+def _normalize_calls(calls):
+    if not isinstance(calls, list):
+        return
+    for position, call in enumerate(calls):
+        if not isinstance(call, dict):
+            continue
+        call.setdefault('type', 'function')
+        if 'index' not in call:
+            call['index'] = position
+        function = call.get('function')
+        if isinstance(function, dict):
+            args = function.get('arguments')
+            if isinstance(args, (dict, list)):
+                function['arguments'] = json.dumps(args, ensure_ascii=False)
+            elif args is None:
+                function['arguments'] = ''
+
+
+def _normalize_message(message):
+    if not isinstance(message, dict):
+        return
+    if 'reasoning_content' not in message and isinstance(message.get('reasoning'), str):
+        message['reasoning_content'] = message['reasoning']
+    _normalize_calls(message.get('tool_calls'))
+
+
+def normalize_response(value, requested_model):
+    """A non-streamed upstream reply in the controller's OpenAI v1 shape."""
+    if not isinstance(value, dict):
+        return value
+    value['model'] = requested_model
+    message = None
+    for choice in value.get('choices') or ():
+        if not isinstance(choice, dict):
+            continue
+        _normalize_message(choice.get('message'))
+        if message is None:
+            message = choice.get('message')
+    try:
+        from .openai_conformance import complete_usage, reasoning_estimate
+    except ImportError:
+        from openai_conformance import complete_usage, reasoning_estimate
+    if isinstance(value.get('usage'), dict):
+        value['usage'] = complete_usage(
+            value['usage'], reasoning_estimate(message, value['usage'].get('completion_tokens')),
+            value.get('timings'))
+    return value
+
+
+class CloudStream:
+    """Pass an OpenAI-compatible SSE stream through with the same normalisation as a local
+    reply: tool-call deltas keep their index and string arguments, ``reasoning`` becomes
+    ``reasoning_content``, the final usage block gets both detail objects, and the model id is
+    the local alias the client asked for."""
+
+    def __init__(self, requested_model):
+        self.model = requested_model
+        self.buffer = b''
+        self.reasoning = 0
+
+    def _frame(self, raw):
+        if not raw.startswith(b'data:'):
+            return raw + b'\n\n'
+        data = raw[5:].strip()
+        if data in (b'', b'[DONE]'):
+            return raw + b'\n\n'
+        try:
+            value = json.loads(data)
+        except ValueError:
+            return raw + b'\n\n'
+        if not isinstance(value, dict):
+            return raw + b'\n\n'
+        value['model'] = self.model
+        for choice in value.get('choices') or ():
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get('delta')
+            if isinstance(delta, dict):
+                if 'reasoning_content' not in delta and isinstance(delta.get('reasoning'), str):
+                    delta['reasoning_content'] = delta['reasoning']
+                if isinstance(delta.get('reasoning_content'), str) and delta['reasoning_content']:
+                    self.reasoning += 1
+                _normalize_calls(delta.get('tool_calls'))
+            _normalize_message(choice.get('message'))
+        if isinstance(value.get('usage'), dict):
+            try:
+                from .openai_conformance import complete_usage
+            except ImportError:
+                from openai_conformance import complete_usage
+            value['usage'] = complete_usage(value['usage'], self.reasoning, value.get('timings'))
+        return b'data: ' + json.dumps(value, ensure_ascii=False).encode() + b'\n\n'
+
+    def feed(self, chunk):
+        self.buffer += chunk
+        out = b''
+        while b'\n\n' in self.buffer:
+            raw, self.buffer = self.buffer.split(b'\n\n', 1)
+            out += self._frame(raw)
+        return out
+
+    def finish(self):
+        out = self._frame(self.buffer) if self.buffer else b''
+        self.buffer = b''
         return out
