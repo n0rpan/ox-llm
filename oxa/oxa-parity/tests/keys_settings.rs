@@ -3183,6 +3183,9 @@ fn key_009() {
     // searchNext (enter, ctrl+g), searchPrevious (shift+enter, ctrl+shift+g), searchClose
     // (escape). ctrl+shift+f and shift+enter need the kitty protocol (a legacy terminal sends
     // ctrl+f / CR for them).
+    // invariant: oxa adds `alt+s` to `tui.altScreen.search`, which a legacy terminal can send;
+    // ctrl+shift+f keeps working with the kitty protocol (asserted below), and OXA's footer
+    // shows only keys the terminal can send (`key_009_legacy_terminal_shows_and_takes_the_fallback`).
     let row_of = |s: &Screen, needle: &str| row_index(s, needle);
     let t = Setup::new()
         .profile(TermProfile::kitty())
@@ -3240,6 +3243,14 @@ fn key_009() {
     t.pty.send_text("R05");
     t.wait("R05 revealed", |s| row_of(s, "R05").is_some());
     assert_eq!(t.editor(), "", "the query went to the search, not the editor");
+    drop(t);
+    // Adapted (oxa): the default `alt+s` opens the search on a legacy terminal.
+    let t = Setup::new().script(&[numbered_reply("R", 80)]).start();
+    t.prompt("count", "R80");
+    t.key("alt+s");
+    t.pty.send_text("R03");
+    t.wait("R03 revealed", |s| row_of(s, "R03").is_some());
+    assert_eq!(t.editor(), "", "the query went to the search, not the editor");
 }
 
 /// KEY-009 (O-199 first run, foot): the kitty keyboard protocol keeps one flags stack per
@@ -3253,8 +3264,10 @@ fn key_009_kitty_protocol_on_the_alternate_screen() {
         env: vec![("TERM".into(), "foot".into())],
         ..TermProfile::kitty()
     };
+    // The footer's key hints are OXA's look (the harness drives pi's look by default).
     let t = Setup::new()
         .profile(foot)
+        .env("OXA_SKIN", "oxa")
         .size(30, 200)
         .script(&[numbered_reply("R", 40)])
         .start();
@@ -3291,7 +3304,9 @@ fn key_009_kitty_protocol_on_the_alternate_screen() {
 /// ctrl+shift+f (it sends ctrl+f). The footer then shows the fallback `alt+s`, which works.
 #[test]
 fn key_009_legacy_terminal_shows_and_takes_the_fallback() {
+    // The footer's key hints are OXA's look (the harness drives pi's look by default).
     let t = Setup::new()
+        .env("OXA_SKIN", "oxa")
         .size(30, 200)
         .script(&[numbered_reply("R", 40)])
         .start();
