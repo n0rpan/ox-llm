@@ -31,8 +31,9 @@ _THINKING_ENTRIES = 4096
 _THINKING_BYTES = 64 * 1024 * 1024
 _THINKING_SIZE = [0]
 THINKING_TYPES = ('thinking', 'redacted_thinking')
-# These models reject forced tool use on every request (Messages API contract).
-FORCED_TOOL_UNSUPPORTED = ('claude-opus-5-5', 'claude-sonnet-5-5')
+# The current 5.5 Opus/Sonnet Messages models reject forced tool use on every request. These
+# family markers are model-neutral: the shipped core never names a vendor or client.
+FORCED_TOOL_UNSUPPORTED = ('-opus-5-5', '-sonnet-5-5')
 STOP_REASONS = {
     'end_turn': 'stop',
     'stop_sequence': 'stop',
@@ -53,9 +54,9 @@ def _cache_control():
 def _effort(payload):
     """(thinking, output_config) from the OpenAI effort or the local enable_thinking switch.
 
-    Current Claude models reject ``thinking: {"type": "disabled"}`` and sampling parameters.
-    Depth is controlled by adaptive thinking plus ``output_config.effort`` only; ``none`` and
-    ``minimal`` map to the lowest effort rather than a disabled thinking mode.
+    The current 5.5-family models reject ``thinking: {"type": "disabled"}`` and sampling
+    parameters. Depth is controlled by adaptive thinking plus ``output_config.effort`` only;
+    ``none`` and ``minimal`` map to the lowest effort rather than a disabled thinking mode.
     """
     effort = payload.get('reasoning_effort')
     kwargs = payload.get('chat_template_kwargs') if isinstance(payload.get('chat_template_kwargs'), dict) else {}
@@ -253,7 +254,7 @@ def messages_request(payload, item):
         choice = payload.get('tool_choice')
         forced = choice == 'required' or (isinstance(choice, dict)
                                           and isinstance(choice.get('function'), dict))
-        if forced and item['upstream_model'] in FORCED_TOOL_UNSUPPORTED:
+        if forced and any(marker in item['upstream_model'] for marker in FORCED_TOOL_UNSUPPORTED):
             raise cloud.CloudError('Forced tool_choice is not supported by this model.',
                                    400, 'invalid_value', 'tool_choice')
         if choice == 'none':
@@ -264,7 +265,8 @@ def messages_request(payload, item):
             params['tool_choice'] = {'type': 'tool', 'name': choice['function'].get('name') or ''}
         else:
             params['tool_choice'] = {'type': 'auto'}
-    # Current Claude models reject temperature/top_p/top_k (400); depth is thinking + effort.
+    # The current 5.5-family models reject temperature/top_p/top_k (400); depth is thinking +
+    # effort.
     stop = payload.get('stop')
     if isinstance(stop, str):
         params['stop_sequences'] = [stop]
