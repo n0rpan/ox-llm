@@ -76,10 +76,13 @@ fn a_crashed_holder_leaves_no_stale_block() {
     let a = store(&env);
     let s = a.create(&env.work(), None, None).unwrap();
     let lock = oxa_session::lock_path_of(&s.path);
-    // `flock(1)` holds the sidecar's lock from a child process, as a live oxa would.
-    let mut child = match Command::new("flock")
+    // One child process holds the sidecar's lock on its own descriptor (`flock(1)` on fd 9, then
+    // the shell becomes `sleep`), as a live oxa would; killing it is the crash.
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(r#"exec 9>"$1" && flock -x 9 && echo held && exec sleep 60"#)
+        .arg("sh")
         .arg(&lock)
-        .args(["-c", "echo held; exec sleep 60"])
         .stdout(Stdio::piped())
         .spawn()
     {
