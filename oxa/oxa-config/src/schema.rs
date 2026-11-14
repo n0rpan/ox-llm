@@ -153,6 +153,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    // The per-prompt environment note (date, time, runtime facts): unset = off under `pi`, on
+    // under `local`.
+    key("oxa.envNote", Kind::Bool, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
@@ -180,6 +183,8 @@ const SCHEMA: &[KeyDef] = &[
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
+    // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
+    key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),

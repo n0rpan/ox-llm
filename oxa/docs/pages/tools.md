@@ -112,7 +112,7 @@ A key added or removed during a session takes effect at the next `/reload` or ne
 
 ### Use
 
-The model passes `query` (up to 600 characters). Optional parameters are `count` (1 to 20 results), `freshness` (`pd`, `pw`, `pm`, `py`, or a date range `YYYY-MM-DDtoYYYY-MM-DD`), `country` (two letters) and `search_lang` (for example `en`).
+The model passes `query` (up to 600 characters). Optional parameters are `count` (1 to 20 results), `freshness` (`pd`, `pw`, `pm`, `py`, or a date range `YYYY-MM-DDtoYYYY-MM-DD`; the words `day`, `24h`, `today`, `week`, `month` and `year` are accepted too), `country` (two letters) and `search_lang` (for example `en`).
 
 oxa uses Brave's LLM Context endpoint first. Its output size is `oxa.webSearch.maxTokens` (2048 by default, from 1024 to 32768). If the key's plan does not include that endpoint, oxa switches to Brave's web search endpoint for the rest of the process and says so once.
 
