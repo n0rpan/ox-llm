@@ -37,12 +37,10 @@ class InterimRehearsalTests(unittest.TestCase):
 
 
 class AbRecorderCounterTests(unittest.TestCase):
-    """tiny_ab's recorder classifies wire tool calls from a real-shaped SSE stream."""
+    """The recording proxy classifies wire tool calls from a real-shaped SSE stream."""
     def setUp(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('tiny_ab', Path(__file__).resolve().parents[1] / 'tools/tiny_real/tiny_ab.py')
-        self.ab = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.ab)
+        import recording_proxy
+        self.ab = recording_proxy
 
     def sse(self, *chunks):
         import json
