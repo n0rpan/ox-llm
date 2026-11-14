@@ -839,13 +839,19 @@ fn run_compaction(st: &mut SessionState, spec: &Spec, sink: &mut dyn EventSink, 
             }
             observe(st, HookPoint::SessionCompact, &payload, sink, ui);
             st.stats.compactions += 1;
-            st.stats.context_tokens = st.transcript.context();
             let count = counter(st);
-            let estimated = a
-                .head
-                .iter()
-                .map(|m| count(m.content.as_deref().unwrap_or("")))
-                .fold(0u32, u32::saturating_add);
+            // #75: the estimate is the frozen prefix (system prompt + tool definitions) plus
+            // the head (summary and kept tail), so the CTX meter and the "to N tokens" notice
+            // reflect what a fresh session starts with, not just the summary. It is also what
+            // `Session::stats` reports until the next reply, so the status refresh after the
+            // settle keeps it instead of resetting the meter to 0.
+            let estimated = prefix_tokens(st).saturating_add(
+                a.head
+                    .iter()
+                    .map(|m| count(m.content.as_deref().unwrap_or("")))
+                    .fold(0u32, u32::saturating_add),
+            );
+            st.stats.context_tokens = estimated;
             sink.emit(&AgentEvent::CompactionEnd {
                 reason,
                 result: Some(CompactionResult {

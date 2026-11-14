@@ -51,3 +51,48 @@ fn degraded_context_shows_until_a_model_summary() {
     apply_event(&mut vm, &end(serde_json::json!({})));
     assert!(!render_footer(&vm, 120, &Theme::plain())[1].contains("no summary"));
 }
+
+/// #75: after a compaction, the CTX meter reflects the estimated post-compaction context and
+/// the chat shows a notice with the tokens before and after.
+#[test]
+fn compaction_end_updates_ctx_and_notice_tokens() {
+    use oxa_interactive::{apply_event, Block};
+    use oxa_proto::{AgentEvent, CompactReason, CompactionResult};
+    let mut vm = ViewModel::default();
+    vm.status.n_ctx = 200_000;
+    vm.status.context_tokens = 120_000;
+    vm.status.last_cached = Some(42_000);
+    vm.status.last_prompt = Some(120_000);
+    apply_event(
+        &mut vm,
+        &AgentEvent::CompactionEnd {
+            reason: CompactReason::Manual,
+            result: Some(CompactionResult {
+                summary: "s".into(),
+                first_kept_entry_id: "e1".into(),
+                tokens_before: 120_000,
+                estimated_tokens_after: 12_000,
+                usage: None,
+                details: serde_json::json!({}),
+            }),
+            aborted: false,
+            will_retry: false,
+            error_message: None,
+        },
+    );
+    // CTX shows the estimate right away, not the stale pre-compaction count.
+    assert_eq!(vm.status.context_tokens, 12_000);
+    // The cache is invalid after a rebase: the CACHE meter is cleared.
+    assert_eq!(vm.status.last_cached, None);
+    assert_eq!(vm.status.last_prompt, None);
+    // The notice block carries both the before and after counts.
+    assert_eq!(
+        vm.blocks,
+        vec![Block::Compaction {
+            summary: "s".into(),
+            tokens_before: 120_000,
+            tokens_after: Some(12_000),
+            expanded: false,
+        }]
+    );
+}

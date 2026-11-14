@@ -38,8 +38,9 @@ pub fn render_block_oxa(block: &Block, cx: &ViewCx) -> Vec<String> {
         Block::Compaction {
             summary,
             tokens_before,
+            tokens_after,
             expanded,
-        } => compaction_panel(summary, *tokens_before, *expanded, cx),
+        } => compaction_panel(summary, *tokens_before, *tokens_after, *expanded, cx),
         Block::BranchSummary { summary, expanded } => branch_panel(summary, *expanded, cx),
         Block::Custom {
             custom_type,
@@ -361,16 +362,22 @@ fn checkpoint(label: &str, hint: bool, cx: &ViewCx) -> String {
 }
 
 /// 5.6: the compaction divider; expanded, the summary as the pi view at `W - 2` on the rail.
-fn compaction_panel(summary: &str, tokens_before: u32, expanded: bool, cx: &ViewCx) -> Vec<String> {
+fn compaction_panel(
+    summary: &str,
+    tokens_before: u32,
+    tokens_after: Option<u32>,
+    expanded: bool,
+    cx: &ViewCx,
+) -> Vec<String> {
     let g = glyphs(cx.settings.skin);
-    let mut out = vec![checkpoint(
-        &format!("COMPACTED from {tokens_before} tokens"),
-        !expanded,
-        cx,
-    )];
+    let label = match tokens_after {
+        Some(after) => format!("COMPACTED from {tokens_before} to {after} tokens"),
+        None => format!("COMPACTED from {tokens_before} tokens"),
+    };
+    let mut out = vec![checkpoint(&label, !expanded, cx)];
     if expanded {
         let inner = at_width(cx, (cx.width as usize).saturating_sub(2));
-        let md = views::render_compaction(summary, tokens_before, true, &inner);
+        let md = views::render_compaction(summary, tokens_before, tokens_after, true, &inner);
         out.extend(rail(md, g.v, "borderMuted", " ", cx.theme));
     }
     out

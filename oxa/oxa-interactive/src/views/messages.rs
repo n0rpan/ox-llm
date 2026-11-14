@@ -105,10 +105,24 @@ pub fn render_assistant(
 
 /// A compaction summary: collapsed = one `customMessageBg` block with the label
 /// `[compaction]`, `Compacted from <n> tokens` and the expand key hint; expanded = the label
-/// and the summary as Markdown.
-pub fn render_compaction(summary: &str, tokens_before: u32, expanded: bool, cx: &ViewCx) -> Vec<String> {
-    let collapsed = format!("Compacted from {tokens_before} tokens (");
-    let header = format!("**Compacted from {tokens_before} tokens**");
+/// and the summary as Markdown. When `tokens_after` is known it is shown as the destination.
+pub fn render_compaction(
+    summary: &str,
+    tokens_before: u32,
+    tokens_after: Option<u32>,
+    expanded: bool,
+    cx: &ViewCx,
+) -> Vec<String> {
+    let (collapsed, header) = match tokens_after {
+        Some(after) => (
+            format!("Compacted {tokens_before} → {after} tokens ("),
+            format!("**Compacted {tokens_before} → {after} tokens**"),
+        ),
+        None => (
+            format!("Compacted from {tokens_before} tokens ("),
+            format!("**Compacted from {tokens_before} tokens**"),
+        ),
+    };
     summary_view("compaction", &collapsed, &header, summary, expanded, cx)
 }
 
