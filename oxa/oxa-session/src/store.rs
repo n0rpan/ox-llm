@@ -1394,7 +1394,7 @@ fn meta_of_parts(sref: SessionRef, header: &SessionHeader, entries: &[Entry]) ->
             EntryBody::SessionInfo { name: n } => name = if n.is_empty() { None } else { Some(n.clone()) },
             EntryBody::Msg { wire, .. } if matches!(wire.role, Role::User | Role::Assistant) => {
                 message_count += 1;
-                let text = wire.content.as_deref().unwrap_or("");
+                let text = crate::meta::message_text(&e.body);
                 if !all_text.is_empty() {
                     all_text.push('\n');
                 }

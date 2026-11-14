@@ -90,6 +90,41 @@ fn meta(
     }
 }
 
+#[test]
+fn picker_metadata_excludes_recorded_env_notes() {
+    let env = TestEnv::new();
+    let st = store(&env);
+    let src = st.create(&env.work(), None, None).unwrap();
+    let note = "<env>\nDate: synthetic-date\nModel: hidden-model\n</env>";
+    for (id, typed, note) in [
+        ("0000000a", "", note),
+        ("0000000b", "fix the picker", "[local time 12:34 UTC]"),
+    ] {
+        let content = if typed.is_empty() {
+            note.to_string()
+        } else {
+            format!("{typed}\n\n{note}")
+        };
+        let mut entry = user(id, None, &content);
+        if let EntryBody::Msg { parts, .. } = &mut entry.body {
+            parts.push(Part::EnvNote(note.to_string()));
+        }
+        st.append(&src, &entry).unwrap();
+    }
+    // Literal user-authored blocks have no provenance and must remain searchable.
+    st.append(&src, &user("0000000c", None, "<env>literal</env>"))
+        .unwrap();
+    let entries = st.load(&src).unwrap();
+    let m = meta_of(&src, &st.header(&src).unwrap(), &entries);
+    assert_eq!(m.first_message, "fix the picker");
+    assert_eq!(m.all_text, "fix the picker\n<env>literal</env>");
+    let metas = [m];
+    assert!(search_sessions(&metas, "hidden-model", false).is_empty());
+    assert!(search_sessions(&metas, "12:34", false).is_empty());
+    assert_eq!(search_sessions(&metas, "literal", false), [0]);
+    assert_eq!(search_sessions(&metas, "fix picker", false), [0]);
+}
+
 /// and the branch up to the entry
 #[test]
 fn fork_header_has_parent_session() {
