@@ -31,7 +31,6 @@
 pub mod pty;
 
 use oxa_fake::TestEnv;
-pub use oxa_proto::Profile;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -58,28 +57,8 @@ pub fn fake_bin() -> PathBuf {
     sibling("oxa-fake", "OXA_FAKE_BIN")
 }
 
-/// The variable that selects the profile a PARITY run drives (`pi` when unset).
-pub const PARITY_PROFILE_ENV: &str = "OXA_PARITY_PROFILE";
-
-/// The `oxa.profile` this PARITY run drives: `$OXA_PARITY_PROFILE` (`pi` or `local`), `pi`
-/// when unset or empty. O-167: PARITY runs under both profiles; a row that asserts pi-exact
-/// text branches on this and checks the same capability under `local` in the same test.
-pub fn profile() -> Profile {
-    match std::env::var(PARITY_PROFILE_ENV) {
-        Ok(v) if !v.is_empty() => Profile::parse(&v)
-            .unwrap_or_else(|| panic!("{PARITY_PROFILE_ENV}={v:?}: expected \"pi\" or \"local\"")),
-        _ => Profile::Pi,
-    }
-}
-
-/// The environment that selects [`profile`] in a child `oxa` (`OXA_PROFILE`). Every place that
-/// starts `oxa` adds it after `TestEnv::envs` (which never sets a profile).
-pub fn profile_env() -> Vec<(String, String)> {
-    vec![(Profile::ENV.to_string(), profile().as_str().to_string())]
-}
-
-/// Run `oxa <args>` in `env.work()` with only `env.envs(engine_url)` and [`profile_env`] as
-/// environment, feeding `stdin`, and return its output.
+/// Run `oxa <args>` in `env.work()` with only `env.envs(engine_url)` as environment, feeding
+/// `stdin`, and return its output.
 pub fn run_oxa(env: &TestEnv, engine_url: &str, args: &[&str], stdin: &str) -> Output {
     use std::io::Write;
     let mut child = Command::new(oxa_bin())
@@ -87,7 +66,6 @@ pub fn run_oxa(env: &TestEnv, engine_url: &str, args: &[&str], stdin: &str) -> O
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(engine_url))
-        .envs(profile_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

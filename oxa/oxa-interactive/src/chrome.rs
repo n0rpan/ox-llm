@@ -174,8 +174,6 @@ pub struct HeaderInfo {
     pub resources: Vec<(String, Vec<String>)>,
     pub engine_url: String,
     pub model: String,
-    /// The profile word after the version (`local`); `None` under `pi`.
-    pub profile: Option<String>,
 }
 
 /// The startup header: logo line, key hints from the keymap, loaded resources. With
@@ -197,14 +195,7 @@ pub fn render_header(
     }
     let mut out = Vec::new();
     out.push(truncate_to_width(
-        &match &info.profile {
-            Some(p) => format!(
-                "{} {}",
-                theme.bold(&format!("oxa v{}", info.version)),
-                theme.dim(p)
-            ),
-            None => theme.bold(&format!("oxa v{}", info.version)),
-        },
+        &theme.bold(&format!("oxa v{}", info.version)),
         w,
         "...",
     ));

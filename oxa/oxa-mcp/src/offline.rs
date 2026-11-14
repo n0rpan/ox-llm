@@ -1,4 +1,4 @@
-//! P4 (wave H lane `local`): the offline check of oxa-mcp's connect sites (the HTTP transport
+//! P4 (wave H): the offline check of oxa-mcp's connect sites (the HTTP transport
 //! and the OAuth requests). Offline, only a loopback server is reached; the error is the one
 //! offline shape of `oxa_proto::offline_error`.
 use oxa_proto::OxaError;

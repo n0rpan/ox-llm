@@ -62,7 +62,6 @@ fn exec(
         .current_dir(dir)
         .env_clear()
         .envs(env.envs(url))
-        .envs(oxa_parity::profile_env())
         .envs(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

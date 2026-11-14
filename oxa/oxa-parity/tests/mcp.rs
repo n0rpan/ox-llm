@@ -910,7 +910,6 @@ fn mcp_016() {
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(NO_ENGINE))
-        .envs(oxa_parity::profile_env())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

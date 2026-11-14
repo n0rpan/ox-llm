@@ -77,8 +77,7 @@ pub(crate) fn depth_marks_child(value: Option<&str>) -> bool {
     }
 }
 
-/// L4-SUBVERIFY: this process is a subagent child (read from the process environment, as
-/// `Settings::profile` reads `OXA_PROFILE`).
+/// L4-SUBVERIFY: this process is a subagent child (read from the process environment).
 pub(crate) fn is_child_process() -> bool {
     depth_marks_child(std::env::var(ENV_SUBAGENT_DEPTH).ok().as_deref())
 }

@@ -1,9 +1,7 @@
-//! parity-local (O-167): under profile `local` a failed model summary is replaced by the
-//! mechanical one (R4). An extension still learns that the model summary failed: the
-//! compaction happened, so `session_compact` fires with `mechanical: true` and `summaryError`
-//! (the failure's text); `session_compact_failed` does not fire (it means the wire is
-//! unchanged). Under `pi` the failure fires `session_compact_failed` as before and the
-//! `session_compact` payload of a normal compaction has no new key.
+//! R4: a failed model summary is replaced by the mechanical one. An extension still learns that
+//! the model summary failed: the compaction happened, so `session_compact` fires with
+//! `mechanical: true` and `summaryError` (the failure's text); `session_compact_failed` does
+//! not fire (it means the wire is unchanged).
 //! Isolation: `oxa_fake::TestEnv` for every file and directory.
 
 use oxa_compact::CompactPolicy;
@@ -13,7 +11,7 @@ use oxa_fake::{Fault, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
     CancelToken, CommandSpec, Engine, EntryBody, FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode,
-    OxaError, Policy, Profile, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
+    OxaError, Policy, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -57,7 +55,7 @@ impl Hooks for Recorder {
     }
 }
 
-fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>, profile: Profile) -> SessionState {
+fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>) -> SessionState {
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     let cwd = env.work();
     let sref = store.create(&cwd, None, None).expect("create session");
@@ -77,7 +75,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>, profile: 
         dirty: AtomicBool::new(false),
         gate: Default::default(),
     });
-    let mut st = SessionState {
+    let st = SessionState {
         engine,
         store,
         hooks: vec![hooks as Arc<dyn Hooks>],
@@ -121,7 +119,6 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>, profile: 
         host_deferred: Vec::new(),
         compact_memo: Default::default(),
     };
-    st.stats.profile = profile;
     st
 }
 
@@ -138,11 +135,11 @@ fn push(st: &mut SessionState, wire: WireMsg) {
 
 /// A threshold compaction whose summary request is answered by `summary`; returns the hooks
 /// seen and whether it compacted.
-fn compact_with(summary: ScriptTurn, profile: Profile) -> (Arc<Recorder>, bool) {
+fn compact_with(summary: ScriptTurn) -> (Arc<Recorder>, bool) {
     let env = TestEnv::new();
     let rec = Arc::new(Recorder::default());
     let engine: Arc<dyn Engine> = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("done two"), summary]));
-    let mut st = build(&env, engine, rec.clone(), profile);
+    let mut st = build(&env, engine, rec.clone());
     push(&mut st, WireMsg::user("task one: fix the parser"));
     push(&mut st, WireMsg::assistant("done one"));
     push(&mut st, WireMsg::user("task two"));
@@ -164,8 +161,8 @@ fn fault() -> ScriptTurn {
 }
 
 #[test]
-fn local_mechanical_fallback_fires_session_compact_with_the_failure() {
-    let (rec, done) = compact_with(fault(), Profile::Local);
+fn mechanical_fallback_fires_session_compact_with_the_failure() {
+    let (rec, done) = compact_with(fault());
     assert!(done, "the session compacts without the model");
     assert!(
         rec.of(HookPoint::SessionCompactFailed).is_empty(),
@@ -182,21 +179,11 @@ fn local_mechanical_fallback_fires_session_compact_with_the_failure() {
 }
 
 #[test]
-fn pi_failure_still_fires_session_compact_failed() {
-    let (rec, done) = compact_with(fault(), Profile::Pi);
-    assert!(!done);
-    assert!(rec.of(HookPoint::SessionCompact).is_empty());
-    assert_eq!(rec.of(HookPoint::SessionCompactFailed).len(), 1);
-}
-
-#[test]
-fn a_model_summary_adds_no_key_under_either_profile() {
-    for profile in [Profile::Pi, Profile::Local] {
-        let (rec, done) = compact_with(ScriptTurn::text("## Goal\nsummary"), profile);
-        assert!(done, "{profile:?}");
-        let compact = rec.of(HookPoint::SessionCompact);
-        assert_eq!(compact.len(), 1, "{profile:?}");
-        assert!(compact[0].get("mechanical").is_none(), "{profile:?}");
-        assert!(compact[0].get("summaryError").is_none(), "{profile:?}");
-    }
+fn a_model_summary_adds_no_key() {
+    let (rec, done) = compact_with(ScriptTurn::text("## Goal\nsummary"));
+    assert!(done);
+    let compact = rec.of(HookPoint::SessionCompact);
+    assert_eq!(compact.len(), 1);
+    assert!(compact[0].get("mechanical").is_none());
+    assert!(compact[0].get("summaryError").is_none());
 }

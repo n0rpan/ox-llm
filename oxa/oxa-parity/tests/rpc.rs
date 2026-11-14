@@ -50,7 +50,6 @@ impl Rpc {
             .current_dir(env.work())
             .env_clear()
             .envs(env.envs(&server.url()))
-            .envs(oxa_parity::profile_env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1619,7 +1618,7 @@ fn rpc_052() {
     let mut client = RpcClient::spawn(
         &oxa_bin(),
         &["--no-session".to_string()],
-        &[env.envs(&server.url()), oxa_parity::profile_env()].concat(),
+        &env.envs(&server.url()),
         &env.work(),
     )
     .expect("spawn oxa --mode rpc");

@@ -43,7 +43,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `$schema` | string | `null` | editor schema hint; ignored |
 | `theme` | string | `"system"` | `system`, `dark`, `light` or a name from a theme file; also `oxa` (OXA's own dark palette) and `oxa-omarchy` (follows the current Omarchy desktop theme, read-only; `system` when there is none). With the `oxa` skin the default is `oxa-omarchy` |
 | `ui.reducedMotion` | bool | `false` | no animation in the `oxa` skin: the working sprite and the YOLO flames are replaced by the static text badge. The environment variable `OXA_REDUCED_MOTION=1` does the same for one run; `NO_COLOR` and `TERM=dumb` imply it |
-| `ui.skin` | `auto` / `pi` / `oxa` | `auto` | the look of the interactive UI: `pi` is pi's look, `oxa` is OXA's own (frames, a status line with meters, a key hint bar); `auto` is `oxa` under the `local` profile and `pi` under the `pi` profile. With the `oxa` skin, `NO_COLOR` turns all colour off |
+| `ui.skin` | `auto` / `pi` / `oxa` | `auto` | the look of the interactive UI: `oxa` is OXA's own (frames, a status line with meters, a key hint bar), `pi` is the plain look, and `auto` is `oxa`. With the `oxa` skin, `NO_COLOR` turns all colour off |
 | `themes` | list | `[]` | extra theme files or directories |
 | `tuiMode` | `fullscreen` / `regular` | `fullscreen` | start-up layout |
 | `quietStartup` | `bool` or `"header"` | `false` | shorter start-up listing; `"header"` shows only the header |
@@ -76,22 +76,21 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `enabledModels` | list | `null` | model patterns for the Ctrl+P cycle and the start model of a new session |
 | `defaultThinkingLevel` | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `medium` | thinking level of a new session |
 | `modelThinkingLevels` | object | `{}` | thinking level per model id, for example `{"your-model-id": "low"}` |
-| `oxa.thinking.policy` | `fixed` / `auto` | unset | when thinking is on; unset is `fixed` under `pi` and `auto` under `local` ([profile.md](profile.md)) |
-| `oxa.profile` | `pi` / `local` | `pi` | format and default profile ([profile.md](profile.md)) |
+| `oxa.thinking.policy` | `fixed` / `auto` | unset | when thinking is on; unset is `auto` ([tools-context.md](tools-context.md)) |
 | `cacheWarming` | `off` / `streaming` / `idle` | `idle` | `off` disables warm-up; `streaming` is accepted and behaves as `idle` |
 | `oxa.bootPreload` | bool | `true` | prefill the frozen prefix when oxa starts, if the engine supports it |
-| `oxa.prefill.paste` | bool | unset | while you type a message of at least 2000 bytes and stop for 0.7 seconds, with oxa idle, the engine prefills it so Enter starts sooner; only sent to an engine on this machine, and it needs an engine that supports prefill-only requests. Unset is off under `pi` and on under `local` |
-| `oxa.prefill.tools` | bool | unset | while a tool call that runs alone takes more than 2 seconds, the engine prefills the results of the calls before it, once they total at least 2048 bytes; needs an engine that supports prefill-only requests. Unset is off under `pi` and on under `local` |
+| `oxa.prefill.paste` | bool | unset | while you type a message of at least 2000 bytes and stop for 0.7 seconds, with oxa idle, the engine prefills it so Enter starts sooner; only sent to an engine on this machine, and it needs an engine that supports prefill-only requests. Unset is on |
+| `oxa.prefill.tools` | bool | unset | while a tool call that runs alone takes more than 2 seconds, the engine prefills the results of the calls before it, once they total at least 2048 bytes; needs an engine that supports prefill-only requests. Unset is on |
 
 ### Tools
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `defaultTools` | list | `["read","bash","edit","write","grep","find","ls"]` | tools on by default; names may include `subagent`, `web_search`, `codemode` and `tool_search` |
-| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is no timeout under `pi` and 120 under `local`; `0` is no timeout |
-| `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is off under `pi` and on under `local` |
-| `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is off under `pi` and on under `local` |
-| `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model. Under profile `local`, when `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [profile.md](profile.md) |
+| `oxa.bash.defaultTimeout` | number (seconds) | unset | timeout of a bash call that names none; unset is 120; `0` is no timeout |
+| `oxa.diet.output` | bool | unset | the system prompt's "be concise" rule is replaced by rules on tool use and a final answer of at most 6 lines. Unset is on |
+| `oxa.diet.tools` | bool | unset | shorter `grep` and `bash` output: `grep` prints each path once, and runs of three or more blank lines in bash output become two. Unset is on |
+| `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
@@ -123,11 +122,11 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `compaction.reserveTokens` | number | `16384` | room kept free for the summary and the next reply |
 | `compaction.keepRecentTokens` | number | `4000` | recent context kept verbatim after a compaction |
 | `compaction.modelOverrides` | object | `null` | per-model `reserveTokens` and `keepRecentTokens` |
-| `oxa.compaction.idleSummary` | bool | unset | after a run that leaves the context between 80 % and 100 % of the soft limit, the summary of the next compaction is written in idle time, and that compaction reuses it with no model request if nothing it covers has changed. Unset is off under `pi` and on under `local` |
-| `oxa.compaction.midRun` | bool | unset | compact between tool steps of a run when the context passes the compaction point; unset is off under `pi` and on under `local` |
-| `oxa.compaction.summaryTarget` | number (tokens) | unset | soft length target of a compaction summary: the model is asked for about three quarters of it in words; `0` is no target. Unset is no target under `pi` and 700 under `local` |
+| `oxa.compaction.idleSummary` | bool | unset | after a run that leaves the context between 80 % and 100 % of the soft limit, the summary of the next compaction is written in idle time, and that compaction reuses it with no model request if nothing it covers has changed. Unset is on |
+| `oxa.compaction.midRun` | bool | unset | compact between tool steps of a run when the context passes the compaction point; unset is on |
+| `oxa.compaction.summaryTarget` | number (tokens) | unset | soft length target of a compaction summary: the model is asked for about three quarters of it in words; `0` is no target. Unset is 700 |
 | `oxa.compaction.softTokens` | number | `null` | context size that starts an idle compaction; unset uses the engine's point |
-| `oxa.compaction.turnStart` | bool | unset | compact before a prompt is sent when the context is already above the compaction point (for example after an aborted turn); unset is off under `pi` and on under `local` |
+| `oxa.compaction.turnStart` | bool | unset | compact before a prompt is sent when the context is already above the compaction point (for example after an aborted turn); unset is on |
 | `branchSummary.reserveTokens` | number | `16384` | output budget of a branch summary |
 | `branchSummary.skipPrompt` | bool | `false` | leave out the "summarise the branch?" question |
 

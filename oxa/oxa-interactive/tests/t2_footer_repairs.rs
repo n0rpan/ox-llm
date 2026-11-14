@@ -1,4 +1,4 @@
-//! T2 / R6 (wave H lane `local`): the malformed-call repair counter in the footer and in the
+//! T2 / R6 (wave H): the malformed-call repair counter in the footer and in the
 //! status after a `tool_repair` event.
 
 use oxa_interactive::{render_footer, StatusModel, ViewModel};

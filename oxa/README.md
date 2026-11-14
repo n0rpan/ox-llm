@@ -26,7 +26,7 @@ The documentation is in [docs/](docs/README.md):
 - [quickstart](docs/pages/quickstart.md): build, connect, first prompt, file locations
 - [usage](docs/pages/usage.md): the interface, keys and slash commands
 - [cli](docs/pages/cli.md) and [settings](docs/pages/settings.md): every flag, variable and key
-- [sessions](docs/pages/sessions.md), [compaction](docs/pages/compaction.md) and [profile](docs/pages/profile.md)
+- [sessions](docs/pages/sessions.md), [compaction](docs/pages/compaction.md) and [tools and context](docs/pages/tools-context.md)
 - [tools](docs/pages/tools.md), [skills](docs/pages/skills.md), [extensions](docs/pages/extensions.md) and [mcp](docs/pages/mcp.md)
 - [security](docs/pages/security.md) and [SECURITY.md](SECURITY.md): permission modes, the sandbox, network and offline mode, and how to report a vulnerability
 - [rpc](docs/pages/rpc.md): print and JSON output, and the RPC protocol

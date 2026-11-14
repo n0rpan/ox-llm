@@ -1,4 +1,4 @@
-//! Wave H lane `local`: the network decisions of the front end (O-167(b), P3, P4). Every
+//! Wave H: the network decisions of the front end (O-167(b), P3, P4). Every
 //! decision is here; `dispatch.rs` only calls in.
 use oxa_config::{dirs_from_env, Env, Settings};
 use oxa_proto::{Level, OxaError, Sandbox};

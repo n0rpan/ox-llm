@@ -143,7 +143,6 @@ Variables that oxa reads. Variables marked *set* are set by oxa for the bash too
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
 | `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |
-| `OXA_PROFILE` | `pi` or `local`; wins over the settings files ([profile.md](profile.md)) |
 | `OXA_OFFLINE` | `1`, `true` or `yes` turns offline mode on, as `--offline` does |
 | `OXA_ALLOW_HOME_CWD` | `1`, `true` or `yes` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
 | `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search` |
@@ -160,7 +159,7 @@ Variables that oxa reads. Variables marked *set* are set by oxa for the bash too
 | `OXA_PROVIDER`, `OXA_MODEL`, `OXA_REASONING_LEVEL` | *set*: the provider (always `oxe`), the model id and the effective thinking level |
 | `OXA_CODING_AGENT`, `AI_AGENT` | *set*: process markers; `OXA_CODING_AGENT` is `true` and `AI_AGENT` is `oxa` in child processes |
 
-Some settings name the same things (`httpProxy`, `externalEditor`, `sessionDir`). `OXA_PROFILE` wins over the settings files, `OXA_SESSION_DIR` wins over `sessionDir`, and `BRAVE_SEARCH_API_KEY` wins over the key file. The rules for each setting are in [settings.md](settings.md).
+Some settings name the same things (`httpProxy`, `externalEditor`, `sessionDir`). `OXA_SESSION_DIR` wins over `sessionDir`, and `BRAVE_SEARCH_API_KEY` wins over the key file. The rules for each setting are in [settings.md](settings.md).
 
 ## Examples
 

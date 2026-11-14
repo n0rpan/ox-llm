@@ -156,7 +156,6 @@ fn quiet_startup() {
         resources: vec![("skills".to_string(), vec!["review".to_string()])],
         engine_url: "http://127.0.0.1:8080".to_string(),
         model: "qwen".to_string(),
-        profile: None,
     };
     let keymap = Keymap::defaults();
     let vm = ViewModel::default();
@@ -341,23 +340,4 @@ fn loaded_resources_listing() {
             ),
         ]
     );
-}
-
-/// Wave H: under the `local` profile the header line carries the word, nothing under `pi`.
-#[test]
-fn header_profile_word() {
-    let mut info = HeaderInfo {
-        version: "0.1.0".to_string(),
-        resources: Vec::new(),
-        engine_url: "http://127.0.0.1:8080".to_string(),
-        model: "qwen".to_string(),
-        profile: Some("local".to_string()),
-    };
-    let keymap = Keymap::defaults();
-    let vm = ViewModel::default();
-    let lines = render_header(&info, &vm, &keymap, false, 80, &Theme::plain());
-    assert_eq!(lines[0], "oxa v0.1.0 local");
-    info.profile = None;
-    let lines = render_header(&info, &vm, &keymap, false, 80, &Theme::plain());
-    assert_eq!(lines[0], "oxa v0.1.0");
 }

@@ -128,14 +128,10 @@ pub fn glyphs(skin: Skin) -> &'static Glyphs {
 }
 
 /// The skin of a session: the `ui.skin` setting (`"pi"`, `"oxa"`, anything else = `"auto"`),
-/// where `auto` is OXA's look under the `local` profile and pi's look under the `pi` profile.
-/// `utf8 == false` (a locale without UTF-8) turns `Oxa` into `OxaAscii`.
-pub fn resolve_skin(setting: Option<&str>, profile_local: bool, utf8: bool) -> Skin {
-    let oxa = match setting.map(str::trim) {
-        Some("pi") => false,
-        Some("oxa") => true,
-        _ => profile_local,
-    };
+/// where `auto` is OXA's look. `utf8 == false` (a locale without UTF-8) turns `Oxa` into
+/// `OxaAscii`.
+pub fn resolve_skin(setting: Option<&str>, utf8: bool) -> Skin {
+    let oxa = !matches!(setting.map(str::trim), Some("pi"));
     match (oxa, utf8) {
         (false, _) => Skin::Pi,
         (true, true) => Skin::Oxa,
@@ -278,12 +274,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skin_follows_setting_then_profile() {
-        assert_eq!(resolve_skin(None, false, true), Skin::Pi);
-        assert_eq!(resolve_skin(None, true, true), Skin::Oxa);
-        assert_eq!(resolve_skin(Some("auto"), true, false), Skin::OxaAscii);
-        assert_eq!(resolve_skin(Some("pi"), true, true), Skin::Pi);
-        assert_eq!(resolve_skin(Some("oxa"), false, true), Skin::Oxa);
+    fn skin_defaults_to_oxa_and_the_setting_wins() {
+        assert_eq!(resolve_skin(None, true), Skin::Oxa);
+        assert_eq!(resolve_skin(Some("auto"), false), Skin::OxaAscii);
+        assert_eq!(resolve_skin(Some("pi"), true), Skin::Pi);
+        assert_eq!(resolve_skin(Some("oxa"), false), Skin::OxaAscii);
     }
 
     #[test]

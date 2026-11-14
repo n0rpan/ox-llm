@@ -975,12 +975,10 @@ impl PtySession {
             .current_dir(env.work())
             .env_clear()
             .envs(env.envs(engine_url))
-            // The PARITY rows describe pi's interface: under both profiles they drive pi's
-            // look (`OXA_SKIN=pi`), so a row checks the same capability with the profile's
-            // formats and defaults. OXA's own look has its own pty tests (`oxa_skin.rs`),
-            // which set `OXA_SKIN=oxa` through `PtyOpts::env` (applied last).
+            // The PARITY rows describe pi's interface: they drive the plain look
+            // (`OXA_SKIN=pi`). OXA's own look has its own pty tests (`oxa_skin.rs`), which
+            // set `OXA_SKIN=oxa` through `PtyOpts::env` (applied last).
             .env("OXA_SKIN", "pi")
-            .envs(crate::profile_env())
             .envs(opts.profile.env.iter().cloned())
             .envs(opts.env.iter().cloned())
             .stdin(io(&slave))
