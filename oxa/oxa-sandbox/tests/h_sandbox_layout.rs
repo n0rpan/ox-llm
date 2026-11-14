@@ -324,16 +324,26 @@ fn golden_root_and_parent_cwd_are_read_only() {
 #[test]
 fn golden_a_symlink_to_home_is_a_home_root() {
     // A cwd that only resolves to the home directory is the home directory: read-only
-    // without a workspace (on main it was bound read-write with no deny-list masks).
+    // without a workspace (on main it was bound read-write with no deny-list masks), and
+    // sbx-symhome: bound at the real home, with its masks (never at the alias, unmasked).
     let env = TestEnv::new();
     env.write("home/.ssh/id_test", "KEY");
     let home = env.home();
     let link = env.root().join("homelink");
     std::os::unix::fs::symlink(&home, &link).expect("symlink");
     let a = bwrap_args_with(&spec("true", &link, true), &home, &Layout::default());
-    let c = link.display().to_string();
-    let at = a.iter().position(|x| x == &c).expect("the cwd is bound");
-    assert_eq!(a[at - 1], "--ro-bind", "{a:?}");
+    let s = shown(&a, &env);
+    assert!(
+        s.windows(3)
+            .any(|w| w == ["--ro-bind", "<root>/home", "<root>/home"]),
+        "{s:?}"
+    );
+    assert!(!s.iter().any(|x| x.contains("homelink")), "{s:?}");
+    assert!(
+        s.windows(4)
+            .any(|w| w == ["--tmpfs", "<root>/home/.ssh", "--remount-ro", "<root>/home/.ssh"]),
+        "{s:?}"
+    );
 }
 
 #[test]
@@ -585,5 +595,136 @@ fn real_protected_project_files_are_read_only() {
     assert!(
         work.join("src.txt").exists(),
         "the rest of the project is writable"
+    );
+}
+
+// ------------------------------------------------------------------- sbx-symhome (T3, PR #8)
+
+/// Credentials a home holds (fake bytes only), relative to the home.
+const CREDS: &[(&str, &str)] = &[
+    (".ssh/id_test", "SSH-KEY-SENTINEL"),
+    (".gnupg/private-keys-v1.d/k.key", "GPG-KEY-SENTINEL"),
+    (".netrc", "NETRC-SENTINEL"),
+    (".codex/auth.json", "CODEX-TOKEN-SENTINEL"),
+    (".claude/.credentials.json", "CLAUDE-TOKEN-SENTINEL"),
+    (".dsh/.credentials.yaml", "DSH-TOKEN-SENTINEL"),
+    (".gemini/oauth_creds.json", "GEMINI-TOKEN-SENTINEL"),
+    (".config/gh/hosts.yml", "GH-TOKEN-SENTINEL"),
+    (".oxa/agent/auth.json", "OXA-KEY-SENTINEL"),
+];
+
+fn plant_creds(env: &TestEnv) {
+    for (rel, body) in CREDS {
+        env.write(&format!("home/{rel}"), body);
+    }
+}
+
+/// Every credential stays unreadable through `paths` (relative to the cwd or absolute) and
+/// unwritable, and its host bytes stay as they were.
+fn assert_creds_hidden(b: &Bwrap, cwd: &Path, home: &Path, paths: &[String]) {
+    let reads: String = paths.iter().map(|p| format!("cat '{p}' 2>/dev/null; ")).collect();
+    let (_, out) = run(b, &format!("{reads}echo done"), cwd);
+    assert!(out.contains("done"), "{out}");
+    for (rel, body) in CREDS {
+        assert!(!out.contains(body), "{rel} readable from {cwd:?}: {out}");
+    }
+    let writes: String = paths
+        .iter()
+        .map(|p| format!("echo evil > '{p}' 2>/dev/null; "))
+        .collect();
+    let (_, out) = run(b, &format!("{writes}echo done"), cwd);
+    assert!(out.contains("done"), "{out}");
+    for (rel, body) in CREDS {
+        assert_eq!(
+            std::fs::read_to_string(home.join(rel)).unwrap_or_default(),
+            *body,
+            "{rel} changed on the host"
+        );
+    }
+}
+
+/// T3 finding on ab555057: started through a symlink to `$HOME`, the home was bound at the
+/// alias and the deny-list masks (lexical `$HOME/...`) were skipped, so every credential was
+/// readable through the alias. Also through a symlink inside the home (`~/link-to-ssh`).
+#[test]
+fn real_symlink_to_home_start_masks_credentials() {
+    let env = TestEnv::new();
+    let l = Layout {
+        allow_home_write: true,
+        ..machine(&env)
+    };
+    plant_creds(&env);
+    env.write("home/project/keep", "");
+    let home = env.home();
+    std::os::unix::fs::symlink(home.join(".ssh"), home.join("link-to-ssh")).expect("symlink");
+    let link = env.root().join("homelink");
+    std::os::unix::fs::symlink(&home, &link).expect("symlink");
+    let Some(b) = real(&env, l) else { return };
+    let mut paths: Vec<String> = CREDS.iter().map(|(rel, _)| (*rel).to_string()).collect();
+    paths.extend(CREDS.iter().map(|(rel, _)| format!("{}/{rel}", link.display())));
+    paths.extend(CREDS.iter().map(|(rel, _)| format!("{}/{rel}", home.display())));
+    paths.push("link-to-ssh/id_test".into());
+    assert_creds_hidden(&b, &link, &home, &paths);
+    // Still the home workspace of a normal start: projects writable, the root read-only.
+    let (exit, out) = run(&b, "echo hi > project/x", &link);
+    assert_eq!(exit, Some(0), "{out}");
+    let (exit, _) = run(&b, "touch planted-at-root", &link);
+    assert_ne!(exit, Some(0));
+    assert!(!home.join("planted-at-root").exists());
+}
+
+/// The same through a symlinked subdirectory of the home (here `~/.config`, which holds a
+/// deny-listed `gh`): a project cwd that resolves into the home keeps its masks.
+#[test]
+fn real_symlinked_subdir_of_home_masks_credentials() {
+    let env = TestEnv::new();
+    let l = machine(&env);
+    plant_creds(&env);
+    let home = env.home();
+    let link = env.work().join("cfg");
+    std::os::unix::fs::symlink(home.join(".config"), &link).expect("symlink");
+    let Some(b) = real(&env, l) else { return };
+    let paths = vec![
+        "gh/hosts.yml".to_string(),
+        format!("{}/gh/hosts.yml", link.display()),
+        format!("{}/.config/gh/hosts.yml", home.display()),
+    ];
+    assert_creds_hidden(&b, &link, &home, &paths);
+    let (exit, out) = run(&b, "echo ok > notes.txt", &link);
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(home.join(".config/notes.txt").exists());
+}
+
+/// The normal start in `$HOME` (not through a symlink) is unchanged: the same masks hide
+/// the same credentials.
+#[test]
+fn real_plain_home_start_still_masks_credentials() {
+    let env = TestEnv::new();
+    let l = Layout {
+        allow_home_write: true,
+        ..machine(&env)
+    };
+    plant_creds(&env);
+    let home = env.home();
+    let Some(b) = real(&env, l) else { return };
+    let mut paths: Vec<String> = CREDS.iter().map(|(rel, _)| (*rel).to_string()).collect();
+    paths.extend(CREDS.iter().map(|(rel, _)| format!("{}/{rel}", home.display())));
+    assert_creds_hidden(&b, &home, &home, &paths);
+}
+
+/// Fail closed: a cwd that cannot be resolved runs nothing.
+#[test]
+fn real_unresolvable_cwd_is_refused() {
+    let env = TestEnv::new();
+    let Some(b) = real(&env, Layout::default()) else {
+        return;
+    };
+    let gone = env.root().join("gone");
+    let r = b.run(&spec("echo ran", &gone, true), &CancelToken::new(), &mut |_| {});
+    let out = String::from_utf8_lossy(&r.output);
+    assert_eq!(r.exit, None, "{out}");
+    assert!(
+        out.contains("cannot be resolved") && !out.contains("ran\n"),
+        "{out}"
     );
 }
