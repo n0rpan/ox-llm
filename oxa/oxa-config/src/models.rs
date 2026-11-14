@@ -345,7 +345,9 @@ pub fn resolve_model(
             None => return Err(not_found(pattern, available)),
         }
     } else if let Some((head, _)) = text.split_once('/') {
-        if is_non_engine(head) && find_endpoint(available, head).is_none() {
+        let base = split_thinking(text).map_or(text, |(b, _)| b);
+        let is_id = |t: &str| available.iter().any(|m| m.model.eq_ignore_ascii_case(t));
+        if is_non_engine(head) && find_endpoint(available, head).is_none() && !is_id(text) && !is_id(base) {
             return Err(unsupported_provider(head));
         }
     }

@@ -68,7 +68,7 @@ pub fn profile_word(env: &[(String, String)], settings: &oxa_config::Settings) -
     let profile = from_env
         .or_else(|| settings.string("oxa.profile").and_then(|v| valid(v.trim())))
         .unwrap_or_else(|| oxa_proto::Profile::DEFAULT.as_str().to_string());
-    (profile == "local").then(|| profile)
+    (profile == "local").then_some(profile)
 }
 
 /// pi interactive-mode.ts `showLoadedResources`, compact form: `Context` (the context files

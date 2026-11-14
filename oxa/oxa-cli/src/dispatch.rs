@@ -1095,16 +1095,21 @@ fn list_models(
             None => true,
         })
         .map(|id| {
-            [
+            let model_info = if id == info.limits_for {
+                info.clone()
+            } else {
+                engine.info(Some(&id))?
+            };
+            Ok([
                 provider.to_string(),
                 id,
-                format_tokens(info.n_ctx as u64),
-                format_tokens(info.max_output as u64),
-                info.thinking.map_or_else(|| "?".to_string(), bool_word),
-                info.images.map_or_else(|| "?".to_string(), bool_word),
-            ]
+                format_tokens(model_info.n_ctx as u64),
+                format_tokens(model_info.max_output as u64),
+                model_info.thinking.map_or_else(|| "?".to_string(), bool_word),
+                model_info.images.map_or_else(|| "?".to_string(), bool_word),
+            ])
         })
-        .collect();
+        .collect::<Result<_, OxaError>>()?;
     let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
     if rows.is_empty() {
         match search {
@@ -1481,5 +1486,53 @@ impl oxa_proto::Host for TrustHost {
                 "only file access is available while project trust is being resolved",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod model_limits_tests {
+    use super::*;
+    use oxa_proto::{AssistantTurn, CancelToken, ChatRequest, EngineInfo, StreamEvent};
+
+    struct CatalogEngine;
+
+    impl Engine for CatalogEngine {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            let models =
+                serde_json::from_str(include_str!("../../oxa-engine/tests/fixtures/remote-models.json"))
+                    .unwrap();
+            let status = serde_json::json!({
+                "model": "local", "context_size": 131072, "max_output": 16384
+            });
+            oxa_engine::parse_info_for("http://localhost:1234", &models, &status, target)
+        }
+
+        fn count_tokens(&self, _: &str) -> Result<u32, OxaError> {
+            panic!("listing models must not tokenize")
+        }
+
+        fn chat(
+            &self,
+            _: &ChatRequest,
+            _: &CancelToken,
+            _: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            panic!("listing models must not generate")
+        }
+    }
+
+    #[test]
+    fn list_models_uses_each_models_limits() {
+        let mut out = Vec::new();
+        list_models(&CatalogEngine, "oxe", Some("sonnet"), &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
+        assert_eq!(&row[1..4], &["anthropic/claude-sonnet-5-5", "200K", "32K"]);
+
+        let mut out = Vec::new();
+        list_models(&CatalogEngine, "oxe", Some("local"), &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
+        assert_eq!(&row[1..4], &["local", "131.1K", "16.4K"]);
     }
 }
