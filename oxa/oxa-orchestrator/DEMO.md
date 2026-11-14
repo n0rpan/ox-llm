@@ -1,6 +1,6 @@
 # Model-free supervisor demo log
 
-This is the local RPC foundation, not the final orchestration CLI demo. Every
+This is the local RPC foundation and A2A bridge, not the final CLI demo. Every
 inference request uses an owned loopback fake engine. No installed model or
 service is contacted. The worker fixture runs the actual oxa CLI/RPC code in a
 private bubblewrap sandbox; dedicated hostile fixtures exercise failure paths.
@@ -22,6 +22,9 @@ test partial failure and sandbox isolation ... ok
 test audit failure cleanup ... ok
 test hostile RPC workers and run deadline ... ok
 test inherited modes and task command wrapping ... ok
+test A2A RPC bridge streaming, steering and deduplication ... ok
+test A2A cancellation, resubscription and shutdown ... ok
+test cancellation bypasses full control queues ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -32,3 +35,9 @@ boundaries, denied permission dialogs, attempted mode changes, a descendant
 holding pipes and a task starting with `!` staying data. All three permission
 modes are passed through and verified. Assertions run inside the suite; this
 log alone is not proof of broader protocol or production readiness.
+
+The A2A scenarios start an authenticated loopback server, send tasks through
+the A2A client, steer actual RPC workers while inference is running and stream
+their artifacts/usage. They also disconnect and resubscribe to a task without
+relaunching it, cancel while another HTTP connection is streaming, and verify
+worker cleanup when the server shuts down with a stalled connection.

@@ -10,7 +10,11 @@ use std::io;
 use std::net::SocketAddr;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 mod task_wire {
@@ -107,8 +111,19 @@ pub struct RunSettings {
 
 #[derive(Clone, Debug)]
 pub enum Control {
-    Steer { worker: String, text: String },
-    Cancel { worker: String },
+    Steer {
+        worker: String,
+        text: String,
+    },
+    /// Acknowledge admission to the bounded RPC queue, not model consumption.
+    SteerChecked {
+        worker: String,
+        text: String,
+        admitted: SyncSender<bool>,
+    },
+    Cancel {
+        worker: String,
+    },
     CancelAll,
 }
 
@@ -178,6 +193,23 @@ pub fn run(
     settings: RunSettings,
     plan: Vec<WorkerSpec>,
     controls: Receiver<Control>,
+    observe: impl FnMut(WorkerStatus),
+) -> io::Result<RunReport> {
+    run_cancellable(
+        settings,
+        plan,
+        controls,
+        Arc::new(AtomicBool::new(false)),
+        observe,
+    )
+}
+
+/// An independent cancellation flag cannot be starved by a full control queue.
+pub fn run_cancellable(
+    settings: RunSettings,
+    plan: Vec<WorkerSpec>,
+    controls: Receiver<Control>,
+    canceled: Arc<AtomicBool>,
     mut observe: impl FnMut(WorkerStatus),
 ) -> io::Result<RunReport> {
     validate(&settings, &plan)?;
@@ -209,6 +241,10 @@ pub fn run(
     let mut reports = Vec::new();
     let mut cancel_all = false;
     while !pending.is_empty() || !active.is_empty() {
+        if canceled.load(Ordering::Acquire) && !cancel_all {
+            cancel_all = true;
+            journal.record(None, "cancel_all", json!({}))?;
+        }
         for _ in 0..32 {
             match controls.try_recv() {
                 Ok(Control::CancelAll) => {
@@ -227,7 +263,17 @@ pub fn run(
                         journal.record(None, "control_rejected", json!({"reason":"worker_not_live"}))?;
                     }
                 }
-                Ok(Control::Steer { worker, text }) => {
+                Ok(control @ (Control::Steer { .. } | Control::SteerChecked { .. })) => {
+                    let (worker, text, admitted) = match control {
+                        Control::Steer { worker, text } => (worker, text, None),
+                        Control::SteerChecked {
+                            worker,
+                            text,
+                            admitted,
+                        } => (worker, text, Some(admitted)),
+                        _ => unreachable!(),
+                    };
+                    let mut accepted = false;
                     if let Some(worker) = active
                         .iter_mut()
                         .find(|w| w.spec.id == worker && w.running && !w.canceled)
@@ -249,15 +295,25 @@ pub fn run(
                             let queued = worker.process.queue(&json!({"id":format!("steer-{}",worker.steering),"type":"steer","message":task_text(&text)}));
                             if queued.is_err() {
                                 worker.forced = Some(Outcome::Failed);
+                                journal.record(
+                                    Some(&worker.spec.id),
+                                    "control_rejected",
+                                    json!({"reason":"rpc_input_limit"}),
+                                )?;
+                            } else {
+                                accepted = true;
+                                journal.record(
+                                    Some(&worker.spec.id),
+                                    "steered",
+                                    json!({"textSha256":hash(&text)}),
+                                )?;
                             }
-                            journal.record(
-                                Some(&worker.spec.id),
-                                "steered",
-                                json!({"textSha256":hash(&text)}),
-                            )?;
                         }
                     } else {
                         journal.record(None, "control_rejected", json!({"reason":"worker_not_running"}))?;
+                    }
+                    if let Some(reply) = admitted {
+                        let _ = reply.try_send(accepted);
                     }
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -642,7 +698,7 @@ fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn validate(settings: &RunSettings, plan: &[WorkerSpec]) -> io::Result<()> {
+pub(crate) fn validate(settings: &RunSettings, plan: &[WorkerSpec]) -> io::Result<()> {
     if !valid_id(&settings.id)
         || plan.is_empty()
         || plan.len() > 128

@@ -3,7 +3,7 @@
 Work in progress for milestone 3 of the
 [orchestrator design](../docs/design/a2a-orchestrator.md).
 This library has no startup side effects and is not linked into the normal oxa
-binary. There is no default orchestration command or network listener.
+binary. There is no default orchestration command or automatically started listener.
 
 ## Executable profile
 
@@ -65,6 +65,36 @@ private parent context. No parent transcript, filesystem grant or environment
 is automatically forwarded. Returned text is data and is never executed or
 applied to the parent workspace.
 
+## A2A to RPC bridge
+
+`rpc_agent::RpcAgent` implements the A2A server backend. An explicit
+`oxa_a2a::server::Server::start` gives it a capability-authenticated loopback
+endpoint. A send starts a supervised oxa RPC worker asynchronously; get,
+stream and resubscribe observe the same task. Follow-up messages with matching
+task/context IDs supply bounded steering data. Admission to the RPC queue is
+acknowledged, without claiming that the model has consumed that message yet.
+Cancellation waits for the supervisor to finish cleanup before returning a
+terminal task. An independent cancellation flag cannot be starved by queued
+steering controls.
+
+The operator fixes the executable, local inference route, role, permission
+mode, budgets and task capacity at construction. Wire data cannot alter any
+of these settings. Worker tools stay disabled and every child inherits offline
+mode. The bridge retains a bounded number of tasks and message histories;
+there is no silent task eviction or relaunch. Within this backend, repeating
+a message ID with the same content reuses its original task/message; reusing
+it with different content fails. That is a local guarantee, not a general A2A
+idempotency guarantee, and the client still never automatically replays sends.
+
+Live streams publish status and whole completed artifacts. Terminal status and
+artifacts are committed together after audit completion. Intermediate model
+token deltas are not yet streamed. A separate optional usage artifact reports
+observed counters and outcome; unknown counters remain unknown. The optional
+`urn:oxa:a2a:reported-usage:1` card extension describes this artifact and does
+not promise hard monetary accounting. Process IDs stay in the local report.
+Dropping the server interrupts active HTTP sockets, joins handlers, cancels
+owned task supervisors and joins them. No provider credential enters a task.
+
 ## Verification
 
 Run `cargo test --locked -p oxa-orchestrator` from `oxa/` with working bubblewrap.
@@ -76,6 +106,12 @@ filesystem/environment boundaries, audit failure, hostile records and process
 cleanup. Test-only hostile RPC fixtures also check that acknowledgment without
 a final assistant response cannot produce success.
 
+The A2A bridge tests drive that same real oxa code over authenticated HTTP:
+live streaming, steering during inference, message deduplication, context
+mismatch rejection, cancellation while streaming, resubscription after a
+disconnect, capacity rejection and shutdown with a stalled HTTP reader. All
+inference remains model-free through owned loopback fake engines.
+
 No installed runtime, model, oxc service or another machine is used. The new
 workspace member and package lock entry are the only existing-file changes;
 manifest registration is subject to architect/coordinator review. All external
@@ -85,7 +121,7 @@ single-child cleanup do not provide this supervisor's guarantees.
 
 ## Remaining milestone work
 
-Remote A2A scheduling and an oxa RPC-to-A2A server adapter, streamed artifact
+Remote A2A scheduling, streamed artifact
 assembly, stronger inference-network isolation, hard provider request/spend
 limits, approved file inputs/worktrees and patch review, restart reconciliation,
 and opt-in CLI/status UX remain required. This working local profile is a

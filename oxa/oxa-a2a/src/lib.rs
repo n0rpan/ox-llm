@@ -4,5 +4,6 @@
 //! accepts no executable/file parts. See README.md for scope and references.
 pub mod loopback;
 pub mod mock;
+pub mod server;
 pub mod sse;
 pub mod wire;
