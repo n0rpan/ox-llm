@@ -5,6 +5,7 @@ mod agent_cli;
 mod checkpoint;
 pub mod cli;
 mod git_worktrees;
+pub mod goals;
 mod journal;
 pub mod lineage;
 mod namespace;
