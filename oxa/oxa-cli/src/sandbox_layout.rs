@@ -9,7 +9,7 @@ use oxa_sandbox::{
 use std::path::Path;
 
 /// What stays protected in a home workspace (O-199), in the user's words.
-const HOME_PROTECTED_SUMMARY: &str = "the home folder itself, every dotfile and dot-folder (.bashrc, .profile, .config, .local/bin, .ssh, .oxa, ...) and ~/bin are read-only; keys and tokens are hidden";
+const HOME_PROTECTED_SUMMARY: &str = "the home folder itself, every dotfile and dot-folder (.bashrc, .profile, .config, .local/bin, .ssh, .oxa, ...) and ~/bin are read-only; keys and tokens are hidden; bash cannot create new top-level folders in ~, so create one with the file tools or outside oxa";
 
 /// The startup warning when oxa runs in `$HOME`, `/` or a parent of `$HOME` without a home
 /// workspace (R6 shape).
