@@ -164,7 +164,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
     // OXA-LOCAL-FIRST sec. 6; the default is `Profile::DEFAULT` (a test keeps them equal).
-    key("oxa.profile", Kind::Enum(&["pi", "local"]), "\"pi\""),
+    key("oxa.profile", Kind::Enum(&["pi", "local"]), "\"local\""),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).
     key("oxa.sandbox.allowHomeWrite", Kind::Bool, "false"),

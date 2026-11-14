@@ -47,6 +47,7 @@ fn build(
     settings: Settings,
 ) -> SessionState {
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
+    let profile = settings.profile();
     let cwd = env.work();
     let sref = store.create(&cwd, None, None).expect("create session");
     let info = engine.info(None).expect("engine info");
@@ -97,7 +98,10 @@ fn build(
         shared,
         next_turn: Vec::new(),
         last_usage: None,
-        stats: Stats::default(),
+        stats: Stats {
+            profile,
+            ..Stats::default()
+        },
         spill_dir: env.tmp(),
         tool_env: Vec::new(),
         tune: Default::default(),
@@ -115,9 +119,23 @@ fn state(
     turns: Vec<ScriptTurn>,
     compact: CompactPolicy,
 ) -> (SessionState, Arc<ScriptedEngine>) {
+    state_settings(env, turns, compact, Settings::default())
+}
+
+fn state_settings(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    compact: CompactPolicy,
+    settings: Settings,
+) -> (SessionState, Arc<ScriptedEngine>) {
     let eng = Arc::new(ScriptedEngine::new(turns));
     let engine: Arc<dyn Engine> = eng.clone();
-    (build(env, engine, Vec::new(), compact, Settings::default()), eng)
+    (build(env, engine, Vec::new(), compact, settings), eng)
+}
+
+/// `local` falls back to a mechanical summary; these tests pin pi's failure policy.
+fn pi_settings() -> Settings {
+    Settings::from_values(json!({"oxa": {"profile": "pi"}}), json!({}))
 }
 
 /// Append a user message the way `Session::prompt` does.
@@ -372,9 +390,13 @@ fn manual_compact_instructions() {
         .expect("summary request");
     let instruction = summary.messages.last().expect("instruction");
     assert_eq!(instruction.role, Role::User);
+    let words = prompt::summary_target_words(st.settings.summary_target(st.stats.profile));
     assert_eq!(
         instruction.content.as_deref(),
-        Some(prompt::summary_instruction(SummaryKind::Initial, Some("keep the API")).as_str())
+        Some(
+            prompt::summary_instruction_with_target(SummaryKind::Initial, Some("keep the API"), words)
+                .as_str()
+        )
     );
     assert!(instruction
         .content
@@ -530,7 +552,7 @@ fn summary_request_is_whole_wire_plus_one() {
 #[test]
 fn failure_leaves_wire_unchanged() {
     let env = TestEnv::new();
-    let (mut st, eng) = state(
+    let (mut st, eng) = state_settings(
         &env,
         vec![
             ScriptTurn::text("reply"),
@@ -540,6 +562,7 @@ fn failure_leaves_wire_unchanged() {
             }),
         ],
         tight(u32::MAX, u32::MAX),
+        pi_settings(),
     );
     say(&mut st, "hi");
     assert_eq!(run(&mut st), RunEnd::Stopped);
@@ -749,7 +772,7 @@ fn failure_policy_by_reason() {
         })
     };
 
-    let (mut st, _eng) = state(&env, vec![fail()], tight(1, u32::MAX));
+    let (mut st, _eng) = state_settings(&env, vec![fail()], tight(1, u32::MAX), pi_settings());
     say(&mut st, "hi");
     push(&mut st, WireMsg::assistant("partial"));
     st.transcript.set_usage(&Usage {
@@ -761,7 +784,7 @@ fn failure_policy_by_reason() {
     let ok = maybe_compact(&mut st, true, &mut VecSink::default(), &mut ui());
     assert_eq!(ok, Ok(false), "after reply: reported, not returned");
 
-    let (mut st, _eng) = state(&env, vec![fail()], tight(u32::MAX, 10));
+    let (mut st, _eng) = state_settings(&env, vec![fail()], tight(u32::MAX, 10), pi_settings());
     say(&mut st, "hi");
     push(&mut st, WireMsg::assistant("partial"));
     say(&mut st, "current prompt");

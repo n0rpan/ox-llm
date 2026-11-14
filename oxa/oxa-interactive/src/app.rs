@@ -58,15 +58,17 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
 }
 
 /// The profile word of the start-up header: `local` under the `local` profile
-/// (`OXA_PROFILE`, else the `oxa.profile` setting), nothing under the default `pi` profile.
+/// (`OXA_PROFILE`, else the `oxa.profile` setting, else the default), nothing under `pi`.
 pub fn profile_word(env: &[(String, String)], settings: &oxa_config::Settings) -> Option<String> {
     let valid = |v: &str| matches!(v, "pi" | "local").then(|| v.to_string());
     let from_env = env
         .iter()
         .find(|(k, _)| k == "OXA_PROFILE")
         .and_then(|(_, v)| valid(v.trim()));
-    let profile = from_env.or_else(|| settings.string("oxa.profile").and_then(|v| valid(v.trim())));
-    profile.filter(|p| p == "local")
+    let profile = from_env
+        .or_else(|| settings.string("oxa.profile").and_then(|v| valid(v.trim())))
+        .unwrap_or_else(|| oxa_proto::Profile::DEFAULT.as_str().to_string());
+    (profile == "local").then(|| profile)
 }
 
 /// pi interactive-mode.ts `showLoadedResources`, compact form: `Context` (the context files
@@ -2102,7 +2104,11 @@ mod profile_word_tests {
 
     #[test]
     fn profile_word_only_for_local() {
-        assert_eq!(profile_word(&env(&[]), &settings(json!({}))), None);
+        assert_eq!(
+            profile_word(&env(&[]), &settings(json!({}))),
+            Some("local".to_string()),
+            "the default profile is local"
+        );
         assert_eq!(
             profile_word(&env(&[]), &settings(json!({"oxa": {"profile": "pi"}}))),
             None

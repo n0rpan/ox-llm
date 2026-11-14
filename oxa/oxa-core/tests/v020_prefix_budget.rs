@@ -174,7 +174,7 @@ struct Case {
 const CASES: [Case; 3] = [
     Case {
         label: "pi",
-        settings: "{}",
+        settings: r#"{"oxa": {"profile": "pi"}}"#,
     },
     Case {
         label: "local, diet on",

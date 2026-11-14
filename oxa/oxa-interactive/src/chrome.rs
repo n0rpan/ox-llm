@@ -174,7 +174,7 @@ pub struct HeaderInfo {
     pub resources: Vec<(String, Vec<String>)>,
     pub engine_url: String,
     pub model: String,
-    /// The profile word after the version (`local`); `None` under the default `pi` profile.
+    /// The profile word after the version (`local`); `None` under `pi`.
     pub profile: Option<String>,
 }
 

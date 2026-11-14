@@ -4,18 +4,18 @@ A profile sets the formats and defaults oxa uses for a model. Both profiles have
 
 | Profile | Use it for |
 |---|---|
-| `pi` (default) | the formats the earlier agent used. Use it with engines and models that expect that shape |
-| `local` | the local ox-llm engine and its models. Formats and defaults are tuned to the local engine and its models |
+| `pi` | the formats the earlier agent used. Select it explicitly for engines and models that expect that shape |
+| `local` (default) | the local ox-llm engine and its models. Formats and defaults are tuned to the local engine and its models |
 
 ## Selecting a profile
 
-Set it in a settings file:
+The default is `local`. Set another in a settings file:
 
 ```json
 { "oxa": { "profile": "local" } }
 ```
 
-in `~/.oxa/agent/settings.json`, or in the project's `.oxa/settings.json` (the project file wins, if the project is trusted). The environment variable `OXA_PROFILE=local` wins over both settings files. Any value other than `pi` or `local` is reported as a warning that names both values, and the next layer decides.
+in `~/.oxa/agent/settings.json`, or in the project's `.oxa/settings.json` (the project file wins, if the project is trusted). The environment variable `OXA_PROFILE=pi` (or `=local`) wins over both settings files. Any value other than `pi` or `local` is reported as a warning that names both values, and the next layer decides.
 
 A session keeps the profile it was created with. A change of profile takes effect at the next prefix epoch: after `/reload` (when the change alters the system prompt or the tool list), after a model switch, or in a new session. `/reload` opens a new epoch when only the profile changed, because the declared tool text is different.
 
