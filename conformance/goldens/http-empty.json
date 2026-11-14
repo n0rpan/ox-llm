@@ -1,0 +1,93 @@
+{
+  "chat-empty": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Local model setup is still being prepared.",
+        "param": null,
+        "type": "local_backend_busy"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "chat-invalid-json": {
+    "body": {
+      "error": {
+        "code": "invalid_request",
+        "message": "Invalid model request.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 400,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "completion-empty": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Local model setup is still being prepared.",
+        "param": null,
+        "type": "local_backend_busy"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "completion-invalid-json": {
+    "body": {
+      "error": {
+        "code": "invalid_request",
+        "message": "Invalid model request.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 400,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "models": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "param": null,
+        "type": "unavailable_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "unknown-model": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "param": null,
+        "type": "unavailable_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "unknown-route": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Local model setup is still being prepared.",
+        "param": null,
+        "type": "local_backend_busy"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  }
+}

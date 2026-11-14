@@ -138,6 +138,8 @@ jobs:
           root=$(mktemp -d); trap 'rm -rf "$root"' EXIT
           HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_RUNTIME_DIR="$root/r" \
             PYTHONPATH=src python3 -m snapdragon_ai_lab --help > /dev/null
+      - name: oxc black-box conformance (Python reference)
+        run: python3 -m unittest discover -s ../conformance -v
       - name: Receipt scrub check (benchmarks/, experiments/)
         # --user '': the user-name rule matches the account that RUNS the scrub (the maintainer's,
         # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
