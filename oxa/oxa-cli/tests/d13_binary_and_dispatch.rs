@@ -189,6 +189,36 @@ fn list_models() {
     assert_eq!(miss.out.trim(), "No models matching \"zzz\"");
 }
 
+/// When the controller publishes a thinking/vision field, `--list-models` shows the real
+/// `yes`/`no` (oxstack/ox-llm#67): a non-`none`/`off`/false thinking value is `yes`, vision bool
+/// is `no`/`yes`. When it publishes neither, the column is `?`.
+#[test]
+fn list_models_unknown_thinking_and_images() {
+    let env = TestEnv::new();
+    // A controller that publishes the real shape: `capabilities.thinking == "toggle"` and
+    // `capabilities.vision == false`, so both columns must be the real `yes`/`no`.
+    let server = FakeServer::start(
+        Vec::new(),
+        FakeOpts {
+            n_ctx: 32_000,
+            model: "real-model".to_string(),
+            omit_modality: false,
+            ..FakeOpts::default()
+        },
+    )
+    .expect("fake engine");
+    let all = go(&env, &server.url(), &["--list-models"]);
+    assert_eq!(all.code, 0, "stderr: {}", all.err);
+    let lines: Vec<&str> = all.out.lines().collect();
+    assert_eq!(lines.len(), 2, "header and one row, got {:?}", all.out);
+    let header = lines[0];
+    let thinking_col = header.split_whitespace().position(|c| c == "thinking").unwrap();
+    let images_col = header.split_whitespace().position(|c| c == "images").unwrap();
+    let cells: Vec<&str> = lines[1].split_whitespace().collect();
+    assert_eq!(cells[thinking_col], "yes", "thinking toggle is a confident yes");
+    assert_eq!(cells[images_col], "no", "vision false is a confident no");
+}
+
 /// --export input [output]
 #[test]
 fn export_flag() {
