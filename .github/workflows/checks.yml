@@ -55,9 +55,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Toolchain
-        run: |
-          engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
-          rustup component add --toolchain "$RUST_VERSION" clippy
+        run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION" clippy
       - name: engine (model-free workspace, all targets)
         working-directory: engine
         run: cargo clippy --locked --workspace --exclude qwen4exp --all-targets
