@@ -9,11 +9,18 @@ use axum::{
     Router,
 };
 use futures_util::StreamExt;
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{tcp::OwnedReadHalf, TcpStream},
-    sync::Mutex,
+    sync::{Mutex, Notify},
 };
 use tower::ServiceExt;
 
@@ -21,6 +28,41 @@ type Reader = Arc<Mutex<BufReader<OwnedReadHalf>>>;
 
 #[derive(Clone)]
 pub struct CloseConnection;
+
+#[derive(Clone)]
+struct Peer {
+    reader: Reader,
+    done: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+impl Peer {
+    fn body_done(&self) {
+        self.done.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+    async fn disconnected(&self) {
+        loop {
+            let ready = self.notify.notified();
+            if self.done.load(Ordering::SeqCst) {
+                break;
+            }
+            ready.await;
+        }
+        loop {
+            let mut reader = self.reader.lock().await;
+            // Leave pipelined bytes for the next request. Peeking must never
+            // consume a subsequent request while an inference is running.
+            if reader.buffer().is_empty() {
+                let mut byte = [0_u8; 1];
+                if !matches!(reader.get_mut().peek(&mut byte).await,Ok(n) if n>0) {
+                    return;
+                }
+            }
+            drop(reader);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
 
 async fn head(reader: &Reader) -> io::Result<Option<Vec<u8>>> {
     let mut head = Vec::new();
@@ -52,7 +94,7 @@ async fn head(reader: &Reader) -> io::Result<Option<Vec<u8>>> {
     ))
 }
 
-fn parse(raw: &[u8], reader: Reader) -> io::Result<Request<Body>> {
+fn parse(raw: &[u8], reader: Reader) -> io::Result<(Request<Body>, Peer)> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP request");
     let mut headers = [httparse::EMPTY_HEADER; 100];
     let mut parsed = httparse::Request::new(&mut headers);
@@ -86,11 +128,18 @@ fn parse(raw: &[u8], reader: Reader) -> io::Result<Request<Body>> {
         }
         request = request.header(field.name, field.value);
     }
+    let peer = Peer {
+        reader: reader.clone(),
+        done: Arc::new(AtomicBool::new(false)),
+        notify: Arc::new(Notify::new()),
+    };
     let body = if length == 0 || chunked {
+        peer.body_done();
         Body::empty()
     } else {
-        let stream =
-            futures_util::stream::unfold((reader, length), |(reader, remaining)| async move {
+        let stream = futures_util::stream::unfold(
+            (reader, length, peer.clone()),
+            |(reader, remaining, peer)| async move {
                 if remaining == 0 {
                     return None;
                 }
@@ -100,16 +149,29 @@ fn parse(raw: &[u8], reader: Reader) -> io::Result<Request<Body>> {
                     locked.read(&mut bytes).await
                 };
                 let count = match result {
-                    Ok(0) => return None,
+                    Ok(0) => {
+                        peer.body_done();
+                        return None;
+                    }
                     Ok(count) => count,
-                    Err(error) => return Some((Err(error), (reader, 0))),
+                    Err(error) => {
+                        peer.body_done();
+                        return Some((Err(error), (reader, 0, peer)));
+                    }
                 };
                 bytes.truncate(count);
-                Some((Ok(bytes), (reader, remaining - count as u64)))
-            });
+                if count as u64 == remaining {
+                    peer.body_done();
+                }
+                Some((Ok(bytes), (reader, remaining - count as u64, peer)))
+            },
+        );
         Body::from_stream(stream)
     };
-    request.body(body).map_err(|_| invalid())
+    request
+        .body(body)
+        .map(|request| (request, peer))
+        .map_err(|_| invalid())
 }
 
 pub async fn serve(stream: TcpStream, app: Router) {
@@ -120,7 +182,7 @@ pub async fn serve(stream: TcpStream, app: Router) {
             Ok(Some(raw)) => raw,
             _ => break,
         };
-        let request = match parse(&raw, reader.clone()) {
+        let (request, peer) = match parse(&raw, reader.clone()) {
             Ok(request) => request,
             Err(_) => {
                 let _=write.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
@@ -136,14 +198,20 @@ pub async fn serve(stream: TcpStream, app: Router) {
                     .headers()
                     .get(header::CONNECTION)
                     .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"keep-alive")));
-        let response = match app.clone().oneshot(request).await {
+        let handled = tokio::select! {response=app.clone().oneshot(request)=>response,_=peer.disconnected()=>break};
+        let response = match handled {
             Ok(response) => response,
             Err(error) => match error {},
         };
         let (mut parts, body) = response.into_parts();
+        let chunked = parts
+            .headers
+            .get(header::TRANSFER_ENCODING)
+            .is_some_and(|v| v == "chunked");
         let close = close
             || parts.extensions.get::<CloseConnection>().is_some()
             || (!parts.headers.contains_key(header::CONTENT_LENGTH)
+                && !chunked
                 && !matches!(parts.status.as_u16(), 204 | 304))
             || parts
                 .headers
@@ -173,13 +241,34 @@ pub async fn serve(stream: TcpStream, app: Router) {
             break;
         }
         let mut body = body.into_data_stream();
-        while let Some(chunk) = body.next().await {
+        loop {
+            let chunk = tokio::select! {chunk=body.next()=>chunk,_=peer.disconnected()=>return};
+            let Some(chunk) = chunk else {
+                break;
+            };
             let Ok(chunk) = chunk else {
                 return;
             };
+            if chunk.is_empty() {
+                continue;
+            }
+            if chunked
+                && write
+                    .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                    .await
+                    .is_err()
+            {
+                return;
+            }
             if write.write_all(&chunk).await.is_err() {
                 return;
             }
+            if chunked && write.write_all(b"\r\n").await.is_err() {
+                return;
+            }
+        }
+        if chunked && write.write_all(b"0\r\n\r\n").await.is_err() {
+            return;
         }
         if write.flush().await.is_err() || close {
             break;

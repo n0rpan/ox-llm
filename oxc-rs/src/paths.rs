@@ -30,6 +30,59 @@ pub fn read_config() -> Option<serde_json::Value> {
     value.is_object().then_some(value)
 }
 
+pub fn write_config(value: &serde_json::Value) -> std::io::Result<()> {
+    use std::{
+        fs::{self, File, OpenOptions},
+        io::Write,
+        os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    };
+    let requested = config();
+    // Match the existing writer: follow the config symlink, keep the target's
+    // permissions, and replace it using a private same-directory temporary.
+    let path = match fs::canonicalize(&requested) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => requested,
+        Err(error) => return Err(error),
+    };
+    let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    let mode = fs::metadata(&path)
+        .map(|m| m.permissions().mode() & 0o7777)
+        .unwrap_or(0o600);
+    let mut suffix = [0_u8; 4];
+    getrandom::fill(&mut suffix).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        suffix
+            .iter()
+            .map(|v| format!("{v:02x}"))
+            .collect::<String>()
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&temporary)?;
+        file.write_all(serde_json::to_string_pretty(value)?.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        if mode != 0o600 {
+            file.set_permissions(fs::Permissions::from_mode(mode))?;
+        }
+        fs::rename(&temporary, &path)?;
+        if let Ok(directory) = File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 pub fn python_json(value: &serde_json::Value) -> String {
     use serde_json::Value;
     match value {

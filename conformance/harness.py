@@ -241,6 +241,10 @@ class Daemon:
         (proc / 'vmstat').write_text('oom_kill 0\npswpin 0\npswpout 0\n')
         return ['bwrap', '--die-with-parent', '--unshare-cgroup', '--ro-bind', '/', '/',
                 '--dev-bind', '/dev', '/dev',
+                # Host root is unmapped in the executor's user namespace. A
+                # private, owned ancestor lets the unchanged diagnostic writer
+                # enforce its directory-owner checks instead of refusing /tmp.
+                '--tmpfs', '/tmp', '--chmod', '0700', '/tmp',
                 '--bind', str(self.home), str(self.home),
                 '--tmpfs', '/run', '--ro-bind', '/proc', '/run/oxc-conformance-proc', '--bind', str(proc), '/proc',
                 '--ro-bind', str(cgroup), '/sys/fs/cgroup',

@@ -197,6 +197,8 @@ def main():
     parser.add_argument('--alias', required=True)
     parser.add_argument('--model', required=True)
     args = parser.parse_args()
+    if diagnostic := os.environ.get('FAKE_ENGINE_STDERR'):
+        os.write(2, diagnostic.encode())
     # Keep this child's live /proc metadata visible through the host fixture.
     # Other host inputs (memory capacity, PSI and cgroup limits) are synthetic.
     proc_entry = Path(os.environ['FAKE_PROC_VIEW']) / str(os.getpid())

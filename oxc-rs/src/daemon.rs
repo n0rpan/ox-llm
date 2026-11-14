@@ -1,4 +1,4 @@
-use crate::{models, paths};
+use crate::{engine, models, paths};
 use axum::{
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode},
@@ -16,8 +16,9 @@ use subtle::ConstantTimeEq;
 struct App {
     port: u16,
     last_config: Mutex<Value>,
+    engine: Arc<engine::Manager>,
 }
-struct Context {
+pub(crate) struct Context {
     path: String,
     head: bool,
     id: String,
@@ -33,7 +34,7 @@ fn random_id() -> Result<String, getrandom::Error> {
     ))
 }
 impl Context {
-    fn reply(&self, code: u16, value: Value) -> Response {
+    pub(crate) fn reply(&self, code: u16, value: Value) -> Response {
         let raw = paths::python_json(&value);
         let length = raw.len();
         let mut response = (
@@ -72,7 +73,7 @@ impl Context {
                 .insert("vary", HeaderValue::from_static("Origin"));
         }
     }
-    fn error(
+    pub(crate) fn error(
         &self,
         code: u16,
         message: &str,
@@ -91,6 +92,24 @@ impl Context {
                 .extensions_mut()
                 .insert(crate::transport::CloseConnection);
         }
+        response
+    }
+    pub(crate) fn stream(&self, body: axum::body::Body) -> Response {
+        let mut response = body.into_response();
+        for (name, value) in [
+            ("content-type", "text/event-stream"),
+            ("cache-control", "no-store"),
+            ("transfer-encoding", "chunked"),
+        ] {
+            response
+                .headers_mut()
+                .insert(name, HeaderValue::from_static(value));
+        }
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_str(&self.id).expect("generated request id"),
+        );
+        self.cors_headers(&mut response);
         response
     }
 }
@@ -337,9 +356,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         return context.reply(200, json!({"object":"list","data":rows}));
     }
     if path == "/_local/status" {
-        let selected = models::selected(&config);
-        let profile = models::resolve(&config, None).unwrap_or_else(|_| json!({}));
-        return context.reply(200,json!({"state":"unloaded","model":selected,"selected_model":selected,"validated":models::eligible(&profile),"active_requests":0,"queued_requests":0,"capabilities":["models"],"context_size":profile["context_size"]}));
+        return context.reply(200, app.engine.status(&config));
     }
     if path == "/_local/models" {
         return context.reply(200, json!({"object":"list","data":models::rows(&config)}));
@@ -350,8 +367,105 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             json!({"object":"list","available":false,"rows":[],"medians":{}}),
         );
     }
+    if [
+        "/_local/load",
+        "/_local/unload",
+        "/_local/preload",
+        "/_local/select",
+    ]
+    .contains(&path.as_str())
+        && method == Method::POST
+    {
+        let length = match headers
+            .get("content-length")
+            .map(|h| h.to_str().unwrap_or(""))
+            .unwrap_or("0")
+            .trim()
+            .parse::<i64>()
+        {
+            Ok(length) => length,
+            Err(_) => return context.error(400, "Invalid content length.", "", "", None),
+        };
+        if headers.contains_key("transfer-encoding") || !(0..=1024).contains(&length) {
+            return context.error(413, "Control request is too large.", "", "", None);
+        }
+        let control = match axum::body::to_bytes(request.into_body(), 1024).await {
+            Ok(bytes) if bytes.is_empty() => json!({}),
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(value) if value.is_object() => value,
+                _ => return context.error(400, "Invalid control request.", "", "", None),
+            },
+            Err(_) => return context.error(400, "Invalid control request.", "", "", None),
+        };
+        if path == "/_local/unload" {
+            if control
+                .get("model")
+                .is_some_and(|v| !v.is_null() && !v.is_string())
+            {
+                return context.reply(409, json!({"error":"That model is not loaded."}));
+            }
+            return match app.engine.unload(control["model"].as_str()).await {
+                Ok(()) => context.reply(200, json!({"state":"unloaded"})),
+                Err((code, value)) => context.reply(code, value),
+            };
+        }
+        if path == "/_local/select" && !control["model"].is_string() {
+            return context.error(409, "Choose a local model.", "", "", None);
+        }
+        if !control["model"].is_null() && !control["model"].is_string() {
+            return if path == "/_local/preload" {
+                context.error(400, "Send {} or {\"model\": alias}.", "", "", None)
+            } else {
+                context.error(503, models::UNKNOWN, "", "", None)
+            };
+        }
+        if path == "/_local/select" && app.engine.busy() {
+            return context.reply(409,json!({"error":"A request is running, so the model was not changed. Try again when it finishes."}));
+        }
+        let profile = match models::resolve(&config, control["model"].as_str()) {
+            Ok(profile) => profile,
+            Err(error) => {
+                return context.error(
+                    if path == "/_local/select" {
+                        409
+                    } else if path == "/_local/preload" && !control["model"].is_null() {
+                        404
+                    } else {
+                        503
+                    },
+                    error,
+                    "",
+                    "",
+                    None,
+                )
+            }
+        };
+        if path == "/_local/preload" {
+            let (code, value) = app.engine.preload(profile, !control["model"].is_null());
+            return context.reply(code, value);
+        }
+        if path == "/_local/select" {
+            return match app.engine.select(profile).await {
+                Ok(alias) => context.reply(
+                    200,
+                    json!({"selected_model":alias,"state":app.engine.phase()}),
+                ),
+                Err(error) => context.error(409, &error, "", "", None),
+            };
+        }
+        return match app.engine.load(profile).await {
+            Ok(()) => context.reply(200, json!({"state":"ready"})),
+            Err(error) => context.error(503, &error, "", "", None),
+        };
+    }
+    if path.starts_with("/_local/") {
+        return context.error(404, "Unknown local control route.", "", "", None);
+    }
     if path == "/health" && models::resolve(&config, None).is_ok_and(|p| models::eligible(&p)) {
-        return context.reply(200, json!({"status":"ok","sleeping":true}));
+        return context.reply(
+            200,
+            json!({"status":"ok","sleeping":app.engine.phase()=="unloaded"}),
+        );
     }
     let encoding = headers
         .get("content-encoding")
@@ -458,6 +572,30 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             );
         }
     }
+    if fresh.is_some() {
+        let unsupported = match path.as_str() {
+            "/v1/embeddings" | "/embeddings" | "/embedding" => Some("embeddings"),
+            "/v1/rerank" | "/rerank" | "/v1/reranking" | "/reranking" => Some("reranking"),
+            "/infill" => Some("infill"),
+            "/v1/audio/speech" | "/v1/audio/transcriptions" | "/v1/audio/translations" => {
+                Some("audio")
+            }
+            "/v1/images/generations" | "/v1/images/edits" | "/v1/images/variations" => {
+                Some("images")
+            }
+            "/v1/moderations" => Some("moderations"),
+            _ => None,
+        };
+        if let Some(kind) = unsupported {
+            return context.error(
+                404,
+                &format!("This local model server does not provide {kind} ({path})."),
+                "invalid_request_error",
+                "unsupported_endpoint",
+                None,
+            );
+        }
+    }
     if fresh.is_some()
         && path.starts_with("/v1/")
         && ![
@@ -475,6 +613,25 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             "unknown_url",
             None,
         );
+    }
+    if fresh.is_some()
+        && method == Method::POST
+        && [
+            "/v1/chat/completions",
+            "/chat/completions",
+            "/v1/completions",
+            "/v1/responses",
+        ]
+        .contains(&path.as_str())
+    {
+        return crate::proxy::handle(
+            &context,
+            app.engine.clone(),
+            &config,
+            &path,
+            payload.unwrap_or(Value::Null),
+        )
+        .await;
     }
     context.error(
         503,
@@ -498,9 +655,17 @@ pub async fn run() -> i32 {
             return 1;
         }
     };
+    let engine = match engine::Manager::new() {
+        Ok(engine) => engine,
+        Err(error) => {
+            eprintln!("local-ai: {error}");
+            return 1;
+        }
+    };
     let app = Arc::new(App {
         port,
         last_config: Mutex::new(paths::read_config().unwrap_or_else(|| json!({}))),
+        engine: engine.clone(),
     });
     let router = Router::new().fallback(handle).with_state(app);
     let mut connections = tokio::task::JoinSet::new();
@@ -521,5 +686,6 @@ pub async fn run() -> i32 {
     }
     connections.abort_all();
     while connections.join_next().await.is_some() {}
+    engine.shutdown().await;
     0
 }

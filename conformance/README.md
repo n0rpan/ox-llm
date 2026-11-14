@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
-Reference: main `a1c683f9e3783fdac4716bef53241833babe60a6`.
-The current suite passes 218 scenarios in 31 unittest methods. This remains a
+Reference: main `2aa4e9326b134c55ecc8fcd3387e818b73facca9`.
+The current suite passes 236 scenarios in 37 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -28,7 +28,11 @@ Configured HTTP tests launch the unchanged daemon and a hash-pinned synthetic
 engine executable through its real lifecycle. A private bubblewrap mount/cgroup
 namespace supplies deterministic host memory, PSI and cgroup counters, including
 the installed service's `memory.swap.max=0`. Changing those fixture files tests
-the real guard's refusal and recovery. No runner cgroup settings are changed.
+the real guard's refusal and recovery, including runtime faults and sustained PSI.
+A private /tmp supplies an owned ancestor for the existing diagnostic log path
+checks; the executor's host root UID is unmapped inside bubblewrap. Diagnostic
+contracts verify private permissions, visible control characters and refusal of
+symlink/hard-link targets. No runner cgroup settings are changed.
 The synthetic `/proc` view delegates other metadata to live procfs and exposes
 engine PIDs before readiness. The daemon receives SIGTERM directly for graceful
 shutdown, rather than terminating the bubblewrap supervisor.
@@ -83,9 +87,9 @@ do not refresh goldens merely because an alternate implementation fails them.
 | CLI ledger files | PASS, 5 cases | PASS | Additional historical ledger labels |
 | CLI runtime | PASS, 48 cases | Partial: 29/48 native CLI cases against Python daemon | More success/failure branches, qualified Flash/plan launch, populated digest/ledger |
 | HTTP empty install | PASS, 7 cases | PASS | Additional setup failures |
-| Configured HTTP | PASS, 50 cases | Not implemented | More option combinations and engine error paths |
-| HTTP gates | PASS, 17 cases | Partial: 16/17; inference pending | LAN share listeners and rate limits |
-| Lifecycle | PASS, 11 tests | Not implemented | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
+| Configured HTTP | PASS, 62 cases | PASS: chat, completions and Responses JSON/SSE | More option combinations and engine error paths |
+| HTTP gates | PASS, 17 cases | PASS | LAN share listeners and rate limits |
+| Lifecycle | PASS, 17 tests | Partial: 16/17; cache/storage/harness status routes pending | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
 | Files | PASS, 3 tests | API-key refresh/fail-closed PASS; remaining round trips pending | Additional state stores and sharing secrets |
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness ready; Python/Python PASS | Not implemented | Run Python/selected/Python round trips with Rust |

@@ -3055,6 +3055,1038 @@
       "x-request-id": "<generated:req_32hex>"
     }
   },
+  "responses-custom-tools": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0,
+          "tools": [
+            {
+              "function": {
+                "name": "synthetic_tool",
+                "parameters": {
+                  "properties": {
+                    "input": {
+                      "description": "The raw input for the tool.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "input"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "background": false,
+        "completed_at": "<current:unix-seconds>",
+        "created_at": "<current:unix-seconds>",
+        "error": null,
+        "id": "<generated:resp_0>",
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "metadata": {},
+        "model": "ornith-35b-a3b-local",
+        "object": "response",
+        "output": [
+          {
+            "call_id": "call_synthetic_0",
+            "id": "<generated:fc_0>",
+            "input": "{\"value\":1}",
+            "name": "synthetic_tool",
+            "status": "completed",
+            "type": "custom_tool_call"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "completed",
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "name": "synthetic_tool",
+            "type": "custom"
+          }
+        ],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 8,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          },
+          "output_tokens": 1,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 9
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-custom-tools-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "temperature": 0,
+          "tools": [
+            {
+              "function": {
+                "name": "synthetic_tool",
+                "parameters": {
+                  "properties": {
+                    "input": {
+                      "description": "The raw input for the tool.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "input"
+                  ],
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "in_progress",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [
+                {
+                  "name": "synthetic_tool",
+                  "type": "custom"
+                }
+              ],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": null
+            },
+            "sequence_number": 0,
+            "type": "response.created"
+          },
+          "event": "response.created"
+        },
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "in_progress",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [
+                {
+                  "name": "synthetic_tool",
+                  "type": "custom"
+                }
+              ],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": null
+            },
+            "sequence_number": 1,
+            "type": "response.in_progress"
+          },
+          "event": "response.in_progress"
+        },
+        {
+          "data": {
+            "item": {
+              "call_id": "call_synthetic_0",
+              "id": "<generated:fc_0>",
+              "input": "",
+              "name": "synthetic_tool",
+              "status": "in_progress",
+              "type": "custom_tool_call"
+            },
+            "output_index": 0,
+            "sequence_number": 2,
+            "type": "response.output_item.added"
+          },
+          "event": "response.output_item.added"
+        },
+        {
+          "data": {
+            "delta": "{\"value\":1}",
+            "item_id": "<generated:fc_0>",
+            "output_index": 0,
+            "sequence_number": 3,
+            "type": "response.custom_tool_call_input.delta"
+          },
+          "event": "response.custom_tool_call_input.delta"
+        },
+        {
+          "data": {
+            "input": "{\"value\":1}",
+            "item_id": "<generated:fc_0>",
+            "output_index": 0,
+            "sequence_number": 4,
+            "type": "response.custom_tool_call_input.done"
+          },
+          "event": "response.custom_tool_call_input.done"
+        },
+        {
+          "data": {
+            "item": {
+              "call_id": "call_synthetic_0",
+              "id": "<generated:fc_0>",
+              "input": "{\"value\":1}",
+              "name": "synthetic_tool",
+              "status": "completed",
+              "type": "custom_tool_call"
+            },
+            "output_index": 0,
+            "sequence_number": 5,
+            "type": "response.output_item.done"
+          },
+          "event": "response.output_item.done"
+        },
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "completed_at": "<current:unix-seconds>",
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [
+                {
+                  "call_id": "call_synthetic_0",
+                  "id": "<generated:fc_0>",
+                  "input": "{\"value\":1}",
+                  "name": "synthetic_tool",
+                  "status": "completed",
+                  "type": "custom_tool_call"
+                }
+              ],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "completed",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [
+                {
+                  "name": "synthetic_tool",
+                  "type": "custom"
+                }
+              ],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": {
+                "input_tokens": 8,
+                "input_tokens_details": {
+                  "cached_tokens": 2
+                },
+                "output_tokens": 1,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 9
+              }
+            },
+            "sequence_number": 6,
+            "type": "response.completed"
+          },
+          "event": "response.completed"
+        }
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-empty-refused": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_value",
+          "message": "\"input\" must contain at least one item.",
+          "param": "input",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-instructions": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic instruction.",
+              "role": "system"
+            },
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "background": false,
+        "completed_at": "<current:unix-seconds>",
+        "created_at": "<current:unix-seconds>",
+        "error": null,
+        "id": "<generated:resp_0>",
+        "incomplete_details": null,
+        "instructions": "Synthetic instruction.",
+        "max_output_tokens": null,
+        "metadata": {
+          "test": "synthetic"
+        },
+        "model": "ornith-35b-a3b-local",
+        "object": "response",
+        "output": [
+          {
+            "content": [
+              {
+                "annotations": [],
+                "logprobs": [],
+                "text": "Synthetic engine reply.",
+                "type": "output_text"
+              }
+            ],
+            "id": "<generated:msg_0>",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "completed",
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 8,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          },
+          "output_tokens": 3,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-invalid-limit": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_value",
+          "message": "\"max_output_tokens\" must be a positive integer.",
+          "param": "max_output_tokens",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-limited": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_completion_tokens": 1,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "background": false,
+        "created_at": "<current:unix-seconds>",
+        "error": null,
+        "id": "<generated:resp_0>",
+        "incomplete_details": {
+          "reason": "max_output_tokens"
+        },
+        "instructions": null,
+        "max_output_tokens": 1,
+        "metadata": {},
+        "model": "ornith-35b-a3b-local",
+        "object": "response",
+        "output": [
+          {
+            "content": [
+              {
+                "annotations": [],
+                "logprobs": [],
+                "text": "Synthetic",
+                "type": "output_text"
+              }
+            ],
+            "id": "<generated:msg_0>",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "incomplete",
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 8,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          },
+          "output_tokens": 1,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 9
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-previous-refused": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "unsupported_value",
+          "message": "\"previous_response_id\" is not supported: this local server is stateless and stores no responses or conversations. Send the whole conversation in \"input\".",
+          "param": "previous_response_id",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-reasoning": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": true,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "background": false,
+        "completed_at": "<current:unix-seconds>",
+        "created_at": "<current:unix-seconds>",
+        "error": null,
+        "id": "<generated:resp_0>",
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "metadata": {},
+        "model": "ornith-35b-a3b-local",
+        "object": "response",
+        "output": [
+          {
+            "content": [
+              {
+                "text": "Synthetic reasoning.",
+                "type": "reasoning_text"
+              }
+            ],
+            "id": "<generated:rs_0>",
+            "status": "completed",
+            "summary": [],
+            "type": "reasoning"
+          },
+          {
+            "content": [
+              {
+                "annotations": [],
+                "logprobs": [],
+                "text": "Synthetic engine reply.",
+                "type": "output_text"
+              }
+            ],
+            "id": "<generated:msg_0>",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": "high",
+          "summary": null
+        },
+        "status": "completed",
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 8,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          },
+          "output_tokens": 3,
+          "output_tokens_details": {
+            "reasoning_tokens": 1
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-reasoning-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": true,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": "high",
+                "summary": null
+              },
+              "status": "in_progress",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": null
+            },
+            "sequence_number": 0,
+            "type": "response.created"
+          },
+          "event": "response.created"
+        },
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": "high",
+                "summary": null
+              },
+              "status": "in_progress",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": null
+            },
+            "sequence_number": 1,
+            "type": "response.in_progress"
+          },
+          "event": "response.in_progress"
+        },
+        {
+          "data": {
+            "item": {
+              "content": [
+                {
+                  "text": "",
+                  "type": "reasoning_text"
+                }
+              ],
+              "id": "<generated:rs_0>",
+              "status": "in_progress",
+              "summary": [],
+              "type": "reasoning"
+            },
+            "output_index": 0,
+            "sequence_number": 2,
+            "type": "response.output_item.added"
+          },
+          "event": "response.output_item.added"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "delta": "Synthetic reasoning.",
+            "item_id": "<generated:rs_0>",
+            "output_index": 0,
+            "sequence_number": 3,
+            "type": "response.reasoning_text.delta"
+          },
+          "event": "response.reasoning_text.delta"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "item_id": "<generated:rs_0>",
+            "output_index": 0,
+            "sequence_number": 4,
+            "text": "Synthetic reasoning.",
+            "type": "response.reasoning_text.done"
+          },
+          "event": "response.reasoning_text.done"
+        },
+        {
+          "data": {
+            "item": {
+              "content": [
+                {
+                  "text": "Synthetic reasoning.",
+                  "type": "reasoning_text"
+                }
+              ],
+              "id": "<generated:rs_0>",
+              "status": "completed",
+              "summary": [],
+              "type": "reasoning"
+            },
+            "output_index": 0,
+            "sequence_number": 5,
+            "type": "response.output_item.done"
+          },
+          "event": "response.output_item.done"
+        },
+        {
+          "data": {
+            "item": {
+              "content": [],
+              "id": "<generated:msg_0>",
+              "role": "assistant",
+              "status": "in_progress",
+              "type": "message"
+            },
+            "output_index": 1,
+            "sequence_number": 6,
+            "type": "response.output_item.added"
+          },
+          "event": "response.output_item.added"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "item_id": "<generated:msg_0>",
+            "output_index": 1,
+            "part": {
+              "annotations": [],
+              "logprobs": [],
+              "text": "",
+              "type": "output_text"
+            },
+            "sequence_number": 7,
+            "type": "response.content_part.added"
+          },
+          "event": "response.content_part.added"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "delta": "Synthetic engine reply.",
+            "item_id": "<generated:msg_0>",
+            "logprobs": [],
+            "output_index": 1,
+            "sequence_number": 8,
+            "type": "response.output_text.delta"
+          },
+          "event": "response.output_text.delta"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "item_id": "<generated:msg_0>",
+            "logprobs": [],
+            "output_index": 1,
+            "sequence_number": 9,
+            "text": "Synthetic engine reply.",
+            "type": "response.output_text.done"
+          },
+          "event": "response.output_text.done"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "item_id": "<generated:msg_0>",
+            "output_index": 1,
+            "part": {
+              "annotations": [],
+              "logprobs": [],
+              "text": "Synthetic engine reply.",
+              "type": "output_text"
+            },
+            "sequence_number": 10,
+            "type": "response.content_part.done"
+          },
+          "event": "response.content_part.done"
+        },
+        {
+          "data": {
+            "item": {
+              "content": [
+                {
+                  "annotations": [],
+                  "logprobs": [],
+                  "text": "Synthetic engine reply.",
+                  "type": "output_text"
+                }
+              ],
+              "id": "<generated:msg_0>",
+              "role": "assistant",
+              "status": "completed",
+              "type": "message"
+            },
+            "output_index": 1,
+            "sequence_number": 11,
+            "type": "response.output_item.done"
+          },
+          "event": "response.output_item.done"
+        },
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "completed_at": "<current:unix-seconds>",
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [
+                {
+                  "content": [
+                    {
+                      "text": "Synthetic reasoning.",
+                      "type": "reasoning_text"
+                    }
+                  ],
+                  "id": "<generated:rs_0>",
+                  "status": "completed",
+                  "summary": [],
+                  "type": "reasoning"
+                },
+                {
+                  "content": [
+                    {
+                      "annotations": [],
+                      "logprobs": [],
+                      "text": "Synthetic engine reply.",
+                      "type": "output_text"
+                    }
+                  ],
+                  "id": "<generated:msg_0>",
+                  "role": "assistant",
+                  "status": "completed",
+                  "type": "message"
+                }
+              ],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": "high",
+                "summary": null
+              },
+              "status": "completed",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": {
+                "input_tokens": 8,
+                "input_tokens_details": {
+                  "cached_tokens": 2
+                },
+                "output_tokens": 3,
+                "output_tokens_details": {
+                  "reasoning_tokens": 1
+                },
+                "total_tokens": 11
+              }
+            },
+            "sequence_number": 12,
+            "type": "response.completed"
+          },
+          "event": "response.completed"
+        }
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
   "responses-store-ignored": {
     "backend": [
       {
@@ -3401,6 +4433,676 @@
               }
             },
             "sequence_number": 8,
+            "type": "response.completed"
+          },
+          "event": "response.completed"
+        }
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-tool-history": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            },
+            {
+              "content": "",
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "function": {
+                    "arguments": "{}",
+                    "name": "synthetic_tool"
+                  },
+                  "id": "call-synthetic-history",
+                  "type": "function"
+                }
+              ]
+            },
+            {
+              "content": "{\"value\": 1}",
+              "role": "tool",
+              "tool_call_id": "call-synthetic-history"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "background": false,
+        "completed_at": "<current:unix-seconds>",
+        "created_at": "<current:unix-seconds>",
+        "error": null,
+        "id": "<generated:resp_0>",
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "metadata": {},
+        "model": "ornith-35b-a3b-local",
+        "object": "response",
+        "output": [
+          {
+            "content": [
+              {
+                "annotations": [],
+                "logprobs": [],
+                "text": "Synthetic engine reply.",
+                "type": "output_text"
+              }
+            ],
+            "id": "<generated:msg_0>",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "completed",
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 8,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          },
+          "output_tokens": 3,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-tools": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0,
+          "tools": [
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "first_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            },
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "second_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "background": false,
+        "completed_at": "<current:unix-seconds>",
+        "created_at": "<current:unix-seconds>",
+        "error": null,
+        "id": "<generated:resp_0>",
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "metadata": {},
+        "model": "ornith-35b-a3b-local",
+        "object": "response",
+        "output": [
+          {
+            "arguments": "{\"value\":1}",
+            "call_id": "call_synthetic_0",
+            "id": "<generated:fc_0>",
+            "name": "first_tool",
+            "status": "completed",
+            "type": "function_call"
+          },
+          {
+            "arguments": "{\"value\":1}",
+            "call_id": "call_synthetic_1",
+            "id": "<generated:fc_1>",
+            "name": "second_tool",
+            "status": "completed",
+            "type": "function_call"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "completed",
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Synthetic tool.",
+            "name": "first_tool",
+            "parameters": {
+              "properties": {
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "type": "function"
+          },
+          {
+            "description": "Synthetic tool.",
+            "name": "second_tool",
+            "parameters": {
+              "properties": {
+                "value": {
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            },
+            "type": "function"
+          }
+        ],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 8,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          },
+          "output_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 10
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-tools-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "temperature": 0,
+          "tools": [
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "first_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            },
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "second_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "in_progress",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [
+                {
+                  "description": "Synthetic tool.",
+                  "name": "first_tool",
+                  "parameters": {
+                    "properties": {
+                      "value": {
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "function"
+                },
+                {
+                  "description": "Synthetic tool.",
+                  "name": "second_tool",
+                  "parameters": {
+                    "properties": {
+                      "value": {
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "function"
+                }
+              ],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": null
+            },
+            "sequence_number": 0,
+            "type": "response.created"
+          },
+          "event": "response.created"
+        },
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "in_progress",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [
+                {
+                  "description": "Synthetic tool.",
+                  "name": "first_tool",
+                  "parameters": {
+                    "properties": {
+                      "value": {
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "function"
+                },
+                {
+                  "description": "Synthetic tool.",
+                  "name": "second_tool",
+                  "parameters": {
+                    "properties": {
+                      "value": {
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "function"
+                }
+              ],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": null
+            },
+            "sequence_number": 1,
+            "type": "response.in_progress"
+          },
+          "event": "response.in_progress"
+        },
+        {
+          "data": {
+            "item": {
+              "arguments": "",
+              "call_id": "call_synthetic_0",
+              "id": "<generated:fc_0>",
+              "name": "first_tool",
+              "status": "in_progress",
+              "type": "function_call"
+            },
+            "output_index": 0,
+            "sequence_number": 2,
+            "type": "response.output_item.added"
+          },
+          "event": "response.output_item.added"
+        },
+        {
+          "data": {
+            "delta": "{\"value\":",
+            "item_id": "<generated:fc_0>",
+            "output_index": 0,
+            "sequence_number": 3,
+            "type": "response.function_call_arguments.delta"
+          },
+          "event": "response.function_call_arguments.delta"
+        },
+        {
+          "data": {
+            "delta": "1}",
+            "item_id": "<generated:fc_0>",
+            "output_index": 0,
+            "sequence_number": 4,
+            "type": "response.function_call_arguments.delta"
+          },
+          "event": "response.function_call_arguments.delta"
+        },
+        {
+          "data": {
+            "item": {
+              "arguments": "",
+              "call_id": "call_synthetic_1",
+              "id": "<generated:fc_1>",
+              "name": "second_tool",
+              "status": "in_progress",
+              "type": "function_call"
+            },
+            "output_index": 1,
+            "sequence_number": 5,
+            "type": "response.output_item.added"
+          },
+          "event": "response.output_item.added"
+        },
+        {
+          "data": {
+            "delta": "{\"value\":",
+            "item_id": "<generated:fc_1>",
+            "output_index": 1,
+            "sequence_number": 6,
+            "type": "response.function_call_arguments.delta"
+          },
+          "event": "response.function_call_arguments.delta"
+        },
+        {
+          "data": {
+            "delta": "1}",
+            "item_id": "<generated:fc_1>",
+            "output_index": 1,
+            "sequence_number": 7,
+            "type": "response.function_call_arguments.delta"
+          },
+          "event": "response.function_call_arguments.delta"
+        },
+        {
+          "data": {
+            "arguments": "{\"value\":1}",
+            "item_id": "<generated:fc_0>",
+            "name": "first_tool",
+            "output_index": 0,
+            "sequence_number": 8,
+            "type": "response.function_call_arguments.done"
+          },
+          "event": "response.function_call_arguments.done"
+        },
+        {
+          "data": {
+            "item": {
+              "arguments": "{\"value\":1}",
+              "call_id": "call_synthetic_0",
+              "id": "<generated:fc_0>",
+              "name": "first_tool",
+              "status": "completed",
+              "type": "function_call"
+            },
+            "output_index": 0,
+            "sequence_number": 9,
+            "type": "response.output_item.done"
+          },
+          "event": "response.output_item.done"
+        },
+        {
+          "data": {
+            "arguments": "{\"value\":1}",
+            "item_id": "<generated:fc_1>",
+            "name": "second_tool",
+            "output_index": 1,
+            "sequence_number": 10,
+            "type": "response.function_call_arguments.done"
+          },
+          "event": "response.function_call_arguments.done"
+        },
+        {
+          "data": {
+            "item": {
+              "arguments": "{\"value\":1}",
+              "call_id": "call_synthetic_1",
+              "id": "<generated:fc_1>",
+              "name": "second_tool",
+              "status": "completed",
+              "type": "function_call"
+            },
+            "output_index": 1,
+            "sequence_number": 11,
+            "type": "response.output_item.done"
+          },
+          "event": "response.output_item.done"
+        },
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "completed_at": "<current:unix-seconds>",
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [
+                {
+                  "arguments": "{\"value\":1}",
+                  "call_id": "call_synthetic_0",
+                  "id": "<generated:fc_0>",
+                  "name": "first_tool",
+                  "status": "completed",
+                  "type": "function_call"
+                },
+                {
+                  "arguments": "{\"value\":1}",
+                  "call_id": "call_synthetic_1",
+                  "id": "<generated:fc_1>",
+                  "name": "second_tool",
+                  "status": "completed",
+                  "type": "function_call"
+                }
+              ],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "completed",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [
+                {
+                  "description": "Synthetic tool.",
+                  "name": "first_tool",
+                  "parameters": {
+                    "properties": {
+                      "value": {
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "function"
+                },
+                {
+                  "description": "Synthetic tool.",
+                  "name": "second_tool",
+                  "parameters": {
+                    "properties": {
+                      "value": {
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "function"
+                }
+              ],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": {
+                "input_tokens": 8,
+                "input_tokens_details": {
+                  "cached_tokens": 2
+                },
+                "output_tokens": 2,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 10
+              }
+            },
+            "sequence_number": 12,
             "type": "response.completed"
           },
           "event": "response.completed"

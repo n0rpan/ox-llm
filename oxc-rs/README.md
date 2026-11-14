@@ -5,7 +5,7 @@ axum router; this crate forbids unsafe code and invokes no Python interpreter.
 It is not a complete replacement yet and has no installation switch enabled.
 
 The owner authorized starting Rust while the remaining conformance work and CI
-proceed. Existing Python product code and reference goldens remain unchanged;
+proceed. Existing Python product code and pre-existing goldens remain unchanged;
 new tests still establish Python behavior before checking a ported path.
 
 Build locally, keeping generated binaries outside the source checkout:
@@ -15,10 +15,11 @@ cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --target-dir ..
 ```
 
 Local validation: 56 parser cases, five CLI ledger-file cases, seven empty-install
-HTTP cases and API-key file rotation/fail-closed behavior pass in Rust. A native
-CLI subset of 29 runtime cases passes against the Python daemon. HTTP gates are
-16/17: valid gzip inference still fails because engine launch is not implemented.
-The Python reference suite has 218 passing scenarios.
+HTTP cases, all 17 HTTP gates, all 62 configured API cases, and API-key file
+rotation/fail-closed behavior pass in Rust. Sixteen of 17 lifecycle tests pass;
+the remaining poll test reports three missing cache/storage/harness status
+routes. A native CLI subset of 29 runtime cases passes against the Python daemon.
+The Python reference suite has 236 passing scenarios in 37 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
 cache controls, harness prepare/forget dispatch, load/unload dispatch, storage
@@ -32,12 +33,25 @@ lengths can receive the same JSON/authentication/error handling as Python. Bodie
 are read lazily, so rejected requests do not require consuming untrusted content.
 The CORS preflight's missing request ID is deliberately preserved bug-for-bug.
 
-Engine launch/inference, complete status/control state, qualified Flash/classic
-profiles, proof-gated long contexts, installers, update/rollback, secrets for
-sharing/cloud, and the remaining commands are still pending. Flash/classic and
-long-context profiles are not advertised as eligible in place of their missing
-qualification adapters. Full Rust conformance currently fails and hardware A/B
-readiness is not claimed.
+The non-Flash engine manager owns lazy startup, SHA verification, the exclusive
+lease, per-launch private bearer files, the GUARD-2b memory monitor, bounded
+private diagnostic logs, unload/reload and idle reaping. A safe exec helper
+creates the engine's session and private umask without unsafe pre-exec hooks.
+Admission uses a single FIFO slot with bounded queue wait. TCP disconnects cancel
+upstream work and release the slot; streaming replies are translated incrementally.
+
+Chat, text completions and the stateless Responses API support JSON and SSE,
+tools, reasoning options, usage details and normalized errors. Additional
+Responses and guard/log contracts were established against Python before porting.
+The log redactor is also tested at every pipe chunk boundary.
+
+Complete status/control state, request-ledger writes, disk-cache launch adapters,
+qualified Flash/classic profiles, proof-gated long contexts, installers,
+update/rollback, sharing/cloud secrets and remaining CLI commands are pending.
+State-cache-capable binaries and automatic native engine-ledger capture explicitly
+refuse launch until their adapters are implemented. Flash/classic and long-context
+profiles remain ineligible while their qualification adapters are missing. Full
+Rust conformance fails; no installation switch or hardware readiness is claimed.
 
 Run the complete black-box suite to see the remaining differences:
 

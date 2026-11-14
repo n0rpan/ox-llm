@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `a1c683f9e3783fdac4716bef53241833babe60a6`.
+Reference main: `2aa4e9326b134c55ecc8fcd3387e818b73facca9`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -57,8 +57,11 @@ not push repeatedly to trigger CI or poll CI status. When requesting a full
 public run/review, dispatch checks.yml once for the branch (or mark ready only
 when appropriate). If waiting is needed, use one blocking gh pr checks --watch.
 
-Next implementation step: native engine lifecycle/inference. The HTTP foundation
-currently passes all empty-install cases and 16/17 gates; valid gzip inference
-still fails because no engine is launched. CLI runtime has a supported subset
-against the Python daemon. Rust's complete conformance remains FAIL; no readiness
-or deployment claim is authorized by the passing subsets.
+Next implementation step: native status/cache/storage/harness readers and the
+request-ledger writer, then complete config/state round trips and remaining CLI
+commands. Rust now passes all 62 configured API and all 17 HTTP gate cases. Of
+17 lifecycle tests, 16 pass; the poll test retains three failures for the cache,
+storage and harness status routes. No tests are skipped to hide these gaps.
+State-cache-capable engines and the automatic engine-ledger bridge currently
+refuse launch explicitly until their adapters are ported. Full Rust conformance
+remains FAIL, and no native deployment or readiness claim is made.

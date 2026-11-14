@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import http.client
 import json
+import os
 from pathlib import Path
 import stat
 import time
@@ -41,11 +42,13 @@ class LifecycleContract(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertEqual(daemon.call('GET', path)['status'], 200)
             self.assertEqual(status(daemon)['state'], 'unloaded')
+            self.assertEqual(daemon.call('GET', '/health')['body'], {'status': 'ok', 'sleeping': True})
             self.assertEqual(launches(daemon), [])
             for _ in range(2):
                 self.assertEqual(daemon.call('POST', '/v1/chat/completions', chat())['status'], 200)
             self.assertEqual(len(launches(daemon)), 1)
             self.assertEqual(status(daemon)['state'], 'ready')
+            self.assertEqual(daemon.call('GET', '/health')['body'], {'status': 'ok', 'sleeping': False})
             self.assertEqual(daemon.call('POST', '/_local/unload', {})['status'], 200)
             self.assertEqual(status(daemon)['state'], 'unloaded')
             self.assertEqual(daemon.call('POST', '/v1/chat/completions', chat())['status'], 200)
@@ -203,6 +206,99 @@ class LifecycleContract(unittest.TestCase):
             self.assertEqual(reply['status'], 503)
             self.assertIn('oxe_engine_identity_changed', reply['body']['error'])
             self.assertEqual(launches(daemon), [])
+
+    def test_runtime_memory_guard_stops_cleans_up_and_recovers(self):
+        changes = (
+            ('memory.swap.max', 'max\n'),
+            ('memory.swap.current', '1\n'),
+            ('memory.events', 'low 0\nhigh 0\nmax 0\noom 0\noom_kill 1\noom_group_kill 0\n'),
+            ('pids.events', 'max 1\n'),
+            ('../proc/vmstat', 'oom_kill 1\n'),
+        )
+        for relative, text in changes:
+            with self.subTest(counter=relative), Daemon(configured=True) as daemon:
+                self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
+                counter = daemon.home / 'host/cgroup' / relative
+                before = counter.read_text()
+                keys = list((daemon.home / 'run/local-ai').glob('oxe-backend-*.key'))
+                self.assertEqual(len(keys), 1)
+                counter.write_text(text)
+                wait_until(lambda: status(daemon)['state'] == 'unloaded')
+                self.assertFalse(keys[0].exists())
+                with Path(daemon.env['LOCAL_AI_LEASE']).open('a') as stream:
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(stream, fcntl.LOCK_UN)
+                counter.write_text(before)
+                self.assertEqual(daemon.call('POST', '/v1/chat/completions', chat())['status'], 200)
+                self.assertEqual(len(launches(daemon)), 2)
+
+    def test_runtime_psi_guard_requires_continuous_pressure(self):
+        with Daemon(configured=True) as daemon:
+            self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
+            pressure = daemon.home / 'host/proc/pressure/memory'
+            healthy = pressure.read_text()
+            unsafe = 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+                     'full avg10=25.00 avg60=0.00 avg300=0.00 total=0\n'
+            pressure.write_text(unsafe)
+            time.sleep(1)
+            pressure.write_text(healthy)
+            time.sleep(2.5)
+            self.assertEqual(status(daemon)['state'], 'ready')
+            pressure.write_text(unsafe)
+            time.sleep(2)
+            self.assertEqual(status(daemon)['state'], 'ready')
+            wait_until(lambda: status(daemon)['state'] == 'unloaded', timeout=5)
+
+    def test_background_preload_is_idempotent_and_never_switches_models(self):
+        with Daemon(configured=True) as daemon:
+            first = daemon.call('POST', '/_local/preload', {})
+            self.assertEqual((first['status'], first['body']), (202, {
+                'state': 'loading', 'started': True, 'model': PRIMARY}))
+            wait_until(lambda: status(daemon).get('model_preload', {}).get('state') == 'ready')
+            again = daemon.call('POST', '/_local/preload', {'model': PRIMARY})
+            self.assertEqual((again['status'], again['body']), (200, {
+                'state': 'ready', 'started': False, 'model': PRIMARY}))
+            self.assertEqual(daemon.call('POST', '/_local/preload', {'model': SECONDARY})['status'], 409)
+            self.assertEqual(daemon.call('POST', '/v1/chat/completions', chat())['status'], 200)
+            self.assertEqual(len(launches(daemon)), 1)
+
+    def test_invalid_control_models_do_not_start_an_engine(self):
+        with Daemon(configured=True) as daemon:
+            for route, code, message in (
+                ('preload', 400, 'Send {} or {"model": alias}.'),
+                ('select', 409, 'Choose a local model.'),
+                ('load', 503, 'Unknown local model. Choose one listed in /v1/models.'),
+            ):
+                with self.subTest(route=route):
+                    reply = daemon.call('POST', '/_local/' + route, {'model': 42})
+                    self.assertEqual((reply['status'], reply['body']), (code, {'error': message}))
+            self.assertEqual(daemon.call('POST', '/_local/select', {})['status'], 409)
+            self.assertEqual(launches(daemon), [])
+
+    def test_engine_diagnostic_log_is_private_and_controls_are_visible(self):
+        with Daemon(configured=True, environ={'FAKE_ENGINE_STDERR': 'Synthetic diagnostic.\r\x01\n'}) as daemon:
+            self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
+            log = daemon.home / 'state/local-ai/engine-stderr.log'
+            wait_until(lambda: log.exists() and log.read_bytes())
+            self.assertEqual(log.read_bytes(), b'Synthetic diagnostic.\\x0d\\x01\n')
+            self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(log.parent.stat().st_mode), 0o700)
+
+    def test_engine_diagnostic_log_refuses_symlinks_and_hard_links(self):
+        for kind in ('symlink', 'hardlink'):
+            with self.subTest(kind=kind), Daemon(configured=True, environ={
+                    'FAKE_ENGINE_STDERR': 'Synthetic diagnostic.\n'}) as daemon:
+                log = daemon.home / 'state/local-ai/engine-stderr.log'
+                log.parent.mkdir(parents=True, exist_ok=True)
+                target = daemon.home / 'untouched-diagnostic-target'
+                target.write_bytes(b'Synthetic sentinel.\n')
+                if kind == 'symlink':
+                    log.symlink_to(target)
+                else:
+                    os.link(target, log)
+                self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
+                self.assertEqual(daemon.call('POST', '/_local/unload', {})['status'], 200)
+                self.assertEqual(target.read_bytes(), b'Synthetic sentinel.\n')
 
 
 if __name__ == '__main__':

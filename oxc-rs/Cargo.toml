@@ -11,10 +11,11 @@ tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "s
 serde_json = { version = "1", features = ["preserve_order"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 getrandom = "0.3"
+base64 = "0.22"
 sha2 = "0.10"
 subtle = "2"
 flate2 = "1"
-nix = { version = "0.30", features = ["fs", "signal", "process", "user"] }
+nix = { version = "0.30", features = ["fs", "signal", "process", "user", "resource"] }
 futures-util = "0.3"
 httparse = "1"
 httpdate = "1"

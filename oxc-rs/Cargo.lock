@@ -752,6 +752,7 @@ name = "oxc"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "flate2",
  "futures-util",
