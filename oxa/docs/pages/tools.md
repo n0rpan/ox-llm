@@ -77,7 +77,7 @@ Under `oxa.thinking.policy: auto` the first reply after your prompt thinks. The 
   - a repeat note ([Repeated calls](#repeated-calls));
   - `oxa.thinking.escalation.fruitlessCalls` calls (default 6) without an edit or write since the prompt. Reading a new file or range counts as progress; re-reads, repeated calls and commands count.
 
-  When your prompt asks to fix, debug or implement something, thinking then stays on until an edit or write succeeds or a test or build command passes. For other prompts (questions, reviews, reading) it goes back off after the next step whose calls all succeed and are new, so a read-heavy task stays fast. A new prompt starts from off.
+  When your prompt asks to fix, debug or implement something, thinking then stays on until an edit or write succeeds or a test or build command passes. Only a test runner or build that the `bash` call actually runs counts (`cargo test`, `pytest`, `go test`, `npm test`, `make`, `tsc`, ...), and a test run passes only when it exits 0 and prints its pass summary; a search or read that merely mentions a test command (`grep -rn "cargo test"`, `ls tests/`) never does. For other prompts (questions, reviews, reading) it goes back off after the next step whose calls all succeed and are new, so a read-heavy task stays fast. A new prompt starts from off.
 
   The footer shows `thinking: auto→on` while it is on, and the transcript shows a note with the reason each time it turns on.
 

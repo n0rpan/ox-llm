@@ -547,3 +547,35 @@ fn the_history_stays_a_byte_prefix_across_an_escalation() {
         .iter()
         .any(|e| matches!(e, AgentEvent::CacheMiss { .. })));
 }
+
+#[test]
+fn searching_for_test_commands_never_counts_as_a_pass() {
+    // Codex T2 review of 5b03ba5: a successful search or read whose command or output merely
+    // mentions a test runner must not release the escalation; only an executed runner with a
+    // pass summary does.
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work().join("tests")).unwrap();
+    std::fs::write(
+        env.work().join("tests/run.sh"),
+        "#!/bin/sh\ncargo test\n# test result: ok. 11 passed\n",
+    )
+    .unwrap();
+    std::fs::write(env.work().join("README.md"), "Run `cargo test` and pytest.\n").unwrap();
+    let turns = vec![
+        failing_test("t0"),
+        bash("g0", "grep -rn \"cargo test\" ."),
+        bash("g1", "rg 'cargo test' README.md || grep -n pytest README.md"),
+        ScriptTurn::tool("r0", "read", r#"{"path":"tests/run.sh"}"#),
+        bash("l0", "ls tests/"),
+        bash("e0", "echo 'test result: ok. 11 passed; 0 failed'"),
+        passing_test("t1"),
+        ScriptTurn::text("done"),
+    ];
+    let (mut st, eng) = state(&env, turns, settings(json!({})), ThinkingLevel::Medium);
+    run(&mut st, "fix the failing test");
+    // Every follow-up after the failure keeps thinking until the real passing run.
+    assert_eq!(
+        thinking(&eng),
+        vec![true, true, true, true, true, true, true, false]
+    );
+}

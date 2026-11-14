@@ -39,7 +39,9 @@
 //!   implement something ([`task_prompt`]), a test or build command whose output reports a
 //!   failure is a failed call even when it exits 0 (`cargo test 2>&1 | tail`).
 //! * **Hysteresis.** Under a fix/debug/implement prompt it stays on until an edit or write
-//!   succeeds or a test or build command passes. Under any other prompt it also goes back off
+//!   succeeds or a test or build command passes (`executed_check`: only a runner in program
+//!   position counts, never a mention in a search or read; a test run also needs its pass
+//!   summary). Under any other prompt it also goes back off
 //!   after a batch whose calls all succeeded and were all new, so a read-heavy task stays fast.
 //! * A new user prompt starts from off; the run's end clears it. The state lives in memory
 //!   (`Stats::escalation`), derives only from the run's tool results and is deterministic.
@@ -311,14 +313,19 @@ pub(crate) fn observe(
             clean = false;
             continue;
         }
-        let check = is_check(&call.name, &args);
-        let failed = r.is_error || (esc.task && check && reports_failure(text));
+        let check = executed_check(&call.name, &args);
+        let failed = r.is_error || (esc.task && check.is_some() && reports_failure(text));
         if failed {
             esc.on.get_or_insert(Reason::Failure);
             clean = false;
             continue;
         }
-        if class == CallClass::Write || check {
+        let passed = match check {
+            Some(Check::Test) => reports_pass(text) && !reports_failure(text),
+            Some(Check::Build) => !reports_failure(text),
+            None => false,
+        };
+        if class == CallClass::Write || passed {
             // Progress: an edit or write that applied, a test or build that passed.
             esc.on = None;
             esc.fruitless = 0;
@@ -380,37 +387,180 @@ fn earlier_calls(wire: &[oxa_proto::WireMsg], batch: &[ToolCall]) -> Vec<(String
         .collect()
 }
 
-/// A `bash` call that runs a test suite, a build or a type check.
-fn is_check(name: &str, args: &Value) -> bool {
+/// What an executed check command is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Check {
+    /// A test runner (`cargo test`, `pytest`, `go test`, `npm test`, `make test`, ...): it
+    /// passes only with exit 0, no failure marker and a recognised pass summary.
+    Test,
+    /// A build or type check (`cargo build|check|clippy`, `make`, `tsc`, `go build|vet`,
+    /// `mypy`, ...): it passes with exit 0 and no failure marker (many print nothing).
+    Build,
+}
+
+/// The check a `bash` call actually EXECUTES, if any. Only the program position of each
+/// simple command counts (after `;`, `&&`, `||`, `|`, a newline, leading `VAR=x` assignments
+/// and wrappers such as `time`, `env`, `timeout 60`); a word inside arguments or quotes never
+/// does, so `grep -rn "cargo test" .`, `rg test_`, `echo pytest` or `ls tests/` are not checks.
+/// A test runner wins over a build in the same command.
+fn executed_check(name: &str, args: &Value) -> Option<Check> {
     if name != "bash" {
-        return false;
+        return None;
     }
-    let Some(cmd) = args.get("command").and_then(Value::as_str) else {
-        return false;
-    };
-    let lower = cmd.to_ascii_lowercase();
-    let words: Vec<&str> = lower
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'))
-        .filter(|w| !w.is_empty())
-        .collect();
-    const ALONE: &[&str] = &[
-        "pytest", "unittest", "ctest", "tsc", "jest", "vitest", "make", "ninja", "mvn", "gradle", "rspec",
-        "nextest", "mypy",
+    let cmd = args.get("command").and_then(Value::as_str)?;
+    let mut found = None;
+    for words in simple_commands(cmd) {
+        let w: Vec<String> = program_words(&words)
+            .iter()
+            .map(|x| x.to_ascii_lowercase())
+            .collect();
+        let Some(prog) = w.first() else { continue };
+        let prog = prog.rsplit('/').next().unwrap_or(prog).to_string();
+        let sub = w.get(1).map(String::as_str).unwrap_or("");
+        let kind = match prog.as_str() {
+            "cargo" => match sub {
+                "test" | "nextest" => Some(Check::Test),
+                "build" | "check" | "clippy" => Some(Check::Build),
+                _ => None,
+            },
+            "go" | "zig" | "dotnet" => match sub {
+                "test" => Some(Check::Test),
+                "build" | "vet" => Some(Check::Build),
+                _ => None,
+            },
+            "npm" | "yarn" | "pnpm" | "bun" => match (sub, w.get(2).map(String::as_str)) {
+                ("test", _) | ("run", Some("test")) => Some(Check::Test),
+                ("build", _) | ("run", Some("build")) => Some(Check::Build),
+                _ => None,
+            },
+            "make" | "ninja" => {
+                if w[1..]
+                    .iter()
+                    .any(|a| matches!(a.as_str(), "test" | "tests" | "check"))
+                {
+                    Some(Check::Test)
+                } else {
+                    Some(Check::Build)
+                }
+            }
+            "python" | "python3" if sub == "-m" => match w.get(2).map(String::as_str) {
+                Some("pytest" | "unittest") => Some(Check::Test),
+                Some("mypy") => Some(Check::Build),
+                _ => None,
+            },
+            "pytest" | "ctest" | "jest" | "vitest" | "rspec" => Some(Check::Test),
+            "mvn" | "gradle" | "./gradlew" | "gradlew" => {
+                if w[1..].iter().any(|a| a == "test") {
+                    Some(Check::Test)
+                } else {
+                    Some(Check::Build)
+                }
+            }
+            "tsc" | "mypy" => Some(Check::Build),
+            _ => None,
+        };
+        match kind {
+            Some(Check::Test) => return Some(Check::Test),
+            Some(Check::Build) => found = Some(Check::Build),
+            None => {}
+        }
+    }
+    found
+}
+
+/// The words of `cmd` split into simple commands at unquoted `;`, `&`, `|` and newlines, with
+/// quotes removed (a small shell tokenizer: enough to find program positions).
+fn simple_commands(cmd: &str) -> Vec<Vec<String>> {
+    let mut out = vec![Vec::new()];
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = cmd.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some('"') if c == '\\' => {
+                if let Some(n) = chars.next() {
+                    word.push(n);
+                }
+            }
+            Some(_) => word.push(c),
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    in_word = true;
+                }
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        word.push(n);
+                        in_word = true;
+                    }
+                }
+                ';' | '&' | '|' | '\n' | '(' | ')' | '{' | '}' => {
+                    if in_word {
+                        out.last_mut().unwrap().push(std::mem::take(&mut word));
+                        in_word = false;
+                    }
+                    if !out.last().unwrap().is_empty() {
+                        out.push(Vec::new());
+                    }
+                }
+                c if c.is_whitespace() => {
+                    if in_word {
+                        out.last_mut().unwrap().push(std::mem::take(&mut word));
+                        in_word = false;
+                    }
+                }
+                c => {
+                    word.push(c);
+                    in_word = true;
+                }
+            },
+        }
+    }
+    if in_word {
+        out.last_mut().unwrap().push(word);
+    }
+    out.retain(|c| !c.is_empty());
+    out
+}
+
+/// The words from the program on: leading `VAR=x` assignments, redirections and wrappers
+/// (`time`, `env`, `nice`, `command`, `exec`, `sudo`, `timeout <d>`) are skipped.
+fn program_words(words: &[String]) -> &[String] {
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i].as_str();
+        let assignment = w
+            .split_once('=')
+            .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        if assignment || matches!(w, "time" | "env" | "nice" | "command" | "exec" | "sudo" | "!") {
+            i += 1;
+        } else if w == "timeout" {
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    &words[i.min(words.len())..]
+}
+
+/// A test runner's output that reports a pass (the runner's own summary line).
+fn reports_pass(text: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "test result: ok",
+        " passed",
+        "PASSED",
+        "\nok ",
+        "ok  \t",
+        "\nPASS",
+        "PASS ",
+        "\nOK",
+        "Tests:",
+        "All tests passed",
     ];
-    const SUB: &[(&str, &[&str])] = &[
-        ("cargo", &["test", "build", "check", "clippy", "nextest"]),
-        ("go", &["test", "build", "vet"]),
-        ("npm", &["test", "run"]),
-        ("yarn", &["test", "build"]),
-        ("pnpm", &["test", "build"]),
-        ("zig", &["build", "test"]),
-        ("dotnet", &["test", "build"]),
-    ];
-    words.iter().any(|w| ALONE.contains(w))
-        || words.windows(2).any(|p| {
-            SUB.iter()
-                .any(|(tool, subs)| p[0] == *tool && subs.contains(&p[1]))
-        })
+    let t = format!("\n{text}");
+    MARKERS.iter().any(|m| t.contains(m))
 }
 
 /// Output text of a test or build that reports a failure.
@@ -557,12 +707,41 @@ mod tests {
         assert!(!task_prompt("explain how the prefix cache works"));
         assert!(!task_prompt("prefix of the file"));
         let cmd = |c: &str| serde_json::json!({ "command": c });
-        assert!(is_check("bash", &cmd("cargo test -p gguf 2>&1 | tail -20")));
-        assert!(is_check("bash", &cmd("cd x && python -m pytest -q")));
-        assert!(is_check("bash", &cmd("make -j8")));
-        assert!(!is_check("bash", &cmd("grep -rn cargo src")));
-        assert!(!is_check("bash", &cmd("ls makefiles")));
-        assert!(!is_check("read", &cmd("cargo test")));
+        let check = |c: &str| executed_check("bash", &cmd(c));
+        assert_eq!(check("cargo test -p gguf 2>&1 | tail -20"), Some(Check::Test));
+        assert_eq!(check("cd x && python -m pytest -q"), Some(Check::Test));
+        assert_eq!(
+            check("RUST_BACKTRACE=1 timeout 600 cargo test"),
+            Some(Check::Test)
+        );
+        assert_eq!(check("cargo build && cargo test"), Some(Check::Test));
+        assert_eq!(check("make -j8"), Some(Check::Build));
+        assert_eq!(check("make test"), Some(Check::Test));
+        assert_eq!(check("npm run test"), Some(Check::Test));
+        assert_eq!(check("go test ./..."), Some(Check::Test));
+        // Mentions in arguments, quotes or output are never an executed check.
+        for c in [
+            "grep -rn cargo src",
+            "grep -rn \"cargo test\" .",
+            "rg 'cargo test' README.md",
+            "grep -n pytest README.md",
+            "rg test_",
+            "echo pytest",
+            "ls tests/",
+            "ls makefiles",
+            "cat tests/test_parser.py",
+            "grep -n 'a; cargo test' notes.txt",
+            "find . -name '*test*'",
+            "git log --grep='make test'",
+        ] {
+            assert_eq!(check(c), None, "{c}");
+        }
+        assert_eq!(executed_check("read", &cmd("cargo test")), None);
+        assert!(reports_pass(
+            "running 11 tests\ntest result: ok. 11 passed; 0 failed"
+        ));
+        assert!(reports_pass("===== 5 passed in 0.12s ====="));
+        assert!(!reports_pass("(no output)"));
         assert!(reports_failure("test result: FAILED. 1 passed; 1 failed"));
         assert!(!reports_failure("test result: ok. 11 passed; 0 failed"));
     }
