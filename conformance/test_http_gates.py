@@ -29,6 +29,8 @@ CASES = {
         'Access-Control-Request-Private-Network': 'true'}, 204),
     'chunked-refused': ('POST', '/v1/chat/completions', None,
                          {'Transfer-Encoding': 'chunked', 'Content-Length': '0'}, 411),
+    'chunked-body-refused': ('POST', '/v1/chat/completions', b'2\r\n{}\r\n0\r\n\r\n',
+                             {'Transfer-Encoding': 'chunked'}, 411),
     'negative-length': ('POST', '/v1/chat/completions', None, {'Content-Length': '-1'}, 413),
     'oversize-length': ('POST', '/v1/chat/completions', None, {'Content-Length': '16777217'}, 413),
     'invalid-length': ('POST', '/v1/chat/completions', None, {'Content-Length': 'invalid'}, 400),
@@ -45,7 +47,13 @@ def run_case(name):
     config = {'openai_api': {'cors_origins': ['https://example.invalid']}} if name.startswith('cors-') else {}
     with Daemon(configured=True, environ={'LOCAL_AI_API_KEY': SYNTHETIC_KEY} if auth else {},
                 config_changes=config) as daemon:
-        reply = daemon.call(method, path, body, headers=headers)
+        if name == 'chunked-body-refused':
+            raw = (f'POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{daemon.port}\r\n'
+                   'Transfer-Encoding: chunked\r\nContent-Type: application/json\r\n'
+                   'Connection: close\r\n\r\n').encode() + body
+            reply = daemon.call_wire(raw, method, path)
+        else:
+            reply = daemon.call(method, path, body, headers=headers)
         if reply['status'] != expected_status:
             raise AssertionError(name + ': ' + repr(reply))
         if name != 'valid-gzip' and daemon.events():

@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
-Reference: main `2aa4e9326b134c55ecc8fcd3387e818b73facca9`.
-The current suite passes 264 scenarios in 41 unittest methods. This remains a
+Reference: main `25397f46f2eccc22b6fea102992bbaf1cc6d4261`.
+The current suite passes 265 scenarios in 41 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -93,7 +93,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Configured HTTP | PASS, 62 cases | PASS: chat, completions and Responses JSON/SSE | More option combinations and engine error paths |
 | Cache usage | PASS, 9 cases | PASS | GC, clear, preload and active-engine ownership |
 | Storage inventory | PASS, 5 cases | PASS | Deletion, races and additional identity variants |
-| HTTP gates | PASS, 17 cases | PASS | LAN share listeners and rate limits |
+| HTTP gates | PASS, 18 cases | PASS | LAN share listeners and rate limits |
 | Lifecycle | PASS, 18 tests | PASS | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
 | Harness registry | PASS, 13 cases | PASS: learning/privacy, controls, prepare, streaming, limits and Python/Rust file reads | More malformed/advisory-I/O cases |
 | Files | PASS, 3 tests | API-key refresh/fail-closed PASS; remaining round trips pending | Additional state stores and sharing secrets |

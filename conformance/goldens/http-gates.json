@@ -172,6 +172,19 @@
     "status": 200,
     "x-request-id": "<generated:req_32hex>"
   },
+  "chunked-body-refused": {
+    "body": {
+      "error": {
+        "code": "length_required",
+        "message": "Use a content length for request bodies.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 411,
+    "x-request-id": "<generated:req_32hex>"
+  },
   "chunked-refused": {
     "body": {
       "error": {

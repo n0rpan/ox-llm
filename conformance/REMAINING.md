@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `2aa4e9326b134c55ecc8fcd3387e818b73facca9`.
+Reference main: `25397f46f2eccc22b6fea102992bbaf1cc6d4261`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -59,7 +59,7 @@ public run/review, dispatch checks.yml once for the branch (or mark ready only
 when appropriate). If waiting is needed, use one blocking gh pr checks --watch.
 
 Next implementation step: the native request-ledger writer, then complete config/state round trips and remaining CLI
-commands. Rust now passes all 62 configured API and all 17 HTTP gate cases. Of
+commands. Rust now passes all 62 configured API and all 18 HTTP gate cases. Of
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
 opt-in learning, memory-only operation, streaming, bounded candidates/prefixes,
 prepare requests, compatibility counters and Python/Rust file reads.

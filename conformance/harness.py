@@ -288,29 +288,40 @@ class Daemon:
                                headers={'Content-Type': 'application/json',
                                         'X-Request-ID': 'conformance-request', **(headers or {})})
             response = connection.getresponse()
-            payload = response.read().decode()
-            request_id = response.getheader('X-Request-ID')
-            # Bug-for-bug: Python's CORS preflight uses end_headers directly and
-            # does not emit the request ID added by the normal reply helpers.
-            missing_preflight_id = method == 'OPTIONS' and response.status == 204 and request_id is None
-            if not missing_preflight_id and (not request_id or not re.fullmatch(r'req_[0-9a-f]{32}', request_id)):
-                raise AssertionError('Invalid generated request ID: ' + repr(request_id))
-            if request_id is not None and request_id in self.request_ids:
-                raise AssertionError('Reused request ID')
-            if request_id is not None:
-                self.request_ids.add(request_id)
-            content_type = response.getheader('Content-Type')
-            body = None if method == 'HEAD' or response.status == 204 else (
-                sse_frames(payload) if content_type and content_type.startswith('text/event-stream') else json.loads(payload))
-            result = {'status': response.status, 'content-type': content_type,
-                      'x-request-id': None if missing_preflight_id else '<generated:req_32hex>', 'body': normalize_completion(body)}
-            for name in ('X-Local-AI-Warning', 'X-Local-AI-Ignored', 'Access-Control-Allow-Origin',
-                         'Access-Control-Allow-Headers', 'Access-Control-Allow-Methods',
-                         'Access-Control-Allow-Private-Network', 'Access-Control-Max-Age', 'Vary'):
-                if response.getheader(name) is not None:
-                    result[name.lower()] = response.getheader(name)
-            if path.startswith('/v1/responses'):
-                result['body'] = normalize_responses(result['body'])
-            return result
+            return self.read_response(response, method, path)
         finally:
             connection.close()
+
+    def call_wire(self, request, method, path):
+        # One write prevents a server's early refusal from racing later body writes.
+        with socket.create_connection(('127.0.0.1', self.port), timeout=5) as transport:
+            transport.sendall(request)
+            with http.client.HTTPResponse(transport) as response:
+                response.begin()
+                return self.read_response(response, method, path)
+
+    def read_response(self, response, method, path):
+        payload = response.read().decode()
+        request_id = response.getheader('X-Request-ID')
+        # Bug-for-bug: Python's CORS preflight uses end_headers directly and
+        # does not emit the request ID added by the normal reply helpers.
+        missing_preflight_id = method == 'OPTIONS' and response.status == 204 and request_id is None
+        if not missing_preflight_id and (not request_id or not re.fullmatch(r'req_[0-9a-f]{32}', request_id)):
+            raise AssertionError('Invalid generated request ID: ' + repr(request_id))
+        if request_id is not None and request_id in self.request_ids:
+            raise AssertionError('Reused request ID')
+        if request_id is not None:
+            self.request_ids.add(request_id)
+        content_type = response.getheader('Content-Type')
+        body = None if method == 'HEAD' or response.status == 204 else (
+            sse_frames(payload) if content_type and content_type.startswith('text/event-stream') else json.loads(payload))
+        result = {'status': response.status, 'content-type': content_type,
+                  'x-request-id': None if missing_preflight_id else '<generated:req_32hex>', 'body': normalize_completion(body)}
+        for name in ('X-Local-AI-Warning', 'X-Local-AI-Ignored', 'Access-Control-Allow-Origin',
+                     'Access-Control-Allow-Headers', 'Access-Control-Allow-Methods',
+                     'Access-Control-Allow-Private-Network', 'Access-Control-Max-Age', 'Vary'):
+            if response.getheader(name) is not None:
+                result[name.lower()] = response.getheader(name)
+        if path.startswith('/v1/responses'):
+            result['body'] = normalize_responses(result['body'])
+        return result
