@@ -1347,6 +1347,18 @@ fn orchestrate_cli_approved_files() {
         .unwrap();
     assert_eq!(rejected.status.code(), Some(1));
     assert!(!candidate.exists());
+    let shared = env.root().join("replaceable-parent");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o770)).unwrap();
+    let unsafe_parent = review_command()
+        .arg("--directory")
+        .arg(shared.join("candidate"))
+        .args(["--approve", approval])
+        .output()
+        .unwrap();
+    assert_eq!(unsafe_parent.status.code(), Some(1));
+    assert!(!shared.join("candidate").exists());
+    assert!(std::fs::read_dir(&shared).unwrap().next().is_none());
     let staged = review_command()
         .arg("--directory")
         .arg(&candidate)

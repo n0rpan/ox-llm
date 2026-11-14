@@ -78,3 +78,8 @@ stages the exact approved candidate and checks its receipt and unchanged source.
 It rejects existing destinations and stale source, and reports overlapping paths
 without choosing a worker automatically. The feature-built binary smoke check
 runs the same end-to-end review command. See [REVIEW.md](REVIEW.md).
+
+Candidate publication additionally rejects a group-writable destination parent
+before staging state is created. Namespace tests also reject a replaceable
+ancestor and symlink aliases, while private-parent publication still produces the
+exact approved candidate hash. No existing permissions are changed by staging.

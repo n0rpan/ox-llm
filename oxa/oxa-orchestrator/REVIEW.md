@@ -61,6 +61,17 @@ file, not an atomic repository read or a lock. A candidate represents the captur
 approved versions; later source changes are not incorporated. Any future apply
 operation must revalidate again and handle concurrent writers.
 
+Before creating state, staging requires a symlink-free destination path with no
+parent traversal, at most 4096 path bytes. Each directory from the filesystem root
+through the destination parent must be owned by the effective user or root.
+Non-owner-writable directories are refused unless sticky semantics protect their
+owner/root-owned entries (for example a private user directory under `/tmp`).
+This includes ancestors: a private final directory inside a replaceable group
+namespace is insufficient. Same-UID processes and root remain trusted; operators
+must retain that protection during publication. Choose a physical private path
+if a collaborative directory or symlink would be refused. No existing permissions
+are changed automatically.
+
 Staging writes the approved snapshot with selected changes to a private temporary
 directory in the destination parent, syncs the files/directories, then publishes
 with a descriptor-anchored Linux no-replace rename. Existing files, directories
