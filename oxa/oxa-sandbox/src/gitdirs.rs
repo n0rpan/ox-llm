@@ -97,6 +97,10 @@ pub struct GitBinds {
     /// sbx-gitsym: the repository's git directories (the gitdir and the common dir, canonical,
     /// also when they lie in the cwd), for the per-command alias check. Binds nothing.
     pub dirs: Vec<PathBuf>,
+    /// sbx-hooks: the worktree root (the directory that holds the `.git` entry), canonical. Git
+    /// resolves a relative `core.hooksPath` from here, not from the session cwd, which may be a
+    /// nested directory. `None` when the cwd is not in a repository.
+    pub worktree: Option<PathBuf>,
 }
 
 impl GitBinds {
@@ -128,6 +132,9 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
     let Some((gitdir, common)) = locate(&dotgit, &ctx) else {
         return GitBinds::default();
     };
+    // The worktree root is the directory holding the `.git` entry, also when the session cwd
+    // is a nested directory below it. Git resolves a relative `core.hooksPath` from here.
+    let worktree = dotgit.parent().map(Path::to_path_buf);
     let objects = common.join("objects");
     let mut alternates = Vec::new();
     let mut seen = BTreeSet::new();
@@ -182,6 +189,7 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
         protect,
         notes,
         dirs,
+        worktree,
     }
 }
 
@@ -720,7 +728,7 @@ fn config_includes(p: &Path, repo: &Path) -> Result<Includes, String> {
 /// sbx-hooks: the `core.hooksPath` values of `dir`'s config and `config.worktree`, including
 /// the values in files they include (all `includeIf` conditions count: this only protects
 /// more). A value is returned as git wrote it; the caller resolves it against the worktree
-/// root (`cwd`). Unreadable or unparsable files are skipped here: [`unsafe_reason`] and
+/// root. Unreadable or unparsable files are skipped here: [`unsafe_reason`] and
 /// [`alias_refusal`] already refuse a git directory whose config cannot be checked.
 pub(crate) fn configured_hooks_paths(dir: &Path, home: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();

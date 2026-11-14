@@ -10,7 +10,7 @@ the tests alone and watch them fail, then take the fix commit.
 
 ---
 
-## F1 — Critical: host runtime IPC is reachable from bash
+## F1 — Critical where the host exposes an authority-bearing IPC service: host runtime IPC is reachable from bash
 
 **Class:** sandbox escape (session D-Bus, container control) and `--offline` DNS bypass
 (systemd-resolved). Security-sensitive; this finding describes the class and the test only.
@@ -34,6 +34,12 @@ tests keep the default off. The list is targeted rather than a tmpfs over `/run`
 
 **Risk / follow-up:** the list is curated; a new host IPC service under `/run` needs an entry.
 `/run` remains visible for non-IPC files (as documented: `/` is read-only).
+
+**Coverage / impact:** the service-specific tests print a skip notice and return when the host
+socket is absent (a CI image often has no user session bus or container daemon), so a green
+run does not prove those assertions ran. The impact is Critical where the host exposes an
+authority-bearing service (the session/system bus, container control); it is conditional on
+that authority, not universal.
 
 ---
 
@@ -107,10 +113,16 @@ included config could hide it too.
 `config.worktree`, following `include`/`includeIf` files (depth-limited, cycle-safe).
 `bwrap.rs` normalises the value (`..`, `~/`) before the containment check, binds each such
 directory that lies in a writable root read-only, or masks it with a read-only tmpfs when it
-does not exist yet. A symlinked path or a missing parent is refused instead of guessed at.
-It runs in plan mode too, where caches are still writable.
+does not exist yet. A relative value is resolved from the worktree root (the directory that
+holds the `.git` entry, recorded in `GitBinds::worktree`), never from the session cwd: a
+session in a nested directory would otherwise derive a different path and leave the real hook
+directory writable. A symlinked path or a missing parent is refused instead of guessed at. It
+runs in plan mode too, where caches are still writable.
 Reproducers: `a_hooks_path_with_dotdot_is_normalised`,
-`a_hooks_path_in_a_writable_cache_is_read_only_in_plan_mode`.
+`a_hooks_path_in_a_writable_cache_is_read_only_in_plan_mode`,
+`a_nested_cwd_resolves_a_relative_hooks_path_from_the_worktree_root`; the nested-cwd control
+`a_nested_cwd_does_not_protect_a_hooks_path_derived_from_the_session_cwd` shows that a
+legitimate nested session is not over-refused.
 
 **Risk:** a missing hooks directory is created empty on the host as the mount point (the same
 documented side effect as a missing `.git/hooks`). A `core.hooksPath` in the user's global
@@ -137,18 +149,23 @@ file read-only and masked `config.worktree` when the extension was on.
 
 ## F6 — High: `--offline` used a remote MCP proxy
 
-**Reproducer:** `oxa-mcp/tests/escape/main.rs::offline_refuses_a_remote_proxy`.
+**Reproducer:** `oxa-mcp/tests/escape/main.rs::offline_refuses_a_remote_proxy`,
+`offline_refuses_an_ambient_remote_proxy_when_not_excluded`, and the positive control
+`offline_allows_a_loopback_target_excluded_by_no_proxy`.
 
 **Root cause:** `HttpTransport::new` installed `httpProxy` (or ureq's environment proxy) and
 `post` checked offline only against the target URL. A loopback target passes the gate, but the
 connection (and the request, including the bearer token) goes to the proxy's host.
 
-**Fix:** offline, a proxy whose host is not loopback is refused in `post` with the standard
-offline error; a loopback proxy is still allowed. The OAuth agent runs direct offline. The
-error names the proxy host, never a password embedded in the proxy URL.
+**Fix:** offline, the transport classifies the effective route per request: a proxy whose host
+is not loopback is refused in `post` with the standard offline error, unless ureq's `NO_PROXY`
+rules route the target direct (a target on the proxy's exclusion list is not sent to the
+proxy). A loopback proxy is still allowed. The OAuth agent runs direct offline. The error
+names the proxy host, never a password embedded in the proxy URL.
 
-**Risk:** offline users with a remote proxy get a clear refusal instead of a direct connection;
-that is the intended policy (the switch says no host other than loopback).
+**Risk:** offline users with a remote ambient proxy and a target it would carry get a clear
+refusal instead of a direct connection; that is the intended policy (the switch says no host
+other than loopback). An excluded loopback target keeps working, as it would without the proxy.
 
 ---
 

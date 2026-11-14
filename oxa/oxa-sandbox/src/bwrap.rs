@@ -545,8 +545,9 @@ fn writable_roots(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) -> Ve
 }
 
 /// The directory a configured `core.hooksPath` names, resolved as git resolves it: absolute
-/// as written, `~/` in the home directory, anything else from the worktree root (`cwd`).
-fn resolve_hooks_path(raw: &Path, home: &Path, cwd: &Path) -> PathBuf {
+/// as written, `~/` in the home directory, anything else from the worktree root (not the
+/// session cwd, which may be a nested directory).
+fn resolve_hooks_path(raw: &Path, home: &Path, worktree: &Path) -> PathBuf {
     let p = if raw == Path::new("~") {
         home.to_path_buf()
     } else if let Some(rest) = raw.to_str().and_then(|s| s.strip_prefix("~/")) {
@@ -554,7 +555,7 @@ fn resolve_hooks_path(raw: &Path, home: &Path, cwd: &Path) -> PathBuf {
     } else if raw.is_absolute() {
         raw.to_path_buf()
     } else {
-        cwd.join(raw)
+        worktree.join(raw)
     };
     lexical_normalize(&p)
 }
@@ -568,10 +569,13 @@ fn configured_hook_paths(cwd: &Path, home: &Path, layout: &Layout) -> Vec<PathBu
     }
     dirs.sort();
     dirs.dedup();
+    // A session may run in a nested directory of the worktree; git resolves a relative
+    // `core.hooksPath` from the worktree root, so the protection must too.
+    let worktree = layout.git.worktree.as_deref().unwrap_or(cwd);
     let mut out: Vec<PathBuf> = dirs
         .iter()
         .flat_map(|d| configured_hooks_paths(d, home))
-        .map(|raw| resolve_hooks_path(&raw, home, cwd))
+        .map(|raw| resolve_hooks_path(&raw, home, worktree))
         .collect();
     out.sort();
     out.dedup();
