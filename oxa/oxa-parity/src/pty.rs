@@ -1340,6 +1340,35 @@ impl PtySession {
         }
     }
 
+    /// Content-based readiness: wait (bounded by `timeout`) until the application has read all
+    /// input sent so far AND `pred` holds on a complete frame, then require that `pred` still
+    /// holds after `quiet_ms` without output. The predicate is the done-signal; quiet time is
+    /// only a secondary condition (a frame that is still being redrawn under load cannot end the
+    /// wait, and a late redraw that breaks the predicate restarts it). On timeout the error
+    /// carries the full dump.
+    pub fn wait_steady(
+        &self,
+        what: &str,
+        pred: impl Fn(&Screen) -> bool,
+        quiet_ms: u64,
+        timeout: Duration,
+    ) -> Result<Screen, ScreenDump> {
+        let quiet = Duration::from_millis(quiet_ms);
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            self.wait_for_named(what, &pred, left)?;
+            let left = deadline.saturating_duration_since(Instant::now());
+            let snap = self.wait_stable(quiet_ms, left)?;
+            if pred(&snap) {
+                return Ok(snap);
+            }
+            if Instant::now() >= deadline {
+                return Err(self.dump(&format!("{what} (steady for {quiet:?}) within {timeout:?}")));
+            }
+        }
+    }
+
     /// Wait until the TUI owns the terminal (raw mode) and has drawn something, then until the
     /// first frame settles (200 ms quiet). Call before typing: input sent earlier is echoed by
     /// the cooked terminal.
