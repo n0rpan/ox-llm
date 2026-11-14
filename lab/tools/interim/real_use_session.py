@@ -47,7 +47,7 @@ HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE), str(HERE.parent / 'tiny_real')]
 import tool_counters as tc  # noqa: E402
 import oxa_tiny_loop as oxl  # noqa: E402
-import tiny_ab as ab  # noqa: E402
+import recording_proxy as rp  # noqa: E402
 
 TASK_VERSION = 2   # v2: t1 forbids non-read shortcuts (v1 arm: the model scripted around paging)
 MUTATION = dict(path='engine/crates/gguf/src/lib.rs',
@@ -361,8 +361,8 @@ def session(a, work, mono, home):
     up = urllib.parse.urlparse(a.base_url)
     if up.hostname not in ('127.0.0.1', 'localhost', '::1') or up.port in (8093, 8094):
         raise SystemExit('loopback controller endpoint only (never an engine port)')
-    rec = ab.Recorder(up.port, work / 'requests.jsonl')
-    proxy = ThreadingHTTPServer(('127.0.0.1', a.proxy_port), ab.make_handler(rec))
+    rec = rp.Recorder(up.port, work / 'requests.jsonl')
+    proxy = ThreadingHTTPServer(('127.0.0.1', a.proxy_port), rp.make_handler(rec))
     threading.Thread(target=proxy.serve_forever, daemon=True).start()
     proxied = 'http://127.0.0.1:%d' % a.proxy_port
     env, settings = bind_profile(a.profile, env_for(work, home, proxied), settings)

@@ -1,22 +1,17 @@
 """Codex's independent controls on c247c3b (S/v020-interim-c247c3b-review-20261113/controls.py),
-as regression tests: every missing / partial / invalid observation fails closed. Model-free;
-the tiny_ab start-up controls use pure mocks (no process, no socket, no key)."""
+as regression tests: every missing / partial / invalid observation fails closed. Model-free.
+The start-up controls of the lab-only A/B driver are tested with that driver."""
 import copy
-import os
 from pathlib import Path
 import sys
-import tempfile
-import types
 import unittest
-from unittest.mock import MagicMock, patch
 
 LAB = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(LAB / 'tools/interim'), str(LAB / 'tools/tiny_real')]
+sys.path[:0] = [str(LAB / 'tools/interim')]
 import rehearse_interim as ri  # noqa: E402
 import soak_slope as ss  # noqa: E402
 import thermal_aa as th  # noqa: E402
 import tool_counters as tc  # noqa: E402
-import tiny_ab as ab  # noqa: E402
 
 
 def verdict(s):
@@ -119,27 +114,6 @@ class CounterControls(unittest.TestCase):
     def test_error_result_creates_a_repair_turn(self):
         cnt = tc.count(ri.wire({'tool_calls': [ri.call('r', 'read', '{"path": "x",}')]}, {'content': 'retry'}), {'r': False})
         self.assertEqual((cnt['repair_turns'], cnt['repaired']), (1, 0))
-
-
-class TinyAbStartupControls(unittest.TestCase):
-    def test_foreign_health200_refused_child_owned_brave_absent(self):
-        with tempfile.TemporaryDirectory() as d:
-            a = types.SimpleNamespace(oxe_bin_dir='/synthetic', model='/synthetic.gguf', ctx=32768, owned=[])
-            p = MagicMock()
-            p.poll.return_value = None
-            c = MagicMock()
-            c.getresponse.return_value.status = 200
-            with patch.dict(os.environ, {'PATH': '/usr/bin:/bin', 'BRAVE_SEARCH_API_KEY': 'synthetic-only'}, clear=True), \
-                    patch.object(ab, 'port_in_use', return_value=False), \
-                    patch.object(ab.subprocess, 'Popen', return_value=p) as launch, \
-                    patch.object(ab.http.client, 'HTTPConnection', return_value=c), \
-                    patch.object(ab, 'pid_listens', return_value=False), patch.object(ab.time, 'sleep'):
-                with self.assertRaises(RuntimeError):
-                    ab.start_server(a, Path(d), 18795)
-                self.assertEqual(a.owned, [p])
-                self.assertNotIn('BRAVE_SEARCH_API_KEY', launch.call_args.kwargs['env'])
-            with patch.dict(os.environ, {'PATH': '/usr/bin:/bin', 'BRAVE_SEARCH_API_KEY': 'synthetic-only'}, clear=True):
-                self.assertNotIn('BRAVE_SEARCH_API_KEY', ab.client_env(Path(d) / 'client'))
 
 
 if __name__ == '__main__':
