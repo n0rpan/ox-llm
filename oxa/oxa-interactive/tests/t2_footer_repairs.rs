@@ -22,3 +22,32 @@ fn the_counter_shows_only_when_a_repair_happened() {
     assert!(!footer(0).contains("repairs"), "{}", footer(0));
     assert!(footer(2).contains("repairs 2"), "{}", footer(2));
 }
+
+/// A compaction without a model summary shows "no summary" in the footer until a compaction
+/// with one replaces it.
+#[test]
+fn degraded_context_shows_until_a_model_summary() {
+    use oxa_interactive::apply_event;
+    use oxa_proto::{AgentEvent, CompactReason, CompactionResult};
+    let end = |details: serde_json::Value| AgentEvent::CompactionEnd {
+        reason: CompactReason::Threshold,
+        result: Some(CompactionResult {
+            summary: "s".into(),
+            first_kept_entry_id: "e1".into(),
+            tokens_before: 10,
+            estimated_tokens_after: 5,
+            usage: None,
+            details,
+        }),
+        aborted: false,
+        will_retry: false,
+        error_message: None,
+    };
+    let mut vm = ViewModel::default();
+    vm.status.model = "qwen".to_string();
+    assert!(!render_footer(&vm, 120, &Theme::plain())[1].contains("no summary"));
+    apply_event(&mut vm, &end(serde_json::json!({"mechanical": true})));
+    assert!(render_footer(&vm, 120, &Theme::plain())[1].contains("no summary"));
+    apply_event(&mut vm, &end(serde_json::json!({})));
+    assert!(!render_footer(&vm, 120, &Theme::plain())[1].contains("no summary"));
+}

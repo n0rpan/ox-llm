@@ -66,6 +66,23 @@ A model can get stuck making the same tool call again and again. When a call (an
 
 `oxa.toolRepeatGuard: false` turns this off.
 
+## Thinking on tool follow-ups
+
+Under `oxa.thinking.policy: auto` the first reply after your prompt thinks. The replies after tool results follow `oxa.thinking.toolFollowups`:
+
+- `off`: they never think. Fast, but a model that does not think between steps can loop.
+- `on`: they always think. Steady, but slow on long runs of routine steps such as paging through a large file.
+- `auto` (the default): they think only while the run needs it. Thinking turns on for the next reply after:
+  - a failed call: a command that exits non-zero, an edit that did not apply, any tool error, or (when your prompt asks to fix, debug or implement something) a test or build command whose output reports a failure;
+  - a repeat note ([Repeated calls](#repeated-calls));
+  - `oxa.thinking.escalation.fruitlessCalls` calls (default 6) without an edit or write since the prompt. Reading a new file or range counts as progress; re-reads, repeated calls and commands count.
+
+  When your prompt asks to fix, debug or implement something, thinking then stays on until an edit or write succeeds or a test or build command passes. Only a test runner or build that the `bash` call actually runs counts (`cargo test`, `pytest`, `go test`, `npm test`, `make`, `tsc`, ...), and a test run passes only when it exits 0 and prints its pass summary; a search or read that merely mentions a test command (`grep -rn "cargo test"`, `ls tests/`) never does. For other prompts (questions, reviews, reading) it goes back off after the next step whose calls all succeed and are new, so a read-heavy task stays fast. A new prompt starts from off.
+
+  The footer shows `thinking: auto→on` while it is on, and the transcript shows a note with the reason each time it turns on.
+
+The thinking level `off` (Shift+Tab, `/thinking`) always wins: nothing turns thinking on. The policy `fixed` sends the level on every request. Switching thinking between requests changes no byte already sent, so the prompt cache is kept.
+
 ## subagent
 
 `subagent` lets the model hand a task to a child oxa that works in its own context and returns only its final answer. It keeps long searches out of the main conversation.
