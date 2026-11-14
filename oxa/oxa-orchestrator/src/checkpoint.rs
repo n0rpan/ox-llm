@@ -1,4 +1,6 @@
-//! Publish the final report before stdout, without exposing a partial file.
+//! Publish bounded final/worker reports without exposing a partial file.
+use sha2::{Digest, Sha256};
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -10,6 +12,45 @@ use std::path::Path;
 const MAX_REPORT: usize = 272 * 1024 * 1024;
 
 pub(crate) fn save(directory: &Path, report: &impl serde::Serialize) -> io::Result<()> {
+    publish(directory, "report.json", report, MAX_REPORT).map(|_| ())
+}
+
+pub(crate) fn save_worker(
+    directory: &Path,
+    run: &str,
+    report: &crate::a2a_run::A2AWorkerReport,
+) -> io::Result<String> {
+    #[derive(serde::Serialize)]
+    struct Envelope<'a> {
+        version: u32,
+        run: &'a str,
+        report: &'a crate::a2a_run::A2AWorkerReport,
+    }
+    publish(
+        directory,
+        &format!("worker-{}.json", report.worker),
+        &Envelope {
+            version: 1,
+            run,
+            report,
+        },
+        MAX_WORKER,
+    )
+}
+pub(crate) const MAX_WORKER: usize = 64 * 1024 * 1024;
+
+fn publish(directory: &Path, name: &str, report: &impl serde::Serialize, limit: usize) -> io::Result<String> {
+    if name.is_empty()
+        || name.len() > 96
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(io::Error::other("invalid checkpoint name"));
+    }
+    let name_c = CString::new(name).unwrap();
+    let temporary_name = format!(".{name}.pending");
+    let temporary_c = CString::new(temporary_name.clone()).unwrap();
     let anchor = crate::namespace::protected_directory(directory)?;
     let metadata = anchor.metadata()?;
     // SAFETY: geteuid only returns the current effective user identity.
@@ -24,7 +65,7 @@ pub(crate) fn save(directory: &Path, report: &impl serde::Serialize) -> io::Resu
         .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
         .open(format!("/proc/self/fd/{}", anchor.as_raw_fd()))?;
     let parent = format!("/proc/self/fd/{}", directory.as_raw_fd());
-    let temporary = Path::new(&parent).join(".report.json.pending");
+    let temporary = Path::new(&parent).join(temporary_name);
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -34,7 +75,8 @@ pub(crate) fn save(directory: &Path, report: &impl serde::Serialize) -> io::Resu
     let pending = Pending(temporary);
     let mut writer = Bounded {
         file,
-        remaining: MAX_REPORT,
+        remaining: limit,
+        digest: Sha256::new(),
     };
     report.serialize(&mut serde_json::Serializer::with_formatter(
         &mut writer,
@@ -42,13 +84,13 @@ pub(crate) fn save(directory: &Path, report: &impl serde::Serialize) -> io::Resu
     ))?;
     writer.write_all(b"\n")?;
     writer.file.sync_all()?;
-    // SAFETY: live directory descriptor and static NUL-terminated file names.
+    // SAFETY: live directory descriptor and valid NUL-terminated file names.
     let result = unsafe {
         libc::renameat2(
             directory.as_raw_fd(),
-            c".report.json.pending".as_ptr(),
+            temporary_c.as_ptr(),
             directory.as_raw_fd(),
-            c"report.json".as_ptr(),
+            name_c.as_ptr(),
             libc::RENAME_NOREPLACE,
         )
     };
@@ -59,7 +101,7 @@ pub(crate) fn save(directory: &Path, report: &impl serde::Serialize) -> io::Resu
     // turn a storage failure into permission to repeat inference.
     directory.sync_all()?;
     drop(pending);
-    Ok(())
+    Ok(format!("{:x}", writer.digest.finalize()))
 }
 
 struct Pending(std::path::PathBuf);
@@ -71,6 +113,7 @@ impl Drop for Pending {
 struct Bounded {
     file: File,
     remaining: usize,
+    digest: Sha256,
 }
 impl Write for Bounded {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -78,6 +121,7 @@ impl Write for Bounded {
             return Err(io::Error::other("final report exceeds the checkpoint bound"));
         }
         let written = self.file.write(bytes)?;
+        self.digest.update(&bytes[..written]);
         self.remaining -= written;
         Ok(written)
     }
@@ -149,6 +193,7 @@ mod tests {
         let mut writer = Bounded {
             file: File::create(&path).unwrap(),
             remaining: 4,
+            digest: Sha256::new(),
         };
         writer.write_all(b"123").unwrap();
         assert!(writer.write_all(b"45").is_err());

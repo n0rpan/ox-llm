@@ -130,7 +130,8 @@ not a completed checkpoint and is never consumed automatically.
 Reports contain delegated results and approved source/proposal text, unlike the
 hash-only audit journal. Keep the directory private. The report is not a signed
 receipt or a persistent scheduler: it does not checkpoint active streams, restore
-lost tasks, or authorize replay. `orchestrate-inspect` remains journal-only and
-read-only. `orchestrate-review --report <directory>/report.json` accepts saved
+lost tasks, or authorize replay. `orchestrate-inspect` remains read-only and network-free; with an explicit
+worker/checkpoint pair it can recover a journal-bound worker result even if no
+final report was published. See [RECOVERY.md](RECOVERY.md). `orchestrate-review --report <directory>/report.json` accepts saved
 reports within its separate 16 MiB review-input bound; larger diagnostic reports
 are retained but cannot be passed directly to that review command.

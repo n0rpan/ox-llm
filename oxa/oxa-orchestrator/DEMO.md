@@ -38,6 +38,7 @@ test native cancellation journal inspection ... ok
 test orchestrate CLI Git worktrees ... ok
 test orchestrate CLI stalled stderr ... ok
 test orchestrate CLI durable report with closed stdout ... ok
+test orchestrate CLI completed worker checkpoint after crash ... ok
 test orchestrate CLI structural input limits ... ok
 test orchestrate CLI protected run namespace ... ok
 ```
@@ -122,3 +123,9 @@ The closed-stdout scenario discards the pipe reader before inference finishes,
 then verifies exit 1, a complete saved report with terminal task results, no
 pending report and reaped native workers. The success scenario checks byte-for-byte
 equality between saved report and stdout, including escaped terminal controls.
+
+The worker-checkpoint crash scenario kills the actual controller after worker 1's
+complete checkpoint binding and before worker 2 finishes. With no final report,
+it recovers worker 1 through both the library and the read-only CLI, preserves the
+original journal bytes, and refuses worker 2 using worker 1's file. Recovery tests
+also reject changed bytes, links and orphan/torn-finish bindings.

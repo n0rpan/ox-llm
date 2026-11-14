@@ -2027,6 +2027,101 @@ fn orchestrate_cli_report_survives_closed_stdout() {
     }
 }
 
+fn orchestrate_cli_completed_checkpoint_survives_controller_crash() {
+    use oxa_orchestrator::recovery::InspectedRun;
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("checkpointed worker result"); 2],
+        FakeOpts {
+            hold_headers_ms: 300,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut child = CliChild(
+        cli_command(&env, &engine, "cli-worker-checkpoint")
+            .args([
+                "--workers",
+                "2",
+                "--parallel",
+                "1",
+                "synthetic checkpoint crash goal",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = std::io::BufReader::new(child.0.stderr.take().unwrap());
+    let mut line = String::new();
+    loop {
+        assert_ne!(
+            stderr.read_line(&mut line).unwrap(),
+            0,
+            "controller finished before crash fixture"
+        );
+        if line.contains("worker-1: completed") {
+            break;
+        }
+        line.clear();
+    }
+    // A streamed completed status can precede local checkpoint publication.
+    // Kill only after observing the actual complete durable finished record.
+    let root = env.root().join("cli-worker-checkpoint");
+    let journal = root.join("run/transcript.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if InspectedRun::inspect(&journal).is_ok_and(|run| {
+            run.snapshot()
+                .workers
+                .iter()
+                .any(|worker| worker.worker == "worker-1" && worker.checkpoint_sha256.is_some())
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "first worker checkpoint was not committed"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    child.0.kill().unwrap();
+    assert!(!child.0.wait().unwrap().success());
+    assert!(!root.join("report.json").exists());
+    let before = std::fs::read(&journal).unwrap();
+    let inspected = InspectedRun::inspect(&journal).unwrap();
+    assert!(!inspected.snapshot().recorded_run_finished);
+    let recovered = inspected
+        .load_checkpoint("worker-1", &root.join("run/worker-worker-1.json"))
+        .unwrap();
+    assert_eq!(recovered.outcome, Outcome::Completed);
+    assert!(serde_json::to_string(&recovered)
+        .unwrap()
+        .contains("checkpointed worker result"));
+    assert!(inspected
+        .load_checkpoint("worker-2", &root.join("run/worker-worker-1.json"))
+        .is_err());
+    let output = std::process::Command::new(cli_binary())
+        .env_clear()
+        .current_dir(env.work())
+        .arg("orchestrate-inspect")
+        .arg("--journal")
+        .arg(&journal)
+        .args(["--worker", "worker-1", "--checkpoint"])
+        .arg(root.join("run/worker-worker-1.json"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["workers"].as_array().unwrap().len(), 1);
+    assert_eq!(report["workers"][0], serde_json::to_value(&recovered).unwrap());
+    assert_eq!(std::fs::read(&journal).unwrap(), before);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -2128,6 +2223,10 @@ fn main() {
         (
             "orchestrate CLI durable report with closed stdout",
             orchestrate_cli_report_survives_closed_stdout,
+        ),
+        (
+            "orchestrate CLI completed worker checkpoint after crash",
+            orchestrate_cli_completed_checkpoint_survives_controller_crash,
         ),
         (
             "orchestrate CLI structural input limits",
