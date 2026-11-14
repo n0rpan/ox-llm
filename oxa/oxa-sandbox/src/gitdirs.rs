@@ -23,7 +23,8 @@
 //! Anything that fails is dropped: git then fails as it does today, and bash keeps working.
 //!
 //! sbx-hooks: the entries that git runs or reads outside the sandbox later
-//! ([`protected_entries`]: `hooks` and `config` of the common dir, `config.worktree` of the
+//! (issue #103: in a worktree also `info` of the common dir and `hooks` of the worktree's gitdir,
+//! [`worktree_entries`]; [`protected_entries`]: `hooks` and `config` of the common dir, `config.worktree` of the
 //! common dir and of a worktree's gitdir when `extensions.worktreeConfig` may be on) stay as
 //! they are in a writable sandbox, also when they do not exist yet. An existing entry is bound
 //! read-only; a missing `hooks` is masked with an empty read-only tmpfs, and a missing file is
@@ -166,6 +167,9 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
             }
         }
         protect.extend(protected_entries(d, &common));
+        if gitdir != common {
+            protect.extend(worktree_entries(d, &common));
+        }
     }
     rw.sort();
     ro.sort();
@@ -285,6 +289,31 @@ pub(crate) fn protected_entries(dir: &Path, common: &Path) -> Vec<PathBuf> {
     names.sort_unstable();
     names
         .into_iter()
+        .map(|n| dir.join(n))
+        .filter(|p| match fs::symlink_metadata(p) {
+            Ok(m) => !m.file_type().is_symlink(),
+            Err(e) => e.kind() == ErrorKind::NotFound,
+        })
+        .collect()
+}
+
+/// Issue #103: what is protected in the git directories of a *worktree*, on top of
+/// [`protected_entries`], existing or missing: `config.worktree` and `info` of the common dir
+/// (`info` holds `exclude` and `attributes`), `hooks` and `config.worktree` of the worktree's
+/// own gitdir (git reads no hooks there, but a command must not plant one). Everything else
+/// in those directories (objects, refs, logs, packed-refs, the worktree's index and HEAD)
+/// stays writable, which is what a commit needs. Symlinks are left out, as above.
+pub(crate) fn worktree_entries(dir: &Path, common: &Path) -> Vec<PathBuf> {
+    if !is_real_dir(dir) {
+        return Vec::new();
+    }
+    let names: &[&str] = if dir == common {
+        &["config.worktree", "info"]
+    } else {
+        &["config.worktree", "hooks"]
+    };
+    names
+        .iter()
         .map(|n| dir.join(n))
         .filter(|p| match fs::symlink_metadata(p) {
             Ok(m) => !m.file_type().is_symlink(),
