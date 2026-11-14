@@ -421,6 +421,7 @@ dependencies = [
  "oxa-fake",
  "oxa-interactive",
  "oxa-mcp",
+ "oxa-orchestrator",
  "oxa-perm",
  "oxa-proto",
  "oxa-resources",

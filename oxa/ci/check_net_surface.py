@@ -26,6 +26,9 @@ IDENTS = ["TcpStream", "TcpListener", "UdpSocket", "to_socket_addrs", "ureq"]
 CLIENT_CRATES = ["ureq", "rustls", "webpki-roots", "native-tls", "reqwest", "hyper", "curl", "isahc", "attohttpc", "minreq"]
 # path -> reason. A new entry needs a reason a reviewer can check.
 ALLOWED = {
+    "oxa-a2a/src/loopback.rs": "opt-in orchestrator: registered literal-loopback client, bounded wire budgets and explicit ephemeral capabilities; no proxies or ambient credentials",
+    "oxa-a2a/src/server.rs": "opt-in orchestrator: explicitly started authenticated loopback server with bounded handlers and owned-backend shutdown; no startup listener",
+    "oxa-a2a/src/mock.rs": "model-free loopback mock helper in the opt-in protocol crate; never starts automatically or invokes a model",
     "oxa-engine/src/http.rs": "the engine client: plain HTTP to the configured engine (loopback unless oxa.engine.allowRemote)",
     "oxa-engine/src/lib.rs": "crate docs of the engine client (text only; names the type the client is built on)",
     "oxa-mcp/src/http.rs": "MCP streamable HTTP transport: only servers the user put in mcp.json",
@@ -116,8 +119,13 @@ def plant(base):
         p = os.path.join(base, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "w").write(text)
-    w("Cargo.toml", '[workspace]\nmembers = ["oxa-cli", "oxa-mcp", "oxa-web", "oxa-engine", "oxa-fake", "oxa-parity"]\n')
-    w("oxa-cli/Cargo.toml", '[package]\nname = "oxa-cli"\n[dependencies]\noxa-mcp = {}\noxa-web = {}\noxa-engine = {}\n[dev-dependencies]\noxa-fake = {}\n')
+    w("Cargo.toml", '[workspace]\nmembers = ["oxa-cli", "oxa-mcp", "oxa-web", "oxa-engine", "oxa-fake", "oxa-parity", "oxa-orchestrator", "oxa-a2a"]\n')
+    w("oxa-cli/Cargo.toml", '[package]\nname = "oxa-cli"\n[dependencies]\noxa-mcp = {}\noxa-web = {}\noxa-engine = {}\noxa-orchestrator = { optional = true }\n[dev-dependencies]\noxa-fake = {}\n')
+    w("oxa-orchestrator/Cargo.toml", '[package]\nname = "oxa-orchestrator"\n[dependencies]\noxa-a2a = {}\n')
+    w("oxa-a2a/Cargo.toml", '[package]\nname = "oxa-a2a"\n')
+    w("oxa-a2a/src/loopback.rs", "use std::net::TcpStream;\n")
+    w("oxa-a2a/src/server.rs", "use std::net::TcpListener;\n")
+    w("oxa-a2a/src/mock.rs", "use std::net::TcpListener;\n")
     w("oxa-web/Cargo.toml", '[package]\nname = "oxa-web"\n[dependencies]\nureq = {}\n')
     w("oxa-web/src/brave.rs", "fn get(a: &ureq::Agent) {}\n")
     w("oxa-web/src/tool.rs", "pub struct WebSearchTool;\n")
@@ -138,6 +146,7 @@ def plant(base):
 
 def self_test(real_root):
     plants = {
+        "socket outside the opt-in reviewed sites": ("oxa-orchestrator/src/cli.rs", "use std::net::TcpStream;\n"),
         "socket in a product file": ("oxa-cli/src/phone.rs", "fn f() { let _ = std::net::TcpStream::connect(\"x:1\"); }\n"),
         "udp in a product file": ("oxa-engine/src/info.rs", "use std::net::UdpSocket;\n"),
         "resolver in a product file": ("oxa-mcp/src/manager.rs", "fn f(h: &str) { let _ = (h, 1).to_socket_addrs(); }\n"),
