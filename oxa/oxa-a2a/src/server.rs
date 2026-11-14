@@ -213,7 +213,11 @@ fn serve<B: Backend>(
         return Ok(());
     }
     let deadline = Instant::now() + limits.timeout;
-    let mut reader = BufReader::new(DeadlineStream { socket, deadline });
+    let mut reader = BufReader::new(DeadlineStream {
+        socket,
+        deadline,
+        budget: None,
+    });
     let head = read_head(&mut reader)?;
     if !authorized(&head, auth) {
         return http_json(

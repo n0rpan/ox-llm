@@ -7,6 +7,7 @@ use oxa_a2a::{
     wire::{Event, Message, MessageObject, Part, Role, SendParams, Task, TaskParams, TaskState},
 };
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use oxa_orchestrator::a2a_run::*;
 use oxa_orchestrator::rpc_agent::{RpcAgent, RpcAgentConfig};
 use oxa_orchestrator::*;
 use std::io::{BufRead, Write};
@@ -751,6 +752,183 @@ fn cancellation_flag_bypasses_full_controls() {
     assert!(engine.requests().is_empty());
 }
 
+fn a2a_settings(env: &TestEnv, name: &str) -> A2ARunSettings {
+    A2ARunSettings {
+        id: name.into(),
+        directory: env.root().join(name),
+        parallelism: 2,
+        wall_time: Duration::from_secs(15),
+        response_reservation: 4 * 1024 * 1024,
+        journal_bytes: 1024 * 1024,
+        request_timeout: Duration::from_millis(100),
+        poll_interval: Duration::from_millis(10),
+        cancel_grace: Duration::from_millis(500),
+    }
+}
+fn a2a_worker(server: &Server<RpcAgent>, id: &str) -> A2AWorkerSpec {
+    A2AWorkerSpec {
+        id: id.into(),
+        role: format!("A2A role {id}"),
+        task: format!("A2A synthetic goal {id}"),
+        agent: LocalAgent::register_verified_local(server.client(Limits::default()).unwrap()),
+        wall_time: Duration::from_secs(10),
+        response_bytes: 512 * 1024,
+        reported_tokens: Some(500_000),
+    }
+}
+
+fn a2a_scheduler_coordinates_real_rpc_workers() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("A2A fan-in result"); 3],
+        FakeOpts {
+            hold_headers_ms: 200,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let agent = native_agent(&env, &engine, "a2a-pool-agent", 2);
+    let server = Server::start(agent.clone(), ServerLimits::default()).unwrap();
+    let plan = vec![
+        a2a_worker(&server, "reader"),
+        a2a_worker(&server, "reviewer"),
+        a2a_worker(&server, "planner"),
+    ];
+    let (_tx, rx) = mpsc::sync_channel(32);
+    let report = run_a2a(
+        a2a_settings(&env, "a2a-pool"),
+        plan,
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        report.succeeded(),
+        "A2A fan-in through real RPC workers: {report:?}"
+    );
+    assert_eq!(report.workers.len(), 3);
+    assert!(engine.max_in_flight() >= 2);
+    for result in &report.workers {
+        let task = result.task.as_ref().unwrap();
+        assert_eq!(task.status.state, TaskState::Completed);
+        assert!(result.reported_tokens.is_some());
+        assert!(result.response_bytes <= 512 * 1024);
+        let native = agent.report(&task.id).unwrap();
+        assert!(!Path::new(&format!("/proc/{}", native.process_id.unwrap())).exists());
+        assert!(engine.requests().iter().any(|r| r.messages.iter().any(|m| m
+            .content
+            .as_deref()
+            .is_some_and(|s| s.contains(&format!("A2A role {}", result.worker))))));
+    }
+    let log = std::fs::read_to_string(env.root().join("a2a-pool/transcript.jsonl")).unwrap();
+    assert!(!log.contains("A2A synthetic goal"));
+    assert!(log.contains("task_bound"));
+}
+
+fn a2a_scheduler_steering_cancellation_and_wire_caps() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![
+            ScriptTurn::text("before outer steering"),
+            ScriptTurn::text("after outer steering"),
+        ],
+        FakeOpts {
+            hold_headers_ms: 250,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let agent = native_agent(&env, &engine, "a2a-control-agent", 1);
+    let server = Server::start(agent.clone(), ServerLimits::default()).unwrap();
+    let (tx, rx) = mpsc::sync_channel(32);
+    let report = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !engine.requests().iter().any(|r| r.max_tokens > 0) {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            tx.send(Control::Steer {
+                worker: "steered".into(),
+                text: "outer A2A steering detail".into(),
+            })
+            .unwrap();
+        });
+        run_a2a(
+            a2a_settings(&env, "a2a-outer-steer"),
+            vec![a2a_worker(&server, "steered")],
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap()
+    });
+    assert!(report.succeeded(), "outer steering: {report:?}");
+    assert!(engine.requests().iter().any(|r| r.messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("outer A2A steering detail")))));
+    let log = std::fs::read_to_string(env.root().join("a2a-outer-steer/transcript.jsonl")).unwrap();
+    assert!(log.contains("steer_admitted"));
+    assert!(!log.contains("outer A2A steering detail"));
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("outer cancellation")],
+        FakeOpts {
+            hold_headers_ms: 1000,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let agent = native_agent(&env, &engine, "a2a-cancel-agent", 1);
+    let server = Server::start(agent.clone(), ServerLimits::default()).unwrap();
+    let (tx, rx) = mpsc::sync_channel(32);
+    let mut canceled = false;
+    let report = run_a2a(
+        a2a_settings(&env, "a2a-outer-cancel"),
+        vec![a2a_worker(&server, "canceled")],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |status| {
+            if !canceled && status.task_id.is_some() {
+                tx.send(Control::Cancel {
+                    worker: "canceled".into(),
+                })
+                .unwrap();
+                canceled = true;
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(report.workers[0].outcome, Outcome::Canceled);
+    assert_eq!(report.workers[0].stop, StopConfirmation::Confirmed);
+    assert_eq!(
+        report.workers[0].task.as_ref().unwrap().status.state,
+        TaskState::Canceled
+    );
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text(&"large result ".repeat(2000))],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let agent = native_agent(&env, &engine, "a2a-byte-agent", 1);
+    let server = Server::start(agent.clone(), ServerLimits::default()).unwrap();
+    let mut worker = a2a_worker(&server, "limited");
+    worker.response_bytes = 8192;
+    let (_tx, rx) = mpsc::sync_channel(1);
+    let report = run_a2a(
+        a2a_settings(&env, "a2a-wire-cap"),
+        vec![worker],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.workers[0].outcome, Outcome::OutputBudget);
+    assert!(report.workers[0].response_bytes <= 8192);
+    assert!(report.workers[0].task.is_some());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--mode") {
@@ -801,6 +979,14 @@ fn main() {
         (
             "cancellation bypasses full control queues",
             cancellation_flag_bypasses_full_controls,
+        ),
+        (
+            "A2A scheduler coordinates real RPC workers",
+            a2a_scheduler_coordinates_real_rpc_workers,
+        ),
+        (
+            "A2A scheduler steering, cancellation and wire caps",
+            a2a_scheduler_steering_cancellation_and_wire_caps,
         ),
     ] {
         println!("test {name} ...");
