@@ -2092,6 +2092,222 @@ fn orchestrate_cli_protected_run_namespace() {
     assert!(engine.requests().is_empty());
 }
 
+fn orchestrate_cli_independent_agent_registration_and_shutdown() {
+    use oxa_orchestrator::{recovery::InspectedRun, registration::Registration};
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("independent agent result"); 2],
+        FakeOpts {
+            hold_headers_ms: 400,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let command = |name: &str, lifetime: &str| {
+        let mut command = std::process::Command::new(cli_binary());
+        command
+            .env_clear()
+            .envs(env.envs(&engine.url()))
+            .current_dir(env.work())
+            .args([
+                "orchestrate-agent",
+                "--engine",
+                engine.url().trim_start_matches("http://"),
+                "--model",
+                "fake-model",
+                "--local-only",
+                "--directory",
+            ])
+            .arg(env.root().join(name))
+            .args([
+                "--parallel",
+                "1",
+                "--capacity",
+                "4",
+                "--worker-timeout",
+                "5",
+                "--lifetime",
+                lifetime,
+            ]);
+        command
+    };
+    assert!(command("agent-help", "10")
+        .arg("--help")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(!env.root().join("agent-help").exists());
+    let missing_assertion = std::process::Command::new(cli_binary())
+        .env_clear()
+        .current_dir(env.work())
+        .args([
+            "orchestrate-agent",
+            "--engine",
+            "127.0.0.1:12345",
+            "--model",
+            "fake-model",
+            "--directory",
+        ])
+        .arg(env.root().join("agent-unverified"))
+        .output()
+        .unwrap();
+    assert_eq!(missing_assertion.status.code(), Some(2));
+    assert!(!env.root().join("agent-unverified").exists());
+    assert_eq!(
+        command("agent-invalid", "10")
+            .args(["--tools", "bash"])
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(2)
+    );
+    assert!(!env.root().join("agent-invalid").exists());
+    assert!(engine.requests().is_empty());
+    let root = env.root().join("independent-agent");
+    let mut host = CliChild(
+        command("independent-agent", "10")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let path = root.join("registration.json");
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let registration = loop {
+        if let Ok(registration) = Registration::load(&path) {
+            break registration;
+        }
+        assert!(
+            host.0.try_wait().unwrap().is_none(),
+            "host exited before private registration"
+        );
+        assert!(Instant::now() < deadline, "host failed to publish registration");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let bytes = std::fs::read(&path).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let secret = value["capability"].as_str().unwrap();
+    assert!(!format!("{registration:?}").contains(secret));
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o077, 0);
+    assert!(engine.requests().is_empty(), "hosting does not probe inference");
+    let limits = Limits {
+        timeout: Duration::from_millis(200),
+        ..Limits::default()
+    };
+    let wrong = oxa_a2a::loopback::Client::new(
+        registration.address(),
+        oxa_a2a::loopback::Capability::new("x".repeat(64)).unwrap(),
+        limits,
+    )
+    .unwrap();
+    assert!(wrong.card().is_err());
+    let original = registration.client(limits).unwrap();
+    assert!(original.card().is_ok());
+    drop(original);
+    let submitted = std::process::Command::new(std::env::current_exe().unwrap())
+        .env_clear()
+        .current_dir(env.work())
+        .arg("--fixture-registration-send")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        submitted.status.success(),
+        "owned controller fixture submitted task"
+    );
+    assert!(!String::from_utf8_lossy(&submitted.stdout).contains(secret));
+    let Event::Task(task) = serde_json::from_slice(&submitted.stdout).unwrap() else {
+        panic!("expected task")
+    };
+    // The submitting controller process exited. The separate host owns work.
+    let mut reconnected = Registration::load(&path).unwrap().client(limits).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let current = reconnected.get(&task.id).unwrap();
+        assert_eq!(current.context_id, task.context_id);
+        if current.status.state.is_terminal() {
+            assert_eq!(current.status.state, TaskState::Completed);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 1);
+    let Event::Task(active) = reconnected
+        .send(a2a_message(
+            "independent-second",
+            "synthetic second delegated goal",
+            None,
+        ))
+        .unwrap()
+    else {
+        panic!("expected task")
+    };
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while engine.requests().iter().filter(|r| r.max_tokens > 0).count() < 2 {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let journal = root.join(&active.id).join("transcript.jsonl");
+    let pid = InspectedRun::inspect(&journal).unwrap().snapshot().workers[0]
+        .recorded_process_id
+        .unwrap();
+    // SAFETY: this is the still-owned, unreaped host test child.
+    assert_eq!(unsafe { libc::kill(host.0.id() as i32, libc::SIGTERM) }, 0);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let status = loop {
+        if let Some(status) = host.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host shutdown must join its active worker"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(status.code(), Some(143));
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    assert!(reconnected.card().is_err());
+    use std::io::Read;
+    let mut stdout = String::new();
+    host.0.stdout.take().unwrap().read_to_string(&mut stdout).unwrap();
+    let mut stderr = String::new();
+    host.0.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(stdout.is_empty());
+    assert!(!stderr.contains(secret));
+    assert!(!std::fs::read_to_string(journal).unwrap().contains(secret));
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    let mut expiring = CliChild(
+        command("expiring-agent", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        if let Some(status) = expiring.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "host lifetime must expire without a signal"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let fresh = Registration::load(&env.root().join("expiring-agent/registration.json")).unwrap();
+    assert_ne!(fresh.instance_sha256(), registration.instance_sha256());
+    assert!(fresh.client(limits).unwrap().card().is_err());
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 2);
+}
+
 fn orchestrate_cli_report_survives_closed_stdout() {
     let env = TestEnv::new();
     let engine = FakeServer::start(
@@ -2278,6 +2494,26 @@ fn orchestrate_cli_completed_checkpoint_survives_controller_crash() {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--fixture-registration-send") {
+        let registration = oxa_orchestrator::registration::Registration::load(Path::new(&args[1])).unwrap();
+        let mut client = registration
+            .client(Limits {
+                timeout: Duration::from_millis(200),
+                ..Limits::default()
+            })
+            .unwrap();
+        let task = client
+            .send(a2a_message(
+                "independent-first",
+                "synthetic first delegated goal",
+                None,
+            ))
+            .unwrap();
+        std::io::stdout()
+            .write_all(&serde_json::to_vec(&task).unwrap())
+            .unwrap();
+        return;
+    }
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
         std::process::exit(code);
     }
@@ -2397,6 +2633,10 @@ fn main() {
         (
             "orchestrate CLI protected run namespace",
             orchestrate_cli_protected_run_namespace,
+        ),
+        (
+            "orchestrate CLI independent agent registration",
+            orchestrate_cli_independent_agent_registration_and_shutdown,
         ),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {

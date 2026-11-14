@@ -292,6 +292,9 @@ fn number(text: &str, min: u64, max: u64) -> Result<u64, &'static str> {
 /// Intended for the gated binary shim. Returns None for every other command.
 /// It does not discover user/project configuration or inherit model credentials.
 pub fn maybe_run(args: &[String]) -> Option<i32> {
+    if args.first().map(String::as_str) == Some("orchestrate-agent") {
+        return Some(crate::agent_cli::run(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("orchestrate-inspect") {
         return Some(crate::recovery_cli::run(&args[1..]));
     }
@@ -475,14 +478,14 @@ extern "C" fn on_signal(signal: libc::c_int) {
     SIGNAL_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-struct Signals {
+pub(crate) struct Signals {
     previous: [(libc::c_int, libc::sigaction); 2],
     stop: Arc<AtomicBool>,
     watcher: Option<JoinHandle<()>>,
     _owner: MutexGuard<'static, ()>,
 }
 impl Signals {
-    fn install(cancel: Arc<AtomicBool>) -> io::Result<Self> {
+    pub(crate) fn install(cancel: Arc<AtomicBool>) -> io::Result<Self> {
         let owner = SIGNAL_OWNER
             .try_lock()
             .map_err(|_| io::Error::other("orchestration signal handlers already owned"))?;
@@ -541,6 +544,13 @@ impl Signals {
             }
         }
     }
+}
+
+pub(crate) fn received_signal() -> i32 {
+    SIGNAL.load(Ordering::Acquire)
+}
+pub(crate) fn diagnostic(message: &[u8]) {
+    StatusSink::new().emit(message);
 }
 impl Drop for Signals {
     fn drop(&mut self) {

@@ -48,6 +48,10 @@ pub(crate) fn consume_resume(directory: &File, receipt: &impl serde::Serialize) 
     publish_anchored(directory, "resume.json", receipt, 64 * 1024).map(|_| ())
 }
 
+pub(crate) fn save_registration(directory: &Path, registration: &impl serde::Serialize) -> io::Result<()> {
+    publish(directory, "registration.json", registration, 8192).map(|_| ())
+}
+
 fn publish_anchored(
     anchor: &File,
     name: &str,

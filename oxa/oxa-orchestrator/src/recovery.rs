@@ -746,7 +746,7 @@ fn open_input(path: &Path, max: usize) -> io::Result<File> {
     }
     Ok(handle)
 }
-fn read_handle(handle: &File, max: usize) -> io::Result<Vec<u8>> {
+pub(crate) fn read_handle(handle: &File, max: usize) -> io::Result<Vec<u8>> {
     let before = handle.metadata()?;
     if !before.is_file() || before.nlink() != 1 || before.len() > max as u64 {
         return Err(invalid("input must be a bounded plain single-link file"));

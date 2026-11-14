@@ -3,7 +3,8 @@
 `resume::resume_queued` can continue an interrupted A2A scheduler's never-started
 jobs while preserving its original inputs and allowances. It is a library API
 for explicitly registered local/nonbillable agents that outlive the scheduler.
-The built-in CLI still owns an ephemeral server/capability; restarting that CLI
+The explicit [foreground host](AGENT_HOST.md) can survive controller exits.
+The integrated orchestrate CLI still owns an ephemeral server/capability; restarting that CLI
 cannot recreate its original agent instance or recover a lost task.
 
 ```rust,ignore
@@ -95,7 +96,7 @@ selected chain and restore full root fan-in. Neither API scans for directories.
 
 ## Current boundaries and validation
 
-Persistent authenticated agent registration, automatic bound-task reattachment,
+Cross-host/reboot agent identity, automatic bound-task reattachment,
 reconciliation that authorizes continuing a mixed ambiguous/queued plan,
 automatic lineage discovery/collection, cross-host/distributed ownership,
 CLI takeover and recovery across machine reboot remain unfinished. No cloud run,

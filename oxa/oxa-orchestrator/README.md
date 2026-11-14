@@ -180,3 +180,8 @@ limits, apply into an existing checkout and merge coordination, automatic mixed-
 available in [RESUME.md](RESUME.md)),
 and richer interactive worker controls remain required. This working local profile is a
 foundation, not a claim that the full orchestration brief is complete.
+
+An explicitly started [foreground agent host](AGENT_HOST.md) can outlive its
+controllers and publish private local A2A registration. It is off by default,
+never starts as an implicit service, and does not retain task state across host
+death or enable cloud inference.
