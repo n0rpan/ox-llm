@@ -1,0 +1,5 @@
+example.invalid
+127.0.0.1:8093
+http://[::1]:8093
+Bearer k
+cross-site
