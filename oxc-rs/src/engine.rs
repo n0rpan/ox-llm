@@ -246,6 +246,7 @@ struct State {
 }
 
 pub struct Manager {
+    pub harness: Mutex<crate::harness::Registry>,
     state: AsyncMutex<State>,
     loaded: RwLock<Option<Value>>,
     phase: AtomicU8,
@@ -297,6 +298,7 @@ impl Manager {
         }
         let (stop, _) = watch::channel(false);
         let manager = Arc::new(Self {
+            harness: Mutex::new(crate::harness::Registry::new()),
             state: AsyncMutex::new(State {
                 running: None,
                 stop_pending: None,
@@ -389,6 +391,109 @@ impl Manager {
             "capabilities":["models","active"],"context_size":profile["context_size"],"memory_policy":memory,
             "last_error":self.last_failure.lock().unwrap_or_else(|e|e.into_inner()).clone(),"model_preload":self.preload.lock().unwrap_or_else(|e|e.into_inner()).clone()})
     }
+    pub async fn set_harness_learning(
+        &self,
+        enabled: Value,
+        min_requests: Value,
+    ) -> Result<Value, String> {
+        if !enabled.is_boolean()
+            || (!min_requests.is_null()
+                && !min_requests
+                    .as_u64()
+                    .is_some_and(|n| (1..=100).contains(&n)))
+        {
+            return Err(
+                "Send {\"enabled\": true or false} and optionally \"min_requests\" (1-100).".into(),
+            );
+        }
+        let _state = tokio::time::timeout(Duration::from_secs(2), self.state.lock())
+            .await
+            .map_err(|_| "A model is loading; change the setting when it is ready.")?;
+        let mut config =
+            paths::read_config().ok_or("The harness learning setting could not be saved.")?;
+        let mut learning = config["harness_learning"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        learning.insert("enabled".into(), enabled);
+        if !min_requests.is_null() {
+            learning.insert("min_requests".into(), min_requests);
+        }
+        config["harness_learning"] = Value::Object(learning);
+        paths::write_config(&config)
+            .map_err(|_| "The harness learning setting could not be saved.")?;
+        Ok(crate::harness::settings(&config))
+    }
+    pub async fn prepare_harness(
+        self: &Arc<Self>,
+        harness: &str,
+        profile: Value,
+    ) -> Result<Value, (u16, String)> {
+        use futures_util::StreamExt;
+        if profile["backend_kind"] != "oxe" {
+            return Err((
+                409,
+                "Harness prefixes are prepared on the Rust engine models only.".into(),
+            ));
+        }
+        let alias = profile["model_alias"].as_str().unwrap_or("");
+        let names = if harness == "*" {
+            self.harness
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .names(&profile)
+        } else {
+            vec![harness.to_owned()]
+        };
+        let mut done = Vec::new();
+        let mut all = Vec::new();
+        for name in names {
+            let primers = self
+                .harness
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .primers(&name, alias);
+            if primers.is_empty() {
+                if harness == "*" {
+                    continue;
+                }
+                return Err((
+                    409,
+                    "No recorded prefix for this harness yet; run it once against the local model."
+                        .into(),
+                ));
+            }
+            let result=async {
+                let mut prepared=Vec::new();
+                for (key,mut body) in primers {
+                    let (admission,backend)=self.admit(profile.clone()).await.map_err(|e|(409,e))?;
+                    let started=Instant::now();crate::proxy::defaults(body.as_object_mut().expect("primer body"),&profile,true);
+                    let error=|| (503,"Harness prefix could not be prepared.".to_owned());
+                    let response=client(900.0).post(format!("{}/v1/chat/completions",backend.url)).bearer_auth(&backend.key).json(&body).send().await.map_err(|_|error())?;
+                    if response.status()!=200 {return Err(error());}
+                    let mut stream=response.bytes_stream();let mut raw=Vec::new();
+                    while let Some(chunk)=stream.next().await {let chunk=chunk.map_err(|_|error())?;if raw.len()+chunk.len()>4*1024*1024 {return Err(error());}raw.extend_from_slice(&chunk);}
+                    let response=serde_json::from_slice::<Value>(&raw).ok().filter(Value::is_object).ok_or_else(error)?;
+                    let cache=response["timings"]["cache_n"].clone();let prompt=response["timings"]["prompt_n"].clone();
+                    self.harness.lock().unwrap_or_else(|e|e.into_inner()).complete(&key,&profile,cache.clone(),prompt.clone());
+                    prepared.push(json!({"key":&key[..12],"cache_n":cache,"prompt_n":prompt,"seconds":(started.elapsed().as_secs_f64()*100.0).round_ties_even()/100.0}));drop(admission);
+                }Ok::<_,(u16,String)>(prepared)
+            }.await;
+            match result {
+                Ok(prepared) => {
+                    all.extend(prepared.clone());
+                    done.push(json!({"harness":name,"model":alias,"prepared":prepared}));
+                }
+                Err((409, _)) if harness == "*" => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if harness == "*" {
+            Ok(json!({"harness":"*","model":alias,"harnesses":done,"prepared":all}))
+        } else {
+            Ok(done.into_iter().next().expect("prepared harness"))
+        }
+    }
     pub async fn admit(self: &Arc<Self>, profile: Value) -> Result<(Admission, Backend), String> {
         self.queued.fetch_add(1, Ordering::SeqCst);
         let waiting = Waiting(self.clone());
@@ -425,7 +530,9 @@ impl Manager {
             .await
             .map_err(|_| {
                 "The model could not start. Details: journalctl --user -u local-ai-chat.".to_owned()
-            })?
+            })??;
+        *self.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+        Ok(())
     }
     pub fn preload(self: &Arc<Self>, profile: Value, explicit: bool) -> (u16, Value) {
         let alias = profile["model_alias"].clone();

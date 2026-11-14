@@ -208,6 +208,12 @@ pub async fn serve(stream: TcpStream, app: Router) {
             .headers
             .get(header::TRANSFER_ENCODING)
             .is_some_and(|v| v == "chunked");
+        let fixed_length = parts
+            .headers
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|_| !chunked);
         let close = close
             || parts.extensions.get::<CloseConnection>().is_some()
             || (!parts.headers.contains_key(header::CONTENT_LENGTH)
@@ -241,8 +247,15 @@ pub async fn serve(stream: TcpStream, app: Router) {
             break;
         }
         let mut body = body.into_data_stream();
+        let mut written = 0_u64;
         loop {
-            let chunk = tokio::select! {chunk=body.next()=>chunk,_=peer.disconnected()=>return};
+            // A client may close immediately after reading Content-Length
+            // bytes. The response's finalizer still owns completed work.
+            let chunk = if fixed_length.is_some_and(|length| written >= length) {
+                body.next().await
+            } else {
+                tokio::select! {chunk=body.next()=>chunk,_=peer.disconnected()=>return}
+            };
             let Some(chunk) = chunk else {
                 break;
             };
@@ -263,6 +276,7 @@ pub async fn serve(stream: TcpStream, app: Router) {
             if write.write_all(&chunk).await.is_err() {
                 return;
             }
+            written = written.saturating_add(chunk.len() as u64);
             if chunked && write.write_all(b"\r\n").await.is_err() {
                 return;
             }
@@ -275,4 +289,82 @@ pub async fn serve(stream: TcpStream, app: Router) {
         }
     }
     let _ = write.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn delivered_response_finalizes_after_client_closes() {
+        assert!(close_after(b"ok").await);
+    }
+    #[tokio::test]
+    async fn unfinished_response_is_cancelled_after_client_closes() {
+        assert!(!close_after(b"o").await);
+    }
+    async fn close_after(first: &'static [u8]) -> bool {
+        let (completed, completion) = tokio::sync::oneshot::channel();
+        let sender = Arc::new(std::sync::Mutex::new(Some(completed)));
+        let app = Router::new().fallback(move || {
+            let completed = sender.lock().expect("test sender").take();
+            async move {
+                let stream = futures_util::stream::unfold(
+                    (0_u8, completed),
+                    move |(stage, completed)| async move {
+                        if stage > 0 {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                            if stage == 1 && first.len() < 2 {
+                                return Some((Ok::<_, io::Error>(b"k".to_vec()), (2, completed)));
+                            }
+                            if let Some(completed) = completed {
+                                let _ = completed.send(());
+                            }
+                            None
+                        } else {
+                            Some((Ok::<_, io::Error>(first.to_vec()), (1, completed)))
+                        }
+                    },
+                );
+                axum::http::Response::builder()
+                    .header("content-length", "2")
+                    .body(Body::from_stream(stream))
+                    .expect("test response")
+            }
+        });
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("test listener");
+        let address = listener.local_addr().expect("test address");
+        let serving = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("test accept");
+            serve(stream, app).await;
+        });
+        let mut client = TcpStream::connect(address).await.expect("test connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .expect("test request");
+        let mut client = BufReader::new(client);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let mut line = String::new();
+                client.read_line(&mut line).await.expect("response head");
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = vec![0_u8; first.len()];
+            client.read_exact(&mut body).await.expect("response body");
+            assert_eq!(&body, first);
+        })
+        .await
+        .expect("response deadline");
+        drop(client);
+        let finalized = tokio::time::timeout(Duration::from_secs(2), completion)
+            .await
+            .expect("finalizer deadline")
+            .is_ok();
+        serving.await.expect("test server");
+        finalized
+    }
 }

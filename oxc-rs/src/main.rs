@@ -5,6 +5,7 @@ mod daemon;
 mod diagnostics;
 mod engine;
 mod guard;
+mod harness;
 mod ledger;
 mod models;
 mod paths;

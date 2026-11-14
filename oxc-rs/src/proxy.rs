@@ -57,12 +57,16 @@ fn truth(value: &Value) -> bool {
         Value::Object(m) => !m.is_empty(),
     }
 }
-fn single_choice(payload: &mut Map<String, Value>) -> Result<(), BadParam> {
+fn single_choice(
+    payload: &mut Map<String, Value>,
+    notes: &mut Vec<&'static str>,
+) -> Result<(), BadParam> {
     if let Some(n) = payload.remove("n") {
         if n.is_null() || n.as_i64() == Some(1) {
             return Ok(());
         }
         if n.as_i64().is_some_and(|n| n > 1) {
+            notes.push("n_refused");
             return Err(BadParam::new("\"n\" > 1 is not supported: this local model server returns one choice per request. Send n=1 (or omit it) and repeat the request for more choices.","n","unsupported_value"));
         }
         return Err(BadParam::new(
@@ -73,7 +77,7 @@ fn single_choice(payload: &mut Map<String, Value>) -> Result<(), BadParam> {
     }
     Ok(())
 }
-fn defaults(payload: &mut Map<String, Value>, profile: &Value, chat: bool) {
+pub(crate) fn defaults(payload: &mut Map<String, Value>, profile: &Value, chat: bool) {
     for (key, value) in [("temperature", json!(0)), ("cache_prompt", json!(true))] {
         if payload.get(key).is_none_or(Value::is_null) {
             payload.insert(key.into(), value);
@@ -149,6 +153,7 @@ fn sorted(value: &Value) -> Value {
 fn chat_request(
     payload: &mut Map<String, Value>,
     sampling: Option<Vec<String>>,
+    notes: &mut Vec<&'static str>,
 ) -> Result<Meta, BadParam> {
     let mut meta = Meta::default();
     if let Some(effort) = payload.remove("reasoning_effort").filter(|v| !v.is_null()) {
@@ -164,13 +169,18 @@ fn chat_request(
                 .remove("chat_template_kwargs")
                 .filter(Value::is_object)
                 .unwrap_or_else(|| json!({}));
-            kwargs
-                .as_object_mut()
-                .expect("object")
-                .entry("enable_thinking")
-                .or_insert(json!(!["none", "minimal"].contains(&effort)));
+            if kwargs.get("enable_thinking").is_none() {
+                let enabled = !["none", "minimal"].contains(&effort);
+                kwargs["enable_thinking"] = json!(enabled);
+                notes.push(if enabled {
+                    "reasoning_effort_on"
+                } else {
+                    "reasoning_effort_off"
+                });
+            }
             payload.insert("chat_template_kwargs".into(), kwargs);
         } else {
+            notes.push("reasoning_effort_unknown");
             meta.warnings.push(format!(
                 "reasoning_effort {} is unknown and was ignored",
                 python_repr(&effort.chars().take(20).collect::<String>())
@@ -255,6 +265,11 @@ fn chat_request(
                     messages.push(json!({"role":"user","content":instruction}));
                 }
             }
+            notes.push(if kind == "json_object" {
+                "response_format_json_object_best_effort"
+            } else {
+                "response_format_json_schema_best_effort"
+            });
             if payload.get("stream") == Some(&json!(true)) {
                 meta.warnings
                     .push("response_format is best effort; a streamed reply is not checked".into());
@@ -286,10 +301,9 @@ fn chat_request(
             }
         }
     }
-    normalize_chat(payload);
     Ok(meta)
 }
-fn normalize_chat(payload: &mut Map<String, Value>) {
+fn normalize_chat(payload: &mut Map<String, Value>, notes: &mut Vec<&'static str>) {
     if let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) {
         let mut started = false;
         for message in messages {
@@ -307,11 +321,13 @@ fn normalize_chat(payload: &mut Map<String, Value>) {
                             .unwrap_or_default()
                     };
                     *message = json!({"role":"user","content":format!("<system-reminder>\n{content}\n</system-reminder>")});
+                    notes.push("late_system_message_to_user");
                 }
             } else {
                 started = true;
             }
             if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
+                let mut changed = false;
                 for part in parts {
                     let kind = part["type"].as_str().unwrap_or("");
                     if ["text", "media_marker", "tool_reference"].contains(&kind) {
@@ -331,6 +347,10 @@ fn normalize_chat(payload: &mut Map<String, Value>) {
                         "attachment"
                     };
                     *part = json!({"type":"text","text":format!("[{kind} omitted: this local model reads text only]")});
+                    changed = true;
+                }
+                if changed {
+                    notes.push("non_text_part_replaced");
                 }
             }
         }
@@ -353,8 +373,10 @@ fn normalize_chat(payload: &mut Map<String, Value>) {
                 })
                 .unwrap_or_default();
             if selected.is_empty() {
+                notes.push("unknown_tool_choice_to_auto");
                 payload.insert("tool_choice".into(), json!("auto"));
             } else {
+                notes.push("named_tool_choice_to_required");
                 payload.insert("tools".into(), json!(selected));
                 payload.insert("tool_choice".into(), json!("required"));
             }
@@ -711,14 +733,69 @@ impl Completion {
 fn frame(value: &Value) -> Vec<u8> {
     format!("data: {}\n\n", paths::python_json(value)).into_bytes()
 }
+struct Observation {
+    manager: Arc<engine::Manager>,
+    key: String,
+    profile: Value,
+    cache: Value,
+    prompt: Value,
+}
+impl Observation {
+    fn capture(&mut self, value: &Value) {
+        for (name, destination) in [("cache_n", &mut self.cache), ("prompt_n", &mut self.prompt)] {
+            if let Some(value) = value["timings"].get(name).filter(|v| v.as_u64().is_some()) {
+                *destination = value.clone();
+            }
+        }
+    }
+    fn complete(self) {
+        self.manager
+            .harness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .complete(&self.key, &self.profile, self.cache, self.prompt);
+    }
+}
+fn finalize(
+    mut response: Response,
+    admission: engine::Admission,
+    observation: Option<Observation>,
+) -> Response {
+    let body = std::mem::replace(response.body_mut(), Body::empty());
+    let stream = futures_util::stream::unfold(
+        (body.into_data_stream(), Some(admission), observation),
+        |(mut body, admission, observation)| async move {
+            match body.next().await {
+                Some(chunk) => Some((chunk, (body, admission, observation))),
+                None => {
+                    if let Some(observation) = observation {
+                        observation.complete();
+                    }
+                    drop(admission);
+                    None
+                }
+            }
+        },
+    );
+    *response.body_mut() = Body::from_stream(stream);
+    response
+}
 struct StreamShim {
     buffer: Vec<u8>,
     reasoning: i64,
     completion: Option<Completion>,
     responses: Option<crate::responses::Stream>,
+    observation: Option<Observation>,
 }
 impl StreamShim {
     fn event(&mut self, raw: &[u8]) -> Vec<u8> {
+        if let Some(observation) = self.observation.as_mut() {
+            if let Some(data) = raw.strip_prefix(b"data:") {
+                if let Ok(value) = serde_json::from_slice::<Value>(data) {
+                    observation.capture(&value);
+                }
+            }
+        }
         if let Some(responses) = self.responses.as_mut() {
             return responses.event(raw);
         }
@@ -853,6 +930,7 @@ pub async fn handle(
     config: &Value,
     path: &str,
     mut payload: Value,
+    user_agent: Option<String>,
 ) -> Response {
     let profile = match models::resolve(config, payload["model"].as_str()) {
         Ok(profile) => profile,
@@ -900,26 +978,52 @@ pub async fn handle(
         None
     };
     let object = payload.as_object_mut().expect("translated request object");
+    let mut conformance_notes = Vec::new();
     let mut meta = match if chat {
         chat_request(
             object,
             manager.sampling(profile["model_alias"].as_str().unwrap_or("")),
+            &mut conformance_notes,
         )
     } else {
         Ok(Meta::default())
     } {
         Ok(meta) => meta,
         Err(error) => {
+            manager
+                .harness
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .record_compat(&conformance_notes);
             return context.error(
                 400,
                 &error.message,
                 "invalid_request_error",
                 error.code,
                 error.param.as_deref(),
-            )
+            );
         }
     };
-    if let Err(error) = single_choice(object) {
+    let mut compat_notes = Vec::new();
+    for (key, note) in [
+        ("temperature", "null_temperature_dropped"),
+        ("cache_prompt", "null_cache_prompt_dropped"),
+    ] {
+        if object.get(key).is_some_and(Value::is_null) {
+            object.shift_remove(key);
+            compat_notes.push(note);
+        }
+    }
+    if chat {
+        normalize_chat(object, &mut compat_notes);
+    }
+    compat_notes.extend(conformance_notes);
+    if let Err(error) = single_choice(object, &mut compat_notes) {
+        manager
+            .harness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record_compat(&compat_notes);
         return context.error(
             400,
             &error.message,
@@ -945,6 +1049,27 @@ pub async fn handle(
             }
         }
     };
+    let key = {
+        let mut registry = manager.harness.lock().unwrap_or_else(|e| e.into_inner());
+        registry.record_compat(&compat_notes);
+        if chat {
+            registry.observe(
+                &payload,
+                &profile,
+                &crate::harness::settings(config),
+                user_agent.as_deref(),
+            )
+        } else {
+            None
+        }
+    };
+    let mut observation = key.map(|key| Observation {
+        manager: manager.clone(),
+        key,
+        profile: profile.clone(),
+        cache: Value::Null,
+        prompt: Value::Null,
+    });
     let (admission, backend) = match manager.admit(profile).await {
         Ok(value) => value,
         Err(error) => {
@@ -977,11 +1102,15 @@ pub async fn handle(
     {
         Ok(reply) => reply,
         Err(_) => {
-            return context.error(
-                503,
-                "The local model is not responding. Try again in a moment.",
-                "local_backend_error",
-                "service_unavailable",
+            return finalize(
+                context.error(
+                    503,
+                    "The local model is not responding. Try again in a moment.",
+                    "local_backend_error",
+                    "service_unavailable",
+                    None,
+                ),
+                admission,
                 None,
             )
         }
@@ -995,6 +1124,7 @@ pub async fn handle(
                 reasoning: 0,
                 completion,
                 responses: responses.map(crate::responses::Stream::new),
+                observation,
             },
             Some(admission),
             false,
@@ -1025,6 +1155,9 @@ pub async fn handle(
                         }
                         None => {
                             let tail = shim.finish();
+                            if let Some(observation) = shim.observation.take() {
+                                observation.complete();
+                            }
                             admission.take();
                             return if tail.is_empty() {
                                 None
@@ -1043,15 +1176,22 @@ pub async fn handle(
     let mut value = match upstream.json::<Value>().await {
         Ok(value) => value,
         Err(_) => {
-            return context.error(
-                502,
-                "The local backend sent an invalid response.",
-                "local_backend_error",
-                "server_error",
+            return finalize(
+                context.error(
+                    502,
+                    "The local backend sent an invalid response.",
+                    "local_backend_error",
+                    "server_error",
+                    None,
+                ),
+                admission,
                 None,
             )
         }
     };
+    if let Some(observation) = observation.as_mut() {
+        observation.capture(&value);
+    }
     if status >= 400 {
         value = normalize_error(status, value);
     } else if let Some(completion) = completion {
@@ -1066,6 +1206,9 @@ pub async fn handle(
     if status == 200 {
         meta.headers(&mut reply);
     }
-    drop(admission);
-    reply
+    finalize(
+        reply,
+        admission,
+        if status == 200 { observation } else { None },
+    )
 }

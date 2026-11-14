@@ -188,6 +188,16 @@ class LifecycleContract(unittest.TestCase):
             self.assertEqual(daemon.call('POST', '/v1/chat/completions', chat())['status'], 200)
             self.assertEqual(len(launches(daemon)), 2)
 
+    def test_explicit_load_reuse_refreshes_idle_deadline(self):
+        with Daemon(configured=True, environ={'LOCAL_LLM_KEEP_WARM_IDLE_SECONDS': '1.5'}) as daemon:
+            self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
+            time.sleep(1.2)
+            self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
+            time.sleep(1.2)
+            self.assertEqual(status(daemon)['state'], 'ready')
+            self.assertEqual(len(launches(daemon)), 1)
+            wait_until(lambda: status(daemon)['state'] == 'unloaded')
+
     def test_swap_limit_guard_refuses_launch(self):
         with Daemon(configured=True) as daemon:
             (daemon.home / 'host/cgroup/memory.swap.max').write_text('max\n')

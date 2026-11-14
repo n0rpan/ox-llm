@@ -200,6 +200,9 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         cors: None,
     };
     let headers = request.headers();
+    let user_agent = headers
+        .get("user-agent")
+        .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned());
     let host = single_header(headers, "host").map(|s| s.trim().to_ascii_lowercase());
     let allowed = [
         format!("127.0.0.1:{}", app.port),
@@ -379,11 +382,31 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             None => context.error(503, "Storage status is unavailable.", "", "", None),
         };
     }
+    if path == "/_local/harnesses" && [Method::GET, Method::HEAD].contains(&method) {
+        let runtime = fresh.as_ref().unwrap_or(&Value::Null);
+        let profile = app
+            .engine
+            .loaded()
+            .or_else(|| models::resolve(runtime, None).ok())
+            .unwrap_or_else(|| json!({}));
+        let value = app
+            .engine
+            .harness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status(&profile, runtime);
+        return context.reply(200, value);
+    }
     if [
         "/_local/load",
         "/_local/unload",
         "/_local/preload",
         "/_local/select",
+        "/_local/harness/forget",
+        "/_local/harness/learning",
+        "/_local/harness/learn",
+        "/_local/harness/label",
+        "/_local/harness/prepare",
     ]
     .contains(&path.as_str())
         && method == Method::POST
@@ -409,6 +432,96 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             },
             Err(_) => return context.error(400, "Invalid control request.", "", "", None),
         };
+        if path == "/_local/harness/learning" {
+            return match app
+                .engine
+                .set_harness_learning(control["enabled"].clone(), control["min_requests"].clone())
+                .await
+            {
+                Ok(value) => context.reply(200, value),
+                Err(error) => context.error(400, &error, "", "", None),
+            };
+        }
+        if path == "/_local/harness/forget" {
+            if !control["harness"].is_null() && !control["harness"].is_string() {
+                return context.error(400, "Invalid harness name.", "", "", None);
+            }
+            let ignore = control["ignore"] == true;
+            app.engine
+                .harness
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .forget(control["harness"].as_str(), ignore);
+            return context.reply(200,json!({"forgotten":control["harness"].as_str().filter(|s|!s.is_empty()).unwrap_or("all"),"ignored":ignore}));
+        }
+        if path == "/_local/harness/learn" {
+            let approved = app
+                .engine
+                .harness
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .approve(control["harness"].as_str().unwrap_or(""));
+            return if approved {
+                context.reply(200, json!({"approved":control["harness"]}))
+            } else {
+                context.error(404,"No such unknown client; it must have sent a request since the controller started.","","",None)
+            };
+        }
+        if path == "/_local/harness/label" {
+            let labelled = app
+                .engine
+                .harness
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .label(
+                    control["harness"].as_str().unwrap_or(""),
+                    control["label"].as_str().unwrap_or(""),
+                );
+            return if labelled {
+                context.reply(200, json!({"harness":control["harness"],"labelled":true}))
+            } else {
+                context.error(
+                    400,
+                    "Only a learned harness can be labelled, with a short plain-text label.",
+                    "",
+                    "",
+                    None,
+                )
+            };
+        }
+        if path == "/_local/harness/prepare" {
+            let Some(harness) = control["harness"].as_str().filter(|s| !s.is_empty()) else {
+                return context.error(409, "Name the harness to prepare.", "", "", None);
+            };
+            if !control["model"].is_null() && !control["model"].is_string() {
+                return context.error(
+                    if control["model"].is_array() || control["model"].is_object() {
+                        503
+                    } else {
+                        409
+                    },
+                    if control["model"].is_array() || control["model"].is_object() {
+                        "Harness prefix could not be prepared."
+                    } else {
+                        models::UNKNOWN
+                    },
+                    "",
+                    "",
+                    None,
+                );
+            }
+            let profile = match models::resolve(
+                fresh.as_ref().unwrap_or(&Value::Null),
+                control["model"].as_str(),
+            ) {
+                Ok(profile) => profile,
+                Err(error) => return context.error(409, error, "", "", None),
+            };
+            return match app.engine.prepare_harness(harness, profile).await {
+                Ok(value) => context.reply(200, value),
+                Err((code, error)) => context.error(code, &error, "", "", None),
+            };
+        }
         if path == "/_local/unload" {
             if control
                 .get("model")
@@ -642,6 +755,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             &config,
             &path,
             payload.unwrap_or(Value::Null),
+            user_agent,
         )
         .await;
     }

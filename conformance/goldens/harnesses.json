@@ -1,0 +1,1570 @@
+{
+  "approve-label-forget": [
+    {
+      "body": {
+        "approved": "learned-227fb080"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness": "learned-227fb080",
+        "labelled": true
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "Synthetic tool  label",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "forgotten": "learned-227fb080",
+        "ignored": true
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-227fb080",
+              "ignored": true,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3136,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3136,
+              "tools": 0
+            }
+          ],
+          "enabled": false,
+          "ignored": [
+            "learned-227fb080"
+          ],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "entries": [],
+      "primers": {},
+      "schema": 1
+    }
+  ],
+  "bounded-candidate-keys": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 8,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-227fb080",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3137,
+              "requests": 9,
+              "stable": false,
+              "system_chars": 3137,
+              "tools": 0
+            }
+          ],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "files": []
+    }
+  ],
+  "bounded-candidates": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-8b37e80a",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3160,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3160,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-284c2e7a",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3160,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3160,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-ee32e76a",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3160,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3160,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-2857ddff",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3160,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3160,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-4755ce85",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3160,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3160,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-eb18f435",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3160,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3160,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-d68dccbb",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3160,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3160,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-82ad5383",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-fa4074fe",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-8f3da421",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-ca3b700f",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-70491dde",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-7e9796b5",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-2a9643dc",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-f79cf526",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            },
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-6039b59e",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3159,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3159,
+              "tools": 0
+            }
+          ],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "files": []
+    }
+  ],
+  "bounded-prefixes": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 1,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "2d9fbececeb9",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 1,
+                "system_chars": 3137,
+                "tools": 0,
+                "warm": true
+              },
+              {
+                "key": "1fa6f34aea78",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 1,
+                "system_chars": 3137,
+                "tools": 0,
+                "warm": true
+              },
+              {
+                "key": "96ddf2fea42c",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 1,
+                "system_chars": 3137,
+                "tools": 0,
+                "warm": true
+              },
+              {
+                "key": "836aade0a325",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 1,
+                "system_chars": 3137,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 4
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "entries": [
+        "1fa6f34aea785a79feeb54b97d506b7963d9ae56f6327a6ab6d0c927cef5f548",
+        "2d9fbececeb9bc09c3d8425b5a8345e6b774c6874c233a8cb51b957a4dae60aa",
+        "836aade0a3258148086ff7e54f58c737d08f3aefe3c420df53a7c35bd519c950",
+        "96ddf2fea42cf08068173456e28d2c0cd580b6ecdff7a097f833ed1757ba1757"
+      ],
+      "primers": {
+        "1fa6f34aea785a79feeb54b97d506b7963d9ae56f6327a6ab6d0c927cef5f548.json": {
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx3",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "tools": []
+        },
+        "2d9fbececeb9bc09c3d8425b5a8345e6b774c6874c233a8cb51b957a4dae60aa.json": {
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx4",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "tools": []
+        },
+        "836aade0a3258148086ff7e54f58c737d08f3aefe3c420df53a7c35bd519c950.json": {
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx1",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "tools": []
+        },
+        "96ddf2fea42cf08068173456e28d2c0cd580b6ecdff7a097f833ed1757ba1757.json": {
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx2",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "tools": []
+        }
+      },
+      "schema": 1
+    }
+  ],
+  "compatibility-counters": [
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "message": {
+              "content": "",
+              "reasoning_content": "Synthetic reasoning.",
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "function": {
+                    "arguments": "{\"value\":1}",
+                    "name": "first_tool"
+                  },
+                  "id": "call_synthetic_0",
+                  "type": "function"
+                }
+              ]
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 1,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 1,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 9
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "unsupported_value",
+          "message": "\"n\" > 1 is not supported: this local model server returns one choice per request. Send n=1 (or omit it) and repeat the request for more choices.",
+          "param": "n",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-local-ai-warning": "reasoning_effort 'synthetic-unknown' is unknown and was ignored",
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {
+          "late_system_message_to_user": 1,
+          "n_refused": 1,
+          "named_tool_choice_to_required": 1,
+          "non_text_part_replaced": 1,
+          "null_cache_prompt_dropped": 1,
+          "null_temperature_dropped": 1,
+          "reasoning_effort_on": 1,
+          "reasoning_effort_unknown": 1,
+          "response_format_json_object_best_effort": 1
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "empty": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "learning-controls": [
+    {
+      "body": {
+        "error": "Send {\"enabled\": true or false} and optionally \"min_requests\" (1-100)."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"enabled\": true or false} and optionally \"min_requests\" (1-100)."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Send {\"enabled\": true or false} and optionally \"min_requests\" (1-100)."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "enabled": true,
+        "min_prefix_chars": 3000,
+        "min_requests": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "enabled": false,
+        "min_prefix_chars": 3000,
+        "min_requests": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "No such unknown client; it must have sent a request since the controller started."
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Only a learned harness can be labelled, with a short plain-text label."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Invalid harness name."
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "forgotten": "all",
+        "ignored": false
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "learning-off": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-227fb080",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3136,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3136,
+              "tools": 0
+            }
+          ],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "files": []
+    }
+  ],
+  "learning-on": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-227fb080",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3136,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3136,
+              "tools": 0
+            }
+          ],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "entries": [
+        "e02dedb30bbe9ed9387d687ca1ec78e95caa5153e19c1781e524baf2f4068496"
+      ],
+      "primers": {
+        "e02dedb30bbe9ed9387d687ca1ec78e95caa5153e19c1781e524baf2f4068496.json": {
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "tools": []
+        }
+      },
+      "schema": 1
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "learning-on-stream": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-227fb080",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3136,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3136,
+              "tools": 0
+            }
+          ],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "entries": [
+        "e02dedb30bbe9ed9387d687ca1ec78e95caa5153e19c1781e524baf2f4068496"
+      ],
+      "primers": {
+        "e02dedb30bbe9ed9387d687ca1ec78e95caa5153e19c1781e524baf2f4068496.json": {
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "tools": []
+        }
+      },
+      "schema": 1
+    }
+  ],
+  "memory-only": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-227fb080",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3136,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3136,
+              "tools": 0
+            }
+          ],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": false
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": false
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "files": []
+    },
+    {
+      "body": {
+        "error": "No recorded prefix for this harness yet; run it once against the local model."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "prepare": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [
+            {
+              "agent": "SyntheticClient",
+              "approved": false,
+              "consistent_requests": 1,
+              "distinct_prefixes": 1,
+              "first_seen": "<current:unix-seconds>",
+              "harness": "learned-227fb080",
+              "ignored": false,
+              "large_enough": true,
+              "last_cache_n": 2,
+              "last_prompt_n": 6,
+              "last_used": "<current:unix-seconds>",
+              "prefix_chars": 3136,
+              "requests": 1,
+              "stable": true,
+              "system_chars": 3136,
+              "tools": 0
+            }
+          ],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {},
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": true,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 2,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-227fb080": {
+            "label": "SyntheticClient",
+            "last_used": "<current:unix-seconds>",
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "e02dedb30bbe",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": "<current:unix-seconds>",
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 3136,
+                "tools": 0,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "entries": [
+        "e02dedb30bbe9ed9387d687ca1ec78e95caa5153e19c1781e524baf2f4068496"
+      ],
+      "primers": {
+        "e02dedb30bbe9ed9387d687ca1ec78e95caa5153e19c1781e524baf2f4068496.json": {
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "tools": []
+        }
+      },
+      "schema": 1
+    },
+    {
+      "body": {
+        "harness": "learned-227fb080",
+        "model": "ornith-35b-a3b-local",
+        "prepared": [
+          {
+            "cache_n": 2,
+            "key": "e02dedb30bbe",
+            "prompt_n": 6,
+            "seconds": "<elapsed:seconds>"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 1,
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": false,
+          "temperature": 0,
+          "tool_choice": "none",
+          "tools": []
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    {
+      "body": {
+        "harness": "*",
+        "harnesses": [],
+        "model": "ornith-35b-a3b-local",
+        "prepared": []
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "harness": "*",
+        "harnesses": [
+          {
+            "harness": "learned-227fb080",
+            "model": "ornith-35b-a3b-local",
+            "prepared": [
+              {
+                "cache_n": 2,
+                "key": "e02dedb30bbe",
+                "prompt_n": 6,
+                "seconds": "<elapsed:seconds>"
+              }
+            ]
+          }
+        ],
+        "model": "ornith-35b-a3b-local",
+        "prepared": [
+          {
+            "cache_n": 2,
+            "key": "e02dedb30bbe",
+            "prompt_n": 6,
+            "seconds": "<elapsed:seconds>"
+          }
+        ]
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 1,
+          "messages": [
+            {
+              "content": "Synthetic harness instructions \u2014 \u03bb. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "role": "system"
+            },
+            {
+              "content": "Initialize this coding prefix. Reply READY. Do not call tools.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": false,
+          "temperature": 0,
+          "tool_choice": "none",
+          "tools": []
+        },
+        "path": "/v1/chat/completions"
+      }
+    ]
+  ],
+  "stored": [
+    {
+      "body": {
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [
+            "learned-cccccccc"
+          ],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {
+          "learned-aaaaaaaa": {
+            "label": "Synthetic label  fixture",
+            "last_used": 2345,
+            "learned": true,
+            "prefixes": [
+              {
+                "key": "bbbbbbbbbbbb",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": 2345,
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 12,
+                "tools": 1,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          },
+          "synthetic": {
+            "last_used": 1234,
+            "prefixes": [
+              {
+                "key": "aaaaaaaaaaaa",
+                "last_cache_n": 2,
+                "last_prompt_n": 6,
+                "last_used": 1234,
+                "model": "ornith-35b-a3b-local",
+                "requests": 2,
+                "system_chars": 12,
+                "tools": 1,
+                "warm": true
+              }
+            ],
+            "warm": 1
+          }
+        },
+        "request_compat": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ]
+}

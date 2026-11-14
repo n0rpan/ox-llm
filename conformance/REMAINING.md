@@ -58,10 +58,11 @@ not push repeatedly to trigger CI or poll CI status. When requesting a full
 public run/review, dispatch checks.yml once for the branch (or mark ready only
 when appropriate). If waiting is needed, use one blocking gh pr checks --watch.
 
-Next implementation step: native harness registry/status and the
-request-ledger writer, then complete config/state round trips and remaining CLI
+Next implementation step: the native request-ledger writer, then complete config/state round trips and remaining CLI
 commands. Rust now passes all 62 configured API and all 17 HTTP gate cases. Of
-17 lifecycle tests, 16 pass; the poll test retains one failure for harness status.
+All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
+opt-in learning, memory-only operation, streaming, bounded candidates/prefixes,
+prepare requests, compatibility counters and Python/Rust file reads.
 The native cache usage and storage inventory readers pass 14 additional cases. No tests are skipped to hide these gaps.
 State-cache-capable engines and the automatic engine-ledger bridge currently
 refuse launch explicitly until their adapters are ported. Full Rust conformance

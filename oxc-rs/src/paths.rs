@@ -140,13 +140,19 @@ pub fn write_config(value: &serde_json::Value) -> std::io::Result<()> {
 }
 
 pub fn python_json(value: &serde_json::Value) -> String {
+    spaced_json(value, true)
+}
+pub fn unicode_json(value: &serde_json::Value) -> String {
+    spaced_json(value, false)
+}
+fn spaced_json(value: &serde_json::Value, ascii: bool) -> String {
     use serde_json::Value;
     match value {
         Value::Array(values) => format!(
             "[{}]",
             values
                 .iter()
-                .map(python_json)
+                .map(|value| spaced_json(value, ascii))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -156,8 +162,8 @@ pub fn python_json(value: &serde_json::Value) -> String {
                 .iter()
                 .map(|(key, value)| format!(
                     "{}: {}",
-                    python_json(&Value::String(key.clone())),
-                    python_json(value)
+                    spaced_json(&Value::String(key.clone()), ascii),
+                    spaced_json(value, ascii)
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -166,7 +172,7 @@ pub fn python_json(value: &serde_json::Value) -> String {
             let raw = value.to_string();
             let mut result = String::new();
             for ch in raw.chars() {
-                if ch.is_ascii() {
+                if !ascii || ch.is_ascii() {
                     result.push(ch);
                 } else {
                     let mut units = [0_u16; 2];

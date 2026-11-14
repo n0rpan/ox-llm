@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `2aa4e9326b134c55ecc8fcd3387e818b73facca9`.
-The current suite passes 250 scenarios in 39 unittest methods. This remains a
+The current suite passes 264 scenarios in 41 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -75,6 +75,7 @@ python3 conformance/test_api.py --record-python
 python3 conformance/test_http_gates.py --record-python
 python3 conformance/test_state_cache.py --record-python
 python3 conformance/test_storage.py --record-python
+python3 conformance/test_harnesses.py --record-python
 python3 conformance/test_cli_runtime.py --record-python
 python3 conformance/test_scans.py --record-python
 python3 conformance/test_update.py --record-python
@@ -93,7 +94,8 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Cache usage | PASS, 9 cases | PASS | GC, clear, preload and active-engine ownership |
 | Storage inventory | PASS, 5 cases | PASS | Deletion, races and additional identity variants |
 | HTTP gates | PASS, 17 cases | PASS | LAN share listeners and rate limits |
-| Lifecycle | PASS, 17 tests | Partial: 16/17; harness status route pending | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
+| Lifecycle | PASS, 18 tests | PASS | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
+| Harness registry | PASS, 13 cases | PASS: learning/privacy, controls, prepare, streaming, limits and Python/Rust file reads | More malformed/advisory-I/O cases |
 | Files | PASS, 3 tests | API-key refresh/fail-closed PASS; remaining round trips pending | Additional state stores and sharing secrets |
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness ready; Python/Python PASS | Not implemented | Run Python/selected/Python round trips with Rust |
