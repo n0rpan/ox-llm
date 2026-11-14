@@ -6,7 +6,7 @@ use oxa_a2a::{
     loopback::{Client, Limits, ResponseBudget},
     wire::*,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, VecDeque};
@@ -30,6 +30,9 @@ pub struct LocalAgent {
 impl LocalAgent {
     pub fn register_verified_local(client: Client) -> Self {
         Self { client }
+    }
+    pub(crate) fn into_client(self) -> Client {
+        self.client
     }
 }
 
@@ -59,7 +62,7 @@ pub struct A2ARunSettings {
     pub cancel_grace: Duration,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StopConfirmation {
     NotNeeded,
@@ -182,7 +185,7 @@ pub fn run_a2a(
     let mut journal = Journal::create(&directory.join("transcript.jsonl"), settings.journal_bytes)?;
     journal.record(None,"run_started",json!({"run":settings.id,"transport":"A2A-0.3.0","workers":plan.len(),"parallelism":settings.parallelism,"offline":true}))?;
     for spec in &plan {
-        journal.record(Some(&spec.id),"queued",json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"reservedBytes":spec.response_bytes}))?;
+        journal.record(Some(&spec.id),"queued",json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"reservedBytes":spec.response_bytes,"agentUrlSha256":hash(&spec.agent.client.url())}))?;
         observe(A2AStatus {
             worker: spec.id.clone(),
             state: "queued".into(),
@@ -896,7 +899,7 @@ fn finish(
     } else {
         None
     };
-    journal.record(Some(&report.worker),"finished",json!({"outcome":report.outcome,"stop":report.stop,"responseBytes":report.response_bytes,"reportedTokens":report.reported_tokens,"resultSha256":digest}))?;
+    journal.record(Some(&report.worker),"finished",json!({"outcome":report.outcome,"stop":report.stop,"taskState":report.task.as_ref().map(|t|&t.status.state),"responseBytes":report.response_bytes,"reportedTokens":report.reported_tokens,"resultSha256":digest}))?;
     observe(A2AStatus {
         worker: report.worker.clone(),
         state: format!("{:?}", report.outcome).to_ascii_lowercase(),
@@ -930,7 +933,10 @@ fn invalid(message: &'static str) -> io::Error {
 fn hash(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
-fn optional_task<S: serde::Serializer>(task: &Option<Task>, serializer: S) -> Result<S::Ok, S::Error> {
+pub(crate) fn optional_task<S: serde::Serializer>(
+    task: &Option<Task>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     match task {
         Some(task) => Event::Task(task.clone()).serialize(serializer),
         None => serializer.serialize_none(),

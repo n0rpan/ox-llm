@@ -272,6 +272,9 @@ fn number(text: &str, min: u64, max: u64) -> Result<u64, &'static str> {
 /// Intended for the gated binary shim. Returns None for every other command.
 /// It does not discover user/project configuration or inherit model credentials.
 pub fn maybe_run(args: &[String]) -> Option<i32> {
+    if args.first().map(String::as_str) == Some("orchestrate-inspect") {
+        return Some(crate::recovery_cli::run(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("orchestrate-review") {
         return Some(crate::review_cli::run(&args[1..]));
     }

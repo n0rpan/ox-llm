@@ -66,6 +66,8 @@ returns a partial JSON report when output remains available. Interrupted runs
 exit 130 for SIGINT or 143 for SIGTERM. Full success exits 0; runtime/partial
 failure exits 1; invalid arguments exit 2. A second interrupt can stop output
 after worker cleanup. Signal handlers are restored when the command returns.
+Use `oxa orchestrate-inspect --journal PATH` to inspect a completed or interrupted
+journal without any network access or task replay; see [RECOVERY.md](RECOVERY.md).
 
 Worker counts and parallelism are bounded to 16. Defaults use three roles and
 at most four simultaneous workers. `--worker-timeout` and `--timeout` bound

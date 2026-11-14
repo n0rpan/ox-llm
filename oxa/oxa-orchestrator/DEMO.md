@@ -32,6 +32,7 @@ test A2A scheduler steering, cancellation and wire caps ... ok
 test orchestrate CLI success and inert validation ... ok
 test orchestrate CLI signal cleanup ... ok
 test orchestrate CLI approved files ... ok
+test orchestrate CLI crash inspection ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -78,3 +79,10 @@ stages the exact approved candidate and checks its receipt and unchanged source.
 It rejects existing destinations and stale source, and reports overlapping paths
 without choosing a worker automatically. The feature-built binary smoke check
 runs the same end-to-end review command. See [REVIEW.md](REVIEW.md).
+
+The crash-inspection scenario forcibly terminates its owned controller while a
+real RPC worker is running, verifies the worker exits through a pinned PID
+handle, and inspects the surviving journal through the CLI. It preserves unknown
+terminal evidence, leaves journal bytes unchanged and makes no new inference
+requests. Separate recovery tests reconcile known original A2A tasks without
+resending input. See [RECOVERY.md](RECOVERY.md).

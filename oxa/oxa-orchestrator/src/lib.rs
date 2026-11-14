@@ -4,6 +4,8 @@ pub mod a2a_run;
 pub mod cli;
 mod journal;
 mod process;
+pub mod recovery;
+mod recovery_cli;
 pub mod review;
 mod review_cli;
 pub mod rpc_agent;
