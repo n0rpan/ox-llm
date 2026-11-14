@@ -71,7 +71,8 @@ pub(crate) fn judge(
     let mut found = Found::default();
     for (n, a, t) in in_batch.iter().rev() {
         if !same_call(n, a, name, &args) {
-            return Verdict::Pass;
+            // A different call ends the run; the identical suffix found so far still counts.
+            return finish(found, name, args_raw);
         }
         match step(&mut found, t, text) {
             Step::Go => {}

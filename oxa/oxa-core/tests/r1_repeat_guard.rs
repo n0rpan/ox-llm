@@ -514,3 +514,25 @@ fn identical_calls_inside_one_batch_count() {
     assert!(is_notice(&res[LIMIT as usize]), "{}", res[LIMIT as usize]);
     assert!(res[0].contains("same"), "{}", res[0]);
 }
+
+/// Codex focused note on the PR: `[other, same x(LIMIT+1)]` in ONE batch. The different call
+/// before the run must end the walk without discarding the identical suffix already counted, so
+/// the last `same` gets the notice (it used to pass because the walk returned Pass on `other`).
+#[test]
+fn identical_suffix_after_a_different_call_in_one_batch_counts() {
+    let env = TestEnv::new();
+    let mut batch = bash("b0", "echo other");
+    for i in 1..=LIMIT + 1 {
+        batch.tool_calls.push(oxa_proto::ToolCall {
+            id: format!("b{i}"),
+            name: "bash".to_string(),
+            args_raw: r#"{"command":"echo same"}"#.to_string(),
+        });
+    }
+    let (mut st, _eng) = state(&env, vec![batch, ScriptTurn::text("done")], Settings::default());
+    assert_eq!(run(&mut st, "go").0, RunEnd::Stopped);
+    let res = results(&st);
+    assert_eq!(res.len(), LIMIT as usize + 2, "{res:#?}");
+    assert!(res[..=LIMIT as usize].iter().all(|r| !is_notice(r)), "{res:#?}");
+    assert!(is_notice(&res[LIMIT as usize + 1]), "{}", res[LIMIT as usize + 1]);
+}
