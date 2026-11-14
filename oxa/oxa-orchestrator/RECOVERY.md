@@ -28,7 +28,9 @@ refused. Bounds are 16 MiB per journal, 64 KiB per line, 100,000 complete record
 128 workers, 64-byte run/worker IDs and 256-byte task/context IDs. Schema, contiguous
 sequence, monotonic elapsed time, worker manifest/lifecycle, outcome and completion
 counts must agree. Unsupported schemas/events or malformed complete lines fail
-closed. A trailing line without a newline is ignored and explicitly flagged,
+closed. The native run-level `cancel_all` event is accepted only for a fully
+recorded native worker manifest; worker-scoped and A2A variants are refused.
+A trailing line without a newline is ignored and explicitly flagged,
 even if it looks like valid JSON; it is not a durable binding or terminal record.
 No raw prompts, results, credentials or diagnostic text are recovered from hashes.
 The file hash binds the captured bytes, including an ignored tail; it does not

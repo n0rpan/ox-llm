@@ -407,3 +407,23 @@ fn later_terminal_results_preserve_the_original_budget_failure() {
     assert!(!result.task.unwrap().artifacts.is_empty());
     assert_eq!(backend.sends.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn cancellation_events_require_the_native_run_level_and_complete_manifest() {
+    let env = TestEnv::new();
+    let mut a2a = records("http://127.0.0.1:12345/");
+    a2a.push(record(4, None, "cancel_all", json!({})));
+    assert!(InspectedRun::inspect(&journal(env.root(), "a2a-cancel", &a2a, b"")).is_err());
+    let native = vec![
+        record(0, None, "run_started", json!({"run":"native","workers":1})),
+        record(1, Some("one"), "queued", json!({})),
+        record(2, Some("one"), "cancel_all", json!({})),
+    ];
+    assert!(InspectedRun::inspect(&journal(env.root(), "worker-cancel", &native, b"")).is_err());
+    let incomplete = vec![
+        record(0, None, "run_started", json!({"run":"native","workers":2})),
+        record(1, Some("one"), "queued", json!({})),
+        record(2, None, "cancel_all", json!({})),
+    ];
+    assert!(InspectedRun::inspect(&journal(env.root(), "incomplete-cancel", &incomplete, b"")).is_err());
+}

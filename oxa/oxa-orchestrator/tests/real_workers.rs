@@ -1090,7 +1090,9 @@ fn orchestrate_cli_signal_cleanup() {
     assert_eq!(report["workers"][0]["stop"], "confirmed");
     let mut spawned = 0;
     for entry in std::fs::read_dir(env.root().join("cli-signal/agents")).unwrap() {
-        let log = std::fs::read_to_string(entry.unwrap().path().join("transcript.jsonl")).unwrap();
+        let path = entry.unwrap().path().join("transcript.jsonl");
+        assert_native_cancellation_inspection(&path, &env.root().join("signal-cancellation-prefix.jsonl"));
+        let log = std::fs::read_to_string(path).unwrap();
         for line in log.lines() {
             let event: serde_json::Value = serde_json::from_str(line).unwrap();
             if let Some(pid) = event["details"]["processId"].as_u64() {
@@ -1582,6 +1584,57 @@ fn orchestrate_cli_crash_inspection() {
     );
 }
 
+fn assert_native_cancellation_inspection(path: &Path, prefix_path: &Path) {
+    use oxa_orchestrator::recovery::{InspectedRun, Phase, Transport};
+    let original = std::fs::read(path).unwrap();
+    let inspected = InspectedRun::inspect(path).unwrap();
+    assert_eq!(inspected.snapshot().transport, Transport::LocalRpc);
+    assert!(inspected.snapshot().recorded_run_finished);
+    assert_eq!(
+        inspected.snapshot().workers[0].recorded_outcome,
+        Some(Outcome::Canceled)
+    );
+    let mut end = 0;
+    let mut cancellation = false;
+    for line in original.split_inclusive(|b| *b == b'\n') {
+        end += line.len();
+        let record: serde_json::Value = serde_json::from_slice(line).unwrap();
+        if record["event"] == "cancel_all" {
+            cancellation = true;
+            break;
+        }
+    }
+    assert!(cancellation, "the actual native producer emitted cancel_all");
+    std::fs::write(prefix_path, &original[..end]).unwrap();
+    let interrupted = InspectedRun::inspect(prefix_path).unwrap();
+    assert!(!interrupted.snapshot().recorded_run_finished);
+    assert!(matches!(
+        interrupted.snapshot().workers[0].phase,
+        Phase::Queued | Phase::Started
+    ));
+    assert!(interrupted.snapshot().workers[0].recorded_outcome.is_none());
+    assert_eq!(std::fs::read(path).unwrap(), original);
+}
+fn native_control_cancel_journal_inspection() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let (tx, rx) = mpsc::sync_channel(1);
+    tx.send(Control::CancelAll).unwrap();
+    let report = run(
+        settings(&env, "native-control-cancel"),
+        vec![worker(&engine, "one")],
+        rx,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.workers[0].outcome, Outcome::Canceled);
+    assert_native_cancellation_inspection(
+        &env.root().join("native-control-cancel/transcript.jsonl"),
+        &env.root().join("control-cancellation-prefix.jsonl"),
+    );
+    assert!(engine.requests().is_empty());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -1661,6 +1714,10 @@ fn main() {
         (
             "orchestrate CLI crash inspection",
             orchestrate_cli_crash_inspection,
+        ),
+        (
+            "native cancellation journal inspection",
+            native_control_cancel_journal_inspection,
         ),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {
