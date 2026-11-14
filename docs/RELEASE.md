@@ -3,7 +3,9 @@
 `release-build.yml` only builds workflow artifacts. It does not create tags,
 GitHub releases, registry entries or AUR uploads. It needs no secrets and has
 `contents: read`. Its only triggers are manual dispatch and PR changes to this
-workflow, `packaging/**` or this document. Ordinary PR checks remain independent.
+workflow, `packaging/**` or this document. Draft PRs skip the artifact builds while
+changes are iterated locally. Marking a matching PR ready, or a manual dispatch,
+enables them. Ordinary PR checks remain independent.
 
 The release-build draft includes the separate CLI-version prerequisite draft.
 Review and merge that prerequisite first. Do not merge either draft automatically.

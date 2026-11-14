@@ -3,6 +3,7 @@ name: release-build
 on:
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/release-build.yml'
       - 'packaging/**'
@@ -26,6 +27,7 @@ env:
 
 jobs:
   binaries:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     name: CPU artifacts (${{ matrix.arch }})
     strategy:
       fail-fast: false
