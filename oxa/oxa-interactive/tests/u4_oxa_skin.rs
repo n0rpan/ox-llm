@@ -74,6 +74,8 @@ struct ScriptTerm {
     raw_after: Vec<(&'static str, usize)>,
     consumed: usize,
     deadline: Instant,
+    /// The terminal "answered" the kitty graphics query at start.
+    graphics: bool,
 }
 
 impl ScriptTerm {
@@ -85,6 +87,7 @@ impl ScriptTerm {
             raw_after: Vec::new(),
             consumed: 0,
             deadline: Instant::now() + Duration::from_secs(60),
+            graphics: false,
         }
     }
     fn raw(&self) -> String {
@@ -156,6 +159,9 @@ impl Terminal for ScriptTerm {
     fn caps(&self) -> TermCaps {
         self.inner.caps()
     }
+    fn graphics(&self) -> bool {
+        self.graphics
+    }
     fn set_mode(&mut self, mode: TermMode, on: bool) {
         self.inner.set_mode(mode, on);
     }
@@ -206,9 +212,40 @@ fn run(
     steps: Vec<Step>,
     prepare: impl FnOnce(&TestEnv),
 ) -> ScriptTerm {
+    run_on(
+        FakeOpts::default(),
+        script,
+        settings,
+        env_vars,
+        size,
+        steps,
+        prepare,
+    )
+}
+
+/// An engine that takes a moment per request, as a real one does: the states of a run
+/// (thinking, the running hints, the closing scene) are on screen long enough to be drawn
+/// even when the machine is busy. Without it a whole run can pass between two frames.
+fn slow_engine() -> FakeOpts {
+    FakeOpts {
+        hold_headers_ms: 350,
+        ..FakeOpts::default()
+    }
+}
+
+/// [`run`] on a fake engine with these options.
+fn run_on(
+    fake: FakeOpts,
+    script: Vec<ScriptTurn>,
+    settings: serde_json::Value,
+    env_vars: &[(&str, &str)],
+    size: (u16, u16),
+    steps: Vec<Step>,
+    prepare: impl FnOnce(&TestEnv),
+) -> ScriptTerm {
     let env = TestEnv::new();
     prepare(&env);
-    let server = FakeServer::start(script, FakeOpts::default()).expect("start the fake engine");
+    let server = FakeServer::start(script, fake).expect("start the fake engine");
     let url = server.url();
     let dirs = Dirs::under(env.root());
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(dirs.sessions_dir.clone()));
@@ -250,6 +287,8 @@ fn run(
         yolo: Some(oxa_proto::YoloSwitch::new(false)),
     };
     let mut term = ScriptTerm::new(size.0, size.1, steps);
+    // A test-only variable: this terminal answers the graphics query.
+    term.graphics = env_vars.iter().any(|(k, _)| *k == "TEST_GRAPHICS_REPLY");
     let (code, _) = run_session(&mut term, session, &mut opts);
     assert_eq!(code, 0);
     assert!(term.steps.is_empty(), "the app quit before the script ended");
@@ -304,7 +343,8 @@ fn colour_params_finds_colours_only() {
 
 #[test]
 fn local_profile_draws_oxa_chrome_and_panels() {
-    let term = run(
+    let term = run_on(
+        slow_engine(),
         read_then_answer(),
         json!({}),
         LOCAL,
@@ -687,4 +727,170 @@ fn hud_counts_auto_approved_actions_and_reduced_motion_stills_the_flames() {
     for width in 1..=200u16 {
         assert!(visible_width(&oxa_yolo_banner(360, true, width, &theme, Skin::Oxa)) <= width as usize);
     }
+}
+
+/// The rows (1-based) that `raw` addresses with a cursor move to column 1.
+fn rows_written(raw: &str) -> std::collections::BTreeSet<usize> {
+    let mut rows = std::collections::BTreeSet::new();
+    let mut rest = raw;
+    while let Some(at) = rest.find("\x1b[") {
+        rest = &rest[at + 2..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() && rest[digits.len()..].starts_with(";1H") {
+            rows.extend(digits.parse::<usize>());
+        }
+    }
+    rows
+}
+
+#[test]
+fn suggestions_are_a_panel_that_floats_and_a_whole_run_shows_the_arcade() {
+    // A terminal so low that the transcript fills the viewport: if the suggestions made the
+    // bottom higher, every transcript row would move.
+    let (cols, rows) = (100u16, 18u16);
+    let term = run_on(
+        slow_engine(),
+        read_then_answer(),
+        json!({}),
+        LOCAL,
+        (cols, rows),
+        vec![
+            step("start", &["READY"], typed("look at notes.txt", &["enter"])),
+            // The run ends with the closing scene; wait until it is gone again.
+            step("answered", &["ALPHA done.", "CLEAR"], Vec::new()),
+            step("settled", &["ALPHA done."], typed("/th", &[])),
+            step("open", &["commands", "esc close"], vec![key("escape")]),
+            step(
+                "closed",
+                &["ALPHA done."],
+                vec![
+                    key("backspace"),
+                    key("backspace"),
+                    key("backspace"),
+                    key("ctrl+d"),
+                ],
+            ),
+        ],
+        write_notes,
+    );
+    let text = term.all_text();
+    // The run showed the arcade: the ox, and "stage clear" with the coin of the one read.
+    assert!(text.contains(" THINKING "), "the activity line showed");
+    assert!(
+        text.contains("CLEAR") && text.contains("◆1 tool"),
+        "the closing scene"
+    );
+
+    // The suggestions: the themed panel, with the header, the footer hint and a description.
+    let opening = term.raw_since("settled");
+    let opening = &opening[..opening.len() - term.raw_since("open").len()];
+    let shown = strip_ansi(opening);
+    assert!(shown.contains("┌─ commands "), "the header: {shown}");
+    assert!(
+        shown.contains("tab complete · enter run · esc close"),
+        "the footer hint"
+    );
+    assert!(shown.contains(" ▌ "), "the selected row is marked");
+    // It floats: the first transcript rows were not rewritten when it opened (nothing moved),
+    // and the rows it wrote lie above the editor, inside the screen.
+    let written = rows_written(opening);
+    assert!(!written.is_empty() && written.iter().all(|r| *r <= usize::from(rows)));
+    assert!(
+        !written.contains(&1) && !written.contains(&2),
+        "the transcript moved when the panel opened: rows {written:?}"
+    );
+    // Closing it puts the covered transcript rows back.
+    let closing = term.raw_since("open");
+    assert!(
+        strip_ansi(&closing).contains("ALPHA done."),
+        "the transcript is back"
+    );
+}
+
+/// The ids of the images that `raw` transmits and deletes.
+fn image_ids(raw: &str) -> (Vec<u32>, Vec<u32>) {
+    let id = |p: &str| -> Option<u32> {
+        p.split([',', ';'])
+            .find_map(|k| k.strip_prefix("i=")?.parse().ok())
+    };
+    let parts: Vec<&str> = raw.split("\x1b_G").collect();
+    let sent = parts
+        .iter()
+        .filter(|p| p.starts_with("a=T,"))
+        .filter_map(|p| id(p))
+        .collect();
+    let deleted = parts
+        .iter()
+        .filter(|p| p.starts_with("a=d,"))
+        .filter_map(|p| id(p))
+        .collect();
+    (sent, deleted)
+}
+
+#[test]
+fn a_graphics_terminal_gets_the_pixel_scene_once_per_frame_and_is_left_clean() {
+    const GHOSTTY: &[(&str, &str)] = &[
+        ("OXA_PROFILE", "local"),
+        ("LANG", "C.UTF-8"),
+        ("TERM", "xterm-ghostty"),
+        ("TEST_GRAPHICS_REPLY", "1"),
+    ];
+    let term = run_on(
+        slow_engine(),
+        read_then_answer(),
+        json!({}),
+        GHOSTTY,
+        (110, 34),
+        vec![
+            step("start", &["READY"], typed("look at notes.txt", &["enter"])),
+            step("answered", &["ALPHA done.", "CLEAR"], vec![key("ctrl+d")]),
+        ],
+        write_notes,
+    );
+    let raw = term.raw();
+    let (sent, deleted) = image_ids(&raw);
+    // The scene is pictures: frames were transmitted, each one once, and shown by placeholders.
+    assert!(sent.len() >= 2, "frames were transmitted: {sent:?}");
+    let unique: std::collections::BTreeSet<&u32> = sent.iter().collect();
+    assert_eq!(unique.len(), sent.len(), "a frame is transmitted once: {sent:?}");
+    assert!(raw.contains('\u{10EEEE}'), "the activity line shows them");
+    assert!(!term.all_text().contains("▟█▛▘"), "not the text scene");
+    // A frame is on the terminal before the row that shows it.
+    let first_sent = raw.find("\x1b_Ga=T,").expect("a transmission");
+    let first_shown = raw.find('\u{10EEEE}').expect("a placeholder");
+    assert!(first_sent < first_shown);
+    // On exit every image is deleted again, with its data.
+    let mut left: Vec<u32> = sent.clone();
+    left.retain(|id| !deleted.contains(id));
+    assert!(left.is_empty(), "images left in the terminal: {left:?}");
+    assert!(raw.contains("a=d,d=I,"));
+
+    // The same run on a terminal without the protocol (foot): text, and not one graphics byte.
+    let foot = run_on(
+        slow_engine(),
+        read_then_answer(),
+        json!({}),
+        &[("OXA_PROFILE", "local"), ("LANG", "C.UTF-8"), ("TERM", "foot")],
+        (110, 34),
+        vec![
+            step("start", &["READY"], typed("look at notes.txt", &["enter"])),
+            step("answered", &["ALPHA done.", "CLEAR"], vec![key("ctrl+d")]),
+        ],
+        write_notes,
+    );
+    assert!(!foot.raw().contains("\x1b_G") && !foot.raw().contains('\u{10EEEE}'));
+    // `ui.animationGraphics = "off"` keeps a graphics terminal on text too.
+    let off = run_on(
+        slow_engine(),
+        read_then_answer(),
+        json!({ "ui": { "animationGraphics": "off" } }),
+        GHOSTTY,
+        (110, 34),
+        vec![
+            step("start", &["READY"], typed("look at notes.txt", &["enter"])),
+            step("answered", &["ALPHA done.", "CLEAR"], vec![key("ctrl+d")]),
+        ],
+        write_notes,
+    );
+    assert!(!off.raw().contains("\x1b_G") && !off.raw().contains('\u{10EEEE}'));
 }

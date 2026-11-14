@@ -32,6 +32,11 @@ pub trait Terminal {
     fn colors(&self) -> Option<TerminalColors> {
         None
     }
+    /// The terminal answered the kitty graphics query at start (`gfx_query`). `false` = no
+    /// reply within the query timeout, or an error reply.
+    fn graphics(&self) -> bool {
+        false
+    }
 }
 
 /// Options of [`ProcessTerminal::open`].
@@ -90,6 +95,8 @@ pub struct ProcessTerminal {
     suspended: bool,
     /// OSC 10 / OSC 11 answers to the start-up colour query.
     colors: TerminalColors,
+    /// The kitty graphics query was answered with `OK`.
+    graphics: bool,
 }
 
 impl ProcessTerminal {
@@ -119,6 +126,7 @@ impl ProcessTerminal {
             last_size: (0, 0),
             pending_since: None,
             colors: TerminalColors::default(),
+            graphics: false,
             suspended: false,
         };
         term.last_size = term.size();
@@ -144,6 +152,8 @@ impl ProcessTerminal {
         // Kitty flags, cell size, then the OSC 10/11 colours; `COLOR_QUERY` ends with the device
         // attributes request that closes the wait.
         self.write(b"\x1b[?u\x1b[16t");
+        // The kitty graphics query: answered before the device attributes, or not at all.
+        self.write(crate::gfx_query().as_bytes());
         self.write(crate::COLOR_QUERY.as_bytes());
         self.flush();
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -161,6 +171,11 @@ impl ProcessTerminal {
                     InputEvent::CellSize { w, h } => self.caps.cell_px = Some((w, h)),
                     InputEvent::OscReply { code: 10, data } => self.colors.fg = parse_osc_color(&data),
                     InputEvent::OscReply { code: 11, data } => self.colors.bg = parse_osc_color(&data),
+                    InputEvent::Apc(body) => {
+                        if let Some(ok) = crate::parse_gfx_reply(&body) {
+                            self.graphics = ok;
+                        }
+                    }
                     InputEvent::DeviceAttributes(_) => done = true,
                     other => self.queued.push(other),
                 }
@@ -262,6 +277,9 @@ impl Terminal for ProcessTerminal {
     }
     fn colors(&self) -> Option<TerminalColors> {
         (self.colors != TerminalColors::default()).then_some(self.colors)
+    }
+    fn graphics(&self) -> bool {
+        self.graphics
     }
     fn flush(&mut self) {
         if !self.out.is_empty() {

@@ -2,7 +2,7 @@
 // ported from pi packages/tui/src/components/editor.ts, kill-ring.ts, undo-stack.ts, word-navigation.ts
 use crate::{
     cluster_boundaries, pad_to_width, truncate_to_width, visible_width, AutocompleteItem,
-    AutocompleteProvider, Component, CursorPos, Interactive, Key, KeyKind, Mouse, Theme,
+    AutocompleteProvider, Component, CursorPos, Interactive, Key, KeyKind, Mouse, PopupStyle, Theme,
 };
 use oxa_config::Keymap;
 use std::collections::BTreeMap;
@@ -21,6 +21,12 @@ pub struct EditorOpts {
     /// A paste longer than this many lines or 1000 characters is shown as a paste marker
     /// (`[paste #1 +12 lines]`) instead of its text.
     pub paste_marker_min_lines: usize,
+    /// How the suggestions look: pi's bare list (the default) or OXA's panel.
+    pub popup: PopupStyle,
+    /// `true`: [`Component::render`] leaves the suggestions out and the owner draws
+    /// [`Editor::popup`] itself (OXA's fullscreen layout floats it over the transcript, so an
+    /// opening list moves nothing).
+    pub popup_detached: bool,
 }
 
 impl Default for EditorOpts {
@@ -31,6 +37,8 @@ impl Default for EditorOpts {
             max_visible_rows: 20,
             border_token: "border".to_string(),
             paste_marker_min_lines: 10,
+            popup: PopupStyle::List,
+            popup_detached: false,
         }
     }
 }
@@ -296,6 +304,11 @@ impl Editor {
     }
     pub fn autocomplete_open(&self) -> bool {
         self.suggest.is_some()
+    }
+    /// The open suggestions as lines of `width` columns (empty when none are open): what
+    /// `render` appends below the editor unless `EditorOpts::popup_detached`.
+    pub fn popup(&self, width: u16, theme: &Theme) -> Vec<String> {
+        self.suggest_popup((width as usize).max(1), theme)
     }
     /// The keymap used by `Component::input` (which has no keymap parameter). Must be called
     /// once before the editor is used as a plain `Component`.
@@ -1173,6 +1186,9 @@ impl Editor {
             return Vec::new();
         };
         let max = self.opts.autocomplete_max_visible.max(1);
+        if self.opts.popup != PopupStyle::List {
+            return crate::suggest_panel(&s.items, s.selected, &s.prefix, max, w, self.opts.popup, theme);
+        }
         let start = if s.selected >= max {
             s.selected + 1 - max
         } else {
@@ -1415,7 +1431,9 @@ impl Component for Editor {
             out.push(pad_to_width(&line, w, false));
         }
         out.push(self.border(w, below, "↓", theme));
-        out.extend(self.suggest_popup(w, theme));
+        if !self.opts.popup_detached {
+            out.extend(self.suggest_popup(w, theme));
+        }
         self.cursor = cursor;
         out
     }
