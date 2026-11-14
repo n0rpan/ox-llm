@@ -1,0 +1,3478 @@
+{
+  "chat": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-engine-error": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "[upstream-error]",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "Synthetic engine refusal.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 422,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-engine-validates-penalty": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "presence_penalty": 5,
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-local-ai-ignored": "presence_penalty",
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-invalid-n": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_value",
+          "message": "\"n\" must be a positive integer.",
+          "param": "n",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-json-format": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.\n\nRespond with one valid JSON object only: no code fences, no text before or after it.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-local-ai-warning": "response_format: the reply is not valid JSON (best effort, not enforced)",
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-json-format-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.\n\nRespond with one valid JSON object only: no code fences, no text before or after it.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Synthetic engine reply."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-local-ai-warning": "response_format is best effort; a streamed reply is not checked",
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-local-default": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-logprobs": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "logprobs": true,
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0,
+          "top_logprobs": 2
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": {
+              "content": [
+                {
+                  "bytes": [
+                    83,
+                    121,
+                    110,
+                    116,
+                    104,
+                    101,
+                    116,
+                    105,
+                    99,
+                    32,
+                    101,
+                    110,
+                    103,
+                    105,
+                    110,
+                    101,
+                    32,
+                    114,
+                    101,
+                    112,
+                    108,
+                    121,
+                    46
+                  ],
+                  "logprob": -0.5,
+                  "token": "Synthetic engine reply.",
+                  "top_logprobs": [
+                    {
+                      "bytes": [
+                        83,
+                        121,
+                        110,
+                        116,
+                        104,
+                        101,
+                        116,
+                        105,
+                        99,
+                        32,
+                        101,
+                        110,
+                        103,
+                        105,
+                        110,
+                        101,
+                        32,
+                        114,
+                        101,
+                        112,
+                        108,
+                        121,
+                        46
+                      ],
+                      "logprob": -0.5,
+                      "token": "Synthetic engine reply."
+                    }
+                  ]
+                }
+              ]
+            },
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-logprobs-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "logprobs": true,
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "temperature": 0,
+          "top_logprobs": 2
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Synthetic engine reply."
+              },
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": {
+                "content": [
+                  {
+                    "bytes": [
+                      83,
+                      121,
+                      110,
+                      116,
+                      104,
+                      101,
+                      116,
+                      105,
+                      99,
+                      32,
+                      101,
+                      110,
+                      103,
+                      105,
+                      110,
+                      101,
+                      32,
+                      114,
+                      101,
+                      112,
+                      108,
+                      121,
+                      46
+                    ],
+                    "logprob": -0.5,
+                    "token": "Synthetic engine reply.",
+                    "top_logprobs": [
+                      {
+                        "bytes": [
+                          83,
+                          121,
+                          110,
+                          116,
+                          104,
+                          101,
+                          116,
+                          105,
+                          99,
+                          32,
+                          101,
+                          110,
+                          103,
+                          105,
+                          110,
+                          101,
+                          32,
+                          114,
+                          101,
+                          112,
+                          108,
+                          121,
+                          46
+                        ],
+                        "logprob": -0.5,
+                        "token": "Synthetic engine reply."
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-max-completion-tokens": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_completion_tokens": 1,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "content": "Synthetic",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 1,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 1,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 9
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-max-tokens": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 2,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 2,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 2,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 10
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-n": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "unsupported_value",
+          "message": "\"n\" > 1 is not supported: this local model server returns one choice per request. Send n=1 (or omit it) and repeat the request for more choices.",
+          "param": "n",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-n-stream": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "unsupported_value",
+          "message": "\"n\" > 1 is not supported: this local model server returns one choice per request. Send n=1 (or omit it) and repeat the request for more choices.",
+          "param": "n",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-native-alias": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-openai-alias": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-penalties": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "frequency_penalty": 0.25,
+          "logit_bias": {
+            "1": -1
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "presence_penalty": 0.5,
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-local-ai-ignored": "presence_penalty, frequency_penalty, logit_bias",
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-reasoning": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": true,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "reasoning_content": "Synthetic reasoning.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 1
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-reasoning-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": true,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "reasoning_content": "Synthetic reasoning."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Synthetic engine reply."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          },
+          "usage": {
+            "completion_tokens": 3,
+            "completion_tokens_details": {
+              "reasoning_tokens": 1
+            },
+            "prompt_tokens": 8,
+            "prompt_tokens_details": {
+              "cached_tokens": 2
+            },
+            "total_tokens": 11
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-secondary": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "qwen3.6-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "qwen3.6-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-stop": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stop": [
+            " engine"
+          ],
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Synthetic engine reply."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-stream-usage": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Synthetic engine reply."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          },
+          "usage": {
+            "completion_tokens": 3,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 8,
+            "prompt_tokens_details": {
+              "cached_tokens": 2
+            },
+            "total_tokens": 11
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-strict-schema-refused": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "unsupported_value",
+          "message": "\"response_format\" json_schema with \"strict\": true is not supported: this local model server has no grammar-constrained sampling, so it cannot guarantee the schema. Send \"strict\": false (best effort: the schema is given to the model and the reply is checked) or use tools.",
+          "param": "response_format.json_schema.strict",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-text-format": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "response_format": {
+            "type": "text"
+          },
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-tools": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0,
+          "tools": [
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "first_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            },
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "second_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "message": {
+              "content": "",
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "function": {
+                    "arguments": "{\"value\":1}",
+                    "name": "first_tool"
+                  },
+                  "id": "call_synthetic_0",
+                  "type": "function"
+                },
+                {
+                  "function": {
+                    "arguments": "{\"value\":1}",
+                    "name": "second_tool"
+                  },
+                  "id": "call_synthetic_1",
+                  "type": "function"
+                }
+              ]
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 2,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 2,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 10
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-tools-no-parallel": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "parallel_tool_calls": false,
+          "temperature": 0,
+          "tools": [
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "first_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            },
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "second_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "message": {
+              "content": "",
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "function": {
+                    "arguments": "{\"value\":1}",
+                    "name": "first_tool"
+                  },
+                  "id": "call_synthetic_0",
+                  "type": "function"
+                }
+              ]
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 1,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 1,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 9
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-tools-none": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0,
+          "tool_choice": "none",
+          "tools": [
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "first_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            },
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "second_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-tools-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "temperature": 0,
+          "tools": [
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "first_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            },
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "second_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "tool_calls": [
+                  {
+                    "function": {
+                      "arguments": "",
+                      "name": "first_tool"
+                    },
+                    "id": "call_synthetic_0",
+                    "index": 0,
+                    "type": "function"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "tool_calls": [
+                  {
+                    "function": {
+                      "arguments": "{\"value\":"
+                    },
+                    "index": 0
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "tool_calls": [
+                  {
+                    "function": {
+                      "arguments": "1}"
+                    },
+                    "index": 0
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "tool_calls": [
+                  {
+                    "function": {
+                      "arguments": "",
+                      "name": "second_tool"
+                    },
+                    "id": "call_synthetic_1",
+                    "index": 1,
+                    "type": "function"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "tool_calls": [
+                  {
+                    "function": {
+                      "arguments": "{\"value\":"
+                    },
+                    "index": 1
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "tool_calls": [
+                  {
+                    "function": {
+                      "arguments": "1}"
+                    },
+                    "index": 1
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "tool_calls",
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 2,
+            "prompt_n": 6
+          },
+          "usage": {
+            "completion_tokens": 2,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 8,
+            "prompt_tokens_details": {
+              "cached_tokens": 2
+            },
+            "total_tokens": 10
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-trailing-slash": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "chat-without-model": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": null,
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "model": "ornith-35b-a3b-local",
+          "n_predict": 4,
+          "prompt": "Synthetic prompt.",
+          "temperature": 0
+        },
+        "path": "/completion"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "text": "Synthetic engine reply."
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "<generated:cmpl_24hex>",
+        "model": "ornith-35b-a3b-local",
+        "object": "text_completion",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-echo": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "model": "ornith-35b-a3b-local",
+          "n_predict": 4,
+          "prompt": "Synthetic prompt.",
+          "temperature": 0
+        },
+        "path": "/completion"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "text": "Synthetic prompt.Synthetic engine reply."
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "<generated:cmpl_24hex>",
+        "model": "ornith-35b-a3b-local",
+        "object": "text_completion",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-logprobs": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "model": "ornith-35b-a3b-local",
+          "n_predict": 4,
+          "n_probs": 2,
+          "prompt": "Synthetic prompt.",
+          "temperature": 0
+        },
+        "path": "/completion"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": {
+              "text_offset": [
+                0,
+                9,
+                16
+              ],
+              "token_logprobs": [
+                -0.5,
+                -0.5,
+                -0.5
+              ],
+              "tokens": [
+                "Synthetic",
+                " engine",
+                " reply."
+              ],
+              "top_logprobs": [
+                {
+                  "Synthetic": -0.5
+                },
+                {
+                  " engine": -0.5
+                },
+                {
+                  " reply.": -0.5
+                }
+              ]
+            },
+            "text": "Synthetic engine reply."
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "<generated:cmpl_24hex>",
+        "model": "ornith-35b-a3b-local",
+        "object": "text_completion",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-logprobs-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "model": "ornith-35b-a3b-local",
+          "n_predict": 4,
+          "n_probs": 2,
+          "prompt": "Synthetic prompt.",
+          "stream": true,
+          "temperature": 0
+        },
+        "path": "/completion"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": {
+                "text_offset": [
+                  0
+                ],
+                "token_logprobs": [
+                  -0.5
+                ],
+                "tokens": [
+                  "Synthetic"
+                ],
+                "top_logprobs": [
+                  {
+                    "Synthetic": -0.5
+                  }
+                ]
+              },
+              "text": "Synthetic"
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": {
+                "text_offset": [
+                  0
+                ],
+                "token_logprobs": [
+                  -0.5
+                ],
+                "tokens": [
+                  " engine"
+                ],
+                "top_logprobs": [
+                  {
+                    " engine": -0.5
+                  }
+                ]
+              },
+              "text": " engine"
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": {
+                "text_offset": [
+                  0
+                ],
+                "token_logprobs": [
+                  -0.5
+                ],
+                "tokens": [
+                  " reply."
+                ],
+                "top_logprobs": [
+                  {
+                    " reply.": -0.5
+                  }
+                ]
+              },
+              "text": " reply."
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "logprobs": null,
+              "text": ""
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-max-tokens": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "model": "ornith-35b-a3b-local",
+          "n_predict": 1,
+          "prompt": "Synthetic prompt.",
+          "temperature": 0
+        },
+        "path": "/completion"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "logprobs": null,
+            "text": "Synthetic"
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "<generated:cmpl_24hex>",
+        "model": "ornith-35b-a3b-local",
+        "object": "text_completion",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 1,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 1,
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 9
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-multiple-prompts": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "One prompt per request: send a string, or a list with one prompt.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-n": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "unsupported_value",
+          "message": "\"n\" > 1 is not supported: this local model server returns one choice per request. Send n=1 (or omit it) and repeat the request for more choices.",
+          "param": "n",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "model": "ornith-35b-a3b-local",
+          "n_predict": 4,
+          "prompt": "Synthetic prompt.",
+          "stream": true,
+          "temperature": 0
+        },
+        "path": "/completion"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null,
+              "text": "Synthetic"
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null,
+              "text": " engine"
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null,
+              "text": " reply."
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "logprobs": null,
+              "text": ""
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-stream-usage": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "model": "ornith-35b-a3b-local",
+          "n_predict": 4,
+          "prompt": "Synthetic prompt.",
+          "stream": true,
+          "temperature": 0
+        },
+        "path": "/completion"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null,
+              "text": "Synthetic"
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null,
+              "text": " engine"
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": null,
+              "index": 0,
+              "logprobs": null,
+              "text": " reply."
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "logprobs": null,
+              "text": ""
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion"
+        },
+        {
+          "choices": [],
+          "created": "<current:unix-seconds>",
+          "id": "<generated:cmpl_24hex>",
+          "model": "ornith-35b-a3b-local",
+          "object": "text_completion",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          },
+          "usage": {
+            "completion_tokens": 3,
+            "prompt_tokens": 8,
+            "prompt_tokens_details": {
+              "cached_tokens": 2
+            },
+            "total_tokens": 11
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-suffix-refused": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "\"suffix\" (insert mode) is not supported by this model server.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "completion-token-prompt": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "model": "ornith-35b-a3b-local",
+          "n_predict": 4,
+          "prompt": [
+            1,
+            2
+          ],
+          "temperature": 0
+        },
+        "path": "/completion"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "text": "Synthetic engine reply."
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "<generated:cmpl_24hex>",
+        "model": "ornith-35b-a3b-local",
+        "object": "text_completion",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "model-before-load": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "context_length": 32768,
+        "created": 0,
+        "id": "ornith-35b-a3b-local",
+        "max_output_tokens": 4,
+        "name": "Ornith 1.5 35B A3B",
+        "object": "model",
+        "owned_by": "local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "models-before-load": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "data": [
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "local-default",
+            "max_output_tokens": 4,
+            "name": "Default: Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "ornith-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen3.6-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Qwen 3.6 35B MoE",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen-local",
+            "legacy": true,
+            "max_output_tokens": 4,
+            "name": "Selected local model (Local AI)",
+            "object": "model",
+            "owned_by": "local"
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "background": false,
+        "completed_at": "<current:unix-seconds>",
+        "created_at": "<current:unix-seconds>",
+        "error": null,
+        "id": "<generated:resp_0>",
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "metadata": {},
+        "model": "ornith-35b-a3b-local",
+        "object": "response",
+        "output": [
+          {
+            "content": [
+              {
+                "annotations": [],
+                "logprobs": [],
+                "text": "Synthetic engine reply.",
+                "type": "output_text"
+              }
+            ],
+            "id": "<generated:msg_0>",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "completed",
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 8,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          },
+          "output_tokens": 3,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-store-ignored": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "synthetic",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "background": false,
+        "completed_at": "<current:unix-seconds>",
+        "created_at": "<current:unix-seconds>",
+        "error": null,
+        "id": "<generated:resp_0>",
+        "incomplete_details": null,
+        "instructions": null,
+        "max_output_tokens": null,
+        "metadata": {},
+        "model": "ornith-35b-a3b-local",
+        "object": "response",
+        "output": [
+          {
+            "content": [
+              {
+                "annotations": [],
+                "logprobs": [],
+                "text": "Synthetic engine reply.",
+                "type": "output_text"
+              }
+            ],
+            "id": "<generated:msg_0>",
+            "role": "assistant",
+            "status": "completed",
+            "type": "message"
+          }
+        ],
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+          "effort": null,
+          "summary": null
+        },
+        "status": "completed",
+        "store": false,
+        "temperature": 0,
+        "text": {
+          "format": {
+            "type": "text"
+          }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": 1,
+        "truncation": "disabled",
+        "usage": {
+          "input_tokens": 8,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          },
+          "output_tokens": 3,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "responses-stream": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          },
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": [
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "in_progress",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": null
+            },
+            "sequence_number": 0,
+            "type": "response.created"
+          },
+          "event": "response.created"
+        },
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "in_progress",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": null
+            },
+            "sequence_number": 1,
+            "type": "response.in_progress"
+          },
+          "event": "response.in_progress"
+        },
+        {
+          "data": {
+            "item": {
+              "content": [],
+              "id": "<generated:msg_0>",
+              "role": "assistant",
+              "status": "in_progress",
+              "type": "message"
+            },
+            "output_index": 0,
+            "sequence_number": 2,
+            "type": "response.output_item.added"
+          },
+          "event": "response.output_item.added"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "item_id": "<generated:msg_0>",
+            "output_index": 0,
+            "part": {
+              "annotations": [],
+              "logprobs": [],
+              "text": "",
+              "type": "output_text"
+            },
+            "sequence_number": 3,
+            "type": "response.content_part.added"
+          },
+          "event": "response.content_part.added"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "delta": "Synthetic engine reply.",
+            "item_id": "<generated:msg_0>",
+            "logprobs": [],
+            "output_index": 0,
+            "sequence_number": 4,
+            "type": "response.output_text.delta"
+          },
+          "event": "response.output_text.delta"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "item_id": "<generated:msg_0>",
+            "logprobs": [],
+            "output_index": 0,
+            "sequence_number": 5,
+            "text": "Synthetic engine reply.",
+            "type": "response.output_text.done"
+          },
+          "event": "response.output_text.done"
+        },
+        {
+          "data": {
+            "content_index": 0,
+            "item_id": "<generated:msg_0>",
+            "output_index": 0,
+            "part": {
+              "annotations": [],
+              "logprobs": [],
+              "text": "Synthetic engine reply.",
+              "type": "output_text"
+            },
+            "sequence_number": 6,
+            "type": "response.content_part.done"
+          },
+          "event": "response.content_part.done"
+        },
+        {
+          "data": {
+            "item": {
+              "content": [
+                {
+                  "annotations": [],
+                  "logprobs": [],
+                  "text": "Synthetic engine reply.",
+                  "type": "output_text"
+                }
+              ],
+              "id": "<generated:msg_0>",
+              "role": "assistant",
+              "status": "completed",
+              "type": "message"
+            },
+            "output_index": 0,
+            "sequence_number": 7,
+            "type": "response.output_item.done"
+          },
+          "event": "response.output_item.done"
+        },
+        {
+          "data": {
+            "response": {
+              "background": false,
+              "completed_at": "<current:unix-seconds>",
+              "created_at": "<current:unix-seconds>",
+              "error": null,
+              "id": "<generated:resp_0>",
+              "incomplete_details": null,
+              "instructions": null,
+              "max_output_tokens": null,
+              "metadata": {},
+              "model": "ornith-35b-a3b-local",
+              "object": "response",
+              "output": [
+                {
+                  "content": [
+                    {
+                      "annotations": [],
+                      "logprobs": [],
+                      "text": "Synthetic engine reply.",
+                      "type": "output_text"
+                    }
+                  ],
+                  "id": "<generated:msg_0>",
+                  "role": "assistant",
+                  "status": "completed",
+                  "type": "message"
+                }
+              ],
+              "parallel_tool_calls": true,
+              "previous_response_id": null,
+              "reasoning": {
+                "effort": null,
+                "summary": null
+              },
+              "status": "completed",
+              "store": false,
+              "temperature": 0,
+              "text": {
+                "format": {
+                  "type": "text"
+                }
+              },
+              "tool_choice": "auto",
+              "tools": [],
+              "top_p": 1,
+              "truncation": "disabled",
+              "usage": {
+                "input_tokens": 8,
+                "input_tokens_details": {
+                  "cached_tokens": 2
+                },
+                "output_tokens": 3,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 11
+              }
+            },
+            "sequence_number": 8,
+            "type": "response.completed"
+          },
+          "event": "response.completed"
+        }
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "unknown-chat-model": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "unknown-model": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "unknown-route": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "unknown_url",
+          "message": "Invalid URL (GET /v1/not-a-route): this local model server does not provide it.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "unsupported-embeddings": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "unsupported_endpoint",
+          "message": "This local model server does not provide embeddings (/v1/embeddings).",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  }
+}

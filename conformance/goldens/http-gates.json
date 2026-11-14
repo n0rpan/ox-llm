@@ -1,0 +1,386 @@
+{
+  "auth-api-key": {
+    "body": {
+      "data": [
+        {
+          "alias_of": "ornith-35b-a3b-local",
+          "context_length": 32768,
+          "created": 0,
+          "id": "local-default",
+          "max_output_tokens": 4,
+          "name": "Default: Ornith 1.5 35B A3B",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "context_length": 32768,
+          "created": 0,
+          "id": "ornith-35b-a3b-local",
+          "max_output_tokens": 4,
+          "name": "Ornith 1.5 35B A3B",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "context_length": 32768,
+          "created": 0,
+          "id": "qwen3.6-35b-a3b-local",
+          "max_output_tokens": 4,
+          "name": "Qwen 3.6 35B MoE",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "alias_of": "ornith-35b-a3b-local",
+          "context_length": 32768,
+          "created": 0,
+          "id": "qwen-local",
+          "legacy": true,
+          "max_output_tokens": 4,
+          "name": "Selected local model (Local AI)",
+          "object": "model",
+          "owned_by": "local"
+        }
+      ],
+      "object": "list"
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "auth-bearer": {
+    "body": {
+      "data": [
+        {
+          "alias_of": "ornith-35b-a3b-local",
+          "context_length": 32768,
+          "created": 0,
+          "id": "local-default",
+          "max_output_tokens": 4,
+          "name": "Default: Ornith 1.5 35B A3B",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "context_length": 32768,
+          "created": 0,
+          "id": "ornith-35b-a3b-local",
+          "max_output_tokens": 4,
+          "name": "Ornith 1.5 35B A3B",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "context_length": 32768,
+          "created": 0,
+          "id": "qwen3.6-35b-a3b-local",
+          "max_output_tokens": 4,
+          "name": "Qwen 3.6 35B MoE",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "alias_of": "ornith-35b-a3b-local",
+          "context_length": 32768,
+          "created": 0,
+          "id": "qwen-local",
+          "legacy": true,
+          "max_output_tokens": 4,
+          "name": "Selected local model (Local AI)",
+          "object": "model",
+          "owned_by": "local"
+        }
+      ],
+      "object": "list"
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "auth-missing": {
+    "body": {
+      "error": {
+        "code": "invalid_api_key",
+        "message": "Missing or wrong API key. Send \"Authorization: Bearer <key>\".",
+        "param": null,
+        "type": "authentication_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 401,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "auth-wrong": {
+    "body": {
+      "error": {
+        "code": "invalid_api_key",
+        "message": "Missing or wrong API key. Send \"Authorization: Bearer <key>\".",
+        "param": null,
+        "type": "authentication_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 401,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "auth-x-api-key": {
+    "body": {
+      "data": [
+        {
+          "alias_of": "ornith-35b-a3b-local",
+          "context_length": 32768,
+          "created": 0,
+          "id": "local-default",
+          "max_output_tokens": 4,
+          "name": "Default: Ornith 1.5 35B A3B",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "context_length": 32768,
+          "created": 0,
+          "id": "ornith-35b-a3b-local",
+          "max_output_tokens": 4,
+          "name": "Ornith 1.5 35B A3B",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "context_length": 32768,
+          "created": 0,
+          "id": "qwen3.6-35b-a3b-local",
+          "max_output_tokens": 4,
+          "name": "Qwen 3.6 35B MoE",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "alias_of": "ornith-35b-a3b-local",
+          "context_length": 32768,
+          "created": 0,
+          "id": "qwen-local",
+          "legacy": true,
+          "max_output_tokens": 4,
+          "name": "Selected local model (Local AI)",
+          "object": "model",
+          "owned_by": "local"
+        }
+      ],
+      "object": "list"
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "chunked-refused": {
+    "body": {
+      "error": {
+        "code": "length_required",
+        "message": "Use a content length for request bodies.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 411,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "cors-allowed": {
+    "access-control-allow-origin": "https://example.invalid",
+    "body": {
+      "data": [
+        {
+          "alias_of": "ornith-35b-a3b-local",
+          "context_length": 32768,
+          "created": 0,
+          "id": "local-default",
+          "max_output_tokens": 4,
+          "name": "Default: Ornith 1.5 35B A3B",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "context_length": 32768,
+          "created": 0,
+          "id": "ornith-35b-a3b-local",
+          "max_output_tokens": 4,
+          "name": "Ornith 1.5 35B A3B",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "context_length": 32768,
+          "created": 0,
+          "id": "qwen3.6-35b-a3b-local",
+          "max_output_tokens": 4,
+          "name": "Qwen 3.6 35B MoE",
+          "object": "model",
+          "owned_by": "local"
+        },
+        {
+          "alias_of": "ornith-35b-a3b-local",
+          "context_length": 32768,
+          "created": 0,
+          "id": "qwen-local",
+          "legacy": true,
+          "max_output_tokens": 4,
+          "name": "Selected local model (Local AI)",
+          "object": "model",
+          "owned_by": "local"
+        }
+      ],
+      "object": "list"
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "vary": "Origin",
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "cors-preflight-missing-request-id": {
+    "access-control-allow-headers": "authorization, content-type",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "https://example.invalid",
+    "access-control-allow-private-network": "true",
+    "access-control-max-age": "600",
+    "body": null,
+    "content-type": null,
+    "status": 204,
+    "vary": "Origin",
+    "x-request-id": null
+  },
+  "head-models": {
+    "body": null,
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "host-refused": {
+    "body": {
+      "error": {
+        "code": "forbidden",
+        "message": "Host not allowed: use 127.0.0.1, localhost or [::1] with this port.",
+        "param": null,
+        "type": "permission_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 403,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "invalid-gzip": {
+    "body": {
+      "error": {
+        "code": "invalid_request",
+        "message": "Invalid model request.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 400,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "invalid-length": {
+    "body": {
+      "error": {
+        "code": "invalid_request",
+        "message": "Invalid content length.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 400,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "negative-length": {
+    "body": {
+      "error": {
+        "code": "request_too_large",
+        "message": "Request is too large.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 413,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "origin-refused": {
+    "body": {
+      "error": {
+        "code": "forbidden",
+        "message": "Cross-origin local AI request refused.",
+        "param": null,
+        "type": "permission_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 403,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "oversize-length": {
+    "body": {
+      "error": {
+        "code": "request_too_large",
+        "message": "Request is too large.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 413,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "percent-route-refused": {
+    "body": {
+      "error": {
+        "code": "unknown_url",
+        "message": "Invalid URL (POST /v1/%63hat/completions): this local model server does not provide it.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 404,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "valid-gzip": {
+    "body": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "content": "Synthetic engine reply.",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": 1,
+      "id": "chatcmpl-synthetic",
+      "model": "ornith-35b-a3b-local",
+      "object": "chat.completion",
+      "system_fingerprint": "synthetic",
+      "timings": {
+        "cache_n": 2,
+        "predicted_n": 3,
+        "prompt_n": 6
+      },
+      "usage": {
+        "completion_tokens": 3,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 8,
+        "prompt_tokens_details": {
+          "cached_tokens": 2
+        },
+        "total_tokens": 11
+      }
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  }
+}
