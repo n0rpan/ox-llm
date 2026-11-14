@@ -152,6 +152,8 @@ fn argv_golden_per_writable_net() {
             "--bind",
             "/w",
             "/w",
+            "--remount-ro",
+            "/h",
             "--chdir",
             "/w",
             "--clearenv",
@@ -200,6 +202,8 @@ fn argv_golden_per_writable_net() {
             "--bind",
             "/w",
             "/w",
+            "--remount-ro",
+            "/h",
             "--chdir",
             "/w",
             "--clearenv",
@@ -247,6 +251,8 @@ fn argv_golden_per_writable_net() {
             "--ro-bind",
             "/w",
             "/w",
+            "--remount-ro",
+            "/h",
             "--chdir",
             "/w",
             "--clearenv",
@@ -295,6 +301,8 @@ fn argv_golden_per_writable_net() {
             "--ro-bind",
             "/w",
             "/w",
+            "--remount-ro",
+            "/h",
             "--chdir",
             "/w",
             "--clearenv",
@@ -605,6 +613,45 @@ fn bash_tool_exit_code_and_timeout_lines() {
     let out = run(serde_json::json!({ "command": "true" }));
     assert_eq!(out.text, "(no output)");
 
+    let notice = sb.persistence_notice().unwrap();
+    for command in ["echo TMPDIR", "echo /tmp"] {
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.ends_with(notice), "{}", out.text);
+    }
+    for error in [
+        "Read-only file system",
+        "Permission denied",
+        "Operation not permitted",
+    ] {
+        let command = format!("echo '{error}' >&2; exit 1");
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(out.is_error);
+        assert!(out.text.contains(notice), "{}", out.text);
+        let command = format!("echo '{error}'");
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(!out.text.contains(notice), "successful output is not an error");
+    }
+    let out = run(serde_json::json!({ "command": "echo tmpdir /TMP" }));
+    assert_eq!(out.text, "tmpdir /TMP\n");
+
+    // Scratch succeeds, but the model sees its lifetime; streaming process bytes stay raw.
+    let mut live = String::new();
+    let out = tool.run(
+        &serde_json::json!({ "command": "echo scratch > /tmp/oxa-98-tool; cat /tmp/oxa-98-tool" }),
+        &cx,
+        &mut |chunk| live.push_str(chunk),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(live, "scratch\n");
+    assert!(out.text.contains("discarded after each command"));
+    let out = run(serde_json::json!({ "command": "test ! -e /tmp/oxa-98-tool" }));
+    assert!(!out.is_error, "{}", out.text);
+    let out = run(serde_json::json!({ "command": "echo lost > ~/oxa-98-tool" }));
+    assert!(out.is_error, "{}", out.text);
+    assert!(out.text.contains("Read-only file system"));
+    assert!(out.text.contains(notice));
+
     // Two runs of a timeout give identical bytes: no timing text (W4).
     let a = run(serde_json::json!({ "command": "echo a; sleep 30", "timeout": 1 }));
     let b = run(serde_json::json!({ "command": "echo a; sleep 30", "timeout": 1 }));
@@ -647,4 +694,37 @@ fn user_bash_runs_in_cwd_without_sandbox() {
     let work = env.work().canonicalize().expect("work dir");
     assert!(text.contains(&*work.to_string_lossy()), "{text}");
     assert!(text.contains("marked"), "{text}");
+}
+
+/// Issue #98: the hidden home must not accept writes that silently disappear.
+#[test]
+fn hidden_home_writes_fail_but_tmp_is_scratch() {
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let home = sb.run(
+        &spec("touch ~/probe", &env.work(), true, false),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    assert_ne!(home.exit, Some(0), "hidden home writes must fail, not disappear");
+    assert!(String::from_utf8_lossy(&home.output).contains("Read-only file system"));
+    assert!(!env.home().join("probe").exists());
+
+    let scratch = sb.run(
+        &spec(
+            "touch /tmp/oxa-98-scratch; test -f /tmp/oxa-98-scratch",
+            &env.work(),
+            true,
+            false,
+        ),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    assert_eq!(scratch.exit, Some(0));
+    let next = sb.run(
+        &spec("test ! -e /tmp/oxa-98-scratch", &env.work(), true, false),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    assert_eq!(next.exit, Some(0), "scratch must not persist between calls");
 }

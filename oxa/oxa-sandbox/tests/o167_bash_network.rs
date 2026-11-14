@@ -81,6 +81,8 @@ fn expected(home: &Path, cwd: &Path, writable: bool, net: bool) -> Vec<String> {
         if writable { "--bind" } else { "--ro-bind" },
         &cwd,
         &cwd,
+        "--remount-ro",
+        &home,
         "--chdir",
         &cwd,
         "--clearenv",

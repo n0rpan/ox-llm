@@ -40,6 +40,9 @@ impl NetSandbox {
 }
 
 impl Sandbox for NetSandbox {
+    fn persistence_notice(&self) -> Option<&str> {
+        self.inner.persistence_notice()
+    }
     fn check(&self) -> Result<(), OxaError> {
         self.inner.check()
     }

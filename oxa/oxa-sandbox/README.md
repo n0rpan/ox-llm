@@ -18,7 +18,8 @@ masks are sorted by path.
 | What | Inside the sandbox | Why |
 |---|---|---|
 | `/` | read-only | the system toolchains (`/usr/bin/cargo`, `python3`, ...) |
-| `$HOME` | empty tmpfs | nothing of the home is visible unless listed below |
+| `$HOME` | empty read-only tmpfs | nothing of the home is visible unless listed below; writes outside the exposed binds fail with `Read-only file system` (or a missing-path error) rather than silently disappearing |
+| `/tmp` | writable private tmpfs, discarded after each command | scratch for cargo, git and compilers; not a place to save deliverables, even when the command succeeds. Use the workspace for persistent output. Startup and tool guidance explain this limit; bash results append a short reminder only when the command mentions `/tmp` or `TMPDIR` (case sensitive), or fails with a read-only/permission error. Commands' raw output (including hook protocols) stays unchanged. |
 | `PATH` | the user's own, filtered to absolute directories that exist (order kept), plus `/usr/local/bin:/usr/bin:/bin` when missing | `uv`, `mise` shims, `~/.cargo/bin` tools resolve as in the user's shell |
 | `PATH` entries under `$HOME` | read-only | the tools on the user's `PATH` run |
 | `~/.cargo/bin`, `~/.cargo/config.toml`, `~/.cargo/config`, `~/.rustup` | read-only | rustup proxies, toolchains, cargo config |

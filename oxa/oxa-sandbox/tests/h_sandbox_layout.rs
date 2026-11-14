@@ -102,6 +102,8 @@ const HEAD: &[&str] = &[
 
 fn tail(cwd: &str, path: &str) -> Vec<String> {
     strs(&[
+        "--remount-ro",
+        "<root>/home",
         "--chdir",
         cwd,
         "--clearenv",

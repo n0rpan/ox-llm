@@ -581,6 +581,7 @@ fn prepare(
         Ok(mut b) => {
             b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
             let b = b.with_git_dirs(cwd);
+            notices.push((Level::Warning, oxa_sandbox::PERSISTENCE_NOTICE.to_string()));
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)
         }

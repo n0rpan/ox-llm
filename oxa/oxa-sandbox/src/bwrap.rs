@@ -219,6 +219,9 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
             push(&mut a, &["--ro-bind", "/dev/null", &ps]);
         }
     }
+    // Mount points below the hidden home must be created before sealing its root.
+    // Child workspace/cache binds remain writable; unbound home writes now fail with EROFS.
+    push(&mut a, &["--remount-ro", &home_c.to_string_lossy()]);
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
     push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
     push(&mut a, &["--setenv", "HOME", &home_s]);
