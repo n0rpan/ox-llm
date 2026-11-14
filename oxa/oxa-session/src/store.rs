@@ -177,9 +177,15 @@ impl SessionStore for FsStore {
     fn acquire(&self, s: &SessionRef) -> Result<(), OxaError> {
         check_safe(&s.path)?;
         let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
-        if held.as_ref().is_some_and(|l| l.session() == s.path) {
+        let staged = self.staged.lock().unwrap_or_else(|p| p.into_inner());
+        if [held.as_ref(), staged.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|l| l.session() == s.path)
+        {
             return Ok(());
         }
+        drop(staged);
         // The new lock is only staged: the held one stays until `commit_lock`.
         let new = crate::SessionLock::acquire(&s.path)?;
         *self.staged.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);
