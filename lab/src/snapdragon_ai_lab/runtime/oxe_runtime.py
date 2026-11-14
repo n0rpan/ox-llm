@@ -85,6 +85,8 @@ def _validate(config):
         if '{' in arg or '}' in arg:
             if arg not in ('{model}', '{context}', '{threads}', '{alias}'):
                 raise ValueError('oxe_unknown_argument_placeholder')
+    if 'engine_features' in config:
+        profile_policy.experimental_engine_args(config['engine_features'], args)
     if is_flash(config):
         _validate_flash(config)
 
@@ -492,7 +494,8 @@ def command(config, port):
     values = {'{model}': config['model_path'], '{context}': str(config['context_size']),
               '{threads}': str(config['threads']), '{alias}': config['model_alias']}
     args = conversation_store_args(config, [values.get(arg, arg) for arg in config['oxe_args']])
-    tail = [*flash_prefix_args(config), *state_cache_args(config)]
+    tail = [*flash_prefix_args(config), *state_cache_args(config),
+            *profile_policy.experimental_engine_args(config.get('engine_features', {}), config['oxe_args'])]
     if state_cache.override(config) is not None:
         # a reviewed override root (gates): the stores this launch writes exist, 0700
         every = args + tail

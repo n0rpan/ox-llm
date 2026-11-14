@@ -22,3 +22,29 @@ or `engine llama.cpp (classic fallback: ...)` with the reason), and `/_local/sta
 
 Defaults when the unit sets no path: `LOCAL_LLM_CONFIG` is `$XDG_CONFIG_HOME/local-ai/llm/runtime.json`
 and `LOCAL_AI_LEASE` is `$XDG_STATE_HOME/local-ai/inference.lock`.
+
+## Opt-in engine experiments
+
+An existing `rust_engine.oxe` or `rust_engine.oxe_flash` block may contain an
+`experimental` object. The historical `memlat_overrides.oxe` / `.oxe_flash`
+locations accept the same object. Keep the block's existing binary identity,
+model, admission and qualification fields unchanged.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `fair_quantum_ms` | unset, engine off | integer 0–600000; 0 disables fair time-slicing; a positive value becomes `--fair-quantum-ms` |
+| `mtp_guard` | unset, engine off | `"off"`, `"0"`, or `"RATIO[:WINDOW[:COOLDOWN]]"`, passed to `--mtp-guard` |
+
+For an explicitly chosen experiment, merge an object such as
+`"experimental": {"fair_quantum_ms": 25, "mtp_guard": "0.6"}` into the existing
+engine block. These are example measurement settings, not new defaults.
+Use the guard with an existing speculative-drafting configuration. An MTP ratio must be finite and in (0, 1]; window is at least 1 and cooldown is
+non-negative. Omitted window/cooldown values use the engine's existing defaults
+(256/512). The controller checks the native f32 ratio and 64-bit counter bounds.
+
+Unset settings append no flags and preserve the existing command. Explicit 0/off
+values append disabling flags. A structured setting cannot also name the same
+flag in raw `oxe_args`; choose one configuration path. Both features remain
+implemented in the engine and off by default. Hardware speed, memory and long-run
+qualification remain maintainer measurements; this config plumbing establishes
+no performance claim.

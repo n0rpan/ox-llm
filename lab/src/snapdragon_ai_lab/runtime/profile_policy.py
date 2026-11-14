@@ -1,6 +1,8 @@
 """Read-only MEMLAT detection and explicit, per-profile execution overrides."""
 import copy
 import hashlib
+import math
+import struct
 import os
 from pathlib import Path
 import re
@@ -27,7 +29,7 @@ SWITCH_OFF_VALUES = ('0', 'off', 'false', 'no')
 # applies whenever its switch is on, so a clean install runs the Rust engine or fails loudly.
 RUST_ENGINE_KEY = 'rust_engine'
 RUST_KEYS = ('oxe', 'oxe_flash')
-OXE_KEYS = {'server_binary', 'server_sha256', 'oxe_args', 'threads', 'context_size', 'environment', 'validation', 'rss_proof'}
+OXE_KEYS = {'server_binary', 'server_sha256', 'oxe_args', 'threads', 'context_size', 'environment', 'validation', 'rss_proof', 'experimental'}
 OXE_REQUIRED = {'server_binary', 'server_sha256', 'oxe_args'}
 OXE_MODEL_SHA_ENV = 'OXE_MODEL_SHA256'
 # Separate MEMLAT-only switch for the Rust Flash engine; independent of LOCAL_AI_ENABLE_OXE.
@@ -36,7 +38,7 @@ FLASH_KIND = 'bigmoe-cpu-stream'
 OXE_FLASH_KEYS = {'server_binary', 'server_sha256', 'oxe_args', 'threads', 'environment', 'validation',
                   'cache_gib', 'sidecar_path', 'sidecar_bytes', 'admission', 'idle_unload_seconds', 'fallback',
                   'session_reserve_bytes', 'idle_qos', 'cache_pref', 'desktop_floor_gib',
-                  'swap_tolerant_guard', 'prefix_store'}
+                  'swap_tolerant_guard', 'prefix_store', 'experimental'}
 OXE_FLASH_REQUIRED = {'server_binary', 'server_sha256', 'oxe_args', 'cache_gib', 'sidecar_path', 'sidecar_bytes', 'admission'}
 FLASH_DENSE_LOWER_BOUND = 4522949120
 # Absolute bound; the 28 GiB limit without a flash_memory policy is enforced at launch (oxe_runtime).
@@ -213,6 +215,51 @@ def memlat_available(root=Path('/sys/class/devfreq')):
     return found == {'ddr', 'llcc'}
 
 
+def experimental_engine_args(value, args):
+    """Explicit opt-in flags for existing engine policies; no configured value means off.
+
+    Bounds and MTP syntax match the native CLI (u32 quantum capped at 600000, f32
+    acceptance ratio, and 64-bit usize counters). Native window/cooldown defaults stay native.
+    """
+    if not isinstance(value, dict) or set(value) - {'fair_quantum_ms', 'mtp_guard'}:
+        raise ValueError('experimental_engine_features_invalid')
+    out = []
+    for key, flag in (('fair_quantum_ms', '--fair-quantum-ms'), ('mtp_guard', '--mtp-guard')):
+        if key not in value:
+            continue
+        if any(arg.split('=', 1)[0] == flag for arg in args):
+            raise ValueError('experimental_engine_flag_conflicts_with_raw_args')
+        setting = value[key]
+        if key == 'fair_quantum_ms':
+            if type(setting) is not int or not 0 <= setting <= 600_000:
+                raise ValueError('experimental_fair_quantum_ms_invalid')
+            out.extend((flag, str(setting)))
+            continue
+        if not isinstance(setting, str) or any(ord(char) < 32 for char in setting):
+            raise ValueError('experimental_mtp_guard_invalid')
+        text = setting.strip()
+        if text in ('', 'off', '0'):
+            out.extend((flag, 'off'))
+            continue
+        parts = [part.strip() for part in text.split(':')]
+        if len(parts) > 3 or not re.fullmatch(r'[+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?', parts[0]):
+            raise ValueError('experimental_mtp_guard_invalid')
+        try:
+            ratio = struct.unpack('f', struct.pack('f', float(parts[0])))[0]
+            if not math.isfinite(ratio) or not 0 < ratio <= 1:
+                raise ValueError()
+            for index, part in enumerate(parts[1:], 1):
+                if not re.fullmatch(r'[+]?[0-9]+', part):
+                    raise ValueError()
+                number = int(part)
+                if not (1 if index == 1 else 0) <= number <= 2**64 - 1:
+                    raise ValueError()
+        except (ValueError, OverflowError):
+            raise ValueError('experimental_mtp_guard_invalid') from None
+        out.extend((flag, text))
+    return out
+
+
 def _validate_oxe_flash(value):
     if not isinstance(value, dict) or set(value) - OXE_FLASH_KEYS or not OXE_FLASH_REQUIRED <= set(value):
         raise ValueError('memlat_oxe_flash_override_requires_binary_sha256_args_cache_and_admission')
@@ -228,6 +275,8 @@ def _validate_oxe_flash(value):
     args = value['oxe_args']
     if not isinstance(args, list) or not args or not all(isinstance(a, str) and not any(c in a for c in '\n\r\0') for a in args):
         raise ValueError('memlat_oxe_args_must_be_strings')
+    if 'experimental' in value:
+        experimental_engine_args(value['experimental'], args)
     if 'threads' in value and (type(value['threads']) is not int or not 1 <= value['threads'] <= 12):
         raise ValueError('invalid_memlat_integer')
     environment = value.get('environment', {})
@@ -327,6 +376,9 @@ def _apply_oxe_flash(result, flash):
     for key in ENGINE_KEYS:
         result[key] = flash[key]
     result['oxe_args'] = copy.deepcopy(flash['oxe_args'])
+    result.pop('engine_features', None)
+    if 'experimental' in flash:
+        result['engine_features'] = copy.deepcopy(flash['experimental'])
     result['extra_args'] = []
     result['threads'] = flash.get('threads', 8)
     environment = copy.deepcopy(flash.get('environment', {}))
@@ -367,6 +419,8 @@ def _validate_oxe(value):
     args = value['oxe_args']
     if not isinstance(args, list) or not args or not all(isinstance(a, str) and not any(c in a for c in '\n\r\0') for a in args):
         raise ValueError('memlat_oxe_args_must_be_strings')
+    if 'experimental' in value:
+        experimental_engine_args(value['experimental'], args)
     if 'threads' in value and (type(value['threads']) is not int or not 1 <= value['threads'] <= 12):
         raise ValueError('invalid_memlat_integer')
     if 'rss_proof' in value:
@@ -394,6 +448,9 @@ def _apply_oxe(result, oxe):
     for key in ENGINE_KEYS:
         result[key] = oxe[key]
     result['oxe_args'] = copy.deepcopy(oxe['oxe_args'])
+    result.pop('engine_features', None)
+    if 'experimental' in oxe:
+        result['engine_features'] = copy.deepcopy(oxe['experimental'])
     # Classic llama.cpp flags and GGML_/LLAMA_ environment never reach Rust.
     result['extra_args'] = []
     if 'threads' in oxe:
