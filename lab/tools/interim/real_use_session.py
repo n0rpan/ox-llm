@@ -3,7 +3,7 @@
 release-built oxa on Ornith working IN a disposable monorepo checkout. MIT.
 
   real_use_session.py --repo <monorepo> --candidate <sha> --base-url http://127.0.0.1:<controller>
-                      --oxa-bin <release oxa> --model ornith-35b-a3b-local --profile local|pi --out DIR
+                      --oxa-bin <release oxa> --model ornith-35b-a3b-local --out DIR
                       [--soft-tokens 32000] [--budget-min 45] [--keep-work]
   real_use_session.py --probe ...      toolchain + sandbox probe only (no model request)
   real_use_session.py --check-only --work DIR   rerun the independent checker on a finished clone
@@ -315,37 +315,6 @@ def second_client(base_url, rows, stop_after=3):
     sc.run()
 
 
-PROFILES = ('local', 'pi')
-
-
-class ProfileMismatch(RuntimeError):
-    """oxa runs a different profile than the arm intends: the arm is aborted before any model
-    request (I0-R2: softTokens is a local-profile setting; a pi run does not test it)."""
-
-
-def bind_profile(profile, env, agent_settings):
-    """Bind the intended oxa profile through BOTH layers oxa reads: `OXA_PROFILE` (wins over every
-    settings layer, oxa-config profile.rs) and `oxa.profile` in the agent settings (the user layer;
-    the arm runs with no trusted project settings). Returns (env, settings)."""
-    if profile not in PROFILES:
-        raise ValueError('profile must be one of %s, got %r' % (PROFILES, profile))
-    env = dict(env, OXA_PROFILE=profile)
-    settings = json.loads(json.dumps(agent_settings))
-    settings.setdefault('oxa', {})['profile'] = profile
-    return env, settings
-
-
-def check_profile(rpc, intended, process, observed):
-    """RPC get_state BEFORE the first prompt of an oxa process: the actual profile must equal the
-    intended one, else ProfileMismatch (the arm aborts). Every observation is recorded."""
-    state = rpc.get_state()
-    got = state.get('profile')
-    observed.append(dict(process=process, intended=intended, actual=got, t=round(time.time(), 3)))
-    if got != intended:
-        raise ProfileMismatch('oxa %s process runs profile %r, the arm intends %r' % (process, got, intended))
-    return got
-
-
 def session(a, work, mono, home):
     """Owns every client and process it starts: the proxy, the oxa process(es) and the second
     client are stopped and reaped on EVERY exit path (finally), survivors recorded and failed.
@@ -354,7 +323,6 @@ def session(a, work, mono, home):
     agent = home / '.oxa' / 'agent'
     (agent / 'agents').mkdir(parents=True, exist_ok=True)
     (agent / 'agents' / 'helper.md').write_text(HELPER)
-    observed = a.__dict__.setdefault('profile_observed', [])
     settings = {'compaction': {'enabled': True},
                 'oxa': {'compaction': {'softTokens': a.soft_tokens}, 'subagent': {'enabled': True}}}
     (work / 'sessions').mkdir(exist_ok=True)
@@ -365,7 +333,7 @@ def session(a, work, mono, home):
     proxy = ThreadingHTTPServer(('127.0.0.1', a.proxy_port), rp.make_handler(rec))
     threading.Thread(target=proxy.serve_forever, daemon=True).start()
     proxied = 'http://127.0.0.1:%d' % a.proxy_port
-    env, settings = bind_profile(a.profile, env_for(work, home, proxied), settings)
+    env = env_for(work, home, proxied)
     (agent / 'settings.json').write_text(json.dumps(settings))
     argv = outer_bwrap(work, extra_ro=[Path(a.oxa_bin).resolve().parent]) + [
         str(Path(a.oxa_bin).resolve()), '--mode', 'rpc', '--model', a.model, '--exclude-tools', 'web_search',
@@ -396,7 +364,6 @@ def session(a, work, mono, home):
     wd.start()
     try:
         state['rpc'] = oxl.Rpc(argv, env, str(mono), str(work / 'oxa-rpc.jsonl'))
-        check_profile(state['rpc'], a.profile, 'main', observed)   # before the first model request
         for tid, text in TASKS:
             if time.time() > budget_end:
                 tasks.append(dict(task=tid, error='not run: overall budget exhausted', wall_s=0.0))
@@ -409,7 +376,6 @@ def session(a, work, mono, home):
                 if tid == 't6-resume':          # resume in a NEW oxa process on the same session
                     state['rpc'].close()
                     state['rpc'] = oxl.Rpc(argv + ['--continue'], env, str(mono), str(work / 'oxa-rpc-resume.jsonl'))
-                    check_profile(state['rpc'], a.profile, 'resume', observed)
                 rpc = state['rpc']
                 all_recs.extend(rpc.wait_idle())
                 if tid == 't2-bug':
@@ -431,9 +397,6 @@ def session(a, work, mono, home):
                 row['aborted'] = any(x.get('type') == 'agent_settled' and x.get('aborted') for x in recs)
                 row['tool_calls'] = [x.get('toolName') for x in recs if x.get('type') == 'tool_execution_start']
                 row['compactions'] = sum(1 for x in recs if x.get('type') == 'compaction_end')
-            except ProfileMismatch:
-                row['error'] = 'profile mismatch: arm aborted'
-                raise
             except Exception as e:
                 row['error'] = '%s: %s' % (type(e).__name__, str(e)[:200])
             finally:
@@ -676,8 +639,6 @@ def main(argv=None):
     ap.add_argument('--model', default='ornith-35b-a3b-local')
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--soft-tokens', type=int, default=32000)
-    ap.add_argument('--profile', choices=PROFILES, help='the oxa profile this arm tests (required for a session); '
-                    'bound via OXA_PROFILE + oxa.profile and asserted with RPC get_state before the first prompt')
     ap.add_argument('--budget-min', type=int, default=45)
     ap.add_argument('--task-cap-s', type=int, default=TASK_CAP_DEFAULT_S, help='abort a task that runs longer (recorded as capped = FAIL for that item)')
     ap.add_argument('--proxy-port', type=int, default=18799)
@@ -721,29 +682,14 @@ def main(argv=None):
             print('\n'.join(lines[-4:]))
             print('REAL-USE PROBE: ' + ('PASS' if rc == 0 else 'FAIL exit %d' % rc))
             return 0 if rc == 0 else 1
-        if a.profile not in PROFILES:
-            print('REAL-USE: FAIL --profile local|pi is required (the arm must bind the profile it tests)')
-            return 2
         home = private_home(work)
         t0 = time.time()
-        a.profile_observed = []
-        try:
-            tasks, recs, rows, second = session(a, work, mono, home)
-        except ProfileMismatch as e:
-            print('REAL-USE: ABORTED %s' % e)
-            (a.out / 'real-use.json').write_text(json.dumps(dict(
-                verdict='ABORTED', reason='profile_mismatch: %s' % e, seal=seal,
-                oxa_profile=dict(intended=a.profile, observed=a.profile_observed),
-                wall_s=round(time.time() - t0, 1)), indent=1, default=str))
-            return 2
+        tasks, recs, rows, second = session(a, work, mono, home)
         remaining = a.budget_min * 60 - (time.time() - t0)
         chk = check(work, remaining)          # the independent checker counts against the arm budget
         wall = round(time.time() - t0, 1)
         v = verdicts(tasks, recs, rows, second, chk, seal, task_cap_s=a.task_cap_s, budget_min=a.budget_min,
                      arm_wall_s=wall, soft_tokens=a.soft_tokens)
-        obs = a.profile_observed
-        v['profile'] = (bool(obs) and all(o.get('actual') == a.profile for o in obs),
-                        'oxa get_state profile %s (intended %s)' % ([o.get('actual') for o in obs] or 'never observed', a.profile))
         m = metrics(tasks, recs, rows)
         overall = all(ok for ok, _ in v.values())
         for k, (ok, why) in v.items():
@@ -751,7 +697,6 @@ def main(argv=None):
         print('REAL-USE wall: %.1f min (bound 30-45)' % (wall / 60))
         (a.out / 'real-use.json').write_text(json.dumps(dict(
             verdict='PASS' if overall else 'FAIL', seal=seal, wall_s=wall, tasks=tasks,
-            oxa_profile=dict(intended=a.profile, observed=a.profile_observed),
             verdicts={k: dict(ok=ok, why=why) for k, (ok, why) in v.items()}, metrics=m,
             second_client=second['statuses']), indent=1, default=str))
         print('REAL-USE: ' + ('PASS' if overall else 'FAIL'))

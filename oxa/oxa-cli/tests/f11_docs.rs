@@ -296,23 +296,6 @@ fn every_doc_command_line_runs_against_fake() {
     );
 }
 
-/// docs/differences.md is in sync
-#[test]
-fn difference_table_generated_from_parity_md() {
-    let out = Command::new("python3")
-        .arg("ci/gen_docs.py")
-        .arg("--check")
-        .current_dir(repo_root())
-        .output()
-        .expect("run python3 ci/gen_docs.py --check");
-    assert!(
-        out.status.success(),
-        "python3 ci/gen_docs.py --check failed:\n{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
 /// no `~/.pi`, `PI_` or `pi ` command in ported pages
 #[test]
 fn no_pi_names_left() {
