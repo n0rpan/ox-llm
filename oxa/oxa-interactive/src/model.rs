@@ -314,6 +314,12 @@ pub enum Reopen {
     Import(PathBuf),
 }
 
+/// Builds the next session for [`Reopen`]. The second argument carries the model and thinking
+/// level of the session being left (`Some` only for [`Reopen::New`], which keeps them; the
+/// other modes restore the target session's own, so the caller passes `None`).
+pub type ReopenFn =
+    Box<dyn FnMut(Reopen, Option<(String, ThinkingLevel)>) -> Result<Session, OxaError> + Send>;
+
 /// One request to the worker thread that owns the `Session`. Each maps to one
 /// `oxa_core::Session` call; the results come back as `AgentEvent`s and [`WorkerMsg`]s.
 pub enum SessionCmd {
@@ -604,8 +610,10 @@ pub struct InteractiveOpts {
     /// Capability overrides resolved by the CLI; `None` = detect from `env`.
     pub caps: Option<TermCaps>,
     /// Builds the next session for `/new`, `/resume`, fork, clone and import. Runs on the
-    /// worker thread after the previous session was dropped.
-    pub reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send>,
+    /// worker thread after the previous session was dropped. The second argument is the model
+    /// and thinking level of the session being left (only for [`Reopen::New`], which carries
+    /// them over; `None` for the other modes, which restore the target session's own).
+    pub reopen: ReopenFn,
     /// `-r` / `--resume`: open the session picker right after start (D-INT).
     pub open_picker: bool,
     /// Saves a `/trust` decision for the session's directory (D-INT; the CLI owns the trust

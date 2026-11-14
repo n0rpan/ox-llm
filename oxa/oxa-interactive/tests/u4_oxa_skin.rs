@@ -271,7 +271,7 @@ fn run_on(
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
         caps: Some(TermCaps::BASIC),
-        reopen: Box::new(move |how| {
+        reopen: Box::new(move |how, _carry| {
             let open = match how {
                 Reopen::New => Open::New,
                 Reopen::Resume(sref) => Open::Resume(sref),
