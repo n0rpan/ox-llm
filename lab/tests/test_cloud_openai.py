@@ -169,6 +169,25 @@ class OpenAI(CloudCase):
         self.assertEqual(self.upstream.requests, [])
         self.assertFalse(cloud._reserved)
 
+    def test_nullable_tool_strict_preserves_supported_contract(self):
+        mock = MockOpenAIResponses() if isinstance(self, Responses) else MockOpenRouter()
+        self.addCleanup(mock.close)
+        self.start(mock=mock, budget=10)
+        for options in ({}, {'strict': False}, {'strict': True}, {'strict': None}):
+            function = {'name': 'lookup', 'parameters': {'type': 'object', 'properties': {},
+                        'additionalProperties': False, 'required': []}, **options}
+            status, body = self.chat(tools=[{'type': 'function', 'function': function}])
+            self.assertEqual(status, 200, body)
+            if 'strict' in options:
+                sent = mock.requests[-1]['body']['tools'][0]
+                sent = sent.get('function', sent)
+                self.assertIs(sent['strict'], options['strict'])
+        for malformed in (3, 'false', []):
+            status, _ = self.chat(tools=[{'type': 'function', 'function': {
+                'name': 'lookup', 'strict': malformed}}])
+            self.assertEqual(status, 400)
+        self.assertEqual(len(mock.requests), 4)
+
     def test_default_url_capabilities_and_no_local_features(self):
         item = cloud.entry(REMOTE, models()[REMOTE])
         self.assertEqual(item['base_url'], 'https://api.openai.com/v1')
@@ -307,6 +326,7 @@ class OpenAI(CloudCase):
 
 
 class Responses(CloudCase):
+    test_nullable_tool_strict_preserves_supported_contract = OpenAI.test_nullable_tool_strict_preserves_supported_contract
     test_malformed_message_and_tool_shapes_are_typed_400 = OpenAI.test_malformed_message_and_tool_shapes_are_typed_400
 
     def setUp(self):

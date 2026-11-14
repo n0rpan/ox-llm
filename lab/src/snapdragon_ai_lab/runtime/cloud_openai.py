@@ -136,7 +136,7 @@ def validate(payload):
             function = tool.get('function')
             if (not isinstance(function, dict) or not isinstance(function.get('name'), str)
                     or not function['name'] or ('parameters' in function and not isinstance(function['parameters'], dict))
-                    or ('strict' in function and type(function['strict']) is not bool)):
+                    or (function.get('strict') is not None and type(function['strict']) is not bool)):
                 _invalid('tools')
     choice = payload.get('tool_choice')
     if choice is not None:
