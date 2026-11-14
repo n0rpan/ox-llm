@@ -390,6 +390,10 @@ impl Editor {
                 return Ignored;
             }
             self.refresh_suggestions(true);
+            // pi: a Tab with exactly one candidate applies it directly.
+            if self.suggest.as_ref().is_some_and(|s| s.items.len() == 1) {
+                self.accept_suggestion();
+            }
             return Changed;
         }
 

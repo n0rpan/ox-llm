@@ -535,3 +535,21 @@ fn prose_apostrophe_opens_no_list_in_the_editor() {
     t.type_str("@src/");
     assert!(t.e.autocomplete_open(), "@src/ opens the list");
 }
+
+/// Tab on a word with one candidate applies it (pi); `src/ma` alone opens no list.
+#[test]
+fn tab_with_one_candidate_applies_it() {
+    let env = oxa_fake::TestEnv::new();
+    env.write("work/src/main.rs", "");
+    env.write("work/src/lib.rs", "");
+    let work = env.work();
+    let p =
+        oxa_tui::CombinedProvider::new(vec![], oxa_tui::FileIndex::build(&work, 1000), &work, &env.home());
+    let mut t = Ed::new();
+    t.e.set_autocomplete(Some(Box::new(p)));
+    t.type_str("src/ma");
+    assert!(!t.e.autocomplete_open(), "a word with a slash is no trigger");
+    t.press("tab");
+    assert_eq!(t.text(), "src/main.rs");
+    assert!(!t.e.autocomplete_open());
+}
