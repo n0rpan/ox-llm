@@ -268,7 +268,10 @@ impl World {
             fullscreen,
             dirs: Dirs::under(self.env.root()),
             // Exact prompt-byte fixtures select note-free queues/RPC/replay.
-            settings: Settings::default().with_override("oxa.envNote", serde_json::json!(false)),
+            settings: Settings::from_values(
+                serde_json::json!({"oxa": {"envNote": false}}),
+                serde_json::json!({}),
+            ),
             keymap: Keymap::defaults(),
             store: self.store.clone(),
             hooks: Vec::new(),
@@ -319,7 +322,10 @@ fn deps_with(engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, root: &Path,
         policy: Box::new(AllowAll),
         sandbox: Arc::new(NoBash),
         // Exact prompt-byte fixtures select note-free queues/RPC/replay.
-        settings: Settings::default().with_override("oxa.envNote", serde_json::json!(false)),
+        settings: Settings::from_values(
+            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({}),
+        ),
         dirs: Dirs::under(root),
         cwd: work.to_path_buf(),
         selection: ToolSelection::default(),

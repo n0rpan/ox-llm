@@ -21,7 +21,10 @@ fn deps(env: &TestEnv, engine: Arc<ScriptedEngine>) -> Deps {
         policy: Box::new(oxa_perm::ModePolicy::new()),
         sandbox: Arc::new(oxa_sandbox::NoSandbox),
         // Exact prompt-byte fixtures select note-free queues/RPC/replay.
-        settings: Settings::default().with_override("oxa.envNote", serde_json::json!(false)),
+        settings: Settings::from_values(
+            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({}),
+        ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),
