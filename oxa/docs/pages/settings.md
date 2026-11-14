@@ -154,6 +154,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
+| `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is off under `pi` and on under `local` |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | let bash write to the working directory when oxa starts in the home directory or above it (a start in `/` makes the whole system writable); user settings only |
 | `oxa.sandbox.readPaths` | list | `[]` | extra read-only paths for bash; `~/` is expanded; user settings only |

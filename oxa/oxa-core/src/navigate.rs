@@ -298,7 +298,8 @@ pub fn fork_from(
 
 /// The text of a user message as pi's `extractUserMessageText` gives it (the wire content).
 fn user_text(wire: &WireMsg) -> String {
-    wire.content.clone().unwrap_or_default()
+    // The editor gets back what was typed, not the environment note oxa appended.
+    crate::envnote::strip_note(wire.content.as_deref().unwrap_or_default()).to_string()
 }
 
 /// `/clone`: the active branch copied into a new session (pi: a fork at the leaf, position `at`;

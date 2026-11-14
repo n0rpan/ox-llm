@@ -792,9 +792,10 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
         AgentEvent::MessageStart { message } => match message.msg.role {
             // The core announces a user message twice: its stored entry (with images) and
             // pi's `message_start` at the turn that sends it. One block.
-            Role::User if !user_block_pending(vm, message.msg.content.as_deref().unwrap_or_default()) => {
+            // Shown without the environment note oxa appended (`oxa_core::envnote`).
+            Role::User if !user_block_pending(vm, shown_user_text(&message.msg)) => {
                 vm.blocks.push(Block::User {
-                    text: message.msg.content.clone().unwrap_or_default(),
+                    text: shown_user_text(&message.msg).to_string(),
                     images: Vec::new(),
                 })
             }
@@ -1184,9 +1185,14 @@ fn user_block_pending(vm: &ViewModel, text: &str) -> bool {
     false
 }
 
+/// A user message's text as typed: without the environment note oxa appended.
+fn shown_user_text(msg: &oxa_proto::WireMsg) -> &str {
+    oxa_core::envnote::strip_note(msg.content.as_deref().unwrap_or_default())
+}
+
 fn user_block(text: &str, parts: &[Part]) -> Block {
     Block::User {
-        text: text.to_string(),
+        text: oxa_core::envnote::strip_note(text).to_string(),
         images: parts
             .iter()
             .filter_map(|p| match p {

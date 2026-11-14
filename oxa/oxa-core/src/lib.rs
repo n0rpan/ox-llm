@@ -33,6 +33,7 @@
 mod agent_loop;
 mod commands;
 mod compaction;
+pub mod envnote;
 mod epoch;
 mod exec;
 mod fire;

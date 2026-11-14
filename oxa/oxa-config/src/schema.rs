@@ -153,6 +153,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    // The per-prompt environment note (date, time, runtime facts): unset = off under `pi`, on
+    // under `local`.
+    key("oxa.envNote", Kind::Bool, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
