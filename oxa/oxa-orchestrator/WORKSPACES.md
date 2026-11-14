@@ -4,8 +4,9 @@ The library can give a trusted local RPC worker a private copy of explicitly
 selected UTF-8 text files. The source checkout is never mounted into the worker.
 The library and default-off `oxa orchestrate` command support explicit grants.
 Without `--source`/`--file`, the command still has no file inputs or tools. These
-copies are not Git worktrees. Git worktree lifecycle, human approval/apply and
-merge coordination remain future work.
+copies are not Git worktrees. [REVIEW.md](REVIEW.md) describes explicit proposal
+selection, conflict detection and approved candidate staging. Git worktree lifecycle,
+apply into an existing checkout and merge coordination remain future work.
 
 The CLI requires a source root and repeated `--file` paths; see [CLI.md](CLI.md).
 `--edit --permission-mode workspace` authorizes private edits, and repeated
@@ -57,7 +58,9 @@ scope before presenting a proposal as valid. `verify_current_base` checks the
 touched source paths for concurrent changes without writing anything. `overlaps`
 reports paths changed by both proposals; it does not attempt a merge. There is no
 apply operation, shell execution, automatic approval or merge in this module.
-Revalidate again at any future apply boundary: a prior check does not lock files.
+The separate review module can stage exactly approved contents in a new candidate
+directory. It never overwrites the source. Revalidate again at any future apply
+boundary: a prior check does not lock files.
 
 Bounds: 32 total eligible files, 256 KiB per file, 1 MiB snapshot/collected text,
 128 KiB serialized review, 128 output entries, 16 nested directory levels. Oversize

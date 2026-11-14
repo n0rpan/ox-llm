@@ -17,7 +17,10 @@ and worker identity. Unknown execution outcomes are not success.
 
 The default profile is **local inference with no tools**. An explicit
 workspace grant can instead enable approved private file copies and review
-proposals; see [WORKSPACES.md](WORKSPACES.md). An operator must register
+proposals; see [WORKSPACES.md](WORKSPACES.md). The inert
+`oxa orchestrate-review` command previews explicitly selected saved proposals and
+stages an exactly approved new candidate; see [REVIEW.md](REVIEW.md).
+An operator must register
 a verified local-only endpoint through `LocalInference`; the loopback address
 check alone does not prove that an oxc proxy cannot forward to the cloud. This
 API is a trusted operator boundary, not a declaration an agent may make about
@@ -171,6 +174,6 @@ single-child cleanup do not provide this supervisor's guarantees.
 
 Production TLS/remote routing, automatic stream resubscription, stronger
 inference-network isolation, hard provider request/spend
-limits, Git worktrees, review/apply and merge coordination, restart reconciliation,
+limits, Git worktrees, apply into an existing checkout and merge coordination, restart reconciliation,
 and richer interactive worker controls remain required. This working local profile is a
 foundation, not a claim that the full orchestration brief is complete.

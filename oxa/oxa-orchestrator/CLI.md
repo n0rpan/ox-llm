@@ -46,6 +46,8 @@ changed files, with hashes, before/after content and display diffs. Source files
 are never written. Multiple workers may propose overlapping changes; no merge or
 apply occurs. File capture errors happen before run state or inference starts.
 See [WORKSPACES.md](WORKSPACES.md) for exact bounds, validation and limitations.
+Use `oxa orchestrate-review` to inspect a saved report, explicitly select completed
+proposals and stage an exact approved candidate; see [REVIEW.md](REVIEW.md).
 
 Worker status appears on stderr as state changes. Stdout contains one final
 JSON report, including each outcome, task/result, usage and stop confirmation.
