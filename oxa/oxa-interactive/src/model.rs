@@ -176,6 +176,9 @@ pub struct StatusModel {
     pub git_branch: Option<String>,
     pub session_name: Option<String>,
     pub model: String,
+    /// Wave D D4b: where the model runs (`local` or `cloud · <provider>`), display only.
+    pub model_remote: bool,
+    pub model_provider: Option<&'static str>,
     pub thinking: Option<ThinkingLevel>,
     /// Why thinking is forced off for this model (W6), shown in the status line.
     pub thinking_note: Option<String>,

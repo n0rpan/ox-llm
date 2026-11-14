@@ -1317,6 +1317,8 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         git_branch: prev.git_branch.clone(),
         session_name: state.session_name.clone(),
         model: state.model.clone(),
+        model_remote: state.model_remote,
+        model_provider: state.model_provider,
         thinking: Some(state.thinking),
         thinking_note: prev.thinking_note.clone(),
         mode: Some(state.mode),

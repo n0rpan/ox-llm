@@ -57,6 +57,9 @@ pub struct State {
     pub session_file: Option<PathBuf>,
     pub session_name: Option<String>,
     pub model: String,
+    /// Wave D D4b: the model runs at a cloud provider through the controller; `None` = local.
+    pub model_remote: bool,
+    pub model_provider: Option<&'static str>,
     pub thinking: ThinkingLevel,
     pub mode: Mode,
     pub is_streaming: bool,
@@ -602,6 +605,8 @@ impl Session {
             session_file,
             session_name: session_name(st),
             model: st.model.clone(),
+            model_remote: st.info.caps.remote,
+            model_provider: st.info.caps.remote_provider,
             thinking: st.thinking,
             mode: st.mode,
             is_streaming: st.shared.busy.load(Ordering::SeqCst),

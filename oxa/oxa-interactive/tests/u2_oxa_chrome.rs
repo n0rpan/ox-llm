@@ -54,6 +54,8 @@ fn info() -> HeaderInfo {
         ],
         engine_url: "http://127.0.0.1:8090".to_string(),
         model: "qwen3-coder-30b".to_string(),
+        model_remote: false,
+        model_provider: None,
         profile: Some("local".to_string()),
     }
 }
@@ -752,6 +754,17 @@ fn splash_has_logo_and_part_of_suite_at_120() {
 }
 
 #[test]
+fn splash_shows_where_the_model_runs() {
+    let local = strip_ansi(&oxa_splash(&info(), "oxa", true, 120, &colour(), Skin::Oxa).join("\n"));
+    assert!(local.contains("local"), "local location: {local}");
+    let mut remote = info();
+    remote.model_remote = true;
+    remote.model_provider = Some("anthropic");
+    let cloud = strip_ansi(&oxa_splash(&remote, "oxa", true, 120, &colour(), Skin::Oxa).join("\n"));
+    assert!(cloud.contains("cloud · anthropic"), "cloud location: {cloud}");
+}
+
+#[test]
 fn splash_below_44_has_no_frame_and_no_logo() {
     let lines = oxa_splash(&info(), "oxa", true, 40, &colour(), Skin::Oxa);
     let text = strip_ansi(&lines.join("\n"));
@@ -1031,6 +1044,8 @@ fn never_panics_on_odd_content_and_fits_every_width() {
         resources: vec![(String::new(), vec![String::new()])],
         engine_url: "\n".to_string(),
         model: String::new(),
+        model_remote: false,
+        model_provider: None,
         profile: Some("\t".to_string()),
     };
     for width in 1..=300u16 {
