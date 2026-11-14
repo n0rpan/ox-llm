@@ -77,6 +77,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `defaultThinkingLevel` | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `medium` | thinking level of a new session |
 | `modelThinkingLevels` | object | `{}` | thinking level per model id, for example `{"your-model-id": "low"}` |
 | `oxa.thinking.policy` | `fixed` / `auto` | unset | when thinking is on; unset is `fixed` under `pi` and `auto` under `local` ([profile.md](profile.md)) |
+| `oxa.thinking.toolFollowups` | `auto` / `on` / `off` | `auto` | thinking on the replies after tool results, when `oxa.thinking.policy` is `auto`. `off`: never. `on`: always. `auto`: off for routine steps, on while the run needs reasoning: after a failed call (non-zero exit, an edit that did not apply, a failing test or build), after a repeat notice, or after `oxa.thinking.escalation.fruitlessCalls` calls without progress. It goes back off after a successful edit or write or a passing test or build ([tools.md](tools.md#thinking-on-tool-follow-ups)). The level `off` always wins |
+| `oxa.thinking.escalation.fruitlessCalls` | number | `6` | under `oxa.thinking.toolFollowups: auto`, the calls without an edit or write since the prompt that turn thinking on (re-reads, repeated calls, commands; reading a new file or range is progress and not counted); `0` = never on this ground |
 | `oxa.profile` | `pi` / `local` | `pi` | format and default profile ([profile.md](profile.md)) |
 | `cacheWarming` | `off` / `streaming` / `idle` | `idle` | `off` disables warm-up; `streaming` is accepted and behaves as `idle` |
 | `oxa.bootPreload` | bool | `true` | prefill the frozen prefix when oxa starts, if the engine supports it |

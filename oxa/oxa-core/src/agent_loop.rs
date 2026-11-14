@@ -76,6 +76,7 @@ pub fn run_loop(
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    crate::think::end_run(st, ui);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
         will_retry: false,
@@ -116,6 +117,8 @@ fn run_inner(
         });
         crate::fire::message(st, HookPoint::MessageStart, &pending, sink, ui);
 
+        // Adaptive thinking (`think.rs`): a reply to a prompt starts the escalation from off.
+        crate::think::before_reply(st, ui);
         let opts = RequestOpts {
             kind: TurnKind::Chat,
             max_tokens: None,
@@ -237,6 +240,8 @@ fn run_inner(
                 crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
                 tool_msgs.push(msg);
             }
+            // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
+            crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
             st.stats.tool_results += results.len() as u32;
             st.stats.context_tokens = st.transcript.context();

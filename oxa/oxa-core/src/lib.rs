@@ -73,6 +73,9 @@ pub use retry::{backoff_ms, chat_with_retry, RetryPolicy};
 pub use session::{prefill_estimate_secs, Deps, Open, OverCap, Session, State, Stats, SwitchPlan};
 pub use state::SessionState;
 pub use subagent::{discover_agents, AgentDef, SubagentHooks};
-pub use think::{classify, classify_tree, thinking_for, ReplyKind};
+pub use think::{
+    classify, classify_tree, task_prompt, thinking_for, tool_followups, Escalation, Reason, ReplyKind,
+    ToolFollowups, STATUS_KEY as THINKING_STATUS_KEY, STATUS_ON as THINKING_STATUS_ON,
+};
 pub use toolset::{resolve_toolset, MutationQueue, ToolSelection, Toolset};
 pub use user_bash::user_bash;

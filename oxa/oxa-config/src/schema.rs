@@ -185,8 +185,17 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
+    // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
+    // before thinking turns on; 0 = never on that ground.
+    key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
     // T5: unset = `fixed` under profile `pi`, `auto` under `local`.
     key("oxa.thinking.policy", Kind::Enum(&["fixed", "auto"]), "null"),
+    // Thinking on tool follow-ups under policy `auto` (oxa-core `think.rs`).
+    key(
+        "oxa.thinking.toolFollowups",
+        Kind::Enum(&["auto", "on", "off"]),
+        "\"auto\"",
+    ),
     key("oxa.toolOutputCap", Kind::Number, "16384"),
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
