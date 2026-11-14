@@ -542,6 +542,8 @@ pub(crate) fn run_with_workspaces(
                         forced: queued.err().map(|_| Outcome::Failed),
                         steering: 0,
                         events: 0,
+                        pending_abort: false,
+                        defer_prompt: false,
                     });
                 }
                 Err(_) => {
@@ -676,6 +678,8 @@ struct Worker {
     forced: Option<Outcome>,
     steering: usize,
     events: usize,
+    pending_abort: bool,
+    defer_prompt: bool,
 }
 
 impl Worker {
@@ -722,7 +726,7 @@ impl Worker {
                 return Ok(Some(Outcome::TokenBudget));
             }
         }
-        if self.settled.is_some() && self.prompt_acked {
+        if self.settled.is_some() && self.prompt_acked && !self.pending_abort {
             return Ok(Some(if self.settled == Some(true) {
                 Outcome::Canceled
             } else if self.last_stop.as_deref() == Some("stop") && self.usage_seen {
@@ -758,6 +762,7 @@ impl Worker {
                     "retry" => "set_auto_retry",
                     "compact" => "set_auto_compaction",
                     "prompt" => "prompt",
+                    "goal-abort" if self.pending_abort => "abort",
                     _ if id
                         .strip_prefix("steer-")
                         .and_then(|s| s.parse::<usize>().ok())
@@ -792,7 +797,7 @@ impl Worker {
                         json!({"mode":mode,"offline":true,"toolPolicy":"explicit-per-worker-grants"}),
                     )?;
                 } else if self.configuration.remove(id) {
-                    if self.configuration.is_empty() {
+                    if self.configuration.is_empty() && !self.defer_prompt {
                         self.running = true;
                         self.process.queue(
                             &json!({"id":"prompt","type":"prompt","message":task_text(&self.spec.task)}),
@@ -801,6 +806,8 @@ impl Worker {
                     }
                 } else if id == "prompt" && self.running {
                     self.prompt_acked = true;
+                } else if id == "goal-abort" && self.pending_abort {
+                    self.pending_abort = false;
                 } else if !id.starts_with("steer-") {
                     return Ok(Some(Outcome::Failed));
                 }
@@ -896,6 +903,151 @@ impl Worker {
         report.output_bytes = self.process.bytes;
         report.process_id = Some(self.process.pid());
         report
+    }
+}
+
+/// The session adapter retains this SAME process, conversation and cumulative
+/// counters between goal turns. The ordinary fan-out worker lifecycle is unchanged.
+pub(crate) struct SessionWorker {
+    inner: Worker,
+    mode: PermissionMode,
+}
+impl SessionWorker {
+    pub(crate) fn start(
+        settings: &RunSettings,
+        spec: WorkerSpec,
+        directory: &std::path::Path,
+        journal: &mut Journal,
+    ) -> io::Result<Self> {
+        validate(settings, std::slice::from_ref(&spec))?;
+        let binary = checked_program(&settings.worker_binary)?;
+        let bwrap = checked_program(&settings.bwrap_binary)?;
+        let workspace = spec
+            .workspace
+            .as_ref()
+            .map(|grant| grant.materialize(&directory.join("workspace")))
+            .transpose()?;
+        let mut process = Process::spawn(
+            &binary,
+            &bwrap,
+            &format!("http://{}", spec.inference.address),
+            &spec.inference.model,
+            &spec.role,
+            settings.mode.as_str(),
+            spec.budget.output_bytes,
+            workspace.as_ref(),
+        )?;
+        process.queue(&json!({"id":"check","type":"get_state"}))?;
+        journal.record(Some(&spec.id), "spawned", json!({"processId":process.pid()}))?;
+        Ok(Self {
+            mode: settings.mode,
+            inner: Worker {
+                deadline: Instant::now() + settings.wall_time,
+                spec,
+                process,
+                workspace,
+                checking: true,
+                configuration: BTreeSet::new(),
+                running: false,
+                prompt_acked: false,
+                settled: None,
+                last_stop: None,
+                result: String::new(),
+                completed_tokens: 0,
+                pending_tokens: None,
+                usage_seen: false,
+                canceled: false,
+                forced: None,
+                steering: 0,
+                events: 0,
+                pending_abort: false,
+                defer_prompt: false,
+            },
+        })
+    }
+    pub(crate) fn poll(&mut self, journal: &mut Journal) -> io::Result<Option<Outcome>> {
+        if self.inner.defer_prompt
+            && !self.inner.running
+            && !self.inner.checking
+            && self.inner.configuration.is_empty()
+        {
+            return Ok(Some(Outcome::Canceled)); // verified no prompt was ever sent
+        }
+        self.inner.poll(self.mode, journal)
+    }
+    pub(crate) fn continue_turn(&mut self, task: String, journal: &mut Journal) -> io::Result<()> {
+        if self.inner.pending_abort
+            || self.inner.checking
+            || !self.inner.configuration.is_empty()
+            || (self.inner.running && self.inner.settled.is_none())
+        {
+            return Err(invalid("native session has not settled"));
+        }
+        self.inner.spec.task = task;
+        self.inner.result.clear();
+        self.inner.last_stop = None;
+        self.inner.pending_tokens = None;
+        self.inner.prompt_acked = false;
+        self.inner.settled = None;
+        self.inner.defer_prompt = false;
+        self.inner.running = true;
+        self.inner
+            .process
+            .queue(&json!({"id":"prompt","type":"prompt","message":task_text(&self.inner.spec.task)}))?;
+        journal.record(Some(&self.inner.spec.id), "working", json!({}))
+    }
+    pub(crate) fn pause(&mut self) -> io::Result<()> {
+        if !self.inner.running {
+            self.inner.defer_prompt = true;
+            return Ok(());
+        }
+        if !self.inner.pending_abort {
+            self.inner
+                .process
+                .queue(&json!({"id":"goal-abort","type":"abort"}))?;
+            self.inner.pending_abort = true;
+        }
+        Ok(())
+    }
+    pub(crate) fn steer(&mut self, text: &str) -> io::Result<()> {
+        if !self.inner.running
+            || self.inner.settled.is_some()
+            || self.inner.pending_abort
+            || self.inner.steering >= 128
+            || text.trim().is_empty()
+            || text.len() > 16 * 1024
+        {
+            return Err(invalid("native session cannot admit steering"));
+        }
+        self.inner.steering += 1;
+        self.inner.process.queue(
+            &json!({"id":format!("steer-{}",self.inner.steering),"type":"steer","message":task_text(text)}),
+        )
+    }
+    pub(crate) fn reply(&self) -> &str {
+        &self.inner.result
+    }
+    pub(crate) fn tokens(&self) -> u64 {
+        self.inner.completed_tokens
+    }
+    pub(crate) fn final_usage_known(&self, outcome: &Outcome) -> bool {
+        *outcome == Outcome::Completed || (self.inner.defer_prompt && !self.inner.running)
+    }
+    pub(crate) fn pid(&self) -> u32 {
+        self.inner.process.pid()
+    }
+    pub(crate) fn bytes(&self) -> usize {
+        self.inner.process.bytes
+    }
+    pub(crate) fn stop(&mut self) {
+        self.inner.process.stop(Duration::from_millis(20));
+    }
+    pub(crate) fn review(&self) -> io::Result<Option<crate::workspace::ReviewBundle>> {
+        self.inner
+            .workspace
+            .as_ref()
+            .map(|copy| copy.collect(&self.inner.spec.id))
+            .transpose()
     }
 }
 

@@ -11,7 +11,7 @@ Reproduce from `oxa/`:
 cargo test --locked -p oxa-orchestrator --test real_workers
 ```
 
-Observed successful run:
+Observed successful run (additional session-goal fixtures are described below):
 
 ```text
 test approved workspace edits and read-only policy ... ok
@@ -165,3 +165,21 @@ engine requests and authenticates through private registration. Its submitting
 controller process exits during work; a new client reconnects to the same task. A second active task is
 canceled/reaped when the owned host receives TERM; the listener closes and no
 capability appears in stdout/stderr/audit output. See [AGENT_HOST.md](AGENT_HOST.md).
+
+Issue #94 session-goal fixtures now pass:
+
+```text
+test session goal accepts live steering in its native process ... ok
+test session goal pauses an active turn without losing its session ... ok
+test session goal cumulative time budget stops native work ... ok
+test orchestrate CLI long-running goal ... ok
+test session goal keeps native context, workspace and budget ... ok
+test session goal completion and budget boundaries ... ok
+```
+
+The three-turn project fixture reads, privately edits and verifies one file, keeps
+the native process/context and cumulative budget, pauses/resumes between steps,
+returns a verified review proposal and preserves the original source. The CLI
+case repairs an unstructured reply without resetting the session or goal budget.
+See [SESSION_GOALS.md](SESSION_GOALS.md) for the concrete operator command, state
+semantics and remaining shared-session/TUI/background-task work.

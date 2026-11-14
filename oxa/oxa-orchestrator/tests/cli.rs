@@ -24,6 +24,21 @@ fn help_and_unrelated_commands_are_inert() {
 }
 
 #[test]
+fn goal_mode_is_one_persistent_session_with_explicit_bounds() {
+    assert!(parse(&args(&["--goal", "--goal-turns", "5", "goal"]))
+        .unwrap()
+        .is_some());
+    for extra in [
+        vec!["--goal-turns", "5", "goal"],
+        vec!["--goal", "--workers", "2", "goal"],
+        vec!["--goal", "--goal-turns", "0", "goal"],
+        vec!["--goal", "--parallel", "2", "goal"],
+    ] {
+        assert!(parse(&args(&extra)).is_err());
+    }
+}
+
+#[test]
 fn a_goal_after_the_delimiter_is_never_an_option() {
     assert!(parse(&args(&["--", "--help"])).unwrap().is_some());
     assert!(parse(&args(&["--", "!touch /tmp/not-a-command"]))

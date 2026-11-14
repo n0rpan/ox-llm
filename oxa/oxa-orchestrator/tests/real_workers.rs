@@ -62,6 +62,379 @@ fn assert_reaped(report: &RunReport) {
     }
 }
 
+fn session_goal_context_workspace_and_budget() {
+    use oxa_orchestrator::workspace::{Grant, RelativePath, Snapshot};
+    use oxa_orchestrator::{goal_session, goals};
+    let env = TestEnv::new();
+    std::fs::write(env.work().join("input.txt"), "before\n").unwrap();
+    let snapshot = Arc::new(
+        Snapshot::approve(&env.work(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+    );
+    let engine = FakeServer::start(vec![
+        ScriptTurn::tool("goal-read", "read", r#"{"path":"input.txt"}"#),
+        ScriptTurn::text(r#"{"state":"continue","summary":"step-one-reviewed; edit remains"}"#),
+        ScriptTurn::tool("goal-edit", "write", r#"{"path":"input.txt","content":"after\n"}"#),
+        ScriptTurn::text(r#"{"state":"continue","summary":"step-two-edited; verify remains"}"#),
+        ScriptTurn::tool("goal-verify", "read", r#"{"path":"input.txt"}"#),
+        ScriptTurn::text(r#"{"state":"done","summary":"Private edit verified","evidence":["Read the changed private file"]}"#),
+    ], FakeOpts::default()).unwrap();
+    let mut config = settings(&env, "persistent-goal");
+    config.parallelism = 1;
+    config.mode = PermissionMode::Workspace;
+    config.wall_time = Duration::from_secs(10);
+    let mut spec = worker(&engine, "project-author");
+    spec.task = "Review, privately edit and verify input.txt".into();
+    spec.workspace = Some(Arc::new(Grant::editing(snapshot.clone(), vec![]).unwrap()));
+    let (tx, rx) = mpsc::sync_channel(8);
+    let mut paused = false;
+    let mut resumed = false;
+    let mut usage = Vec::new();
+    let report = goal_session::pursue(
+        config,
+        spec,
+        goals::Budget {
+            wall_ms: 10_000,
+            tokens: Some(500_000),
+            turns: 8,
+        },
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |event| {
+            if event.kind == "turn_reply" && event.goal.turns_started == 1 && !paused {
+                paused = true;
+                tx.try_send(goal_session::Control::Pause {
+                    revision: event.goal.revision,
+                })
+                .unwrap();
+            }
+            if event.goal.state == goals::State::Paused && !resumed {
+                resumed = true;
+                tx.try_send(goal_session::Control::Resume {
+                    revision: event.goal.revision,
+                })
+                .unwrap();
+            }
+            if let Some(tokens) = event.goal.reported_tokens {
+                usage.push(tokens);
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(report.goal.state, goals::State::Done, "{report:?}");
+    assert_eq!(report.goal.turns_started, 3);
+    assert!(paused && resumed);
+    assert!(usage.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(report.goal.reported_tokens.unwrap() > 0);
+    assert!(report.process_stopped && !Path::new(&format!("/proc/{}", report.process_id)).exists());
+    let requests = engine.requests();
+    let generation = requests.iter().filter(|r| r.max_tokens > 0).collect::<Vec<_>>();
+    assert_eq!(generation.len(), 6);
+    assert!(
+        generation.last().unwrap().messages.iter().any(|m| m
+            .content
+            .as_deref()
+            .is_some_and(|s| s.contains("step-one-reviewed"))),
+        "same native session must retain earlier assistant context"
+    );
+    let review = report.review.as_ref().unwrap();
+    review.verify(&snapshot, &[]).unwrap();
+    assert_eq!(review.changes[0].after.as_deref(), Some("after\n"));
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("input.txt")).unwrap(),
+        "before\n"
+    );
+    let log = std::fs::read_to_string(env.root().join("persistent-goal/goal.jsonl")).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("\"event\":\"spawned\""))
+            .count(),
+        1
+    );
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("\"event\":\"policy_verified\""))
+            .count(),
+        1
+    );
+    assert!(!log.contains("step-one-reviewed"));
+}
+
+fn session_goal_completion_and_budget_boundaries() {
+    use oxa_orchestrator::{goal_session, goals};
+    let env = TestEnv::new();
+    for (name, reply, cap, turns, expected) in [
+        (
+            "invalid-goal",
+            "Ordinary text saying DONE is not a goal declaration",
+            500_000,
+            1,
+            goals::State::BudgetExhausted,
+        ),
+        (
+            "blocked-goal",
+            r#"{"state":"blocked","reason":"Need operator review input"}"#,
+            500_000,
+            3,
+            goals::State::Blocked,
+        ),
+        (
+            "token-goal",
+            r#"{"state":"done","summary":"claimed done","evidence":["synthetic"]}"#,
+            1,
+            3,
+            goals::State::BudgetExhausted,
+        ),
+    ] {
+        let engine = FakeServer::start(vec![ScriptTurn::text(reply)], FakeOpts::default()).unwrap();
+        let mut config = settings(&env, name);
+        config.parallelism = 1;
+        config.wall_time = Duration::from_secs(5);
+        let mut spec = worker(&engine, "goal");
+        spec.budget.reported_tokens = cap;
+        let (tx, rx) = mpsc::sync_channel(1);
+        drop(tx);
+        let report = goal_session::pursue(
+            config,
+            spec,
+            goals::Budget {
+                wall_ms: 5_000,
+                tokens: Some(cap),
+                turns,
+            },
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.goal.state, expected, "{name}: {report:?}");
+        assert_eq!(report.goal.turns_started, 1);
+        assert!(report.process_stopped && !Path::new(&format!("/proc/{}", report.process_id)).exists());
+        assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 1);
+    }
+}
+
+fn orchestrate_cli_long_running_goal() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(vec![
+        ScriptTurn::text("first project step complete; an ordinary reply is not goal completion"),
+        ScriptTurn::text(r#"{"state":"done","summary":"Goal verified","evidence":["Both requested project steps completed"]}"#),
+    ], FakeOpts::default()).unwrap();
+    let output = cli_command(&env, &engine, "cli-goal")
+        .args([
+            "--goal",
+            "--goal-turns",
+            "4",
+            "--save-results",
+            "synthetic project goal",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["goal"]["state"], "done");
+    assert_eq!(report["goal"]["turns_started"], 2);
+    assert_eq!(report["process_stopped"], true);
+    let pid = report["process_id"].as_u64().unwrap();
+    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+    assert_eq!(
+        std::fs::read(env.root().join("cli-goal/report.json")).unwrap(),
+        output.stdout
+    );
+    let requests = engine.requests();
+    let generating = requests.iter().filter(|r| r.max_tokens > 0).collect::<Vec<_>>();
+    assert_eq!(generating.len(), 2);
+    assert!(generating[1].messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("first project step complete"))));
+    assert!(generating[1].messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("previous turn did not provide a valid complete goal declaration"))));
+    let log = std::fs::read_to_string(env.root().join("cli-goal/goal.jsonl")).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("\"event\":\"spawned\""))
+            .count(),
+        1
+    );
+}
+
+fn session_goal_pauses_running_turn_and_keeps_unknown_usage_unknown() {
+    use oxa_orchestrator::{goal_session, goals};
+    let env = TestEnv::new();
+    let engine = FakeServer::start(vec![
+        ScriptTurn::text(r#"{"state":"continue","summary":"first attempt"}"#),
+        ScriptTurn::text(r#"{"state":"done","summary":"resumed work complete","evidence":["Completed after operator resume"]}"#),
+    ], FakeOpts { hold_headers_ms: 600, ..FakeOpts::default() }).unwrap();
+    let mut config = settings(&env, "goal-running-pause");
+    config.parallelism = 1;
+    config.wall_time = Duration::from_secs(8);
+    let spec = worker(&engine, "goal");
+    let (tx, rx) = mpsc::sync_channel(8);
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let mut saw_pausing = false;
+    let mut saw_paused = false;
+    let report = std::thread::scope(|scope| {
+        let sender = tx.clone();
+        let engine_ref = &engine;
+        scope.spawn(move || {
+            let revision = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !engine_ref.requests().iter().any(|r| r.max_tokens > 0) {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            sender.send(goal_session::Control::Pause { revision }).unwrap();
+        });
+        goal_session::pursue(
+            config,
+            spec,
+            goals::Budget {
+                wall_ms: 8000,
+                tokens: None,
+                turns: 5,
+            },
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |event| {
+                if event.kind == "goal_started" {
+                    started_tx.try_send(event.goal.revision).unwrap();
+                }
+                if event.goal.state == goals::State::Pausing {
+                    saw_pausing = true;
+                    assert!(event.goal.turn_active);
+                }
+                if event.goal.state == goals::State::Paused && !saw_paused {
+                    saw_paused = true;
+                    assert!(!event.goal.turn_active);
+                    assert!(event.goal.reported_tokens.is_none());
+                    tx.try_send(goal_session::Control::Resume {
+                        revision: event.goal.revision,
+                    })
+                    .unwrap();
+                }
+            },
+        )
+        .unwrap()
+    });
+    assert!(saw_pausing && saw_paused);
+    assert_eq!(report.goal.state, goals::State::Done, "{report:?}");
+    assert!(
+        report.goal.reported_tokens.is_none(),
+        "an interrupted unaccounted turn must not become zero usage"
+    );
+    assert!(report.process_stopped && !Path::new(&format!("/proc/{}", report.process_id)).exists());
+}
+
+fn session_goal_cumulative_time_stops_inflight_native_work() {
+    use oxa_orchestrator::{goal_session, goals};
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text(
+            r#"{"state":"done","summary":"late reply","evidence":["too late"]}"#,
+        )],
+        FakeOpts {
+            hold_headers_ms: 1000,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut config = settings(&env, "goal-time-budget");
+    config.parallelism = 1;
+    config.wall_time = Duration::from_millis(100);
+    let (tx, rx) = mpsc::sync_channel(1);
+    drop(tx);
+    let started = Instant::now();
+    let report = goal_session::pursue(
+        config,
+        worker(&engine, "goal"),
+        goals::Budget {
+            wall_ms: 100,
+            tokens: Some(500_000),
+            turns: 10,
+        },
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.goal.state, goals::State::BudgetExhausted);
+    assert_eq!(report.goal.reason.as_deref(), Some("time_budget"));
+    assert!(started.elapsed() < Duration::from_millis(700));
+    assert!(report.process_stopped && !Path::new(&format!("/proc/{}", report.process_id)).exists());
+}
+
+fn session_goal_accepts_steering_while_native_inference_is_running() {
+    use oxa_orchestrator::{goal_session, goals};
+    let env = TestEnv::new();
+    let engine=FakeServer::start(vec![
+        ScriptTurn::text(r#"{"state":"continue","summary":"first attempt"}"#),
+        ScriptTurn::text(r#"{"state":"done","summary":"Operator steering incorporated","evidence":["Second inference used the supplied clarification"]}"#),
+    ],FakeOpts{hold_headers_ms:600,..FakeOpts::default()}).unwrap();
+    let mut config = settings(&env, "goal-live-steer");
+    config.parallelism = 1;
+    config.wall_time = Duration::from_secs(5);
+    let (tx, rx) = mpsc::sync_channel(4);
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let mut admitted = false;
+    let report = std::thread::scope(|scope| {
+        let engine_ref = &engine;
+        scope.spawn(move || {
+            let revision = started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !engine_ref.requests().iter().any(|r| r.max_tokens > 0) {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            tx.send(goal_session::Control::Steer {
+                revision,
+                text: "operator-goal-clarification-marker".into(),
+            })
+            .unwrap();
+        });
+        goal_session::pursue(
+            config,
+            worker(&engine, "goal"),
+            goals::Budget {
+                wall_ms: 5000,
+                tokens: Some(500_000),
+                turns: 5,
+            },
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |event| {
+                if event.kind == "goal_started" {
+                    started_tx.try_send(event.goal.revision).unwrap();
+                }
+                if event.kind == "control_admitted" {
+                    admitted = true;
+                }
+            },
+        )
+        .unwrap()
+    });
+    assert!(admitted);
+    assert_eq!(report.goal.state, goals::State::Done, "{report:?}");
+    let requests = engine.requests();
+    let generating = requests.iter().filter(|r| r.max_tokens > 0).collect::<Vec<_>>();
+    assert_eq!(generating.len(), 2);
+    assert!(generating[1].messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("operator-goal-clarification-marker"))));
+    assert!(
+        !std::fs::read_to_string(env.root().join("goal-live-steer/goal.jsonl"))
+            .unwrap()
+            .contains("operator-goal-clarification-marker")
+    );
+    assert!(report.process_stopped && !Path::new(&format!("/proc/{}", report.process_id)).exists());
+}
+
 fn parallel_roles_and_fan_in() {
     let env = TestEnv::new();
     let server = FakeServer::start(
@@ -2542,6 +2915,30 @@ fn main() {
     }
     std::env::set_var("OXA_PARENT_PRIVATE_MARKER", "synthetic-parent-value");
     for (name, test) in [
+        (
+            "session goal accepts live steering in its native process",
+            session_goal_accepts_steering_while_native_inference_is_running as fn(),
+        ),
+        (
+            "session goal pauses an active turn without losing its session",
+            session_goal_pauses_running_turn_and_keeps_unknown_usage_unknown as fn(),
+        ),
+        (
+            "session goal cumulative time budget stops native work",
+            session_goal_cumulative_time_stops_inflight_native_work,
+        ),
+        (
+            "orchestrate CLI long-running goal",
+            orchestrate_cli_long_running_goal as fn(),
+        ),
+        (
+            "session goal keeps native context, workspace and budget",
+            session_goal_context_workspace_and_budget as fn(),
+        ),
+        (
+            "session goal completion and budget boundaries",
+            session_goal_completion_and_budget_boundaries,
+        ),
         (
             "approved workspace edits and read-only policy",
             approved_workspace_edit_and_read_only_policy as fn(),

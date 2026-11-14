@@ -2,7 +2,7 @@
 //! State and budgets survive turn boundaries; a reply is not goal completion.
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const MAX_EVENTS: usize = 128;
 const MAX_TEXT: usize = 16 * 1024;
@@ -76,13 +76,14 @@ pub enum Error {
     TurnActive,
     NoTurn,
     AccountingUnavailable,
+    ClockUnavailable,
 }
 
 /// One authoritative goal, intended to live inside the same session owner used
 /// by a TUI and external control clients. No writer identity or exclusive UI lock.
 pub struct Goal {
     snapshot: Snapshot,
-    started: Instant,
+    started_ns: u64,
     finished_elapsed: Option<Duration>,
     known_tokens: u64,
     unknown_turns: u32,
@@ -90,6 +91,24 @@ pub struct Goal {
     next_sequence: u64,
 }
 impl Goal {
+    pub(crate) fn state(&self) -> State {
+        self.snapshot.state
+    }
+    pub(crate) fn revision(&self) -> u64 {
+        self.snapshot.revision
+    }
+    pub(crate) fn runtime_blocked(&mut self, reason: &str) {
+        self.snapshot.state = State::Blocked;
+        self.snapshot.reason = Some(reason.into());
+        self.snapshot.evidence.clear();
+        self.event("goal_blocked");
+    }
+    pub(crate) fn runtime_budget(&mut self, reason: &str) {
+        self.exhaust(reason);
+    }
+    pub(crate) fn steered(&mut self) {
+        self.event("steer_queued");
+    }
     pub fn new(id: String, goal: String, budget: Budget) -> Result<Self, Error> {
         if id.is_empty()
             || id.len() > 64
@@ -119,7 +138,7 @@ impl Goal {
                 reason: None,
                 evidence: vec![],
             },
-            started: Instant::now(),
+            started_ns: crate::resume::boot_time_ns().map_err(|_| Error::ClockUnavailable)?,
             finished_elapsed: None,
             known_tokens: 0,
             unknown_turns: 0,
@@ -301,9 +320,30 @@ impl Goal {
     /// Time includes pauses. Terminal budget state does not falsely assert that
     /// an in-flight request has already stopped; turn_active remains explicit.
     pub fn tick(&mut self) -> Effect {
-        self.tick_at(self.elapsed())
+        if matches!(
+            self.snapshot.state,
+            State::Done | State::Canceled | State::BudgetExhausted
+        ) {
+            return if self.snapshot.turn_active {
+                Effect::AbortTurn
+            } else {
+                Effect::None
+            };
+        }
+        match self.read_elapsed() {
+            Ok(elapsed) => self.tick_at(elapsed),
+            Err(_) => {
+                self.exhaust("clock_unavailable");
+                if self.snapshot.turn_active {
+                    Effect::AbortTurn
+                } else {
+                    Effect::None
+                }
+            }
+        }
     }
     fn tick_at(&mut self, elapsed: Duration) -> Effect {
+        self.snapshot.elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
         if !matches!(
             self.snapshot.state,
             State::Done | State::Canceled | State::BudgetExhausted
@@ -318,7 +358,17 @@ impl Goal {
         }
     }
     fn elapsed(&self) -> Duration {
-        self.finished_elapsed.unwrap_or_else(|| self.started.elapsed())
+        self.read_elapsed()
+            .unwrap_or(Duration::from_millis(self.snapshot.elapsed_ms))
+    }
+    fn read_elapsed(&self) -> Result<Duration, Error> {
+        if let Some(elapsed) = self.finished_elapsed {
+            return Ok(elapsed);
+        }
+        let now = crate::resume::boot_time_ns().map_err(|_| Error::ClockUnavailable)?;
+        Ok(Duration::from_nanos(
+            now.checked_sub(self.started_ns).ok_or(Error::ClockUnavailable)?,
+        ))
     }
     fn check(&self, revision: u64) -> Result<(), Error> {
         if revision == self.snapshot.revision {
@@ -340,7 +390,10 @@ impl Goal {
             )
             && self.finished_elapsed.is_none()
         {
-            self.finished_elapsed = Some(self.started.elapsed());
+            self.finished_elapsed = Some(
+                self.elapsed()
+                    .max(Duration::from_millis(self.snapshot.elapsed_ms)),
+            );
         }
         self.snapshot.revision += 1;
         if self.events.len() == MAX_EVENTS {
@@ -420,7 +473,7 @@ mod tests {
         assert_eq!(goal.snapshot().turns_started, 3);
         assert_eq!(goal.snapshot().reported_tokens, Some(60));
         let elapsed = goal.snapshot().elapsed_ms;
-        goal.started -= Duration::from_secs(10);
+        goal.started_ns = goal.started_ns.saturating_sub(10_000_000_000);
         assert_eq!(
             goal.snapshot().elapsed_ms,
             elapsed,

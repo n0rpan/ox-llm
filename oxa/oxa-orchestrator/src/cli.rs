@@ -37,6 +37,8 @@ Required:
   --directory <path>            New private audit directory; parent must exist
 
 Options:
+  --goal                       Pursue one goal across turns in the SAME session
+  --goal-turns <n>             Goal prompt-turn cap, 1..10000 (default 128)
   --workers <n>                 Number of workers, 1..16 (default: 3)
   --parallel <n>                Concurrent workers (default: min(workers, 4))
   --role <text>                 Repeat per worker, or repeat one role for all
@@ -61,6 +63,8 @@ source files are never changed or merged. Private edits return review data. Toke
 
 #[derive(Debug)]
 pub struct Options {
+    pursue_goal: bool,
+    goal_turns: u32,
     engine: SocketAddr,
     model: String,
     directory: PathBuf,
@@ -81,6 +85,8 @@ pub struct Options {
 }
 
 pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
+    let mut pursue_goal = false;
+    let mut goal_turns = None;
     let mut source = None;
     let mut files = Vec::new();
     let mut new_files = Vec::new();
@@ -135,6 +141,10 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
             git_worktrees = true;
             continue;
         }
+        if flag == "--goal" {
+            pursue_goal = true;
+            continue;
+        }
         if flag == "--edit" {
             editing = true;
             continue;
@@ -142,6 +152,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
         if !matches!(
             flag,
             "--source"
+                | "--goal-turns"
                 | "--file"
                 | "--allow-new"
                 | "--engine"
@@ -164,6 +175,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
             return Err("option values must not be empty");
         }
         match flag {
+            "--goal-turns" => goal_turns = Some(number(value, 1, 10_000)? as u32),
             "--source" => source = Some(PathBuf::from(value)),
             "--file" | "--allow-new" => {
                 let path =
@@ -232,11 +244,30 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     if !new_files.is_empty() && !editing {
         return Err("--allow-new requires --edit");
     }
-    let workers = workers.unwrap_or(if roles.is_empty() { 3 } else { roles.len() });
+    if goal_turns.is_some() && !pursue_goal {
+        return Err("--goal-turns requires --goal");
+    }
+    if pursue_goal && git_worktrees {
+        return Err("goal sessions currently use private workspace copies; omit --git-worktrees");
+    }
+    let workers = workers.unwrap_or(if pursue_goal {
+        1
+    } else if roles.is_empty() {
+        3
+    } else {
+        roles.len()
+    });
+    if pursue_goal && workers != 1 {
+        return Err("--goal owns one session; use one worker");
+    }
     if roles.is_empty() {
-        roles = (0..workers)
-            .map(|n| ["planner", "analyst", "reviewer"][n % 3].to_owned())
-            .collect();
+        roles = if pursue_goal {
+            vec!["project orchestrator".into()]
+        } else {
+            (0..workers)
+                .map(|n| ["planner", "analyst", "reviewer"][n % 3].to_owned())
+                .collect()
+        };
     } else if roles.len() == 1 {
         roles.resize(workers, roles[0].clone());
     } else if roles.len() != workers {
@@ -257,8 +288,14 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     if parallel > workers {
         return Err("parallelism cannot exceed the number of workers");
     }
-    let run_secs = run_secs.unwrap_or(worker_secs * workers.div_ceil(parallel) as u64 + 5);
+    let run_secs = run_secs.unwrap_or(if pursue_goal {
+        3600
+    } else {
+        worker_secs * workers.div_ceil(parallel) as u64 + 5
+    });
     Ok(Some(Options {
+        pursue_goal,
+        goal_turns: goal_turns.unwrap_or(128),
         engine,
         model,
         directory,
@@ -316,6 +353,9 @@ pub fn maybe_run(args: &[String]) -> Option<i32> {
         }
     };
     let cancel = Arc::new(AtomicBool::new(false));
+    if options.pursue_goal {
+        return Some(run_goal_command(options));
+    }
     let signals = match Signals::install(cancel.clone()) {
         Ok(guard) => guard,
         Err(_) => {
@@ -371,6 +411,11 @@ pub fn execute(
     cancel: Arc<AtomicBool>,
     observe: impl FnMut(A2AStatus),
 ) -> io::Result<A2ARunReport> {
+    if options.pursue_goal {
+        return Err(io::Error::other(
+            "goal mode uses the persistent goal-session driver",
+        ));
+    }
     let parent = options
         .directory
         .parent()
@@ -464,6 +509,150 @@ pub fn execute(
     // stdout report, including when a downstream consumer closes its pipe.
     drop(server);
     let report = report?;
+    if options.save_results {
+        crate::checkpoint::save(&directory, &report)?;
+    }
+    Ok(report)
+}
+
+fn run_goal_command(options: Options) -> i32 {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let signals = match Signals::install(cancel.clone()) {
+        Ok(signals) => signals,
+        Err(_) => {
+            diagnostic(b"oxa goal: cannot install cancellation handlers\n");
+            return 1;
+        }
+    };
+    let result = execute_goal(options, cancel, |event| {
+        let tokens = event
+            .goal
+            .reported_tokens
+            .map_or_else(|| "unknown".into(), |n| n.to_string());
+        let line = format!(
+            "goal: {:?}; turns {}/{}; reported tokens {tokens}; time {}/{} ms\n",
+            event.goal.state,
+            event.goal.turns_started,
+            event.goal.budget.turns,
+            event.goal.elapsed_ms,
+            event.goal.budget.wall_ms
+        );
+        diagnostic(line.as_bytes());
+    });
+    let code = match result {
+        Ok(report) => {
+            let mut stdout = Interruptible {
+                inner: Descriptor(libc::STDOUT_FILENO),
+                epoch: SIGNAL_COUNT.load(Ordering::Acquire),
+            };
+            let written = report
+                .serialize(&mut serde_json::Serializer::with_formatter(
+                    &mut stdout,
+                    TerminalJson,
+                ))
+                .and_then(|_| stdout.write_all(b"\n").map_err(serde_json::Error::io));
+            if written.is_ok() && report.goal.state == crate::goals::State::Done {
+                0
+            } else {
+                1
+            }
+        }
+        Err(error) => {
+            diagnostic(format!("oxa goal: {error}\n").as_bytes());
+            1
+        }
+    };
+    let signal = SIGNAL.load(Ordering::Acquire);
+    drop(signals);
+    if signal == 0 {
+        code
+    } else {
+        128 + signal
+    }
+}
+
+/// Same-session goal execution for the gated CLI and shared-session adapters.
+pub fn execute_goal(
+    options: Options,
+    cancel: Arc<AtomicBool>,
+    observe: impl FnMut(crate::goal_session::Event),
+) -> io::Result<crate::goal_session::Report> {
+    if !options.pursue_goal {
+        return Err(io::Error::other("--goal is required"));
+    }
+    let parent = options
+        .directory
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."))
+        .canonicalize()?;
+    let _namespace = crate::namespace::protected_directory(&parent)?;
+    let directory = parent.join(
+        options
+            .directory
+            .file_name()
+            .ok_or_else(|| io::Error::other("missing goal directory name"))?,
+    );
+    let workspace = options
+        .source
+        .as_ref()
+        .map(|root| {
+            let snapshot = Arc::new(Snapshot::approve(root, options.files.clone())?);
+            let grant = if options.editing {
+                Grant::editing(snapshot, options.new_files.clone())?
+            } else {
+                Grant::read_only(snapshot)
+            };
+            Ok::<_, io::Error>(Arc::new(grant))
+        })
+        .transpose()?;
+    let mut random = [0u8; 16];
+    std::io::Read::read_exact(&mut File::open("/dev/urandom")?, &mut random)?;
+    let id = format!(
+        "goal-{}",
+        random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let settings = crate::RunSettings {
+        id,
+        worker_binary: std::env::current_exe()?,
+        bwrap_binary: "/usr/bin/bwrap".into(),
+        directory: directory.clone(),
+        parallelism: 1,
+        mode: options.mode,
+        wall_time: options.run_timeout,
+        output_reservation: options.response_bytes,
+        token_reservation: options.reported_tokens,
+        journal_bytes: 1024 * 1024,
+    };
+    let spec = crate::WorkerSpec {
+        id: "session".into(),
+        role: options.roles[0].clone(),
+        task: options.goal,
+        inference: LocalInference::register_verified_local(options.engine, options.model)?,
+        budget: WorkerBudget {
+            wall_time: options.worker_timeout,
+            output_bytes: options.response_bytes,
+            reported_tokens: options.reported_tokens,
+        },
+        workspace,
+    };
+    let (sender, controls) = mpsc::sync_channel(1);
+    drop(sender);
+    let report = crate::goal_session::pursue(
+        settings,
+        spec,
+        crate::goals::Budget {
+            wall_ms: options.run_timeout.as_millis() as u64,
+            tokens: Some(options.reported_tokens),
+            turns: options.goal_turns,
+        },
+        controls,
+        cancel,
+        observe,
+    )?;
     if options.save_results {
         crate::checkpoint::save(&directory, &report)?;
     }

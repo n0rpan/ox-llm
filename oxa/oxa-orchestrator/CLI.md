@@ -145,3 +145,7 @@ For an agent that can outlive a controller, the explicit
 [`orchestrate-agent` foreground host](AGENT_HOST.md) publishes private registration
 for operator-owned clients. It does not change this command's default internal
 server lifetime, discover credentials or install an OS service.
+
+For one goal that continues across turns in the SAME session instead of independent
+single-turn workers, use [`--goal`](SESSION_GOALS.md). Cumulative budgets and
+DONE/blocked state follow issue #94's project-orchestrator priority.
