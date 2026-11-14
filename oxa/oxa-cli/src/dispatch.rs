@@ -526,18 +526,22 @@ fn prepare(
             notices.push((Level::Warning, e.message));
         }
     }
-    // O-152 self-heal: the identity section is written by the ox-llm install
-    // (`oxa identity --refresh`). An install that skipped it leaves the model with the generic
-    // "nothing is known about this machine" text, so the first start writes it from this
-    // machine's facts and the engine's model list (never under test isolation; a failure only
-    // keeps the generic text). Written once: later starts read the same bytes (W3).
-    if oxa_resources::read_identity(dirs).is_none()
-        && env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1")
-    {
+    // O-152, automatic: the identity section is refreshed at every start, before the prefix is
+    // built, from cheap local facts (machine, OS, oxa version) and the engine's model list (a
+    // few loopback requests), so a missed `oxa identity --refresh` or an update never leaves
+    // a stale or generic identity. The file is rewritten only when its bytes change, so the
+    // prefix (and the cache) changes only when a fact did; a running session keeps its epoch's
+    // prefix (W3). When the engine does not answer, an existing file keeps its model list.
+    // Never under test isolation or in a subagent child (its parent just did it); a failure
+    // only keeps the previous text.
+    if env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
         let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
         let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
-        if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
-            notices.push((Level::Warning, e.message));
+        let keep_known_models = facts.models.is_empty() && oxa_resources::read_identity(dirs).is_some();
+        if !keep_known_models {
+            if let Err(e) = crate::identity_cmd::write_identity(dirs, &facts) {
+                notices.push((Level::Warning, e.message));
+            }
         }
     }
     // Resources, package sources included (E10).
