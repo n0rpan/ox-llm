@@ -123,3 +123,56 @@ class MockOpenRouter(_Base):
             'id': 'chatcmpl-mock', 'object': 'chat.completion', 'created': 1, 'model': model,
             'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': self.reply}, 'finish_reason': 'stop'}],
             'usage': self.usage})
+
+
+class MockAnthropic(_Base):
+    """A native Messages API mock: records the SDK request and answers in Anthropic's wire shape."""
+
+    def __init__(self, status=200, error=None, message=None, stream_events=None):
+        super().__init__()
+        self.status, self.error = status, error
+        self.message = message or {
+            'id': 'msg_mock', 'type': 'message', 'role': 'assistant',
+            'content': [{'type': 'text', 'text': 'Anthropic reply.'}],
+            'model': 'claude-mock', 'stop_reason': 'end_turn', 'stop_sequence': None,
+            'usage': {'input_tokens': 12, 'output_tokens': 5,
+                      'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 0}}
+        self.stream_events = stream_events
+        self.start()
+
+    def handle(self, handler, method):
+        length = int(handler.headers.get('Content-Length', '0'))
+        raw = handler.rfile.read(length) if length else b''
+        body = json.loads(raw) if raw else None
+        record = {'method': method, 'path': handler.path, 'body': body,
+                  'headers': {k.lower(): v for k, v in handler.headers.items()}}
+        self.requests.append(record)
+        if self.status >= 400:
+            error = self.error
+            if isinstance(error, str):
+                error = {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': error}}
+            return self._json(handler, self.status, error)
+        if isinstance(body, dict) and body.get('stream') is True:
+            return self._sse(handler, self.stream_events or self.default_stream())
+        return self._json(handler, 200, self.message)
+
+    def default_stream(self):
+        usage_in = {'input_tokens': 12, 'output_tokens': 0,
+                    'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 0}
+        return [
+            ('message_start', {'type': 'message_start', 'message': {
+                'id': 'msg_mock', 'type': 'message', 'role': 'assistant', 'content': [],
+                'model': 'claude-mock', 'stop_reason': None, 'stop_sequence': None,
+                'usage': usage_in}}),
+            ('content_block_start', {'type': 'content_block_start', 'index': 0,
+                                     'content_block': {'type': 'text', 'text': ''}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 0,
+                                     'delta': {'type': 'text_delta', 'text': 'Anthropic '}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 0,
+                                     'delta': {'type': 'text_delta', 'text': 'reply.'}}),
+            ('content_block_stop', {'type': 'content_block_stop', 'index': 0}),
+            ('message_delta', {'type': 'message_delta',
+                               'delta': {'stop_reason': 'end_turn', 'stop_sequence': None},
+                               'usage': {'output_tokens': 5}}),
+            ('message_stop', {'type': 'message_stop'}),
+        ]

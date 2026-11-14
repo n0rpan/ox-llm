@@ -127,3 +127,42 @@ oxa reads these per model before its first request:
 The interactive status bar shows the location: `local` in the theme's green, or
 `cloud · openrouter` / `cloud · anthropic` in the accent colour; the start banner shows the
 same segment.
+
+## Anthropic Messages (D6)
+
+An entry of kind `remote/anthropic` uses the native Messages API through the official
+`anthropic` Python SDK, not OpenAI compatibility mode. The three example entries
+(`claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`) are in
+[`examples/cloud-models.example.json`](../examples/cloud-models.example.json); copy the block
+into `runtime.json` and put the key in the same owner-only secrets file under `anthropic`.
+
+`base_url` is the SDK base (`https://api.anthropic.com`), not a `/v1/messages` URL.
+
+Translation rules:
+
+- OpenAI system/developer messages become the Messages `system` block; user/assistant text
+  becomes text blocks; assistant `tool_calls` become `tool_use` blocks; tool results become
+  `tool_result` blocks. `tools`, `tool_choice` (`auto` / `none` / `required` / named) and the
+  output limit are translated; `max_tokens` is required by the upstream and falls back to the
+  catalog `max_output`.
+- `reasoning_effort` `low`/`medium`/`high`/`xhigh` maps to adaptive thinking
+  (`thinking: {"type": "adaptive"}`) plus `output_config.effort`; `none`/`minimal` map to
+  `thinking: {"type": "disabled"}`.
+- `cache_control: {"type": "ephemeral"}` breakpoints go on the system block, the last tool
+  definition and the latest history turn (the frozen prefix and the newest turn).
+- Replies are translated back to OpenAI v1: text, `reasoning_content` from thinking blocks,
+  `tool_calls` with JSON-string arguments, usage including cache reads, and `stop_reason`
+  mapping (`end_turn`/`stop_sequence` -> `stop`, `max_tokens` -> `length`, `tool_use` ->
+  `tool_calls`, `refusal` -> `content_filter`). Streamed events become OpenAI chat chunks and
+  end with `data: [DONE]`.
+- The same cloud-off default, `OXC_OFFLINE` refusal, secrets file, daily budget and ledger rows
+  apply as for OpenRouter.
+
+Install the SDK in the controller's Python environment with
+`python3 -m pip install 'anthropic==0.125.0'` (or the package extra `snapdragon-local-ai-lab[cloud]`).
+If it is missing, an Anthropic request answers `503` with `cloud_sdk_unavailable`; local models
+are unaffected.
+
+Tests: `lab/tests/test_cloud_anthropic.py` runs a mock Messages server on loopback (request
+translation, tools, refusal, streaming tool calls, key redaction, budget and cloud-off). No test
+reads a real key or calls the real API.
