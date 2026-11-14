@@ -53,6 +53,8 @@ pub struct A2AWorkerSpec {
 pub struct A2ARunSettings {
     pub id: String,
     pub directory: PathBuf,
+    /// Explicit consent to persist raw worker results beside the hash-only journal.
+    pub persist_results: bool,
     pub parallelism: usize,
     pub wall_time: Duration,
     pub response_reservation: usize,
@@ -208,7 +210,13 @@ pub fn run_a2a(
                     if let Some(index) = pending.iter().position(|s| s.id == worker) {
                         let spec = pending.remove(index).unwrap();
                         let report = empty(&spec.id, Outcome::Canceled);
-                        finish(&mut journal, &directory, &settings.id, &report, &mut observe)?;
+                        finish(
+                            &mut journal,
+                            settings.persist_results.then_some(directory.as_path()),
+                            &settings.id,
+                            &report,
+                            &mut observe,
+                        )?;
                         reports.push(report);
                     } else if let Some(job) = active.iter_mut().find(|a| a.id == worker) {
                         job.cancel_reason = Some(Outcome::Canceled);
@@ -260,7 +268,13 @@ pub fn run_a2a(
             }
             while let Some(spec) = pending.pop_front() {
                 let report = empty(&spec.id, reason.clone());
-                finish(&mut journal, &directory, &settings.id, &report, &mut observe)?;
+                finish(
+                    &mut journal,
+                    settings.persist_results.then_some(directory.as_path()),
+                    &settings.id,
+                    &report,
+                    &mut observe,
+                )?;
                 reports.push(report);
             }
         }
@@ -404,7 +418,13 @@ pub fn run_a2a(
                         )?;
                     }
                 }
-                finish(&mut journal, &directory, &settings.id, &report, &mut observe)?;
+                finish(
+                    &mut journal,
+                    settings.persist_results.then_some(directory.as_path()),
+                    &settings.id,
+                    &report,
+                    &mut observe,
+                )?;
                 reports.push(report);
             } else {
                 i += 1;
@@ -890,12 +910,14 @@ fn reject_control(control: Control, journal: &mut Journal) -> io::Result<()> {
 }
 fn finish(
     journal: &mut Journal,
-    directory: &std::path::Path,
+    directory: Option<&std::path::Path>,
     run: &str,
     report: &A2AWorkerReport,
     observe: &mut impl FnMut(A2AStatus),
 ) -> io::Result<()> {
-    let checkpoint = crate::checkpoint::save_worker(directory, run, report)?;
+    let checkpoint = directory
+        .map(|directory| crate::checkpoint::save_worker(directory, run, report))
+        .transpose()?;
     let digest = if let Some(task) = &report.task {
         Some(hash(&serde_json::to_string(&task.artifacts)?))
     } else if let Some(message) = &report.message {

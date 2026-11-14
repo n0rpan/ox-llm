@@ -112,11 +112,16 @@ review before any merge. This command remains part of an unmerged draft lane.
 
 ## Saved final report
 
-After owned servers and workers stop, the command saves the same terminal-safe
+With explicit `--save-results`, after owned servers and workers stop, the command
+saves the same terminal-safe
 JSON it prints to stdout as `<directory>/report.json`. This includes partial and
 canceled run reports. A consumer closing stdout can cause exit 1 while the saved
 report still records completed workers; a nonzero command exit alone does not
 justify repeating inference. SIGINT/SIGTERM exit codes remain 130/143.
+
+Without that flag, reports go to stdout and no raw-result JSON checkpoints are
+created. The hash-only journal is still retained. This option does not change
+retention of explicitly granted private workspace copies or Git worktrees.
 
 The file is 0600 inside the new private run directory. The controller serializes
 directly to `.report.json.pending`, caps output at 272 MiB, syncs the file, publishes

@@ -756,6 +756,7 @@ fn cancellation_flag_bypasses_full_controls() {
 
 fn a2a_settings(env: &TestEnv, name: &str) -> A2ARunSettings {
     A2ARunSettings {
+        persist_results: false,
         id: name.into(),
         directory: env.root().join(name),
         parallelism: 2,
@@ -966,6 +967,7 @@ fn orchestrate_cli_success_and_validation() {
     )
     .unwrap();
     let output = cli_command(&env, &engine, "cli-success")
+        .arg("--save-results")
         .args([
             "--workers",
             "2",
@@ -1056,6 +1058,7 @@ fn orchestrate_cli_signal_cleanup() {
     .unwrap();
     let mut child = CliChild(
         cli_command(&env, &engine, "cli-signal")
+            .arg("--save-results")
             .args([
                 "--workers",
                 "1",
@@ -1275,6 +1278,7 @@ fn orchestrate_cli_approved_files() {
     )
     .unwrap();
     let output = cli_command(&env, &engine, "cli-files")
+        .arg("--save-results")
         .args(["--workers", "1", "--source"])
         .arg(env.work())
         .args([
@@ -1991,6 +1995,7 @@ fn orchestrate_cli_report_survives_closed_stdout() {
     .unwrap();
     let mut child = CliChild(
         cli_command(&env, &engine, "cli-closed-stdout")
+            .arg("--save-results")
             .args(["--workers", "1", "synthetic checkpoint goal"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -2027,6 +2032,43 @@ fn orchestrate_cli_report_survives_closed_stdout() {
     }
 }
 
+fn orchestrate_cli_result_persistence_requires_opt_in() {
+    use oxa_orchestrator::recovery::InspectedRun;
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("stdout-only synthetic result")],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = cli_command(&env, &engine, "cli-no-result-retention")
+        .args(["--workers", "1", "synthetic retention goal"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["workers"][0]["outcome"], "completed");
+    assert!(report.to_string().contains("stdout-only synthetic result"));
+    let root = env.root().join("cli-no-result-retention");
+    assert!(!root.join("report.json").exists());
+    assert!(!root.join(".report.json.pending").exists());
+    let entries = std::fs::read_dir(root.join("run"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, vec![std::ffi::OsString::from("transcript.jsonl")]);
+    let journal = root.join("run/transcript.jsonl");
+    let inspected = InspectedRun::inspect(&journal).unwrap();
+    assert!(inspected.snapshot().recorded_run_finished);
+    assert!(inspected.snapshot().workers[0].checkpoint_sha256.is_none());
+    assert!(!String::from_utf8(std::fs::read(&journal).unwrap())
+        .unwrap()
+        .contains("stdout-only"));
+}
+
 fn orchestrate_cli_completed_checkpoint_survives_controller_crash() {
     use oxa_orchestrator::recovery::InspectedRun;
     let env = TestEnv::new();
@@ -2040,6 +2082,7 @@ fn orchestrate_cli_completed_checkpoint_survives_controller_crash() {
     .unwrap();
     let mut child = CliChild(
         cli_command(&env, &engine, "cli-worker-checkpoint")
+            .arg("--save-results")
             .args([
                 "--workers",
                 "2",
@@ -2223,6 +2266,10 @@ fn main() {
         (
             "orchestrate CLI durable report with closed stdout",
             orchestrate_cli_report_survives_closed_stdout,
+        ),
+        (
+            "orchestrate CLI result persistence requires opt-in",
+            orchestrate_cli_result_persistence_requires_opt_in,
         ),
         (
             "orchestrate CLI completed worker checkpoint after crash",
