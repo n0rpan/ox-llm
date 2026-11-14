@@ -185,3 +185,26 @@ An explicitly started [foreground agent host](AGENT_HOST.md) can outlive its
 controllers and publish private local A2A registration. It is off by default,
 never starts as an implicit service, and does not retain task state across host
 death or enable cloud inference.
+
+## Current direction: the project orchestrator (#94)
+
+The updated owner brief prioritizes a usable long-running session goal, then a
+local control API shared with the TUI, background-task wake-ups, and role/model/
+budget worker lanes whose results are session events. Further protocol breadth
+and registered-controller polish are deferred behind those priorities.
+
+The in-progress `goals` module is the session-owned lifecycle core: one goal
+survives turn boundaries, accumulates time/token/turn budgets, distinguishes
+active/pausing/paused/DONE/blocked/budget-exhausted/canceled state, retains unknown
+usage, and exposes bounded sequenced events plus revision-checked control. DONE
+needs an explicit structured declaration with agent-reported evidence; a normal
+turn reply does not finish the goal. Pausing an active turn requests abort and
+remains visibly in flight until settlement. This is not yet the native runtime
+adapter or an end-user milestone.
+
+Next acceptance check: drive multiple turns in the SAME native oxa session,
+continue automatically, steer/pause without restarting it, and stop on explicit
+DONE/blocked or the original cumulative budget. Then expose that exact session
+owner to both the existing TUI integration and external control, with no exclusive
+writer ownership tied to the TUI. All implementation stays in the new crates plus
+small default-off hooks; cloud execution and merging retain the brief's gates.
