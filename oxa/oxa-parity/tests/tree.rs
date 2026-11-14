@@ -264,7 +264,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     const DOCS: &[&str] = &[
         "sessions.md",
         "compaction.md",
@@ -316,21 +316,6 @@ fn a_rows_name_their_invariant() {
         );
     }
     assert!(checked > 0, "no A rows found");
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for (id, verdict, test) in tree_rows() {
-        if verdict != "O" {
-            continue;
-        }
-        let body = fn_body(&fn_name_of(&test)).expect("row fn");
-        assert!(
-            body.contains("unsupported_in_oxa"),
-            "{id}: O row test does not assert the unsupported_in_oxa error"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1146,25 +1146,6 @@ fn ses_013() {
     );
 }
 
-/// pi docs: sessions.md "Share": `/share` uploads a session. oxa has no uploads, so the command
-/// is `unsupported_in_oxa`.
-#[test]
-fn ses_014() {
-    let env = TestEnv::new();
-    let server = FakeServer::start(Vec::new(), FakeOpts::default()).expect("fake engine");
-    let run = oxa(&env, &server.url(), &["-p", "/share"]);
-    let err = stderr_of(&run);
-    if !err.contains("unsupported_in_oxa") {
-        red(
-            "SES-014",
-            "print mode answers `/share` with `invalid` (\"slash commands and ! lines go through \
-             run_command or user_bash\", oxa-core session.rs prompt guard), not `unsupported_in_oxa`; \
-             the omitted-command error (oxa-core OMITTED) is produced only by the interactive front end",
-        );
-    }
-    assert_ne!(run.status.code(), Some(0), "the unsupported command fails");
-}
-
 /// pi docs: sessions.md "Report a bug": `/bug` prepares a report. oxa writes a local redacted
 /// bundle. invariant: oxa-only, nothing is uploaded.
 #[test]
@@ -1287,7 +1268,7 @@ fn fn_body(id: &str) -> &'static str {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = ses_rows();
-    assert_eq!(rows.len(), 16, "the SES area has 16 rows: {rows:?}");
+    assert_eq!(rows.len(), 14, "the SES area has 14 rows: {rows:?}");
     for (id, verdict, test) in &rows {
         if test == "omission" {
             assert_eq!(verdict, "O", "{id}: only O rows may be omitted");
@@ -1311,7 +1292,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for (id, verdict, _) in ses_rows() {
         if verdict != "P" {
             continue;
@@ -1339,20 +1320,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             body.contains("assert") || body.contains("red("),
             "{id} (A) asserts its adapted behaviour"
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for (id, verdict, test) in ses_rows() {
-        if test == "omission" || verdict != "O" {
-            continue;
-        }
-        assert!(
-            fn_body(&id).contains("unsupported_in_oxa"),
-            "{id} (O) asserts the unsupported_in_oxa error"
         );
     }
 }

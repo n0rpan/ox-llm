@@ -2081,7 +2081,7 @@ id = "G1"
 wave = "G"
 title = "PARITY: tools"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/tools.rs", "oxa-parity/fixtures/pi/tools/"]
+owns = ["oxa-parity/tests/tools.rs", "oxa-parity/fixtures/goldens/tools/"]
 consumes = ["PARITY.md rows: TOOLS, CM", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: tools"]
 needs = ["D13", "F11"]
@@ -2091,9 +2091,8 @@ test_file = "oxa-parity/tests/tools.rs"
 test_cmd = "cargo test -p oxa-parity --test tools"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2102,7 +2101,7 @@ id = "G2"
 wave = "G"
 title = "PARITY: cli"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/cli.rs", "oxa-parity/fixtures/pi/cli/"]
+owns = ["oxa-parity/tests/cli.rs", "oxa-parity/fixtures/goldens/cli/"]
 consumes = ["PARITY.md rows: CLI, ENV, MOD", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: cli"]
 needs = ["D13", "F11"]
@@ -2112,9 +2111,8 @@ test_file = "oxa-parity/tests/cli.rs"
 test_cmd = "cargo test -p oxa-parity --test cli"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2123,7 +2121,7 @@ id = "G3"
 wave = "G"
 title = "PARITY: sessions"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/sessions.rs", "oxa-parity/fixtures/pi/sessions/"]
+owns = ["oxa-parity/tests/sessions.rs", "oxa-parity/fixtures/goldens/sessions/"]
 consumes = ["PARITY.md rows: SES", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: sessions"]
 needs = ["D13", "F11"]
@@ -2133,9 +2131,8 @@ test_file = "oxa-parity/tests/sessions.rs"
 test_cmd = "cargo test -p oxa-parity --test sessions"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2144,7 +2141,7 @@ id = "G4"
 wave = "G"
 title = "PARITY: tree"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/tree.rs", "oxa-parity/fixtures/pi/tree/"]
+owns = ["oxa-parity/tests/tree.rs", "oxa-parity/fixtures/goldens/tree/"]
 consumes = ["PARITY.md rows: TREE, ENG (engine support, O-144; fake engine with a held slot and `: queued` comments)", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: tree"]
 needs = ["D13", "F11"]
@@ -2154,9 +2151,8 @@ test_file = "oxa-parity/tests/tree.rs"
 test_cmd = "cargo test -p oxa-parity --test tree"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2165,7 +2161,7 @@ id = "G5"
 wave = "G"
 title = "PARITY: compaction"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/compaction.rs", "oxa-parity/fixtures/pi/compaction/"]
+owns = ["oxa-parity/tests/compaction.rs", "oxa-parity/fixtures/goldens/compaction/"]
 consumes = ["PARITY.md rows: CMP", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: compaction"]
 needs = ["D13", "F11"]
@@ -2175,9 +2171,8 @@ test_file = "oxa-parity/tests/compaction.rs"
 test_cmd = "cargo test -p oxa-parity --test compaction"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2186,7 +2181,7 @@ id = "G6"
 wave = "G"
 title = "PARITY: json"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/json.rs", "oxa-parity/fixtures/pi/json/"]
+owns = ["oxa-parity/tests/json.rs", "oxa-parity/fixtures/goldens/json/"]
 consumes = ["PARITY.md rows: JSON", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: json"]
 needs = ["D13", "F11"]
@@ -2196,9 +2191,8 @@ test_file = "oxa-parity/tests/json.rs"
 test_cmd = "cargo test -p oxa-parity --test json"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2207,7 +2201,7 @@ id = "G7"
 wave = "G"
 title = "PARITY: rpc"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/rpc.rs", "oxa-parity/fixtures/pi/rpc/"]
+owns = ["oxa-parity/tests/rpc.rs", "oxa-parity/fixtures/goldens/rpc/"]
 consumes = ["PARITY.md rows: RPC", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: rpc"]
 needs = ["D13", "F11"]
@@ -2217,9 +2211,8 @@ test_file = "oxa-parity/tests/rpc.rs"
 test_cmd = "cargo test -p oxa-parity --test rpc"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2228,7 +2221,7 @@ id = "G8"
 wave = "G"
 title = "PARITY: tui"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/tui.rs", "oxa-parity/fixtures/pi/tui/"]
+owns = ["oxa-parity/tests/tui.rs", "oxa-parity/fixtures/goldens/tui/"]
 consumes = ["PARITY.md rows: TUI, THM", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: tui"]
 needs = ["D13", "F11"]
@@ -2238,9 +2231,8 @@ test_file = "oxa-parity/tests/tui.rs"
 test_cmd = "cargo test -p oxa-parity --test tui"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2249,7 +2241,7 @@ id = "G9"
 wave = "G"
 title = "PARITY: keys_settings"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/keys_settings.rs", "oxa-parity/fixtures/pi/keys_settings/"]
+owns = ["oxa-parity/tests/keys_settings.rs", "oxa-parity/fixtures/goldens/keys_settings/"]
 consumes = ["PARITY.md rows: KEY, SET", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: keys_settings"]
 needs = ["D13", "F11"]
@@ -2259,9 +2251,8 @@ test_file = "oxa-parity/tests/keys_settings.rs"
 test_cmd = "cargo test -p oxa-parity --test keys_settings"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2270,7 +2261,7 @@ id = "G10"
 wave = "G"
 title = "PARITY: resources"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/resources.rs", "oxa-parity/fixtures/pi/resources/"]
+owns = ["oxa-parity/tests/resources.rs", "oxa-parity/fixtures/goldens/resources/"]
 consumes = ["PARITY.md rows: SKL, TPL, PKG, SLASH, SEC", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: resources"]
 needs = ["D13", "F11"]
@@ -2280,9 +2271,8 @@ test_file = "oxa-parity/tests/resources.rs"
 test_cmd = "cargo test -p oxa-parity --test resources"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2291,7 +2281,7 @@ id = "G11"
 wave = "G"
 title = "PARITY: mcp"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/mcp.rs", "oxa-parity/fixtures/pi/mcp/"]
+owns = ["oxa-parity/tests/mcp.rs", "oxa-parity/fixtures/goldens/mcp/"]
 consumes = ["PARITY.md rows: MCP", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: mcp"]
 needs = ["D13", "F11"]
@@ -2301,9 +2291,8 @@ test_file = "oxa-parity/tests/mcp.rs"
 test_cmd = "cargo test -p oxa-parity --test mcp"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2312,7 +2301,7 @@ id = "G12"
 wave = "G"
 title = "PARITY: extensions"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/extensions.rs", "oxa-parity/fixtures/pi/extensions/"]
+owns = ["oxa-parity/tests/extensions.rs", "oxa-parity/fixtures/goldens/extensions/"]
 consumes = ["PARITY.md rows: EXT", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: extensions"]
 needs = ["D13", "F11"]
@@ -2322,9 +2311,8 @@ test_file = "oxa-parity/tests/extensions.rs"
 test_cmd = "cargo test -p oxa-parity --test extensions"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 

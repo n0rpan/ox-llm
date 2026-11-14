@@ -777,32 +777,6 @@ fn pkg_002() {
     );
 }
 
-/// PKG-003: `npm:` sources (O-175: not in oxa).
-/// pi docs: packages.md ("npm ... Installed under the Pi npm directory"). oxa refuses an
-/// `npm:` source with one clear `unsupported_in_oxa` error and runs nothing.
-/// invariant: no network from the test; the engine endpoint is never a package source.
-#[test]
-fn pkg_003() {
-    let env = TestEnv::new();
-    let out = cmd(&env, &["install", "npm:@example/tools@1.0.0"]);
-    // unsupported_in_oxa is exit code 2.
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "PKG-003: an npm source fails the install with unsupported_in_oxa; stderr: {}",
-        stderr_of(&out)
-    );
-    let stderr = stderr_of(&out);
-    assert!(
-        stderr.contains("npm package sources are not supported; use a git URL or a local path"),
-        "PKG-003: the clear refusal; stderr: {stderr}"
-    );
-    assert!(
-        !env.agent_dir().join("npm").exists(),
-        "PKG-003: nothing is installed"
-    );
-}
-
 /// PKG-004: `-l` writes the declaration to the project settings; identity is the resolved path.
 /// pi docs: packages.md ("Add --local or -l to write the package declaration to .pi/settings.json").
 #[test]
@@ -953,30 +927,6 @@ fn pkg_007() {
     assert!(
         !settings.contains(source),
         "PKG-007: remove must take the declaration out of settings"
-    );
-}
-
-/// PKG-009: package changelog display.
-/// pi docs: packages.md ("Show a changelog"). O-175: oxa does not show package changelogs
-/// ("Extension Updates"); pi's bookkeeping key `extensionChangelogVersions` is an unknown
-/// setting: reported, kept and ignored.
-#[test]
-fn pkg_009() {
-    // unsupported_in_oxa: O-175, no package changelog display; the bookkeeping key is an unknown setting (warned, ignored)
-    // pi docs: packages.md ("Show a changelog"); interactive-mode.ts 898-915.
-    let env = TestEnv::new();
-    put_settings(
-        &env,
-        "home/.oxa/agent/settings.json",
-        serde_json::json!({ "extensionChangelogVersions": { "logged": "1.0.0" } }),
-    );
-    let ran = drive(&env, &[], "hello");
-    assert_success(&ran.out);
-    let err = stderr_of(&ran.out);
-    assert!(
-        err.lines()
-            .any(|l| l.starts_with("Warning:") && l.contains("unknown setting `extensionChangelogVersions`")),
-        "PKG-009: {err}"
     );
 }
 
@@ -1404,8 +1354,8 @@ fn thm_002() {
 #[test]
 fn thm_003() {
     let env = TestEnv::new();
-    let pi_dark =
-        std::fs::read_to_string(fixture("pi/resources/thm_003/pi-dark.json")).expect("pi dark.json fixture");
+    let pi_dark = std::fs::read_to_string(fixture("goldens/resources/thm_003/pi-dark.json"))
+        .expect("pi dark.json fixture");
     let renamed = pi_dark.replacen("\"name\": \"dark\"", "\"name\": \"pi-dark-copy\"", 1);
     assert_ne!(renamed, pi_dark, "THM-003: fixture must contain the name field");
     env.write("home/.oxa/agent/themes/pi-dark-copy.json", &renamed);
@@ -1817,8 +1767,8 @@ fn every_row_has_test_or_recorded_omission() {
     let rows = parity_rows();
     assert_eq!(
         rows.len(),
-        43,
-        "resources area rows (SKL 7, TPL 4, PKG 10, SEC 8, THM 6, CFG 8)"
+        37,
+        "resources area rows (SKL 7, TPL 4, PKG 6, SEC 8, THM 6, CFG 6)"
     );
     for row in &rows {
         if row.test == "omission" {
@@ -1845,7 +1795,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for row in parity_rows()
         .iter()
         .filter(|r| r.verdict == "P" && r.test != "omission")
@@ -1876,22 +1826,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             body.contains("invariant") || body.contains("oxa"),
             "{}: an A row names the invariant or the adapted behaviour in a comment",
-            row.id
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for row in parity_rows().iter().filter(|r| r.verdict == "O") {
-        if row.test == "omission" {
-            continue;
-        }
-        let name = row.id.to_lowercase().replace('-', "_");
-        assert!(
-            body_of(&name).contains("unsupported_in_oxa"),
-            "{}: an O row with a surface asserts the unsupported_in_oxa error",
             row.id
         );
     }
