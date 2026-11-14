@@ -15,7 +15,9 @@ and returns every outcome and result. Fan-in uses all-required success; partial
 results remain available. Results embed tagged A2A Task objects, scoped by run
 and worker identity. Unknown execution outcomes are not success.
 
-The first profile is **local inference with no tools**. An operator must register
+The default profile is **local inference with no tools**. An explicit
+workspace grant can instead enable approved private file copies and review
+proposals; see [WORKSPACES.md](WORKSPACES.md). An operator must register
 a verified local-only endpoint through `LocalInference`; the loopback address
 check alone does not prove that an oxc proxy cannot forward to the cloud. This
 API is a trusted operator boundary, not a declaration an agent may make about
@@ -26,11 +28,12 @@ Each worker is a trusted, explicitly chosen oxa executable inside bubblewrap:
 - New mount, PID and user namespaces; private work directory, HOME, temporary
   files, agent state and XDG paths. Only system runtime files under `/usr`,
   `/lib` and `/lib64`, and the chosen executable, are mounted read-only.
-- Cleared environment, offline enabled, no tools, MCP, extensions, skills,
+- Cleared environment, offline enabled, tools disabled unless explicitly
+  granted for a private workspace, no MCP, extensions, skills,
   context discovery, project approval or persistent sessions. The configured
   parent permission mode is passed unchanged and verified before prompting.
 - The network namespace is shared to reach the registered loopback inference
-  server. Egress restrictions rely on the trusted oxa offline checks; tools and
+  server. Egress restrictions rely on the trusted oxa offline checks; network tools and
   dynamically loaded code are disabled. This is not a kernel-enforced network
   destination allowlist. Stronger endpoint isolation remains work to do.
 - The assigned task and steering text are wrapped as data so a leading `!` or
@@ -80,8 +83,8 @@ steering controls.
 
 The operator fixes the executable, local inference route, role, permission
 mode, budgets and task capacity at construction. Wire data cannot alter any
-of these settings. Worker tools stay disabled and every child inherits offline
-mode. The bridge retains a bounded number of tasks and message histories;
+of these settings, including any approved workspace grant. Worker tools stay
+disabled by default and every child inherits offline mode. The bridge retains a bounded number of tasks and message histories;
 there is no silent task eviction or relaunch. Within this backend, repeating
 a message ID with the same content reuses its original task/message; reusing
 it with different content fails. That is a local guarantee, not a general A2A
@@ -168,6 +171,6 @@ single-child cleanup do not provide this supervisor's guarantees.
 
 Production TLS/remote routing, automatic stream resubscription, stronger
 inference-network isolation, hard provider request/spend
-limits, approved file inputs/worktrees and patch review, restart reconciliation,
+limits, Git worktrees, review/apply and merge coordination, restart reconciliation,
 and richer interactive worker controls remain required. This working local profile is a
 foundation, not a claim that the full orchestration brief is complete.

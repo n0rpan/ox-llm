@@ -63,3 +63,46 @@ fn malformed_counts_roles_and_oversized_goals_are_rejected() {
         .unwrap()
         .is_some());
 }
+
+#[test]
+fn source_grants_require_explicit_files_and_editing_mode() {
+    for extra in [
+        vec!["--source", "unused", "goal"],
+        vec!["--file", "a.txt", "goal"],
+        vec!["--source", "unused", "--file", "../bad", "goal"],
+        vec!["--source", "unused", "--file", ".env", "goal"],
+        vec!["--source", "unused", "--file", "a.txt", "--file", "a.txt", "goal"],
+        vec!["--source", "unused", "--file", "a.txt", "--edit", "goal"],
+        vec![
+            "--source",
+            "unused",
+            "--file",
+            "a.txt",
+            "--allow-new",
+            "b.txt",
+            "goal",
+        ],
+    ] {
+        assert!(parse(&args(&extra)).is_err(), "{extra:?}");
+    }
+    // Parsing validates only; neither this source nor output directory exists.
+    assert!(
+        parse(&args(&["--source", "does-not-exist", "--file", "a.txt", "goal"]))
+            .unwrap()
+            .is_some()
+    );
+    assert!(parse(&args(&[
+        "--source",
+        "does-not-exist",
+        "--file",
+        "a.txt",
+        "--edit",
+        "--permission-mode",
+        "workspace",
+        "--allow-new",
+        "b.txt",
+        "goal"
+    ]))
+    .unwrap()
+    .is_some());
+}

@@ -39,50 +39,59 @@ impl Process {
         role: &str,
         mode: &str,
         byte_limit: usize,
+        workspace: Option<&crate::workspace::WorkingCopy>,
     ) -> io::Result<Self> {
         // Build a new filesystem instead of exposing the parent's root/home.
         // Only the trusted runtime libraries and the explicitly chosen binary
-        // are mounted. /work and HOME start empty and disappear with the worker.
+        // are mounted. HOME is private; /work is empty or an approved private copy.
         let mut command = Command::new(bwrap);
+        command.args([
+            "--unshare-all",
+            "--hostname",
+            "oxa-worker",
+            "--share-net",
+            "--die-with-parent",
+            "--cap-drop",
+            "ALL",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind-try",
+            "/lib",
+            "/lib",
+            "--ro-bind-try",
+            "/lib64",
+            "/lib64",
+            "--symlink",
+            "usr/bin",
+            "/bin",
+            "--symlink",
+            "usr/sbin",
+            "/sbin",
+            "--new-session",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/home/worker",
+        ]);
+        if let Some(workspace) = workspace {
+            command
+                .arg(if workspace.editing() {
+                    "--bind"
+                } else {
+                    "--ro-bind"
+                })
+                .arg(workspace.path())
+                .arg("/work");
+        } else {
+            command.args(["--tmpfs", "/work"]);
+        }
         command
-            .args([
-                "--unshare-all",
-                "--hostname",
-                "oxa-worker",
-                "--share-net",
-                "--die-with-parent",
-                "--cap-drop",
-                "ALL",
-                "--ro-bind",
-                "/usr",
-                "/usr",
-                "--ro-bind-try",
-                "/lib",
-                "/lib",
-                "--ro-bind-try",
-                "/lib64",
-                "/lib64",
-                "--symlink",
-                "usr/bin",
-                "/bin",
-                "--symlink",
-                "usr/sbin",
-                "/sbin",
-                "--new-session",
-                "--proc",
-                "/proc",
-                "--dev",
-                "/dev",
-                "--tmpfs",
-                "/tmp",
-                "--dir",
-                "/home/worker",
-                "--tmpfs",
-                "/work",
-                "--chdir",
-                "/work",
-                "--ro-bind",
-            ])
+            .args(["--chdir", "/work", "--ro-bind"])
             .arg(binary)
             .arg("/agent")
             .args([
@@ -136,7 +145,6 @@ impl Process {
                 "--model",
                 model,
                 "--no-session",
-                "--no-tools",
                 "--no-mcp",
                 "--no-web-search",
                 "--no-extensions",
@@ -145,9 +153,7 @@ impl Process {
                 "--no-themes",
                 "--no-context-files",
                 "--no-approve",
-                "--append-system-prompt",
             ])
-            .arg(format!("Orchestrator-assigned worker role:\n{role}"))
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("LANG", "C.UTF-8")
@@ -156,6 +162,15 @@ impl Process {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        if let Some(workspace) = workspace {
+            command.arg("--tools").arg(workspace.tools().join(","));
+        } else {
+            command.arg("--no-tools");
+        }
+        command.arg("--append-system-prompt").arg(format!(
+            "Orchestrator-assigned worker role:\n{role}{}",
+            workspace.map(|w| w.role_context()).unwrap_or_default()
+        ));
         let mut child = command.spawn()?;
         let descriptors = (child.stdin.take(), child.stdout.take(), child.stderr.take());
         let (Some(stdin), Some(stdout), Some(stderr)) = descriptors else {

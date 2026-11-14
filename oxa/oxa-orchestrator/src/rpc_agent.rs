@@ -31,6 +31,7 @@ pub struct RpcAgentConfig {
     pub role: String,
     pub inference: LocalInference,
     pub mode: PermissionMode,
+    pub workspace: Option<Arc<crate::workspace::Grant>>,
     pub budget: WorkerBudget,
     pub max_live: usize,
     /// Includes retained terminal tasks; no silent eviction/relaunch.
@@ -452,5 +453,6 @@ fn spec(config: &RpcAgentConfig, task: String) -> WorkerSpec {
         task,
         inference: config.inference.clone(),
         budget: config.budget.clone(),
+        workspace: config.workspace.clone(),
     }
 }
