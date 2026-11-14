@@ -216,7 +216,7 @@ pub fn fetch_info_for(
     api_key: Option<&str>,
     target: Option<&str>,
 ) -> Result<EngineInfo, OxaError> {
-    fetch_info_full(url, api_key, target).map(|(info, _)| info)
+    fetch_info_full(url, api_key, target).map(|(info, _, _)| info)
 }
 
 /// [`fetch_info_for`] plus the deliberate-cancel capability of the endpoint
@@ -226,7 +226,7 @@ pub(crate) fn fetch_info_full(
     url: &Url,
     api_key: Option<&str>,
     target: Option<&str>,
-) -> Result<(EngineInfo, bool), OxaError> {
+) -> Result<(EngineInfo, bool, Option<String>), OxaError> {
     let headers = auth_headers(api_key);
     let models = get_json(url, "/v1/models", &headers)?.ok_or_else(|| {
         OxaError::new(codes::ENGINE_HTTP, "the engine has no /v1/models endpoint")
@@ -245,6 +245,7 @@ pub(crate) fn fetch_info_full(
     };
     // Read before props is merged into the status below.
     let cancel = cancel_advertised(status.as_ref(), props.as_ref());
+    let handshake = crate::handshake::handshake_warning(status.as_ref(), props.as_ref());
     let status = match status {
         Some(mut v) => {
             if let (Some(obj), Some(p)) = (v.as_object_mut(), props.as_ref()) {
@@ -265,7 +266,7 @@ pub(crate) fn fetch_info_full(
         })?,
     };
     let info = parse_info_for(&url_string(url), &models, &status, target)?;
-    Ok((info, cancel))
+    Ok((info, cancel, handshake))
 }
 
 /// PROVISIONAL, capability-gated proposal (cancel-contract.md section 7, see [`CANCEL_PATH`]):

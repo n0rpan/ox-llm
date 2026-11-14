@@ -78,6 +78,9 @@ fn stats_left(st: &StatusModel, theme: &Theme) -> String {
     if st.tool_repairs > 0 {
         parts.push(theme.fg("warning", &format!("repairs {}", st.tool_repairs)));
     }
+    if st.degraded_context {
+        parts.push(theme.fg("warning", "no summary"));
+    }
     if let Some(mode) = st.mode {
         parts.push(theme.fg(mode_token(mode), mode.as_str()));
     }

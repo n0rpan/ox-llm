@@ -1038,8 +1038,11 @@ fn ses_011() {
     let url = rig.server.url();
     let path = file.display().to_string();
     let tree_label = |rig: &Rig| {
+        // The TUI holds the session's lock (one writer per file): the reader opens a copy.
+        let copy = rig.env.tmp().join("label-reader.jsonl");
+        std::fs::copy(&path, &copy).expect("copy the session file");
         let mut reader = Rpc::start(&rig.env, &url);
-        reader.ok(json!({"type": "switch_session", "sessionPath": path}));
+        reader.ok(json!({"type": "switch_session", "sessionPath": copy.display().to_string()}));
         let tree = reader.ok(json!({"type": "get_tree"}));
         let node = find_node(tree["tree"].as_array().expect("tree"), &target)
             .expect("the entry is in the tree")

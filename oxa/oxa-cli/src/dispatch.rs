@@ -291,6 +291,12 @@ struct Prep {
     name: Option<String>,
 }
 
+/// The one-line handshake warning of the engine (read by the `info` call of the session open;
+/// no request of its own).
+fn handshake_notice(built: &Built) -> Option<(Level, String)> {
+    built.engine.handshake_warning().map(|w| (Level::Warning, w))
+}
+
 /// `Session::open`, then pi's `--name` (`appendSessionInfo`).
 fn open_named(
     built: &Built,
@@ -881,7 +887,7 @@ fn run_headless(
         built,
         open,
         session_id,
-        notices,
+        mut notices,
         name,
         ..
     } = prep;
@@ -889,6 +895,7 @@ fn run_headless(
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
+    notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
     let result = match mode {
         RunMode::Json => run_json(&mut session, prompts, stdout, stderr),
@@ -913,7 +920,7 @@ fn run_rpc(
         built,
         open,
         session_id,
-        notices,
+        mut notices,
         name,
         ..
     } = prep;
@@ -921,6 +928,7 @@ fn run_rpc(
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
+    notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
@@ -945,7 +953,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         built,
         open,
         session_id,
-        notices,
+        mut notices,
         gated,
         name,
     } = prep;
@@ -953,6 +961,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
+    notices.extend(handshake_notice(&built));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
