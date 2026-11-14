@@ -4,12 +4,32 @@ import json
 import os
 from pathlib import Path
 import socket
+import struct
 import subprocess
 import tempfile
 import time
 import urllib.request
 
-with tempfile.TemporaryDirectory() as sandbox:
+def tokenizer_fixture(path):
+    """GGUF metadata only: a synthetic byte vocabulary, no tensors or weights."""
+    visible = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
+    extra = {byte: 256 + index for index, byte in enumerate(b for b in range(256) if b not in visible)}
+    tokens = [chr(byte if byte in visible else extra[byte]) for byte in range(256)]
+    tokens += ['<|im_start|>', '<|im_end|>', '<|endoftext|>', '<think>', '</think>']
+    def string(value):
+        data = value.encode()
+        return struct.pack('<Q', len(data)) + data
+    rows = []
+    for name, value in [('tokenizer.ggml.model', 'gpt2'), ('tokenizer.ggml.pre', 'qwen2')]:
+        rows.append(string(name) + struct.pack('<I', 8) + string(value))
+    rows.append(string('tokenizer.ggml.tokens') + struct.pack('<IIQ', 9, 8, len(tokens)) + b''.join(map(string, tokens)))
+    rows.append(string('tokenizer.ggml.eos_token_id') + struct.pack('<II', 4, 257))
+    path.write_bytes(b'GGUF' + struct.pack('<IQQ', 3, 0, len(rows)) + b''.join(rows))
+
+
+with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as fixtures:
+    model = Path(fixtures) / 'tokenizer-only.gguf'
+    tokenizer_fixture(model)
     env = {'PATH': os.defpath, 'HOME': sandbox, 'XDG_CONFIG_HOME': sandbox + '/config',
            'XDG_STATE_HOME': sandbox + '/state', 'XDG_CACHE_HOME': sandbox + '/cache',
            'XDG_DATA_HOME': sandbox + '/data', 'XDG_RUNTIME_DIR': sandbox + '/runtime',
@@ -27,7 +47,8 @@ with tempfile.TemporaryDirectory() as sandbox:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
     with tempfile.TemporaryFile() as log:
-        process = subprocess.Popen(['oxe-server', '--engine', 'stub', '--host', '127.0.0.1',
+        process = subprocess.Popen(['oxe-server', '--engine', 'stub', '--model', str(model),
+                                    '--alias', 'synthetic', '--stub-reply', 'ok', '--host', '127.0.0.1',
                                     '--port', str(port)], env=env, stdout=log, stderr=log)
         try:
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

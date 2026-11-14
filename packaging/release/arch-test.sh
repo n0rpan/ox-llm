@@ -19,7 +19,7 @@ for variant in ox-llm-bin ox-llm; do
   cp /build/*.tar.gz "/build/$variant/"
   chown -R builder:builder "/build/$variant"
   cd "/build/$variant"
-  runuser -u builder --preserve-environment -- makepkg --noconfirm --cleanbuild
+  runuser -u builder -- makepkg --noconfirm --cleanbuild
   package=$(find . -maxdepth 1 -name '*.pkg.tar.zst' -print)
   namcap PKGBUILD
   namcap "$package" | tee /tmp/namcap.log

@@ -43,6 +43,8 @@ jobs:
       source_commit: ${{ steps.source.outputs.commit }}
       source_epoch: ${{ steps.source.outputs.epoch }}
     steps:
+      - name: Git before checkout (prevent REST archive fallback)
+        run: dnf -y -q install --setopt=install_weak_deps=False git-core
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
