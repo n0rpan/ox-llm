@@ -233,7 +233,10 @@ def messages_request(payload, item):
     if not messages:
         messages = [{'role': 'user', 'content': [{'type': 'text', 'text': ''}]}]
     # The latest history turn ends with a cache breakpoint (the frozen prefix is handled below).
-    messages[-1]['content'][-1]['cache_control'] = _cache_control()
+    # Never touch a thinking/redacted block: its signature must stay byte-identical.
+    last = messages[-1]['content'][-1]
+    if last.get('type') not in THINKING_TYPES:
+        last['cache_control'] = _cache_control()
 
     params = {'model': item['upstream_model'], 'messages': messages,
               'max_tokens': _max_tokens(payload, item)}
