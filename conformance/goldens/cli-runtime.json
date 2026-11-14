@@ -1,0 +1,596 @@
+{
+  "cache": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Usage:\n  local-ai cache [status] [--json]          conversation cache: used, budget, conversations\n  local-ai cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  local-ai cache clear [--all | --session ID]  --all (default) also clears stored prompts\n"
+  },
+  "cache-budget-four": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Cache budget: 4 GB.\n"
+  },
+  "cache-budget-invalid": {
+    "exit": 2,
+    "host_commands": [],
+    "stderr": "Usage:\n  local-ai cache [status] [--json]          conversation cache: used, budget, conversations\n  local-ai cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  local-ai cache clear [--all | --session ID]  --all (default) also clears stored prompts\n",
+    "stdout": ""
+  },
+  "cache-budget-off": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Cache budget: off.\n"
+  },
+  "cache-clear": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Cleared 0.00 GB of saved conversations.\n"
+  },
+  "cache-clear-session": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Cleared 0.00 GB of saved conversations.\n"
+  },
+  "cache-json": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "{\"cache_available\": true, \"budget_bytes\": 64000000000, \"used_bytes\": 0, \"ttl_secs\": 604800, \"default_budget_bytes\": 64000000000, \"invalid_settings\": false, \"sessions\": {\"count\": 0, \"oldest_age_secs\": null}}\n"
+  },
+  "chat": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "launch",
+          "webapp",
+          "http://127.0.0.1:8092"
+        ],
+        "command": "omarchy"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "clear-cache": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "code": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "launch",
+          "terminal",
+          "env",
+          "-C",
+          "<HOME>/Work",
+          "OXA_ENGINE_URL=http://127.0.0.1:8092",
+          "<HOME>/bin/oxa",
+          "--model",
+          "ornith-35b-a3b-local"
+        ],
+        "command": "omarchy"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "digest": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Day 2026-11-01: 0 requests, healthy\n  cache reuse - of tokens, 0 misses in 0 follow-up turns (0 unexplained)\n  history rewrites 0 (fold suspects 0, client compactions 0)\n  queued 0 (wait p95 -), replays 0\n  first token p50 -, p95 -; errors 5xx 0, cut 0, guard stops 0\n"
+  },
+  "digest-invalid-day": {
+    "exit": 2,
+    "host_commands": [],
+    "stderr": "local-ai: Use a day like 2026-11-13, today or yesterday.\n",
+    "stdout": ""
+  },
+  "digest-soak": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Soak: 0 of 7 green days, 0 requests, 0 history rewrites\n"
+  },
+  "digest-status": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "No health check yet\n"
+  },
+  "flash-cache-invalid": {
+    "exit": 2,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "flash-cache-unavailable": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "Local AI",
+          "The Flash tier was not changed: a request is running, or this model has no tiers. Try again when it is idle."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "flash-unavailable": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Flash is not ready on this machine. Run `local-ai status` to see why."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "harness-forget": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "harness-forget-one": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "harness-prepare-invalid": {
+    "exit": 2,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "harness-prepare-missing": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "images": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "prompt-studio-app.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "launch",
+          "webapp",
+          "http://127.0.0.1:8090"
+        ],
+        "command": "omarchy"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "ledger": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "No request ledger\n"
+  },
+  "ledger-json": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "{\"ledger_available\": false, \"rows\": []}\n"
+  },
+  "load": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "mode": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "mode-missing": {
+    "exit": 2,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "moe": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "ornith": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "panel": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "snapdragon.local-ai",
+          "toggle"
+        ],
+        "command": "omarchy-shell"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "plan-unavailable": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Flash is not ready on this machine. Run `local-ai status` to see why."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "retired-dense": {
+    "exit": 2,
+    "host_commands": [],
+    "stderr": "The dense Qwen3.8 27B model was retired in v0.1.2. Use `local-ai ornith` or `local-ai moe`.\n",
+    "stdout": ""
+  },
+  "rollback-check-no-stage": {
+    "exit": 2,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Nothing to roll back: no installed release with a saved previous version was found.\n"
+  },
+  "share": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "LAN share: off (loopback only).\n"
+  },
+  "share-invalid": {
+    "exit": 2,
+    "host_commands": [],
+    "stderr": "Usage:\n  local-ai share [status] [--json]      what is shared, where, and the key fingerprint\n  local-ai share on [tailscale|lan]     share the OpenAI API with your devices (default: tailscale)\n  local-ai share off                    loopback only again, at once\n  local-ai share key [--rotate]         show the API key once; --rotate makes a new one (old stops working)\n",
+    "stdout": ""
+  },
+  "share-json": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "{\"enabled\": false, \"mode\": \"off\", \"active\": false, \"addresses\": [], \"port\": 8092, \"urls\": [], \"key_present\": false, \"key_fingerprint\": null, \"key_shown\": false, \"encryption\": null, \"warning\": null, \"error\": null, \"paused\": null, \"pinned_network\": null, \"routes\": [\"POST /v1/chat/completions\", \"POST /v1/completions\", \"GET /v1/models\", \"GET /v1/models/{id}\"], \"limits\": {\"rate_per_min\": 120, \"burst\": 30, \"max_body_bytes\": 8388608, \"max_tokens\": 16384, \"concurrency\": 1}, \"remote_active\": 0, \"remote_requests\": 0, \"remote_refused\": 0}\n"
+  },
+  "share-off": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "LAN share: off (loopback only).\n"
+  },
+  "status": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": "Qwen: unloaded | Images: offline | Available: 12.0 GiB\n"
+  },
+  "status-json": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": "{\"chat_state\": \"unloaded\", \"active_requests\": 0, \"idle_seconds\": 7200.0, \"compute_busy\": false, \"model\": \"ornith\", \"selected_model\": \"ornith\", \"prefix_cache_enabled\": false, \"backend\": \"cpu\", \"npu_status\": \"experimental\", \"image_state\": \"offline\", \"image_model\": null, \"available_gib\": 12.0, \"flash_available\": false, \"ornith_available\": true, \"execution_policy_mode\": \"stock\", \"total_gib\": 16.0, \"queued_requests\": 0, \"context_size\": 32768, \"loaded_model\": null, \"resident_gib\": null, \"idle_remaining_seconds\": null, \"has_error\": false, \"harnesses\": [], \"context\": {\"cap\": 32768, \"mode\": \"fast\", \"modes\": [{\"id\": \"fast\", \"context\": 131072, \"compact_at\": 49536, \"cap\": 131072, \"available\": true, \"reason\": null}, {\"id\": \"deep\", \"context\": 131072, \"compact_at\": 102000, \"cap\": 131072, \"available\": true, \"reason\": null}, {\"id\": \"max\", \"context\": 262144, \"compact_at\": 199750, \"cap\": 262144, \"available\": false, \"reason\": \"needs RSS proof\"}]}, \"preload\": {\"state\": \"idle\", \"src\": null, \"ms\": null, \"age_s\": null}, \"error_at\": null, \"error_origin\": null, \"models\": [{\"key\": \"ornith\", \"engine\": \"rust\", \"engine_status\": \"production\", \"memory_gib\": 3.0, \"battery_start_percent\": null, \"prefix\": \"off\", \"selected\": true, \"default\": true, \"state\": \"unloaded\"}, {\"key\": \"moe\", \"engine\": \"rust\", \"engine_status\": \"production\", \"memory_gib\": 3.0, \"battery_start_percent\": null, \"prefix\": \"off\", \"selected\": false, \"default\": false, \"state\": \"unloaded\"}], \"flash_download_state\": \"absent\", \"flash_download_bytes\": 0, \"flash_download_total_bytes\": 0, \"flash_download_shards\": 0, \"flash_verified_shards\": 0, \"flash_download_active\": false, \"flash_waiting_verification\": false, \"flash_trial_active\": false, \"flash_trial_kind\": \"\", \"flash_trial_elapsed_seconds\": 0}\n"
+  },
+  "storage": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "\n"
+  },
+  "storage-delete-invalid": {
+    "exit": 2,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "storage-json": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "{\"storage_available\": true, \"entries\": []}\n"
+  },
+  "uninstall-apply": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Removed:\n  (nothing)\nNotes:\n  - no ox-llm install record was found (update state, or pass --record); no program file is removed\n  - Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\n"
+  },
+  "uninstall-dry-run": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Dry run (nothing changed; pass --apply to remove):\n  (nothing)\nNotes:\n  - no ox-llm install record was found (update state, or pass --record); no program file is removed\n  - Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\n"
+  },
+  "unload": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "update-check-no-stage": {
+    "exit": 2,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Not ready to install: No staged release is ready to install. Stage one first, then run `local-ai update <dir>`.\n"
+  }
+}

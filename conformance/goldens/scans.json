@@ -1,0 +1,119 @@
+{
+  "export-bad-digest": {
+    "exit": 2,
+    "stderr": "export refused: binary sha256 must be a hex digest\n",
+    "stdout": ""
+  },
+  "export-private-fields": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": 32768,
+        "threads": 1,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "free-text": 1,
+          "prompt": 1
+        },
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 4
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "max_rss_kib": 1024,
+            "n_ctx": 32768,
+            "prompt_redacted": {
+              "bytes": 25,
+              "redacted": "prompt",
+              "sha256": "f5940c3f24234d8ad6787850e84c089104359ac0f651c605f26c5e0df4a8a501"
+            },
+            "threads": 1,
+            "tokens_per_second": 2.5
+          },
+          "name": "receipt.json",
+          "private_file_sha256": "f8ef2f7b84caf7b6b87c06e62c9823562385f3a1d675f5fc6470c1f8c8cb945c"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 4 values; dropped: free-text=1, prompt=1\nwrote public.json\n",
+    "stdout": ""
+  },
+  "rules": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "home-path\ntilde-path\nabs-path\nuser-slice\nmac-address\ndevice-serial\nuuid\nemail\nmount-path\nprivate-ip\nprivate-key\napi-key\nsecret-assignment\nprice\nplus per-machine words: user-name, real-name, host-name, machine-id, device-serial-value, disk-serial-value, mac-address-value, deny-word\n"
+  },
+  "scan-binary": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:0: binary-file\n"
+  },
+  "scan-clean": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": ""
+  },
+  "scan-denied-word": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:1: deny-word\n"
+  },
+  "scan-receipt-path": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:1: abs-path\n"
+  },
+  "scan-tree-binary": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": ""
+  },
+  "scan-tree-path": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": ""
+  },
+  "scrub-apply": {
+    "exit": 0,
+    "source_after": "synthetic path: $HOME/private\n",
+    "stderr": "",
+    "stdout": "changed 1 files; replacements: home-path=1\n"
+  },
+  "scrub-check": {
+    "exit": 1,
+    "source_after": "synthetic path: <HOME>/private\n",
+    "stderr": "",
+    "stdout": "would change 1 files; replacements: home-path=1\n"
+  }
+}

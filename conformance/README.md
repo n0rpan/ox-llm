@@ -1,7 +1,8 @@
 # oxc drop-in conformance
 
 Reference: main `a1c683f9e3783fdac4716bef53241833babe60a6`.
-This is the initial contract slice, not a complete parity claim. No Rust
+The current suite passes 205 scenarios in 24 unittest methods. This remains a
+partial contract suite, not a complete parity claim. No Rust
 implementation has been started: the full Python suite must pass first.
 
 Requires Linux, Python 3.10+ and bubblewrap with unprivileged user and cgroup
@@ -17,6 +18,11 @@ process. Each invocation gets a temporary HOME and explicit XDG directories; its
 environment is constructed from an allowlist and inherits no API credentials or
 proxy settings. HTTP connections target loopback only. Parser cases stop before
 command execution, so they do not contact desktop applications or systemd.
+Runtime CLI cases use a fresh network namespace each, giving the CLI its
+hardcoded port 8092 without reaching another service. Systemd and desktop
+executables are synthetic peers on PATH; their exact command/argument lists are
+part of the goldens. The fixed HOME path in that namespace is synthetic, making
+storage IDs reproducible across test runs.
 
 Configured HTTP tests launch the unchanged daemon and a hash-pinned synthetic
 engine executable through its real lifecycle. A private bubblewrap mount/cgroup
@@ -62,6 +68,8 @@ python3 conformance/test_cli.py --record-python
 python3 conformance/test_http.py --record-python
 python3 conformance/test_api.py --record-python
 python3 conformance/test_http_gates.py --record-python
+python3 conformance/test_cli_runtime.py --record-python
+python3 conformance/test_scans.py --record-python
 ```
 
 Recording rejects alternate implementation command overrides. Review the diff;
@@ -69,7 +77,8 @@ do not refresh goldens merely because an alternate implementation fails them.
 
 | Area | Python | Rust | Coverage still required |
 | --- | --- | --- | --- |
-| CLI parsing | PASS, 56 cases | Not implemented | Runtime behavior of every command, retired commands, option combinations |
+| CLI parsing | PASS, 56 cases | Not implemented | More option combinations |
+| CLI runtime | PASS, 46 cases | Not implemented | More success/failure branches, qualified Flash/plan launch, populated digest/ledger |
 | HTTP empty install | PASS, 7 cases | Not implemented | Additional setup failures |
 | Configured HTTP | PASS, 50 cases | Not implemented | More option combinations and engine error paths |
 | HTTP gates | PASS, 17 cases | Not implemented | LAN share listeners and rate limits |
@@ -77,7 +86,9 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Files | PASS, 3 tests | Not implemented | Additional state stores and sharing secrets |
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness ready; Python/Python PASS | Not implemented | Run Python/selected/Python round trips with Rust |
-| Installation | Not covered | Not implemented | Bootstrap, update, rollback, uninstall, unit text, receipt and secret scanners |
+| Bootstrap/install | PASS, 4 scenarios | Not implemented | Full staged update/rollback flow and recovery |
+| Uninstall | PASS, dry-run and apply CLI cases | Not implemented | Installed release records and model deletion cases |
+| Shipped scans | PASS, 11 cases | Not implemented | More secret/SDK rule inputs (no real secrets or SDK material) |
 | Fake engine benchmark | Not measured | Not implemented | Idle/load RSS, CPU and latency |
 
 No hardware calls or real cloud API calls are part of this suite. Hardware A/B
@@ -87,3 +98,23 @@ At this reference SHA there is no cloud gateway implementation in the runtime:
 Wave D in AGENTS.md describes future work. Cloud provider/budget tests cannot yet
 be validated against Python. This remains an explicit baseline gap; neither
 cloud conformance nor full suite completion is claimed.
+
+Bootstrap contracts use the real source payload in a throwaway prefix, compare
+complete unit text, execute installed CLI help without PYTHONPATH, and verify
+hash-bound rollback plus refusal for altered identity, collisions and symlinks.
+Python's current unit invokes `/usr/bin/python3`; replacing that ExecStart with
+the native entry point will need a documented migration delta while retaining
+its service name, paths, resource limits and hardening settings.
+
+Helper entry points can be replaced independently when the native implementation
+provides them. Each override is a shell command string parsed with shlex:
+
+| Environment variable | Python reference process |
+| --- | --- |
+| `OXC_BOOTSTRAP_COMMAND` | `python3 -m snapdragon_ai_lab.bootstrap` |
+| `OXC_INSTALL_COMMAND` | `python3 -m snapdragon_ai_lab.bootstrap_install` |
+| `OXC_EXPORT_RECEIPT_COMMAND` | `python3 lab/tools/export_receipt.py` |
+| `OXC_SCRUB_RECEIPTS_COMMAND` | `python3 lab/tools/scrub_receipts.py` |
+
+Runtime CLI commands passed in overrides should be outside `/home` and `/tmp`,
+which are private mounts in these tests (a build under the checkout works).

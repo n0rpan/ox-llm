@@ -25,7 +25,7 @@ def isolated_env(home):
                         ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache'),
                         ('XDG_RUNTIME_DIR', 'run')):
         path = home / subdir
-        path.mkdir(mode=0o700)
+        path.mkdir(mode=0o700, exist_ok=True)
         env[key] = str(path)
     return env
 
@@ -98,19 +98,22 @@ def normalize_responses(body):
 
 
 class Daemon:
-    def __init__(self, configured=False, environ=None, config_changes=None):
+    def __init__(self, configured=False, environ=None, config_changes=None, port=None, home=None):
         self.configured = configured
         self.environ = environ or {}
         self.config_changes = config_changes or {}
         self.request_ids = set()
+        self.fixed_port, self.fixed_home = port, home
 
     def __enter__(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='oxc-http-conformance-')
-        self.home = home = Path(self.temp.name)
+        self.temp = None if self.fixed_home else tempfile.TemporaryDirectory(prefix='oxc-http-conformance-')
+        self.home = home = Path(self.fixed_home or self.temp.name)
         ports = set()
         while len(ports) < 3:
             ports.add(free_port())
         self.port, self.backend_port, flash_port = sorted(ports)
+        if self.fixed_port is not None:
+            self.port = self.fixed_port
         self.env = isolated_env(home)
         self.env.update({'LOCAL_LLM_PORT': str(self.port), 'LOCAL_LLM_BACKEND_PORT': str(self.backend_port),
                         'LOCAL_FLASH_BACKEND_PORT': str(flash_port),
@@ -269,7 +272,8 @@ class Daemon:
                 except FileNotFoundError:
                     pass
         self.log.close()
-        self.temp.cleanup()
+        if self.temp is not None:
+            self.temp.cleanup()
 
     def call(self, method, path, body=None, headers=None, timeout=5):
         connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=timeout)
