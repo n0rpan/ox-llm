@@ -175,7 +175,8 @@ fn golden_project_cwd() {
     env.write("work/.git/config", "[core]\n");
     env.write("work/.git/hooks/pre-commit.sample", "");
     env.write("work/.oxa/settings.json", "{}");
-    let a = bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &l);
+    let a =
+        oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &l));
     let mut want = strs(HEAD);
     want.extend(strs(&[
         "--bind",
@@ -232,7 +233,7 @@ fn golden_home_cwd_is_read_only_and_masked() {
     let env = TestEnv::new();
     let l = machine(&env);
     let home = env.home();
-    let a = bwrap_args_with(&spec("true", &home, true), &home, &l);
+    let a = oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &home, true), &home, &l));
     let mut want = strs(HEAD);
     want.extend(strs(&["--ro-bind", "<root>/home", "<root>/home"]));
     // Every toolchain bind is inside the cwd: none is left out (they hold their own mode).
@@ -265,7 +266,7 @@ fn golden_home_cwd_is_read_only_and_masked() {
         allow_home_write: true,
         ..l
     };
-    let a = bwrap_args_with(&spec("true", &home, true), &home, &allowed);
+    let a = oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &home, true), &home, &allowed));
     let s = shown(&a, &env);
     assert_eq!(
         s[HEAD.len()..HEAD.len() + 9],
@@ -289,7 +290,7 @@ fn golden_home_cwd_is_read_only_and_masked() {
     );
     // Plan mode in the same layout: nothing writable.
     let ro = shown(
-        &bwrap_args_with(&spec("true", &home, false), &home, &allowed),
+        &oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &home, false), &home, &allowed)),
         &env,
     );
     assert!(!ro.iter().any(|x| x.ends_with("/home/project")), "{ro:?}");

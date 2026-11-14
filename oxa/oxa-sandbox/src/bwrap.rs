@@ -79,6 +79,16 @@ pub(crate) fn bwrap_args_homes(
     );
     push(&mut a, &["--tmpfs", "/tmp"]);
     push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
+    // #53: a `$HOME` that is not the account's real home leaves the real one visible. Hide it
+    // like `$HOME` (an empty tmpfs; the cwd and the binds below are mounted on top), so its
+    // credentials are absent, not merely emptied by a mask. Never `/` or the sandbox's `$HOME`.
+    let real_c = real_home
+        .filter(|r| r.is_absolute() && *r != Path::new("/") && *r != home && **r != *home_c)
+        .map(canon)
+        .filter(|r| r != &home_c && r.parent().is_some() && std::fs::metadata(r).is_ok_and(|m| m.is_dir()));
+    if let Some(r) = &real_c {
+        push(&mut a, &["--tmpfs", &r.to_string_lossy()]);
+    }
     let mode = cwd_mode(s, home, layout);
     let writable = mode == CwdMode::Writable;
     let bind = if writable { "--bind" } else { "--ro-bind" };
@@ -191,7 +201,9 @@ pub(crate) fn bwrap_args_homes(
     // (the cwd, the home workspace's entries, the layout's binds at their own destinations,
     // the git data), so a symlink in the way never leaves a second, unmasked route.
     let shown = |p: &Path| {
-        (!p.starts_with(home) && !p.starts_with(&home_c))
+        (!p.starts_with(home)
+            && !p.starts_with(&home_c)
+            && !real_c.as_ref().is_some_and(|r| p.starts_with(r)))
             || p.starts_with(cwd_path)
             || binds.iter().any(|(b, _)| p.starts_with(b))
             || layout.git.paths().any(|b| p.starts_with(b))
@@ -225,7 +237,10 @@ pub(crate) fn bwrap_args_homes(
         let Ok(pc) = std::fs::canonicalize(&p) else {
             continue;
         };
-        if !pc.starts_with(&home_c) && !pc.starts_with(home) {
+        if !pc.starts_with(&home_c)
+            && !pc.starts_with(home)
+            && !real_c.as_ref().is_some_and(|r| pc.starts_with(r))
+        {
             masks.push((pc.clone(), dir));
         }
         for (dest, src) in &mounts {
@@ -264,6 +279,22 @@ pub(crate) fn bwrap_args_homes(
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a
+}
+
+/// The home of the current uid from the passwd database, never from `$HOME`.
+pub fn account_home() -> Option<PathBuf> {
+    real_home()
+}
+
+/// `argv` without the `--tmpfs <account home>` pair that hides the real home (for goldens that
+/// pin a fake `$HOME` and must not depend on the machine they run on).
+pub fn without_account_home(mut argv: Vec<String>) -> Vec<String> {
+    if let Some(r) = real_home().map(|r| canon(&r).to_string_lossy().into_owned()) {
+        if let Some(i) = argv.windows(2).position(|w| w[0] == "--tmpfs" && w[1] == r) {
+            argv.drain(i..i + 2);
+        }
+    }
+    argv
 }
 
 /// The home of the current uid from the passwd database, never from `$HOME`.
@@ -573,22 +604,43 @@ mod tests {
     }
 
     #[test]
-    fn a_different_home_keeps_the_real_home_credentials_masked() {
+    fn a_different_home_hides_the_real_home_in_every_mode() {
         let env = TestEnv::new();
         let real = env.root().join("realhome");
         env.write("realhome/.ssh/id", "K");
         env.write("realhome/.config/local-ai/llm/cloud-secrets.json", "{}");
-        let a = bwrap_args_homes(
-            &spec(&env.work(), true),
-            &env.home(),
-            &Layout::default(),
-            Some(&real),
-        );
-        assert!(masked(&a, &real.join(".ssh")), "{a:?}");
-        assert!(
-            masked(&a, &real.join(".config/local-ai/llm/cloud-secrets.json")),
-            "{a:?}"
-        );
+        let real_s = real.to_string_lossy().into_owned();
+        for (writable, net) in [(true, true), (true, false), (false, true), (false, false)] {
+            let mut sp = spec(&env.work(), net);
+            sp.writable = writable;
+            let a = bwrap_args_homes(&sp, &env.home(), &Layout::default(), Some(&real));
+            // An empty tmpfs over the real home: `~/.ssh` and the cloud keys are absent
+            // (`test -r` fails), not just emptied by a mask.
+            assert!(a.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == real_s), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn a_cwd_inside_the_real_home_keeps_its_credentials_masked() {
+        let env = TestEnv::new();
+        let real = env.root().join("realhome");
+        env.write("realhome/proj/x", "1");
+        env.write("realhome/proj/.ssh/id", "K");
+        let cwd = real.join("proj");
+        // A credential path that lies inside the cwd mount is masked there.
+        let layout = Layout {
+            agent_dir: Some(cwd.join(".ssh")),
+            ..Layout::default()
+        };
+        let a = bwrap_args_homes(&spec(&cwd, true), &env.home(), &layout, Some(&real));
+        assert!(masked(&a, &cwd.join(".ssh")), "{a:?}");
+        let real_s = real.to_string_lossy().into_owned();
+        let tmpfs = a.iter().position(|x| *x == real_s).expect("real home hidden");
+        let bind = a
+            .iter()
+            .position(|x| *x == cwd.to_string_lossy())
+            .expect("cwd bound");
+        assert!(tmpfs < bind, "{a:?}");
     }
 
     #[test]

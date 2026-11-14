@@ -19,10 +19,13 @@ impl Sandbox for Recording {
         Ok(())
     }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
-        bwrap_args(s, &self.home)
+        oxa_sandbox::without_account_home(bwrap_args(s, &self.home))
     }
     fn run(&self, s: &ExecSpec, _c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        self.argv.lock().unwrap().push(bwrap_args(s, &self.home));
+        self.argv
+            .lock()
+            .unwrap()
+            .push(oxa_sandbox::without_account_home(bwrap_args(s, &self.home)));
         ExecResult {
             output: Vec::new(),
             exit: Some(0),
