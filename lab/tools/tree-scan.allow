@@ -2,6 +2,7 @@
 # Columns are separated by TABs: GLOB, RULE, REASON. Every line needs a reason. Keep this list short.
 !allow-exact	Yoga	Product name of the test laptop.
 !allow-word	yoga	The host name of the development machine equals the product name, which is part of file and device-tree names.
+!allow-word	n0rpan	The owner's public handle (copyright, author and repository-owner lines, owner decision O-23) is also the host name of a development machine; a host named like the public handle must not fail the tree scan. The owner-identity test still confines the handle to those lines.
 tests/test_export_receipt.py	*	Scanner test: invented paths, addresses and keys are the test input.
 tests/test_mac_reproduce.py	*	Scanner test: invented paths, addresses and keys are the test input.
 tests/test_backup_sanitize.py	*	Scanner test: invented paths, addresses and keys are the test input (incl. plain-literal synthetic dotted credential controls, P63; export-excluded).
