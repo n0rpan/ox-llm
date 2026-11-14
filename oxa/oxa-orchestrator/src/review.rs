@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::{
     ffi::OsStrExt,
     fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -130,8 +130,7 @@ impl PreparedReview {
         let parent = directory
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."))
-            .canonicalize()?;
+            .unwrap_or(Path::new("."));
         let raw_name = directory
             .as_os_str()
             .as_bytes()
@@ -147,10 +146,7 @@ impl PreparedReview {
             return Err(invalid("invalid candidate directory name"));
         }
         let name = CString::new(name.as_bytes()).map_err(|_| invalid("invalid candidate directory name"))?;
-        let parent = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(parent)?;
+        let parent = trusted_parent(parent)?;
         let mut random = [0u8; 16];
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         let temporary = format!(
@@ -216,6 +212,69 @@ impl PreparedReview {
         parent.sync_all()?;
         Ok(())
     }
+}
+
+// Bind publication to an enforced namespace: untrusted users must not be able
+// to replace either the staging child or an ancestor named in the output path.
+// Same-UID processes and root are the operator's trusted authority boundary.
+fn trusted_parent(path: &Path) -> io::Result<File> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if absolute.as_os_str().as_bytes().len() > 4096 {
+        return Err(invalid("candidate destination path is too long"));
+    }
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open("/")?;
+    check_namespace(&directory)?;
+    for component in absolute.components() {
+        let name = match component {
+            std::path::Component::RootDir | std::path::Component::CurDir => continue,
+            std::path::Component::Normal(name) => name,
+            _ => return Err(invalid("candidate destination cannot contain parent traversal")),
+        };
+        let name =
+            CString::new(name.as_bytes()).map_err(|_| invalid("invalid candidate directory component"))?;
+        // SAFETY: live owned parent FD, valid C component; no symlink traversal.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: openat returned a new owned descriptor.
+        directory = unsafe { File::from_raw_fd(fd) };
+        check_namespace(&directory)?;
+    }
+    // Reopen the pinned final inode for publication/fsync, without requiring
+    // read/list permission on every ancestor traversed through O_PATH.
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open(format!("/proc/self/fd/{}", directory.as_raw_fd()))
+}
+fn check_namespace(directory: &File) -> io::Result<()> {
+    let metadata = directory.metadata()?;
+    // SAFETY: geteuid has no arguments or memory access side effects.
+    let user = unsafe { libc::geteuid() };
+    if !metadata.is_dir()
+        || (metadata.uid() != user && metadata.uid() != 0)
+        || (metadata.mode() & 0o022 != 0 && metadata.mode() & libc::S_ISVTX == 0)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "candidate namespace must be owner/root controlled and protect entries from other users",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -618,5 +677,75 @@ mod tests {
         assert!(proposals_from_report(&env.root().join("report-link"), &selected).is_err());
         fs::hard_link(&path, env.root().join("report-hard")).unwrap();
         assert!(proposals_from_report(&path, &selected).is_err());
+    }
+    #[test]
+    fn publication_refuses_replaceable_parent_and_ancestor_namespaces() {
+        let env = TestEnv::new();
+        let snapshot = snapshot(&env);
+        let proposal = proposal(
+            &env,
+            snapshot.clone(),
+            "one",
+            &[("a.txt", Some("approved change\n"))],
+        );
+        let prepared = PreparedReview::prepare(snapshot, vec![], vec![proposal]).unwrap();
+        for (label, mode) in [("group-writable", 0o770), ("world-writable", 0o777)] {
+            let parent = env.root().join(label);
+            fs::create_dir(&parent).unwrap();
+            fs::set_permissions(&parent, fs::Permissions::from_mode(mode)).unwrap();
+            let target = parent.join("candidate");
+            assert_eq!(
+                prepared
+                    .stage(&target, &prepared.preview().approval_sha256)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert!(!target.exists());
+            assert!(fs::read_dir(&parent).unwrap().next().is_none());
+            let inner = parent.join("private-child");
+            fs::DirBuilder::new().mode(0o700).create(&inner).unwrap();
+            assert!(
+                prepared
+                    .stage(&inner.join("candidate"), &prepared.preview().approval_sha256)
+                    .is_err(),
+                "a private final parent cannot repair a replaceable ancestor"
+            );
+            assert!(!inner.join("candidate").exists());
+        }
+        let private = env.root().join("private");
+        fs::DirBuilder::new().mode(0o700).create(&private).unwrap();
+        symlink(&private, env.root().join("alias")).unwrap();
+        assert!(prepared
+            .stage(
+                &env.root().join("alias/candidate"),
+                &prepared.preview().approval_sha256
+            )
+            .is_err());
+        prepared
+            .stage(&private.join("candidate"), &prepared.preview().approval_sha256)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(private.join("candidate/a.txt")).unwrap(),
+            "approved change\n"
+        );
+        let execute_only = env.root().join("execute-only");
+        fs::create_dir(&execute_only).unwrap();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(execute_only.join("private"))
+            .unwrap();
+        fs::set_permissions(&execute_only, fs::Permissions::from_mode(0o111)).unwrap();
+        let staged = prepared.stage(
+            &execute_only.join("private/candidate"),
+            &prepared.preview().approval_sha256,
+        );
+        fs::set_permissions(&execute_only, fs::Permissions::from_mode(0o700)).unwrap();
+        staged.unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(private.join("candidate/.oxa-review.json")).unwrap()).unwrap();
+        let snapshot =
+            Snapshot::approve(&private.join("candidate"), vec![path("a.txt"), path("b.txt")]).unwrap();
+        assert_eq!(receipt["candidate_manifest_sha256"], snapshot.manifest_sha256());
     }
 }
