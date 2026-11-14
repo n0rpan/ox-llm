@@ -27,6 +27,20 @@ class Paths(unittest.TestCase):
         self.assertFalse(got['lab'])
         self.assertFalse(got['docs'])
 
+    def test_runtime_markdown_is_source_for_branch_pr_and_main(self):
+        for name in ('oxa/oxa-resources/builtin-skills/ox-llm/SKILL.md',
+                     'oxa/oxa-resources/builtin-skills/oxa-extend/SKILL.md',
+                     'lab/src/prompts/system.md', 'engine/src/template.rst'):
+            for full_event in (False, True):
+                with self.subTest(name=name, full_event=full_event):
+                    got = paths.classify([name], full_event)
+                    self.assertFalse(got['docs'])
+                    self.assertTrue(got[name.split('/')[0]])
+                    self.assertEqual(got['full'], full_event)
+        got = paths.classify(['README.md', 'oxa/oxa-resources/builtin-skills/ox-llm/SKILL.md'], True)
+        self.assertFalse(got['docs'])
+        self.assertTrue(got['full'])
+
     def test_unknown_workflow_and_tooling_changes_test_every_product(self):
         for path in ('.github/workflows/checks.yml', 'tools/ci/paths.py', 'new-product/code',
                      'engine-other/src/code.rs', 'lab-notes.txt'):

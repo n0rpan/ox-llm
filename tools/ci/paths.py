@@ -6,12 +6,26 @@ import re
 import subprocess
 
 
+def documentation(path):
+    """Only known documentation locations qualify; runtime Markdown is product source."""
+    parts = Path(path).parts
+    if Path(path).suffix.lower() not in ('.md', '.rst'):
+        return False
+    if len(parts) == 1:
+        return parts[0] in ('README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'AGENTS.md', 'SECURITY.md')
+    if parts[0] == 'docs' or (len(parts) >= 3 and parts[0] in ('oxa', 'engine', 'lab')
+                              and parts[1] == 'docs'):
+        return True
+    return len(parts) == 2 and parts[0] in ('oxa', 'engine', 'lab') and parts[1] in (
+        'README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'AGENTS.md', 'SECURITY.md')
+
+
 def classify(paths, full_event=False):
     paths = list(paths)
-    docs = bool(paths) and all(Path(path).suffix.lower() in ('.md', '.rst') for path in paths)
+    docs = bool(paths) and all(documentation(path) for path in paths)
     changed = {'oxa': False, 'engine': False, 'lab': False}
     for path in paths:
-        if Path(path).suffix.lower() in ('.md', '.rst'):
+        if documentation(path):
             continue
         component = path.split('/', 1)[0]
         if component in changed:
