@@ -37,6 +37,7 @@ test orchestrate CLI crash inspection ... ok
 test native cancellation journal inspection ... ok
 test orchestrate CLI Git worktrees ... ok
 test orchestrate CLI stalled stderr ... ok
+test orchestrate CLI structural input limits ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -106,3 +107,7 @@ keeps its reader open without draining it. The one-second run deadline still
 produces a partial JSON report, reaps the owned workers and closes the observed
 owned listener. The caller's stderr flags stay unchanged. The actual feature-built
 binary smoke check exercises the same case.
+Structural input validation uses the same bounds as output collection. Unit tests
+materialize and collect unchanged snapshots at 16 directory levels and 128 total
+entries. The CLI rejects 17-level and 129-entry input layouts before creating run
+state or probing inference; eligible new-file scope is checked too.
