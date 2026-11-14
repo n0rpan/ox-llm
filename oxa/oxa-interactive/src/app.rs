@@ -933,7 +933,14 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             vm.status.steering = steering.clone();
             vm.status.follow_up = follow_up.clone();
         }
-        AgentEvent::ModelSelect { model, .. } => vm.status.model = model.clone(),
+        AgentEvent::ModelSelect { model, .. } => {
+            if vm.status.model != *model {
+                vm.status.tok_per_s = None;
+                vm.status.last_cached = None;
+                vm.status.last_prompt = None;
+            }
+            vm.status.model = model.clone();
+        }
         AgentEvent::ThinkingLevelChanged { level } => vm.status.thinking = Some(*level),
         AgentEvent::SessionInfoChanged { name } => vm.status.session_name = name.clone(),
         AgentEvent::BashExecutionUpdate { delta, .. } => {
@@ -1660,6 +1667,10 @@ fn reopened(s: &Session, last: &mut StatusModel) -> WorkerMsg {
 /// Copy the state-derived fields of a fresh status into the UI's status. Display-only and
 /// event-driven fields (activity, queues, extension status, cwd, branch) stay with the UI.
 pub(crate) fn refresh_status(dst: &mut StatusModel, fresh: StatusModel) {
+    if dst.model != fresh.model || fresh.context_tokens == 0 {
+        dst.last_cached = None;
+        dst.last_prompt = None;
+    }
     dst.model = fresh.model;
     dst.thinking = fresh.thinking;
     dst.mode = fresh.mode;
@@ -2191,5 +2202,40 @@ mod terminal_colour_tests {
             Some(Appearance::Dark)
         );
         assert_eq!(pick(opts(&[]), None), None);
+    }
+}
+
+#[cfg(test)]
+mod status_reset_tests {
+    use super::*;
+
+    fn stale() -> StatusModel {
+        StatusModel {
+            model: "a".into(),
+            last_cached: Some(97),
+            last_prompt: Some(100),
+            tok_per_s: Some(54.4),
+            context_tokens: 100,
+            ..StatusModel::default()
+        }
+    }
+
+    /// The TUI path of `/model`: the `ModelSelect` event, before any new turn.
+    #[test]
+    fn model_select_event_clears_speed_and_cache() {
+        let mut vm = ViewModel { status: stale(), ..ViewModel::default() };
+        apply_event(&mut vm, &AgentEvent::ModelSelect { model: "b".into(), previous: Some("a".into()) });
+        assert_eq!((vm.status.tok_per_s, vm.status.last_cached, vm.status.last_prompt), (None, None, None));
+    }
+
+    /// The TUI path of `/new` (`WorkerMsg::Reopened` / `Status` -> `refresh_status`).
+    #[test]
+    fn refresh_status_clears_cache_on_empty_session_and_keeps_it_otherwise() {
+        let mut dst = stale();
+        refresh_status(&mut dst, StatusModel { model: "a".into(), context_tokens: 0, ..StatusModel::default() });
+        assert_eq!((dst.last_cached, dst.last_prompt), (None, None));
+        let mut dst = stale();
+        refresh_status(&mut dst, StatusModel { model: "a".into(), context_tokens: 120, ..StatusModel::default() });
+        assert_eq!(dst.last_cached, Some(97));
     }
 }
