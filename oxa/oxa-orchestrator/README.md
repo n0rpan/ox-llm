@@ -65,7 +65,7 @@ process IDs and result hashes. Raw prompts, credentials, diagnostics and model
 output do not enter that journal. Results are returned in memory; callers must
 decide whether and where to persist approved content. Audit failure stops the
 run and drops all owned workers. Existing run directories are never reused or
-replayed. Read-only crash inspection, explicitly enabled journal-bound completed-worker checkpoints and
+replayed. Cooperative journal ownership, read-only crash inspection, explicitly enabled journal-bound completed-worker checkpoints and
 explicit known-task reconciliation are described
 in [RECOVERY.md](RECOVERY.md). A new run must not be treated as resuming an old task.
 

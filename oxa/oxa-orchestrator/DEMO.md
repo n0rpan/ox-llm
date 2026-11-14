@@ -136,3 +136,10 @@ scenario verifies stdout still contains the complete result while no final,
 pending or per-worker result JSON is created and the journal has no checkpoint
 binding or raw result text. Library callers must explicitly choose
 `A2ARunSettings::persist_results`; normal scheduler fixtures choose false.
+
+The completed-worker crash fixture also verifies that exclusive recovery returns
+`WouldBlock` before killing the owned controller, then can claim its exact journal
+inode after death while recovering saved results. Library tests verify live
+inspection remains available, a second recovery owner is excluded, dropping the
+owner releases the lock, legacy journals cannot establish exclusion, and an audit
+write failure retains ownership until the writer is dropped.

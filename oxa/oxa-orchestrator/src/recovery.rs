@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -68,10 +68,55 @@ pub struct Snapshot {
     pub records: usize,
     pub truncated_tail: bool,
     pub recorded_run_finished: bool,
+    /// New writers hold an exclusive kernel lock for the journal's lifetime.
+    pub exclusive_ownership_supported: bool,
     pub workers: Vec<WorkerSnapshot>,
 }
 pub struct InspectedRun {
     snapshot: Snapshot,
+}
+
+/// Exclusive recovery authority over a cooperative writer's inactive journal
+/// inode. Keep this value alive for the entire recovery operation.
+/// It does not prove that a remote task or native descendant has stopped.
+pub struct ExclusiveRun {
+    inspected: InspectedRun,
+    _journal: File,
+}
+impl ExclusiveRun {
+    pub fn claim(path: &Path) -> io::Result<Self> {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let _namespace = crate::namespace::protected_directory(parent)?;
+        let handle = open_input(path, MAX_JOURNAL)?;
+        let metadata = handle.metadata()?;
+        // SAFETY: geteuid only returns the effective user identity.
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+            return Err(invalid(
+                "exclusive recovery requires an operator-owned private journal",
+            ));
+        }
+        let journal = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(format!("/proc/self/fd/{}", handle.as_raw_fd()))?;
+        crate::ownership::lock(&journal)?;
+        let inspected = InspectedRun::from_bytes(read_handle(&journal, MAX_JOURNAL)?)?;
+        if !inspected.snapshot.exclusive_ownership_supported {
+            return Err(invalid(
+                "legacy journal does not establish cooperative controller ownership",
+            ));
+        }
+        Ok(Self {
+            inspected,
+            _journal: journal,
+        })
+    }
+    pub fn inspected(&self) -> &InspectedRun {
+        &self.inspected
+    }
 }
 #[derive(Deserialize)]
 struct Record {
@@ -86,7 +131,9 @@ struct Record {
 
 impl InspectedRun {
     pub fn inspect(path: &Path) -> io::Result<Self> {
-        let bytes = read_journal(path)?;
+        Self::from_bytes(read_journal(path)?)
+    }
+    fn from_bytes(bytes: Vec<u8>) -> io::Result<Self> {
         let truncated_tail = bytes.last() != Some(&b'\n');
         let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
         if end == 0 {
@@ -102,6 +149,7 @@ impl InspectedRun {
         let mut elapsed = 0;
         let mut records = 0;
         let mut finished = false;
+        let mut exclusive_ownership_supported = false;
         for line in bytes[..end - 1].split(|b| *b == b'\n') {
             if line.len() > MAX_LINE || records >= MAX_RECORDS {
                 return Err(invalid("journal record bound exceeded"));
@@ -136,6 +184,11 @@ impl InspectedRun {
                     None => Transport::LocalRpc,
                     Some(Value::String(value)) if value == "A2A-0.3.0" => Transport::A2a,
                     _ => return Err(invalid("unsupported recorded transport")),
+                };
+                exclusive_ownership_supported = match record.details.get("ownership") {
+                    None => false,
+                    Some(Value::String(value)) if value == crate::ownership::PROTOCOL => true,
+                    _ => return Err(invalid("unsupported controller ownership protocol")),
                 };
                 continue;
             }
@@ -299,6 +352,7 @@ impl InspectedRun {
                 records,
                 truncated_tail,
                 recorded_run_finished: finished,
+                exclusive_ownership_supported,
                 workers: workers.into_values().collect(),
             },
         })
@@ -627,10 +681,21 @@ fn read_journal(path: &Path) -> io::Result<Vec<u8>> {
     read_bounded(path, MAX_JOURNAL)
 }
 fn read_bounded(path: &Path, max: usize) -> io::Result<Vec<u8>> {
+    let handle = open_input(path, max)?;
+    read_handle(&handle, max)
+}
+fn open_input(path: &Path, max: usize) -> io::Result<File> {
     let handle = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
+    let before = handle.metadata()?;
+    if !before.is_file() || before.nlink() != 1 || before.len() > max as u64 {
+        return Err(invalid("input must be a bounded plain single-link file"));
+    }
+    Ok(handle)
+}
+fn read_handle(handle: &File, max: usize) -> io::Result<Vec<u8>> {
     let before = handle.metadata()?;
     if !before.is_file() || before.nlink() != 1 || before.len() > max as u64 {
         return Err(invalid("input must be a bounded plain single-link file"));
