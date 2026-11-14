@@ -155,6 +155,26 @@ jobs:
           env -i PATH="$PATH" HOME="$root/home" PIP_CACHE_DIR="$HOME/.cache/pip" \
             tools/openai-contract/run.sh --mode both --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
 
+  fuzz-oxc:
+    # Task 61: fast properties over the SSE translators, request normalisers and file readers.
+    # The long hypothesis/libFuzzer runs stay local; this job only proves the targets still run.
+    name: oxc fuzz smoke (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: lab
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Hypothesis smoke
+        run: |
+          python3 -m venv "$RUNNER_TEMP/oxc-fuzz-venv"
+          "$RUNNER_TEMP/oxc-fuzz-venv/bin/pip" install -q --disable-pip-version-check -r tests/fuzz/requirements.txt
+          PATH="$RUNNER_TEMP/oxc-fuzz-venv/bin:$PATH" ./tools/run_lab_tests.sh discover -s tests/fuzz -v
+
   lab:
     if: github.event_name != 'pull_request'
     name: lab tests, CLI, receipt scrub (x86_64)
@@ -193,13 +213,6 @@ jobs:
         run: |
           set -o pipefail
           ./tools/run_lab_tests.sh discover -s tests -v 2>&1 | tee unittest.log
-      - name: Fuzz smoke (hypothesis, seconds)
-        # Task 61: the fast properties over the SSE translators, request normalisers and file
-        # readers. The long runs stay local; this step only proves the targets still run.
-        run: |
-          python3 -m venv "$RUNNER_TEMP/oxc-fuzz-venv"
-          "$RUNNER_TEMP/oxc-fuzz-venv/bin/pip" install -q --disable-pip-version-check -r tests/fuzz/requirements.txt
-          PATH="$RUNNER_TEMP/oxc-fuzz-venv/bin:$PATH" ./tools/run_lab_tests.sh discover -s tests/fuzz -v
       - name: Report skipped tests
         if: always()
         # every skip is surfaced as an annotation instead of a silent pass (e.g. tests that need
