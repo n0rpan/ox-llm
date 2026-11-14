@@ -929,8 +929,182 @@ fn a2a_scheduler_steering_cancellation_and_wire_caps() {
     assert!(report.workers[0].task.is_some());
 }
 
+fn cli_binary() -> std::path::PathBuf {
+    // Local feature-enabled binary smoke runs can point at the checkout build;
+    // hosted default tests use this fixture's identical command implementation.
+    std::env::var_os("OXA_ORCHESTRATE_TEST_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_exe().unwrap())
+}
+fn cli_command(env: &TestEnv, engine: &FakeServer, name: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(cli_binary());
+    command
+        .env_clear()
+        .envs(env.envs(&engine.url()))
+        .env("OXA_PARENT_PRIVATE_MARKER", "synthetic-cli-parent")
+        .current_dir(env.work())
+        .args([
+            "orchestrate",
+            "--engine",
+            engine.url().trim_start_matches("http://"),
+            "--model",
+            "fake-model",
+            "--local-only",
+            "--directory",
+        ])
+        .arg(env.root().join(name));
+    command
+}
+
+fn orchestrate_cli_success_and_validation() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("synthetic CLI result \u{001b}\u{009d}\u{007f}"); 2],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = cli_command(&env, &engine, "cli-success")
+        .args([
+            "--workers",
+            "2",
+            "--role",
+            "reader",
+            "--role",
+            "reviewer",
+            "--",
+            "synthetic CLI goal",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["workers"].as_array().unwrap().len(), 2);
+    assert!(report["workers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|w| w["outcome"] == "completed"));
+    assert!(!output.stdout.contains(&0x1b), "JSON escapes terminal controls");
+    assert!(!String::from_utf8_lossy(&output.stdout)
+        .chars()
+        .any(|c| c.is_control() && c != '\n'));
+    let status = String::from_utf8(output.stderr).unwrap();
+    assert!(status.contains("worker-1: completed"));
+    assert!(status.contains("worker-2: completed"));
+    let root = env.root().join("cli-success");
+    assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o077, 0);
+    let audit = std::fs::read_to_string(root.join("run/transcript.jsonl")).unwrap();
+    assert!(!audit.contains("synthetic CLI goal"));
+    assert!(engine.requests().iter().all(|r| r.tools_json == "[]"));
+    let before = engine.requests().len();
+    let output = cli_command(&env, &engine, "cli-invalid")
+        .args(["--yolo", "synthetic goal"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!env.root().join("cli-invalid").exists());
+    let output = cli_command(&env, &engine, "cli-help")
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(!env.root().join("cli-help").exists());
+    assert_eq!(
+        engine.requests().len(),
+        before,
+        "help and rejected options never probe the engine"
+    );
+    std::fs::write(root.join("keep"), "keep-existing-data").unwrap();
+    let output = cli_command(&env, &engine, "cli-success")
+        .arg("goal")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        std::fs::read_to_string(root.join("keep")).unwrap(),
+        "keep-existing-data"
+    );
+}
+
+struct CliChild(std::process::Child);
+impl Drop for CliChild {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+fn orchestrate_cli_signal_cleanup() {
+    use std::io::Read;
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("canceled CLI result")],
+        FakeOpts {
+            hold_headers_ms: 1500,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut child = CliChild(
+        cli_command(&env, &engine, "cli-signal")
+            .args([
+                "--workers",
+                "1",
+                "--worker-timeout",
+                "4",
+                "--timeout",
+                "10",
+                "synthetic cancel goal",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stderr = std::io::BufReader::new(child.0.stderr.take().unwrap());
+    let mut line = String::new();
+    let mut working = false;
+    while stderr.read_line(&mut line).unwrap() != 0 {
+        if line.contains("worker-1: working") {
+            working = true;
+            break;
+        }
+        line.clear();
+    }
+    assert!(working, "CLI reached active worker status");
+    // SAFETY: this PID is our live, unreaped test child, not a system process.
+    assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGINT) }, 0);
+    let mut stdout = Vec::new();
+    child.0.stdout.take().unwrap().read_to_end(&mut stdout).unwrap();
+    assert_eq!(child.0.wait().unwrap().code(), Some(130));
+    let report: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(report["workers"][0]["outcome"], "canceled");
+    assert_eq!(report["workers"][0]["stop"], "confirmed");
+    let mut spawned = 0;
+    for entry in std::fs::read_dir(env.root().join("cli-signal/agents")).unwrap() {
+        let log = std::fs::read_to_string(entry.unwrap().path().join("transcript.jsonl")).unwrap();
+        for line in log.lines() {
+            let event: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(pid) = event["details"]["processId"].as_u64() {
+                spawned += 1;
+                assert!(!Path::new(&format!("/proc/{pid}")).exists());
+            }
+        }
+    }
+    assert!(spawned > 0);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
+        std::process::exit(code);
+    }
     if args.first().map(String::as_str) == Some("--mode") {
         assert_eq!(std::env::var("HOME").unwrap(), "/home/worker");
         assert!(std::env::var("OXA_PARENT_PRIVATE_MARKER").is_err());
@@ -988,7 +1162,15 @@ fn main() {
             "A2A scheduler steering, cancellation and wire caps",
             a2a_scheduler_steering_cancellation_and_wire_caps,
         ),
+        (
+            "orchestrate CLI success and inert validation",
+            orchestrate_cli_success_and_validation,
+        ),
+        ("orchestrate CLI signal cleanup", orchestrate_cli_signal_cleanup),
     ] {
+        if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {
+            continue;
+        }
         println!("test {name} ...");
         test();
         println!("test {name} ... ok");

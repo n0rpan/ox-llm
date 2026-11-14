@@ -1,6 +1,6 @@
 # Model-free supervisor demo log
 
-This is the local RPC/A2A orchestration foundation, not the final CLI demo. Every
+This is the local RPC/A2A orchestration foundation and opt-in CLI demo. Every
 inference request uses an owned loopback fake engine. No installed model or
 service is contacted. The worker fixture runs the actual oxa CLI/RPC code in a
 private bubblewrap sandbox; dedicated hostile fixtures exercise failure paths.
@@ -27,6 +27,8 @@ test A2A cancellation, resubscription and shutdown ... ok
 test cancellation bypasses full control queues ... ok
 test A2A scheduler coordinates real RPC workers ... ok
 test A2A scheduler steering, cancellation and wire caps ... ok
+test orchestrate CLI success and inert validation ... ok
+test orchestrate CLI signal cleanup ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -54,3 +56,10 @@ reserved wire allowance. Reproduce those with:
 ```sh
 cargo test --locked -p oxa-orchestrator --test a2a_scheduler
 ```
+
+The CLI scenarios also pass through an actual `oxa` binary built with
+`--features orchestrator`. They verify two worker results, live stderr status,
+JSON-safe terminal controls, no engine access for help/rejected options,
+refusal to overwrite an existing directory, and SIGINT exit 130 after worker
+reaping. The default build excludes the orchestration dependency; enabling the
+feature leaves base help byte-identical. See [CLI.md](CLI.md) for reproduction.

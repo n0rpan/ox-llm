@@ -8,6 +8,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+orchestrator = ["dep:oxa-orchestrator"]
+
 [lib]
 name = "oxa_cli"
 path = "src/lib.rs"
@@ -17,6 +21,7 @@ name = "oxa"
 path = "src/main.rs"
 
 [dependencies]
+oxa-orchestrator = { path = "../oxa-orchestrator", optional = true }
 oxa-proto.workspace = true
 oxa-engine.workspace = true
 oxa-session.workspace = true

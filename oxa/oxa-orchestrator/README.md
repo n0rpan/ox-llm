@@ -3,7 +3,8 @@
 Work in progress for milestone 3 of the
 [orchestrator design](../docs/design/a2a-orchestrator.md).
 This library has no startup side effects and is not linked into the normal oxa
-binary. There is no default orchestration command or automatically started listener.
+binary. The default-off `orchestrator` feature adds `oxa orchestrate`; see
+[the CLI guide](CLI.md). There is no automatically started listener.
 
 ## Executable profile
 
@@ -168,5 +169,5 @@ single-child cleanup do not provide this supervisor's guarantees.
 Production TLS/remote routing, automatic stream resubscription, stronger
 inference-network isolation, hard provider request/spend
 limits, approved file inputs/worktrees and patch review, restart reconciliation,
-and opt-in CLI/status UX remain required. This working local profile is a
+and richer interactive worker controls remain required. This working local profile is a
 foundation, not a claim that the full orchestration brief is complete.
