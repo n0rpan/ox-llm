@@ -175,6 +175,7 @@ pub fn run_a2a(
         .parent()
         .ok_or_else(|| invalid("missing run directory parent"))?
         .canonicalize()?;
+    let _namespace = crate::namespace::protected_directory(&parent)?;
     let directory = parent.join(
         settings
             .directory

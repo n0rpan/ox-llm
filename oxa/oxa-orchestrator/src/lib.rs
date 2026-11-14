@@ -4,6 +4,7 @@ pub mod a2a_run;
 pub mod cli;
 mod git_worktrees;
 mod journal;
+mod namespace;
 mod process;
 pub mod recovery;
 mod recovery_cli;

@@ -573,12 +573,12 @@ fn scan(
     }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
+        if skip_git && depth == 0 && entry.file_name() == ".git" {
+            continue;
+        }
         *count += 1;
         if *count > MAX_ENTRIES {
             return Err(limit("workspace entry limit exceeded"));
-        }
-        if skip_git && depth == 0 && entry.file_name() == ".git" {
-            continue;
         }
         let ty = entry.file_type()?;
         let relative = entry

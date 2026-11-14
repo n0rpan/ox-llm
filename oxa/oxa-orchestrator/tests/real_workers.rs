@@ -1962,6 +1962,21 @@ fn orchestrate_cli_structural_input_limits() {
     );
 }
 
+fn orchestrate_cli_protected_run_namespace() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let shared = env.root().join("shared-output");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o770)).unwrap();
+    let output = cli_command(&env, &engine, "shared-output/run")
+        .arg("synthetic namespace goal")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(std::fs::read_dir(&shared).unwrap().next().is_none());
+    assert!(engine.requests().is_empty());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -2059,8 +2074,15 @@ fn main() {
             native_control_cancel_journal_inspection,
         ),
         ("orchestrate CLI Git worktrees", orchestrate_cli_git_worktrees),
-        ("orchestrate CLI stalled stderr",orchestrate_cli_stalled_stderr),
-        ("orchestrate CLI structural input limits",orchestrate_cli_structural_input_limits),
+        ("orchestrate CLI stalled stderr", orchestrate_cli_stalled_stderr),
+        (
+            "orchestrate CLI structural input limits",
+            orchestrate_cli_structural_input_limits,
+        ),
+        (
+            "orchestrate CLI protected run namespace",
+            orchestrate_cli_protected_run_namespace,
+        ),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {
             continue;

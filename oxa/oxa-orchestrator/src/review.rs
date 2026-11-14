@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::{
     ffi::OsStrExt,
     fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -146,7 +146,11 @@ impl PreparedReview {
             return Err(invalid("invalid candidate directory name"));
         }
         let name = CString::new(name.as_bytes()).map_err(|_| invalid("invalid candidate directory name"))?;
-        let parent = trusted_parent(parent)?;
+        let anchor = crate::namespace::protected_directory(parent)?;
+        let parent = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(format!("/proc/self/fd/{}", anchor.as_raw_fd()))?;
         let mut random = [0u8; 16];
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         let temporary = format!(
@@ -212,69 +216,6 @@ impl PreparedReview {
         parent.sync_all()?;
         Ok(())
     }
-}
-
-// Bind publication to an enforced namespace: untrusted users must not be able
-// to replace either the staging child or an ancestor named in the output path.
-// Same-UID processes and root are the operator's trusted authority boundary.
-fn trusted_parent(path: &Path) -> io::Result<File> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    if absolute.as_os_str().as_bytes().len() > 4096 {
-        return Err(invalid("candidate destination path is too long"));
-    }
-    let mut directory = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open("/")?;
-    check_namespace(&directory)?;
-    for component in absolute.components() {
-        let name = match component {
-            std::path::Component::RootDir | std::path::Component::CurDir => continue,
-            std::path::Component::Normal(name) => name,
-            _ => return Err(invalid("candidate destination cannot contain parent traversal")),
-        };
-        let name =
-            CString::new(name.as_bytes()).map_err(|_| invalid("invalid candidate directory component"))?;
-        // SAFETY: live owned parent FD, valid C component; no symlink traversal.
-        let fd = unsafe {
-            libc::openat(
-                directory.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: openat returned a new owned descriptor.
-        directory = unsafe { File::from_raw_fd(fd) };
-        check_namespace(&directory)?;
-    }
-    // Reopen the pinned final inode for publication/fsync, without requiring
-    // read/list permission on every ancestor traversed through O_PATH.
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
-        .open(format!("/proc/self/fd/{}", directory.as_raw_fd()))
-}
-fn check_namespace(directory: &File) -> io::Result<()> {
-    let metadata = directory.metadata()?;
-    // SAFETY: geteuid has no arguments or memory access side effects.
-    let user = unsafe { libc::geteuid() };
-    if !metadata.is_dir()
-        || (metadata.uid() != user && metadata.uid() != 0)
-        || (metadata.mode() & 0o022 != 0 && metadata.mode() & libc::S_ISVTX == 0)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "candidate namespace must be owner/root controlled and protect entries from other users",
-        ));
-    }
-    Ok(())
 }
 
 #[derive(Serialize)]

@@ -38,6 +38,7 @@ test native cancellation journal inspection ... ok
 test orchestrate CLI Git worktrees ... ok
 test orchestrate CLI stalled stderr ... ok
 test orchestrate CLI structural input limits ... ok
+test orchestrate CLI protected run namespace ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
