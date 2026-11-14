@@ -688,3 +688,80 @@ fn hud_counts_auto_approved_actions_and_reduced_motion_stills_the_flames() {
         assert!(visible_width(&oxa_yolo_banner(360, true, width, &theme, Skin::Oxa)) <= width as usize);
     }
 }
+
+/// The rows (1-based) that `raw` addresses with a cursor move to column 1.
+fn rows_written(raw: &str) -> std::collections::BTreeSet<usize> {
+    let mut rows = std::collections::BTreeSet::new();
+    let mut rest = raw;
+    while let Some(at) = rest.find("\x1b[") {
+        rest = &rest[at + 2..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() && rest[digits.len()..].starts_with(";1H") {
+            rows.extend(digits.parse::<usize>());
+        }
+    }
+    rows
+}
+
+#[test]
+fn suggestions_are_a_panel_that_floats_and_a_whole_run_shows_the_arcade() {
+    // A terminal so low that the transcript fills the viewport: if the suggestions made the
+    // bottom higher, every transcript row would move.
+    let (cols, rows) = (100u16, 18u16);
+    let term = run(
+        read_then_answer(),
+        json!({}),
+        LOCAL,
+        (cols, rows),
+        vec![
+            step("start", &["READY"], typed("look at notes.txt", &["enter"])),
+            // The run ends with the closing scene; wait until it is gone again.
+            step("answered", &["ALPHA done.", "CLEAR", "enter send"], Vec::new()),
+            step("settled", &["ALPHA done."], typed("/th", &[])),
+            step("open", &["commands", "esc close"], vec![key("escape")]),
+            step(
+                "closed",
+                &["ALPHA done."],
+                vec![
+                    key("backspace"),
+                    key("backspace"),
+                    key("backspace"),
+                    key("ctrl+d"),
+                ],
+            ),
+        ],
+        write_notes,
+    );
+    let text = term.all_text();
+    // The run showed the arcade: the ox, and "stage clear" with the coin of the one read.
+    assert!(text.contains("▟█▛▘") || text.contains("▜█▛▘"), "the ox ran");
+    assert!(
+        text.contains("CLEAR") && text.contains("◆1 tool"),
+        "the closing scene"
+    );
+
+    // The suggestions: the themed panel, with the header, the footer hint and a description.
+    let opening = term.raw_since("settled");
+    let opening = &opening[..opening.len() - term.raw_since("open").len()];
+    let shown = strip_ansi(opening);
+    assert!(shown.contains("┌─ commands "), "the header: {shown}");
+    assert!(
+        shown.contains("tab complete · enter run · esc close"),
+        "the footer hint"
+    );
+    assert!(shown.contains(" ▌ "), "the selected row is marked");
+    // It floats: the first transcript rows were not rewritten when it opened (nothing moved),
+    // and the rows it wrote lie above the editor, inside the screen.
+    let written = rows_written(opening);
+    assert!(!written.is_empty() && written.iter().all(|r| *r <= usize::from(rows)));
+    assert!(
+        !written.contains(&1) && !written.contains(&2),
+        "the transcript moved when the panel opened: rows {written:?}"
+    );
+    // Closing it puts the covered transcript rows back.
+    let closing = term.raw_since("open");
+    assert!(
+        strip_ansi(&closing).contains("ALPHA done."),
+        "the transcript is back"
+    );
+}

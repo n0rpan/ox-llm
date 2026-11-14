@@ -14,8 +14,8 @@ use crate::selectors::{
     TreeFilter, TreePick, TreeSelector,
 };
 use crate::skin::{
-    env_reduced_motion, frame_box, frame_inner_width, hot_theme, oxa_activity_line_with, oxa_footer,
-    oxa_splash, oxa_title_text, oxa_yolo_banner, HintContext, SPRITE_FRAME_MS,
+    env_reduced_motion, frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash,
+    oxa_title_text, oxa_yolo_banner, Animation, ArcadeScene, ArcadeState, HintContext, SPRITE_FRAME_MS,
 };
 use crate::{
     activity_text, choose_clip_method, compose_fullscreen, copy_text, debug_dump, dispatch_slash,
@@ -270,6 +270,11 @@ pub(crate) struct Loop<'a> {
     /// O-184: the animation step that was last drawn (OXA's look redraws once per step, not
     /// once per loop turn, so an idle or busy engine costs the UI next to nothing).
     anim_step: u64,
+    /// The arcade scene's counters of the run (coins, the closing scene).
+    arcade: ArcadeState,
+    /// OXA's fullscreen look: the editor's suggestion panel of this frame and the editor's
+    /// first row among the bottom lines (the panel floats above it, over the transcript).
+    popup_overlay: Option<(usize, Vec<String>)>,
     /// O-182: the theme as loaded; `theme` is its hot variant while YOLO is on (OXA's look).
     cool_theme: Theme,
     /// O-182: what the screen last showed of the YOLO switch, and until when its banner shows.
@@ -390,6 +395,8 @@ impl<'a> Loop<'a> {
             theme_label: String::new(),
             palette: None,
             anim_step: 0,
+            arcade: ArcadeState::default(),
+            popup_overlay: None,
             cool_theme: Theme::plain(),
             yolo_shown: false,
             yolo_banner_since: 0,
@@ -422,9 +429,21 @@ impl<'a> Loop<'a> {
             && !env_reduced_motion(&self.opts.env)
     }
 
+    /// The `ui.animation` setting (`arcade`, `minimal`, `off`); `Off` whenever motion is.
+    /// Like [`Self::motion`], but the ASCII glyph set animates too (in ASCII).
+    fn animation(&self) -> Animation {
+        let reduced =
+            self.opts.settings.bool("ui.reducedMotion", false) || env_reduced_motion(&self.opts.env);
+        if self.view.skin.is_oxa() && !self.theme.is_plain() && !reduced {
+            Animation::from_setting(self.opts.settings.string("ui.animation").as_deref())
+        } else {
+            Animation::Off
+        }
+    }
+
     /// How long one animation step of OXA's look lasts.
     fn anim_step_ms(&self) -> u64 {
-        if self.motion() {
+        if self.animation() != Animation::Off {
             SPRITE_FRAME_MS
         } else {
             1000
@@ -539,6 +558,7 @@ impl<'a> Loop<'a> {
             || self.dialogs.is_open()
             || self.mouse_sel.dragging
             || now_ms() < self.yolo_banner_until
+            || self.arcade.finishing(now_ms())
     }
 
     fn send(&mut self, cmd: SessionCmd) {
@@ -855,7 +875,7 @@ impl<'a> Loop<'a> {
         } else {
             animating
         };
-        if self.dialogs.tick(now_ms()) || animating {
+        if self.dialogs.tick(now_ms()) || animating || self.arcade.take_expired(now_ms()) {
             self.dirty = true;
         }
         self.draft_tick();
@@ -2412,12 +2432,22 @@ impl<'a> Loop<'a> {
             self.vm.status.clone()
         };
         let oxa = self.view.skin.is_oxa();
-        let status = if oxa { self.timed_status(status) } else { status };
+        let mut status = if oxa { self.timed_status(status) } else { status };
         if oxa {
-            let line = oxa_activity_line_with(
+            // The tool queue of the reply at hand (an extension's working text comes first).
+            if status.working_message.is_none() {
+                status.working_message =
+                    crate::skin::tool_queue_detail(&self.vm.blocks, &status.activity, self.view.skin);
+            }
+            let running = self.running();
+            self.arcade.observe(running, &self.vm.blocks, now_ms());
+            let scene = ArcadeScene::from_setting(self.opts.settings.string("ui.animationScene").as_deref());
+            let line = oxa_arcade_line(
                 &status,
                 &self.opts.keymap,
-                self.motion(),
+                self.animation(),
+                scene,
+                &self.arcade.run(now_ms()),
                 width,
                 &self.theme,
                 self.view.skin,
@@ -2477,6 +2507,14 @@ impl<'a> Loop<'a> {
         } else {
             editor_border_token(&self.vm.status, &text).to_string()
         };
+        // OXA's look: the suggestions are a panel; in fullscreen it floats over the transcript.
+        self.editor_opts.popup = match self.view.skin {
+            crate::Skin::Pi => oxa_tui::PopupStyle::List,
+            crate::Skin::Oxa => oxa_tui::PopupStyle::Panel,
+            crate::Skin::OxaAscii => oxa_tui::PopupStyle::PanelAscii,
+        };
+        self.editor_opts.popup_detached = oxa && self.fullscreen;
+        self.popup_overlay = None;
         self.editor.set_opts(self.editor_opts.clone());
         let top = lines.len();
         // OXA's look: selectors sit in a closed frame (dialogs and the tree draw their own).
@@ -2511,6 +2549,9 @@ impl<'a> Loop<'a> {
             }
         } else {
             let body = self.editor.render(width, &self.theme);
+            if self.editor_opts.popup_detached && self.editor.autocomplete_open() {
+                self.popup_overlay = Some((top, self.editor.popup(width, &self.theme)));
+            }
             (
                 body,
                 if self.search_open {
@@ -2701,8 +2742,11 @@ impl<'a> Loop<'a> {
         } else {
             self.viewport.render(&self.cache.content, &self.theme)
         };
-        let (frame, _) = compose_fullscreen(&lines, &bottom, rows);
+        let (mut frame, _) = compose_fullscreen(&lines, &bottom, rows);
         let cut = bottom.len() - bottom_rows;
+        if let Some((top, popup)) = self.popup_overlay.take() {
+            crate::skin::float_above(&mut frame, (vp_rows + top).saturating_sub(cut), &popup);
+        }
         let cursor = cursor.filter(|p| p.row >= cut).map(|p| CursorPos {
             row: vp_rows + p.row - cut,
             col: p.col,

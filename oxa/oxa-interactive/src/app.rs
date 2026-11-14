@@ -885,7 +885,12 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                     vm.blocks.push(Block::Tool(t));
                 }
             }
-            vm.status.activity = Activity::Thinking;
+            // Calls of one reply may run side by side: while another one runs, a tool runs.
+            let running = vm.blocks.iter().rev().find_map(|b| match b {
+                Block::Tool(t) if t.state == ToolState::Running => Some(t.name.clone()),
+                _ => None,
+            });
+            vm.status.activity = running.map_or(Activity::Thinking, Activity::Tool);
         }
         AgentEvent::CompactionStart { .. } => vm.status.activity = Activity::Compacting,
         AgentEvent::CompactionEnd {

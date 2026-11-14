@@ -236,6 +236,16 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["regular", "fullscreen"]),
         "\"fullscreen\"",
     ),
+    key(
+        "ui.animation",
+        Kind::Enum(&["arcade", "minimal", "off"]),
+        "\"arcade\"",
+    ),
+    key(
+        "ui.animationScene",
+        Kind::Enum(&["charge", "stars", "stack"]),
+        "\"charge\"",
+    ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa"]), "\"auto\""),
     verdict_o("warnings.anthropicExtraUsage", Kind::Bool, "true"),

@@ -42,6 +42,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 |---|---|---|---|
 | `$schema` | string | `null` | editor schema hint; ignored |
 | `theme` | string | `"system"` | `system`, `dark`, `light` or a name from a theme file; also `oxa` (OXA's own dark palette) and `oxa-omarchy` (follows the current Omarchy desktop theme, read-only; `system` when there is none). With the `oxa` skin the default is `oxa-omarchy` |
+| `ui.animation` | `arcade` / `minimal` / `off` | `arcade` | what moves on the activity line of the `oxa` skin while a run is in progress: `arcade` is a one-row pixel scene (the ox charges while the model thinks, butts a crate per tool call and collects a coin for each, a short `CLEAR` when the run is done); `minimal` is the small six-cell sprite; `off` is the static text badge. Never any sound. `ui.reducedMotion`, `NO_COLOR` and `TERM=dumb` give `off` |
+| `ui.animationScene` | `charge` / `stars` / `stack` | `charge` | the scene of `ui.animation = "arcade"`: the charging ox, a ship in a starfield, or stacking columns |
 | `ui.reducedMotion` | bool | `false` | no animation in the `oxa` skin: the working sprite and the YOLO flames are replaced by the static text badge. The environment variable `OXA_REDUCED_MOTION=1` does the same for one run; `NO_COLOR` and `TERM=dumb` imply it |
 | `ui.skin` | `auto` / `pi` / `oxa` | `auto` | the look of the interactive UI: `pi` is pi's look, `oxa` is OXA's own (frames, a status line with meters, a key hint bar); `auto` is `oxa` under the `local` profile and `pi` under the `pi` profile. With the `oxa` skin, `NO_COLOR` turns all colour off |
 | `themes` | list | `[]` | extra theme files or directories |
