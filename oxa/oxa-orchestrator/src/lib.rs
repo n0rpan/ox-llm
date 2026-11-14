@@ -21,6 +21,8 @@ pub mod review;
 mod review_cli;
 pub mod rpc_agent;
 mod run;
+#[cfg(feature = "interactive-control")]
+pub mod tui;
 pub mod workspace;
 
 pub use run::*;

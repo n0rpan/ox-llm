@@ -4,8 +4,8 @@ The feature-enabled `oxa orchestrate --goal --control ...` command exposes its
 existing native goal owner at `<directory>/session.sock`. An external client can
 observe and steer that conversation while the foreground command keeps displaying
 status. It does not start or restore another inference process when clients attach.
-The existing interactive TUI is not attached yet; its adapter is the next step in
-this branch. This is not completion of priority 2 in #94.
+The existing interactive TUI can also expose its actual core session through this
+API. Both clients keep read/write access; attachment never starts a second session.
 
 Start with the local-only invocation in [SESSION_GOALS.md](SESSION_GOALS.md), adding
 `--control`. The socket appears after native session initialization. It is removed
@@ -45,13 +45,14 @@ print(json.dumps(request(path, {
 | `events` | `after` | Up to 16 events after a sequence; use `next` for the next page, inspect `gap` |
 | `pause` | `revision` | Request pause; active work stays visibly pausing until settlement |
 | `resume` | `revision` | Continue paused/blocked work if accounting and remaining budget permit |
-| `set_goal` | `revision`, `text` | Redirect settled paused/blocked work; remains paused until explicit resume |
+| `set_goal` | `revision`, `text`, optional `budget` | Set a new TUI goal or redirect settled paused/blocked work; remains paused until explicit resume |
 | `steer` | `revision`, `text` | Queue bounded clarification for a running native turn |
-| `cancel` | `revision` | Cancel the goal and stop/reap its owned native process |
+| `cancel` | `revision` | Cancel goal work; the TUI retains its session, while the native goal CLI stops/reaps its process |
 | `close` | none | End the attachment after `runtime_stopped` is true; rejected while native work remains active |
 
 `id` is a nonempty string of at most 128 bytes without control characters. Unknown
-fields and methods are rejected. Revisions come from status/events. A mutation's
+fields and methods are rejected. Use a unique ID for each mutation. Revisions come
+from status/events. A mutation's
 `queued: true` means it reached the bounded owner queue; it is not confirmation
 that it was admitted or consumed by inference. Read the `control_admitted` or
 `control_rejected` event carrying the same `request_id`. Two simultaneous mutations
@@ -61,7 +62,7 @@ other. On an uncertain response, inspect events/status before deciding to retry.
 `set_goal` changes operator instructions in the same session and goal ledger. It
 does not reset elapsed time, token usage, turn attempts or output limits, and does
 not expand model/tools/filesystem/network permissions. It is rejected during active
-or pausing work and after terminal completion. Pause first, wait for settlement,
+or pausing work. Pause first, wait for settlement,
 then update and explicitly resume with the new revision. Unknown interrupted usage
 continues to block token-bounded resume; changing the goal cannot clear that debt.
 
@@ -71,9 +72,12 @@ History is memory-only: at most 128 events and 512 KiB, with an explicit `gap` w
 the caller missed retained history. Turn replies, including the final DONE reply,
 have a UTF-8-safe 16 KiB preview with an explicit `truncated` flag. Full final replies
 remain in the foreground report, saved only with `--save-results`. These events are
-goal/control/turn events, not yet incremental native token/tool events.
+goal/control/turn events. The TUI attachment also publishes native event names and
+text deltas/final replies; it does not copy tool arguments, tool output or hidden
+reasoning to the socket.
 
-Read `goal_finished` and status `runtime_stopped: true` for post-cleanup evidence.
+For the native goal CLI, read `goal_finished` and status `runtime_stopped: true`
+for post-cleanup evidence.
 The CLI retains the final in-memory events for up to 30 seconds after inference is
 stopped/reaped, so polling clients can read the final reply and cleanup event. Send
 `close` after collecting them to let the foreground print its final report and
@@ -93,7 +97,10 @@ eight simultaneous connections, limits a request to 32 KiB, uses a two-second
 total connection deadline, and forwards at most 64 queued controls. It never waits
 for client I/O while holding the session-state lock. Slow/disconnected clients do
 not block native supervision or owned process cleanup. Goal/control payloads are
-not persisted by this attachment; the existing goal journal remains hash-only.
+not persisted by this attachment. The native goal CLI journal remains hash-only;
+the normal TUI transcript still follows its existing session persistence policy
+(including goal prompts and steering). Use the normal `--no-session` option when
+you want an ephemeral TUI transcript.
 
 The real RPC fixture verifies two simultaneous external writers, stale revision
 rejection with request correlation, paused goal redirection with no budget reset,
@@ -102,26 +109,87 @@ updates/resumes or cancels blocked work, checks the final report and reaped proc
 and verifies socket removal and opt-in-only result persistence. All inference is
 owned loopback fake traffic.
 
-## Remaining TUI integration
+## Existing TUI attachment
 
-`oxa-interactive::worker_loop_with` owns the actual `oxa_core::Session`, while
-the terminal holds its cloneable `Handle` and sends `SessionCmd`s. The adapter must
-use that owner and handle: it must not spawn a second RPC session or build a
-replacement terminal application. Existing prompt/tool events and dialogs must
-continue to reach the TUI while external observers receive the same session's
-events. Session replacement must rebind the attachment identity and reject stale
-controls. Goal accounting must cover that owner's turns, including TUI input.
+Build the feature-enabled binary, then explicitly enable attachment for one TUI:
 
-Implementation belongs in the new crate with only small, default-off hooks at
-worker initialization, command/turn boundaries and event forwarding. A running
-turn cannot wait for the worker's next command dequeue before admitting steering
-or requesting abort. The cross-thread broker therefore needs the existing
-`Handle`, with explicit acknowledgement of settlement before showing paused.
-Goal progression remains with the session owner, serialized with TUI commands.
+```sh
+cargo build --locked -p oxa-cli --features orchestrator --bin oxa
+OXA_SESSION_CONTROL_DIRECTORY=/absolute/private/new-control-directory \
+OXA_ENGINE_URL=http://127.0.0.1:PORT \
+./target/debug/oxa --offline --model MODEL
+```
 
-The integration test must run the existing scripted-terminal TUI and an external
-socket client concurrently against one fake-backed core session, verify shared
-identity/context, observe replies in both clients, steer and pause an active turn,
-redirect/resume the goal without accounting resets, and exercise session swaps
-and TUI exit cleanup. The current socket/CLI fixtures are prerequisites, not
-evidence that this TUI acceptance has passed.
+Use only a verified local/nonbillable route for the brief's model-free workflow.
+This example is not permission to make a cloud request. The control directory must
+be absolute, new, and outside the agent workspace. Use an owner-controlled parent
+that already exists. The adapter rejects a workspace-exposed directory
+before creating it. A session swap that exposes the directory disables attachment.
+No setting file is changed. The feature and environment switch are both required;
+ordinary builds and unset environments keep the existing TUI behavior.
+
+The socket's `status.session.id` is the ID of the session the TUI worker actually
+owns. `session.busy`, `session.model` and `session.mode` report the existing state and
+configuration; the API
+cannot change model, tools, permissions, endpoint, sandbox or offline policy.
+The worker still owns all prompts, tools, dialogs and session changes. Socket
+steering/abort uses its existing `Handle`, and goal continuations run on that same
+worker between TUI commands. Reply text and native events reach the original TUI
+and external observers. There is no RPC subprocess or replacement terminal UI.
+
+Initially no goal is set (`reason: no_goal`). Use the current revision to submit:
+
+```json
+{"id":"project-goal","method":"set_goal","revision":1,"text":"Review the selected project lane and verify the fix","budget":{"wall_ms":3600000,"tokens":null,"turns":128}}
+```
+
+Wait for its admission event, then `resume` with the new revision. A new TUI goal
+may specify a budget (default: one hour, 128 command/goal-turn attempts, time-only
+usage accounting). Pauses count against time. An explicit new goal is allowed after
+DONE, cancellation or exhaustion and starts a new ledger in the SAME conversation.
+Redirecting a paused/blocked goal keeps its ledger and rejects a replacement
+budget. The native goal CLI's initial ledger is immutable and rejects `budget` on
+`set_goal`; it cannot be reset through this API.
+
+Goal state, attempts and usage appear as notices in the existing TUI. Normal TUI
+commands during active goal work share its cumulative budget. A normal reply does
+not complete the goal: the next continuation requests the structured declaration
+again. Paused/blocked goals reject new TUI command work until resume or cancel;
+viewing history and changing sessions remain available. An exhausted ledger also
+rejects new TUI work until an explicitly funded new goal or a session change.
+TUI Esc pauses autonomous
+progression after the running turn settles. An interrupted turn's uncertain usage
+stays unknown; token-bounded goals cannot resume it with a fabricated zero.
+
+This bounded goal profile disables automatic retry/compaction while a goal is
+active/paused/blocked and restores the previous switches afterward. It suppresses
+unrelated idle-host work and invisible draft/prefix requests while a goal ledger
+owns the session, including after exhaustion. This prevents hidden follow-on
+inference from bypassing a stop. Long cloud compaction/reliability is still a
+separate acceptance item. Time and observed token limits request abort through the
+same core handle; they are not a provider-side monetary cap or evidence of stopped
+cloud billing. No cloud test has been run.
+
+DONE ends goal work but keeps the TUI session and in-memory events available. A
+settled goal has `turn_active: false`; `runtime_stopped` stays false because the TUI
+owner is still alive, so socket `close` cannot close the TUI. Exit the terminal to
+stop its owned work and remove the socket. `/new`, resume and fork rebind socket
+identity and advance the attachment revision; stale controls cannot start work on
+the replacement session. A new session has no inherited goal or budget debt.
+
+The hooks are limited to `oxa-interactive/src/app.rs`: attachment lifetime, session
+rebinding, command admission/settlement, idle progression, draft gating and event
+forwarding. All are behind the default-off `session-control` feature; the adapter
+and socket implementation live in `oxa-orchestrator`. `oxa-cli`'s existing
+`orchestrator` feature opts into these hooks. No core/config/sandbox code changes.
+
+`shared_tui` runs the actual `run_session` with a scripted terminal and concurrent
+socket clients against owned loopback fakes. Its nine scenarios verify ordinary
+TUI turn revisions and stale steering, private attachment placement, shared identity/context,
+TUI and external steering, multi-turn completion, live pause/resume and goal
+redirection without accounting resets, unknown interrupted usage, TUI Esc,
+`/new` rebinding/stale rejection, time/token stops, cancellation, and in-flight TUI
+exit cleanup. The normal feature-enabled TUI regression suite also runs without
+the environment switch to verify ordinary behavior stays inert. Background task
+wake-ups and worker-lane integration are the next priorities; full-evening cloud
+acceptance and coordinator/independent review gates remain open.
