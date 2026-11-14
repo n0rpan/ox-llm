@@ -76,7 +76,81 @@ def endpoint(item):
     return '/responses' if item['upstream_model'] in RESPONSES_MODELS else '/chat/completions'
 
 
+def _invalid(field):
+    raise cloud.CloudError('Invalid OpenAI message or tool shape.', 400, 'invalid_value', field)
+
+
+def validate(payload):
+    """Validate structured inputs before continuation lookup, reservation or transport."""
+    messages = payload.get('messages', [])
+    if not isinstance(messages, list):
+        _invalid('messages')
+    for message in messages:
+        if not isinstance(message, dict):
+            _invalid('messages')
+        role = message.get('role')
+        if role not in ('system', 'developer', 'user', 'assistant', 'tool'):
+            _invalid('messages')
+        content = message.get('content')
+        if content is None:
+            if role != 'assistant':
+                _invalid('messages')
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    _invalid('messages')
+                if part.get('type') == 'text':
+                    if not isinstance(part.get('text'), str):
+                        _invalid('messages')
+                elif part.get('type') == 'image_url' and role == 'user':
+                    image = part.get('image_url')
+                    if (not isinstance(image, dict) or not isinstance(image.get('url'), str)
+                            or not image['url'] or image.get('detail', 'auto') not in ('auto', 'low', 'high')):
+                        _invalid('messages')
+                else:
+                    _invalid('messages')
+        elif not isinstance(content, str):
+            _invalid('messages')
+        if role == 'tool' and (not isinstance(message.get('tool_call_id'), str)
+                               or not message['tool_call_id'] or not isinstance(content, str)):
+            _invalid('messages')
+        calls = message.get('tool_calls')
+        if calls is not None:
+            if role != 'assistant' or not isinstance(calls, list):
+                _invalid('messages')
+            for call in calls:
+                if not isinstance(call, dict) or call.get('type') != 'function':
+                    _invalid('messages')
+                function = call.get('function')
+                if (not isinstance(call.get('id'), str) or not call['id']
+                        or not isinstance(function, dict) or not isinstance(function.get('name'), str)
+                        or not function['name'] or not isinstance(function.get('arguments'), str)):
+                    _invalid('messages')
+    tools = payload.get('tools')
+    if tools is not None:
+        if not isinstance(tools, list):
+            _invalid('tools')
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get('type') != 'function':
+                _invalid('tools')
+            function = tool.get('function')
+            if (not isinstance(function, dict) or not isinstance(function.get('name'), str)
+                    or not function['name'] or ('parameters' in function and not isinstance(function['parameters'], dict))
+                    or ('strict' in function and type(function['strict']) is not bool)):
+                _invalid('tools')
+    choice = payload.get('tool_choice')
+    if choice is not None:
+        if isinstance(choice, dict):
+            function = choice.get('function')
+            if (choice.get('type') != 'function' or not isinstance(function, dict)
+                    or not isinstance(function.get('name'), str) or not function['name']):
+                _invalid('tool_choice')
+        elif not isinstance(choice, str) or choice not in ('auto', 'none', 'required'):
+            _invalid('tool_choice')
+
+
 def request(payload, item, key=None):
+    validate(payload)
     return responses_request(payload, item, key) if endpoint(item) == '/responses' else chat_request(payload, item)
 
 

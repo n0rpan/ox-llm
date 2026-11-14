@@ -110,6 +110,26 @@ class OpenAI(CloudCase):
             self.assertNotIn(fragment.decode(), self.ledger_text())
         self.assertEqual(self.upstream.requests, [])
 
+    def test_malformed_message_and_tool_shapes_are_typed_400(self):
+        self.start()
+        cases = [
+            {'messages': [None]}, {'messages': ['invalid']},
+            {'messages': [{'role': 'user', 'content': [None]}]},
+            {'messages': [{'role': 'user', 'content': [{'type': 'image_url', 'image_url': None}]}]},
+            {'messages': [{'role': 'assistant', 'content': None, 'tool_calls': [None]}]},
+            {'messages': [{'role': 'tool', 'content': 'result'}]},
+            {'messages': [{'role': 'user', 'content': 'hello'}], 'tools': [None]},
+            {'messages': [{'role': 'user', 'content': 'hello'}],
+             'tool_choice': {'type': 'function', 'function': None}},
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload):
+                status, body = self.call('POST', '/v1/chat/completions', {'model': REMOTE, **payload})
+                self.assertEqual(status, 400, body)
+                self.assertEqual(json.loads(body)['error']['code'], 'invalid_value')
+        self.assertEqual(self.upstream.requests, [])
+        self.assertFalse(cloud._reserved)
+
     def test_default_url_capabilities_and_no_local_features(self):
         item = cloud.entry(REMOTE, models()[REMOTE])
         self.assertEqual(item['base_url'], 'https://api.openai.com/v1')
@@ -248,6 +268,8 @@ class OpenAI(CloudCase):
 
 
 class Responses(CloudCase):
+    test_malformed_message_and_tool_shapes_are_typed_400 = OpenAI.test_malformed_message_and_tool_shapes_are_typed_400
+
     def setUp(self):
         super().setUp()
         self.secrets.write_text(json.dumps({'openai': {'api_key': KEY}}))
