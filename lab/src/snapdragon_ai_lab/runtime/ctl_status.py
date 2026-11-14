@@ -139,21 +139,23 @@ class StatusMixin:
                     expected = json.loads((ctl.CONFIG.parent / 'model.json').read_text()).get('expected_bytes')
             except (OSError, ValueError, KeyError):
                 pass
+            none = self.cloud_only()  # #83/#99: no local engine, so no local-model fields
             return {**({'engine_mode': 'none'} if self.cloud_only() else {}),
                     **({'flash_cache': dict(self.flash_cache_status)} if self.flash_cache_status else {}),
                     **({'stop_pending': self.stop_pending} if self.stop_pending is not None else {}),
                     'state': self.state, 'validated': self.cloud_only() or self.eligible(config),
-                    'download_state': setup.get('state', 'preparing'),
+                    'download_state': 'none' if none else setup.get('state', 'preparing'),
                     'downloaded_bytes': downloaded, 'expected_bytes': expected,
-                    'model': config.get('model_alias', 'qwen-local'),
-                    'selected_model': selected_config.get('model_alias'),
+                    'model': None if none else config.get('model_alias', 'qwen-local'),
+                    'selected_model': None if none else selected_config.get('model_alias'),
                     'selection_error': selection_error,
-                    'backend': config.get('backend', 'cpu'),
-                    'context_size': config.get('context_size', 8192),
+                    'backend': None if none else config.get('backend', 'cpu'),
+                    'context_size': None if none else config.get('context_size', 8192),
                     'threads': config.get('threads'),
                     'execution_policy_mode': config.get('execution_policy_mode', 'stock'),
                     'memory_policy': self.classic_memory_guard.metadata() if self.classic_memory_guard is not None else self.last_memory_guard,
-                    'memory_guard_setup': memory_policy.guard_requirements(),
+                    'memory_guard_setup': ({'ok': True, 'not_applicable': True, 'swap_max': None, 'problem': None, 'fix': None}
+                                           if none else memory_policy.guard_requirements()),
                     'validation': config.get('validation', {}),
                     'flash_memory': config.get('flash_memory'),
                     'gpu_layers': config.get('gpu_layers', 0),

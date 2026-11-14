@@ -165,6 +165,11 @@ def log_effective_engines(manager, stream=None):
     except (OSError, ValueError, AttributeError, TypeError):
         print(f'local-ai: no readable runtime config at {CONFIG}', file=stream, flush=True)
         return
+    if value.get('cloud_only') is True:  # #83: no local engine, nothing to name
+        try: count = len(manager.models())
+        except Exception: count = 0
+        print(f'local-ai: cloud-only mode, no local engine, {count} remote models', file=stream, flush=True)
+        return
     for alias in dict.fromkeys(aliases):
         try:
             summary = engine_summary(manager.config(alias))

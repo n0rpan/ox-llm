@@ -90,6 +90,25 @@ class CloudOnlyNoEngine(unittest.TestCase):
         for leak in ('Traceback', str(self.root), 'secrets.json', 'synthetic-fake-key'):
             self.assertNotIn(leak, text)
 
+    def test_status_has_no_local_model_fields(self):
+        self.start()
+        status, raw = self.call('GET', '/_local/status')
+        body = json.loads(raw)['controller'] if 'controller' in json.loads(raw) else json.loads(raw)
+        self.assertEqual(body['engine_mode'], 'none')
+        self.assertEqual(body['download_state'], 'none')
+        for key in ('model', 'selected_model', 'backend', 'context_size'):
+            self.assertIsNone(body[key], key)
+        self.assertTrue(body['memory_guard_setup']['ok'])
+
+    def test_startup_log_is_cloud_only(self):
+        import io
+        self.start()
+        out = io.StringIO()
+        controller.log_effective_engines(self.server.manager, out)
+        text = out.getvalue()
+        self.assertIn('cloud-only mode, no local engine, 1 remote models', text)
+        self.assertNotIn('engine llama.cpp', text)
+
 
 if __name__ == '__main__':
     unittest.main()
