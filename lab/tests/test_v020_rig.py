@@ -314,15 +314,17 @@ class ProxyEndToEnd(unittest.TestCase):
         status, data = self.post('/v1/chat/completions', dict(body, stream=True))
         self.assertEqual(status, 200)
         self.assertIn(b'"content":"ok"', data)
-        # the proxy writes its record after the reply has been sent: wait for both lines
+        # Both metadata and transcript are appended after the response; await complete rows.
         import time
-        deadline = time.time() + 10
-        while time.time() < deadline and not (Path(self.tmp) / 'transcript.jsonl').exists():
-            time.sleep(0.05)
-        for _ in range(100):
-            if (Path(self.tmp) / 'requests.jsonl').read_text().count('\n') >= 2:
-                break
-            time.sleep(0.05)
+        deadline = time.monotonic() + 10
+        for name in ('requests.jsonl', 'transcript.jsonl'):
+            path = Path(self.tmp) / name
+            while time.monotonic() < deadline:
+                if path.exists() and path.read_text().count('\n') == 2:
+                    break
+                time.sleep(0.01)
+            self.assertTrue(path.exists(), name)
+            self.assertEqual(path.read_text().count('\n'), 2, name)
         recs = [json.loads(x) for x in (Path(self.tmp) / 'requests.jsonl').read_text().splitlines()]
         self.assertEqual(len(recs), 2)
         self.assertEqual(recs[0]['timings'], {'prompt_ms': 9})
