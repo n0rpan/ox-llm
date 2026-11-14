@@ -26,24 +26,9 @@ pub fn meta_of(sref: &SessionRef, header: &SessionHeader, entries: &[Entry]) -> 
             EntryBody::SessionInfo { name: n } => {
                 name = Some(n.trim().to_string()).filter(|n| !n.is_empty());
             }
-            EntryBody::Msg { wire, parts } if matches!(wire.role, Role::User | Role::Assistant) => {
+            EntryBody::Msg { wire, .. } if matches!(wire.role, Role::User | Role::Assistant) => {
                 message_count += 1;
-                let mut text = wire.content.as_deref().unwrap_or("");
-                // Only remove the exact suffix recorded as injected, never a user's literal block.
-                if wire.role == Role::User {
-                    if let Some(note) = parts.iter().rev().find_map(|p| match p {
-                        oxa_proto::Part::EnvNote(note) => Some(note.as_str()),
-                        _ => None,
-                    }) {
-                        text = if text == note {
-                            ""
-                        } else {
-                            text.strip_suffix(note)
-                                .and_then(|typed| typed.strip_suffix("\n\n"))
-                                .unwrap_or(text)
-                        };
-                    }
-                }
+                let text = message_text(&e.body);
                 if !all_text.is_empty() {
                     all_text.push('\n');
                 }
@@ -67,6 +52,30 @@ pub fn meta_of(sref: &SessionRef, header: &SessionHeader, entries: &[Entry]) -> 
         all_text,
         parent_session: header.parent_session.clone(),
     }
+}
+
+/// Display/search text shared by the standalone metadata builder and both stores' listings.
+/// Without provenance, a trailing note-shaped block may be user-authored and is preserved.
+pub(crate) fn message_text(body: &EntryBody) -> &str {
+    let EntryBody::Msg { wire, parts } = body else {
+        return "";
+    };
+    let text = wire.content.as_deref().unwrap_or("");
+    if wire.role == Role::User {
+        if let Some(note) = parts.iter().rev().find_map(|p| match p {
+            oxa_proto::Part::EnvNote(note) => Some(note.as_str()),
+            _ => None,
+        }) {
+            return if text == note {
+                ""
+            } else {
+                text.strip_suffix(note)
+                    .and_then(|typed| typed.strip_suffix("\n\n"))
+                    .unwrap_or(text)
+            };
+        }
+    }
+    text
 }
 
 /// pi's picker search: space-separated terms all match (case-insensitive) in name, first
