@@ -74,6 +74,9 @@ budgets and explicit plan/input binding govern the limited
 [queued-plan resume API](RESUME.md); task reconciliation remains necessary for
 ambiguous starts. The CLI exposes inspection/recovery only, not takeover.
 
+The [lineage collector](LINEAGE.md) can recover full root reports across an
+explicitly selected continuation chain under those ownership guards.
+
 ## Recover completed worker artifacts offline
 
 With explicit `A2ARunSettings::persist_results = true`, A2A runs publish

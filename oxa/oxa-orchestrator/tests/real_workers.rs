@@ -898,6 +898,40 @@ fn a2a_scheduler_resumes_only_never_started_real_workers() {
         let native = agent.report(&task.id).unwrap();
         assert!(!Path::new(&format!("/proc/{}", native.process_id.unwrap())).exists());
     }
+    let child_path = env.root().join("resume-native-child/transcript.jsonl");
+    let child = ExclusiveRun::claim(&child_path).unwrap();
+    let collected = oxa_orchestrator::lineage::collect(&[&owner, &child]).unwrap();
+    assert_eq!(
+        serde_json::to_value(&collected).unwrap(),
+        serde_json::to_value(&report).unwrap()
+    );
+    let before_collect = engine.requests().len();
+    // A separate inspector cannot claim journals still owned by this fixture.
+    let inspect = || {
+        let mut command = std::process::Command::new(cli_binary());
+        command
+            .env_clear()
+            .current_dir(env.work())
+            .args(["orchestrate-inspect", "--lineage"])
+            .arg(&path)
+            .arg("--lineage")
+            .arg(&child_path);
+        command
+    };
+    assert_eq!(inspect().output().unwrap().status.code(), Some(1));
+    drop(child);
+    drop(owner);
+    let output = inspect().output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::to_value(&report).unwrap()
+    );
+    assert_eq!(engine.requests().len(), before_collect);
     assert_eq!(std::fs::read(path).unwrap(), before);
 }
 
@@ -2321,7 +2355,7 @@ fn main() {
             a2a_scheduler_coordinates_real_rpc_workers,
         ),
         (
-            "A2A scheduler resumes only never-started real workers",
+            "orchestrate CLI continuation lineage collection",
             a2a_scheduler_resumes_only_never_started_real_workers,
         ),
         (

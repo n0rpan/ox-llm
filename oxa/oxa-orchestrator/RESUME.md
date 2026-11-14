@@ -89,15 +89,15 @@ The child uses a distinct run ID and a fresh private directory. Its journal keep
 the original boot-clock start/deadline and the queued subset's unused reservation.
 On success, `resume_queued` returns an A2A report for its selected parent manifest,
 combining recovered finished results with new queued outcomes. A child is a
-separate manifest, not an implicit claim that every ancestor completed. Further
-child recovery may need explicit ancestor checkpoint collection for full root
-fan-in; this API does not silently traverse or merge a lineage of directories.
+separate manifest, not an implicit claim that every ancestor completed. For further
+child recovery, [explicit lineage collection](LINEAGE.md) can verify an operator-
+selected chain and restore full root fan-in. Neither API scans for directories.
 
 ## Current boundaries and validation
 
 Persistent authenticated agent registration, automatic bound-task reattachment,
 reconciliation that authorizes continuing a mixed ambiguous/queued plan,
-automatic multi-generation lineage collection, cross-host/distributed ownership,
+automatic lineage discovery/collection, cross-host/distributed ownership,
 CLI takeover and recovery across machine reboot remain unfinished. No cloud run,
 checkout application, automatic merge or review-gate bypass is introduced.
 
