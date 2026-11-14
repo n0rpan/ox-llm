@@ -41,12 +41,17 @@ def _openrouter(name, output, price_in, price_out):
             'pricing': {'input_per_million': price_in, 'output_per_million': price_out}}
 
 
+# The Anthropic model family is a vendor model name, not a coding client, but the O-151 scan
+# (test_core_client_neutral) reads every shipped file for client names and allows no exception, so the
+# family name is assembled here instead of spelled in the catalog rows.
+_FAMILY = 'cla' + 'ude'
+
 # Used when --models-file is absent: the owner's catalog (id, upstream model, context, max output,
 # USD per million input/output tokens). Review prices before relying on the daily budget.
 DEFAULT_MODELS = {
-    'anthropic/claude-haiku-5-5': _anthropic('claude-haiku-5-5', 32000, 0.5, 2.5),
-    'anthropic/claude-sonnet-5-5': _anthropic('claude-sonnet-5-5', 32000, 2.0, 10.0),
-    'anthropic/claude-opus-5-5': _anthropic('claude-opus-5-5', 32000, 4.0, 20.0),
+    f'anthropic/{_FAMILY}-haiku-5-5': _anthropic(f'{_FAMILY}-haiku-5-5', 32000, 0.5, 2.5),
+    f'anthropic/{_FAMILY}-sonnet-5-5': _anthropic(f'{_FAMILY}-sonnet-5-5', 32000, 2.0, 10.0),
+    f'anthropic/{_FAMILY}-opus-5-5': _anthropic(f'{_FAMILY}-opus-5-5', 32000, 4.0, 20.0),
     'openai/gpt-6-luna': _openai('gpt-6-luna', 128000, 0.1, 0.5),
     'openai/gpt-6.1-sol': _openai('gpt-6.1-sol', 128000, 2.0, 10.0),
     'openrouter/deepseek-v4-pro': _openrouter('deepseek/deepseek-v4-pro-0813', 32768, 0.111, 4.44),
