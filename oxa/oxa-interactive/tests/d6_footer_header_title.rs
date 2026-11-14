@@ -425,4 +425,19 @@ fn footer_and_header_show_the_model_location() {
     info.model_provider = Some("openrouter");
     let cloud_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
     assert!(cloud_header.contains("cloud · openrouter"), "{cloud_header}");
+    info.model_provider = Some("openai");
+    let openai_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
+    assert!(openai_header.contains("cloud · openai"), "{openai_header}");
+    let openai_footer = render_footer(
+        &vm_with(StatusModel {
+            model_remote: true,
+            model_provider: Some("openai"),
+            ..base_status()
+        }),
+        120,
+        &theme,
+    )[1]
+    .clone();
+    assert!(openai_footer.contains("cloud · openai"), "{openai_footer}");
+    assert!(openai_footer.contains("\x1b[38;5;6m"), "{openai_footer}");
 }

@@ -120,3 +120,22 @@ fn a_remote_body_skips_local_only_fields_and_uses_reasoning_effort() {
         "{remote}"
     );
 }
+
+#[test]
+fn openai_location_and_offline_policy_come_from_model_capabilities() {
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let models = json!({"data": [{"id": "cloud-model"}]});
+    let mut status = cloud_status(32000, 200000);
+    let caps = &mut status["model_limits"]["cloud-model"]["capabilities"];
+    caps["remote_provider"] = json!("openai");
+    caps["cancel"] = json!(false);
+    let info = parse_info_for("http://127.0.0.1:8092", &models, &status, Some("cloud-model"))
+        .expect("OpenAI capabilities");
+    assert_eq!(info.caps.remote_provider, Some("openai"));
+    assert_eq!(info.n_ctx, 200000);
+    assert!(!info.caps.cancel);
+    oxa_proto::set_net_policy(true, false);
+    let result = parse_info_for("http://127.0.0.1:8092", &models, &status, Some("cloud-model"));
+    oxa_proto::set_net_policy(false, false);
+    assert_eq!(result.expect_err("offline refusal").code, codes::OFFLINE);
+}

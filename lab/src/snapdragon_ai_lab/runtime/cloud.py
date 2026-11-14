@@ -1,7 +1,7 @@
 """Cloud models through the controller (Wave D: D1/D2).
 
 A remote model is a catalog entry of kind ``remote`` (or ``remote/openrouter`` /
-``remote/anthropic``) under ``cloud.models`` in ``runtime.json``.  This module is the
+``remote/anthropic`` / ``remote/openai``) under ``cloud.models`` in ``runtime.json``.  This module is the
 metadata and privacy layer: it reads the catalog, the owner-only secrets file at request
 time, the per-day ledger spend and the upstream HTTP connection.  It never logs a key and
 never returns one to a caller that renders status.
@@ -21,8 +21,9 @@ if __package__:
 else:
     from ctl_seams import ctl
 
-PROVIDERS = ('openrouter', 'anthropic')
-KINDS = {'remote': None, 'remote/openrouter': 'openrouter', 'remote/anthropic': 'anthropic'}
+PROVIDERS = ('openrouter', 'anthropic', 'openai')
+KINDS = {'remote': None, 'remote/openrouter': 'openrouter', 'remote/anthropic': 'anthropic',
+         'remote/openai': 'openai'}
 ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}')
 ENV_OFFLINE = 'OXC_OFFLINE'
 LEGACY_OFFLINE = 'LOCAL_AI_OFFLINE'
@@ -69,7 +70,7 @@ def enabled(value):
 
 
 def provider_of(raw):
-    """'openrouter' / 'anthropic' for a valid catalog entry kind, else None."""
+    """The provider for a valid catalog entry kind, else None."""
     if not isinstance(raw, dict):
         return None
     kind = raw.get('kind', 'remote')
@@ -119,10 +120,17 @@ def entry(alias, raw):
     provider = provider_of(raw)
     if provider is None or not isinstance(alias, str) or not ID_RE.fullmatch(alias):
         return None
-    base_url = _base_url(raw)
+    base_url = _base_url({**raw, 'base_url': raw.get('base_url', 'https://api.openai.com/v1')}
+                         if provider == 'openai' else raw)
     upstream = raw.get('upstream_model') or raw.get('upstream')
     context = _positive_number(raw, 'context_window')
     output = _positive_number(raw, 'max_output')
+    if provider == 'openai':
+        price = raw.get('pricing')
+        if output is None or not isinstance(price, dict) or any(
+                type(price.get(name)) not in (int, float) or not math.isfinite(price[name])
+                or price[name] < 0 for name in ('input_per_million', 'output_per_million')):
+            return None
     if base_url is None or not isinstance(upstream, str) or not upstream.strip() or context is None:
         return None
     return {'id': alias, 'kind': raw.get('kind', 'remote'), 'provider': provider,
@@ -277,7 +285,7 @@ def _check_ledger_health():
 
 
 def _max_tokens(payload, item):
-    for field in ('max_tokens', 'max_completion_tokens', 'n_predict'):
+    for field in ('max_tokens', 'max_completion_tokens', 'max_output_tokens', 'n_predict'):
         value = payload.get(field) if isinstance(payload, dict) else None
         if type(value) is int and value > 0:
             return value
@@ -289,7 +297,7 @@ def estimate_prompt_tokens(payload):
     """A deterministic upper-ish estimate for admission: UTF-8 bytes of the prompt / 4."""
     if not isinstance(payload, dict):
         return 1
-    material = {'messages': payload.get('messages'), 'tools': payload.get('tools'),
+    material = {'messages': payload.get('messages', payload.get('input')), 'tools': payload.get('tools'),
                 'system': payload.get('system')}
     try:
         text = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
@@ -300,7 +308,8 @@ def estimate_prompt_tokens(payload):
 
 def worst_case_cost(item, payload):
     """The most one request can cost: the prompt estimate plus max_tokens at the output price."""
-    usd = cost(item, estimate_prompt_tokens(payload), _max_tokens(payload, item))
+    prompt = item['context_window'] if item['provider'] == 'openai' else estimate_prompt_tokens(payload)
+    usd = cost(item, prompt, _max_tokens(payload, item))
     return math.inf if usd is None else usd
 
 
@@ -444,6 +453,17 @@ def redact(text, key):
     return text
 
 
+def redact_value(value, key):
+    """Redact decoded JSON too, including escaped strings and metadata."""
+    if isinstance(value, str):
+        return redact(value, key)
+    if isinstance(value, list):
+        return [redact_value(item, key) for item in value]
+    if isinstance(value, dict):
+        return {redact(name, key): redact_value(item, key) for name, item in value.items()}
+    return value
+
+
 class StreamRedactor:
     """Incremental redactor for a byte stream: a key split across chunks is still removed.
 
@@ -560,7 +580,7 @@ class SSEDecoder:
 def capabilities(item):
     """The Wave D per-model capability block for a remote catalog entry."""
     return {'remote': True, 'remote_provider': item['provider'], 'echo': False,
-            'cache_hints': False, 'cancel': True, 'prefill': False,
+            'cache_hints': False, 'cancel': item['provider'] != 'openai', 'prefill': False,
             'preserve_thinking': False, 'context_window': item['context_window']}
 
 
@@ -601,6 +621,12 @@ def remote_payload(payload, item):
 
 
 def path_for(item):
+    if item['provider'] == 'openai':
+        if __package__:
+            from . import cloud_openai
+        else:
+            import cloud_openai
+        return urllib.parse.urlsplit(item['base_url']).path.rstrip('/') + cloud_openai.endpoint(item)
     if item['provider'] == 'anthropic':
         return '/v1/messages'
     return urllib.parse.urlsplit(item['base_url']).path.rstrip('/') + '/chat/completions'
@@ -704,7 +730,7 @@ REASONING_EFFORT = {'none': 'none', 'minimal': 'none', 'low': 'low', 'medium': '
                     'high': 'high', 'xhigh': 'high'}
 
 
-def upstream_payload(payload, item):
+def upstream_payload(payload, item, key=None):
     """The normalised upstream body: the remote catalog swap plus the OpenAI v1 mapping.
 
     Local-only fields (``chat_template_kwargs``, cache/slot controls) are removed; an OpenAI
@@ -712,6 +738,12 @@ def upstream_payload(payload, item):
     ``high``); a local ``enable_thinking`` switch is mapped the same way.  A stream asks for
     the final usage chunk so the ledger and budget see the provider's own numbers.
     """
+    if item['provider'] == 'openai':
+        if __package__:
+            from . import cloud_openai
+        else:
+            import cloud_openai
+        return cloud_openai.request(payload, item, key)
     body = remote_payload(payload, item)
     effort = body.get('reasoning_effort')
     kwargs = body.pop('chat_template_kwargs', None)
@@ -785,7 +817,9 @@ class CloudStream:
     ``reasoning_content``, the final usage block gets both detail objects, and the model id is
     the local alias the client asked for."""
 
-    def __init__(self, requested_model):
+    def __init__(self, requested_model, key=None):
+        self.key = key
+        self.fields = {}
         self.model = requested_model
         self.parser = SSEDecoder()
         self.reasoning = 0
@@ -794,9 +828,30 @@ class CloudStream:
         prefix = b'event: ' + name.encode() + b'\n' if name else b''
         return prefix + b'data: ' + data + b'\n\n'
 
+    def _fragment(self, choice, field, text, slot=None, final=False):
+        token = (choice, field, slot)
+        redactor = self.fields.setdefault(token, StreamRedactor(self.key))
+        safe = redactor.feed(text.encode('utf-8'))
+        if final:
+            safe += redactor.finish()
+        return safe.decode('utf-8')
+
+    def _tails(self):
+        out = b''
+        for (index, field, slot), redactor in self.fields.items():
+            tail = redactor.finish().decode('utf-8')
+            if not tail:
+                continue
+            delta = ({'tool_calls': [{'index': slot, 'function': {field: tail}}]}
+                     if slot is not None else {field: tail})
+            value = {'model': self.model, 'object': 'chat.completion.chunk',
+                     'choices': [{'index': index, 'delta': delta, 'finish_reason': None}]}
+            out += self._wire(None, json.dumps(value, ensure_ascii=False).encode())
+        return out
+
     def _event(self, name, data):
         if data == b'[DONE]':
-            return self._wire(name, data)
+            return self._tails() + self._wire(name, data)
         if data == b'':
             return b''
         try:
@@ -806,6 +861,7 @@ class CloudStream:
         if not isinstance(value, dict):
             return self._wire(name, data)
         value['model'] = self.model
+        tails = b''
         for choice in value.get('choices') or ():
             if not isinstance(choice, dict):
                 continue
@@ -816,6 +872,20 @@ class CloudStream:
                 if isinstance(delta.get('reasoning_content'), str) and delta['reasoning_content']:
                     self.reasoning += 1
                 _normalize_calls(delta.get('tool_calls'))
+                if self.key:
+                    index = choice.get('index', 0)
+                    for field in ('content', 'reasoning_content', 'refusal'):
+                        if isinstance(delta.get(field), str):
+                            delta[field] = self._fragment(index, field, delta[field])
+                    delta.pop('reasoning', None)
+                    for call in delta.get('tool_calls') or []:
+                        function = call.get('function') or {}
+                        for field in ('arguments', 'name'):
+                            if isinstance(function.get(field), str):
+                                function[field] = self._fragment(index, field, function[field],
+                                                                 call.get('index', 0))
+            if choice.get('finish_reason') is not None:
+                tails += self._tails()
             _normalize_message(choice.get('message'))
         if isinstance(value.get('usage'), dict):
             try:
@@ -823,7 +893,9 @@ class CloudStream:
             except ImportError:
                 from openai_conformance import complete_usage
             value['usage'] = complete_usage(value['usage'], self.reasoning, value.get('timings'))
-        return self._wire(name, json.dumps(value, ensure_ascii=False).encode())
+        if self.key:
+            value = redact_value(value, self.key)
+        return tails + self._wire(name, json.dumps(value, ensure_ascii=False).encode())
 
     def feed(self, chunk):
         out = b''

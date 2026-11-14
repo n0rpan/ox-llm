@@ -168,6 +168,7 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
             remote_provider: match c.get("remote_provider").and_then(Value::as_str) {
                 Some("openrouter") => Some("openrouter"),
                 Some("anthropic") => Some("anthropic"),
+                Some("openai") => Some("openai"),
                 _ => None,
             },
             echo: flag(c, "echo"),

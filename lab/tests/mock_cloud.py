@@ -204,3 +204,34 @@ class MockAnthropic(_Base):
                                'usage': {'output_tokens': 5}}),
             ('message_stop', {'type': 'message_stop'}),
         ]
+
+
+class MockOpenAIResponses(_Base):
+    """Native Responses wire mock; records API-key requests only on loopback."""
+
+    def __init__(self, response=None, events=None):
+        super().__init__()
+        self.response = response or {
+            'id': 'resp_mock', 'object': 'response', 'created_at': 1, 'status': 'completed',
+            'output': [{'type': 'message', 'id': 'msg_mock', 'role': 'assistant',
+                        'status': 'completed', 'content': [{'type': 'output_text', 'text': 'Done.'}]}],
+            'usage': {'input_tokens': 11, 'output_tokens': 4,
+                      'input_tokens_details': {'cached_tokens': 2},
+                      'output_tokens_details': {'reasoning_tokens': 1}}}
+        self.events = events
+        self.start()
+
+    def handle(self, handler, method):
+        body = json.loads(handler.rfile.read(int(handler.headers.get('Content-Length', '0'))))
+        self.requests.append({'method': method, 'path': handler.path, 'body': body,
+                              'headers': {k.lower(): v for k, v in handler.headers.items()}})
+        if handler.path != '/v1/responses':
+            return self._json(handler, 404, {'error': {'message': 'wrong endpoint'}})
+        if body.get('stream'):
+            events = self.events
+            if events is None:
+                events = [{'type': 'response.created', 'response': {'id': 'resp_mock'}},
+                          {'type': 'response.output_text.delta', 'output_index': 0, 'delta': 'Done.'},
+                          {'type': 'response.completed', 'response': self.response}]
+            return self._sse(handler, [(event['type'], event) for event in events])
+        return self._json(handler, 200, self.response)

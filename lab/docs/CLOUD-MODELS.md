@@ -32,7 +32,7 @@ A remote model is one entry under `cloud.models`:
 }
 ```
 
-- `kind` is `remote` (or the explicit `remote/openrouter` / `remote/anthropic`); `provider`
+- `kind` is `remote` (or the explicit `remote/openrouter` / `remote/anthropic` / `remote/openai`); `provider`
   selects the wire format. The first implementation is an OpenAI-compatible OpenRouter
   upstream.
 - `base_url`, `upstream_model`, `context_window` and `max_output` are required. The display
@@ -113,7 +113,7 @@ capability block with the client-neutral names:
 | field | meaning |
 |---|---|
 | `remote` | `true` when the model runs at a provider through the controller |
-| `remote_provider` | `openrouter` / `anthropic`, else `null` |
+| `remote_provider` | `openrouter` / `anthropic` / `openai`, else `null` |
 | `echo` | the engine echoes a cached reply (local Rust engine) |
 | `cache_hints` | local prefix hints (snapshot, hint clear, cache warming) are useful |
 | `cancel` | a running request may be cancelled by closing the socket |
@@ -195,3 +195,50 @@ are unaffected.
 Tests: `lab/tests/test_cloud_anthropic.py` runs a mock Messages server on loopback (request
 translation, tools, refusal, streaming tool calls, key redaction, budget and cloud-off). No test
 reads a real key or calls the real API.
+
+
+## OpenAI API-key upstream (D8)
+
+Use `kind: "remote/openai"` and put the platform API key under `openai` in the
+same owner-only secrets file. The default base URL is `https://api.openai.com/v1`.
+Cloud remains off by default and requires a daily budget; offline mode refuses it.
+This route uses exact-spec HTTP, with no SDK dependency or automatic retries.
+
+Set `upstream_model`, `context_window`, `max_output`, and `pricing` in each catalog
+entry using the model's published limits and your account's prices. No prices or
+model limits are supplied implicitly. The per-model capabilities disable echo,
+cache hints, cancellation and prefill; oxa shows `cloud · openai` in its footer
+and start banner.
+
+The endpoint is selected by an explicit model contract:
+
+- `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol` and `gpt-6-luna`
+  use Responses, including when tools are present. Chat messages, function tools,
+  tool outputs, streamed argument fragments, refusals and usage are translated
+  to/from the gateway's Chat Completions interface.
+- `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano` (and their `2025-04-14` snapshots),
+  `o3` (`2025-04-16`) and `o4-mini` (`2025-04-16`) use Chat Completions.
+- Other ids are refused before forwarding. Adding an alias or snapshot requires
+  reviewing its model/endpoint contract and extending the tests.
+
+Both endpoints set `store: false` and bound output to the catalog's `max_output`.
+Chat Completions uses `max_completion_tokens`, including reasoning tokens.
+Sampling controls are removed from reasoning requests. For o3/o4-mini, thinking
+`none`/`minimal` maps to `low`, and `xhigh` maps to `high`. For Responses,
+`minimal` maps to `low`; `none` also maps to `low` for Astra and 6.1 Sol, which
+require reasoning. Other supported efforts are preserved.
+
+Responses continuations replay native output, including encrypted reasoning,
+from bounded process memory (128 entries, 8 MiB, 30-minute expiry), scoped to the
+upstream, credentials and full client history. Nothing is persisted or logged.
+A tool continuation whose native state has expired returns
+`409 cloud_continuation_unavailable`; start a new turn. A process restart also
+expires this state. Client bodies cannot opt into stored Responses or substitute
+a different endpoint. Missing usage and interrupted streams retain the shared
+conservative reservation charge. OpenAI admission reserves the full catalog
+context window at the input price plus the bounded output at the output price.
+
+The contract follows the official [GPT-6 guidance](https://developers.openai.com/api/docs/guides/latest-model),
+[reasoning replay guidance](https://developers.openai.com/api/docs/guides/reasoning),
+and [Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+Tests in `lab/tests/test_cloud_openai.py` exercise loopback mocks only.

@@ -9,13 +9,14 @@ if __package__:
     from .ctl_proxy_prep import HOP_HEADERS
     from .ctl_seams import ctl
     from . import cloud, openai_api
-    from . import cloud_anthropic
+    from . import cloud_anthropic, cloud_openai
 else:
     from ctl_proxy_prep import HOP_HEADERS
     from ctl_seams import ctl
     import cloud
     import openai_api
     import cloud_anthropic
+    import cloud_openai
 
 MAX_STREAM_BYTES = 64 * 1024 * 1024
 
@@ -70,7 +71,7 @@ def _error_body(status, data, secret):
     except Exception:
         parsed = {'error': {'message': 'The cloud provider refused the request.',
                             'type': 'cloud_error', 'code': 'cloud_upstream_error'}}
-    return json.dumps(parsed, ensure_ascii=False).encode()
+    return json.dumps(cloud.redact_value(parsed, secret), ensure_ascii=False).encode()
 
 
 def forward(self, st):
@@ -88,7 +89,7 @@ def forward(self, st):
     if item['provider'] == 'anthropic':
         return cloud_anthropic.forward(self, st, item, key)
     try:
-        body = cloud.upstream_payload(st.payload, item)
+        body = cloud.upstream_payload(st.payload, item, key)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, param=error.param)
     try:
@@ -96,6 +97,8 @@ def forward(self, st):
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, error.code, param=error.param)
     data = json.dumps(body, ensure_ascii=False).encode()
+    responses = (cloud_openai.ResponsesStream(item, st.payload.get('messages'), key)
+                 if item['provider'] == 'openai' and cloud_openai.endpoint(item) == '/responses' else None)
     meter = cloud.Meter()
     connection = None
     started = False
@@ -119,7 +122,7 @@ def forward(self, st):
             self.end_headers()
             started = True
             total = 0
-            streamer = cloud.CloudStream(item['id'])
+            streamer = cloud.CloudStream(item['id'], key=key if item['provider'] == 'openai' else None)
             redactor = cloud.StreamRedactor(key)
 
             def write(data):
@@ -140,8 +143,14 @@ def forward(self, st):
                         st.request_error = 'cloud_response_too_large'
                         self.close_connection = True
                         break
+                    if responses is not None:
+                        chunk = responses.feed(chunk)
                     meter.feed(chunk, sse=True)
                     write(streamer.feed(chunk))
+                if responses is not None:
+                    tail = responses.finish()
+                    meter.feed(tail, sse=True)
+                    write(streamer.feed(tail))
                 write(streamer.finish())
                 meter.finish_sse()
                 tail = redactor.finish()
@@ -163,9 +172,15 @@ def forward(self, st):
             _finish(self, st, item, meter, 502, 'cloud_response_too_large', hold, key, failed=True)
             return self.json_reply(502, {'error': {'message': 'The cloud provider sent an oversized response.',
                                                    'type': 'cloud_error', 'code': 'cloud_response_too_large'}})
+        if responses is not None:
+            payload = json.dumps(cloud_openai.response(json.loads(payload), item,
+                                 st.payload.get('messages'), key), ensure_ascii=False).encode()
         meter.feed(payload)
         try:
-            payload = cloud.normalize_response(json.loads(payload), item['id'])
+            parsed = json.loads(payload)
+            if item['provider'] == 'openai':
+                parsed = cloud.redact_value(parsed, key)
+            payload = cloud.normalize_response(parsed, item['id'])
             payload = json.dumps(payload, ensure_ascii=False).encode()
         except (ValueError, TypeError):
             pass  # an upstream body that is not JSON is relayed as it arrived
@@ -176,8 +191,12 @@ def forward(self, st):
         _finish(self, st, item, meter, response.status, hold=hold, secret=key)
     except cloud.CloudError as error:
         _finish(self, st, item, meter, error.status, error.code, hold, key, failed=True)
-        self.json_reply(error.status, {'error': {'message': str(error), 'type': 'cloud_error',
-                                                 'param': 'model', 'code': error.code}})
+        if started:
+            self.close_connection = True
+        else:
+            self.json_reply(error.status, {'error': {'message': cloud.redact(str(error), key),
+                                                   'type': 'cloud_error', 'param': error.param,
+                                                   'code': error.code}})
     except (OSError, ValueError, json.JSONDecodeError) as error:
         detail = cloud.redact(str(error), key)
         _finish(self, st, item, meter, 503, 'cloud_unavailable', hold, key, failed=True)
