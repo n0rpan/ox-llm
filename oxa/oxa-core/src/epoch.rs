@@ -185,7 +185,11 @@ fn open_epoch_at(
     });
     let secs = crate::prefill_estimate_secs(cost);
     let text = match known.and_then(|c| c.who) {
-        Some(who) if ["anthropic/", "openai/", "openrouter/"].iter().any(|p| who.starts_with(p)) => {
+        Some(who)
+            if ["anthropic/", "openai/", "openrouter/"]
+                .iter()
+                .any(|p| who.starts_with(p)) =>
+        {
             format!("new prefix epoch ({reason}): {who} gets the context of about {cost} tokens re-sent (the provider cache may miss)")
         }
         Some(who) => {
