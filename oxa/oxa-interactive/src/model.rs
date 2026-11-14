@@ -300,14 +300,12 @@ pub struct ViewModel {
 // Commands to the worker thread
 // ---------------------------------------------------------------------------------------------
 
-/// How to open the next session (`/new`, `/resume`, `/fork`, `/clone`, `/import`).
+/// How to open the next session (`/new`, `/resume`, `/fork`, `/clone`).
 pub enum Reopen {
     New,
     Resume(SessionRef),
     /// Fork the given session file into a new one and open it.
     Fork(SessionRef),
-    /// Import a pi session file (migrated, cache cold) and open it.
-    Import(PathBuf),
 }
 
 /// One request to the worker thread that owns the `Session`. Each maps to one
@@ -385,11 +383,11 @@ pub enum WorkerMsg {
     /// Fresh status after a settle.
     Status(StatusModel),
     /// Which session the worker holds now (D-INT): sent once when the worker starts and after
-    /// every swap (`/new`, `/resume`, `/fork`, `/clone`, import) and reload.
+    /// every swap (`/new`, `/resume`, `/fork`, `/clone`) and reload.
     Session(SessionInfo),
     /// The answer to [`SessionCmd::Snapshot`].
     Tree(oxa_session::Tree),
-    /// The worker opened another `Session` object (`/new`, `/resume`, import): this is its
+    /// The worker opened another `Session` object (`/new`, `/resume`): this is its
     /// control handle (D-INT). Abort, steering and follow-ups go to it from now on; what was
     /// still queued for the previous session is handed back to the user, never sent.
     Rebind(oxa_core::Handle),
@@ -599,7 +597,7 @@ pub struct InteractiveOpts {
     pub env: Vec<(String, String)>,
     /// Capability overrides resolved by the CLI; `None` = detect from `env`.
     pub caps: Option<TermCaps>,
-    /// Builds the next session for `/new`, `/resume`, fork, clone and import. Runs on the
+    /// Builds the next session for `/new`, `/resume`, fork and clone. Runs on the
     /// worker thread after the previous session was dropped.
     pub reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send>,
     /// `-r` / `--resume`: open the session picker right after start (D-INT).

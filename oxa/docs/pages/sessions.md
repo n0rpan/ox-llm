@@ -86,11 +86,10 @@ Moving the leaf does not change what was sent before. The next request follows a
 - Shift+L on a tree entry sets or clears its label. Labels are stored as `label` entries and appear in the tree; the labelled-only filter lists them. Shift+T shows the time of each label.
 - `/name <text>` sets the session's display name, and `--name` sets it at start. The name appears in the footer and in the sessions picker.
 
-## Export and import
+## Export
 
 - `/export [path]` writes the session as one HTML file. The file contains the whole tree, so every branch can be browsed in a browser, and it works without a network connection. A `.jsonl` path copies the session file instead. Without a path oxa chooses a file name in the current directory.
 - `oxa --export <session file> [output]` does the same from the command line and exits. The output is HTML unless the output name ends in `.jsonl`.
-- `/import <path>` loads a JSONL session. The session keeps its id and its working directory.
 
 Nothing is uploaded. An export is a local file, and you decide where it goes.
 

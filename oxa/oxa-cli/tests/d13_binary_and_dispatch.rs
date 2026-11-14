@@ -253,50 +253,6 @@ fn help_and_version() {
     assert_eq!(version.out, format!("oxa {}\n", env!("CARGO_PKG_VERSION")));
 }
 
-/// copies, never overwrites
-#[test]
-fn config_import_pi_once() {
-    let env = TestEnv::new();
-    env.write("home/.pi/agent/mcp.json", "{\"servers\":{}}");
-    env.write("home/.pi/agent/keybindings.json", "{\"from\":\"pi\"}");
-    env.write(
-        "home/.pi/agent/skills/demo/SKILL.md",
-        "---\nname: demo\n---\nbody\n",
-    );
-    env.write("home/.pi/agent/prompts/review.md", "review\n");
-    env.write("home/.oxa/agent/keybindings.json", "{\"from\":\"oxa\"}");
-    let url = closed_url();
-
-    let first = go(&env, &url, &["config", "--import-pi"]);
-    assert_eq!(first.code, 0, "stderr: {}", first.err);
-    assert!(first.out.contains("imported 3 file(s)"), "report: {}", first.out);
-    assert!(first.out.contains("kept 1 existing"), "report: {}", first.out);
-    let agent = env.agent_dir();
-    assert_eq!(
-        std::fs::read_to_string(agent.join("mcp.json")).unwrap(),
-        "{\"servers\":{}}"
-    );
-    assert!(agent.join("skills/demo/SKILL.md").is_file(), "skills copied");
-    assert!(agent.join("prompts/review.md").is_file(), "prompts copied");
-    assert_eq!(
-        std::fs::read_to_string(agent.join("keybindings.json")).unwrap(),
-        "{\"from\":\"oxa\"}",
-        "an existing file is never overwritten"
-    );
-
-    let second = go(&env, &url, &["config", "--import-pi"]);
-    assert_eq!(second.code, 0);
-    assert!(
-        second.out.contains("imported 0 file(s)"),
-        "second run copies nothing: {}",
-        second.out
-    );
-    assert_eq!(
-        std::fs::read_to_string(agent.join("keybindings.json")).unwrap(),
-        "{\"from\":\"oxa\"}"
-    );
-}
-
 /// `oxa -p` against oxa-fake
 #[test]
 fn print_mode_end_to_end_with_fake() {

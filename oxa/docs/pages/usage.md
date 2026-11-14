@@ -139,7 +139,6 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/name [name]` | set the session's display name |
 | `/session` | show session info and stats |
 | `/export [path]` | export the session to HTML (or `.jsonl`) |
-| `/import <path>` | import a JSONL session, keeping its id and working directory |
 | `/copy` | copy the last assistant message to the clipboard |
 | `/hotkeys` | show the key bindings in force |
 | `/mcp` | list the MCP servers and their state |

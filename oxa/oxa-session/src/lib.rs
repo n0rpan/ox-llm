@@ -19,14 +19,12 @@
 
 mod durable;
 mod meta;
-mod migrate;
 mod ops;
 mod store;
 mod transcript;
 mod tree;
 
 pub use meta::{meta_of, search_sessions, sort_sessions, SessionSort};
-pub use migrate::{import_pi, import_session, migrate_lines};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
 pub use store::{
     count_files, decode_entry, decode_header, encode_entry, encode_header, new_entry_id, purge_session_file,

@@ -801,11 +801,11 @@ acceptance = [
 [[task]]
 id = "B14"
 wave = "B"
-title = "Fork, clone, import, picker metadata"
+title = "Fork, clone, picker metadata"
 crate = "oxa-session"
-owns = ["oxa-session/src/ops.rs", "oxa-session/src/migrate.rs", "oxa-session/src/meta.rs", "oxa-session/tests/b14_fork_clone_import_picker_metadata.rs"]
+owns = ["oxa-session/src/ops.rs", "oxa-session/src/meta.rs", "oxa-session/tests/b14_fork_clone_import_picker_metadata.rs"]
 consumes = ["SessionStore (A3)", "Tree (A4)"]
-provides = ["fork_session", "clone_session", "set_name", "set_label", "import_pi", "migrate_lines", "meta_of", "search_sessions", "sort_sessions"]
+provides = ["fork_session", "clone_session", "set_name", "set_label", "meta_of", "search_sessions", "sort_sessions"]
 needs = ["A3", "A4"]
 size = "M"
 est_min = 40
@@ -814,9 +814,6 @@ test_cmd = "cargo test -p oxa-session --test b14_fork_clone_import_picker_metada
 acceptance = [
   { test = "fork_header_has_parent_session", text = "and the branch up to the entry" },
   { test = "clone_copies_active_branch", text = "ids kept" },
-  { test = "pi_v1_fixture_imports", text = "fixture file" },
-  { test = "pi_v2_fixture_imports", text = "fixture file" },
-  { test = "pi_v3_fixture_imports", text = "fixture file" },
   { test = "labels_set_and_clear", text = "entries appended" },
   { test = "names", text = "SessionInfo entry and meta name" },
   { test = "list_sort_modes", text = "recent / threaded / relevance" },
@@ -1460,7 +1457,7 @@ acceptance = [
   { test = "debug_writes_file", text = "/debug" },
   { test = "hotkeys_reflects_keymap", text = "/hotkeys with overrides" },
   { test = "compact_name_session_copy_export", text = "handlers" },
-  { test = "new_resume_tree_fork_clone_import", text = "handlers" },
+  { test = "new_resume_tree_fork_clone", text = "handlers" },
   { test = "reload_reports_epoch_cost", text = "notice" },
   { test = "omitted_commands_error", text = "unsupported_in_oxa" },
 ]
@@ -1508,7 +1505,6 @@ acceptance = [
   { test = "list_models", text = "output format" },
   { test = "export_flag", text = "--export input [output]" },
   { test = "help_and_version", text = "output" },
-  { test = "config_import_pi_once", text = "copies, never overwrites" },
   { test = "print_mode_end_to_end_with_fake", text = "`oxa -p` against oxa-fake" },
   { test = "continue_resume_session_flags", text = "open modes" },
   { test = "no_sandbox_notice", text = "bwrap missing" },

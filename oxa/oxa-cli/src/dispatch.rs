@@ -19,7 +19,7 @@ use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLev
 use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_rpc::{run_json, run_print, serve, Out};
 use oxa_sandbox::{Bwrap, NoSandbox};
-use oxa_session::{decode_entry, decode_header, import_session, FsStore, MemStore, SessionStore};
+use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -952,7 +952,6 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::New => Open::New,
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
-            Reopen::Import(path) => Open::Resume(import_session(&path, base.store.as_ref(), &base.cwd)?),
         };
         Session::open(base.deps(None), how)
     });

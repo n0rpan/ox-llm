@@ -2,7 +2,7 @@
 //! format" (`FMT-001` -> `fn fmt_001()`), plus the four meta-checks every parity file has.
 //!
 //! Every row test drives the real `oxa` binary (print mode, `--mode json`, `--mode rpc`, or the
-//! pty for `/import`) against the in-process fake engine inside an isolated `TestEnv`, then reads
+//! pty) against the in-process fake engine inside an isolated `TestEnv`, then reads
 //! the session `.jsonl` file the binary wrote and the requests the fake recorded.
 //! Conventions (see `oxa-parity/src/lib.rs`):
 //! * `pi docs: <page>` names the pi 1.5.2 documented behaviour a P row compares with
@@ -26,10 +26,6 @@ use std::time::{Duration, Instant};
 
 #[path = "support/tui_rig.rs"]
 mod rig;
-#[path = "support/tree_pty.rs"]
-mod tree_pty;
-use rig::{Rig, RigOpts, WAIT};
-use tree_pty::dialog_choice;
 
 // ---------------------------------------------------------------- pi's documented examples
 
@@ -1363,100 +1359,6 @@ fn fmt_018() {
     );
 }
 
-/// pi docs: session-format.md "Session Version": versions 1 (linear, no ids) and 2 (tree, the
-/// `hookMessage` role) are migrated to version 3 on load.
-/// invariant: through `/import` (oxa migrates pi files into a new v3 session; pi's assistant
-/// entries lack the exact wire bytes, so the first request starts cold).
-#[test]
-fn fmt_019() {
-    let env = TestEnv::new();
-    let proj = env.root().join("proj");
-    std::fs::create_dir_all(&proj).unwrap();
-    let v1_id = "0f6c2d9e-1111-4222-8333-944455556661";
-    let v2_id = "0f6c2d9e-1111-4222-8333-944455556662";
-    let jsonl = |vs: Vec<Value>| vs.iter().map(|v| format!("{v}\n")).collect::<String>();
-    let v1 = env.write(
-        "import/v1.jsonl",
-        &jsonl(vec![
-            json!({"type":"session","id":v1_id,"timestamp":"2025-01-01T00:00:00.000Z","cwd":proj}),
-            json!({"type":"message","timestamp":"2025-01-01T00:00:01.000Z",
-                   "message":{"role":"user","content":"v1 question","timestamp":1}}),
-            json!({"type":"message","timestamp":"2025-01-01T00:00:02.000Z",
-                   "message":{"role":"assistant","content":[{"type":"text","text":"v1 answer"}],
-                              "stopReason":"stop","timestamp":2}}),
-        ]),
-    );
-    let v2 = env.write(
-        "import/v2.jsonl",
-        &jsonl(vec![
-            json!({"type":"session","version":2,"id":v2_id,"timestamp":"2025-01-02T00:00:00.000Z","cwd":proj}),
-            json!({"type":"message","id":"a1b2c3d4","parentId":null,"timestamp":"2025-01-02T00:00:01.000Z",
-                   "message":{"role":"user","content":"v2 question","timestamp":1}}),
-            json!({"type":"message","id":"b2c3d4e5","parentId":"a1b2c3d4","timestamp":"2025-01-02T00:00:02.000Z",
-                   "message":{"role":"hookMessage","customType":"hook-x","content":"v2 hook text","display":true,"timestamp":2}}),
-            json!({"type":"message","id":"c3d4e5f6","parentId":"b2c3d4e5","timestamp":"2025-01-02T00:00:03.000Z",
-                   "message":{"role":"assistant","content":[{"type":"text","text":"v2 answer"}],
-                              "stopReason":"stop","timestamp":3}}),
-        ]),
-    );
-    let rig = Rig::start_in(env, rig::replies(2), RigOpts::default());
-    rig.pty.wait_for_text("ctrl+d exit").unwrap();
-    let import = |path: &Path, answer: &str| {
-        rig.slash(&format!("/import {}", path.display()));
-        rig.pty.wait_for_text("Replace current session with").unwrap();
-        rig.pty
-            .wait_for_named("Yes chosen", |s| dialog_choice(s) == "Yes", WAIT)
-            .unwrap();
-        rig.pty.send_key("enter");
-        rig.pty.wait_for_text("Session imported from:").unwrap();
-        rig.pty.wait_for_text(answer).unwrap();
-        rig.settle();
-    };
-    let stored = |id: &str| {
-        rig.session_files()
-            .into_iter()
-            .find(|f| lines(f)[0]["id"] == id)
-            .unwrap_or_else(|| panic!("an imported session with id {id}"))
-    };
-
-    // v1: ids generated, one linear chain, version 3.
-    import(&v1, "v1 answer");
-    rig.prompt("follow up one", "reply 1");
-    let last = rig.generating().pop().unwrap();
-    assert_eq!(contents(&last), vec!["v1 question", "v1 answer", "follow up one"]);
-    let ls = lines(&stored(v1_id));
-    assert_eq!(ls[0]["version"], 3, "migrated to version 3");
-    assert_eq!(ls[0]["cwd"], json!(proj));
-    let mut prev = Value::Null;
-    for e in ls.iter().skip(1) {
-        assert!(is_hex8(e["id"].as_str().unwrap_or("")), "an id: {e}");
-        assert_eq!(e["parentId"], prev, "one linear chain: {e}");
-        prev = e["id"].clone();
-    }
-
-    // v2: ids kept, `hookMessage` becomes a custom message (v3's rename), in context.
-    import(&v2, "v2 answer");
-    rig.prompt("follow up two", "reply 2");
-    let last = rig.generating().pop().unwrap();
-    assert_eq!(
-        contents(&last),
-        vec!["v2 question", "v2 hook text", "v2 answer", "follow up two"]
-    );
-    let ls = lines(&stored(v2_id));
-    assert_eq!(ls[0]["version"], 3);
-    assert_eq!(msg_id(&ls, "v2 question"), "a1b2c3d4", "v2 ids are kept");
-    let cm = of_type(&ls, "custom_message");
-    assert_eq!(cm.len(), 1, "{ls:#?}");
-    assert_eq!(cm[0]["id"], "b2c3d4e5");
-    assert_eq!(cm[0]["customType"], "hook-x");
-    assert!(
-        !std::fs::read_to_string(stored(v2_id))
-            .unwrap()
-            .contains("hookMessage"),
-        "no v2 role is left"
-    );
-}
-
 /// pi docs: message-types.md "ImageContent" (`{type:"image", data, mimeType}`) in user messages.
 /// invariant: text-only engine: the image is stored with the user message as a `Part::Image`
 /// (`parts`: path, mime, sha256, size) and never serialised to the wire (no image bytes in any
@@ -1633,7 +1535,7 @@ fn fn_body(id: &str) -> &'static str {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = fmt_rows();
-    assert_eq!(rows.len(), 21, "the FMT area has 21 rows: {rows:?}");
+    assert_eq!(rows.len(), 20, "the FMT area has 20 rows: {rows:?}");
     for (id, verdict, test) in &rows {
         let fn_name = id.to_ascii_lowercase().replace('-', "_");
         assert!(
