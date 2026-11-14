@@ -11,6 +11,12 @@
     "stderr": "",
     "stdout": "Cache budget: 4 GB.\n"
   },
+  "cache-budget-fractional": {
+    "exit": 0,
+    "host_commands": [],
+    "stderr": "",
+    "stdout": "Cache budget: 4.12346 GB.\n"
+  },
   "cache-budget-invalid": {
     "exit": 2,
     "host_commands": [],
@@ -395,6 +401,20 @@
     ],
     "stderr": "",
     "stdout": ""
+  },
+  "panel-output": {
+    "exit": 37,
+    "host_commands": [
+      {
+        "args": [
+          "snapdragon.local-ai",
+          "toggle"
+        ],
+        "command": "omarchy-shell"
+      }
+    ],
+    "stderr": "Synthetic panel diagnostic.\n",
+    "stdout": "Synthetic panel output.\n"
   },
   "plan-unavailable": {
     "exit": 1,

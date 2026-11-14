@@ -15,6 +15,7 @@ GOLDENS = Path(__file__).with_name('goldens') / 'cli-runtime.json'
 CANONICAL_HOME = Path('/home/oxc-conformance')  # synthetic namespace mount, never a real account
 CASES = {
     'panel': (['panel'], 0),
+    'panel-output': (['panel'], 37),
     'status': (['status'], 0),
     'status-json': (['status', '--json'], 0),
     'ledger': (['ledger'], 0),
@@ -42,6 +43,7 @@ CASES = {
     'cache-json': (['cache', '--json'], 0),
     'cache-budget-off': (['cache', 'budget', 'off'], 0),
     'cache-budget-four': (['cache', 'budget', '4'], 0),
+    'cache-budget-fractional': (['cache', 'budget', '4.1234567'], 0),
     'cache-budget-invalid': (['cache', 'budget', '3'], 2),
     'cache-clear': (['cache', 'clear', '--all'], 0),
     'cache-clear-session': (['cache', 'clear', '--session', 'synthetic-session'], 0),
@@ -77,6 +79,8 @@ def capture_case(name):
         executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
         command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
         env = {**daemon.env, 'PATH': str(binary_dir) + ':/usr/bin:/bin'}
+        if name == 'panel-output':
+            env['OXC_PANEL_OUTPUT'] = '1'
         result = subprocess.run([*daemon.namespace, *command, *args], cwd=daemon.home,
                                 env=env, capture_output=True, timeout=15)
         if result.returncode != expected_exit:

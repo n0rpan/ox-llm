@@ -1,0 +1,5 @@
+Usage:
+  local-ai share [status] [--json]      what is shared, where, and the key fingerprint
+  local-ai share on [tailscale|lan]     share the OpenAI API with your devices (default: tailscale)
+  local-ai share off                    loopback only again, at once
+  local-ai share key [--rotate]         show the API key once; --rotate makes a new one (old stops working)

@@ -1,7 +1,9 @@
-# Remaining conformance work before Rust
+# Remaining conformance and Rust work
 
 Reference main: `a1c683f9e3783fdac4716bef53241833babe60a6`.
-The passing suite is partial. No Rust implementation has been started.
+The passing Python suite is partial. Per the owner's updated instruction, Rust
+implementation has started in parallel with the remaining contracts. See
+`oxc-rs/README.md` for the implemented scope and local checks.
 
 The following gaps remain visible rather than being represented by skipped tests:
 
@@ -38,8 +40,10 @@ The following gaps remain visible rather than being represented by skipped tests
   preserving names/paths/resource and hardening controls. Document the necessary
   executor change; do not silently relax unit comparisons.
 
-After coverage is complete and passes Python, create `oxc-rs/` (safe Rust,
-Tokio plus axum/hyper) and port each area against this same suite. Complete both
+Continue `oxc-rs/` (safe Rust, Tokio plus axum) area by area against this same
+suite. The owner authorized starting implementation while conformance/CI are
+still in progress. Establish or extend Python contracts before adjusting a
+ported behavior; do not change Python behavior to ease parity. Complete both
 file directions and the fake-engine benchmark with Rust before any readiness
 claim. Hardware A/B remains the owner's responsibility.
 
@@ -47,3 +51,14 @@ Fetch/merge main every few hours and before any completion claim. Review all
 `lab/` changes since the previous merge point, add reference contracts first,
 then port the changed behavior. Keep the draft PR's first line and parity table
 in sync. Never merge, tag, release, push main or mark hardware readiness early.
+
+CI policy from the owner: keep PRs draft during iteration and test locally. Do
+not push repeatedly to trigger CI or poll CI status. When requesting a full
+public run/review, dispatch checks.yml once for the branch (or mark ready only
+when appropriate). If waiting is needed, use one blocking gh pr checks --watch.
+
+Next implementation step: native engine lifecycle/inference. The HTTP foundation
+currently passes all empty-install cases and 16/17 gates; valid gzip inference
+still fails because no engine is launched. CLI runtime has a supported subset
+against the Python daemon. Rust's complete conformance remains FAIL; no readiness
+or deployment claim is authorized by the passing subsets.

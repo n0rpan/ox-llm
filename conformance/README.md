@@ -1,9 +1,9 @@
 # oxc drop-in conformance
 
 Reference: main `a1c683f9e3783fdac4716bef53241833babe60a6`.
-The current suite passes 211 scenarios in 30 unittest methods. This remains a
-partial contract suite, not a complete parity claim. No Rust
-implementation has been started: the full Python suite must pass first.
+The current suite passes 218 scenarios in 31 unittest methods. This remains a
+partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
+work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
 Requires Linux, Python 3.10+ and bubblewrap with unprivileged user and cgroup
 namespaces. The lab CI job already installs bubblewrap. Run from the repository root:
@@ -65,6 +65,7 @@ Intentional reference refresh, after reviewing changes on main:
 
 ```sh
 python3 conformance/test_cli.py --record-python
+python3 conformance/test_cli_files.py --record-python
 python3 conformance/test_http.py --record-python
 python3 conformance/test_api.py --record-python
 python3 conformance/test_http_gates.py --record-python
@@ -78,13 +79,14 @@ do not refresh goldens merely because an alternate implementation fails them.
 
 | Area | Python | Rust | Coverage still required |
 | --- | --- | --- | --- |
-| CLI parsing | PASS, 56 cases | Not implemented | More option combinations |
-| CLI runtime | PASS, 46 cases | Not implemented | More success/failure branches, qualified Flash/plan launch, populated digest/ledger |
-| HTTP empty install | PASS, 7 cases | Not implemented | Additional setup failures |
+| CLI parsing | PASS, 56 cases | PASS, captured grammar | More option combinations |
+| CLI ledger files | PASS, 5 cases | PASS | Additional historical ledger labels |
+| CLI runtime | PASS, 48 cases | Partial: 29/48 native CLI cases against Python daemon | More success/failure branches, qualified Flash/plan launch, populated digest/ledger |
+| HTTP empty install | PASS, 7 cases | PASS | Additional setup failures |
 | Configured HTTP | PASS, 50 cases | Not implemented | More option combinations and engine error paths |
-| HTTP gates | PASS, 17 cases | Not implemented | LAN share listeners and rate limits |
+| HTTP gates | PASS, 17 cases | Partial: 16/17; inference pending | LAN share listeners and rate limits |
 | Lifecycle | PASS, 11 tests | Not implemented | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
-| Files | PASS, 3 tests | Not implemented | Additional state stores and sharing secrets |
+| Files | PASS, 3 tests | API-key refresh/fail-closed PASS; remaining round trips pending | Additional state stores and sharing secrets |
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness ready; Python/Python PASS | Not implemented | Run Python/selected/Python round trips with Rust |
 | Bootstrap/install | PASS, 4 scenarios | Not implemented | Transfer/build/install-journal edge cases |
@@ -141,3 +143,8 @@ resolution. Load RSS is sampled every 20 ms; latency covers complete sequential
 HTTP requests. The stored Python baseline is an executor measurement with the
 synthetic host files and fake engine, not laptop hardware validation. See
 [benchmarks/python-a1c683f.json](benchmarks/python-a1c683f.json).
+
+CI policy: keep the PR draft and test locally while iterating. Do not push
+repeatedly to trigger CI. Request a full public run deliberately with one
+workflow dispatch (or mark ready when appropriate); use one blocking
+`gh pr checks --watch` rather than polling.

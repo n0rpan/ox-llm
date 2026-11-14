@@ -10,6 +10,10 @@ row = json.dumps({'command': name, 'args': sys.argv[1:]}) + '\n'
 fd = os.open(Path.home() / 'host-commands.jsonl', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
 os.write(fd, row.encode())
 os.close(fd)
+if name == 'omarchy-shell' and os.environ.get('OXC_PANEL_OUTPUT') == '1':
+    print('Synthetic panel output.')
+    print('Synthetic panel diagnostic.', file=sys.stderr)
+    raise SystemExit(37)
 if name == 'systemctl' and os.environ.get('OXC_STATEFUL_SYSTEMCTL') == '1':
     state_path = Path.home() / 'mock-services.json'
     states = json.loads(state_path.read_text()) if state_path.exists() else {}

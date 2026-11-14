@@ -1,0 +1,12 @@
+usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]
+                          [--json]
+
+Remove ox-llm from this user account (dry run unless --apply).
+
+options:
+  -h, --help       show this help message and exit
+  --apply          actually remove (default: print the plan)
+  --remove-models  also delete the model files runtime.json names
+  --record PATH    an extra install record: a stage manifest.json or a
+                   bootstrap install journal
+  --json           machine-readable output
