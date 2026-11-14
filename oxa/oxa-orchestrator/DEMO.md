@@ -29,6 +29,7 @@ test A2A scheduler coordinates real RPC workers ... ok
 test A2A scheduler steering, cancellation and wire caps ... ok
 test orchestrate CLI success and inert validation ... ok
 test orchestrate CLI signal cleanup ... ok
+test orchestrate CLI stalled stderr ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -63,3 +64,9 @@ JSON-safe terminal controls, no engine access for help/rejected options,
 refusal to overwrite an existing directory, and SIGINT exit 130 after worker
 reaping. The default build excludes the orchestration dependency; enabling the
 feature leaves base help byte-identical. See [CLI.md](CLI.md) for reproduction.
+
+The stalled-stderr case fills a blocking pipe before starting the command and
+keeps its reader open without draining it. The one-second run deadline still
+produces a partial JSON report, reaps the owned workers and closes the observed
+owned listener. The caller's stderr flags stay unchanged. The actual feature-built
+binary smoke check exercises the same case.

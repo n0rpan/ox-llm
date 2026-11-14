@@ -33,7 +33,11 @@ selected permission mode is passed through and verified, with `plan` as the
 command default. `workspace` and `ask` still have no filesystem tools here.
 Results are proposals; this profile does not edit or merge a checkout.
 
-Worker status appears on stderr as state changes. Stdout contains one final
+Worker status appears on stderr as state changes. Status writes use a separate
+nonblocking file description with at most 512 pending bytes. Backpressure drops
+intermediate updates instead of blocking deadlines or canceling useful work.
+Caller descriptor flags remain unchanged; regular-file status logs append, and
+unsupported stderr sockets/devices are quiet. The final report is authoritative. Stdout contains one final
 JSON report, including each outcome, task/result, usage and stop confirmation.
 JSON escaping keeps terminal control characters in result text from executing.
 Redirect stdout explicitly if results should be saved. Audit logs contain
