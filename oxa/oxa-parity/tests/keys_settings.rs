@@ -446,6 +446,17 @@ mod tui {
     }
 
     /// The first row whose text (without the fullscreen scrollbar column) is exactly `needle`.
+    /// The numbered reply is completely drawn at the bottom: the closing code fence row sits
+    /// right after the `last` line (it arrives after the last line while the reply streams, and
+    /// shifts every row above it by one).
+    pub fn reply_closed(s: &Screen, last: &str) -> bool {
+        row_index(s, last).is_some_and(|r| {
+            s.rows()
+                .get(r + 1)
+                .is_some_and(|f| f.trim_end().trim_end_matches(['│', '█']).trim() == "```")
+        })
+    }
+
     pub fn row_index(s: &Screen, needle: &str) -> Option<usize> {
         s.rows()
             .iter()
@@ -596,6 +607,13 @@ mod tui {
         /// Wait (bounded) until `pred` holds; panics with the screen dump otherwise.
         pub fn wait(&self, what: &str, pred: impl Fn(&Screen) -> bool) -> Screen {
             self.pty.wait_for_named(what, pred, DEFAULT_TIMEOUT).unwrap()
+        }
+        /// Content-based: wait until `pred` holds on a complete frame (input read, bounded by
+        /// `DEFAULT_TIMEOUT`), then until it still holds after 250 ms of quiet. Use it for a
+        /// baseline measured before the next input: a frame that merely looks right while the
+        /// transcript is still being drawn must not end the wait.
+        pub fn wait_steady(&self, what: &str, pred: impl Fn(&Screen) -> bool) -> Screen {
+            self.pty.wait_steady(what, pred, 250, DEFAULT_TIMEOUT).unwrap()
         }
         pub fn wait_text(&self, needle: &str) -> Screen {
             self.pty.wait_for_text(needle).unwrap()
@@ -2025,21 +2043,30 @@ fn set_036() {
         let t = r.trim_end().trim_end_matches(['│', '█']).trim();
         t.strip_prefix('R')?.parse().ok()
     };
-    let moved = |settings: Value, button: u32| {
+    let moved = |settings: Value, button: u32, want: i64| {
         let t = Setup::new()
             .settings(settings)
             .script(&[numbered_reply("R", 80)])
             .start();
         t.prompt("count", "R80");
-        let before = number_at(&t.settle(), 10).expect("a numbered line in row 10");
+        // The baseline is the steady bottom view: R80 on screen and row 10 unchanged for a
+        // quiet period (the numbered line in row 10 is the one measured).
+        let s = t.wait_steady("the bottom view drawn", |s| {
+            reply_closed(s, "R80") && number_at(s, 10).is_some()
+        });
+        let before = number_at(&s, 10).expect("a numbered line in row 10");
         t.pty.send_bytes(format!("\x1b[<{button};5;5M").as_bytes());
-        let s = t.wait("the view moved", |s| number_at(s, 10) != Some(before));
+        // Wait for the frame with the exact expected position (bounded; a wrong distance times
+        // out with the screen dump), then assert it unchanged after the redraw is quiet.
+        let s = t.wait_steady("the view moved by the expected distance", |s| {
+            number_at(s, 10) == Some(before - want)
+        });
         number_at(&s, 10).map(|n| before - n)
     };
-    assert_eq!(moved(json!({}), 64), Some(1), "auto: one line");
-    assert_eq!(moved(json!({ "fullscreenWheelScrollLines": 5 }), 64), Some(5));
+    assert_eq!(moved(json!({}), 64, 1), Some(1), "auto: one line");
+    assert_eq!(moved(json!({ "fullscreenWheelScrollLines": 5 }), 64, 5), Some(5));
     assert_eq!(
-        moved(json!({ "fullscreenWheelScrollLines": 2 }), 64 + 8),
+        moved(json!({ "fullscreenWheelScrollLines": 2 }), 64 + 8, 10),
         Some(10),
         "alt: x5"
     );
@@ -2049,7 +2076,7 @@ fn set_036() {
         .script(&[numbered_reply("R", 80)])
         .start();
     t.prompt("count", "R80");
-    t.settle();
+    t.wait_steady("the bottom view drawn", |s| reply_closed(s, "R80"));
     t.pty.send_bytes(b"\x1b[<64;5;5M");
     t.wait("the top in one event", |s| s.row(0).starts_with("oxa v"));
 }
@@ -3085,7 +3112,9 @@ fn key_007() {
         .start();
     t.prompt("count", "R80");
     let row_of = |s: &Screen, needle: &str| row_index(s, needle);
-    let at_bottom = t.wait("R80 shown", |s| row_of(s, "R80").is_some());
+    let at_bottom = t.wait_steady("the reply drawn to its closing fence", |s| {
+        reply_closed(s, "R80") && row_of(s, "R70").is_some()
+    });
     let r70 = row_of(&at_bottom, "R70").unwrap();
     t.key("pageUp");
     let s = t.wait("a page up", |s| row_of(s, "R80").is_none());
@@ -3098,7 +3127,9 @@ fn key_007() {
     t.key("ctrl+home");
     t.wait("the top", |s| s.row(0).starts_with("oxa v"));
     t.key("ctrl+end");
-    t.wait("the bottom", |s| row_of(s, "R80").is_some());
+    t.wait_steady("the bottom", |s| {
+        reply_closed(s, "R80") && row_of(s, "R70") == Some(r70)
+    });
     // lineUp moves the transcript down by exactly one row; lineDown back.
     t.key("f5");
     t.wait("one line up", |s| row_of(s, "R70") == Some(r70 + 1));
