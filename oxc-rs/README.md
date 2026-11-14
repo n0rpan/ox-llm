@@ -21,8 +21,8 @@ cache usage and storage inventory pass 14 additional reference cases. A native C
 The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
-contracts also pass. Fourteen scoped cache-clear cases pass. The Python reference
-suite has 319 passing scenarios in 53
+contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
+suite has 323 passing scenarios in 53
 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
@@ -72,6 +72,9 @@ Scoped clear handles all/model/session/hint requests, preserves other owners'
 shared files, atomically rewrites shared manifests with private permissions and
 directory fsync, and removes recognized legacy Rust prefixes. Clear-all marks
 registry entries cold while retaining their primers.
+Classic PrefixStore clear preserves the reference constructor's private directory,
+pending cleanup and pruning rules, then removes only recognized cache names and
+syncs the directory. File operations use its opened directory descriptor.
 
 Fast/deep/max modes publish per-model limits and capabilities and preserve
 unknown config fields, symlinks and permission bits. Max context requires the
@@ -79,8 +82,8 @@ same engine-hash-bound RSS proof and 27 GiB ceiling as Python. Cap changes unloa
 an idle model and refuse an active request; the synthetic engine verifies the
 new context reaches its launch arguments. This is fixture validation only.
 
-Complete status/control state, optional turn diagnostics, classic PrefixStore
-clearing, disk-cache launch/preload adapters,
+Complete status/control state, optional turn diagnostics, PrefixStore lookup/save,
+disk-cache launch/preload adapters,
 qualified Flash/classic and execution-override profiles, installers,
 update/rollback, sharing/cloud secrets and remaining CLI commands are pending.
 State-cache-capable binaries and automatic native engine-ledger capture explicitly

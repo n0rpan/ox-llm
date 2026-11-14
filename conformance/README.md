@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `2d5825e19301dead4703362c556ddc11c4635662`.
-The current suite passes 319 scenarios in 53 unittest methods. This remains a
+The current suite passes 323 scenarios in 53 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -97,7 +97,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Configured HTTP | PASS, 62 cases | PASS: chat, completions and Responses JSON/SSE | More option combinations and engine error paths |
 | Cache usage | PASS, 9 cases | PASS | Clear, preload and active-engine ownership |
 | Cache budgets | PASS, 12 cases | PASS: persistence, value/TTL eviction, pins/recent sessions, shared blocks, orphan echo, opaque models, lease refusal and symlink safety | State-cache engine adapter and mutation races |
-| Cache clear | PASS, 14 cases | PASS: all/model/session/hint scopes, shared/anonymous owners, opaque manifests, private durable rewrites, busy/lease refusal, legacy Rust prefixes and retained primers | Classic PrefixStore adapter, engine-owned clear and more mutation races |
+| Cache clear | PASS, 18 cases | PASS: all/model/session/hint scopes, shared/anonymous owners, opaque manifests, private durable rewrites, busy/lease refusal, classic/Rust prefixes and retained primers | Engine-owned clear and more mutation races |
 | Context modes | PASS, 8 cases | PASS: limits/capabilities, fast/deep/max, RSS-proof gates, active/cap-changing controls and private config writes | Execution override adapters and more malformed profiles |
 | Storage inventory | PASS, 5 cases | PASS | Deletion, races and additional identity variants |
 | HTTP gates | PASS, 18 cases | PASS | LAN share listeners and rate limits |

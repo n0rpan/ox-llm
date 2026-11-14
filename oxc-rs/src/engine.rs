@@ -502,10 +502,10 @@ impl Manager {
                 ));
             }
             if profile["prefix_cache"]["enabled"] == true {
-                return Err((
-                    503,
-                    json!({"error":"Prefix cache could not be cleared. Try again in a moment."}),
-                ));
+                let prefix = profile["prefix_cache"].clone();
+                tokio::task::spawn_blocking(move ||crate::prefix_store::clear(&prefix)).await
+                    .map_err(|_|(503,json!({"error":"Prefix cache could not be cleared. Try again in a moment."})))?
+                    .map_err(|_|(503,json!({"error":"Prefix cache could not be cleared. Try again in a moment."})))?;
             }
             self.harness
                 .lock()

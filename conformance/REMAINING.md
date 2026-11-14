@@ -17,7 +17,7 @@ The following gaps remain visible rather than being represented by skipped tests
   symlink refusals. Budget persistence and controller eviction now cover TTL,
   value ranking, shared blocks, pins, opaque manifests and private lease ownership.
   Controller clear now covers all/model/session/hint scopes and shared ownership.
-  Classic PrefixStore clearing, preload, engine-owned mutation and further race
+  PrefixStore lookup/save, preload, engine-owned mutation and further race
   coverage remain pending.
 - LAN sharing: actual listener configuration, key rotation and file permissions,
   origin/route/header restrictions, rates, shared/local priority and preemption.
@@ -77,9 +77,11 @@ All three config/ledger/key-file contracts now pass with Rust. Eight context-mod
 cases cover published limits/capabilities, hash-bound RSS-proof gates, active
 requests, cap-changing reloads and symlink/permission preservation. Twelve budget
 cases cover persistence and descriptor-anchored eviction without reading KV bytes.
-Fourteen cache-clear cases cover scope validation, shared/anonymous owners,
+Eighteen cache-clear cases cover scope validation, shared/anonymous owners,
 private durable manifest rewrites, lease/busy refusal, retained primers and
-legacy Rust prefixes. Classic PrefixStore clearing remains an explicit refusal.
+legacy Rust prefixes. Classic PrefixStore clearing preserves its private-directory,
+pending/prune, recognized-name and fsync rules; symlink roots and invalid budgets
+refuse the operation, and other clear scopes retain that store.
 State-cache-capable engines and the automatic engine-ledger bridge currently
 refuse launch explicitly until their adapters are ported. Full Rust conformance
 remains FAIL, and no native deployment or readiness claim is made.

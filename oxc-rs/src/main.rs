@@ -9,6 +9,7 @@ mod harness;
 mod ledger;
 mod models;
 mod paths;
+mod prefix_store;
 mod proxy;
 mod request_ledger;
 mod responses;

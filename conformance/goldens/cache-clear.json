@@ -125,6 +125,298 @@
       }
     }
   ],
+  "classic-prefix": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 269,
+          "scope": "all"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 0
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 0
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/echo"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    },
+    {
+      "classic_files": [
+        "synthetic-unknown.bin"
+      ],
+      "classic_mode": 448,
+      "classic_symlink": false
+    }
+  ],
+  "classic-prefix-invalid-budget": [
+    {
+      "body": {
+        "error": "Prefix cache could not be cleared. Try again in a moment."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 269
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 269
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/32945703e0f21e3b6fbc997171959d8b.jsonl": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/first.json": {
+          "bytes": 219,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": "32945703e0f21e3b6fbc997171959d8b",
+            "n_tokens": 256,
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    },
+    {
+      "classic_files": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pending",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.bin",
+        "synthetic-unknown.bin"
+      ],
+      "classic_mode": 448,
+      "classic_symlink": false
+    }
+  ],
+  "classic-prefix-model-scope": [
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "controller",
+          "freed_bytes": 269,
+          "scope": "model"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 0
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 0
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/echo"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    },
+    {
+      "classic_files": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pending",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.bin",
+        "synthetic-unknown.bin"
+      ],
+      "classic_mode": 448,
+      "classic_symlink": false
+    }
+  ],
+  "classic-prefix-symlink": [
+    {
+      "body": {
+        "error": "Prefix cache could not be cleared. Try again in a moment."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 269
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 604800,
+        "used_bytes": 269
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "directories": [
+        "aaaaaaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaa/blocks",
+        "aaaaaaaaaaaaaaaa/blocks/bb",
+        "aaaaaaaaaaaaaaaa/blocks/dd",
+        "aaaaaaaaaaaaaaaa/echo",
+        "aaaaaaaaaaaaaaaa/sessions",
+        "aaaaaaaaaaaaaaaa/snaps"
+      ],
+      "files": {
+        "aaaaaaaaaaaaaaaa/blocks/dd/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeee.kv": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/echo/32945703e0f21e3b6fbc997171959d8b.jsonl": {
+          "bytes": 15,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/identity.json": {
+          "bytes": 2,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/sessions/first.json": {
+          "bytes": 219,
+          "manifest": {
+            "atime": 1234,
+            "blocks": [
+              [
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "eeeeeeeeeeeeeeee"
+              ]
+            ],
+            "hint": "32945703e0f21e3b6fbc997171959d8b",
+            "n_tokens": 256,
+            "pin": false,
+            "snaps": [],
+            "version": 1
+          },
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/snaps/synthetic.eeeeeeeeeeeeeeee.st": {
+          "bytes": 18,
+          "mode": 384
+        },
+        "aaaaaaaaaaaaaaaa/unknown.txt": {
+          "bytes": 14,
+          "mode": 384
+        }
+      }
+    },
+    {
+      "classic_files": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bin",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pending",
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.bin",
+        "synthetic-unknown.bin"
+      ],
+      "classic_mode": 448,
+      "classic_symlink": true
+    }
+  ],
   "empty": [
     {
       "body": {

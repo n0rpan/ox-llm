@@ -19,7 +19,8 @@ from test_lifecycle import status, wait_until
 
 GOLDENS = Path(__file__).with_name('goldens') / 'cache-clear.json'
 CASES = ('empty', 'all', 'model', 'session-shared', 'hint-shared-owners', 'hint-anonymous',
-         'hint-only-owner', 'opaque', 'invalid', 'lease-busy', 'busy', 'legacy-prefix', 'harness-warm', 'manifest-float-version')
+         'hint-only-owner', 'opaque', 'invalid', 'lease-busy', 'busy', 'legacy-prefix', 'harness-warm', 'manifest-float-version',
+         'classic-prefix', 'classic-prefix-symlink', 'classic-prefix-invalid-budget', 'classic-prefix-model-scope')
 
 
 def hint(name):
@@ -80,6 +81,23 @@ def run_case(name):
             (legacy / ('c' * 64 + '.bin')).write_bytes(b'OXEPFX01' + len(identity).to_bytes(4, 'little') + identity + b'synthetic-state')
             (legacy / ('d' * 64 + '.bin')).write_bytes(b'synthetic-invalid-prefix')
             (legacy / 'synthetic-unknown.bin').write_bytes(b'synthetic-kept')
+        if name.startswith('classic-prefix'):
+            classic = daemon.home / 'classic-prefixes'
+            classic.mkdir(mode=0o755)
+            for suffix in ('bin', 'json', 'pending'):
+                path = classic / ('a' * 64 + '.' + suffix)
+                path.write_bytes(b'synthetic-classic-state' if suffix != 'json' else b'{}')
+                path.chmod(0o600)
+            (classic / ('c' * 64 + '.bin')).symlink_to(outside)
+            (classic / 'synthetic-unknown.bin').write_bytes(b'synthetic-kept')
+            if name == 'classic-prefix-symlink':
+                target = classic.with_name('synthetic-classic-target')
+                classic.rename(target)
+                classic.symlink_to(target, target_is_directory=True)
+            config = json.loads(daemon.config_path.read_text())
+            config['prefix_cache'] = {'enabled': True, 'directory': str(classic),
+                                     'max_bytes': 0 if name == 'classic-prefix-invalid-budget' else 1}
+            daemon.config_path.write_text(json.dumps(config))
         output = []
         if name == 'harness-warm':
             send(daemon)
@@ -103,7 +121,7 @@ def run_case(name):
                     raise AssertionError('Held synthetic request failed')
             wait_until(lambda: status(daemon)['active_requests'] == 0)
         else:
-            body = {'scope': 'model', 'model': MODEL} if name == 'model' else \
+            body = {'scope': 'model', 'model': MODEL} if name in ('model', 'classic-prefix-model-scope') else \
                    {'scope': 'session', 'session': 'first'} if name in ('session-shared', 'opaque', 'manifest-float-version') else \
                    {'scope': 'hint', 'hint': 'synthetic-first'} if name.startswith('hint-') else {}
             descriptor = None
@@ -121,6 +139,10 @@ def run_case(name):
         output.append(inventory(root))
         if name == 'legacy-prefix':
             output.append({'legacy_files': {path.name: path.stat().st_size for path in sorted(legacy.iterdir())}})
+        if name.startswith('classic-prefix'):
+            output.append({'classic_mode': stat.S_IMODE(classic.stat().st_mode),
+                           'classic_symlink': classic.is_symlink(),
+                           'classic_files': [path.name for path in sorted(classic.iterdir())]})
         if name == 'harness-warm':
             output.append(harness_status(daemon))
         if name != 'empty' and outside.read_bytes() != b'synthetic-outside-kept':
