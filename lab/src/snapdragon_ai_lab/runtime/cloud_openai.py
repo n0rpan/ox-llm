@@ -33,24 +33,28 @@ EFFORT = {'none': 'low', 'minimal': 'low', 'low': 'low', 'medium': 'medium',
           'high': 'high', 'xhigh': 'high'}
 
 
+def _output_limit(payload, maximum):
+    if type(maximum) is not int or maximum <= 0:
+        raise cloud.CloudError('OpenAI models need a catalog max_output.', 400, 'invalid_value', 'model')
+    limit = next((payload[field] for field in ('max_completion_tokens', 'max_tokens')
+                  if payload.get(field) is not None), maximum)
+    if type(limit) is not int or limit <= 0:
+        raise cloud.CloudError('The output token limit must be a positive integer.',
+                               400, 'invalid_value', 'max_completion_tokens')
+    return min(limit, maximum)
+
+
 def chat_request(payload, item):
     """A single-choice, non-stored Chat Completions call with a bounded output cap."""
     reasoning = CHAT_MODELS.get(item['upstream_model'])
     if reasoning is None:
         raise cloud.CloudError('This OpenAI model has no supported Chat Completions tool contract.',
                                400, 'unsupported_model', 'model')
-    if payload.get('n', 1) != 1:
+    if payload.get('n') is not None and (type(payload['n']) is not int or payload['n'] != 1):
         raise cloud.CloudError('Cloud requests support one completion.', 400, 'invalid_value', 'n')
     body = {name: payload[name] for name in CHAT_FIELDS if name in payload}
     body.update(model=item['upstream_model'], store=False)
-    maximum = item.get('max_output')
-    if type(maximum) is not int or maximum <= 0:
-        raise cloud.CloudError('OpenAI models need a catalog max_output.', 400, 'invalid_value', 'model')
-    limit = payload.get('max_completion_tokens', payload.get('max_tokens', maximum))
-    if type(limit) is not int or limit <= 0:
-        raise cloud.CloudError('The output token limit must be a positive integer.',
-                               400, 'invalid_value', 'max_completion_tokens')
-    body['max_completion_tokens'] = min(limit, maximum)
+    body['max_completion_tokens'] = _output_limit(payload, item.get('max_output'))
     effort = payload.get('reasoning_effort')
     kwargs = payload.get('chat_template_kwargs')
     if effort is None and isinstance(kwargs, dict) and isinstance(kwargs.get('enable_thinking'), bool):
@@ -112,7 +116,7 @@ def validate(payload):
         elif not isinstance(content, str):
             _invalid('messages')
         if role == 'tool' and (not isinstance(message.get('tool_call_id'), str)
-                               or not message['tool_call_id'] or not isinstance(content, str)):
+                               or not message['tool_call_id']):
             _invalid('messages')
         calls = message.get('tool_calls')
         if calls is not None:
@@ -226,12 +230,8 @@ def _restore(item, history, key):
 
 
 def responses_request(payload, item, key=None):
-    maximum = item.get('max_output')
-    limit = payload.get('max_completion_tokens', payload.get('max_tokens', maximum))
-    if type(maximum) is not int or maximum <= 0 or type(limit) is not int or limit <= 0:
-        raise cloud.CloudError('OpenAI models need a positive output token limit.',
-                               400, 'invalid_value', 'max_completion_tokens')
-    if payload.get('n', 1) != 1:
+    limit = _output_limit(payload, item.get('max_output'))
+    if payload.get('n') is not None and (type(payload['n']) is not int or payload['n'] != 1):
         raise cloud.CloudError('Cloud requests support one completion.', 400, 'invalid_value', 'n')
     effort = payload.get('reasoning_effort')
     kwargs = payload.get('chat_template_kwargs')
@@ -256,8 +256,11 @@ def responses_request(payload, item, key=None):
                 raise cloud.CloudError('OpenAI tool continuation expired; start a new turn.',
                                        409, 'cloud_continuation_unavailable', 'messages')
         if role == 'tool':
+            output = message.get('content') or ''
+            if isinstance(output, list):
+                output = ''.join(part['text'] for part in output)
             inputs.append({'type': 'function_call_output', 'call_id': message.get('tool_call_id'),
-                           'output': message.get('content') or ''})
+                           'output': output})
             continue
         content = message.get('content')
         if isinstance(content, str):
@@ -278,7 +281,7 @@ def responses_request(payload, item, key=None):
             inputs.append({'role': role, 'content': parts})
     body = {'model': item['upstream_model'], 'input': inputs, 'store': False,
             'include': ['reasoning.encrypted_content'], 'reasoning': {'effort': effort},
-            'max_output_tokens': min(limit, maximum), 'stream': payload.get('stream') is True}
+            'max_output_tokens': limit, 'stream': payload.get('stream') is True}
     tools = []
     for tool in payload.get('tools') or []:
         function = tool.get('function')

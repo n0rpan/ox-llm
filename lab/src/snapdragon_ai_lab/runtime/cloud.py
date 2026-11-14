@@ -339,8 +339,8 @@ class BudgetHold:
 
 
 def validate_remote_request(payload, item):
-    n = payload.get('n', 1) if isinstance(payload, dict) else None
-    if type(n) is not int or n != 1:
+    n = payload.get('n') if isinstance(payload, dict) else None
+    if n is not None and (type(n) is not int or n != 1):
         raise CloudError('Cloud requests support one completion.', 400, 'invalid_value', 'n')
     if pricing(item) is None:
         raise CloudError('Cloud models need catalog pricing or explicit free: true.',

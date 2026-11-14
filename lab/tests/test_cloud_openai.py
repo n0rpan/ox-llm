@@ -188,6 +188,29 @@ class OpenAI(CloudCase):
             self.assertEqual(status, 400)
         self.assertEqual(len(mock.requests), 4)
 
+    def test_supported_tool_text_arrays_and_nullable_limits(self):
+        for model in ('gpt-4.1', 'gpt-6.1-sol'):
+            item = cloud.entry(REMOTE, models(model)[REMOTE])
+            assistant = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'call_array', 'type': 'function',
+                'function': {'name': 'lookup', 'arguments': '{}'}}]}
+            history = [{'role': 'user', 'content': 'lookup'}]
+            cloud_openai.remember(item, history, assistant, [{
+                'type': 'function_call', 'call_id': 'call_array', 'name': 'lookup', 'arguments': '{}'}],
+                'synthetic-array-scope')
+            result = [{'type': 'text', 'text': 'synthetic '}, {'type': 'text', 'text': 'result'}]
+            history.extend([assistant, {'role': 'tool', 'tool_call_id': 'call_array', 'content': result}])
+            body = cloud_openai.request({'messages': history}, item, 'synthetic-array-scope')
+            if cloud_openai.endpoint(item) == '/responses':
+                self.assertEqual(body['input'][-1]['output'], 'synthetic result')
+            else:
+                self.assertEqual(body['messages'][-1]['content'], result)
+            for tokens in ({'max_tokens': None}, {'max_completion_tokens': None},
+                           {'max_completion_tokens': None, 'max_tokens': 12}):
+                body = cloud_openai.request({'messages': [history[0]], 'n': None, **tokens}, item)
+                field = 'max_output_tokens' if cloud_openai.endpoint(item) == '/responses' else 'max_completion_tokens'
+                self.assertEqual(body[field], 12 if tokens.get('max_tokens') == 12 else 4096)
+
     def test_default_url_capabilities_and_no_local_features(self):
         item = cloud.entry(REMOTE, models()[REMOTE])
         self.assertEqual(item['base_url'], 'https://api.openai.com/v1')

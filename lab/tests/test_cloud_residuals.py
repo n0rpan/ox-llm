@@ -15,6 +15,8 @@ class SharedAdmission(CloudCase):
         self.assertEqual(status, 400, body)
         self.assertEqual(json.loads(body)['error']['param'], 'n')
         self.assertEqual(self.upstream.requests, [])
+        self.assertEqual(self.chat(n=None, max_tokens=1000)[0], 200)
+        self.assertEqual(len(self.upstream.requests), 1)
 
     def test_missing_pricing_is_unknown_and_refused_before_upstream(self):
         catalog = profiles()
