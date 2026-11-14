@@ -3260,13 +3260,26 @@ fn key_009_kitty_protocol_on_the_alternate_screen() {
         .start();
     let m = t.pty.modes();
     assert!(m.alt_screen, "fullscreen by default: {m:?}");
-    assert_eq!(m.kitty_flags(), 7, "the alternate screen has the flags pushed: {m:?}");
+    assert_eq!(
+        m.kitty_flags(),
+        7,
+        "the alternate screen has the flags pushed: {m:?}"
+    );
     t.prompt("count", "R40");
-    let s = t.wait("the footer advertises ctrl+shift+f", |s| s.contains("ctrl+shift+f search"));
+    let s = t.wait("the footer advertises ctrl+shift+f", |s| {
+        s.contains("ctrl+shift+f search")
+    });
     assert!(!s.contains("alt+s search"), "the first key is shown\n{s:?}");
     // The CSI-u bytes a kitty-protocol terminal sends (flags 7: `CSI 102 ; 6 u`).
-    let bytes = t.pty.key_bytes("ctrl+shift+f", KeyEncoding::Auto).expect("encodable");
-    assert!(bytes.starts_with(b"\x1b[102"), "{:?}", String::from_utf8_lossy(&bytes));
+    let bytes = t
+        .pty
+        .key_bytes("ctrl+shift+f", KeyEncoding::Auto)
+        .expect("encodable");
+    assert!(
+        bytes.starts_with(b"\x1b[102"),
+        "{:?}",
+        String::from_utf8_lossy(&bytes)
+    );
     t.pty.send_bytes(&bytes);
     t.wait("search open", |s| s.contains("Search:"));
     t.pty.send_text("R07");
@@ -3284,7 +3297,9 @@ fn key_009_legacy_terminal_shows_and_takes_the_fallback() {
         .start();
     assert_eq!(t.pty.modes().kitty_flags(), 0, "legacy terminal");
     t.prompt("count", "R40");
-    let s = t.wait("the footer advertises the fallback", |s| s.contains("alt+s search"));
+    let s = t.wait("the footer advertises the fallback", |s| {
+        s.contains("alt+s search")
+    });
     assert!(
         !s.contains("ctrl+shift+f"),
         "a key the terminal cannot send is not advertised\n{s:?}"
