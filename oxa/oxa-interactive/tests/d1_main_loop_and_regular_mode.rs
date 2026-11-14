@@ -743,6 +743,35 @@ fn status_from_keeps_display_only_fields() {
 }
 
 #[test]
+fn status_from_clears_speed_and_cache_on_model_switch_and_new_session() {
+    let env = TestEnv::new();
+    let s = session(&env);
+    let state = s.state();
+    let mut stats = s.stats();
+    stats.last_tok_s = 54.4;
+    stats.context_tokens = 0;
+    let prev = StatusModel {
+        model: "other-model".into(),
+        last_cached: Some(86),
+        last_prompt: Some(100),
+        tok_per_s: Some(54.4),
+        ..StatusModel::default()
+    };
+    let next = status_from(&state, &stats, &prev);
+    assert_eq!(next.tok_per_s, None, "speed cleared on model switch");
+    assert_eq!((next.last_cached, next.last_prompt), (None, None));
+    // same model, empty session (/new): cache cleared
+    let prev = StatusModel {
+        model: state.model.clone(),
+        last_cached: Some(86),
+        last_prompt: Some(100),
+        ..StatusModel::default()
+    };
+    let next = status_from(&state, &stats, &prev);
+    assert_eq!((next.last_cached, next.last_prompt), (None, None));
+}
+
+#[test]
 fn transcript_lines_index_each_block() {
     let mut vm = ViewModel::default();
     for e in conversation() {

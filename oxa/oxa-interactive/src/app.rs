@@ -1312,6 +1312,8 @@ pub(crate) fn transcript_lines_in(
 /// Status from the session after a settle (`Session::state()` and `Session::stats()`), keeping
 /// the display-only fields of `prev` (extension status, git branch, working message).
 pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusModel {
+    let switched = prev.model != state.model;
+    let fresh = switched || stats.context_tokens == 0;
     StatusModel {
         cwd: prev.cwd.clone(),
         home: prev.home.clone(),
@@ -1323,9 +1325,9 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         mode: Some(state.mode),
         context_tokens: stats.context_tokens,
         n_ctx: state.n_ctx,
-        last_cached: prev.last_cached,
-        last_prompt: prev.last_prompt,
-        tok_per_s: if stats.last_tok_s > 0.0 {
+        last_cached: if fresh { None } else { prev.last_cached },
+        last_prompt: if fresh { None } else { prev.last_prompt },
+        tok_per_s: if stats.last_tok_s > 0.0 && !switched {
             Some(stats.last_tok_s)
         } else {
             None
