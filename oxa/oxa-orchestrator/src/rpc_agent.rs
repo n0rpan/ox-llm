@@ -85,6 +85,7 @@ impl RpcAgent {
             .parent()
             .ok_or_else(|| io::Error::other("missing agent directory parent"))?
             .canonicalize()?;
+        let _namespace = crate::namespace::protected_directory(&parent)?;
         let name = config
             .directory
             .file_name()

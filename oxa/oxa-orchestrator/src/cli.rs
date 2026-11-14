@@ -365,6 +365,7 @@ pub fn execute(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(std::path::Path::new("."))
         .canonicalize()?;
+    let _namespace = crate::namespace::protected_directory(&parent)?;
     let directory = parent.join(
         options
             .directory

@@ -24,6 +24,11 @@ pub(crate) struct Pool {
 }
 impl Pool {
     pub(crate) fn new(root: PathBuf) -> io::Result<Self> {
+        let _namespace = crate::namespace::protected_directory(
+            root.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?;
         DirBuilder::new().mode(0o700).create(&root)?;
         Ok(Self {
             root,
@@ -637,5 +642,35 @@ mod tests {
             );
             assert!(start.elapsed() < Duration::from_millis(300));
         });
+    }
+    #[test]
+    fn trusted_git_metadata_does_not_consume_the_approved_entry_budget() {
+        let env = TestEnv::new();
+        let mut paths = Vec::new();
+        for i in 0..32 {
+            let directory = format!("e{i}/p/q");
+            fs::create_dir_all(env.root().join(&directory)).unwrap();
+            let name = format!("{directory}/file.txt");
+            fs::write(env.root().join(&name), "approved").unwrap();
+            paths.push(path(&name));
+        }
+        let snapshot = Arc::new(Snapshot::approve(env.root(), paths).unwrap());
+        let grant = Arc::new(
+            Grant::editing(snapshot, vec![])
+                .unwrap()
+                .with_git_worktrees()
+                .unwrap(),
+        );
+        let mut pool = Pool::new(env.root().join("controller")).unwrap();
+        let flag = AtomicBool::new(false);
+        let work = pool
+            .prepare(
+                &grant,
+                &env.root().join("boundary-worktree"),
+                Instant::now() + Duration::from_secs(5),
+                &flag,
+            )
+            .unwrap();
+        assert!(work.collect("boundary").unwrap().changes.is_empty());
     }
 }

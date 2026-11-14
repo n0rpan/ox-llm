@@ -89,7 +89,8 @@ Default hosted workspace tests exercise command parsing and the full command
 implementation through the real-worker fixture, with owned loopback fake
 engines. Local validation also builds the actual feature-enabled `oxa` binary
 and runs the same success, help/validation, approved-file proposal and SIGINT scenarios through its
-four-line main hook. To reproduce that smoke check from `oxa/`:
+four-line main hook. The smoke suite also exercises crash inspection, Git
+worktrees, stalled stderr, structural limits and unsafe output parents. To reproduce that smoke check from `oxa/`:
 
 ```sh
 cargo build --locked -p oxa-cli --features orchestrator --bin oxa

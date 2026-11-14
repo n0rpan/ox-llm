@@ -236,6 +236,7 @@ pub(crate) fn run_with_workspaces(
         .parent()
         .ok_or_else(|| invalid("missing run directory parent"))?
         .canonicalize()?;
+    let _namespace = crate::namespace::protected_directory(&parent)?;
     let name = settings
         .directory
         .file_name()

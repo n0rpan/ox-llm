@@ -79,6 +79,13 @@ supervisor continues servicing other workers, deadlines and per-worker controls
 while Git or a shared-pool wait is in progress. Audit failure stops active workers,
 cancels every preparation job and joins the owned threads.
 
+Run, agent and pool setup checks every ancestor of the canonical output parent.
+Each must be owned by the operator or root; group/other writable directories
+require sticky entry protection. Unsafe shared parents fail before worker or
+listener setup. Existing permissions are never changed. Same-UID processes and
+root remain trusted. The verified root `.git` entry does not consume the approved
+user-file/directory collection budget.
+
 Repositories and worktrees are retained in private run/agent directories for
 inspection. Worktree directories are 0700, initial text and pointer/mask files
 0600. Controller roots are private; internal Git object files remain under those
