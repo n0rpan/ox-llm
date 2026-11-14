@@ -28,6 +28,8 @@ pub fn parse_info(base_url: &str, models: &Value, status: &Value) -> Result<Engi
 ///   `max_output` for that model, loaded or not. When the row exists (with a positive `cap`)
 ///   the limits below are read from it and `limits_for` is that key; otherwise from the top
 ///   level and `limits_for = model`.
+/// * Remote catalog models (`data[].remote == true`) use their positive `context_length`
+///   and `max_output_tokens` ahead of local status limits, without a local compaction threshold.
 /// * `n_ctx`: row `cap`; top level `context.cap` (the cap of the selected context mode),
 ///   `context_size`, `n_ctx`, `default_generation_settings.n_ctx` (`/props`). None of them =
 ///   `engine_http` error.
@@ -82,14 +84,31 @@ pub fn parse_info_for(
         .and_then(|m| m.get(key))
         .filter(|r| first_u32(r, &["/cap"]).is_some_and(|n| n > 0));
 
-    let (limits_for, n_ctx, published_output, compact_at) = match row {
-        Some(r) => (
+    // Cloud limits belong to the requested catalog model, never the loaded local engine.
+    let remote = models
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|m| m.get("id").and_then(Value::as_str) == Some(key))
+        })
+        .filter(|m| m.get("remote").and_then(Value::as_bool) == Some(true));
+    let remote_ctx = remote.and_then(|m| first_u32(m, &["/context_length"]).filter(|n| *n > 0));
+    let (limits_for, n_ctx, published_output, compact_at) = match (remote_ctx, row) {
+        (Some(n_ctx), _) => (
+            key.to_string(),
+            n_ctx,
+            remote.and_then(|m| first_u32(m, &["/max_output_tokens"])),
+            None,
+        ),
+        (None, Some(r)) => (
             key.to_string(),
             first_u32(r, &["/cap"]).unwrap_or(0),
             first_u32(r, &["/max_output"]),
             mode_compact_at(r),
         ),
-        None => {
+        (None, None) => {
             let n_ctx = first_u32(
                 status,
                 &["/context/cap", "/context_size", "/n_ctx", "/default_generation_settings/n_ctx"],
