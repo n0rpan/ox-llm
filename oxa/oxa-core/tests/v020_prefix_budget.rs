@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// 2026-11-14: the identity fallback text changed (oxa is the local agent of ox-llm; other AI
 /// tools' folders are data, not instructions); the pi tool texts are unchanged.
 const PI_STABLE_SHA: &str = "4d19948fecd5874c16bd94fa3910cf0233d2281548f7ded5f23b16402c081d5d";
-const PI_STABLE_SHA_SUBAGENT: &str = "02a0db1861a4572b28671937db8395c6e28ffbfcd70b03564a4d4a52d7be3e61";
+const PI_STABLE_SHA_SUBAGENT: &str = "6bec67802b7237f35e2539e6507d4a100fc7c0dae10aadf0517e555d34c3cc24";
 
 /// Pinned: the `local` diet-on prefix is at least this many bytes smaller than the `pi` one, with
 /// and without the subagent tool. Measured 2355 (default) and 2344 (with subagent) on 2026-11-13;
