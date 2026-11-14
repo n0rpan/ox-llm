@@ -17,9 +17,9 @@ cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --target-dir ..
 Local validation: 56 parser cases, five CLI ledger-file cases, seven empty-install
 HTTP cases, all 17 HTTP gates, all 62 configured API cases, and API-key file
 rotation/fail-closed behavior pass in Rust. Sixteen of 17 lifecycle tests pass;
-the remaining poll test reports three missing cache/storage/harness status
-routes. A native CLI subset of 29 runtime cases passes against the Python daemon.
-The Python reference suite has 236 passing scenarios in 37 unittest methods.
+the remaining poll test reports the missing harness status route. Read-only
+cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 29 runtime cases passes against the Python daemon.
+The Python reference suite has 250 passing scenarios in 39 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
 cache controls, harness prepare/forget dispatch, load/unload dispatch, storage
@@ -44,6 +44,10 @@ Chat, text completions and the stateless Responses API support JSON and SSE,
 tools, reasoning options, usage details and normalized errors. Additional
 Responses and guard/log contracts were established against Python before porting.
 The log redactor is also tested at every pipe chunk boundary.
+
+Read-only cache usage walks recognized files through directory descriptors and
+reads bounded manifests. Storage inventory reads bounded identity headers, tracks
+configured references and open/mapped paths, and returns no private paths.
 
 Complete status/control state, request-ledger writes, disk-cache launch adapters,
 qualified Flash/classic profiles, proof-gated long contexts, installers,

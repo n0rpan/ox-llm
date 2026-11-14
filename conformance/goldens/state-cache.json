@@ -1,0 +1,152 @@
+{
+  "config-root": {
+    "body": {
+      "budget_bytes": 64000000000,
+      "invalid_settings": [],
+      "models": {
+        "aaaaaaaaaaaaaaaa": 335,
+        "ffffffffffffffff": 13
+      },
+      "sessions": {
+        "count": 1,
+        "newest_atime": 1234,
+        "oldest_atime": 1234
+      },
+      "ttl_secs": 604800,
+      "used_bytes": 348
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "disk-tier-off": {
+    "body": {
+      "budget_bytes": 0,
+      "invalid_settings": [],
+      "models": {},
+      "sessions": {
+        "count": 0,
+        "newest_atime": null,
+        "oldest_atime": null
+      },
+      "ttl_secs": 60,
+      "used_bytes": 0
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "empty": {
+    "body": {
+      "budget_bytes": 64000000000,
+      "invalid_settings": [],
+      "models": {},
+      "sessions": {
+        "count": 0,
+        "newest_atime": null,
+        "oldest_atime": null
+      },
+      "ttl_secs": 604800,
+      "used_bytes": 0
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "environment-root": {
+    "body": {
+      "budget_bytes": 64000000000,
+      "invalid_settings": [],
+      "models": {
+        "aaaaaaaaaaaaaaaa": 335,
+        "ffffffffffffffff": 13
+      },
+      "sessions": {
+        "count": 1,
+        "newest_atime": 1234,
+        "oldest_atime": 1234
+      },
+      "ttl_secs": 604800,
+      "used_bytes": 348
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "invalid-settings": {
+    "body": {
+      "budget_bytes": 64000000000,
+      "invalid_settings": [
+        "disk_budget_bytes",
+        "ttl_secs"
+      ],
+      "models": {
+        "aaaaaaaaaaaaaaaa": 335,
+        "ffffffffffffffff": 13
+      },
+      "sessions": {
+        "count": 1,
+        "newest_atime": 1234,
+        "oldest_atime": 1234
+      },
+      "ttl_secs": 604800,
+      "used_bytes": 348
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "malformed-runtime": {
+    "body": {
+      "budget_bytes": 64000000000,
+      "invalid_settings": [],
+      "models": {},
+      "sessions": {
+        "count": 0,
+        "newest_atime": null,
+        "oldest_atime": null
+      },
+      "ttl_secs": 604800,
+      "used_bytes": 0
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "populated": {
+    "body": {
+      "budget_bytes": 64000000000,
+      "invalid_settings": [],
+      "models": {
+        "aaaaaaaaaaaaaaaa": 335,
+        "ffffffffffffffff": 13
+      },
+      "sessions": {
+        "count": 1,
+        "newest_atime": 1234,
+        "oldest_atime": 1234
+      },
+      "ttl_secs": 604800,
+      "used_bytes": 348
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "root-outside-home": {
+    "body": {
+      "error": "Cache usage is unavailable."
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "symlink-root-outside-home": {
+    "body": {
+      "error": "Cache usage is unavailable."
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  }
+}

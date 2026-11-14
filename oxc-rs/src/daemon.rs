@@ -367,6 +367,18 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             json!({"object":"list","available":false,"rows":[],"medians":{}}),
         );
     }
+    if path == "/_local/cache" && [Method::GET, Method::HEAD].contains(&method) {
+        return match crate::state_cache::usage(fresh.as_ref().unwrap_or(&Value::Null)) {
+            Ok(value) => context.reply(200, value),
+            Err(_) => context.error(503, "Cache usage is unavailable.", "", "", None),
+        };
+    }
+    if path == "/_local/storage" && [Method::GET, Method::HEAD].contains(&method) {
+        return match &fresh {
+            Some(config) => context.reply(200, crate::storage::inventory(config)),
+            None => context.error(503, "Storage status is unavailable.", "", "", None),
+        };
+    }
     if [
         "/_local/load",
         "/_local/unload",

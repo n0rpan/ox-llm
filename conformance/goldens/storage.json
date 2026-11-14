@@ -1,0 +1,184 @@
+{
+  "empty": {
+    "body": {
+      "data": [],
+      "object": "list"
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "in-use": {
+    "body": {
+      "data": [
+        {
+          "bytes": 28,
+          "deletable": true,
+          "id": "rust-weights-ef3c768fb600b0b3",
+          "kind": "rust-weights",
+          "model": "",
+          "name": "9999999999999999999999999999999999999999999999999999999999999999-synthetic-eeeeeee-ffffffff.bin",
+          "state": "unreferenced"
+        },
+        {
+          "bytes": 15,
+          "deletable": false,
+          "id": "rust-weights-a4f64ce318f92a3d",
+          "kind": "rust-weights",
+          "model": "ornith",
+          "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-synthetic-eeeeeee-ffffffff.bin",
+          "state": "referenced"
+        },
+        {
+          "bytes": 183,
+          "deletable": false,
+          "id": "rust-prefix-4ad0328240cb01a0",
+          "kind": "rust-prefix",
+          "model": "ornith",
+          "name": "aaaaaaaaaaaa-bbbbbbbbbbbb",
+          "state": "referenced"
+        },
+        {
+          "bytes": 17,
+          "deletable": false,
+          "id": "flash-sidecar-581ac91b0d966399",
+          "kind": "flash-sidecar",
+          "model": "flash",
+          "name": "flash",
+          "state": "protected"
+        },
+        {
+          "bytes": 193,
+          "deletable": true,
+          "id": "llama-prefix-dac1205e73627f80",
+          "kind": "llama-prefix",
+          "model": "",
+          "name": "cccccccccccc-dddddddddddd",
+          "state": "unreferenced"
+        },
+        {
+          "bytes": 16,
+          "deletable": false,
+          "id": "llama-repack-a169e04048bd7b16",
+          "kind": "llama-repack",
+          "model": "ornith",
+          "name": "synthetic.gguf-eeeeeeeeeeee",
+          "state": "referenced"
+        }
+      ],
+      "object": "list"
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "malformed-runtime": {
+    "body": {
+      "error": "Storage status is unavailable."
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "populated": {
+    "body": {
+      "data": [
+        {
+          "bytes": 28,
+          "deletable": true,
+          "id": "rust-weights-ef3c768fb600b0b3",
+          "kind": "rust-weights",
+          "model": "",
+          "name": "9999999999999999999999999999999999999999999999999999999999999999-synthetic-eeeeeee-ffffffff.bin",
+          "state": "unreferenced"
+        },
+        {
+          "bytes": 15,
+          "deletable": false,
+          "id": "rust-weights-a4f64ce318f92a3d",
+          "kind": "rust-weights",
+          "model": "ornith",
+          "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-synthetic-eeeeeee-ffffffff.bin",
+          "state": "referenced"
+        },
+        {
+          "bytes": 183,
+          "deletable": false,
+          "id": "rust-prefix-4ad0328240cb01a0",
+          "kind": "rust-prefix",
+          "model": "ornith",
+          "name": "aaaaaaaaaaaa-bbbbbbbbbbbb",
+          "state": "referenced"
+        },
+        {
+          "bytes": 17,
+          "deletable": false,
+          "id": "flash-sidecar-581ac91b0d966399",
+          "kind": "flash-sidecar",
+          "model": "flash",
+          "name": "flash",
+          "state": "protected"
+        },
+        {
+          "bytes": 193,
+          "deletable": true,
+          "id": "llama-prefix-dac1205e73627f80",
+          "kind": "llama-prefix",
+          "model": "",
+          "name": "cccccccccccc-dddddddddddd",
+          "state": "unreferenced"
+        },
+        {
+          "bytes": 16,
+          "deletable": false,
+          "id": "llama-repack-a169e04048bd7b16",
+          "kind": "llama-repack",
+          "model": "ornith",
+          "name": "synthetic.gguf-eeeeeeeeeeee",
+          "state": "referenced"
+        }
+      ],
+      "object": "list"
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "symlinks": {
+    "body": {
+      "data": [
+        {
+          "bytes": 15,
+          "deletable": false,
+          "id": "rust-weights-a4f64ce318f92a3d",
+          "kind": "rust-weights",
+          "model": "ornith",
+          "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-synthetic-eeeeeee-ffffffff.bin",
+          "state": "referenced"
+        },
+        {
+          "bytes": 193,
+          "deletable": true,
+          "id": "llama-prefix-dac1205e73627f80",
+          "kind": "llama-prefix",
+          "model": "",
+          "name": "cccccccccccc-dddddddddddd",
+          "state": "unreferenced"
+        },
+        {
+          "bytes": 16,
+          "deletable": false,
+          "id": "llama-repack-a169e04048bd7b16",
+          "kind": "llama-repack",
+          "model": "ornith",
+          "name": "synthetic.gguf-eeeeeeeeeeee",
+          "state": "referenced"
+        }
+      ],
+      "object": "list"
+    },
+    "content-type": "application/json",
+    "status": 200,
+    "x-request-id": "<generated:req_32hex>"
+  }
+}

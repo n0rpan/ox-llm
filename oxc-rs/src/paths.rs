@@ -25,6 +25,62 @@ pub fn config() -> PathBuf {
         .unwrap_or_else(|| xdg("XDG_CONFIG_HOME", ".config").join("local-ai/llm/runtime.json"))
 }
 
+/// Resolve existing symlinks while retaining missing trailing components, as
+/// Python's non-strict realpath does for a not-yet-created conversation store.
+pub fn realpath(path: &std::path::Path) -> std::io::Result<PathBuf> {
+    fn resolve(path: &std::path::Path, links: &mut usize) -> std::io::Result<PathBuf> {
+        use std::path::Component;
+        let absolute = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let mut resolved = PathBuf::from("/");
+        for part in absolute.components() {
+            match part {
+                Component::RootDir => resolved = PathBuf::from("/"),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                Component::Normal(name) => {
+                    let candidate = resolved.join(name);
+                    match std::fs::symlink_metadata(&candidate) {
+                        Ok(info) if info.file_type().is_symlink() => {
+                            *links += 1;
+                            if *links > 40 {
+                                return Err(std::io::Error::from_raw_os_error(nix::libc::ELOOP));
+                            }
+                            let target = std::fs::read_link(&candidate)?;
+                            resolved = resolve(
+                                &if target.is_absolute() {
+                                    target
+                                } else {
+                                    resolved.join(target)
+                                },
+                                links,
+                            )?;
+                        }
+                        Ok(_) => resolved = candidate,
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            ) =>
+                        {
+                            resolved = candidate
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                Component::Prefix(_) => unreachable!("Unix path"),
+            }
+        }
+        Ok(resolved)
+    }
+    resolve(path, &mut 0)
+}
+
 pub fn read_config() -> Option<serde_json::Value> {
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(config()).ok()?).ok()?;
     value.is_object().then_some(value)

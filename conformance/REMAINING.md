@@ -13,7 +13,8 @@ The following gaps remain visible rather than being represented by skipped tests
   the planned Rust functionality as a new feature after the existing contracts.
 - Disk state/prefix/session caches: seed actual on-disk formats, budget/GC, clear
   scopes, preload, concurrent mutation and additional cross-implementation reads.
-  Current tests cover an empty store, budgets and config persistence only.
+  Usage tests now read populated state formats, pending-write ages, overrides and
+  symlink refusals. Mutation/GC coverage remains pending.
 - LAN sharing: actual listener configuration, key rotation and file permissions,
   origin/route/header restrictions, rates, shared/local priority and preemption.
   All listeners/upstreams used in tests must remain synthetic and isolated.
@@ -57,11 +58,11 @@ not push repeatedly to trigger CI or poll CI status. When requesting a full
 public run/review, dispatch checks.yml once for the branch (or mark ready only
 when appropriate). If waiting is needed, use one blocking gh pr checks --watch.
 
-Next implementation step: native status/cache/storage/harness readers and the
+Next implementation step: native harness registry/status and the
 request-ledger writer, then complete config/state round trips and remaining CLI
 commands. Rust now passes all 62 configured API and all 17 HTTP gate cases. Of
-17 lifecycle tests, 16 pass; the poll test retains three failures for the cache,
-storage and harness status routes. No tests are skipped to hide these gaps.
+17 lifecycle tests, 16 pass; the poll test retains one failure for harness status.
+The native cache usage and storage inventory readers pass 14 additional cases. No tests are skipped to hide these gaps.
 State-cache-capable engines and the automatic engine-ledger bridge currently
 refuse launch explicitly until their adapters are ported. Full Rust conformance
 remains FAIL, and no native deployment or readiness claim is made.
