@@ -67,11 +67,19 @@ echoes the key is redacted before it reaches the client.
   and code `offline`, before any DNS or socket call. Remote models are not listed while
   offline.
 - `cloud.daily_budget_usd` is a positive USD cap per local day. A missing or non-positive cap
-  fails closed (`budget_not_configured`). Once the sum of today's `cost_usd` ledger rows
-  reaches the cap, requests get `429` with code `budget_exceeded`.
+  fails closed (`budget_not_configured`). Admission atomically reserves the worst case
+  (`prompt estimate + max_tokens` at the model price) before forwarding, so concurrent
+  requests cannot all spend the same budget; the actual cost settles after the ledger row is
+  written. A request that would exceed `spent + reserved` gets `429` with code
+  `budget_exceeded`.
+- Missing usage charges the reserved worst case, never zero. An unreadable, corrupt or
+  unwritable ledger refuses remote calls with `503` and code `cloud_ledger_unavailable` until
+  it is repaired.
 - Every remote request writes one ledger row with `remote: true`, `remote_provider`, the
-  upstream model id, token usage when the provider reports it and `cost_usd`. The prompt and
-  reply text are never written.
+  upstream model id, token usage when the provider reports it and a settled `cost_usd`. The
+  prompt and reply text are never written. Every response path (streamed chunks, success
+  bodies, errors and error bodies) is redacted for the upstream key before it reaches the
+  client or the ledger.
 
 ## Tests
 
@@ -161,16 +169,21 @@ Translation rules:
   `tool_result` blocks. `tools`, `tool_choice` (`auto` / `none` / `required` / named) and the
   output limit are translated; `max_tokens` is required by the upstream and falls back to the
   catalog `max_output`.
-- `reasoning_effort` `low`/`medium`/`high`/`xhigh` maps to adaptive thinking
-  (`thinking: {"type": "adaptive"}`) plus `output_config.effort`; `none`/`minimal` map to
-  `thinking: {"type": "disabled"}`.
+- `reasoning_effort` always maps to adaptive thinking (`thinking: {"type": "adaptive"}`) plus
+  `output_config.effort`; `none`/`minimal` map to the lowest effort. Current Claude models
+  reject `thinking: {"type": "disabled"}` and `temperature`/`top_p`/`top_k`, so those are never
+  sent. Forced `tool_choice` is rejected with a clear `400` on models that refuse it.
+- Every assistant thinking block, including its `signature`, and every
+  `redacted_thinking` block is kept and replayed unchanged on the following requests of the
+  same conversation. The history stays append-only, so the prompt-cache prefix is stable.
 - `cache_control: {"type": "ephemeral"}` breakpoints go on the system block, the last tool
   definition and the latest history turn (the frozen prefix and the newest turn).
 - Replies are translated back to OpenAI v1: text, `reasoning_content` from thinking blocks,
   `tool_calls` with JSON-string arguments, usage including cache reads, and `stop_reason`
   mapping (`end_turn`/`stop_sequence` -> `stop`, `max_tokens` -> `length`, `tool_use` ->
   `tool_calls`, `refusal` -> `content_filter`). Streamed events become OpenAI chat chunks and
-  end with `data: [DONE]`.
+  end with `data: [DONE]`. A stream that fails after `message_start` still writes a ledger row
+  with the reported input tokens and the reserved cost.
 - The same cloud-off default, `OXC_OFFLINE` refusal, secrets file, daily budget and ledger rows
   apply as for OpenRouter.
 

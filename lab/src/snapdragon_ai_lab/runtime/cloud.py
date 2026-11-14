@@ -445,10 +445,10 @@ def redact(text, key):
 
 
 class StreamRedactor:
-    """Incremental redactor for a byte stream: a key split across TCP chunks is still removed.
+    """Incremental redactor for a byte stream: a key split across chunks is still removed.
 
-    It buffers at most ``len(key) - 1`` bytes, so a stream keeps flowing and no event is held
-    beyond the one that may end in a partial key.
+    Only the longest suffix that could be the start of the key is held, so ordinary text is
+    never delayed just because the key is long.
     """
 
     def __init__(self, key):
@@ -459,15 +459,16 @@ class StreamRedactor:
         if not self.key:
             return chunk
         data = (self.buffer + chunk).replace(self.key, b'[redacted]')
-        keep = len(self.key) - 1
-        if keep <= 0:
-            self.buffer = b''
-            return data
-        if len(data) <= keep:
-            self.buffer = data
-            return b''
-        self.buffer = data[-keep:]
-        return data[:-keep]
+        hold = 0
+        for size in range(min(len(self.key) - 1, len(data)), 0, -1):
+            if data.endswith(self.key[:size]):
+                hold = size
+                break
+        if hold:
+            self.buffer = data[-hold:]
+            return data[:-hold]
+        self.buffer = b''
+        return data
 
     def finish(self):
         if not self.key or not self.buffer:

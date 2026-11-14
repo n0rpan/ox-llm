@@ -1,7 +1,10 @@
 """Wave D D6: the native Anthropic Messages upstream, against a local mock only."""
+import http.client
 import importlib.util
 import json
 import unittest
+
+from snapdragon_ai_lab.runtime import cloud
 
 from mock_cloud import MockAnthropic
 from test_cloud_remote import CloudCase, KEY
@@ -76,7 +79,7 @@ class MessagesTranslation(AnthropicBase):
                 'name': 'read', 'description': 'read a file',
                 'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}}}}}],
             'tool_choice': 'auto', 'max_tokens': 100, 'reasoning_effort': 'medium',
-            'temperature': 0.2,
+            'temperature': 0.2, 'top_p': 0.9, 'top_k': 40,
         }
         status, reply = self.call('POST', '/v1/chat/completions', body)
         self.assertEqual(status, 200, reply)
@@ -87,7 +90,8 @@ class MessagesTranslation(AnthropicBase):
         self.assertNotIn('authorization', sent['headers'])
         self.assertEqual(sent['body']['model'], 'claude-sonnet-5-5')
         self.assertEqual(sent['body']['max_tokens'], 100)
-        self.assertEqual(sent['body']['temperature'], 0.2)
+        for field in ('temperature', 'top_p', 'top_k'):
+            self.assertNotIn(field, sent['body'])
         self.assertEqual(sent['body']['thinking'], {'type': 'adaptive'})
         self.assertEqual(sent['body']['output_config'], {'effort': 'medium'})
         self.assertEqual(sent['body']['system'][-1]['cache_control'], {'type': 'ephemeral'})
@@ -116,7 +120,7 @@ class MessagesTranslation(AnthropicBase):
             'tool_choice': 'required', 'reasoning_effort': 'none'})
         self.assertEqual(status, 200)
         sent = upstream.requests[0]['body']
-        self.assertEqual(sent['thinking'], {'type': 'disabled'})
+        self.assertEqual(sent['thinking'], {'type': 'adaptive'})
         self.assertEqual(sent['output_config'], {'effort': 'low'})
         self.assertEqual(sent['tool_choice'], {'type': 'any'})
 
@@ -238,14 +242,221 @@ class KeyAndBudget(AnthropicBase):
                              'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}
         upstream = MockAnthropic(message=message)
         self.addCleanup(upstream.close)
-        self.start(mock=upstream, budget=0.001)
-        self.assertEqual(self.chat(model='anthropic/claude-haiku-5-5')[0], 200)
+        self.start(mock=upstream, budget=0.005)
+        self.assertEqual(self.chat(model='anthropic/claude-haiku-5-5', max_tokens=1000)[0], 200)
         rows = self.ledger_rows()
         self.assertEqual(rows[-1]['cost_usd'], 0.0048)
-        status, body = self.chat(model='anthropic/claude-haiku-5-5')
+        status, body = self.chat(model='anthropic/claude-haiku-5-5', max_tokens=1000)
         self.assertEqual(status, 429)
         self.assertEqual(json.loads(body)['error']['code'], 'budget_exceeded')
         self.assertEqual(len(upstream.requests), 1)
+
+
+class SuccessRedaction(AnthropicBase):
+    def test_a_key_in_a_successful_non_streamed_reply_is_redacted(self):
+        message = {'id': 'msg_key', 'type': 'message', 'role': 'assistant',
+                   'content': [{'type': 'text', 'text': 'leak ' + KEY}],
+                   'model': 'claude-sonnet-5-5', 'stop_reason': 'end_turn',
+                   'stop_sequence': None,
+                   'usage': {'input_tokens': 3, 'output_tokens': 2,
+                             'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}
+        upstream = MockAnthropic(message=message)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat()
+        self.assertEqual(status, 200)
+        self.assertNotIn(KEY.encode(), body)
+        self.assertIn(b'[redacted]', body)
+        self.assertNotIn(KEY, self.ledger_text())
+
+    def test_a_key_split_across_successful_stream_deltas_is_redacted(self):
+        events = [
+            ('message_start', {'type': 'message_start', 'message': {
+                'id': 'msg_key_stream', 'type': 'message', 'role': 'assistant', 'content': [],
+                'model': 'claude-sonnet-5-5', 'stop_reason': None, 'stop_sequence': None,
+                'usage': {'input_tokens': 3, 'output_tokens': 0,
+                          'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}}),
+            ('content_block_start', {'type': 'content_block_start', 'index': 0,
+                                     'content_block': {'type': 'text', 'text': ''}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 0,
+                                     'delta': {'type': 'text_delta', 'text': 'leak ' + KEY[:6]}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 0,
+                                     'delta': {'type': 'text_delta', 'text': KEY[6:] + ' end'}}),
+            ('content_block_stop', {'type': 'content_block_stop', 'index': 0}),
+            ('message_delta', {'type': 'message_delta',
+                               'delta': {'stop_reason': 'end_turn', 'stop_sequence': None},
+                               'usage': {'output_tokens': 2}}),
+            ('message_stop', {'type': 'message_stop'}),
+        ]
+        upstream = MockAnthropic(stream_events=events)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat(stream=True)
+        self.assertEqual(status, 200)
+        self.assertNotIn(KEY.encode(), body)
+        self.assertIn(b'[redacted]', body)
+        self.assertNotIn(KEY, self.ledger_text())
+
+
+class ThinkingRoundTrip(AnthropicBase):
+    def _tools(self):
+        return [{'type': 'function', 'function': {
+            'name': 'read', 'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}}}}}]
+
+    def _tool_result(self):
+        return {'role': 'tool', 'tool_call_id': 'toolu_1', 'content': 'X'}
+
+    def test_native_thinking_blocks_round_trip_unchanged_across_a_tool_turn(self):
+        native = [
+            {'type': 'thinking', 'thinking': 'plan', 'signature': 'sig-abc-123'},
+            {'type': 'redacted_thinking', 'data': 'opaque-encrypted-blob'},
+            {'type': 'text', 'text': 'I will read.'},
+            {'type': 'tool_use', 'id': 'toolu_1', 'name': 'read', 'input': {'path': 'x'}},
+        ]
+        message = {'id': 'msg_tool', 'type': 'message', 'role': 'assistant',
+                   'content': native, 'model': 'claude-sonnet-5-5',
+                   'stop_reason': 'tool_use', 'stop_sequence': None,
+                   'usage': {'input_tokens': 10, 'output_tokens': 4,
+                             'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}
+        upstream = MockAnthropic(message=message)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        body = {'model': 'anthropic/claude-sonnet-5-5',
+                'messages': [{'role': 'user', 'content': 'read x'}],
+                'tools': self._tools(), 'max_tokens': 100}
+        status, reply = self.call('POST', '/v1/chat/completions', body)
+        self.assertEqual(status, 200, reply)
+        assistant = json.loads(reply)['choices'][0]['message']
+        followup = {'model': 'anthropic/claude-sonnet-5-5',
+                    'messages': [{'role': 'user', 'content': 'read x'}, assistant, self._tool_result()],
+                    'tools': self._tools(), 'max_tokens': 100}
+        status, _ = self.call('POST', '/v1/chat/completions', followup)
+        self.assertEqual(status, 200)
+        sent = upstream.requests[1]['body']['messages']
+        self.assertEqual(sent[1]['content'], native)
+        self.assertEqual(sent[1]['content'][0]['signature'], 'sig-abc-123')
+        self.assertEqual(sent[1]['content'][1]['data'], 'opaque-encrypted-blob')
+
+    def test_streamed_thinking_and_tool_use_round_trip_byte_for_byte(self):
+        events = [
+            ('message_start', {'type': 'message_start', 'message': {
+                'id': 'msg_stream_tool', 'type': 'message', 'role': 'assistant', 'content': [],
+                'model': 'claude-sonnet-5-5', 'stop_reason': None, 'stop_sequence': None,
+                'usage': {'input_tokens': 10, 'output_tokens': 0,
+                          'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}}),
+            ('content_block_start', {'type': 'content_block_start', 'index': 0,
+                                     'content_block': {'type': 'thinking', 'thinking': ''}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 0,
+                                     'delta': {'type': 'thinking_delta', 'thinking': 'plan'}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 0,
+                                     'delta': {'type': 'signature_delta', 'signature': 'sig-stream'}}),
+            ('content_block_stop', {'type': 'content_block_stop', 'index': 0}),
+            ('content_block_start', {'type': 'content_block_start', 'index': 1,
+                                     'content_block': {'type': 'tool_use', 'id': 'toolu_1',
+                                                       'name': 'read', 'input': {}}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 1,
+                                     'delta': {'type': 'input_json_delta', 'partial_json': '{"path"'}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 1,
+                                     'delta': {'type': 'input_json_delta', 'partial_json': ': "x"}'}}),
+            ('content_block_stop', {'type': 'content_block_stop', 'index': 1}),
+            ('message_delta', {'type': 'message_delta',
+                               'delta': {'stop_reason': 'tool_use', 'stop_sequence': None},
+                               'usage': {'output_tokens': 4}}),
+            ('message_stop', {'type': 'message_stop'}),
+        ]
+        upstream = MockAnthropic(stream_events=events)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.call('POST', '/v1/chat/completions', {
+            'model': 'anthropic/claude-sonnet-5-5',
+            'messages': [{'role': 'user', 'content': 'read x'}],
+            'tools': self._tools(), 'max_tokens': 100, 'stream': True})
+        self.assertEqual(status, 200)
+        frames = [json.loads(line[5:]) for line in body.decode().splitlines()
+                  if line.startswith('data:') and line[5:].strip() not in ('', '[DONE]')]
+        final = next(frame for frame in frames if frame.get('choices')
+                     and frame['choices'][0].get('finish_reason') == 'tool_calls')
+        self.assertEqual(final['choices'][0]['finish_reason'], 'tool_calls')
+        assistant = {'role': 'assistant', 'content': None,
+                     'tool_calls': [{'id': 'toolu_1', 'type': 'function',
+                                     'function': {'name': 'read', 'arguments': '{"path": "x"}'}}]}
+        followup = {'model': 'anthropic/claude-sonnet-5-5',
+                    'messages': [{'role': 'user', 'content': 'read x'}, assistant, self._tool_result()],
+                    'tools': self._tools(), 'max_tokens': 100}
+        status, _ = self.call('POST', '/v1/chat/completions', followup)
+        self.assertEqual(status, 200)
+        sent = upstream.requests[1]['body']['messages']
+        self.assertEqual(sent[1]['content'][0],
+                         {'type': 'thinking', 'thinking': 'plan', 'signature': 'sig-stream'})
+        self.assertEqual(sent[1]['content'][1],
+                         {'type': 'tool_use', 'id': 'toolu_1', 'name': 'read', 'input': {'path': 'x'}})
+
+
+class FailedStreams(AnthropicBase):
+    def test_a_failed_stream_after_input_usage_writes_conservative_spend(self):
+        events = [
+            ('message_start', {'type': 'message_start', 'message': {
+                'id': 'msg_fail', 'type': 'message', 'role': 'assistant', 'content': [],
+                'model': 'claude-sonnet-5-5', 'stop_reason': None, 'stop_sequence': None,
+                'usage': {'input_tokens': 100, 'output_tokens': 0,
+                          'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}}),
+            ('content_block_start', {'type': 'content_block_start', 'index': 0,
+                                     'content_block': {'type': 'text', 'text': ''}}),
+            ('content_block_delta', {'type': 'content_block_delta', 'index': 0,
+                                     'delta': {'type': 'text_delta', 'text': 'partial'}}),
+            ('error', {'type': 'error',
+                       'error': {'type': 'overloaded_error', 'message': 'upstream overloaded'}}),
+        ]
+        upstream = MockAnthropic(stream_events=events)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        connection = http.client.HTTPConnection('127.0.0.1', self.stack.port, timeout=15)
+        try:
+            data = json.dumps({'model': 'anthropic/claude-sonnet-5-5',
+                               'messages': [{'role': 'user', 'content': 'hello'}],
+                               'stream': True, 'max_tokens': 1000}).encode()
+            connection.request('POST', '/v1/chat/completions', body=data,
+                               headers={'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            try:
+                response.read()
+            except http.client.IncompleteRead:
+                pass  # a broken stream closes without the chunked terminator
+        finally:
+            connection.close()
+        row = self.ledger_rows()[-1]
+        payload = {'max_tokens': 1000, 'messages': [{'role': 'user', 'content': 'hello'}]}
+        expected = cloud.worst_case_cost(
+            cloud.entry('anthropic/claude-sonnet-5-5', anthropic_models()['anthropic/claude-sonnet-5-5']),
+            payload)
+        self.assertEqual(row['prompt_tokens'], 100)
+        self.assertEqual(row['cost_usd'], expected)
+        self.assertTrue(row['usage_missing'])
+        self.assertEqual(row['settled'], 'reserved')
+        self.assertEqual(row['error'], 'cloud_stream_error')
+
+
+class TypedErrors(AnthropicBase):
+    def test_a_non_string_effort_is_a_clear_400(self):
+        self.start()
+        status, body = self.call('POST', '/v1/chat/completions', {
+            'model': 'anthropic/claude-sonnet-5-5',
+            'messages': [{'role': 'user', 'content': 'x'}], 'reasoning_effort': 3})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)['error']['code'], 'invalid_value')
+        self.assertEqual(self.upstream.requests, [])
+
+    def test_forced_tool_choice_is_rejected_for_a_model_that_refuses_it(self):
+        self.start()
+        status, body = self.call('POST', '/v1/chat/completions', {
+            'model': 'anthropic/claude-sonnet-5-5',
+            'messages': [{'role': 'user', 'content': 'x'}],
+            'tools': [{'type': 'function', 'function': {
+                'name': 'read', 'parameters': {'type': 'object'}}}],
+            'tool_choice': 'required'})
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)['error']['code'], 'invalid_value')
+        self.assertEqual(self.upstream.requests, [])
 
 
 if __name__ == '__main__':

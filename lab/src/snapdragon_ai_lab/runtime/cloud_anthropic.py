@@ -9,7 +9,10 @@ the latest turn.
 The key is passed to the SDK per request; it is never logged and every error string is
 redacted before it reaches a client or the ledger.
 """
+import hashlib
 import json
+from collections import OrderedDict
+import threading
 import time
 if __package__:
     from . import cloud, openai_api
@@ -18,6 +21,18 @@ else:
     import openai_api
 
 MAX_BODY = 64 * 1024 * 1024
+# Thinking blocks are opaque provider state: the signature (or a redacted_thinking ``data``
+# blob) is bound to the conversation and must be replayed byte for byte with the assistant
+# turn that produced it.  The OpenAI wire has no field for that state, so keep it in memory
+# keyed by the exact conversation prefix and the assistant turn the client echoes back.
+_THINKING_LOCK = threading.Lock()
+_THINKING = OrderedDict()
+_THINKING_ENTRIES = 4096
+_THINKING_BYTES = 64 * 1024 * 1024
+_THINKING_SIZE = [0]
+THINKING_TYPES = ('thinking', 'redacted_thinking')
+# These models reject forced tool use on every request (Messages API contract).
+FORCED_TOOL_UNSUPPORTED = ('claude-opus-5-5', 'claude-sonnet-5-5')
 STOP_REASONS = {
     'end_turn': 'stop',
     'stop_sequence': 'stop',
@@ -36,7 +51,12 @@ def _cache_control():
 
 
 def _effort(payload):
-    """(thinking, output_config) from the OpenAI effort or the local enable_thinking switch."""
+    """(thinking, output_config) from the OpenAI effort or the local enable_thinking switch.
+
+    Current Claude models reject ``thinking: {"type": "disabled"}`` and sampling parameters.
+    Depth is controlled by adaptive thinking plus ``output_config.effort`` only; ``none`` and
+    ``minimal`` map to the lowest effort rather than a disabled thinking mode.
+    """
     effort = payload.get('reasoning_effort')
     kwargs = payload.get('chat_template_kwargs') if isinstance(payload.get('chat_template_kwargs'), dict) else {}
     if effort is None and isinstance(kwargs.get('enable_thinking'), bool):
@@ -47,8 +67,6 @@ def _effort(payload):
         raise cloud.CloudError('"reasoning_effort" must be a string.', 400, 'invalid_value', 'reasoning_effort')
     if effort not in EFFORT:
         return None, None
-    if effort in ('none', 'minimal'):
-        return {'type': 'disabled'}, {'effort': EFFORT[effort]}
     return {'type': 'adaptive'}, {'effort': EFFORT[effort]}
 
 
@@ -81,13 +99,91 @@ def _tool_use(call):
             'name': function.get('name') or 'tool', 'input': args}
 
 
+def _assistant_key(message):
+    """Canonical assistant turn the client echoes: content and tool calls, not reasoning text."""
+    if not isinstance(message, dict):
+        return 'null'
+    content = message.get('content')
+    if isinstance(content, list):
+        content = ''.join(part.get('text', '') for part in content
+                          if isinstance(part, dict) and part.get('type') == 'text')
+    calls = []
+    for call in message.get('tool_calls') or ():
+        if not isinstance(call, dict):
+            continue
+        function = call.get('function') if isinstance(call.get('function'), dict) else {}
+        args = function.get('arguments')
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                pass
+        calls.append({'id': call.get('id'), 'type': call.get('type'),
+                      'name': function.get('name'), 'arguments': args})
+    return json.dumps({'role': message.get('role'), 'content': content, 'tool_calls': calls},
+                      ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
+def _history_digest(messages, count):
+    digest = hashlib.sha256(b'oxc-anthropic-history-v1\0')
+    for message in list(messages or ())[:count]:
+        digest.update(_assistant_key(message).encode('utf-8', 'replace'))
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def _remember_blocks(item, history, assistant, blocks):
+    """Keep the native assistant content (thinking signatures included) for the next turn."""
+    if not isinstance(blocks, list) or not any(
+            isinstance(block, dict) and block.get('type') in THINKING_TYPES for block in blocks):
+        return
+    frozen = json.loads(json.dumps(blocks, ensure_ascii=False))
+    key = (item['id'], _history_digest(list(history or ()) + [assistant],
+                                       len(list(history or ())) + 1))
+    size = len(json.dumps(frozen, ensure_ascii=False).encode('utf-8'))
+    with _THINKING_LOCK:
+        old = _THINKING.pop(key, None)
+        if old is not None:
+            _THINKING_SIZE[0] -= len(json.dumps(old, ensure_ascii=False).encode('utf-8'))
+        _THINKING[key] = frozen
+        _THINKING_SIZE[0] += size
+        while _THINKING and (len(_THINKING) > _THINKING_ENTRIES or _THINKING_SIZE[0] > _THINKING_BYTES):
+            _, dropped = _THINKING.popitem(last=False)
+            _THINKING_SIZE[0] -= len(json.dumps(dropped, ensure_ascii=False).encode('utf-8'))
+
+
+def _restore_blocks(item, messages, index):
+    """The exact native content stored for the assistant message at ``index``, if known."""
+    key = (item['id'], _history_digest(messages, index + 1))
+    with _THINKING_LOCK:
+        blocks = _THINKING.get(key)
+        if blocks is None:
+            return None
+        _THINKING.move_to_end(key)
+        return json.loads(json.dumps(blocks, ensure_ascii=False))
+
+
+def _native_blocks(message):
+    """Thinking blocks a direct client may already have put on the wire, otherwise None."""
+    explicit = message.get('thinking_blocks')
+    if isinstance(explicit, list) and explicit:
+        return [block for block in explicit if isinstance(block, dict)
+                and block.get('type') in THINKING_TYPES]
+    content = message.get('content')
+    if isinstance(content, list) and any(
+            isinstance(block, dict) and block.get('type') in THINKING_TYPES for block in content):
+        return [block for block in content if isinstance(block, dict) and block.get('type') in THINKING_TYPES]
+    return None
+
+
 def messages_request(payload, item):
     """The native Messages API parameters for one OpenAI v1 chat body."""
     if not isinstance(payload, dict):
         raise cloud.CloudError('Invalid cloud request.', 400, 'invalid_request')
     system = []
     converted = []
-    for message in payload.get('messages') or ():
+    raw_messages = payload.get('messages') if isinstance(payload.get('messages'), list) else []
+    for position, message in enumerate(raw_messages):
         if not isinstance(message, dict):
             continue
         role = message.get('role')
@@ -102,11 +198,15 @@ def messages_request(payload, item):
             converted.append(('user', [block]))
             continue
         if role == 'assistant':
-            blocks = _text_parts(message.get('content'))
-            for call in message.get('tool_calls') or ():
-                block = _tool_use(call)
-                if block is not None:
-                    blocks.append(block)
+            native = _restore_blocks(item, raw_messages, position) or _native_blocks(message)
+            if native is not None:
+                blocks = native
+            else:
+                blocks = _text_parts(message.get('content'))
+                for call in message.get('tool_calls') or ():
+                    block = _tool_use(call)
+                    if block is not None:
+                        blocks.append(block)
             if blocks:
                 converted.append(('assistant', blocks))
             continue
@@ -142,6 +242,11 @@ def messages_request(payload, item):
         tools[-1]['cache_control'] = _cache_control()
         params['tools'] = tools
         choice = payload.get('tool_choice')
+        forced = choice == 'required' or (isinstance(choice, dict)
+                                          and isinstance(choice.get('function'), dict))
+        if forced and item['upstream_model'] in FORCED_TOOL_UNSUPPORTED:
+            raise cloud.CloudError('Forced tool_choice is not supported by this model.',
+                                   400, 'invalid_value', 'tool_choice')
         if choice == 'none':
             params.pop('tools')
         elif choice == 'required':
@@ -150,10 +255,7 @@ def messages_request(payload, item):
             params['tool_choice'] = {'type': 'tool', 'name': choice['function'].get('name') or ''}
         else:
             params['tool_choice'] = {'type': 'auto'}
-    if isinstance(payload.get('temperature'), (int, float)):
-        params['temperature'] = payload['temperature']
-    if isinstance(payload.get('top_p'), (int, float)):
-        params['top_p'] = payload['top_p']
+    # Current Claude models reject temperature/top_p/top_k (400); depth is thinking + effort.
     stop = payload.get('stop')
     if isinstance(stop, str):
         params['stop_sequences'] = [stop]
@@ -203,7 +305,7 @@ def _usage(usage):
             'completion_tokens_details': {'reasoning_tokens': 0}}
 
 
-def response(message, item):
+def response(message, item, history=None):
     """An OpenAI chat completion from a native Messages reply."""
     value = _dump(message)
     content, reasoning, calls = [], [], []
@@ -223,6 +325,8 @@ def response(message, item):
         assistant['reasoning_content'] = ''.join(reasoning)
     if calls:
         assistant['tool_calls'] = calls
+    if history is not None:
+        _remember_blocks(item, history, assistant, value.get('content'))
     finish = STOP_REASONS.get(value.get('stop_reason'), 'stop')
     return {'id': value.get('id') or 'chatcmpl_anthropic', 'object': 'chat.completion',
             'created': int(time.time()), 'model': item['id'],
@@ -233,19 +337,69 @@ def response(message, item):
 class _Stream:
     """Translate Anthropic's Messages SSE events into OpenAI chat completion chunks."""
 
-    def __init__(self, item, include_usage):
+    def __init__(self, item, include_usage, history=None, key=None):
         self.item = item
         self.include_usage = include_usage
+        self.history = history
+        self.key = key
+        self.text_redactor = cloud.StreamRedactor(key)
+        self.thinking_redactor = cloud.StreamRedactor(key)
+        self.call_redactors = {}
         self.model = item['id']
         self.finish = None
         self.usage = None
         self.raw_usage = {}
         self.tool_slots = {}
+        self.blocks = []
+        self.open = {}
+        self.text = []
+        self.thinking = []
+        self.calls = {}
+        self.stopped = False
+        self.error = None
 
     def _chunk(self, delta, finish=None):
         return {'id': 'chatcmpl_anthropic', 'object': 'chat.completion.chunk', 'created': int(time.time()),
                 'model': self.model,
                 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}
+
+    def _remember(self):
+        if self.history is None:
+            return
+        assistant = {'role': 'assistant', 'content': ''.join(self.text) or None}
+        if self.thinking:
+            assistant['reasoning_content'] = ''.join(self.thinking)
+        calls = []
+        for index in sorted(self.tool_slots, key=self.tool_slots.get):
+            call = self.calls.get(index)
+            if call is None:
+                continue
+            calls.append({'id': call['id'], 'type': 'function',
+                          'function': {'name': call['name'], 'arguments': call['args']}})
+        if calls:
+            assistant['tool_calls'] = calls
+        _remember_blocks(self.item, self.history, assistant, self.blocks)
+
+    def _block(self, index, block):
+        native = dict(block)
+        kind = native.get('type')
+        if kind == 'thinking':
+            native.setdefault('thinking', '')
+            native.setdefault('signature', '')
+            self.open[index] = native
+        elif kind == 'text':
+            native.setdefault('text', '')
+            self.open[index] = native
+        elif kind == 'tool_use':
+            native.setdefault('id', 'toolu_unknown')
+            native.setdefault('name', 'tool')
+            native.setdefault('input', {})
+            self.open[index] = native
+            slot = len(self.tool_slots)
+            self.tool_slots[index] = slot
+            self.calls[index] = {'id': native['id'], 'name': native['name'], 'args': ''}
+            self.call_redactors[index] = cloud.StreamRedactor(self.key)
+        self.blocks.append(native)
 
     def event(self, event):
         value = _dump(event)
@@ -261,23 +415,53 @@ class _Stream:
         elif kind == 'content_block_start':
             index = value.get('index') if type(value.get('index')) is int else 0
             block = value.get('content_block') or {}
+            self._block(index, block)
             if block.get('type') == 'tool_use':
-                slot = len(self.tool_slots)
-                self.tool_slots[index] = slot
                 out.append(self._chunk({'tool_calls': [{
-                    'index': slot, 'id': block.get('id') or 'toolu_unknown', 'type': 'function',
+                    'index': self.tool_slots[index], 'id': block.get('id') or 'toolu_unknown',
+                    'type': 'function',
                     'function': {'name': block.get('name') or 'tool', 'arguments': ''}}]}))
         elif kind == 'content_block_delta':
             index = value.get('index') if type(value.get('index')) is int else 0
             delta = value.get('delta') or {}
+            native = self.open.get(index)
             if delta.get('type') == 'text_delta' and isinstance(delta.get('text'), str):
-                out.append(self._chunk({'content': delta['text']}))
+                if native is not None:
+                    native['text'] = native.get('text', '') + delta['text']
+                self.text.append(delta['text'])
+                safe = self.text_redactor.feed(delta['text'].encode('utf-8'))
+                if safe:
+                    out.append(self._chunk({'content': safe.decode('utf-8', 'replace')}))
             elif delta.get('type') == 'thinking_delta' and isinstance(delta.get('thinking'), str):
-                out.append(self._chunk({'reasoning_content': delta['thinking']}))
+                if native is not None:
+                    native['thinking'] = native.get('thinking', '') + delta['thinking']
+                self.thinking.append(delta['thinking'])
+                safe = self.thinking_redactor.feed(delta['thinking'].encode('utf-8'))
+                if safe:
+                    out.append(self._chunk({'reasoning_content': safe.decode('utf-8', 'replace')}))
+            elif delta.get('type') == 'signature_delta' and isinstance(delta.get('signature'), str):
+                if native is not None:
+                    native['signature'] = delta['signature']
             elif delta.get('type') == 'input_json_delta' and isinstance(delta.get('partial_json'), str):
-                out.append(self._chunk({'tool_calls': [{
-                    'index': self.tool_slots.get(index, 0),
-                    'function': {'arguments': delta['partial_json']}}]}))
+                call = self.calls.get(index)
+                if call is not None:
+                    call['args'] += delta['partial_json']
+                safe = self.call_redactors[index].feed(delta['partial_json'].encode('utf-8'))
+                if safe:
+                    out.append(self._chunk({'tool_calls': [{
+                        'index': self.tool_slots.get(index, 0),
+                        'function': {'arguments': safe.decode('utf-8', 'replace')}}]}))
+        elif kind == 'content_block_stop':
+            index = value.get('index') if type(value.get('index')) is int else 0
+            native = self.open.pop(index, None)
+            if native is not None and native.get('type') == 'tool_use':
+                args = self.calls.get(index, {}).get('args', '')
+                try:
+                    native['input'] = json.loads(args) if args else {}
+                except ValueError:
+                    native['input'] = {'input': args}
+        elif kind == 'error':
+            self.error = value.get('error') or value
         elif kind == 'message_delta':
             delta = value.get('delta') or {}
             if isinstance(delta.get('stop_reason'), str):
@@ -286,6 +470,20 @@ class _Stream:
                 self.raw_usage.update(_dump(value['usage']))
                 self.usage = _usage(self.raw_usage)
         elif kind == 'message_stop':
+            self.stopped = True
+            self._remember()
+            tail = self.text_redactor.finish()
+            if tail:
+                out.append(self._chunk({'content': tail.decode('utf-8', 'replace')}))
+            tail = self.thinking_redactor.finish()
+            if tail:
+                out.append(self._chunk({'reasoning_content': tail.decode('utf-8', 'replace')}))
+            for index in sorted(self.call_redactors):
+                tail = self.call_redactors[index].finish()
+                if tail:
+                    out.append(self._chunk({'tool_calls': [{
+                        'index': self.tool_slots.get(index, 0),
+                        'function': {'arguments': tail.decode('utf-8', 'replace')}}]}))
             out.append(self._chunk({}, self.finish or 'stop'))
             if self.include_usage and self.usage is not None:
                 out.append({'id': 'chatcmpl_anthropic', 'object': 'chat.completion.chunk',
@@ -312,9 +510,51 @@ def _client(item, key):
                                timeout=min(cloud.DEFAULT_TIMEOUT, 1800.0))
 
 
-def _error(self, st, item, status, message, key, code='cloud_upstream_error'):
+def _row(item):
+    return {'remote': True, 'remote_provider': 'anthropic', 'remote_model': item['upstream_model']}
+
+
+def _usage_row(row, usage, item):
+    row.update({'prompt_tokens': usage['prompt_tokens'],
+                'completion_tokens': usage['completion_tokens'],
+                'cached_tokens': usage['prompt_tokens_details']['cached_tokens'],
+                'cost_usd': cloud.cost(item, usage['prompt_tokens'], usage['completion_tokens'])})
+    return row
+
+
+def _has_usage(message):
+    if isinstance(message, dict):
+        return isinstance(message.get('usage'), dict)
+    return getattr(message, 'usage', None) is not None
+
+
+def _close(st, status, error=None):
+    if st.led is None:
+        return
+    st.led.finish(status, error)
+    if getattr(st.led, 'written', True) is False:
+        cloud.mark_ledger_failure()
+
+
+def _record(st, item, hold, usage, failed, status, error):
+    row = _row(item)
+    if isinstance(usage, dict):
+        _usage_row(row, usage, item)
+    if hold is None:
+        row.setdefault('cost_usd', 0.0)
+        row.setdefault('settled', 'not_forwarded')
+    else:
+        cloud.conservative_cost(row, hold, failed=failed)
     if st.led is not None:
-        st.led.finish(status, code)
+        st.led.row.update(row)
+    _close(st, status, error)
+    if hold is not None:
+        hold.settle()
+
+
+def _error(self, st, item, status, message, key, code='cloud_upstream_error', hold=None,
+           failed=False, usage=None):
+    _record(st, item, hold, usage, failed, status, code)
     body = {'error': {'message': cloud.redact(message, key), 'type': 'cloud_error',
                       'param': 'model', 'code': code}}
     return self.json_reply(status, body)
@@ -328,28 +568,37 @@ def _write(self, st, data):
 def forward(self, st, item, key):
     """Run one Anthropic Messages request and write the OpenAI v1 reply."""
     payload = st.payload
-    params = messages_request(payload, item)
-    client = _client(item, key)
     include_usage = _include_usage(payload)
     streamed = _is_stream(payload)
     stream = None
+    translator = None
+    hold = None
     started = False
+    try:
+        params = messages_request(payload, item)
+        client = _client(item, key)
+        hold = cloud.reserve(st.api_value, item, payload)
+    except cloud.CloudError as error:
+        if hold is not None and not hold.settled:
+            hold.settle()
+        return _error(self, st, item, error.status, str(error), key, error.code)
     try:
         if not streamed:
             message = client.messages.create(**params)
-            reply = response(message, item)
+            present = _has_usage(message)
+            reply = response(message, item, history=payload.get('messages'))
+            row = _row(item)
+            if present:
+                _usage_row(row, reply['usage'], item)
+            cloud.conservative_cost(row, hold, failed=not present)
             if st.led is not None:
-                st.led.row.update({'remote': True, 'remote_provider': 'anthropic',
-                                   'remote_model': item['upstream_model']})
-                st.led.row.update({'prompt_tokens': reply['usage']['prompt_tokens'],
-                                   'completion_tokens': reply['usage']['completion_tokens'],
-                                   'cached_tokens': reply['usage']['prompt_tokens_details']['cached_tokens'],
-                                   'cost_usd': cloud.cost(item, reply['usage']['prompt_tokens'],
-                                                          reply['usage']['completion_tokens'])})
-            data = json.dumps(reply, ensure_ascii=False).encode()
+                st.led.row.update(row)
+            data = cloud.redact(json.dumps(reply, ensure_ascii=False).encode(), key)
+            if st.led is not None:
+                st.led.observe(data)
             self.reply(200, data, 'application/json')
-            if st.led is not None:
-                st.led.finish(200)
+            _close(st, 200)
+            hold.settle()
             return
         stream = client.messages.create(**params)
         self.send_response(200)
@@ -360,29 +609,46 @@ def forward(self, st, item, key):
             self.send_header(name, value)
         self.end_headers()
         started = True
-        translator = _Stream(item, include_usage)
+        translator = _Stream(item, include_usage, payload.get('messages'), key)
+        redactor = cloud.StreamRedactor(key)
+
+        def relay(data):
+            safe = redactor.feed(data)
+            if not safe:
+                return
+            if st.led is not None:
+                st.led.observe(safe)
+            _write(self, st, safe)
+
         for event in stream:
             for chunk in translator.event(event):
-                data = ('data: ' + json.dumps(chunk, ensure_ascii=False) + '\n\n').encode()
-                _write(self, st, data)
-        _write(self, st, b'data: [DONE]\n\n')
+                relay(('data: ' + json.dumps(chunk, ensure_ascii=False) + '\n\n').encode())
+        if translator.error is not None or not translator.stopped:
+            _record(st, item, hold, translator.usage, True, 503, 'cloud_stream_error')
+            self.close_connection = True
+            return
+        relay(b'data: [DONE]\n\n')
+        tail = redactor.finish()
+        if tail:
+            if st.led is not None:
+                st.led.observe(tail)
+            _write(self, st, tail)
         self.wfile.write(b'0\r\n\r\n')
         self.wfile.flush()
-        usage = translator.usage or _usage(None)
+        row = _row(item)
+        if translator.usage is not None:
+            _usage_row(row, translator.usage, item)
+        cloud.conservative_cost(row, hold, failed=translator.usage is None)
         if st.led is not None:
-            st.led.row.update({'remote': True, 'remote_provider': 'anthropic',
-                               'remote_model': item['upstream_model'],
-                               'prompt_tokens': usage['prompt_tokens'],
-                               'completion_tokens': usage['completion_tokens'],
-                               'cached_tokens': usage['prompt_tokens_details']['cached_tokens'],
-                               'cost_usd': cloud.cost(item, usage['prompt_tokens'], usage['completion_tokens'])})
-            st.led.finish(200)
+            st.led.row.update(row)
+        _close(st, 200)
+        hold.settle()
     except cloud.CloudError as error:
         if not started:
-            _error(self, st, item, error.status, str(error), key, error.code)
+            _error(self, st, item, error.status, str(error), key, error.code, hold, failed=True)
         else:
-            if st.led is not None:
-                st.led.finish(error.status, error.code)
+            _record(st, item, hold, translator.usage if translator else None, True,
+                    error.status, error.code)
             self.close_connection = True
     except Exception as error:  # the SDK's own status/connection errors, redacted
         status = getattr(error, 'status_code', None) or 503
@@ -390,10 +656,11 @@ def forward(self, st, item, key):
             status = 503
         message = cloud.redact(str(error), key)
         if not started:
-            _error(self, st, item, status, message or 'The Anthropic provider is unavailable.', key)
+            _error(self, st, item, status, message or 'The Anthropic provider is unavailable.',
+                   key, hold=hold, failed=True)
         else:
-            if st.led is not None:
-                st.led.finish(status, 'cloud_stream_error')
+            _record(st, item, hold, translator.usage if translator else None, True,
+                    status, 'cloud_stream_error')
             self.close_connection = True
     finally:
         try:
@@ -401,3 +668,5 @@ def forward(self, st, item, key):
                 stream.close()
         except Exception:
             pass
+        if hold is not None and not hold.settled:
+            hold.settle()
