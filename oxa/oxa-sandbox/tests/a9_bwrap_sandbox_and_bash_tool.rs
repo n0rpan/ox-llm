@@ -417,6 +417,18 @@ fn home_ssh_absent() {
     assert!(!String::from_utf8_lossy(&cat.output).contains("PRIVATE"));
 }
 
+/// #52: a secret env var (`GH_TOKEN`) reaches the command through `--args <fd>`, not argv.
+#[test]
+fn gh_token_reaches_the_command_but_not_the_bwrap_command_line() {
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let mut sp = spec("echo \"[$GH_TOKEN]\"", &env.work(), true, false);
+    sp.env.push(("GH_TOKEN".into(), "ghp_SECRET123".into()));
+    let res = sb.run(&sp, &CancelToken::new(), &mut |_| {});
+    let out = String::from_utf8_lossy(&res.output).into_owned();
+    assert!(out.contains("[ghp_SECRET123]"), "{out}");
+}
+
 /// needs bwrap
 #[test]
 fn no_network_by_default() {

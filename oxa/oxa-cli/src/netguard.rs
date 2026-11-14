@@ -10,7 +10,41 @@ use std::sync::Arc;
 /// on; always off while offline). Read once at startup.
 pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
     let on = sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
-    Arc::new(NetSandbox::new(sandbox, on, oxa_proto::offline()))
+    let offline = oxa_proto::offline();
+    let token = if on && !offline { gh_token() } else { None };
+    Arc::new(NetSandbox::new(sandbox, on, offline).with_gh_token(token))
+}
+
+/// #52: the GitHub CLI token for the networked sandbox, from `gh auth token` run once here,
+/// outside the sandbox, with a short timeout. Any failure (no `gh`, not logged in, slow) is
+/// `None`. The token is never logged.
+fn gh_token() -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("gh")
+        .args(["auth", "token", "--hostname", "github.com"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait().ok()? {
+            Some(st) if st.success() => break,
+            Some(_) => return None,
+            None if start.elapsed() > std::time::Duration::from_secs(3) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    }
+    let mut out = String::new();
+    child.stdout.take()?.take(4096).read_to_string(&mut out).ok()?;
+    let t = out.trim();
+    (!t.is_empty() && !t.chars().any(char::is_whitespace)).then(|| t.to_string())
 }
 
 /// The setting that allows an engine host that is not loopback (P3). Read from the user's
