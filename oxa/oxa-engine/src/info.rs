@@ -548,6 +548,20 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
         .and_then(|e| e.get("message").and_then(Value::as_str))
         .map(str::to_string)
         .unwrap_or_else(|| text.trim().chars().take(300).collect());
+    if status == 503 {
+        if let Some(code) = err
+            .filter(|e| e.get("type").and_then(Value::as_str) == Some("cloud_error"))
+            .and_then(|e| e.get("code").and_then(Value::as_str))
+            .filter(|c| c.starts_with("cloud_"))
+        {
+            // The cloud gateway refused (no key, no SDK, ledger unusable): not the engine's
+            // queue, and a retry will not fix it. Show its own message.
+            return OxaError::new(
+                codes::ENGINE_HTTP,
+                format!("the cloud gateway refused the request ({code}): {detail}"),
+            );
+        }
+    }
     status_error(status, &detail, retry_after)
 }
 
@@ -616,6 +630,49 @@ fn status_error(status: u16, detail: &str, retry_after: Option<u32>) -> OxaError
         );
     }
     OxaError::new(codes::ENGINE_HTTP, msg)
+}
+
+#[cfg(test)]
+mod cloud_refusal_tests {
+    use super::http_error_with;
+    use oxa_proto::codes;
+
+    fn body(code: &str, message: &str) -> Vec<u8> {
+        format!(r#"{{"error":{{"message":"{message}","type":"cloud_error","param":null,"code":"{code}"}}}}"#)
+            .into_bytes()
+    }
+
+    /// A cloud gateway refusal that retrying cannot fix (no key, no SDK) shows the gateway's own
+    /// message; it is not the "engine is busy" text and carries no `HTTP 5xx` the core retries.
+    #[test]
+    fn a_cloud_503_shows_the_servers_message_not_engine_busy() {
+        for code in ["cloud_credentials_unavailable", "cloud_sdk_unavailable"] {
+            let message = "The Anthropic SDK is not installed on this host.";
+            let e = http_error_with(503, &body(code, message), None);
+            assert_eq!(e.code, codes::ENGINE_HTTP, "{code}");
+            assert!(
+                e.message.contains(message) && e.message.contains(code),
+                "{}",
+                e.message
+            );
+            assert!(!e.message.contains("HTTP 503"), "{}", e.message);
+            assert!(
+                e.hint.as_deref().is_none_or(|h| !h.contains("busy")),
+                "{:?}",
+                e.hint
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_503_is_still_engine_busy() {
+        let e = http_error_with(
+            503,
+            br#"{"error":{"message":"queue full","type":"local_backend_busy"}}"#,
+            None,
+        );
+        assert_eq!(e.code, codes::ENGINE_BUSY);
+    }
 }
 
 #[cfg(test)]

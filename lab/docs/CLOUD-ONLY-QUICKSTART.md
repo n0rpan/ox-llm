@@ -11,6 +11,8 @@ budget.
 - Linux on x86_64 or arm64
 - `python3`
 - A Rust toolchain, to build oxa
+- The Anthropic SDK for the python that runs the controller, if you use `anthropic/*` models
+  (step 2; the controller does not install it)
 - An API key for at least one provider (OpenRouter, Anthropic or OpenAI)
 
 ## 1. Install the controller
@@ -35,7 +37,23 @@ built oxa to `<prefix>/bin/oxa`.
 The built-in catalog's prices are only an estimate for the budget. Check them against your
 provider, or pass your own `--models-file`.
 
-## 2. Add your keys
+## 2. Install the Anthropic SDK (only for `anthropic/*` models)
+
+The installer checks whether the python that runs the controller can import `anthropic`, and
+reports it as `anthropic_sdk` in its JSON output. If the catalog has Anthropic models and the
+SDK is missing, it prints one line with the exact command (it installs nothing itself), which is
+this, with the same python:
+
+```console
+$ python3 -m pip install anthropic==0.125.0
+```
+
+(This is the `cloud` extra of `lab/pyproject.toml`. Use a virtual environment if your system
+python is externally managed.) Without it, a chat to an `anthropic/*` model gets HTTP `503`,
+code `cloud_sdk_unavailable`, "The Anthropic SDK is not installed on this host." OpenRouter and
+OpenAI models need no extra package. Restart the controller after installing.
+
+## 3. Add your keys
 
 The installer never creates or reads the key file. Create `<config-dir>/cloud-secrets.json`
 with the providers you use, in the format of [CLOUD-MODELS.md](CLOUD-MODELS.md#key-file), then
@@ -51,7 +69,7 @@ a log or this repository.
 `--daily-budget` (USD, default 1.0) is stored as `cloud.daily_budget_usd` in `runtime.json`.
 A request that would exceed it gets `429` `budget_exceeded`.
 
-## 3. Check it
+## 4. Check it
 
 ```console
 $ curl -s http://127.0.0.1:8092/v1/models
@@ -62,9 +80,10 @@ Every row is a cloud model (`"remote": true`). The status at `/_local/status` re
 
 A request to a provider whose key is missing or whose file has the wrong mode fails cleanly
 with HTTP `503`, code `cloud_credentials_unavailable` and the message "Cloud credentials are
-not configured." Fix the file and retry; no restart is needed, the file is read per request.
+not configured." Fix the file and retry; no restart is needed, the file is read per request. oxa shows the
+controller's message ("the cloud gateway refused the request (cloud_credentials_unavailable): ...").
 
-## 4. Build and run oxa
+## 5. Build and run oxa
 
 ```console
 $ cd oxa && cargo build --release --locked

@@ -79,6 +79,19 @@ def load_models(path):
     return models
 
 
+SDK_REQUIREMENT = 'anthropic==0.125.0'  # the `cloud` extra of pyproject.toml
+
+
+def anthropic_importable():
+    """Whether the python that runs the controller (this one, see `launcher`) can import the
+    Anthropic SDK. Imports it in a child process; installs nothing."""
+    try:
+        done = subprocess.run([sys.executable, '-c', 'import anthropic'], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 def copy_runtime(destination):
     destination.mkdir(parents=True, exist_ok=True)
     for source in sorted(RUNTIME.glob('*.py')):
@@ -131,6 +144,12 @@ def install(args, runner=subprocess.run):
               'prefix': str(prefix), 'runtime_json': str(runtime_json), 'launcher': str(script),
               'models': len(models), 'api_base': f'http://127.0.0.1:{args.port}/v1',
               'secrets_file': str(config / 'cloud-secrets.json')}
+    if any(m.get('provider') == 'anthropic' for m in models.values()):
+        result['anthropic_sdk'] = anthropic_importable()
+        if not result['anthropic_sdk']:
+            result['sdk_hint'] = (f'the catalog has anthropic models but the Anthropic SDK is missing for '
+                                  f'{sys.executable}; run: {sys.executable} -m pip install {SDK_REQUIREMENT}')
+            print('cloud-install: ' + result['sdk_hint'], file=sys.stderr)
     if args.no_systemd:
         result['run'] = str(script)
         return result

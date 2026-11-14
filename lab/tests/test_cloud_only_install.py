@@ -123,6 +123,45 @@ class CloudOnlyInstall(unittest.TestCase):
         self.assertIn(str(self.root / 'config/cloud-secrets.json'), printed['next_step'])
         self.assertFalse((self.root / 'config/cloud-secrets.json').exists())
 
+    def install_output(self, models_file, importable):
+        out, err = io.StringIO(), io.StringIO()
+        args = list(self.args)
+        if models_file is None:
+            i = args.index('--models-file')
+            del args[i:i + 2]
+        with patch.object(cloud_install, 'anthropic_importable', return_value=importable), \
+                patch('sys.stdout', new=out), patch('sys.stderr', new=err):
+            code = cloud_install.main([*args, '--no-systemd', '--force'])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue()), err.getvalue()
+
+    def test_missing_anthropic_sdk_is_reported_with_the_pip_command(self):
+        result, err = self.install_output(None, importable=False)
+        self.assertIs(result['anthropic_sdk'], False)
+        command = f'{sys.executable} -m pip install anthropic==0.125.0'
+        self.assertIn(command, result['sdk_hint'])
+        self.assertEqual(len(err.strip().splitlines()), 1)
+        self.assertIn(command, err)
+
+    def test_present_sdk_or_no_anthropic_entry_prints_no_hint(self):
+        result, err = self.install_output(None, importable=True)
+        self.assertIs(result['anthropic_sdk'], True)
+        self.assertNotIn('sdk_hint', result)
+        self.assertEqual(err, '')
+        result, err = self.install_output(self.models, importable=False)
+        self.assertNotIn('sdk_hint', result)
+        self.assertEqual(err, '')
+
+    def test_sdk_check_uses_the_controller_python_and_installs_nothing(self):
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, '', '')
+        with patch('subprocess.run', fake_run):
+            self.assertFalse(cloud_install.anthropic_importable())
+        self.assertEqual(seen, [[sys.executable, '-c', 'import anthropic']])
+
     def test_installed_controller_serves_only_remote_models(self):
         port = free_port()
         self.args[self.args.index('--port') + 1] = str(port)
