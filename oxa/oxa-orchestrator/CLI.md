@@ -145,3 +145,43 @@ For an agent that can outlive a controller, the explicit
 [`orchestrate-agent` foreground host](AGENT_HOST.md) publishes private registration
 for operator-owned clients. It does not change this command's default internal
 server lifetime, discover credentials or install an OS service.
+
+## Control an existing foreground host
+
+```sh
+./target/debug/oxa orchestrate \
+  --registration ./agent-host/registration.json --local-only \
+  --directory ./new-controller-run --workers 2 --parallel 2 \
+  --save-results -- "Analyze this explicitly delegated goal"
+```
+
+`--registration` selects one private operator-owned file instead of
+`--engine`/`--model`; mixed routes are refused. The caller still explicitly verifies
+that the original host's inference cannot forward to a paid/cloud provider.
+The controller loads no environment credentials and starts no internal native
+server or worker. Every invocation gets a fresh unpredictable run ID so identical
+new goals cannot collide with a surviving host's message deduplication.
+
+This CLI profile requires an explicit plan-mode/no-tools/no-workspace policy in
+the private registration generated from the host's immutable operator config.
+Legacy files without policy and more permissive hosts are refused before creating
+a run directory or contacting the host. Network cards/results cannot grant that
+authority. Source attachment, editing, Git-worktree and permission-changing flags
+are refused on this route. Existing library APIs still require explicit operator
+grants for other profiles. The registration and its pending filename are protected
+credential paths and cannot enter approved worker snapshots by filename.
+
+Worker/run time, incoming-wire, observed-token, parallelism and journal limits use
+the same scheduler as integrated runs. Host-side capacity/limits remain fixed;
+controllers cannot raise them. Oversubscription is an explicit failed/partial
+outcome, not an initial-send retry. Result persistence still requires
+`--save-results`, and saved reports have the same format/review gates.
+
+A normal controller exit leaves the host alive. INT/TERM cancels only that
+controller's known jobs and finishes cleanup before stdout; unrelated host tasks
+remain owned by their original controllers. A hard controller crash can leave its
+accepted jobs running on the separate host. Inspect the original durable task
+binding and explicitly reconcile it; never resubmit the original goal to guess
+whether it was accepted. This option does not yet add CLI scheduler takeover or
+mixed started/queued resume. The host lifetime/shutdown and original registration
+remain as described in [AGENT_HOST.md](AGENT_HOST.md).

@@ -44,6 +44,7 @@ test orchestrate CLI completed worker checkpoint after crash ... ok
 test orchestrate CLI structural input limits ... ok
 test orchestrate CLI protected run namespace ... ok
 test orchestrate CLI independent agent registration ... ok
+test orchestrate CLI registered controller isolation ... ok
 ```
 
 The first scenario verifies three overlapping workers, distinct role prompts,
@@ -165,3 +166,11 @@ engine requests and authenticates through private registration. Its submitting
 controller process exits during work; a new client reconnects to the same task. A second active task is
 canceled/reaped when the owned host receives TERM; the listener closes and no
 capability appears in stdout/stderr/audit output. See [AGENT_HOST.md](AGENT_HOST.md).
+
+The registered-controller fixture runs two identical new goals against a surviving
+host and verifies distinct run/task IDs and four real inferences rather than old
+result reuse. It rejects mixed routes, legacy policy and an actual more-permissive
+host before run setup, then interrupts one controller while an unrelated task
+completes on the same host. The host survives and credentials remain out of
+stdout/stderr/audit data. A deterministic pre-exec fork fixture also verifies that
+normal journal-ownership release is not prolonged by an inherited descriptor.

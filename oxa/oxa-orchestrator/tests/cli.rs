@@ -24,6 +24,47 @@ fn help_and_unrelated_commands_are_inert() {
 }
 
 #[test]
+fn registered_routes_are_explicit_exclusive_and_cannot_change_permissions() {
+    let base = [
+        "--registration",
+        "/nonexistent/private/registration.json",
+        "--local-only",
+        "--directory",
+        "unused-output",
+    ];
+    let parse_registered = |extra: &[&str]| {
+        parse(
+            &base
+                .iter()
+                .copied()
+                .chain(extra.iter().copied())
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert!(parse_registered(&["--workers", "1", "goal"]).unwrap().is_some());
+    assert!(parse_registered(&["--help"]).unwrap().is_none());
+    for extra in [
+        vec!["--engine", "127.0.0.1:12345", "goal"],
+        vec!["--model", "fake-model", "goal"],
+        vec!["--permission-mode", "workspace", "goal"],
+        vec!["--permission-mode", "ask", "goal"],
+        vec!["--source", "source", "--file", "input.txt", "goal"],
+        vec!["--edit", "goal"],
+        vec!["--git-worktrees", "goal"],
+    ] {
+        assert!(parse_registered(&extra).is_err());
+    }
+    assert!(parse(
+        &["--registration", "reg.json", "--directory", "out", "goal"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect::<Vec<_>>()
+    )
+    .is_err());
+}
+
+#[test]
 fn a_goal_after_the_delimiter_is_never_an_option() {
     assert!(parse(&args(&["--", "--help"])).unwrap().is_some());
     assert!(parse(&args(&["--", "!touch /tmp/not-a-command"]))

@@ -2308,6 +2308,217 @@ fn orchestrate_cli_independent_agent_registration_and_shutdown() {
     assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 2);
 }
 
+fn orchestrate_cli_registered_controller_permissions_and_task_ownership() {
+    use oxa_orchestrator::registration::{AgentHost, Registration};
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("registered controller result"); 6],
+        FakeOpts {
+            hold_headers_ms: 600,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let host_root = env.root().join("registered-host");
+    let mut command = std::process::Command::new(cli_binary());
+    command
+        .env_clear()
+        .envs(env.envs(&engine.url()))
+        .current_dir(env.work())
+        .args([
+            "orchestrate-agent",
+            "--engine",
+            engine.url().trim_start_matches("http://"),
+            "--model",
+            "fake-model",
+            "--local-only",
+            "--directory",
+        ])
+        .arg(&host_root)
+        .args([
+            "--parallel",
+            "2",
+            "--capacity",
+            "16",
+            "--worker-timeout",
+            "5",
+            "--lifetime",
+            "20",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut host = CliChild(command.spawn().unwrap());
+    let path = host_root.join("registration.json");
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let registration = loop {
+        if let Ok(value) = Registration::load(&path) {
+            break value;
+        }
+        assert!(host.0.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    registration.require_tool_free_plan().unwrap();
+    let credentials = std::fs::read(&path).unwrap();
+    let wire: serde_json::Value = serde_json::from_slice(&credentials).unwrap();
+    let secret = wire["capability"].as_str().unwrap();
+    let controller = |name: &str, file: &Path, workers: &str| {
+        let mut command = std::process::Command::new(cli_binary());
+        command
+            .env_clear()
+            .current_dir(env.work())
+            .args(["orchestrate", "--registration"])
+            .arg(file)
+            .args(["--local-only", "--directory"])
+            .arg(env.root().join(name))
+            .args([
+                "--workers",
+                workers,
+                "--parallel",
+                workers,
+                "--worker-timeout",
+                "5",
+                "--timeout",
+                "10",
+                "--save-results",
+                "identical synthetic registered goal",
+            ]);
+        command
+    };
+    let mut seen_tasks = std::collections::BTreeSet::new();
+    let mut seen_runs = std::collections::BTreeSet::new();
+    for name in ["registered-run-one", "registered-run-two"] {
+        let output = controller(name, &path, "2").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(seen_runs.insert(report["run"].as_str().unwrap().to_owned()));
+        for worker in report["workers"].as_array().unwrap() {
+            assert_eq!(worker["outcome"], "completed");
+            assert!(
+                seen_tasks.insert(worker["task"]["id"].as_str().unwrap().to_owned()),
+                "fresh run must not reuse an old task"
+            );
+        }
+        let root = env.root().join(name);
+        assert_eq!(std::fs::read(root.join("report.json")).unwrap(), output.stdout);
+        assert!(
+            !root.join("agents").exists(),
+            "registered route must not launch an internal native host"
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+        assert!(!std::fs::read_to_string(root.join("run/transcript.jsonl"))
+            .unwrap()
+            .contains(secret));
+        assert!(host.0.try_wait().unwrap().is_none());
+    }
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 4);
+    let invalid = controller("registered-mixed-route", &path, "1")
+        .args(["--model", "fake-model"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(!env.root().join("registered-mixed-route").exists());
+    let legacy_file = env.root().join("legacy-registration.json");
+    let mut legacy = wire.clone();
+    legacy.as_object_mut().unwrap().remove("policy");
+    std::fs::write(&legacy_file, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    std::fs::set_permissions(&legacy_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        controller("registered-legacy", &legacy_file, "1")
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(1)
+    );
+    assert!(!env.root().join("registered-legacy").exists());
+    let config = settings(&env, "more-permissive-host");
+    let template = worker(&engine, "template");
+    let privileged = AgentHost::start(RpcAgentConfig {
+        worker_binary: config.worker_binary,
+        bwrap_binary: config.bwrap_binary,
+        directory: config.directory,
+        role: "synthetic workspace policy".into(),
+        inference: template.inference,
+        mode: PermissionMode::Workspace,
+        workspace: None,
+        budget: template.budget,
+        max_live: 1,
+        max_tasks: 1,
+        journal_bytes: config.journal_bytes,
+    })
+    .unwrap();
+    assert_eq!(
+        controller("registered-widening", &privileged.registration_file(), "1")
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(1)
+    );
+    assert!(!env.root().join("registered-widening").exists());
+    drop(privileged);
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 4);
+    let limits = Limits {
+        timeout: Duration::from_millis(200),
+        ..Limits::default()
+    };
+    let mut client = registration.client(limits).unwrap();
+    let Event::Task(unrelated) = client
+        .send(a2a_message(
+            "unrelated-controller-job",
+            "synthetic unrelated controller",
+            None,
+        ))
+        .unwrap()
+    else {
+        panic!("expected task")
+    };
+    let mut owned = CliChild(
+        controller("registered-cancel", &path, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while engine.requests().iter().filter(|r| r.max_tokens > 0).count() < 6 {
+        assert!(owned.0.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // SAFETY: known owned unreaped controller child, never a historical PID.
+    assert_eq!(unsafe { libc::kill(owned.0.id() as i32, libc::SIGINT) }, 0);
+    let mut stdout = Vec::new();
+    use std::io::Read;
+    owned.0.stdout.take().unwrap().read_to_end(&mut stdout).unwrap();
+    assert_eq!(owned.0.wait().unwrap().code(), Some(130));
+    let canceled: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(canceled["workers"][0]["outcome"], "canceled");
+    assert_eq!(canceled["workers"][0]["stop"], "confirmed");
+    assert!(host.0.try_wait().unwrap().is_none());
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let task = client.get(&unrelated.id).unwrap();
+        if task.status.state.is_terminal() {
+            assert_eq!(task.status.state, TaskState::Completed);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(client.card().is_ok());
+    assert_eq!(std::fs::read(&path).unwrap(), credentials);
+    // SAFETY: known owned unreaped host child.
+    assert_eq!(unsafe { libc::kill(host.0.id() as i32, libc::SIGTERM) }, 0);
+    assert_eq!(host.0.wait().unwrap().code(), Some(143));
+}
+
 fn orchestrate_cli_report_survives_closed_stdout() {
     let env = TestEnv::new();
     let engine = FakeServer::start(
@@ -2637,6 +2848,10 @@ fn main() {
         (
             "orchestrate CLI independent agent registration",
             orchestrate_cli_independent_agent_registration_and_shutdown,
+        ),
+        (
+            "orchestrate CLI registered controller isolation",
+            orchestrate_cli_registered_controller_permissions_and_task_ownership,
         ),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {

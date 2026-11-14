@@ -22,6 +22,18 @@ pub struct AgentHost {
 }
 impl AgentHost {
     pub fn start(config: RpcAgentConfig) -> io::Result<Self> {
+        let policy = HostPolicy {
+            mode: config.mode,
+            tools: config
+                .workspace
+                .as_ref()
+                .map(|grant| grant.tools().iter().map(|tool| (*tool).to_owned()).collect())
+                .unwrap_or_default(),
+            workspace_manifest_sha256: config
+                .workspace
+                .as_ref()
+                .map(|grant| grant.snapshot().manifest_sha256().to_owned()),
+        };
         let directory = config.directory.clone();
         let agent = Arc::new(RpcAgent::new(config)?);
         let directory = directory.canonicalize()?;
@@ -35,6 +47,7 @@ impl AgentHost {
             address: server.address(),
             instance_sha256: hash(secret.as_bytes()),
             capability: secret,
+            policy: Some(policy),
         };
         crate::checkpoint::save_registration(&directory, &registration)?;
         Ok(Self { server, directory })
@@ -54,6 +67,17 @@ pub struct Registration {
     address: SocketAddr,
     capability: Capability,
     instance_sha256: String,
+    policy: Option<HostPolicy>,
+}
+
+/// Immutable host configuration captured locally by the trusted operator.
+/// This is private registration metadata, never authority from an agent card.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostPolicy {
+    pub mode: crate::PermissionMode,
+    pub tools: Vec<String>,
+    pub workspace_manifest_sha256: Option<String>,
 }
 impl std::fmt::Debug for Registration {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -102,6 +126,7 @@ impl Registration {
             address: wire.address,
             capability,
             instance_sha256: wire.instance_sha256,
+            policy: wire.policy,
         })
     }
     pub fn client(&self, limits: Limits) -> io::Result<Client> {
@@ -113,6 +138,12 @@ impl Registration {
     pub fn instance_sha256(&self) -> &str {
         &self.instance_sha256
     }
+    pub fn require_tool_free_plan(&self) -> io::Result<()> {
+        match &self.policy {
+            Some(policy) if policy.mode == crate::PermissionMode::Plan && policy.tools.is_empty() && policy.workspace_manifest_sha256.is_none() => Ok(()),
+            _ => Err(invalid("registered CLI requires an explicitly recorded plan-mode host without tools or workspace grants")),
+        }
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,6 +152,8 @@ struct WireRegistration {
     address: SocketAddr,
     instance_sha256: String,
     capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy: Option<HostPolicy>,
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -143,6 +176,7 @@ mod tests {
             address: "127.0.0.1:12345".parse().unwrap(),
             instance_sha256: hash(capability.as_bytes()),
             capability,
+            policy: None,
         }
     }
     fn write(path: &Path, wire: &WireRegistration) {
@@ -156,6 +190,10 @@ mod tests {
         let original = wire();
         write(&path, &original);
         let registration = Registration::load(&path).unwrap();
+        assert!(
+            registration.require_tool_free_plan().is_err(),
+            "legacy registration cannot establish a CLI permission envelope"
+        );
         assert_eq!(registration.address(), original.address);
         assert_eq!(registration.instance_sha256(), original.instance_sha256);
         assert!(!format!("{registration:?}").contains(&original.capability));
@@ -199,5 +237,46 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&serde_json::json!({"version":1,"address":secret,"capability":secret,"instance_sha256":"invalid"})).unwrap()).unwrap();
         let error = Registration::load(&path).err().unwrap().to_string();
         assert!(!error.contains(&secret));
+    }
+
+    #[test]
+    fn registered_controller_requires_explicit_tool_free_plan_policy() {
+        let env = TestEnv::new();
+        let path = env.root().join("registration.json");
+        let mut original = wire();
+        original.policy = Some(HostPolicy {
+            mode: crate::PermissionMode::Plan,
+            tools: vec![],
+            workspace_manifest_sha256: None,
+        });
+        write(&path, &original);
+        Registration::load(&path)
+            .unwrap()
+            .require_tool_free_plan()
+            .unwrap();
+        for policy in [
+            HostPolicy {
+                mode: crate::PermissionMode::Workspace,
+                tools: vec![],
+                workspace_manifest_sha256: None,
+            },
+            HostPolicy {
+                mode: crate::PermissionMode::Plan,
+                tools: vec!["read".into()],
+                workspace_manifest_sha256: None,
+            },
+            HostPolicy {
+                mode: crate::PermissionMode::Plan,
+                tools: vec![],
+                workspace_manifest_sha256: Some("a".repeat(64)),
+            },
+        ] {
+            original.policy = Some(policy);
+            write(&path, &original);
+            assert!(Registration::load(&path)
+                .unwrap()
+                .require_tool_free_plan()
+                .is_err());
+        }
     }
 }

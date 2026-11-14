@@ -17,7 +17,8 @@ Help and invalid options are inert and do not probe inference.
 
 The host writes `<directory>/registration.json` in its new private 0700 directory.
 That 0600 file contains a version, literal loopback socket address, random 256-bit
-A2A capability and capability-derived instance hash. Publication uses a bounded
+A2A capability, capability-derived instance hash and locally captured immutable
+permission policy (mode, tools and optional workspace-manifest hash). Publication uses a bounded
 pending file, sync, no-replace rename and parent sync. No existing directory/file
 is reused or overwritten. The capability is local-agent authentication, not an
 inference-provider credential, model input, tool grant or output artifact. It is
@@ -39,7 +40,9 @@ card, a model result or a directory scan.
 
 The operator must still assert the original agent and local/nonbillable route
 when wrapping that client with `LocalAgent::register_verified_local`. The file does
-not automatically confer that trust. The process hosting the original agent must
+not automatically confer that trust. A plan-mode CLI controller additionally
+requires an explicit tool-free/no-workspace policy. Old files without policy remain
+loadable by the library but cannot establish that CLI permission envelope. The process hosting the original agent must
 still be alive. A controller can disconnect/exit, reload that explicitly selected
 registration and query/resubscribe to a known task through the existing protocol.
 A2A task/context validation and recovery's no-replay rules remain in force.
@@ -77,7 +80,9 @@ directory, random capability, backend task prefix and ephemeral endpoint. An old
 registration file remains private for explicit retention/cleanup, but cannot
 restore a dead host's in-memory tasks or authorize replay. Reused ports do not
 confer the original capability. The command does not persist backend state across
-host death, provide distributed identity or offer CLI controller takeover yet.
+host death, provide distributed identity or offer CLI scheduler takeover yet. The main CLI can start new bounded runs
+against it using `orchestrate --registration PATH --local-only`; see
+[CLI.md](CLI.md#control-an-existing-foreground-host).
 The existing integrated `orchestrate` command still owns its ephemeral internal
 server; this separate command is opt-in.
 

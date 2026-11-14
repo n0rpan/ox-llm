@@ -32,7 +32,8 @@ Ctrl-C cancels and cleans up owned workers.
 
 Required:
   --engine <address:port>       Explicit literal loopback inference endpoint
-  --model <id>                  Exact model ID
+  --model <id>                  Exact model ID for --engine
+    OR --registration <path>    Explicit private registration of an existing host
   --local-only                  Assert this endpoint cannot forward to cloud
   --directory <path>            New private audit directory; parent must exist
 
@@ -61,8 +62,7 @@ source files are never changed or merged. Private edits return review data. Toke
 
 #[derive(Debug)]
 pub struct Options {
-    engine: SocketAddr,
-    model: String,
+    route: Route,
     directory: PathBuf,
     roles: Vec<String>,
     goal: String,
@@ -80,6 +80,12 @@ pub struct Options {
     save_results: bool,
 }
 
+#[derive(Clone, Debug)]
+enum Route {
+    Native { engine: SocketAddr, model: String },
+    Registered(PathBuf),
+}
+
 pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     let mut source = None;
     let mut files = Vec::new();
@@ -89,6 +95,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     let mut save_results = false;
     let mut engine = None;
     let mut model = None;
+    let mut registration = None;
     let mut directory = None;
     let mut roles = Vec::new();
     let mut workers = None;
@@ -146,6 +153,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
                 | "--allow-new"
                 | "--engine"
                 | "--model"
+                | "--registration"
                 | "--directory"
                 | "--workers"
                 | "--parallel"
@@ -186,6 +194,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
                 )
             }
             "--model" => model = Some(value.clone()),
+            "--registration" => registration = Some(PathBuf::from(value)),
             "--directory" => directory = Some(PathBuf::from(value)),
             "--role" => roles.push(value.clone()),
             "--workers" => workers = Some(number(value, 1, 16)? as usize),
@@ -208,10 +217,27 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     if !local_only {
         return Err("--local-only is required: loopback alone does not exclude cloud routing");
     }
-    let engine = engine.ok_or("--engine is required")?;
-    let model = model.ok_or("--model is required")?;
-    LocalInference::register_verified_local(engine, model.clone())
-        .map_err(|_| "invalid local engine address or model ID")?;
+    let route = if let Some(path) = registration {
+        if engine.is_some() || model.is_some() {
+            return Err("choose --registration or --engine/--model, never both");
+        }
+        if source.is_some()
+            || !files.is_empty()
+            || !new_files.is_empty()
+            || editing
+            || git_worktrees
+            || mode != PermissionMode::Plan
+        {
+            return Err("--registration cannot attach source files or change host permissions");
+        }
+        Route::Registered(path)
+    } else {
+        let engine = engine.ok_or("--engine is required")?;
+        let model = model.ok_or("--model is required")?;
+        LocalInference::register_verified_local(engine, model.clone())
+            .map_err(|_| "invalid local engine address or model ID")?;
+        Route::Native { engine, model }
+    };
     let directory = directory.ok_or("--directory is required")?;
     let goal = goal.join(" ");
     if goal.trim().is_empty() || goal.len() > 16 * 1024 {
@@ -259,8 +285,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, &'static str> {
     }
     let run_secs = run_secs.unwrap_or(worker_secs * workers.div_ceil(parallel) as u64 + 5);
     Ok(Some(Options {
-        engine,
-        model,
+        route,
         directory,
         roles,
         goal,
@@ -384,16 +409,39 @@ pub fn execute(
             .file_name()
             .ok_or_else(|| io::Error::other("missing output directory name"))?,
     );
+    if let Route::Registered(path) = &options.route {
+        let registration = crate::registration::Registration::load(path)?;
+        registration.require_tool_free_plan()?;
+        create_output(&directory)?;
+        let report = run_selected(
+            &options,
+            &directory,
+            || {
+                Ok(LocalAgent::register_verified_local(
+                    registration.client(Limits::default())?,
+                ))
+            },
+            cancel,
+            observe,
+        )?;
+        if options.save_results {
+            crate::checkpoint::save(&directory, &report)?;
+        }
+        return Ok(report);
+    }
+    let Route::Native { engine, model } = &options.route else {
+        unreachable!()
+    };
     let binary = std::env::current_exe()?;
     // No runtime work before full argument validation, including route checks.
-    let inference = LocalInference::register_verified_local(options.engine, options.model.clone())?;
+    let inference = LocalInference::register_verified_local(*engine, model.clone())?;
     let workspace = options
         .source
         .as_ref()
         .map(|root| {
-            let snapshot = Arc::new(Snapshot::approve(root, options.files)?);
+            let snapshot = Arc::new(Snapshot::approve(root, options.files.clone())?);
             let grant = if options.editing {
-                Grant::editing(snapshot, options.new_files)?
+                Grant::editing(snapshot, options.new_files.clone())?
             } else {
                 Grant::read_only(snapshot)
             };
@@ -406,19 +454,7 @@ pub fn execute(
             Ok::<_, io::Error>(Arc::new(grant))
         })
         .transpose()?;
-    DirBuilder::new()
-        .mode(0o700)
-        .create(&directory)
-        .map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                if error.kind() == io::ErrorKind::AlreadyExists {
-                    "output directory already exists; choose a new directory"
-                } else {
-                    "cannot create the private output directory"
-                },
-            )
-        })?;
+    create_output(&directory)?;
     let agent=Arc::new(RpcAgent::new(RpcAgentConfig {workspace,worker_binary:binary,bwrap_binary:"/usr/bin/bwrap".into(),directory:directory.join("agents"),
         role:"Complete the delegated task under its assigned role. Return proposals and evidence; do not change permissions.".into(),inference,mode:options.mode,
         budget:WorkerBudget {wall_time:options.worker_timeout,output_bytes:1024*1024,reported_tokens:options.reported_tokens},max_live:options.parallel,max_tasks:options.roles.len(),journal_bytes:1024*1024})?);
@@ -429,22 +465,76 @@ pub fn execute(
             ..ServerLimits::default()
         },
     )?;
+    let report = run_selected(
+        &options,
+        &directory,
+        || {
+            Ok(LocalAgent::register_verified_local(
+                server.client(Limits::default())?,
+            ))
+        },
+        cancel,
+        observe,
+    );
+    // Owned servers/supervisors are stopped before writing a potentially large
+    // stdout report, including when a downstream consumer closes its pipe.
+    drop(server);
+    let report = report?;
+    if options.save_results {
+        crate::checkpoint::save(&directory, &report)?;
+    }
+    Ok(report)
+}
+
+fn create_output(directory: &std::path::Path) -> io::Result<()> {
+    DirBuilder::new().mode(0o700).create(directory).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                "output directory already exists; choose a new directory"
+            } else {
+                "cannot create the private output directory"
+            },
+        )
+    })
+}
+
+fn run_selected(
+    options: &Options,
+    directory: &std::path::Path,
+    mut agent: impl FnMut() -> io::Result<LocalAgent>,
+    cancel: Arc<AtomicBool>,
+    observe: impl FnMut(A2AStatus),
+) -> io::Result<A2ARunReport> {
+    let id = if matches!(options.route, Route::Registered(_)) {
+        let mut random = [0u8; 16];
+        std::io::Read::read_exact(&mut File::open("/dev/urandom")?, &mut random)?;
+        format!(
+            "orchestrate-{}",
+            random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    } else {
+        "orchestrate".to_owned()
+    };
     let mut plan = Vec::new();
-    for (index, role) in options.roles.into_iter().enumerate() {
+    for (index, role) in options.roles.iter().cloned().enumerate() {
         plan.push(A2AWorkerSpec {
             id: format!("worker-{}", index + 1),
             role,
             task: options.goal.clone(),
-            agent: LocalAgent::register_verified_local(server.client(Limits::default())?),
+            agent: agent()?,
             wall_time: options.worker_timeout,
             response_bytes: options.response_bytes,
             reported_tokens: Some(options.reported_tokens),
         });
     }
     let (_control, controls) = mpsc::sync_channel(1);
-    let report = run_a2a(
+    run_a2a(
         A2ARunSettings {
-            id: "orchestrate".into(),
+            id,
             directory: directory.join("run"),
             persist_results: options.save_results,
             parallelism: options.parallel,
@@ -459,15 +549,7 @@ pub fn execute(
         controls,
         cancel,
         observe,
-    );
-    // Owned servers/supervisors are stopped before writing a potentially large
-    // stdout report, including when a downstream consumer closes its pipe.
-    drop(server);
-    let report = report?;
-    if options.save_results {
-        crate::checkpoint::save(&directory, &report)?;
-    }
-    Ok(report)
+    )
 }
 
 static SIGNAL: AtomicI32 = AtomicI32::new(0);
