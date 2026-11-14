@@ -83,6 +83,7 @@ pub enum Error {
 pub struct Goal {
     snapshot: Snapshot,
     started: Instant,
+    finished_elapsed: Option<Duration>,
     known_tokens: u64,
     unknown_turns: u32,
     events: VecDeque<Event>,
@@ -119,6 +120,7 @@ impl Goal {
                 evidence: vec![],
             },
             started: Instant::now(),
+            finished_elapsed: None,
             known_tokens: 0,
             unknown_turns: 0,
             events: VecDeque::new(),
@@ -316,7 +318,7 @@ impl Goal {
         }
     }
     fn elapsed(&self) -> Duration {
-        self.started.elapsed()
+        self.finished_elapsed.unwrap_or_else(|| self.started.elapsed())
     }
     fn check(&self, revision: u64) -> Result<(), Error> {
         if revision == self.snapshot.revision {
@@ -331,6 +333,15 @@ impl Goal {
         self.event("goal_budget_exhausted");
     }
     fn event(&mut self, kind: &str) {
+        if !self.snapshot.turn_active
+            && matches!(
+                self.snapshot.state,
+                State::Done | State::Canceled | State::BudgetExhausted
+            )
+            && self.finished_elapsed.is_none()
+        {
+            self.finished_elapsed = Some(self.started.elapsed());
+        }
         self.snapshot.revision += 1;
         if self.events.len() == MAX_EVENTS {
             self.events.pop_front();
@@ -408,6 +419,13 @@ mod tests {
         assert_eq!(goal.snapshot().state, State::Done);
         assert_eq!(goal.snapshot().turns_started, 3);
         assert_eq!(goal.snapshot().reported_tokens, Some(60));
+        let elapsed = goal.snapshot().elapsed_ms;
+        goal.started -= Duration::from_secs(10);
+        assert_eq!(
+            goal.snapshot().elapsed_ms,
+            elapsed,
+            "terminal goal time must not keep growing while the session remains open"
+        );
         assert_eq!(goal.begin_turn(), Err(Error::NotActive));
     }
     #[test]
