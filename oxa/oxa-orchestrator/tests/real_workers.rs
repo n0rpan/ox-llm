@@ -1796,6 +1796,122 @@ fn orchestrate_cli_git_worktrees() {
     assert!(!env.root().join("must-not-be-used").exists());
 }
 
+fn owned_listener(pid: u32) -> Option<std::net::SocketAddr> {
+    let inodes = std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|f| std::fs::read_link(f.path()).ok())
+        .filter_map(|path| {
+            path.to_str()?
+                .strip_prefix("socket:[")?
+                .strip_suffix(']')
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    let tcp = std::fs::read_to_string(format!("/proc/{pid}/net/tcp")).ok()?;
+    for line in tcp.lines().skip(1) {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() > 9 && fields[3] == "0A" && inodes.iter().any(|i| i == fields[9]) {
+            let (address, port) = fields[1].split_once(':')?;
+            if address == "0100007F" {
+                return Some(([127, 0, 0, 1], u16::from_str_radix(port, 16).ok()?).into());
+            }
+        }
+    }
+    None
+}
+fn orchestrate_cli_stalled_stderr() {
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text("stalled status result")],
+        FakeOpts {
+            hold_headers_ms: 2000,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut descriptors = [-1; 2];
+    // SAFETY: initialized output array; both returned descriptors are owned.
+    assert_eq!(
+        unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    // SAFETY: successful pipe2 returned these new, distinct descriptors.
+    let _reader = unsafe { std::fs::File::from_raw_fd(descriptors[0]) };
+    let mut writer = unsafe { std::fs::File::from_raw_fd(descriptors[1]) };
+    // Fill the empty pipe completely before passing its BLOCKING write end to
+    // the child. The reader stays open and undrained for the whole command.
+    let capacity = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETPIPE_SZ) };
+    assert!(capacity > 0);
+    writer.write_all(&vec![b'x'; capacity as usize]).unwrap();
+    let original_flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) };
+    assert_eq!(original_flags & libc::O_NONBLOCK, 0);
+    let start = Instant::now();
+    let mut child = CliChild(
+        cli_command(&env, &engine, "cli-stalled-stderr")
+            .args([
+                "--workers",
+                "1",
+                "--timeout",
+                "1",
+                "--worker-timeout",
+                "4",
+                "synthetic deadline goal",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::from(writer.try_clone().unwrap()))
+            .spawn()
+            .unwrap(),
+    );
+    let mut listener = None;
+    let mut exited = None;
+    while start.elapsed() < Duration::from_secs(3) {
+        if listener.is_none() {
+            listener = owned_listener(child.0.id());
+        }
+        if let Some(status) = child.0.try_wait().unwrap() {
+            exited = Some(status);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        exited
+            .expect("CLI timeout must progress with a full undrained stderr pipe")
+            .code(),
+        Some(1)
+    );
+    let listener = listener.expect("observed only the owned child's loopback listener");
+    assert!(
+        std::net::TcpStream::connect_timeout(&listener, Duration::from_millis(50)).is_err(),
+        "owned listener closed before final output"
+    );
+    assert_eq!(
+        unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) },
+        original_flags,
+        "caller stderr flags stay unchanged"
+    );
+    let mut bytes = Vec::new();
+    child.0.stdout.take().unwrap().read_to_end(&mut bytes).unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(report["workers"][0]["outcome"], "deadline");
+    assert_eq!(report["workers"][0]["stop"], "confirmed");
+    let mut processes = 0;
+    for entry in std::fs::read_dir(env.root().join("cli-stalled-stderr/agents")).unwrap() {
+        let log = std::fs::read_to_string(entry.unwrap().path().join("transcript.jsonl")).unwrap();
+        for line in log.lines() {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(pid) = record["details"]["processId"].as_u64() {
+                processes += 1;
+                assert!(!Path::new(&format!("/proc/{pid}")).exists());
+            }
+        }
+    }
+    assert!(processes > 0);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
@@ -1893,6 +2009,7 @@ fn main() {
             native_control_cancel_journal_inspection,
         ),
         ("orchestrate CLI Git worktrees", orchestrate_cli_git_worktrees),
+        ("orchestrate CLI stalled stderr",orchestrate_cli_stalled_stderr),
     ] {
         if args.iter().any(|a| a == "--cli-smoke") && !name.starts_with("orchestrate CLI") {
             continue;

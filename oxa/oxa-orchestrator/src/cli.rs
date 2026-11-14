@@ -12,10 +12,10 @@ use oxa_a2a::{
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::DirBuilder;
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
@@ -299,7 +299,7 @@ pub fn maybe_run(args: &[String]) -> Option<i32> {
         }
         Ok(Some(options)) => options,
         Err(error) => {
-            let _ = writeln!(io::stderr(), "oxa orchestrate: {error}");
+            StatusSink::new().emit(format!("oxa orchestrate: {error}\n").as_bytes());
             return Some(2);
         }
     };
@@ -307,17 +307,11 @@ pub fn maybe_run(args: &[String]) -> Option<i32> {
     let signals = match Signals::install(cancel.clone()) {
         Ok(guard) => guard,
         Err(_) => {
-            let _ = writeln!(
-                io::stderr(),
-                "oxa orchestrate: cannot install cancellation handlers"
-            );
+            StatusSink::new().emit(b"oxa orchestrate: cannot install cancellation handlers\n");
             return Some(1);
         }
     };
-    let mut stderr = Interruptible {
-        inner: Descriptor(libc::STDERR_FILENO),
-        epoch: 0,
-    };
+    let mut stderr = StatusSink::new();
     let mut previous = BTreeMap::new();
     let result = execute(options, cancel.clone(), |status| {
         if !changed_status(&mut previous, &status) {
@@ -327,9 +321,7 @@ pub fn maybe_run(args: &[String]) -> Option<i32> {
             "{}: {} ({} response bytes)\n",
             status.worker, status.state, status.response_bytes
         );
-        if write_all(&mut stderr, line.as_bytes()).is_err() {
-            cancel.store(true, Ordering::Release);
-        }
+        stderr.emit(line.as_bytes());
     });
     let code = match result {
         Ok(report) => {
@@ -351,7 +343,7 @@ pub fn maybe_run(args: &[String]) -> Option<i32> {
             }
         }
         Err(error) => {
-            let _ = writeln!(io::stderr(), "oxa orchestrate: {error}");
+            StatusSink::new().emit(format!("oxa orchestrate: {error}\n").as_bytes());
             1
         }
     };
@@ -573,6 +565,68 @@ impl Write for Descriptor {
     }
 }
 
+// A fresh open-file description prevents O_NONBLOCK/O_APPEND from changing the
+// caller's stderr flags. dup() would share those flags and is not sufficient.
+// Status is best effort; the final stdout report remains authoritative.
+struct StatusSink {
+    file: Option<File>,
+    pending: Vec<u8>,
+}
+impl StatusSink {
+    fn new() -> Self {
+        let file = (|| {
+            let metadata = std::fs::metadata("/proc/self/fd/2").ok()?;
+            // Do not reopen arbitrary devices. Unsupported sockets are quiet.
+            // SAFETY: isatty only queries the inherited descriptor.
+            if !metadata.is_file()
+                && !metadata.file_type().is_fifo()
+                && unsafe { libc::isatty(libc::STDERR_FILENO) } != 1
+            {
+                return None;
+            }
+            OpenOptions::new()
+                .append(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
+                .open("/proc/self/fd/2")
+                .ok()
+        })();
+        Self {
+            file,
+            pending: Vec::new(),
+        }
+    }
+    fn emit(&mut self, line: &[u8]) {
+        self.flush_once();
+        if !self.pending.is_empty() || self.file.is_none() || line.len() > 512 {
+            return;
+        }
+        self.pending.extend_from_slice(line);
+        self.flush_once();
+    }
+    fn flush_once(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let Some(file) = &mut self.file else {
+            return;
+        };
+        match file.write(&self.pending) {
+            Ok(0) => {
+                self.file = None;
+                self.pending.clear();
+            }
+            Ok(n) => {
+                self.pending.drain(..n);
+            }
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+            Err(_) => {
+                self.file = None;
+                self.pending.clear();
+            }
+        }
+    }
+}
+
 pub(crate) struct TerminalJson;
 impl serde_json::ser::Formatter for TerminalJson {
     fn write_string_fragment<W: Write + ?Sized>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()> {
@@ -598,18 +652,6 @@ impl<W: Write> Write for Interruptible<W> {
         self.inner.flush()
     }
 }
-fn write_all(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
-    while !bytes.is_empty() {
-        match writer.write(bytes) {
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "output closed")),
-            Ok(n) => bytes = &bytes[n..],
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
 /// Coalesce repeated status values for embedders that render a worker view.
 pub fn changed_status(previous: &mut BTreeMap<String, String>, status: &A2AStatus) -> bool {
     if previous.get(&status.worker) == Some(&status.state) {

@@ -51,7 +51,11 @@ See [WORKSPACES.md](WORKSPACES.md) for exact bounds, validation and limitations.
 Use `oxa orchestrate-review` to inspect a saved report, explicitly select completed
 proposals and stage an exact approved candidate; see [REVIEW.md](REVIEW.md).
 
-Worker status appears on stderr as state changes. Stdout contains one final
+Worker status appears on stderr as state changes. Status writes use a separate
+nonblocking file description with at most 512 pending bytes. Backpressure drops
+intermediate updates instead of blocking deadlines or canceling useful work.
+Caller descriptor flags remain unchanged; regular-file status logs append, and
+unsupported stderr sockets/devices are quiet. The final report is authoritative. Stdout contains one final
 JSON report, including each outcome, task/result, usage and stop confirmation.
 JSON escaping keeps terminal control characters in result text from executing.
 Redirect stdout explicitly if results should be saved. Audit logs contain
