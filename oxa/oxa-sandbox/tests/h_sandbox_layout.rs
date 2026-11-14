@@ -802,9 +802,11 @@ fn real_parent_cwd_hides_credentials_but_reads_ordinary_files() {
         let (exit, out) = run(&b, "cat ~/ordinary.txt", &cwd);
         assert_eq!(exit, Some(0), "{cwd:?}: {out}");
         assert!(out.contains("ORDINARY-SENTINEL"), "{cwd:?}: {out}");
-        let mut paths: Vec<String> = CREDS.iter().map(|(rel, _)| (*rel).to_string()).collect();
-        paths.extend(CREDS.iter().map(|(rel, _)| format!("{}/{rel}", home.display())));
-        let at_home: Vec<String> = paths.iter().map(|p| format!("~/{p}")).collect();
-        assert_creds_hidden(&b, &cwd, &home, &at_home);
+        // Absolute paths, expanded here: no shell tilde inside the helper's single quotes.
+        let abs: Vec<String> = CREDS
+            .iter()
+            .map(|(rel, _)| format!("{}/{rel}", home.display()))
+            .collect();
+        assert_creds_hidden(&b, &cwd, &home, &abs);
     }
 }
