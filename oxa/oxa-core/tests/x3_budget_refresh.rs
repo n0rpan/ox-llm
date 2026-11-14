@@ -288,7 +288,7 @@ fn without_published_limits_switch_is_exact_when_loaded_and_conservative_otherwi
     let env = TestEnv::new();
     write_settings(
         &env,
-        r#"{"compaction": {"reserveTokens": 1024, "enabled": false}}"#,
+        r#"{"compaction": {"reserveTokens": 1024, "keepRecentTokens": 4000, "enabled": false}}"#,
     );
     let eng = TwoModels::new(
         vec![
@@ -388,7 +388,9 @@ fn reload_applies_changed_compaction_settings() {
 #[test]
 fn runtime_auto_compaction_overrides_the_setting() {
     let env = TestEnv::new();
-    let off = r#"{"compaction": {"enabled": false, "reserveTokens": 1024, "keepRecentTokens": 1}, "oxa": {"compaction": {"softTokens": 50}}}"#;
+    // `local` turns on turn-start compaction; this test is about the runtime switch, so keep
+    // the after-reply compaction the only Threshold per prompt.
+    let off = r#"{"compaction": {"enabled": false, "reserveTokens": 1024, "keepRecentTokens": 1}, "oxa": {"compaction": {"softTokens": 50, "turnStart": false}}}"#;
     write_settings(&env, off);
     let eng = TwoModels::new(
         vec![

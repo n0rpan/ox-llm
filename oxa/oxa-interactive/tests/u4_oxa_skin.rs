@@ -389,7 +389,7 @@ fn local_profile_draws_oxa_chrome_and_panels() {
 fn pi_profile_keeps_pis_look() {
     let term = run(
         read_then_answer(),
-        json!({}),
+        json!({"oxa": {"profile": "pi"}}),
         &[("LANG", "C.UTF-8")],
         (110, 34),
         vec![
@@ -674,7 +674,7 @@ fn yolo_key_toggles_and_no_color_shows_a_text_badge() {
 fn yolo_under_pis_look_is_a_footer_status() {
     let term = run(
         Vec::new(),
-        json!({}),
+        json!({"oxa": {"profile": "pi"}}),
         &[("LANG", "C.UTF-8")],
         (100, 30),
         vec![

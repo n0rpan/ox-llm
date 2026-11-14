@@ -169,7 +169,8 @@ fn only_main_turns_summaries_and_documented_prefills() {
         .map(|r| (r.kind.as_str(), r.max_tokens, r.background))
         .collect();
     assert_eq!(count("chat"), 4, "the four main turns only: {kinds:?}");
-    assert_eq!(count("compaction"), 2, "{kinds:?}");
+    // `local` turns on turn-start compaction, so the second prompt compacts once more.
+    assert_eq!(count("compaction"), 3, "{kinds:?}");
     assert_eq!(
         reqs.len(),
         count("chat") + count("compaction") + count("prefill"),
