@@ -84,6 +84,10 @@ def forward(self, st):
     if cloud.offline():
         return _reply(self, st, 403, 'Cloud models are unavailable in offline mode.', 'offline')
     try:
+        cloud.validate_remote_request(st.payload, item)
+    except cloud.CloudError as error:
+        return _reply(self, st, error.status, str(error), error.code, param=error.param)
+    try:
         key = cloud.secret(item['provider'], value)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, 'cloud_credentials_unavailable', error.param)
@@ -200,7 +204,7 @@ def forward(self, st):
             self.json_reply(error.status, {'error': {'message': cloud.redact(str(error), key),
                                                    'type': 'cloud_error', 'param': error.param,
                                                    'code': error.code}})
-    except (OSError, ValueError, http.client.HTTPException):
+    except Exception:  # every transport/protocol failure retains its conservative charge
         _finish(self, st, item, meter, 503, 'cloud_unavailable', hold, key, failed=True)
         if not started:
             self.json_reply(503, {'error': {'message': 'The cloud provider is unavailable.',
@@ -209,7 +213,13 @@ def forward(self, st):
             self.close_connection = True
     finally:
         if hold is not None and not hold.settled:
-            hold.settle()
+            try:
+                _finish(self, st, item, meter, 503, 'cloud_interrupted', hold, key, failed=True)
+            except Exception:
+                # If settlement itself fails, no subsequent request may spend past it.
+                cloud.mark_ledger_failure()
+            finally:
+                hold.settle()
         if connection is not None:
             try:
                 connection.close()

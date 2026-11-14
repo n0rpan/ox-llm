@@ -37,7 +37,7 @@ A remote model is one entry under `cloud.models`:
   upstream.
 - `base_url`, `upstream_model`, `context_window` and `max_output` are required. The display
   `name` is optional.
-- `pricing` is USD per million tokens and is used for the ledger cost and the daily budget.
+- `pricing` is USD per million tokens and is used for the ledger cost and daily budget. Both input and output prices must be explicit. Unknown pricing refuses the request; an entry with no prices must explicitly declare `"free": true`. Cloud requests support one completion (`n: 1`).
 - Remote ids are listed in `GET /v1/models` and `GET /_local/models` while cloud is on.
   Each row carries `remote: true`, `provider`, `context_length`, `max_output_tokens` and a
   `capabilities` block (`remote`, `echo`, `cache_hints`, `cancel`, `prefill`,

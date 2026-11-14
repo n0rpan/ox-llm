@@ -73,6 +73,45 @@ class OpenAI(CloudCase):
         self.assertEqual(cloud.spend_today(), rows[0]['cost_usd'])
         self.assertFalse(cloud._reserved)
 
+    def test_unexpected_transport_error_is_settled_and_blocks_repeat_spend(self):
+        class BrokenConnection:
+            def request(self, *args, **kwargs):
+                raise RuntimeError('synthetic transport failure')
+
+            def close(self):
+                pass
+        self.start(budget=0.205)
+        with patch.object(cloud, 'connection', return_value=(BrokenConnection(), '/mock', {})):
+            status, body = self.chat()
+            self.assertEqual(status, 503, body)
+            row = self.ledger_rows()[0]
+            self.assertEqual(row['settled'], 'reserved')
+            self.assertGreater(row['cost_usd'], 0)
+            self.assertEqual(self.chat()[0], 429)
+        self.assertEqual(self.upstream.requests, [])
+
+    def test_settlement_failure_blocks_future_spend_and_closes_transport(self):
+        from snapdragon_ai_lab.runtime import ctl_cloud
+        class BrokenConnection:
+            closed = False
+
+            def request(self, *args, **kwargs):
+                raise RuntimeError('synthetic transport failure')
+
+            def close(self):
+                self.closed = True
+        connection = BrokenConnection()
+        self.start()
+        import http.client
+        with patch.object(cloud, 'connection', return_value=(connection, '/mock', {})), \
+                patch.object(ctl_cloud, '_finish', side_effect=RuntimeError('synthetic settlement failure')):
+            with self.assertRaises(http.client.RemoteDisconnected):
+                self.chat()
+        self.assertTrue(connection.closed)
+        self.assertFalse(cloud._reserved)
+        self.assertEqual(self.chat()[0], 503)
+        self.assertEqual(self.upstream.requests, [])
+
     def test_truncated_nonstream_body_returns_failure_and_charges(self):
         class Truncated(MockOpenRouter):
             def _json(self, handler, status, value):
@@ -406,10 +445,14 @@ class Responses(CloudCase):
                                               'content': 'synthetic result'}]
         self.assertEqual(cloud_openai.responses_request(
             {'messages': continuation}, item, 'synthetic-history-scope')['input'][1], native[0])
-        history[0]['content'][1]['image_url']['url'] = 'https://example.invalid/second.png'
-        with self.assertRaises(cloud.CloudError) as caught:
-            cloud_openai.responses_request({'messages': continuation}, item, 'synthetic-history-scope')
-        self.assertEqual(caught.exception.code, 'cloud_continuation_unavailable')
+        image = history[0]['content'][1]['image_url']
+        for changed in ({'url': 'https://example.invalid/second.png'},
+                        {'url': 'https://example.invalid/first.png', 'detail': 'high'}):
+            image.clear()
+            image.update(changed)
+            with self.assertRaises(cloud.CloudError) as caught:
+                cloud_openai.responses_request({'messages': continuation}, item, 'synthetic-history-scope')
+            self.assertEqual(caught.exception.code, 'cloud_continuation_unavailable')
 
     def test_all_gpt6_models_bind_responses_and_reasoning_contract(self):
         for upstream, none_supported in cloud_openai.RESPONSES_MODELS.items():

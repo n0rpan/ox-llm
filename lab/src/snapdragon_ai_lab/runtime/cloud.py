@@ -88,16 +88,20 @@ def _positive_number(raw, key, default=None):
 
 def _pricing(raw):
     price = raw.get('pricing')
-    if not isinstance(price, dict):
+    if isinstance(price, dict):
+        def one(*names):
+            for name in names:
+                value = price.get(name)
+                if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                    return float(value)
+            return None
+        input_price = one('input_per_million', 'input')
+        output_price = one('output_per_million', 'output')
+        if input_price is not None and output_price is not None:
+            return {'input_per_million': input_price, 'output_per_million': output_price}
+    if raw.get('free') is True:
         return {'input_per_million': 0.0, 'output_per_million': 0.0}
-    def one(*names):
-        for name in names:
-            value = price.get(name)
-            if type(value) in (int, float) and math.isfinite(value) and value >= 0:
-                return float(value)
-        return 0.0
-    return {'input_per_million': one('input_per_million', 'input'),
-            'output_per_million': one('output_per_million', 'output')}
+    return None  # Unknown pricing is never silently free.
 
 
 def _base_url(raw):
@@ -125,12 +129,8 @@ def entry(alias, raw):
     upstream = raw.get('upstream_model') or raw.get('upstream')
     context = _positive_number(raw, 'context_window')
     output = _positive_number(raw, 'max_output')
-    if provider == 'openai':
-        price = raw.get('pricing')
-        if output is None or not isinstance(price, dict) or any(
-                type(price.get(name)) not in (int, float) or not math.isfinite(price[name])
-                or price[name] < 0 for name in ('input_per_million', 'output_per_million')):
-            return None
+    if provider == 'openai' and output is None:
+        return None
     if base_url is None or not isinstance(upstream, str) or not upstream.strip() or context is None:
         return None
     return {'id': alias, 'kind': raw.get('kind', 'remote'), 'provider': provider,
@@ -178,12 +178,14 @@ def models(value):
 
 
 def pricing(entry_value):
-    return entry_value.get('pricing') or {'input_per_million': 0.0, 'output_per_million': 0.0}
+    return entry_value.get('pricing')
 
 
 def cost(entry_value, prompt_tokens, completion_tokens):
     """USD for one usage record; numbers only, bounded to a small finite value."""
     price = pricing(entry_value)
+    if price is None:
+        return None
     prompt = prompt_tokens if type(prompt_tokens) is int and prompt_tokens >= 0 else 0
     completion = completion_tokens if type(completion_tokens) is int and completion_tokens >= 0 else 0
     if prompt > 100_000_000 or completion > 10_000_000:
@@ -336,8 +338,18 @@ class BudgetHold:
             self.settled = True
 
 
+def validate_remote_request(payload, item):
+    n = payload.get('n', 1) if isinstance(payload, dict) else None
+    if type(n) is not int or n != 1:
+        raise CloudError('Cloud requests support one completion.', 400, 'invalid_value', 'n')
+    if pricing(item) is None:
+        raise CloudError('Cloud models need catalog pricing or explicit free: true.',
+                         400, 'cloud_pricing_unavailable', 'pricing')
+
+
 def reserve(value, item, payload):
     """Atomically reserve the worst-case cost before forwarding, or raise a clear CloudError."""
+    validate_remote_request(payload, item)
     cap = _cap(value)
     if cap is None:
         raise CloudError('Cloud models need a per-day USD budget (`cloud.daily_budget_usd`).',
@@ -390,11 +402,15 @@ def secrets_file(value):
     if not path.is_absolute():
         raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable')
     try:
-        repo = Path(__file__).resolve().parents[4]
-        if path.resolve().is_relative_to(repo):
-            raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable')
-    except (OSError, ValueError):
-        pass
+        resolved = path.resolve()
+        for parent in resolved.parents:
+            # Check the configured path, independently of source/versioned/flat module layout.
+            # Worktree .git files count, as do exported product source trees without Git metadata.
+            if ((parent / '.git').exists() or ((parent / 'AGENTS.md').is_file()
+                    and (parent / 'oxa').is_dir() and (parent / 'engine').is_dir())):
+                raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable')
+    except (OSError, RuntimeError, ValueError):
+        raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable') from None
     return path
 
 
