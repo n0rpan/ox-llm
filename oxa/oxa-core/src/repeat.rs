@@ -13,7 +13,10 @@
 //! * a user message (a new instruction may legitimately need the same range again);
 //! * the result of any call that is NOT read-class, or of an unknown tool (an edit, a write or a
 //!   command may have changed what the read returns; this is what keeps a re-read after an edit
-//!   from ever being counted).
+//!   from ever being counted). The same holds inside one batch: a call that comes after a
+//!   non-read call of its own batch (`[read A, edit A, read A]`) is never judged, since the
+//!   wire does not hold that batch's results yet (`exec::run_calls`). This reset is wider than
+//!   per file: any edit, write or command resets every read.
 //!
 //! Compaction needs no rule: a summarised result is no longer on the wire, so it is not counted.
 //!
@@ -132,6 +135,11 @@ fn find_call<'a>(before: &'a [WireMsg], id: &str) -> Option<&'a oxa_proto::ToolC
         .rev()
         .filter(|m| m.role == Role::Assistant)
         .find_map(|m| m.tool_calls.iter().find(|c| c.id == id))
+}
+
+/// Whether `name` is a read-class tool of the session (an unknown tool is not).
+pub(crate) fn is_read(st: &SessionState, name: &str) -> bool {
+    class_of(st, name) == Some(ToolClass::Read)
 }
 
 fn class_of(st: &SessionState, name: &str) -> Option<ToolClass> {

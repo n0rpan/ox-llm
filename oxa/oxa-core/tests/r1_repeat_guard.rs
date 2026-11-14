@@ -330,3 +330,48 @@ fn card_values_follow_the_qwen36_card() {
     );
     assert!(oxa_core::sampling::card("llama-3", true).is_none());
 }
+
+/// Codex T2 review: `[read A, edit A, read A]` in ONE batch, after LIMIT identical reads of A on
+/// the wire. The edit touches lines outside the range, so the second read returns the same bytes;
+/// it follows an edit of its own batch and must not be judged a repeat. The first read of the
+/// batch (before the edit) is a real repeat and gets the notice.
+#[test]
+fn a_read_after_an_edit_in_the_same_batch_is_not_a_repeat() {
+    let env = TestEnv::new();
+    let mut turns: Vec<ScriptTurn> = (0..LIMIT).map(|i| read(&format!("c{i}"), RANGE)).collect();
+    let mut batch = read("b0", RANGE);
+    batch.tool_calls.push(oxa_proto::ToolCall {
+        id: "b1".to_string(),
+        name: "edit".to_string(),
+        args_raw: r#"{"path":"a.txt","oldText":"line 30\n","newText":"line 30 edited\n"}"#.to_string(),
+    });
+    batch.tool_calls.push(oxa_proto::ToolCall {
+        id: "b2".to_string(),
+        name: "read".to_string(),
+        args_raw: RANGE.to_string(),
+    });
+    turns.push(batch);
+    // After the batch the edit is on the wire: the same read again is fresh content.
+    turns.push(read("after", RANGE));
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    assert_eq!(run(&mut st, "edit a.txt").0, RunEnd::Stopped);
+    let res = results(&st);
+    assert_eq!(res.len(), LIMIT as usize + 4, "{res:#?}");
+    let b = LIMIT as usize;
+    assert!(is_notice(&res[b]), "the read before the edit repeats: {}", res[b]);
+    assert!(!is_notice(&res[b + 1]), "edit result: {}", res[b + 1]);
+    assert!(
+        !is_notice(&res[b + 2]) && res[b + 2].contains("line 5"),
+        "read after the edit: {}",
+        res[b + 2]
+    );
+    assert!(
+        !is_notice(&res[b + 3]) && res[b + 3].contains("line 5"),
+        "next read: {}",
+        res[b + 3]
+    );
+    assert!(std::fs::read_to_string(env.work().join("a.txt"))
+        .unwrap()
+        .contains("line 30 edited"));
+}

@@ -299,6 +299,9 @@ pub(crate) fn run_calls(
 
     // Phase 3, in call order: the ToolResult hook, shape, end events.
     let mut out = Vec::with_capacity(n);
+    // The repeated-read guard: a call after a non-read call of this same batch (an edit, a
+    // write, a command) is never a repeat; the wire does not hold this batch's results yet.
+    let mut mutated_in_batch = false;
     for (((p, res), ahead), call) in prepared.iter().zip(outputs).zip(early).zip(calls) {
         let (mut output, dur) = res.unwrap_or((ToolOutput::error(tool_errors::ABORTED), Duration::ZERO));
         output = apply_result_hook(st, p, output, sink, ui);
@@ -311,7 +314,9 @@ pub(crate) fn run_calls(
         // The repeated-read guard: an unchanged result already on the wire LIMIT times is
         // replaced by a notice (the call ran; only its result text changes).
         let mut stop = false;
-        if !output.is_error {
+        let after_mutation = mutated_in_batch;
+        mutated_in_batch |= !crate::repeat::is_read(st, &p.name);
+        if !output.is_error && !after_mutation {
             match crate::repeat::judge(st, &p.name, &call.args_raw, &output.text) {
                 crate::repeat::Verdict::Pass => {}
                 crate::repeat::Verdict::Notice(text) => {
