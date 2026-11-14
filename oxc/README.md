@@ -1,4 +1,4 @@
-# Snapdragon Local AI Lab
+# oxc controller
 
 Large language models and image generation running locally on a **Snapdragon X Elite laptop under Linux**, on the CPU, with the receipts linked beside each speed number.
 
@@ -34,7 +34,7 @@ Be clear about the limits:
 
 ## Quick start
 
-Chat models run through the engine binaries. The lab has the controller and Studio. The coding agent is oxa.
+The engine runs inference, oxc provides the controller and Studio, and oxa is the coding agent.
 
 **1. Get the engine.** Download the attested Linux aarch64 tarball from the [engine releases](https://github.com/n0rpan/ox-llm/releases): `oxe-server-vX.Y.Z-linux-aarch64.tar.gz` for Ornith and Qwen, or the Flash tarball for the 125B model. The numbers here were measured on the Snapdragon X Elite (X1E80100) only; the X Plus has not been tested. The packaged `README.txt` says cores without i8mm or bf16 stop with "Illegal instruction"; that has not been tested on such a core.
 
@@ -69,13 +69,16 @@ curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/jso
 
 The CPU lists assume the X1E80100 core layout. The server listens on loopback only.
 
-**4. Add the controller (optional).** To serve every model on one OpenAI-compatible port, build the controller from this repository and follow [docs/REPRODUCE.md](docs/REPRODUCE.md). There is no one-command installer yet.
+**4. Controller setup.** The installed runtime provides the `oxc` model, code and status commands.
+The source package provides read-only diagnostics and installation tooling; it is not a complete
+live-user installer. Start with [the sandbox bootstrap](docs/BOOTSTRAP-INSTALL.md) for its supported
+source-install and rollback boundary, and [reproduction](docs/REPRODUCE.md) for engine setup.
 
 Model-free checks run anywhere with Python 3:
 
 ```sh
 PYTHONPATH=src python3 -B -m oxc doctor
-PYTHONPATH=src python3 -B -m unittest discover -s tests
+./tools/run_lab_tests.sh
 ```
 
 ## Supported models
@@ -88,8 +91,6 @@ PYTHONPATH=src python3 -B -m unittest discover -s tests
 | FLUX.2 klein 4B Q8 | images | `oxi` (experimental, opt-in, 512 px fast path) or patched stable-diffusion.cpp (other sizes) | 512 px |
 
 **Coding.** `oxc code` starts the coding agent oxa in `~/Work` (override with `OXC_CODE_DIRECTORY`), pointed at the controller with `OXA_ENGINE_URL=http://127.0.0.1:8092`. `oxc plan` starts oxa on Flash with read-only tools (read, grep, find, ls). The widget's **Code** button does the same as `oxc code`. When to compact a session is oxa's decision, not the controller's. Other clients: [docs/OTHER-CLIENTS.md](docs/OTHER-CLIENTS.md).
-
-**History (v0.1.x, when the launcher started OpenCode).** v0.1.3 fixed the deep-mode long-append timeout: the engine sends an SSE keepalive comment while it reads a long append, and the controller waits up to 3600 s. Qualification through OpenCode 2.2.7: a 28,420-token append at 111,025 tokens of context took 1,080.8 s to read, with 72 keepalives, a longest gap of 15.0 s and no client retries. Receipt: [V013-INSTALL-G1](benchmarks/results/public/V013-INSTALL-G1.json). OpenCode 2.2.7 could also fold a prompt submitted above its compaction trigger into the compacted history, so the model saw no live user turn; if you use OpenCode yourself, send the request again after the compaction finishes.
 
 Pinned revisions and SHA-256 of every file: [`dependencies/model-artifacts.json`](dependencies/model-artifacts.json). No weights are in this repository, and each model keeps its publisher's licence.
 

@@ -79,7 +79,7 @@ A miss after a compaction or a leaf move is expected once. A miss with cause `en
 
 ## Summary length and idle summary
 
-Two settings change how the summary is made. Both are part of profile `local` by default ([profile.md](profile.md#4-the-prompt-compaction-and-prefill)).
+Two settings change how the summary is made. Both use oxa’s default context handling ([details](profile.md)).
 
 - **`oxa.compaction.summaryTarget`** (tokens). The summary request asks the model for about three quarters of this many words. It is a request, not a limit: the summary is still at most the output limit above. `0` is no target. Unset is no target under `pi` and 700 tokens (about 550 words) under `local`.
 - **`oxa.compaction.idleSummary`**. When a run ends with the context between 80 % and 100 % of the soft limit, oxa writes the summary of the next compaction in idle time. That compaction then uses it with no model request, if the session, the frozen prefix, the model and the messages it covers are unchanged and the kept tail is not too large. Otherwise the summary is dropped and the compaction runs as usual. A cancelled or failed idle summary is silent.

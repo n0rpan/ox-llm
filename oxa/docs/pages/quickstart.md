@@ -4,14 +4,16 @@ This page gets `oxa` running against a local engine and sends a first prompt. Fo
 
 ## Requirements
 
-- A Rust toolchain, 1.87 or newer (the `rust-version` of the workspace in `Cargo.toml`).
+- A Rust toolchain; hosted checks pin Rust 1.99.1.
 - A running engine that speaks the OpenAI-compatible HTTP API. In an ox-llm install this is the controller (`oxc`) on `http://127.0.0.1:8092`.
 - For the bash tool: Linux with `bubblewrap` (`bwrap`) installed and unprivileged user namespaces enabled. Without a usable `bwrap` the bash tool is disabled and oxa says so at startup.
 
 ## Build
 
+Run these commands from the `oxa/` directory of the checkout:
+
 ```console
-$ cargo build --release -p oxa-cli
+$ cargo build --release --locked -p oxa-cli
 $ ./target/release/oxa --version
 ```
 
@@ -33,14 +35,14 @@ Error: cannot reach the engine at 127.0.0.1:9: Connection refused (os error 111)
 
 Several endpoints, or a per-model setup, go in `~/.oxa/agent/models.json`. See [settings.md](settings.md) for the settings that choose a model.
 
-The default profile is `pi`. Models that the ox-llm engine serves are meant for the `local` profile, so set it once, with `export OXA_PROFILE=local` or with `"oxa": { "profile": "local" }` in `~/.oxa/agent/settings.json`. [profile.md](profile.md) lists what it changes.
+oxa uses its default tools and context handling without a profile-selection step. See [tools and context handling](profile.md) for the defaults and their settings.
 
 ## First prompt
 
 Start oxa in a project directory:
 
 ```console
-$ cd ~/src/my-project
+$ cd ~/project
 $ oxa
 ```
 
