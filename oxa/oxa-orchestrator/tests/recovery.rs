@@ -191,13 +191,63 @@ fn complete_scheduler_journal_can_recover_results_without_resending() {
         reported_tokens: None,
     };
     let (_tx, rx) = mpsc::sync_channel(2);
-    let report = run_a2a(settings, vec![spec], rx, Arc::new(AtomicBool::new(false)), |_| {}).unwrap();
+    let report = run_a2a(
+        settings.clone(),
+        vec![spec],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
     assert!(report.succeeded());
     let path = env.root().join("actual/transcript.jsonl");
     let before = fs::read(&path).unwrap();
     let inspected = InspectedRun::inspect(&path).unwrap();
     assert!(inspected.snapshot().recorded_run_finished);
     assert_eq!(inspected.snapshot().workers[0].phase, Phase::Finished);
+    let checkpoint = env.root().join("actual/worker-one.json");
+    let checkpoint_bytes = fs::read(&checkpoint).unwrap();
+    let recovered = inspected.load_checkpoint("one", &checkpoint).unwrap();
+    assert_eq!(
+        serde_json::to_value(&recovered).unwrap(),
+        serde_json::to_value(&report.workers[0]).unwrap()
+    );
+    assert_eq!(
+        inspected.snapshot().workers[0].checkpoint_sha256.as_deref(),
+        Some(hash(&checkpoint_bytes).as_str())
+    );
+    fs::write(&checkpoint, b"modified").unwrap();
+    assert!(inspected.load_checkpoint("one", &checkpoint).is_err());
+    fs::write(&checkpoint, &checkpoint_bytes).unwrap();
+    let linked = env.root().join("linked-checkpoint");
+    fs::hard_link(&checkpoint, &linked).unwrap();
+    assert!(inspected.load_checkpoint("one", &checkpoint).is_err());
+    fs::remove_file(&linked).unwrap();
+    std::os::unix::fs::symlink(&checkpoint, &linked).unwrap();
+    assert!(inspected.load_checkpoint("one", &linked).is_err());
+    // A published file alone is not sufficient. Simulate a crash before its
+    // finished journal line, including a valid-looking but unterminated line.
+    let lines = before.split_inclusive(|b| *b == b'\n').collect::<Vec<_>>();
+    let finish = lines
+        .iter()
+        .position(|line| serde_json::from_slice::<Value>(line).unwrap()["event"] == "finished")
+        .unwrap();
+    let mut interrupted = lines[..finish].concat();
+    interrupted.extend_from_slice(&lines[finish][..lines[finish].len() - 1]);
+    let prefix = env.root().join("before-finished.jsonl");
+    fs::write(&prefix, interrupted).unwrap();
+    assert!(InspectedRun::inspect(&prefix)
+        .unwrap()
+        .load_checkpoint("one", &checkpoint)
+        .is_err());
+    // A durable worker finish survives even without a whole-run finish.
+    fs::write(&prefix, lines[..=finish].concat()).unwrap();
+    let interrupted = InspectedRun::inspect(&prefix).unwrap();
+    assert!(!interrupted.snapshot().recorded_run_finished);
+    assert_eq!(
+        interrupted.load_checkpoint("one", &checkpoint).unwrap().outcome,
+        Outcome::Completed
+    );
     let result = inspected
         .reconcile("one", agent(&server), opts(Action::Observe))
         .unwrap();
@@ -222,6 +272,41 @@ fn complete_scheduler_journal_can_recover_results_without_resending() {
         .unwrap();
     assert_eq!(regressed.disposition, Disposition::ResultMismatch);
     assert_eq!(backend.cancels.load(Ordering::Relaxed), 0);
+
+    // Inject an existing checkpoint at setup. Publication must fail without a
+    // durable finish, overwriting prior data or sending the task again.
+    let mut fault = settings;
+    fault.directory = env.root().join("checkpoint-failure");
+    let destination = fault.directory.join("worker-one.json");
+    backend.task.lock().unwrap().status.state = TaskState::Completed;
+    let spec = A2AWorkerSpec {
+        id: "one".into(),
+        role: "reader".into(),
+        task: "synthetic task".into(),
+        agent: agent(&server),
+        wall_time: Duration::from_secs(2),
+        response_bytes: 128 * 1024,
+        reported_tokens: None,
+    };
+    let (_tx, rx) = mpsc::sync_channel(2);
+    let result = run_a2a(
+        fault,
+        vec![spec],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |status| {
+            if status.state == "queued" {
+                fs::write(&destination, b"preserved existing data").unwrap();
+            }
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(fs::read(&destination).unwrap(), b"preserved existing data");
+    assert_eq!(backend.sends.load(Ordering::Relaxed), 2);
+    let failed = InspectedRun::inspect(&env.root().join("checkpoint-failure/transcript.jsonl")).unwrap();
+    assert!(!failed.snapshot().recorded_run_finished);
+    assert_ne!(failed.snapshot().workers[0].phase, Phase::Finished);
+    assert!(failed.load_checkpoint("one", &destination).is_err());
 }
 #[test]
 fn interrupted_bound_tasks_can_be_observed_or_explicitly_canceled() {

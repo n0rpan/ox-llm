@@ -36,6 +36,55 @@ No raw prompts, results, credentials or diagnostic text are recovered from hashe
 The file hash binds the captured bytes, including an ignored tail; it does not
 sign/authenticate a journal or prove the machine survived a power loss.
 
+## Recover completed worker artifacts offline
+
+New A2A runs publish `worker-<worker-id>.json` beside `transcript.jsonl` before
+recording each worker's durable `finished` event. For the built-in CLI, worker 1
+is `<directory>/run/worker-worker-1.json`. Each versioned checkpoint contains the
+run ID and complete worker report, including results and review proposals. The
+finished journal record binds its exact bytes with `checkpointSha256`. The
+hash-only journal still contains no result text or credential.
+
+```sh
+./target/debug/oxa orchestrate-inspect \
+  --journal ./run-directory/run/transcript.jsonl \
+  --worker worker-1 --checkpoint ./run-directory/run/worker-worker-1.json \
+  > recovered-worker.json
+```
+
+This explicit read-only operation prints a one-worker A2A run report. It can feed
+`orchestrate-review --report recovered-worker.json` with the original approved
+source scope and the usual explicit selection/approval gates. Recovering a report
+is not approval to apply it. Partial/canceled outcomes retain their original
+meaning and remain ineligible for completed-proposal review.
+
+The library equivalent is `InspectedRun::load_checkpoint(worker, path)`. It reads
+only the explicitly selected bounded plain single-link file, pins the inode and
+checks for observed concurrent mutation. It verifies the exact captured-file
+hash, schema, run/worker identity, recorded outcome/stop and task/context/state
+and result evidence. It performs no discovery, network request, process action,
+file write or prompt replay. It does not require the original agent to survive.
+
+Publication uses a 0600 pending file, a 64 MiB per-worker output cap, file sync,
+no-replace rename and parent sync in the protected private run directory. The
+checkpoint's exact bytes are hashed while writing. Publication precedes the
+journal finish; journal finish precedes the whole-run report. A crash after a
+worker finish can preserve that worker even if later work never finishes. A crash
+between publication and the complete journal line can leave an orphan file;
+a pending file, orphan file or unterminated finish record is never a recovery
+binding. Storage failure stops the scheduler through its owned cleanup path,
+without overwriting an existing result, recording a false worker finish or
+restarting inference. File-system I/O/sync latency remains outside a hard real-time
+guarantee, as for the audit journal.
+
+Old journals without checkpoint hashes remain inspectable and can use explicit
+agent reconciliation. They cannot load an unbound local checkpoint. Checksums
+prove consistency with the selected journal, not authenticity against an operator
+or root modifying both files, nor a universal power-loss guarantee. Checkpoints
+contain delegated result/source text and must stay private. There is still no
+automatic directory scan, active-stream checkpoint, queued-plan resume or takeover
+of an interrupted controller.
+
 ## Explicit A2A reconciliation API
 
 `recovery::InspectedRun::reconcile` can query a known task on an agent that outlived
@@ -94,7 +143,7 @@ stdout consumer closes, but cannot recover a controller killed before publicatio
 Pending temporary output is not treated as a completed report.
 
 This is recovery inspection and explicit task reconciliation, not scheduler resume.
-Persistent authenticated agent registration, durable artifact checkpoints,
+Persistent authenticated agent registration, active-task artifact checkpoints,
 automatic reattachment/resubscription, queued-plan resume, concurrent-controller
 ownership and recovery after machine failure remain unfinished. No cloud/provider
 route or paid-call authorization is introduced.

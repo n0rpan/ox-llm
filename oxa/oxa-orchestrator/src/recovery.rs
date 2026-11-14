@@ -55,6 +55,7 @@ pub struct WorkerSnapshot {
     /// Historical data only. Never used to identify or signal a live process.
     pub recorded_process_id: Option<u32>,
     pub result_sha256: Option<String>,
+    pub checkpoint_sha256: Option<String>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
@@ -165,6 +166,7 @@ impl InspectedRun {
                             recorded_task_state: None,
                             recorded_process_id: None,
                             result_sha256: None,
+                            checkpoint_sha256: None,
                         },
                     );
                 }
@@ -246,6 +248,10 @@ impl InspectedRun {
                         ),
                     };
                     worker.result_sha256 = optional_hash(&record.details, "resultSha256")?;
+                    worker.checkpoint_sha256 = optional_hash(&record.details, "checkpointSha256")?;
+                    if transport != Transport::A2a && worker.checkpoint_sha256.is_some() {
+                        return Err(invalid("A2A checkpoint in native journal"));
+                    }
                     worker.phase = Phase::Finished;
                 }
                 "run_finished" => {
@@ -299,6 +305,61 @@ impl InspectedRun {
     }
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
+    }
+
+    /// Load one explicitly selected checkpoint. Only a complete finished record
+    /// can bind it; orphan/pending files never authorize recovery or task replay.
+    pub fn load_checkpoint(&self, worker: &str, path: &Path) -> io::Result<crate::a2a_run::A2AWorkerReport> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Envelope {
+            version: u32,
+            run: String,
+            report: crate::a2a_run::A2AWorkerReport,
+        }
+        let worker = self
+            .snapshot
+            .workers
+            .iter()
+            .find(|w| w.worker == worker)
+            .ok_or_else(|| invalid("worker is absent from inspected journal"))?;
+        let expected = worker
+            .checkpoint_sha256
+            .as_ref()
+            .filter(|_| self.snapshot.transport == Transport::A2a && worker.phase == Phase::Finished)
+            .ok_or_else(|| invalid("no durable worker checkpoint binding"))?;
+        let bytes = read_bounded(path, crate::checkpoint::MAX_WORKER)?;
+        if &hash(&bytes) != expected {
+            return Err(invalid("checkpoint hash does not match the journal"));
+        }
+        let checkpoint: Envelope =
+            serde_json::from_slice(&bytes).map_err(|_| invalid("invalid worker checkpoint"))?;
+        let report = checkpoint.report;
+        if checkpoint.version != 1
+            || checkpoint.run != self.snapshot.run
+            || report.worker != worker.worker
+            || Some(&report.outcome) != worker.recorded_outcome.as_ref()
+            || Some(report.stop) != worker.recorded_stop
+        {
+            return Err(invalid("checkpoint does not match recorded worker lifecycle"));
+        }
+        match (&report.task, &worker.binding) {
+            (Some(task), Some(binding)) => {
+                validate_task(task, binding, worker, crate::checkpoint::MAX_WORKER)
+                    .map_err(|_| invalid("checkpoint task does not match recorded evidence"))?;
+                if Some(&task.status.state) != worker.recorded_task_state.as_ref() {
+                    return Err(invalid("checkpoint task state differs from the journal"));
+                }
+            }
+            (None, None) => {}
+            _ => return Err(invalid("checkpoint task binding differs from the journal")),
+        }
+        if report.task.is_some() && report.message.is_some() {
+            return Err(invalid(
+                "checkpoint cannot contain both a task and direct message",
+            ));
+        }
+        Ok(report)
     }
 
     /// The operator re-registers the ORIGINAL agent instance/capability. An
@@ -563,13 +624,16 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 fn read_journal(path: &Path) -> io::Result<Vec<u8>> {
+    read_bounded(path, MAX_JOURNAL)
+}
+fn read_bounded(path: &Path, max: usize) -> io::Result<Vec<u8>> {
     let handle = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
     let before = handle.metadata()?;
-    if !before.is_file() || before.nlink() != 1 || before.len() > MAX_JOURNAL as u64 {
-        return Err(invalid("journal must be a bounded plain single-link file"));
+    if !before.is_file() || before.nlink() != 1 || before.len() > max as u64 {
+        return Err(invalid("input must be a bounded plain single-link file"));
     }
     let mut file = OpenOptions::new()
         .read(true)
@@ -577,10 +641,10 @@ fn read_journal(path: &Path) -> io::Result<Vec<u8>> {
         .open(format!("/proc/self/fd/{}", handle.as_raw_fd()))?;
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
-        .take(MAX_JOURNAL as u64 + 1)
+        .take(max as u64 + 1)
         .read_to_end(&mut bytes)?;
     let after = file.metadata()?;
-    if bytes.len() > MAX_JOURNAL
+    if bytes.len() > max
         || (
             before.len(),
             before.mtime(),
@@ -597,7 +661,7 @@ fn read_journal(path: &Path) -> io::Result<Vec<u8>> {
             after.nlink(),
         )
     {
-        return Err(invalid("journal changed during capture or exceeded its bound"));
+        return Err(invalid("input changed during capture or exceeded its bound"));
     }
     Ok(bytes)
 }

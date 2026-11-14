@@ -70,11 +70,11 @@ pub enum StopConfirmation {
     Unconfirmed,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct A2AWorkerReport {
     pub worker: String,
     pub outcome: Outcome,
-    #[serde(serialize_with = "optional_task")]
+    #[serde(serialize_with = "optional_task", deserialize_with = "read_optional_task")]
     pub task: Option<Task>,
     pub message: Option<MessageObject>,
     pub response_bytes: usize,
@@ -208,7 +208,7 @@ pub fn run_a2a(
                     if let Some(index) = pending.iter().position(|s| s.id == worker) {
                         let spec = pending.remove(index).unwrap();
                         let report = empty(&spec.id, Outcome::Canceled);
-                        finish(&mut journal, &report, &mut observe)?;
+                        finish(&mut journal, &directory, &settings.id, &report, &mut observe)?;
                         reports.push(report);
                     } else if let Some(job) = active.iter_mut().find(|a| a.id == worker) {
                         job.cancel_reason = Some(Outcome::Canceled);
@@ -260,7 +260,7 @@ pub fn run_a2a(
             }
             while let Some(spec) = pending.pop_front() {
                 let report = empty(&spec.id, reason.clone());
-                finish(&mut journal, &report, &mut observe)?;
+                finish(&mut journal, &directory, &settings.id, &report, &mut observe)?;
                 reports.push(report);
             }
         }
@@ -404,7 +404,7 @@ pub fn run_a2a(
                         )?;
                     }
                 }
-                finish(&mut journal, &report, &mut observe)?;
+                finish(&mut journal, &directory, &settings.id, &report, &mut observe)?;
                 reports.push(report);
             } else {
                 i += 1;
@@ -890,9 +890,12 @@ fn reject_control(control: Control, journal: &mut Journal) -> io::Result<()> {
 }
 fn finish(
     journal: &mut Journal,
+    directory: &std::path::Path,
+    run: &str,
     report: &A2AWorkerReport,
     observe: &mut impl FnMut(A2AStatus),
 ) -> io::Result<()> {
+    let checkpoint = crate::checkpoint::save_worker(directory, run, report)?;
     let digest = if let Some(task) = &report.task {
         Some(hash(&serde_json::to_string(&task.artifacts)?))
     } else if let Some(message) = &report.message {
@@ -900,7 +903,7 @@ fn finish(
     } else {
         None
     };
-    journal.record(Some(&report.worker),"finished",json!({"outcome":report.outcome,"stop":report.stop,"taskState":report.task.as_ref().map(|t|&t.status.state),"responseBytes":report.response_bytes,"reportedTokens":report.reported_tokens,"resultSha256":digest}))?;
+    journal.record(Some(&report.worker),"finished",json!({"outcome":report.outcome,"stop":report.stop,"taskState":report.task.as_ref().map(|t|&t.status.state),"responseBytes":report.response_bytes,"reportedTokens":report.reported_tokens,"resultSha256":digest,"checkpointSha256":checkpoint}))?;
     observe(A2AStatus {
         worker: report.worker.clone(),
         state: format!("{:?}", report.outcome).to_ascii_lowercase(),
@@ -941,5 +944,13 @@ pub(crate) fn optional_task<S: serde::Serializer>(
     match task {
         Some(task) => Event::Task(task.clone()).serialize(serializer),
         None => serializer.serialize_none(),
+    }
+}
+
+fn read_optional_task<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Task>, D::Error> {
+    match Option::<Event>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(Event::Task(task)) => Ok(Some(task)),
+        _ => Err(serde::de::Error::custom("worker report requires a task snapshot")),
     }
 }
