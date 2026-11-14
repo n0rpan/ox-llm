@@ -411,7 +411,9 @@ fn degraded_context_notice_counts_the_dropped_turns() {
         .expect("a warning notice");
     // The read call, its result and "fixed" were summarised away.
     assert!(
-        text.starts_with("context compacted without a model summary: 3 assistant/tool turns were dropped from memory"),
+        text.starts_with(
+            "context compacted without a model summary: 3 assistant/tool turns were dropped from memory"
+        ),
         "{text}"
     );
     let dropped = sink.0.iter().find_map(|e| match e {

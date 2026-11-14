@@ -18,8 +18,8 @@
 #![forbid(unsafe_code)]
 
 mod chat;
-mod hints;
 mod handshake;
+mod hints;
 mod http;
 mod info;
 mod sse;

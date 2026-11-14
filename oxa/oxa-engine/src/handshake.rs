@@ -41,7 +41,9 @@ pub fn handshake_warning(status: Option<&Value>, props: Option<&Value>) -> Optio
             ));
         }
     }
-    let caps = status.and_then(|s| s.get("capabilities")).and_then(Value::as_array)?;
+    let caps = status
+        .and_then(|s| s.get("capabilities"))
+        .and_then(Value::as_array)?;
     let missing: Vec<&str> = NEEDED_CAPABILITIES
         .iter()
         .copied()

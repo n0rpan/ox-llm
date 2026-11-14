@@ -89,7 +89,10 @@ impl SessionLock {
                 session: session.to_path_buf(),
             });
         }
-        Err(OxaError::new(codes::INTERNAL, "cannot take the session lock (the lock file kept changing)"))
+        Err(OxaError::new(
+            codes::INTERNAL,
+            "cannot take the session lock (the lock file kept changing)",
+        ))
     }
 }
 

@@ -6,6 +6,18 @@ use oxa_fake::TestEnv;
 use oxa_session::{fork_file, FsStore, SessionStore, LOCKED};
 use std::process::Command;
 
+fn entry() -> oxa_proto::Entry {
+    oxa_proto::Entry {
+        id: "e1".to_string(),
+        parent: None,
+        ts_ms: 1,
+        body: oxa_proto::EntryBody::Msg {
+            wire: oxa_proto::WireMsg::user("hi"),
+            parts: Vec::new(),
+        },
+    }
+}
+
 fn store(env: &TestEnv) -> FsStore {
     FsStore::new(env.root().join("sessions"))
 }
@@ -47,6 +59,7 @@ fn fork_of_a_locked_session_works_and_the_copy_is_free() {
     let a = store(&env);
     let s = a.create(&env.work(), None, None).unwrap();
     a.acquire(&s).unwrap();
+    a.append(&s, &entry()).unwrap();
     let b = store(&env);
     let copy = fork_file(&b, &s, &env.work(), None).expect("fork reads the locked file");
     b.acquire(&copy).expect("the fork has its own lock");
@@ -66,7 +79,7 @@ fn a_crashed_holder_leaves_no_stale_block() {
     // `flock(1)` holds the sidecar's lock from a child process, as a live oxa would.
     let mut child = match Command::new("flock")
         .arg(&lock)
-        .args(["-c", "echo held; sleep 60"])
+        .args(["-c", "echo held; exec sleep 60"])
         .stdout(Stdio::piped())
         .spawn()
     {
@@ -74,7 +87,9 @@ fn a_crashed_holder_leaves_no_stale_block() {
         Err(_) => return, // no util-linux flock on this machine
     };
     let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
     assert_eq!(line.trim(), "held");
     assert_eq!(a.acquire(&s).expect_err("held by the child").code, LOCKED);
     child.kill().unwrap(); // a crash: no cleanup runs

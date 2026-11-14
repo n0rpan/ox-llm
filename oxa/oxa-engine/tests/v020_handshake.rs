@@ -60,7 +60,6 @@ fn read_path(s: &mut TcpStream) -> String {
     line.split_whitespace().nth(1).unwrap_or("").to_string()
 }
 
-
 fn status_with(edit: impl FnOnce(&mut Value)) -> String {
     let mut v: Value = serde_json::from_str(READY).unwrap();
     edit(&mut v);
@@ -94,7 +93,11 @@ fn a_newer_protocol_warns_once_without_extra_requests() {
     assert!(w.contains("oxc offers features this oxa doesn't know"), "{w}");
     assert!(w.contains("update oxa"), "{w}");
     let plain = warning_for(READY.to_string()).1;
-    assert_eq!(asked.len(), plain.len(), "the handshake adds no request: {asked:?}");
+    assert_eq!(
+        asked.len(),
+        plain.len(),
+        "the handshake adds no request: {asked:?}"
+    );
 }
 
 #[test]
@@ -118,7 +121,8 @@ fn unknown_extra_capabilities_are_not_a_warning() {
 
 #[test]
 fn a_plain_engine_with_a_newer_protocol_warns_about_the_engine() {
-    let props = serde_json::json!({"n_ctx": 8192, "oxe_hints": {"protocol_version": 99, "hints": []}}).to_string();
+    let props =
+        serde_json::json!({"n_ctx": 8192, "oxe_hints": {"protocol_version": 99, "hints": []}}).to_string();
     let (base, _) = routes(vec![
         ("/v1/models", 200, MODELS.to_string()),
         ("/props", 200, props),
@@ -126,5 +130,8 @@ fn a_plain_engine_with_a_newer_protocol_warns_about_the_engine() {
     let engine = HttpEngine::new(&base, None).unwrap();
     engine.info(None).expect("info");
     let w = engine.handshake_warning().expect("a warning");
-    assert!(w.starts_with("the engine offers features this oxa doesn't know"), "{w}");
+    assert!(
+        w.starts_with("the engine offers features this oxa doesn't know"),
+        "{w}"
+    );
 }
