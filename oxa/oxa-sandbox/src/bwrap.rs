@@ -46,6 +46,16 @@ pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
 /// (`PATH` of the layout, `HOME`, `LANG`, `TERM=dumb`, `AI_AGENT=oxa`), the layout's
 /// passed-through variables (sorted), then `s.env` in order, then `-- bash -c <command>`.
 pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String> {
+    bwrap_args_homes(s, home, layout, real_home().as_deref())
+}
+
+/// [`bwrap_args_with`] with the real account home given explicitly (tests).
+pub(crate) fn bwrap_args_homes(
+    s: &ExecSpec,
+    home: &Path,
+    layout: &Layout,
+    real_home: Option<&Path>,
+) -> Vec<String> {
     let home_s = home.to_string_lossy().into_owned();
     // sbx-symhome: every decision and every mount uses the canonical cwd and home, so a cwd
     // that only resolves to `$HOME` (or into it) gets the masks of the real one. An
@@ -96,6 +106,14 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
     for (p, rw) in &binds {
         let p = p.to_string_lossy();
         push(&mut a, &[if *rw { "--bind" } else { "--ro-bind" }, &p, &p]);
+    }
+    // #52: with network, `gh` needs its config directory (host list and token). Read-only, and
+    // only the sandbox's own `$HOME`; offline it stays masked like the rest of the deny-list.
+    let gh = home_c.join(GH_CONFIG);
+    let gh_open = s.net && std::fs::metadata(&gh).is_ok_and(|m| m.is_dir());
+    if gh_open {
+        let p = gh.to_string_lossy();
+        push(&mut a, &["--ro-bind", &p, &p]);
     }
     // sbx-git: the git data of a worktree or shared clone outside the cwd (resolved once when
     // the session's sandbox is built). Read-only when the command may not write; alternates and
@@ -183,7 +201,20 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
     mounts.extend(binds.iter().map(|(b, _)| (b.to_path_buf(), canon(b))));
     mounts.extend(layout.git.paths().map(|b| (b.to_path_buf(), canon(b))));
     let mut masks: Vec<(PathBuf, bool)> = Vec::new();
-    for p in sensitive_paths(home, layout.agent_dir.as_deref()) {
+    // #53: the deny-list of `$HOME` and of the account's real home, so a changed `$HOME`
+    // never widens access.
+    let mut homes: Vec<&Path> = vec![home];
+    homes.extend(real_home.filter(|r| *r != home));
+    let mut deny: Vec<PathBuf> = homes
+        .iter()
+        .flat_map(|h| sensitive_paths(h, layout.agent_dir.as_deref()))
+        .collect();
+    deny.sort();
+    deny.dedup();
+    for p in deny {
+        if gh_open && (p == home.join(GH_CONFIG) || p == gh) {
+            continue;
+        }
         let Ok(meta) = std::fs::metadata(&p) else {
             continue;
         };
@@ -234,6 +265,32 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a
 }
+
+/// The home of the current uid from the passwd database, never from `$HOME`.
+fn real_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0u8; 16384];
+    // SAFETY: getpwuid_r writes only into `pwd` and `buf`, both live and sized as passed.
+    unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let rc = libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            &mut res,
+        );
+        if rc != 0 || res.is_null() || pwd.pw_dir.is_null() {
+            return None;
+        }
+        let dir = std::ffi::CStr::from_ptr(pwd.pw_dir).to_bytes();
+        (!dir.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(dir)))
+    }
+}
+
+/// The GitHub CLI's config directory under the home, open (read-only) in a networked sandbox.
+const GH_CONFIG: &str = ".config/gh";
 
 /// `p` canonical, or `p` itself when it cannot be resolved (the argv stays deterministic; the
 /// sandbox refuses to run a command then, [`refusal`]).
@@ -494,6 +551,64 @@ fn probe(bwrap: &Path) -> Result<(), OxaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_fake::TestEnv;
+
+    fn spec(cwd: &Path, net: bool) -> ExecSpec {
+        ExecSpec {
+            command: "true".into(),
+            cwd: cwd.to_path_buf(),
+            writable: true,
+            net,
+            timeout_s: None,
+            env: Vec::new(),
+        }
+    }
+
+    /// `--tmpfs P` or `--ro-bind /dev/null P` masks `P`.
+    fn masked(a: &[String], p: &Path) -> bool {
+        let p = p.to_string_lossy();
+        a.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == p)
+            || a.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == p)
+    }
+
+    #[test]
+    fn a_different_home_keeps_the_real_home_credentials_masked() {
+        let env = TestEnv::new();
+        let real = env.root().join("realhome");
+        env.write("realhome/.ssh/id", "K");
+        env.write("realhome/.config/local-ai/llm/cloud-secrets.json", "{}");
+        let a = bwrap_args_homes(
+            &spec(&env.work(), true),
+            &env.home(),
+            &Layout::default(),
+            Some(&real),
+        );
+        assert!(masked(&a, &real.join(".ssh")), "{a:?}");
+        assert!(
+            masked(&a, &real.join(".config/local-ai/llm/cloud-secrets.json")),
+            "{a:?}"
+        );
+    }
+
+    #[test]
+    fn gh_config_is_readable_online_and_hidden_offline() {
+        let env = TestEnv::new();
+        let gh = env.home().join(".config/gh");
+        env.write("home/.config/gh/hosts.yml", "x");
+        let on = bwrap_args_homes(&spec(&env.work(), true), &env.home(), &Layout::default(), None);
+        assert!(on.iter().any(|x| x == "--share-net"));
+        assert!(!masked(&on, &gh), "{on:?}");
+        let ghs = gh.to_string_lossy().into_owned();
+        assert!(
+            on.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == ghs && w[2] == ghs),
+            "{on:?}"
+        );
+        let off = bwrap_args_homes(&spec(&env.work(), false), &env.home(), &Layout::default(), None);
+        // Offline the home is an empty tmpfs: gh's directory is not bound in.
+        assert!(!off.contains(&ghs), "{off:?}");
+    }
 
     #[test]
     fn find_on_path_skips_relative_and_empty_entries() {

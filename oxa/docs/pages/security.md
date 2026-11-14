@@ -88,12 +88,17 @@ Writable package caches are shared with your own builds. A crate or Go module th
 These paths are masked inside the sandbox, and the file tools refuse them in every mode, whatever the grants or settings say. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
 
 - SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`.
-- Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh`, `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`.
+- Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`.
+- oxa Cloud keys: `~/.config/local-ai/llm/cloud-secrets.json`.
 - Password stores and keyrings: `~/.password-store`, `~/.local/share/keyrings`, `~/.config/op`, `~/.config/Bitwarden`, `~/.pki`.
 - Browser profiles: Firefox, Thunderbird, Chrome, Chromium, Brave, Edge, Vivaldi and Opera profile directories.
 - oxa's own state: the agent directory `~/.oxa/agent` (keys, trust records, sessions), `~/.config/oxc` and `~/.local/state/oxc`.
 - The earlier agent's directory, `~/.pi/agent`.
 - `~/.docker/config.json`.
+
+The list applies to your `$HOME` and also to the home of your account from the passwd database, so starting oxa with another `HOME` never exposes the real `~/.ssh` or the cloud keys.
+
+Exception for the GitHub CLI: in a sandbox with network access (not `--offline`), `~/.config/gh` is bound read-only so `gh` works (its host list and token file are readable there). With `--offline` there is no network and `gh` fails. A `gh` token in the system keyring, or in `GH_TOKEN`, is not affected. Every other entry stays masked.
 
 Other secrets are not on the list. A project's `.env` file, a token in a project configuration file, and files outside your home directory are readable by bash, and by the file tools in the modes that allow reads. Keep such files out of the project when the model should not see them, or use `plan` or `--offline` for the session.
 
