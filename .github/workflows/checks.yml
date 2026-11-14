@@ -5,6 +5,7 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  merge_group:
   workflow_dispatch:
   schedule:
     - cron: "17 3 * * *"

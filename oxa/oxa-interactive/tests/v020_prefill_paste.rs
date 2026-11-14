@@ -60,7 +60,10 @@ fn worker_prefills_the_current_draft_only() {
             hooks: Vec::new(),
             policy: Box::new(AllowAll),
             sandbox: Arc::new(NoBash),
-            settings: Settings::from_values(json!({"oxa": {"prefill": {"paste": true}}}), json!({})),
+            settings: Settings::from_values(
+                json!({"oxa": {"envNote": false, "prefill": {"paste": true}}}),
+                json!({}),
+            ),
             dirs: Dirs::under(env.root()),
             cwd: env.work(),
             selection: ToolSelection::default(),
