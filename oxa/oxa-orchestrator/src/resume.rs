@@ -102,6 +102,10 @@ pub fn resume_queued(
     let pinned = Path::new("/proc/self/fd")
         .join(namespace.as_raw_fd().to_string())
         .join(name);
+    // Bind the receipt to the kernel spelling of the validated parent inode,
+    // so harmless current-directory components cannot break later lineage.
+    let directory =
+        std::fs::read_link(Path::new("/proc/self/fd").join(namespace.as_raw_fd().to_string()))?.join(name);
     match std::fs::symlink_metadata(&pinned) {
         Ok(_) => {
             return Err(io::Error::new(

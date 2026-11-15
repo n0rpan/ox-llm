@@ -39,8 +39,8 @@ recovery from arbitrary operator copies/deletion of private state.
 The exclusive claim and all checkpoint/receipt I/O remain bound to validated
 private inodes, including after a trusted rename. Same-UID/root actors remain
 inside the operator trust boundary. No CLI, TUI, source apply, Git publication,
-registry change or paid route is enabled by this slice. Multi-generation lineage
-inspection remains the next capability.
+registry change or paid route is enabled by this slice. Read-only multi-generation
+collection is described in [LINEAGE.md](LINEAGE.md).
 
 Local acceptance: 116 ordinary crate tests pass, including six queue-resume
 regressions against actual authenticated loopback agents. They cover exact-plan

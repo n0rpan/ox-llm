@@ -51,3 +51,6 @@ mod a2a_reconcile;
 
 #[cfg(feature = "core")]
 pub mod resume;
+
+#[cfg(feature = "core")]
+pub mod lineage;

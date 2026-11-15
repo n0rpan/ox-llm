@@ -601,3 +601,203 @@ fn resuming_the_remaining_queue_does_not_upgrade_a_retained_failure() {
     assert_eq!(first.sends.load(Ordering::Relaxed), 1);
     assert_eq!(second.sends.load(Ordering::Relaxed), 1);
 }
+#[test]
+fn lineage_preserves_ancestor_results_and_failed_leaf_outcomes_without_replay() {
+    use crate::{lineage, resume::resume_queued};
+    use std::os::unix::fs::DirBuilderExt;
+    let env = TestEnv::new();
+    let first = Agent::new(TaskState::Completed);
+    let second = Agent::new(TaskState::Completed);
+    let third = Agent::new(TaskState::Failed);
+    let a = Server::start(first.clone(), ServerLimits::default()).unwrap();
+    let b = Server::start(second.clone(), ServerLimits::default()).unwrap();
+    let c = Server::start(third.clone(), ServerLimits::default()).unwrap();
+    let root_path = env.root().join("lineage-root/transcript.jsonl");
+    let (_controller, inbox) = crate::a2a_run::controls();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_a2a(
+            A2ARunSettings {
+                id: "lineage-root".into(),
+                directory: env.root().join("lineage-root"),
+                persist_results: true,
+                parallelism: 1,
+                wall_time: Duration::from_secs(10),
+                response_reservation: 3 * 128 * 1024,
+                journal_bytes: 128 * 1024,
+                request_timeout: Duration::from_millis(100),
+                poll_interval: Duration::from_millis(5),
+                cancel_grace: Duration::from_millis(100),
+            },
+            vec![
+                queued_spec("one", &a),
+                queued_spec("two", &b),
+                queued_spec("three", &c),
+            ],
+            inbox,
+            |_| {
+                if InspectedRun::inspect(&root_path)
+                    .unwrap()
+                    .snapshot()
+                    .workers
+                    .iter()
+                    .any(|w| w.worker == "one" && w.phase == Phase::Finished)
+                {
+                    panic!("synthetic root failure after one");
+                }
+            },
+        )
+    }));
+    assert!(failed.is_err());
+    let root = ExclusiveRun::claim(&root_path).unwrap();
+    let child_path = env.root().join("lineage-child/transcript.jsonl");
+    let (_controller, inbox) = crate::a2a_run::controls();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        resume_queued(
+            &root,
+            &env.root().join("lineage-child"),
+            vec![queued_spec("two", &b), queued_spec("three", &c)],
+            inbox,
+            |_| {
+                if InspectedRun::inspect(&child_path)
+                    .unwrap()
+                    .snapshot()
+                    .workers
+                    .iter()
+                    .any(|w| w.worker == "two" && w.phase == Phase::Finished)
+                {
+                    panic!("synthetic child failure after two");
+                }
+            },
+        )
+    }));
+    assert!(failed.is_err());
+    let child = ExclusiveRun::claim(&child_path).unwrap();
+    assert!(
+        lineage::collect(&[&root, &child]).is_err(),
+        "an unresolved worker cannot disappear from fan-in"
+    );
+    let (_controller, inbox) = crate::a2a_run::controls();
+    let report = resume_queued(
+        &child,
+        &env.root().join("lineage-leaf"),
+        vec![queued_spec("three", &c)],
+        inbox,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        report.workers.len(),
+        2,
+        "child-local report intentionally excludes its ancestor"
+    );
+    let leaf_path = env.root().join("lineage-leaf/transcript.jsonl");
+    let leaf = ExclusiveRun::claim(&leaf_path).unwrap();
+    let root_bytes = fs::read(&root_path).unwrap();
+    let child_bytes = fs::read(&child_path).unwrap();
+    let leaf_bytes = fs::read(&leaf_path).unwrap();
+    let collected = lineage::collect(&[&root, &child, &leaf]).unwrap();
+    assert_eq!(collected.run, "lineage-root");
+    assert_eq!(collected.workers.len(), 3);
+    assert!(!collected.succeeded(), "failed leaf outcome must remain failed");
+    assert_eq!(
+        collected
+            .workers
+            .iter()
+            .filter(|w| w.outcome == Outcome::Completed)
+            .count(),
+        2
+    );
+    assert_eq!(
+        collected
+            .workers
+            .iter()
+            .find(|w| w.worker == "three")
+            .unwrap()
+            .outcome,
+        Outcome::Failed
+    );
+    assert!(lineage::collect(&[&root, &leaf]).is_err());
+    assert!(lineage::collect(&[&root, &child, &child]).is_err());
+    assert!(lineage::collect(&[&leaf, &child, &root]).is_err());
+    let receipt_path = env.root().join("lineage-root/resume.json");
+    let receipt_bytes = fs::read(&receipt_path).unwrap();
+    for case in 0..5 {
+        let mut bad: Value = serde_json::from_slice(&receipt_bytes).unwrap();
+        match case {
+            0 => bad["child_run"] = json!("different-child"),
+            1 => bad["destination_sha256"] = json!("0".repeat(64)),
+            2 => bad["workers"] = json!(["two"]),
+            3 => bad["limits"]["deadline_ns"] = json!(1),
+            _ => bad["journal_sha256"] = json!("0".repeat(64)),
+        }
+        fs::write(&receipt_path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(lineage::collect(&[&root, &child, &leaf]).is_err());
+    }
+    fs::write(&receipt_path, &receipt_bytes).unwrap();
+    // A copied journal with identical run identity cannot replace the directory
+    // explicitly bound by the durable parent receipt.
+    let copy = env.root().join("copied-leaf");
+    fs::DirBuilder::new().mode(0o700).create(&copy).unwrap();
+    fs::copy(&leaf_path, copy.join("transcript.jsonl")).unwrap();
+    fs::copy(
+        env.root().join("lineage-leaf/worker-three.json"),
+        copy.join("worker-three.json"),
+    )
+    .unwrap();
+    let copied = ExclusiveRun::claim(&copy.join("transcript.jsonl")).unwrap();
+    assert!(lineage::collect(&[&root, &child, &copied]).is_err());
+    drop(leaf);
+    // Complete durable worker finishes suffice even if the final whole-run
+    // marker is torn. No unresolved worker is manufactured or omitted.
+    fs::write(&leaf_path, &leaf_bytes[..leaf_bytes.len() - 1]).unwrap();
+    let torn_leaf = ExclusiveRun::claim(&leaf_path).unwrap();
+    assert!(torn_leaf.inspected().snapshot().truncated_tail);
+    assert!(!torn_leaf.inspected().snapshot().recorded_run_finished);
+    assert_eq!(
+        lineage::collect(&[&root, &child, &torn_leaf])
+            .unwrap()
+            .workers
+            .len(),
+        3
+    );
+    drop(torn_leaf);
+    fs::write(&leaf_path, &leaf_bytes).unwrap();
+    for backend in [&first, &second, &third] {
+        assert_eq!(backend.sends.load(Ordering::Relaxed), 1);
+    }
+    assert_eq!(fs::read(root_path).unwrap(), root_bytes);
+    assert_eq!(fs::read(child_path).unwrap(), child_bytes);
+    assert_eq!(fs::read(leaf_path).unwrap(), leaf_bytes);
+}
+
+#[test]
+fn lineage_accepts_a_destination_spelled_with_a_current_directory_component() {
+    let env = TestEnv::new();
+    let first = Agent::new(TaskState::Completed);
+    let second = Agent::new(TaskState::Completed);
+    let a = Server::start(first.clone(), ServerLimits::default()).unwrap();
+    let b = Server::start(second.clone(), ServerLimits::default()).unwrap();
+    let path = interrupted_manifest(
+        &env,
+        "root",
+        (&a, &b),
+        StopAt::FirstFinished,
+        Duration::from_secs(10),
+    );
+    let root = ExclusiveRun::claim(&path).unwrap();
+    let (_controller, inbox) = crate::a2a_run::controls();
+    resume_queued(
+        &root,
+        &env.root().join(".").join("child"),
+        vec![queued_spec("two", &b)],
+        inbox,
+        |_| {},
+    )
+    .unwrap();
+    let child = ExclusiveRun::claim(&env.root().join("child/transcript.jsonl")).unwrap();
+    let collected = crate::lineage::collect(&[&root, &child]).unwrap();
+    assert!(collected.succeeded());
+    assert_eq!(collected.workers.len(), 2);
+    assert_eq!(first.sends.load(Ordering::Relaxed), 1);
+    assert_eq!(second.sends.load(Ordering::Relaxed), 1);
+}

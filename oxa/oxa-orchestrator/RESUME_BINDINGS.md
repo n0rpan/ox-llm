@@ -31,4 +31,5 @@ expiry/reboot and downtime arithmetic, fingerprints changing for each original
 input/route/allowance, serialization roundtrip without raw input/route text,
 13 malformed or widened metadata cases, and all actual scheduler journal and
 checkpoint fixtures. No model, shared gateway, paid request or UI is involved.
-Queue consumption is documented separately; multi-generation lineage remains unfinished.
+Queue consumption is documented separately, with read-only multi-generation
+collection in [LINEAGE.md](LINEAGE.md).
