@@ -128,7 +128,7 @@ pub fn oxa_hud(st: &StatusModel, width: u16, theme: &Theme, skin: Skin) -> Strin
     let g = glyphs(skin);
     let w = width as usize;
     let parts = HudParts::new(st, g);
-    for drops in 0..=HUD_DROPS {
+    for drops in 0..10 {
         let line = hud_build(&parts, drops, &parts.model, g, theme);
         if visible_width(&line) <= w {
             return line;
