@@ -397,3 +397,37 @@ fn narrowing_clears_reflowed_height() {
         "moves up over the 6 reflowed rows: {out:?}"
     );
 }
+
+/// the cursor partway through a reflowed line: only the rows above the cursor are climbed
+#[test]
+fn narrowing_with_cursor_at_line_start_does_not_climb() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    let full = "x".repeat(20);
+    let mut f = frame(&[&full]);
+    f.cursor = Some(CursorPos { row: 0, col: 0 });
+    r.draw(&f, &mut term);
+    term.take_output();
+    term.resize(10, 20);
+    let mut f = frame(&[&full[..10]]);
+    f.cursor = Some(CursorPos { row: 0, col: 0 });
+    r.draw(&f, &mut term);
+    let out = term.take_output();
+    assert!(!out.contains("A\r"), "no climb above the region: {out:?}");
+    assert!(out.contains("\r\x1b[J"), "{out:?}");
+}
+
+/// a wide character that does not fit at a row end moves to the next row
+#[test]
+fn narrowing_counts_wide_character_wrap() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    let line = "あ".repeat(5); // 10 columns
+    r.draw(&frame(&[&line, "z"]), &mut term);
+    term.take_output();
+    term.resize(5, 20);
+    r.draw(&frame(&[&line, "z"]), &mut term);
+    let out = term.take_output();
+    // 5 columns hold two wide chars (4 cols): 3 rows, plus "z" row; cursor on last line
+    assert!(out.contains("\x1b[3A\r\x1b[J"), "{out:?}");
+}

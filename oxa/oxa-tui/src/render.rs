@@ -1,6 +1,6 @@
 //! A13: the Component trait and the line-diff renderer. Owner: task A13. Signatures below are frozen; bodies are yours.
 // ported from pi packages/tui/src/tui.ts, tui-main-screen.ts and tui-alt-screen.ts
-use crate::{truncate_to_width, visible_width, CursorPos, Key, Mouse, TermMode, Terminal, Theme};
+use crate::{truncate_to_width, CursorPos, Key, Mouse, TermMode, Terminal, Theme};
 
 const RESET: &str = "\x1b[0m";
 const SYNC_ON: &str = "\x1b[?2026h";
@@ -91,6 +91,22 @@ pub struct Renderer {
     size: Option<(u16, u16)>,
     /// Set by `reset` and `clear`: the next draw repaints everything.
     stale: bool,
+}
+
+/// Rows a line occupies after the terminal reflowed it to `cols` columns; a wide character
+/// that does not fit at the end of a row moves to the next one.
+fn reflowed_rows(line: &str, cols: u16) -> usize {
+    let cols = cols as usize;
+    let (mut rows, mut x) = (1, 0);
+    for ch in crate::strip_ansi(line).chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w > 0 && x + w > cols {
+            rows += 1;
+            x = 0;
+        }
+        x += w;
+    }
+    rows
 }
 
 /// The bytes that move the hardware cursor from row `from` to row `to` (0-based, relative to
@@ -267,15 +283,15 @@ impl Renderer {
         // A narrower terminal has reflowed the old lines into more rows than there are lines.
         let old_cols = self.size.map_or(cols, |s| s.0);
         let reflowed_up = if full && cols < old_cols && cols > 0 {
-            let rows_of = |l: &String| visible_width(l).max(1).div_ceil(cols as usize);
-            let end = (self.cursor_row + 1).min(self.prev.len());
-            Some(
-                self.prev[..end]
-                    .iter()
-                    .map(rows_of)
-                    .sum::<usize>()
-                    .saturating_sub(1),
-            )
+            let end = self.cursor_row.min(self.prev.len());
+            let above: usize = self.prev[..end].iter().map(|l| reflowed_rows(l, cols)).sum();
+            // Inside the cursor's own line only the rows up to the cursor's column count.
+            let within = match (self.prev_cursor, self.prev.get(self.cursor_row)) {
+                (Some(cur), _) => cur.col as usize / cols as usize,
+                (None, Some(l)) => reflowed_rows(l, cols) - 1,
+                (None, None) => 0,
+            };
+            Some(above + within)
         } else {
             None
         };
