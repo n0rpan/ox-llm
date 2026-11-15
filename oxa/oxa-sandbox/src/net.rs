@@ -128,6 +128,14 @@ impl NetSandbox {
             .filter(|t| net && !t.is_empty() && !t.chars().any(char::is_whitespace))
     }
 
+    /// The token only for a networked command that mentions `gh` as a word (#210).
+    fn token_for(&self, s: &ExecSpec) -> Option<&String> {
+        if !s.net || !mentions_gh(&s.command) {
+            return None;
+        }
+        self.token()
+    }
+
     fn token(&self) -> Option<&String> {
         self.gh_token
             .get_or_init(|| {
@@ -140,7 +148,7 @@ impl NetSandbox {
     /// The spec for a real run: the clamp plus the token, when the command has the network.
     fn clamp_run(&self, s: &ExecSpec) -> ExecSpec {
         let mut s = self.clamp(s);
-        if let (true, Some(t)) = (s.net, s.net.then(|| self.token()).flatten()) {
+        if let (true, Some(t)) = (s.net, self.token_for(&s)) {
             s.env.retain(|(k, _)| k != "GH_TOKEN" && k != "GH_HOST");
             s.env.push(("GH_TOKEN".into(), t.clone()));
             s.env.push(("GH_HOST".into(), "github.com".into()));
@@ -155,7 +163,7 @@ impl NetSandbox {
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         let s = self.clamp_run(spec);
-        let Some(t) = s.net.then(|| self.token()).flatten() else {
+        let Some(t) = self.token_for(&s) else {
             return run(&s, live);
         };
         let mut sr = StreamRedactor::new(t);
@@ -208,6 +216,16 @@ impl Sandbox for NetSandbox {
     ) -> ExecResult {
         self.redacted_run(s, live, |s, live| self.inner.run_with_stdin(s, stdin, c, live))
     }
+}
+
+/// True when `gh` appears as a command word (not inside `ghost` or `a-gh`).
+fn mentions_gh(cmd: &str) -> bool {
+    let ok = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
+    cmd.match_indices("gh").any(|(i, _)| {
+        let before = cmd[..i].chars().next_back();
+        let after = cmd[i + 2..].chars().next();
+        before.is_none_or(|c| !ok(c)) && after.is_none_or(|c| !ok(c))
+    })
 }
 
 #[cfg(test)]
@@ -324,7 +342,7 @@ mod tests {
 
     fn spec(net: bool) -> ExecSpec {
         ExecSpec {
-            command: "x".into(),
+            command: "gh x".into(),
             cwd: "/".into(),
             writable: true,
             net,
@@ -370,6 +388,24 @@ mod tests {
                 "{env:?}"
             );
             assert_eq!(out, "token is none\n");
+        }
+    }
+
+    #[test]
+    fn token_only_goes_to_gh_commands() {
+        let inner = Arc::new(Echo(Mutex::new(Vec::new())));
+        let sb = NetSandbox::new(inner.clone(), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        for (cmd, want) in [
+            ("curl https://example.invalid", false),
+            ("npm install ghost", false),
+            ("gh pr list", true),
+            ("cd x && gh api /user | jq", true),
+        ] {
+            let mut sp = spec(true);
+            sp.command = cmd.into();
+            sb.run(&sp, &CancelToken::new(), &mut |_| {});
+            let env = inner.0.lock().unwrap().pop().unwrap();
+            assert_eq!(env.iter().any(|(k, _)| k == "GH_TOKEN"), want, "{cmd}");
         }
     }
 
