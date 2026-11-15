@@ -12,11 +12,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CHAT: &str = "local-ai-chat.service";
+const CHAT: &str = "oxc-chat.service";
 const STUDIO: &str = "prompt-studio-app.service";
 const SERVICES: [&str; 2] = [CHAT, STUDIO];
 fn stage_roots() -> Vec<PathBuf> {
-    if let Some(value) = std::env::var_os("LOCAL_AI_STAGE_ROOTS").filter(|s| !s.is_empty()) {
+    if let Some(value) = std::env::var_os("OXC_STAGE_ROOTS").filter(|s| !s.is_empty()) {
         std::env::split_paths(&value)
             .filter(|p| !p.as_os_str().is_empty())
             .collect()
@@ -40,11 +40,11 @@ fn stages() -> Vec<PathBuf> {
     out
 }
 fn state_path() -> PathBuf {
-    std::env::var_os("LOCAL_AI_UPDATE_STATE")
+    std::env::var_os("OXC_UPDATE_STATE")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/update/state.json")
+            paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/update/state.json")
         })
 }
 fn state() -> Value {
@@ -140,7 +140,10 @@ fn candidate() -> Result<PathBuf, String> {
         }
     }
     found.sort();
-    found.pop().map(|(_,p)|p).ok_or_else(||"No staged release is ready to install. Stage one first, then run `local-ai update <dir>`.".into())
+    found.pop().map(|(_, p)| p).ok_or_else(|| {
+        "No staged release is ready to install. Stage one first, then run `oxc update <dir>`."
+            .into()
+    })
 }
 fn current() -> Option<PathBuf> {
     let mut candidates = Vec::new();
@@ -159,7 +162,7 @@ fn systemctl(m: &Value) -> String {
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .or_else(|| {
-            std::env::var("LOCAL_AI_SYSTEMCTL")
+            std::env::var("OXC_SYSTEMCTL")
                 .ok()
                 .filter(|s| !s.is_empty())
         })
@@ -615,7 +618,7 @@ async fn auto_rollback(stage: &Path, m: &Value, chat: &str, why: &str, seconds: 
             "rollback_failed",
             json!({"reason":why.chars().take(300).collect::<String>()}),
         );
-        println!("The automatic rollback did not finish ({}). Run `local-ai rollback`; if that also stops, run `{}/rollback/rollback.py --check` and share its output.",error(code),stage.display());
+        println!("The automatic rollback did not finish ({}). Run `oxc rollback`; if that also stops, run `{}/rollback/rollback.py --check` and share its output.",error(code),stage.display());
         return 3;
     }
     if let Err(error) = ready_after_rollback(stage, m, chat, seconds).await {
@@ -625,7 +628,7 @@ async fn auto_rollback(stage: &Path, m: &Value, chat: &str, why: &str, seconds: 
             "auto_rolled_back",
             json!({"reason":why.chars().take(300).collect::<String>(),"ready":false}),
         );
-        println!("The previous version is back, but the service is not answering yet ({error}). Give it a minute, then run `local-ai status`.");
+        println!("The previous version is back, but the service is not answering yet ({error}). Give it a minute, then run `oxc status`.");
         return 3;
     }
     record(
@@ -668,7 +671,7 @@ async fn rollback(chat: &str, check: bool, seconds: f64) -> i32 {
             "failed",
             json!({"reason":error(code).chars().take(300).collect::<String>()}),
         );
-        println!("The rollback stopped ({}). Run `local-ai rollback` again; if it stops again, run `{}/rollback/rollback.py --check` and share its output.",error(code),stage.display());
+        println!("The rollback stopped ({}). Run `oxc rollback` again; if it stops again, run `{}/rollback/rollback.py --check` and share its output.",error(code),stage.display());
         return 3;
     }
     if let Err(error) = ready_after_rollback(&stage, &m, chat, seconds).await {
@@ -678,11 +681,14 @@ async fn rollback(chat: &str, check: bool, seconds: f64) -> i32 {
             "rolled_back",
             json!({"ready":false}),
         );
-        println!("The previous version is back, but the service is not answering yet ({error}). Give it a minute, then run `local-ai status`.");
+        println!("The previous version is back, but the service is not answering yet ({error}). Give it a minute, then run `oxc status`.");
         return 3;
     }
     record("rollback", Some(&stage), "rolled_back", json!({}));
-    println!("The previous version is back and running. To install the newer one again: local-ai update {}",stage.display());
+    println!(
+        "The previous version is back and running. To install the newer one again: oxc update {}",
+        stage.display()
+    );
     0
 }
 async fn update(
@@ -759,7 +765,7 @@ async fn update(
                 json!({"reason":error.chars().take(300).collect::<String>(),"services_restored":back}),
             );
             if !back {
-                println!("No file was changed ({error}), but the local AI service did not start again. Run `systemctl --user start local-ai-chat.service`, then `local-ai status`.");
+                println!("No file was changed ({error}), but the local AI service did not start again. Run `systemctl --user start oxc-chat.service`, then `oxc status`.");
                 return 3;
             }
             println!("Nothing was changed: {error}");
@@ -799,7 +805,7 @@ async fn update(
         json!({"release":name,"chat_seconds":wall,"agent_identity":identity}),
     );
     println!(
-        "Updated to {name}.{} If anything feels wrong: local-ai rollback",
+        "Updated to {name}.{} If anything feels wrong: oxc rollback",
         wall.map(|n| format!(" Chat answered in {n:.1} s."))
             .unwrap_or_default()
     );
@@ -812,16 +818,16 @@ fn seconds(name: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 pub async fn run(action: &str, words: &[String], check: bool, no_chat: bool) -> i32 {
-    let chat = std::env::var("LOCAL_AI_CHAT_URL")
+    let chat = std::env::var("OXC_CHAT_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8092".into())
         .trim_end_matches('/')
         .to_string();
-    let ready_seconds = seconds("LOCAL_AI_UPDATE_READY_SECONDS", 120.0);
+    let ready_seconds = seconds("OXC_UPDATE_READY_SECONDS", 120.0);
     if action == "rollback" {
         return rollback(&chat, check, ready_seconds).await;
     }
     if words.len() > 1 {
-        eprintln!("Usage: local-ai update [STAGED-RELEASE-DIR] [--no-chat]");
+        eprintln!("Usage: oxc update [STAGED-RELEASE-DIR] [--no-chat]");
         return 2;
     }
     let stage = words
@@ -843,10 +849,7 @@ pub async fn run(action: &str, words: &[String], check: bool, no_chat: bool) -> 
             println!("Not ready to install: {error}");
             return 2;
         }
-        println!(
-            "Ready to install. Run `local-ai update {}`.",
-            stage.display()
-        );
+        println!("Ready to install. Run `oxc update {}`.", stage.display());
         return 0;
     }
     update(
@@ -854,7 +857,7 @@ pub async fn run(action: &str, words: &[String], check: bool, no_chat: bool) -> 
         &chat,
         !no_chat,
         ready_seconds,
-        seconds("LOCAL_AI_UPDATE_CHAT_SECONDS", 900.0),
+        seconds("OXC_UPDATE_CHAT_SECONDS", 900.0),
     )
     .await
 }

@@ -5,7 +5,7 @@ pub(crate) use crate::cli_client::{plain_name, request_timeout, request_url};
 use serde_json::{json, Value};
 use std::process::Stdio;
 
-const CACHE_USAGE: &str = "Usage:\n  local-ai cache [status] [--json]          conversation cache: used, budget, conversations\n  local-ai cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  local-ai cache clear [--all | --session ID]  --all (default) also clears stored prompts";
+const CACHE_USAGE: &str = "Usage:\n  oxc cache [status] [--json]          conversation cache: used, budget, conversations\n  oxc cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  oxc cache clear [--all | --session ID]  --all (default) also clears stored prompts";
 
 impl Args {
     fn flag(&self, name: &str) -> bool {
@@ -74,7 +74,7 @@ fn code_agent() -> Option<std::path::PathBuf> {
         .find(|p| executable(p))
 }
 fn code_command(agent: std::path::PathBuf, alias: &str, read_only: bool) -> Vec<String> {
-    let directory = std::env::var_os("LOCAL_AI_CODE_DIRECTORY")
+    let directory = std::env::var_os("OXC_CODE_DIRECTORY")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| crate::paths::home().join("Work"));
     let mut words = vec![
@@ -98,11 +98,11 @@ async fn desktop_action(name: &str, mode: Option<&str>) -> i32 {
     let service = if name == "images" {
         "prompt-studio-app.service"
     } else {
-        "local-ai-chat.service"
+        "oxc-chat.service"
     };
     if command("systemctl", &["--user", "start", service]).await != Some(0) {
         notify(if name == "images" { "The local image service could not start. Details: journalctl --user -u prompt-studio-app." }
-            else { "The local chat service could not start. Details: journalctl --user -u local-ai-chat." }).await;
+            else { "The local chat service could not start. Details: journalctl --user -u oxc-chat." }).await;
         return 1;
     }
     if name == "ornith" && !offered("ornith-35b-a3b-local").await {
@@ -110,7 +110,7 @@ async fn desktop_action(name: &str, mode: Option<&str>) -> i32 {
         return 1;
     }
     if ["flash", "plan"].contains(&name) && !offered("qwen3.8-flash-next-local").await {
-        notify("Flash is not ready on this machine. Run `local-ai status` to see why.").await;
+        notify("Flash is not ready on this machine. Run `oxc status` to see why.").await;
         return 1;
     }
     if name == "mode" {
@@ -135,7 +135,10 @@ async fn desktop_action(name: &str, mode: Option<&str>) -> i32 {
     }
     if name == "code" {
         let Some(agent) = code_agent() else {
-            notify("The coding agent (oxa) is not installed. Reinstall ox-llm or run `local-ai doctor`.").await;
+            notify(
+                "The coding agent (oxa) is not installed. Reinstall ox-llm or run `oxc doctor`.",
+            )
+            .await;
             return 1;
         };
         let current = crate::cli_status::project().await.unwrap_or(json!({}));
@@ -169,7 +172,10 @@ async fn desktop_action(name: &str, mode: Option<&str>) -> i32 {
     }
     if name == "plan" {
         let Some(agent) = code_agent() else {
-            notify("The coding agent (oxa) is not installed. Reinstall ox-llm or run `local-ai doctor`.").await;
+            notify(
+                "The coding agent (oxa) is not installed. Reinstall ox-llm or run `oxc doctor`.",
+            )
+            .await;
             return 1;
         };
         return launch(&code_command(agent, "qwen3.8-flash-next-local", true)).await;
@@ -202,8 +208,7 @@ pub async fn run(args: Args) -> i32 {
             use std::os::unix::process::ExitStatusExt;
             match tokio::process::Command::new("omarchy-shell")
                 .args([
-                    std::env::var("LOCAL_AI_PANEL_ID")
-                        .unwrap_or_else(|_| "snapdragon.local-ai".into()),
+                    std::env::var("OXC_PANEL_ID").unwrap_or_else(|_| "snapdragon.local-ai".into()),
                     "toggle".into(),
                 ])
                 .status()
@@ -213,7 +218,7 @@ pub async fn run(args: Args) -> i32 {
                     .code()
                     .unwrap_or_else(|| -status.signal().unwrap_or(1)),
                 Err(_) => {
-                    eprintln!("local-ai: the panel needs the Omarchy shell (omarchy-shell was not found). Try `local-ai status`.");
+                    eprintln!("oxc: the panel needs the Omarchy shell (omarchy-shell was not found). Try `oxc status`.");
                     1
                 }
             }
@@ -291,7 +296,7 @@ pub async fn run(args: Args) -> i32 {
         }
         _ => {
             eprintln!(
-                "local-ai: {} is not implemented by the Rust controller yet.",
+                "oxc: {} is not implemented by the Rust controller yet.",
                 args.action
             );
             1
@@ -394,7 +399,7 @@ async fn cache(args: &Args) -> i32 {
     let message = match body {
         409 => "A request is running or a model is loading. Try again when it finishes.",
         400 => "That value was refused. Use off or a size from 4 to 4096 GB.",
-        _ => "The local model service is not answering. Run `local-ai status` to see why.",
+        _ => "The local model service is not answering. Run `oxc status` to see why.",
     };
     if args.flag("--json") {
         println!("{}", crate::paths::python_json(&json!({"error":message})));
@@ -545,7 +550,7 @@ async fn share(args: &Args) -> i32 {
             }
         };
         if !record.show {
-            eprintln!("The key was already shown (fingerprint {}). Run `local-ai share key --rotate` for a new one; the old one then stops working.",record.fingerprint());
+            eprintln!("The key was already shown (fingerprint {}). Run `oxc share key --rotate` for a new one; the old one then stops working.",record.fingerprint());
             return 1;
         }
         println!("{}", record.key());
@@ -555,9 +560,7 @@ async fn share(args: &Args) -> i32 {
     if command == "status" && rest.is_empty() {
         let (code, value) = request_timeout("/_local/share", None, 5).await;
         if code != 200 {
-            eprintln!(
-                "local-ai: offline share status is not implemented by the Rust controller yet."
-            );
+            eprintln!("oxc: offline share status is not implemented by the Rust controller yet.");
             return 1;
         }
         if args.flag("--json") {
@@ -592,7 +595,7 @@ async fn share(args: &Args) -> i32 {
             println!("{}", share_text(&value));
         }
         if mode != "off" && value["key_shown"] != true {
-            eprintln!("Run `local-ai share key` to see the API key (shown once).");
+            eprintln!("Run `oxc share key` to see the API key (shown once).");
         }
         return i32::from(mode != "off" && value["active"] != true);
     }
@@ -631,7 +634,7 @@ fn share_text(value: &Value) -> String {
         if value["key_shown"] == true {
             ""
         } else {
-            " (not shown yet: local-ai share key)"
+            " (not shown yet: oxc share key)"
         }
     ));
     for key in ["error", "warning"] {

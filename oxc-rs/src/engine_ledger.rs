@@ -72,7 +72,7 @@ const ENUMS: &[(&str, &[&str])] = &[
 
 pub fn enabled(profile: &Value, args: &[String]) -> bool {
     profile["backend_kind"] == "oxe"
-        && profile["environment"]["LOCAL_AI_ENGINE_LEDGER"] == "1"
+        && profile["environment"]["OXC_ENGINE_LEDGER"] == "1"
         && !args
             .iter()
             .any(|arg| arg.split('=').next() == Some("--ledger"))
@@ -104,8 +104,7 @@ pub struct Prepared {
 }
 impl Prepared {
     pub fn new(profile: &Value) -> io::Result<Self> {
-        let path =
-            paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/engine-ledger.jsonl");
+        let path = paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/engine-ledger.jsonl");
         let writer = diagnostics::Writer::new(path.clone());
         if writer.error().is_some() {
             return Err(io::Error::other("native ledger log unavailable"));

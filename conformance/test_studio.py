@@ -68,7 +68,7 @@ def capture(name):
         project.mkdir(mode=0o700)
         env.update(STUDIO_PORT=str(port), LOCAL_IMAGE_CONFIG_DIR=str(project),
                    SD_HOME=str(home / 'stack'), IMG_OUTDIR=str(home / 'pictures'),
-                   LOCAL_AI_LEASE=str(home / 'inference.lock'))
+                   OXC_LEASE=str(home / 'inference.lock'))
         if name in JOB_CASES:
             executable = home / 'bin/sd-cli'
             executable.parent.mkdir(mode=0o700)
@@ -191,7 +191,7 @@ def capture(name):
                 file_path.unlink()
                 file_path.mkdir(mode=0o700)
         command = shlex.split(os.environ['OXC_STUDIO_COMMAND']) if 'OXC_STUDIO_COMMAND' in os.environ else [
-            sys.executable, str(ROOT / 'lab/src/snapdragon_ai_lab/runtime/studio')]
+            sys.executable, str(ROOT / 'oxc/src/oxc/runtime/studio')]
         with tempfile.TemporaryFile() as log:
             process = subprocess.Popen(command, env=env, cwd=home, stdin=subprocess.DEVNULL,
                 stdout=log, stderr=log, umask=0o077)

@@ -57,7 +57,7 @@ class LifecycleContract(unittest.TestCase):
     def test_backend_tokens_private_rotated_removed_and_not_exposed(self):
         with Daemon(configured=True) as daemon:
             self.assertEqual(daemon.call('POST', '/_local/load', {})['body'], {'state': 'ready'})
-            keys = list((daemon.home / 'run/local-ai').glob('oxe-backend-*.key'))
+            keys = list((daemon.home / 'run/oxc').glob('oxe-backend-*.key'))
             self.assertEqual(len(keys), 1)
             first = keys[0].read_bytes()
             self.assertGreaterEqual(len(first), 32)
@@ -79,14 +79,14 @@ class LifecycleContract(unittest.TestCase):
             self.assertEqual(daemon.call('POST', '/_local/unload', {})['status'], 200)
             self.assertFalse(keys[0].exists())
             self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
-            keys = list((daemon.home / 'run/local-ai').glob('oxe-backend-*.key'))
+            keys = list((daemon.home / 'run/oxc').glob('oxe-backend-*.key'))
             self.assertEqual(len(keys), 1)
             self.assertFalse(first == keys[0].read_bytes())
 
     def test_lease_is_exclusive_until_unload(self):
         with Daemon(configured=True) as daemon:
             self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
-            lease = Path(daemon.env['LOCAL_AI_LEASE'])
+            lease = Path(daemon.env['OXC_LEASE'])
             self.assertEqual(stat.S_IMODE(lease.stat().st_mode), 0o600)
             with lease.open('a') as stream:
                 with self.assertRaises(BlockingIOError):
@@ -97,7 +97,7 @@ class LifecycleContract(unittest.TestCase):
 
     def test_external_lease_blocks_start_and_recovers(self):
         with Daemon(configured=True) as daemon:
-            lease = Path(daemon.env['LOCAL_AI_LEASE'])
+            lease = Path(daemon.env['OXC_LEASE'])
             lease.parent.mkdir(parents=True, exist_ok=True)
             with lease.open('a') as stream:
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -109,7 +109,7 @@ class LifecycleContract(unittest.TestCase):
 
     def test_symlink_lease_is_refused(self):
         with Daemon(configured=True) as daemon:
-            lease = Path(daemon.env['LOCAL_AI_LEASE'])
+            lease = Path(daemon.env['OXC_LEASE'])
             lease.parent.mkdir(parents=True, exist_ok=True)
             target = daemon.home / 'untouched'
             target.write_text('synthetic sentinel')
@@ -230,12 +230,12 @@ class LifecycleContract(unittest.TestCase):
                 self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
                 counter = daemon.home / 'host/cgroup' / relative
                 before = counter.read_text()
-                keys = list((daemon.home / 'run/local-ai').glob('oxe-backend-*.key'))
+                keys = list((daemon.home / 'run/oxc').glob('oxe-backend-*.key'))
                 self.assertEqual(len(keys), 1)
                 counter.write_text(text)
                 wait_until(lambda: status(daemon)['state'] == 'unloaded')
                 self.assertFalse(keys[0].exists())
-                with Path(daemon.env['LOCAL_AI_LEASE']).open('a') as stream:
+                with Path(daemon.env['OXC_LEASE']).open('a') as stream:
                     fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fcntl.flock(stream, fcntl.LOCK_UN)
                 counter.write_text(before)
@@ -288,7 +288,7 @@ class LifecycleContract(unittest.TestCase):
     def test_engine_diagnostic_log_is_private_and_controls_are_visible(self):
         with Daemon(configured=True, environ={'FAKE_ENGINE_STDERR': 'Synthetic diagnostic.\r\x01\n'}) as daemon:
             self.assertEqual(daemon.call('POST', '/_local/load', {})['status'], 200)
-            log = daemon.home / 'state/local-ai/engine-stderr.log'
+            log = daemon.home / 'state/oxc/engine-stderr.log'
             wait_until(lambda: log.exists() and log.read_bytes())
             self.assertEqual(log.read_bytes(), b'Synthetic diagnostic.\\x0d\\x01\n')
             self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
@@ -298,7 +298,7 @@ class LifecycleContract(unittest.TestCase):
         for kind in ('symlink', 'hardlink'):
             with self.subTest(kind=kind), Daemon(configured=True, environ={
                     'FAKE_ENGINE_STDERR': 'Synthetic diagnostic.\n'}) as daemon:
-                log = daemon.home / 'state/local-ai/engine-stderr.log'
+                log = daemon.home / 'state/oxc/engine-stderr.log'
                 log.parent.mkdir(parents=True, exist_ok=True)
                 target = daemon.home / 'untouched-diagnostic-target'
                 target.write_bytes(b'Synthetic sentinel.\n')

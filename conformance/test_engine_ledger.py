@@ -19,12 +19,12 @@ CASES = ('enabled', 'invalid', 'chunked', 'tail', 'reload', 'explicit', 'explici
 def run_case(name):
     environment = {'FAKE_ENGINE_LEDGER_CASE': name}
     if name == 'inherited':
-        environment['LOCAL_AI_ENGINE_LEDGER'] = '1'
+        environment['OXC_ENGINE_LEDGER'] = '1'
     with Daemon(configured=True, environ=environment) as daemon:
         home = daemon.home
         config = json.loads(daemon.config_path.read_text())
         if name != 'inherited':
-            config['environment'] = {**environment, 'LOCAL_AI_ENGINE_LEDGER': '1'}
+            config['environment'] = {**environment, 'OXC_ENGINE_LEDGER': '1'}
             config['profiles'][PRIMARY]['environment'] = config['environment']
         if name.startswith('explicit'):
             own = str(home / 'own-ledger.jsonl')
@@ -32,7 +32,7 @@ def run_case(name):
             config['oxe_args'] += extra
             config['profiles'][PRIMARY]['oxe_args'] = config['oxe_args']
         daemon.config_path.write_text(json.dumps(config))
-        directory = home / 'state/local-ai'
+        directory = home / 'state/oxc'
         path = directory / 'engine-ledger.jsonl'
         output = [{'before': status(daemon)['engine_ledger'], 'exists': path.exists()}]
         target = home / 'untouched-ledger-target'
@@ -57,7 +57,7 @@ def run_case(name):
         generations = 2 if name == 'reload' else 1
         credentials = []
         for index in range(generations):
-            credentials += [key.read_text().strip() for key in (home / 'run/local-ai').glob('oxe-backend-*.key')]
+            credentials += [key.read_text().strip() for key in (home / 'run/oxc').glob('oxe-backend-*.key')]
             if not name.startswith('explicit'):
                 reply = daemon.call('POST', '/v1/chat/completions', chat())
                 if reply['status'] != 200:

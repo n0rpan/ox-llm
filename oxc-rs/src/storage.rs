@@ -94,8 +94,7 @@ pub(crate) fn prefixes(path: &Path, rust: bool) -> BTreeMap<Pair, Vec<PathBuf>> 
 pub fn clear_legacy_prefix(config: &Value) -> std::io::Result<u64> {
     let state = crate::state_cache::root(config)?;
     let mut directories = HashSet::from([state.parent().expect("state directory").join("prefix")]);
-    let override_root = std::env::var_os("LOCAL_AI_STATE_CACHE_ROOT")
-        .is_some_and(|s| !s.is_empty())
+    let override_root = std::env::var_os("OXC_STATE_CACHE_ROOT").is_some_and(|s| !s.is_empty())
         || !config["cache"]["root"].is_null();
     if !override_root {
         for profile in config["profiles"]

@@ -27,7 +27,7 @@ HEADERS = {'User-Agent': 'SyntheticClient/1.2 trailing text', 'X-Session-Id': 's
 
 
 def directory(daemon):
-    return daemon.home / '.local/state/local-ai/ledger'
+    return daemon.home / '.local/state/oxc/ledger'
 
 
 def seed(daemon, salt=SALT, mode=0o600):
@@ -104,7 +104,7 @@ def persistence(daemon):
 
 
 def run_case(name):
-    environment = {'LOCAL_AI_LEDGER': '0'} if name == 'disabled' else {}
+    environment = {'OXC_LEDGER': '0'} if name == 'disabled' else {}
     with Daemon(configured=True, environ=environment) as daemon:
         output = []
         if name == 'empty':
@@ -265,7 +265,7 @@ class LedgerContract(unittest.TestCase):
     def test_ledger_directory_override_relative_and_empty(self):
         for configured in ('synthetic-ledger', ''):
             with self.subTest(directory=configured), Daemon(configured=True, environ={
-                    'LOCAL_AI_LEDGER_DIR': configured}) as daemon:
+                    'OXC_LEDGER_DIR': configured}) as daemon:
                 root = daemon.home / (configured or '.')
                 root.mkdir(parents=True, exist_ok=True)
                 (root / '.salt').write_bytes(SALT)

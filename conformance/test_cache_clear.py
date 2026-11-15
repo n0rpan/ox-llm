@@ -127,7 +127,7 @@ def run_case(name):
             descriptor = None
             try:
                 if name == 'lease-busy':
-                    path = daemon.home / 'state/local-ai/inference.lock'
+                    path = daemon.home / 'state/oxc/inference.lock'
                     path.parent.mkdir(parents=True, exist_ok=True)
                     descriptor = path.open('a')
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)

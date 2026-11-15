@@ -80,9 +80,9 @@ def capture(name, action=None, responses=None, setup=None, arguments=()):
     if name.endswith('start-fails'):
         (home / 'mock-fail-once').write_text('start')
     if name == 'plan-directory':
-        environment['LOCAL_AI_CODE_DIRECTORY'] = str(home / 'synthetic project')
+        environment['OXC_CODE_DIRECTORY'] = str(home / 'synthetic project')
     executable = home / 'oxc'
-    executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+    executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
     command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
     action = action or ('images' if name.startswith('images') else 'plan' if name.startswith('plan')
               else 'flash' if name.startswith('flash') else 'ornith' if name.startswith('ornith')

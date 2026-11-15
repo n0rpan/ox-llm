@@ -104,7 +104,7 @@ pub fn eligible(profile: &Value) -> bool {
         return false;
     }
     if profile["backend_kind"] == "oxe" {
-        if std::env::var("LOCAL_AI_ENABLE_OXE").is_ok_and(|v| {
+        if std::env::var("OXC_ENABLE_OXE").is_ok_and(|v| {
             ["0", "off", "false", "no"].contains(&v.trim().to_ascii_lowercase().as_str())
         }) {
             return false;

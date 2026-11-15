@@ -45,7 +45,7 @@ def run_case(name):
     method, path, body, headers, expected_status = CASES[name]
     auth = name.startswith('auth-') or name.startswith('cors-')
     config = {'openai_api': {'cors_origins': ['https://example.invalid']}} if name.startswith('cors-') else {}
-    with Daemon(configured=True, environ={'LOCAL_AI_API_KEY': SYNTHETIC_KEY} if auth else {},
+    with Daemon(configured=True, environ={'OXC_API_KEY': SYNTHETIC_KEY} if auth else {},
                 config_changes=config) as daemon:
         if name == 'chunked-body-refused':
             raw = (f'POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{daemon.port}\r\n'

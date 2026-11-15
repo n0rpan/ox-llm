@@ -178,7 +178,7 @@ def capture(name):
             elif name == 'rotation':
                 output.append(call())
                 entry = home / 'oxc'
-                entry.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+                entry.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
                 command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(entry)]
                 rotated = subprocess.run([*command, 'share', 'key', '--rotate'], cwd=home, env=daemon.env,
                                          capture_output=True, timeout=5)

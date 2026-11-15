@@ -39,8 +39,8 @@ class UpdateContract(unittest.TestCase):
         systemctl.write_text('#!' + sys.executable + '\n' + source)
         systemctl.chmod(0o700)
         self.env.update({'PATH': str(binary) + ':/usr/bin:/bin', 'OXC_STATEFUL_SYSTEMCTL': '1',
-                         'LOCAL_AI_UPDATE_READY_SECONDS': '0.1', 'LOCAL_AI_UPDATE_CHAT_SECONDS': '2',
-                         'LOCAL_AI_STAGE_ROOTS': str(self.home / 'staged')})
+                         'OXC_UPDATE_READY_SECONDS': '0.1', 'OXC_UPDATE_CHAT_SECONDS': '2',
+                         'OXC_STAGE_ROOTS': str(self.home / 'staged')})
         self.calls = []
         self.chat_status = 200
         test = self
@@ -76,9 +76,9 @@ class UpdateContract(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self.close_server)
-        self.env['LOCAL_AI_CHAT_URL'] = 'http://127.0.0.1:' + str(self.server.server_port)
+        self.env['OXC_CHAT_URL'] = 'http://127.0.0.1:' + str(self.server.server_port)
         executable = self.home / 'oxc'
-        executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+        executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
         self.command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
         self.stage = self.home / 'staged/synthetic-release'
         (self.stage / 'rollback').mkdir(parents=True)
@@ -100,7 +100,7 @@ class UpdateContract(unittest.TestCase):
                     'preimage_mode': {key: '0600' for key in self.paths}}
         (self.stage / 'manifest.json').write_text(json.dumps(manifest))
         for tool in ('install_staged_release.py', 'stage_rollback_guard.py'):
-            shutil.copyfile(ROOT / 'lab/tools' / tool, self.stage / 'tools' / tool)
+            shutil.copyfile(ROOT / 'oxc/tools' / tool, self.stage / 'tools' / tool)
         binding = [sys.executable, str(self.stage / 'tools/stage_rollback_guard.py'), 'bind', str(self.stage)]
         for key, path in self.paths.items():
             binding += ['--path', key + '=' + str(path)]
@@ -150,7 +150,7 @@ class UpdateContract(unittest.TestCase):
     def render_binding(self, paths=None, old=None, new=None, services=None, service_state=None):
         # Fixture generation uses the shipped stager's data renderer. Assertions
         # still exercise the public CLI and its real file/service transaction.
-        source = ROOT / 'lab/tools/stage_rollback_guard.py'
+        source = ROOT / 'oxc/tools/stage_rollback_guard.py'
         spec = importlib.util.spec_from_file_location('conformance_stage_guard', source)
         guard = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(guard)
@@ -176,10 +176,10 @@ class UpdateContract(unittest.TestCase):
         saved_services = self.stage / 'service-state.json'
         services = json.loads(saved_services.read_text())
         self.assertEqual(stat.S_IMODE(saved_services.stat().st_mode), 0o400)
-        self.assertEqual(services['states'], {'local-ai-chat.service': 'active', 'prompt-studio-app.service': 'active'})
-        self.assertEqual(services['active'], {'local-ai-chat.service': True, 'prompt-studio-app.service': True})
+        self.assertEqual(services['states'], {'oxc-chat.service': 'active', 'prompt-studio-app.service': 'active'})
+        self.assertEqual(services['active'], {'oxc-chat.service': True, 'prompt-studio-app.service': True})
         self.assertIsNone(services['chat_release'])
-        self.assertIn(['--user', 'stop', 'local-ai-chat.service', 'prompt-studio-app.service'], self.commands())
+        self.assertIn(['--user', 'stop', 'oxc-chat.service', 'prompt-studio-app.service'], self.commands())
         for path in self.paths.values():
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         chats = [call for call in self.calls if call['path'] == '/v1/chat/completions']
@@ -187,7 +187,7 @@ class UpdateContract(unittest.TestCase):
         self.assertEqual(chats[0]['origin'], 'lab')
         self.assertEqual(chats[0]['body']['max_tokens'], 8)
         self.assertTrue(any(call['path'] == '/_local/unload' for call in self.calls))
-        state = self.home / 'state/local-ai/update/state.json'
+        state = self.home / 'state/oxc/update/state.json'
         self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o600)
         installed = json.loads(state.read_text())
         self.assertEqual(installed['current']['stage'], str(self.stage))
@@ -251,7 +251,7 @@ class UpdateContract(unittest.TestCase):
         restored = json.loads(receipts[0].read_text())
         self.assertEqual(restored['action'], 'rollback')
         self.assertEqual(restored['restored'], ['runtime', 'unit'])
-        self.assertEqual(restored['started'], ['local-ai-chat.service'])
+        self.assertEqual(restored['started'], ['oxc-chat.service'])
         self.assertEqual(restored['start_basis'], 'all bound services')
         self.assertEqual(stat.S_IMODE(receipts[0].stat().st_mode), 0o644)
 
@@ -293,11 +293,11 @@ class UpdateContract(unittest.TestCase):
         self.assertEqual(self.commands(), [])
 
     def test_bound_service_state_is_validated_before_rollback(self):
-        self.render_binding(services=['local-ai-chat.service', 'prompt-studio-app.service'], service_state='service-state.json')
+        self.render_binding(services=['oxc-chat.service', 'prompt-studio-app.service'], service_state='service-state.json')
         self.cli(['update', self.stage, '--no-chat'], 0)
         service_state = self.stage / 'service-state.json'
         service_state.chmod(0o600)
-        service_state.write_text('{"active": {"local-ai-chat.service": "invalid"}}')
+        service_state.write_text('{"active": {"oxc-chat.service": "invalid"}}')
         service_state.chmod(0o400)
         calls = len(self.commands())
         self.cli(['rollback', '--check'], 2)
@@ -322,7 +322,7 @@ class UpdateContract(unittest.TestCase):
         self.reseal()
         self.cli(['update', self.stage, '--no-chat'], 3)
         self.assertEqual(self.contents(), self.old)
-        state = json.loads((self.home / 'state/local-ai/update/state.json').read_text())
+        state = json.loads((self.home / 'state/oxc/update/state.json').read_text())
         self.assertFalse(state['history'][-1]['ready'])
 
     def test_owner_edit_during_failed_chat_refuses_automatic_rollback(self):
@@ -350,9 +350,9 @@ class UpdateContract(unittest.TestCase):
         self.reseal()
         self.cli(['update', self.stage, '--no-chat'], 0)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
-        self.assertEqual(calls, [{'args': ['identity', '--refresh'], 'home': str(target), 'url': self.env['LOCAL_AI_CHAT_URL']},
-                                 {'args': ['identity', '--refresh', '--offline'], 'home': str(target), 'url': self.env['LOCAL_AI_CHAT_URL']}])
-        state = json.loads((self.home / 'state/local-ai/update/state.json').read_text())
+        self.assertEqual(calls, [{'args': ['identity', '--refresh'], 'home': str(target), 'url': self.env['OXC_CHAT_URL']},
+                                 {'args': ['identity', '--refresh', '--offline'], 'home': str(target), 'url': self.env['OXC_CHAT_URL']}])
+        state = json.loads((self.home / 'state/oxc/update/state.json').read_text())
         self.assertEqual(state['history'][-1]['agent_identity'], 'refreshed-offline')
 
 

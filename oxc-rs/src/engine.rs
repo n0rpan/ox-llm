@@ -60,22 +60,21 @@ struct Token {
 impl Token {
     fn new(port: u16) -> Result<Self, String> {
         let mut temporary = false;
-        let directory = if let Some(explicit) =
-            std::env::var_os("LOCAL_AI_RUNTIME_DIR").filter(|v| !v.is_empty())
-        {
-            private_directory(Path::new(&explicit))
-        } else if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute() && p.is_dir())
-        {
-            private_directory(&runtime.join("local-ai"))
-        } else {
-            None
-        };
+        let directory =
+            if let Some(explicit) = std::env::var_os("OXC_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+                private_directory(Path::new(&explicit))
+            } else if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute() && p.is_dir())
+            {
+                private_directory(&runtime.join("oxc"))
+            } else {
+                None
+            };
         let directory = if let Some(directory) = directory {
             directory
         } else {
-            if std::env::var_os("LOCAL_AI_RUNTIME_DIR").is_some_and(|v| !v.is_empty()) {
+            if std::env::var_os("OXC_RUNTIME_DIR").is_some_and(|v| !v.is_empty()) {
                 return Err(
                     "Local model cannot start: no private runtime directory for its access token."
                         .into(),
@@ -83,7 +82,7 @@ impl Token {
             }
             temporary = true;
             let suffix = URL_SAFE_NO_PAD.encode(random::<12>()?);
-            private_directory(&std::env::temp_dir().join(format!("local-ai-{suffix}"))).ok_or(
+            private_directory(&std::env::temp_dir().join(format!("oxc-{suffix}"))).ok_or(
                 "Local model cannot start: no private runtime directory for its access token.",
             )?
         };
@@ -132,7 +131,7 @@ impl Drop for Token {
 }
 fn verify(profile: &Value) -> Result<(), String> {
     let error = |name: &str| {
-        format!("The model could not start (ValueError: {name}). Details: journalctl --user -u local-ai-chat.")
+        format!("The model could not start (ValueError: {name}). Details: journalctl --user -u oxc-chat.")
     };
     let binary = profile["server_binary"]
         .as_str()
@@ -822,10 +821,10 @@ impl Manager {
         let hint =
             hint.map(|hint| format!("{:x}", Sha256::digest(hint.as_bytes()))[..32].to_owned());
         let lease = if state.running.is_none() {
-            let path = std::env::var_os("LOCAL_AI_LEASE")
+            let path = std::env::var_os("OXC_LEASE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| {
-                    paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/inference.lock")
+                    paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/inference.lock")
                 });
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|_| failure())?;
@@ -954,10 +953,10 @@ impl Manager {
             }
         })?;
         let lease = if state.running.is_none() {
-            let path = std::env::var_os("LOCAL_AI_LEASE")
+            let path = std::env::var_os("OXC_LEASE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| {
-                    paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/inference.lock")
+                    paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/inference.lock")
                 });
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|_| failure())?;
@@ -1204,7 +1203,7 @@ impl Manager {
         tokio::spawn(async move { manager.load_inner(profile, false).await })
             .await
             .map_err(|_| {
-                "The model could not start. Details: journalctl --user -u local-ai-chat.".to_owned()
+                "The model could not start. Details: journalctl --user -u oxc-chat.".to_owned()
             })??;
         *self.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         Ok(())
@@ -1320,13 +1319,12 @@ impl Manager {
         drop(probe);
         let path = profile["model_path"]
             .as_str()
-            .ok_or("The model file is not in place yet. Run `local-ai status` to check setup.")?;
-        let info = fs::metadata(path).map_err(|_| {
-            "The model file is not in place yet. Run `local-ai status` to check setup."
-        })?;
+            .ok_or("The model file is not in place yet. Run `oxc status` to check setup.")?;
+        let info = fs::metadata(path)
+            .map_err(|_| "The model file is not in place yet. Run `oxc status` to check setup.")?;
         if !info.is_file() {
             return Err(
-                "The model file is not in place yet. Run `local-ai status` to check setup.".into(),
+                "The model file is not in place yet. Run `oxc status` to check setup.".into(),
             );
         }
         if profile["expected_bytes"]
@@ -1334,18 +1332,17 @@ impl Manager {
             .is_some_and(|v| v != info.len())
         {
             return Err(
-                "The model file is incomplete or changed. Run `local-ai status` to check setup."
-                    .into(),
+                "The model file is incomplete or changed. Run `oxc status` to check setup.".into(),
             );
         }
         let required = info.len().saturating_add(3 * 1024 * 1024 * 1024);
         if let Some(available) = guard::available_memory().filter(|v| *v < required) {
             return Err(format!("This model needs about {:.1} GiB of available RAM; {:.1} GiB is available. Close other large apps and retry.",required as f64/(1_u64<<30) as f64,available as f64/(1_u64<<30) as f64));
         }
-        let lease_path = std::env::var_os("LOCAL_AI_LEASE")
+        let lease_path = std::env::var_os("OXC_LEASE")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/inference.lock")
+                paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/inference.lock")
             });
         if let Some(parent) = lease_path.parent() {
             fs::create_dir_all(parent).map_err(|_| "The inference lease is unavailable.")?;
@@ -1379,11 +1376,11 @@ impl Manager {
                 _ => arg.to_owned(),
             });
         }
-        args=crate::state_cache::conversation_args(&profile,args).map_err(|_|"LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?;
+        args=crate::state_cache::conversation_args(&profile,args).map_err(|_|"OXC_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?;
         let settings = crate::state_cache::Settings::new(&profile);
         let overridden = crate::state_cache::overridden(&profile);
         let state_root = if settings.budget > 0 || overridden {
-            Some(crate::state_cache::root(&profile).map_err(|_|"LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?)
+            Some(crate::state_cache::root(&profile).map_err(|_|"OXC_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?)
         } else {
             None
         };
@@ -1409,7 +1406,7 @@ impl Manager {
                     .unwrap_or((arg.as_str(), args.get(index + 1).map(String::as_str)));
                 if ["--prefix-cache", "--session-cache", "--state-cache"].contains(&name) {
                     if let Some(path) = value.filter(|s| !s.is_empty()) {
-                        crate::state_cache::make_private(Path::new(path)).map_err(|_|"LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?;
+                        crate::state_cache::make_private(Path::new(path)).map_err(|_|"OXC_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?;
                     }
                 }
             }
@@ -1425,8 +1422,7 @@ impl Manager {
                 }
                 Err(_) => {
                     crate::diagnostics::Writer::new(
-                        paths::xdg("XDG_STATE_HOME", ".local/state")
-                            .join("local-ai/engine-stderr.log"),
+                        paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/engine-stderr.log"),
                     )
                     .write(b"{\"event\":\"ledger_disabled\",\"reason\":\"log_unavailable\"}\n");
                     None
@@ -1478,8 +1474,7 @@ impl Manager {
                 self.phase.store(0, Ordering::SeqCst);
                 *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = None;
                 return Err(
-                    "The model could not start. Details: journalctl --user -u local-ai-chat."
-                        .into(),
+                    "The model could not start. Details: journalctl --user -u oxc-chat.".into(),
                 );
             }
         };
@@ -1537,7 +1532,7 @@ impl Manager {
             }
             if running.process.poll().ok().flatten().is_some() {
                 break Err(
-                    "The model exited during loading. Details: journalctl --user -u local-ai-chat."
+                    "The model exited during loading. Details: journalctl --user -u oxc-chat."
                         .into(),
                 );
             }
@@ -1897,7 +1892,7 @@ fn redact(pending: &mut Vec<u8>, token: &[u8], finish: bool) -> Vec<u8> {
 }
 fn spawn_stderr(mut stderr: tokio::process::ChildStderr, token: String) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let path = paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/engine-stderr.log");
+        let path = paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/engine-stderr.log");
         let mut writer = crate::diagnostics::Writer::new(path);
         let mut buffer = [0_u8; 4096];
         let mut pending = Vec::new();

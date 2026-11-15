@@ -116,9 +116,9 @@ class Daemon:
         self.env = isolated_env(home)
         self.env.update({'LOCAL_LLM_PORT': str(self.port), 'LOCAL_LLM_BACKEND_PORT': str(self.backend_port),
                         'LOCAL_FLASH_BACKEND_PORT': str(flash_port),
-                        'LOCAL_LLM_CONFIG': str(home / 'config/local-ai/llm/runtime.json'),
-                        'LOCAL_AI_LEASE': str(home / 'state/local-ai/inference.lock'),
-                        'LOCAL_AI_ENABLE_OXE': '1', 'LOCAL_LLM_START_SECONDS': '5',
+                        'LOCAL_LLM_CONFIG': str(home / 'config/oxc/llm/runtime.json'),
+                        'OXC_LEASE': str(home / 'state/oxc/inference.lock'),
+                        'OXC_ENABLE_OXE': '1', 'LOCAL_LLM_START_SECONDS': '5',
                         'LOCAL_LLM_QUEUE_WAIT_SECONDS': '2',
                         'FAKE_ENGINE_EVENTS': str(home / 'engine-events.jsonl'),
                         'FAKE_ENGINE_GATE': str(home / 'engine-gate'),
@@ -135,7 +135,7 @@ class Daemon:
             self.config_path.write_text(json.dumps(self.config_changes))
             self.config_path.chmod(0o600)
         command = shlex.split(os.environ['OXC_DAEMON_COMMAND']) if 'OXC_DAEMON_COMMAND' in os.environ else [
-            sys.executable, '-m', 'snapdragon_ai_lab.runtime.controller']
+            sys.executable, '-m', 'oxc.runtime.controller']
         self.namespace = []
         if self.configured:
             self.namespace = self.host_fixture([])
@@ -186,7 +186,7 @@ class Daemon:
     def restart(self, reference=False):
         self.stop()
         if reference or 'OXC_DAEMON_COMMAND' not in os.environ:
-            command = [sys.executable, '-m', 'snapdragon_ai_lab.runtime.controller']
+            command = [sys.executable, '-m', 'oxc.runtime.controller']
         else:
             command = shlex.split(os.environ['OXC_DAEMON_COMMAND'])
         self.start(command)

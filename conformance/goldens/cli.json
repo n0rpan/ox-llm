@@ -196,7 +196,7 @@
   },
   "retired-version": {
     "exit": 2,
-    "stderr": "The dense Qwen3.8 27B model was retired in v0.1.2. Use `local-ai ornith` or `local-ai moe`.\n",
+    "stderr": "The dense Qwen3.8 27B model was retired in v0.1.2. Use `oxc ornith` or `oxc moe`.\n",
     "stdout": ""
   },
   "rollback-help": {
@@ -252,16 +252,16 @@
   "uninstall-help": {
     "exit": 0,
     "stderr": "",
-    "stdout": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\n\nRemove ox-llm from this user account (dry run unless --apply).\n\noptions:\n  -h, --help       show this help message and exit\n  --apply          actually remove (default: print the plan)\n  --remove-models  also delete the model files runtime.json names\n  --record PATH    an extra install record: a stage manifest.json or a\n                   bootstrap install journal\n  --json           machine-readable output\n"
+    "stdout": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\n\nRemove ox-llm from this user account (dry run unless --apply).\n\noptions:\n  -h, --help       show this help message and exit\n  --apply          actually remove (default: print the plan)\n  --remove-models  also delete the model files runtime.json names\n  --record PATH    an extra install record: a stage manifest.json or a\n                   bootstrap install journal\n  --json           machine-readable output\n"
   },
   "uninstall-unknown-option": {
     "exit": 2,
-    "stderr": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\nlocal-ai uninstall: error: unrecognized arguments: --not-an-option\n",
+    "stderr": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\noxc uninstall: error: unrecognized arguments: --not-an-option\n",
     "stdout": ""
   },
   "uninstall-version": {
     "exit": 2,
-    "stderr": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\nlocal-ai uninstall: error: unrecognized arguments: --version\n",
+    "stderr": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\noxc uninstall: error: unrecognized arguments: --version\n",
     "stdout": ""
   },
   "unknown-action": {
@@ -297,17 +297,17 @@
   "version": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "version-abbreviation": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "version-after-action": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "version-after-unknown": {
     "exit": 2,
@@ -317,7 +317,7 @@
   "version-before-unknown": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "version-explicit-error": {
     "exit": 2,

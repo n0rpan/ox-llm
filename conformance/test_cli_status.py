@@ -60,7 +60,7 @@ def capture_status(name):
     def setup(home, environment):
         if name.startswith('status-trial'):
             stamp = time.monotonic_ns() // 1000 - 4_000_000
-            raw = ('Id=local-ai-flash-profile-cache-full-12288.service\nActiveState=active\n'
+            raw = ('Id=oxc-flash-profile-cache-full-12288.service\nActiveState=active\n'
                    'ActiveEnterTimestampMonotonic=' + str(stamp) + '\n').encode()
             if name == 'status-trial-duplicate':
                 raw += b'\n' + raw
@@ -73,7 +73,7 @@ def capture_status(name):
             environment['OXC_SYSTEMCTL_SHOW_FILE'] = str(query)
         if not name.startswith('status-download'):
             return
-        root = home / 'state/local-ai/downloads/flash-next'
+        root = home / 'state/oxc/downloads/flash-next'
         root.mkdir(parents=True)
         models = home / 'data/ai-stack/models/llm/Qwen3.8-Flash-Next'
         models.mkdir(parents=True)
@@ -99,7 +99,7 @@ def capture_status(name):
                     'models': entries, 'total_bytes': sum(row['bytes'] for row in entries)}
         (root / 'manifest.json').write_text(json.dumps(manifest))
         if name == 'status-download-paused':
-            (home / 'mock-services.json').write_text(json.dumps({'local-ai-flash-download.service': 'inactive'}))
+            (home / 'mock-services.json').write_text(json.dumps({'oxc-flash-download.service': 'inactive'}))
         if name == 'status-download-unqualified':
             chat['flash_qualification'] = 'weights-only'
 

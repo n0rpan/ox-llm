@@ -39,7 +39,7 @@ def capture(name):
         headers += [(key, replace(value)) for key, value in case.get('headers', [])]
         wire = (f'{method} {path} HTTP/1.1\r\nConnection: close\r\n' +
                 ''.join(f'{key}: {value}\r\n' for key, value in headers) + '\r\n').encode('latin-1')
-        lease = Path(daemon.env['LOCAL_AI_LEASE'])
+        lease = Path(daemon.env['OXC_LEASE'])
         lease.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         with lease.open('xb') as owner:
             owner.write(b'synthetic-other-owner\n')

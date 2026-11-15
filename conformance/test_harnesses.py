@@ -61,7 +61,7 @@ def send(daemon, system=SYSTEM, **extra):
 
 
 def persistence(daemon):
-    root = daemon.home / 'state/local-ai/harness-prefixes'
+    root = daemon.home / 'state/oxc/harness-prefixes'
     paths = sorted(path for path in root.rglob('*') if path.is_file()) if root.exists() else []
     if any(PRIVATE.encode() in path.read_bytes() for path in paths):
         raise AssertionError('A user turn was persisted in the harness registry')
@@ -81,13 +81,13 @@ def run_case(name):
         'learning-on', 'prepare', 'learning-on-stream', 'memory-only') else {}
     if name == 'bounded-prefixes':
         changes = {'harness_learning': {'enabled': True, 'min_requests': 1}}
-    environment = {'LOCAL_AI_HARNESS_STATE': ''} if name == 'memory-only' else {}
+    environment = {'OXC_HARNESS_STATE': ''} if name == 'memory-only' else {}
     with Daemon(configured=True, config_changes=changes, environ=environment) as daemon:
         output = []
         if name == 'empty':
             output.append(status(daemon))
         elif name == 'stored':
-            root = daemon.home / 'state/local-ai/harness-prefixes'
+            root = daemon.home / 'state/oxc/harness-prefixes'
             (root / 'primers').mkdir(parents=True)
             root.chmod(0o700)
             config = json.loads(daemon.config_path.read_text())
@@ -113,7 +113,7 @@ def run_case(name):
                 send(daemon, **options)
                 output.append(status(daemon))
             output.append(persistence(daemon))
-            if name == 'learning-off' and (daemon.home / 'state/local-ai/harness-prefixes/index.json').exists():
+            if name == 'learning-off' and (daemon.home / 'state/oxc/harness-prefixes/index.json').exists():
                 raise AssertionError('Unknown-client text was stored without opt-in')
             if name == 'learning-on':
                 daemon.restart(reference=True)
@@ -127,7 +127,7 @@ def run_case(name):
                 output.append([{'path': row['path'], 'body': row['body']} for row in daemon.events()[before:]
                                if row['event'] == 'request' and row['method'] == 'POST'])
                 output.append(daemon.call('POST', '/_local/harness/prepare', {'harness': '*'}))
-                index_path = daemon.home / 'state/local-ai/harness-prefixes/index.json'
+                index_path = daemon.home / 'state/oxc/harness-prefixes/index.json'
                 index = json.loads(index_path.read_text())
                 for entry in index['entries'].values():
                     entry['warm_identity'] = None

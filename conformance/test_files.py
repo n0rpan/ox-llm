@@ -52,7 +52,7 @@ class FileCompatibilityContract(unittest.TestCase):
             daemon.restart(reference=True)
             self.assertEqual(daemon.call('POST', '/v1/chat/completions', payload, headers=headers)['status'], 200)
             reference = wait_until(lambda: daemon.call('GET', '/_local/ledger')['body'].get('rows'))[0]
-            directory = daemon.home / '.local/state/local-ai/ledger'
+            directory = daemon.home / '.local/state/oxc/ledger'
             salt_digest = (directory / '.salt').read_bytes()
             self.assertEqual(len(salt_digest), 32)
             self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)

@@ -57,7 +57,7 @@ def run_case(name):
             changes = {'cache': {'root': str(override)}}
         elif name == 'environment-root':
             changes = {'cache': {'root': '/outside-synthetic-home'}}
-            environment = {'LOCAL_AI_STATE_CACHE_ROOT': str(override)}
+            environment = {'OXC_STATE_CACHE_ROOT': str(override)}
         elif name == 'symlink-root-outside-home':
             (home / 'escape').symlink_to('/outside-synthetic-home', target_is_directory=True)
             changes = {'cache': {'root': str(home / 'escape')}}

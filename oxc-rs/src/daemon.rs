@@ -124,7 +124,7 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
         if fresh.is_none() || ((path == "/v1/models" || path == "/models") && rows.is_empty()) {
             return context.error(
                 503,
-                "Model setup is not finished yet. Run `local-ai status` to follow it.",
+                "Model setup is not finished yet. Run `oxc status` to follow it.",
                 "unavailable_error",
                 "service_unavailable",
                 None,
@@ -484,7 +484,7 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
         if app.engine.status(&config)["validated"] != true {
             return context.error(
                 503,
-                "Model setup is not finished yet. Run `local-ai status` to follow it.",
+                "Model setup is not finished yet. Run `oxc status` to follow it.",
                 "unavailable_error",
                 "service_unavailable",
                 None,
@@ -711,27 +711,27 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
 pub async fn run() -> i32 {
     let port = std::env::var("LOCAL_LLM_PORT").unwrap_or_else(|_| "8092".into());
     let Ok(port) = port.parse::<u16>() else {
-        eprintln!("local-ai: invalid LOCAL_LLM_PORT");
+        eprintln!("oxc: invalid LOCAL_LLM_PORT");
         return 1;
     };
     let listener = match tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("local-ai: {error}");
+            eprintln!("oxc: {error}");
             return 1;
         }
     };
     let engine = match engine::Manager::new() {
         Ok(engine) => engine,
         Err(error) => {
-            eprintln!("local-ai: {error}");
+            eprintln!("oxc: {error}");
             return 1;
         }
     };
     let sharing = match crate::share_runtime::Manager::new(port, engine.ledger.clone()) {
         Ok(sharing) => sharing,
         Err(error) => {
-            eprintln!("local-ai: {error}");
+            eprintln!("oxc: {error}");
             return 1;
         }
     };
@@ -762,7 +762,7 @@ pub async fn run() -> i32 {
         tokio::select! {
             accepted=listener.accept()=>match accepted {
                 Ok((stream,_))=>{connections.spawn(crate::transport::serve(stream,router.clone()));},
-                Err(error)=>{eprintln!("local-ai: {error}");return 1;}
+                Err(error)=>{eprintln!("oxc: {error}");return 1;}
             },
             _=term.recv()=>break,
             _=tokio::signal::ctrl_c()=>break,

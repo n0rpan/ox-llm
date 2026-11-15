@@ -36,8 +36,8 @@ def capture(name):
     auth = name.startswith(('auth-', 'cors-'))
     config = {'openai_api': {'cors_origins': ['https://example.invalid']}} if name.startswith('cors-') else {}
     with Daemon(engine_free=True, config_changes=config,
-                environ={'LOCAL_AI_API_KEY': SYNTHETIC_KEY} if auth else {}) as daemon:
-        lease = Path(daemon.env['LOCAL_AI_LEASE'])
+                environ={'OXC_API_KEY': SYNTHETIC_KEY} if auth else {}) as daemon:
+        lease = Path(daemon.env['OXC_LEASE'])
         lease.parent.mkdir(parents=True, mode=0o700)
         with lease.open('xb') as owner:
             owner.write(b'synthetic-other-owner\n')

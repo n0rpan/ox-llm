@@ -128,7 +128,7 @@ fn sample() -> Result<Sample, String> {
     })
 }
 pub fn refusal(reason: &str) -> String {
-    const UNIT: &str = "local-ai-chat.service";
+    const UNIT: &str = "oxc-chat.service";
     if matches!(
         reason,
         "own_swap_limit_not_zero" | "memory_metadata_unavailable"
@@ -138,7 +138,7 @@ pub fn refusal(reason: &str) -> String {
             .and_then(|p| fs::read_to_string(p.join("memory.swap.max")).ok());
         if let Some(value) = swap {
             if value.trim() != "0" {
-                return format!("The model was not started: the controller service has no swap limit (memory.swap.max = {}); a model must never be swapped out, so no model is started. Fix: add MemorySwapMax=0 under [Service] of {UNIT} (systemctl --user edit local-ai-chat), then systemctl --user restart local-ai-chat; the installer writes it.",value.trim());
+                return format!("The model was not started: the controller service has no swap limit (memory.swap.max = {}); a model must never be swapped out, so no model is started. Fix: add MemorySwapMax=0 under [Service] of {UNIT} (systemctl --user edit oxc-chat), then systemctl --user restart oxc-chat; the installer writes it.",value.trim());
             }
         } else {
             return format!("The model was not started: the controller cannot read its own cgroup memory files. Fix: run the controller as the systemd user service {UNIT} (cgroup v2 required).");

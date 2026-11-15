@@ -53,22 +53,22 @@ const COMPLETENESS: [&str; 4] = ["complete", "closed-after-done", "incomplete", 
 const REPLAYS: [&str; 3] = ["cut-served", "cut-done", "cut-aborted"];
 
 fn directory() -> PathBuf {
-    std::env::var_os("LOCAL_AI_DIGEST_DIR")
+    std::env::var_os("OXC_DIGEST_DIR")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/digest"))
+        .unwrap_or_else(|| paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/digest"))
 }
 fn ledger() -> PathBuf {
-    std::env::var_os("LOCAL_AI_LEDGER_DIR")
+    std::env::var_os("OXC_LEDGER_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| paths::home().join(".local/state/local-ai/ledger"))
+        .unwrap_or_else(|| paths::home().join(".local/state/oxc/ledger"))
 }
 fn engine_log() -> PathBuf {
-    std::env::var_os("LOCAL_AI_ENGINE_LOG")
+    std::env::var_os("OXC_ENGINE_LOG")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/engine-stderr.log")
+            paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/engine-stderr.log")
         })
 }
 fn stamp(day: NaiveDate) -> String {
@@ -1070,7 +1070,7 @@ pub async fn run(day: Option<String>, as_json: bool, write: bool, status: bool, 
         return 0;
     }
     let Some(day) = parse_day(day.as_deref(), write || soak) else {
-        eprintln!("local-ai: Use a day like 2026-11-13, today or yesterday.");
+        eprintln!("oxc: Use a day like 2026-11-13, today or yesterday.");
         return 2;
     };
     let store = crate::cli::cache_status().await;
@@ -1125,7 +1125,7 @@ pub async fn run(day: Option<String>, as_json: bool, write: bool, status: bool, 
                     io::ErrorKind::NotFound => "FileNotFoundError",
                     _ => "OSError",
                 };
-                eprintln!("local-ai: the digest could not be saved ({name}).");
+                eprintln!("oxc: the digest could not be saved ({name}).");
                 return 1;
             }
         }

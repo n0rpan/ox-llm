@@ -47,4 +47,4 @@ if name == 'pgrep':
     raise SystemExit(1)
 if name == 'systemctl' and 'is-active' in sys.argv:
     # Controller active; unrelated desktop/image/download units inactive.
-    raise SystemExit(0 if 'local-ai-chat.service' in sys.argv else 3)
+    raise SystemExit(0 if 'oxc-chat.service' in sys.argv else 3)

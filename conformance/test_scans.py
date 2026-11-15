@@ -224,7 +224,7 @@ def run_case(name):
             elif name == 'scrub-layout':
                 receipt.write_bytes((str(home / 'Work/local-ai') + '\r\n' +
                     str(home / '.local/share/ai-stack') + '\r\n' +
-                    str(home / '.local/state/local-ai') + '\r\n' +
+                    str(home / '.local/state/oxc') + '\r\n' +
                     '/run/user/12345 user-12345.slice user@12345.service\r\n' +
                     str(uuid.uuid4()) + '\r\n' + 'numbers 1.25 32768\r\n').encode())
             elif name == 'scrub-binary':
@@ -232,7 +232,7 @@ def run_case(name):
         elif name == 'rules':
             args = ['rules']
         command = shlex.split(os.environ[variable]) if variable in os.environ else [
-            sys.executable, str(ROOT / 'lab/tools' / script)]
+            sys.executable, str(ROOT / 'oxc/tools' / script)]
         result = subprocess.run(command + args, env=env, cwd=home, capture_output=True, text=True, timeout=10)
         if result.returncode != expected:
             raise AssertionError(name + ': ' + repr((result.returncode, result.stdout, result.stderr)))

@@ -1,6 +1,6 @@
 """Synthetic wire inputs shared by HTTP policy conformance subsets."""
 KEY = 'synthetic-policy-credential'
-AUTH = {'LOCAL_AI_API_KEY': KEY}
+AUTH = {'OXC_API_KEY': KEY}
 ORIGIN = 'https://example.invalid'
 CORS = {'cors_origins': [ORIGIN]}
 WILDCARD = {'cors_origins': ['*']}
@@ -41,7 +41,7 @@ CASES = {
     'key-file-missing': {'keyfile': None},
     'key-file-invalid-utf8': {'keyfile': b'\xff\n'},
     'key-env-precedes-file': {'env': AUTH, 'keyfile': b'synthetic-other\n', 'headers': [('Authorization', 'Bearer ' + KEY)]},
-    'key-blank-env-uses-file': {'env': {'LOCAL_AI_API_KEY': '  '}, 'keyfile': (KEY + '\n').encode(), 'headers': [('api-key', KEY)]},
+    'key-blank-env-uses-file': {'env': {'OXC_API_KEY': '  '}, 'keyfile': (KEY + '\n').encode(), 'headers': [('api-key', KEY)]},
     'key-file-symlink': {'keyfile': (KEY + '\n').encode(), 'symlink': True, 'headers': [('api-key', KEY)]},
     'key-file-unicode': {'keyfile': 'synthetic-\u00e9\n'.encode(), 'headers': [('Authorization', 'Bearer synthetic-\u00e9')]},
     'key-file-cr-line-ending': {'keyfile': (KEY + '\rsynthetic-ignored\n').encode(), 'headers': [('api-key', KEY)]},

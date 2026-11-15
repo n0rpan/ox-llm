@@ -20,19 +20,19 @@ use std::{
     time::Duration,
 };
 
-const NAMED: [&str; 2] = ["local-ai-chat.service", "prompt-studio-app.service"];
+const NAMED: [&str; 2] = ["oxc-chat.service", "prompt-studio-app.service"];
 const PLACES: [&str; 9] = [
-    ".local/bin/local-ai",
+    ".local/bin/oxc",
     ".local/bin/oxa",
     ".local/bin/launch_local_plan.py",
-    ".config/local-ai",
-    ".local/state/local-ai",
+    ".config/oxc",
+    ".local/state/oxc",
     ".local/share/ai-stack/runtime",
     ".local/share/ai-stack/runtime-releases",
     ".local/share/ai-stack/releases",
     ".config/omarchy/plugins/snapdragon.local-ai",
 ];
-const CLIENT_NOTE:&str="Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.";
+const CLIENT_NOTE:&str="Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.";
 type Reasons = Vec<(String, String)>;
 type Owned = BTreeMap<PathBuf, BTreeSet<String>>;
 fn exists(path: &Path) -> bool {
@@ -171,8 +171,7 @@ fn record_files(doc: &Value) -> (Vec<(PathBuf, String)>, Vec<PathBuf>) {
     (files, dirs)
 }
 fn records(home: &Path, extra: &[PathBuf]) -> (Owned, Vec<PathBuf>, Vec<String>) {
-    let state =
-        read_json(&home.join(".local/state/local-ai/update/state.json")).unwrap_or(Value::Null);
+    let state = read_json(&home.join(".local/state/oxc/update/state.json")).unwrap_or(Value::Null);
     let mut sources = Vec::new();
     for entry in
         std::iter::once(&state["current"]).chain(state["history"].as_array().into_iter().flatten())
@@ -293,7 +292,7 @@ fn models(home: &Path) -> Vec<PathBuf> {
         }
     }
     let mut out = Vec::new();
-    if let Some(config) = read_json(&home.join(".config/local-ai/llm/runtime.json")) {
+    if let Some(config) = read_json(&home.join(".config/oxc/llm/runtime.json")) {
         walk(&config, &mut out);
     }
     out
@@ -735,7 +734,7 @@ fn report(
         return;
     }
     if let Some(message) = message {
-        println!("local-ai uninstall: refused: {message}");
+        println!("oxc uninstall: refused: {message}");
     }
     println!(
         "{}",

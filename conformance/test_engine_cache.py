@@ -39,7 +39,7 @@ def run_case(name):
     preload = name in ('preload', 'preload-memory', 'preload-async')
     environment = {'FAKE_ENGINE_STATE_CACHE': '1', 'FAKE_ENGINE_STATE_PRELOAD': '1' if preload else '0'}
     if name == 'preload-memory':
-        environment['LOCAL_AI_LEDGER'] = '0'
+        environment['OXC_LEDGER'] = '0'
     changes = {'cache': {'disk_budget_bytes': 0 if name == 'disk-off' else 64_000_000_000, 'ttl_secs': 60}}
     with Daemon(configured=True, config_changes=changes, environ=environment) as daemon:
         ledger = seed_ledger(daemon)

@@ -9,7 +9,7 @@ use std::{
 };
 
 pub fn directory() -> std::path::PathBuf {
-    std::env::var_os("LOCAL_AI_LEDGER_DIR")
+    std::env::var_os("OXC_LEDGER_DIR")
         .map(|value| {
             std::path::PathBuf::from(if value.is_empty() {
                 std::ffi::OsStr::new(".")
@@ -17,7 +17,7 @@ pub fn directory() -> std::path::PathBuf {
                 &value
             })
         })
-        .unwrap_or_else(|| paths::home().join(".local/state/local-ai/ledger"))
+        .unwrap_or_else(|| paths::home().join(".local/state/oxc/ledger"))
 }
 fn number(value: &Value) -> Value {
     if value.as_f64().is_some_and(|v| (0.0..=1e18).contains(&v)) {

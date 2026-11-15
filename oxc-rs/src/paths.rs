@@ -22,7 +22,7 @@ pub fn xdg(name: &str, fallback: &str) -> PathBuf {
 pub fn config() -> PathBuf {
     std::env::var_os("LOCAL_LLM_CONFIG")
         .map(PathBuf::from)
-        .unwrap_or_else(|| xdg("XDG_CONFIG_HOME", ".config").join("local-ai/llm/runtime.json"))
+        .unwrap_or_else(|| xdg("XDG_CONFIG_HOME", ".config").join("oxc/llm/runtime.json"))
 }
 
 /// Resolve existing symlinks while retaining missing trailing components, as

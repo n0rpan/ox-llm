@@ -387,7 +387,7 @@ impl Manager {
                 *config=tokio::task::spawn_blocking(move ||sharing::save_mode("off",None,Some(paused))).await
                     .map_err(|_|"Could not list network addresses: OSError")?
                     .map_err(|_|"Could not list network addresses: OSError")?;
-                eprintln!("local-ai: LAN share: the network changed (another subnet, gateway or gateway MAC); sharing is OFF. Run `local-ai share on lan` to share on this network.");
+                eprintln!("oxc: LAN share: the network changed (another subnet, gateway or gateway MAC); sharing is OFF. Run `oxc share on lan` to share on this network.");
                 Ok(Vec::new())
             }
         }
@@ -538,7 +538,7 @@ impl Manager {
             bool::from(left.ct_eq(&right))
         });
         if !valid {
-            return Err(self.refuse(context,401,"Missing or wrong share key. Send \"Authorization: Bearer <key>\" (local-ai share key on the host).",Some("authentication_error")));
+            return Err(self.refuse(context,401,"Missing or wrong share key. Send \"Authorization: Bearer <key>\" (oxc share key on the host).",Some("authentication_error")));
         }
         let raw = request.uri().to_string();
         let path = request.uri().path().trim_end_matches('/');

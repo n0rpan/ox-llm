@@ -76,7 +76,7 @@ def capture_case(name):
             path.write_text('#!' + sys.executable + '\n' + source)
             path.chmod(0o700)
         executable = daemon.home / 'oxc'
-        executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+        executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
         command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
         env = {**daemon.env, 'PATH': str(binary_dir) + ':/usr/bin:/bin'}
         if name == 'panel-output':

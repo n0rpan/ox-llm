@@ -179,12 +179,10 @@ pub struct Registry {
 }
 impl Registry {
     pub fn new() -> Self {
-        let directory = match std::env::var_os("LOCAL_AI_HARNESS_STATE") {
+        let directory = match std::env::var_os("OXC_HARNESS_STATE") {
             Some(value) if value.is_empty() => None,
             Some(value) => Some(PathBuf::from(value)),
-            None => {
-                Some(paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/harness-prefixes"))
-            }
+            None => Some(paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/harness-prefixes")),
         };
         let mut registry = Self {
             directory,

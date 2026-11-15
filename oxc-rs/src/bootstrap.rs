@@ -153,7 +153,7 @@ const MODEL: &str = "ornith-1.5-35b-a3b-apex-mtp-compact";
 const LEAVES: &[&str] = &[
     "Work",
     "Pictures/sd/_uploads",
-    ".local/state/local-ai/prefix-cache",
+    ".local/state/oxc/prefix-cache",
     ".local/share/ai-stack/releases/llama-cpu",
     ".local/share/ai-stack/releases/sd-cpu-repack",
     ".local/share/ai-stack/models/llm",
@@ -371,11 +371,7 @@ fn stage(
     config["selected_model"] = json!(MOE);
     config["ready"] = json!(false);
     config["server_sha256"] = json!("");
-    put(
-        ".config/local-ai/llm/runtime.json",
-        json_bytes(&config)?,
-        0o600,
-    )?;
+    put(".config/oxc/llm/runtime.json", json_bytes(&config)?, 0o600)?;
     let mut image_files: Vec<_> = fs::read_dir(project.join("examples/runtime/images"))
         .map_err(io)?
         .filter_map(|v| v.ok())
@@ -397,13 +393,13 @@ fn stage(
             value["validated"] = json!(false);
         }
         put(
-            &format!(".config/local-ai/images/{name}"),
+            &format!(".config/oxc/images/{name}"),
             json_bytes(&value)?,
             0o600,
         )?;
     }
     put(
-        ".local/bin/local-ai",
+        ".local/bin/oxc",
         fs::read(std::env::current_exe().map_err(io)?).map_err(io)?,
         0o700,
     )?;
@@ -436,11 +432,11 @@ fn stage(
         let text = text
             .replace(
                 "ExecStart=/usr/bin/python3 %h/.local/share/ai-stack/runtime/controller.py",
-                "ExecStart=%h/.local/bin/local-ai serve",
+                "ExecStart=%h/.local/bin/oxc serve",
             )
             .replace(
                 "ExecStart=/usr/bin/python3 %h/.local/share/ai-stack/runtime/studio",
-                "ExecStart=%h/.local/bin/local-ai studio",
+                "ExecStart=%h/.local/bin/oxc studio",
             );
         put(
             &format!(".config/systemd/user/{name}"),
@@ -459,7 +455,7 @@ fn stage(
         }
         Ok(())
     }
-    let plugin = project.join("src/snapdragon_ai_lab/omarchy_plugin");
+    let plugin = project.join("src/oxc/omarchy_plugin");
     let mut plugin_files = Vec::new();
     source_files(&plugin, &mut plugin_files)?;
     plugin_files.sort();
@@ -474,11 +470,11 @@ fn stage(
         )?;
     }
     put(
-        ".config/local-ai/npu-status.json",
+        ".config/oxc/npu-status.json",
         json_bytes(&json!({"ready":false,"state":"disabled","bootstrap_qualified":false}))?,
         0o600,
     )?;
-    put(".local/state/local-ai/inference.lock", Vec::new(), 0o600)?;
+    put(".local/state/oxc/inference.lock", Vec::new(), 0o600)?;
     for name in ["LICENSE", "NOTICE"] {
         put(
             &format!(".local/share/ai-stack/notices/wrapper/{name}"),

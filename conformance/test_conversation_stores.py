@@ -27,7 +27,7 @@ def run_case(name):
         home = Path(temporary)
         environment = {'FAKE_ENGINE_LEGACY_STORES': '1'}
         if name == 'environment':
-            environment['LOCAL_AI_STATE_CACHE_ROOT'] = str(home / 'cache-env-root')
+            environment['OXC_STATE_CACHE_ROOT'] = str(home / 'cache-env-root')
         with Daemon(configured=True, home=home, environ=environment) as daemon:
             config = json.loads(daemon.config_path.read_text())
             cache = {'disk_budget_bytes': 0 if name in ('off', 'off-override') else 64_000_000_000}

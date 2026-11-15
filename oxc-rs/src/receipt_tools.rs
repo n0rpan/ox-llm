@@ -80,7 +80,8 @@ const KEY: &str = r"^[A-Za-z0-9][A-Za-z0-9_.:+%-]{0,79}$";
 const FILE_NAME: &str = r"^[A-Za-z0-9][A-Za-z0-9_.+=,-]{0,159}$";
 const PROGRAM: &str = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$";
 const PATH_KEY: &str = r"(?:^|[_. -])(?:path|paths|dir|dirs|directory|file|files|root|folder|location)$|[a-z](?:Path|Paths|Dir|File|Files|Root)$";
-const ENV_ALLOW: &str = r"^(?:OMP_|GOMP_|KMP_|OXE_|GGML_|LLAMA_|LOCAL_AI_|RAYON_|MALLOC_|OPENBLAS_|VECLIB_|MLX_)[A-Z0-9_]*$";
+const ENV_ALLOW: &str =
+    r"^(?:OMP_|GOMP_|KMP_|OXE_|GGML_|LLAMA_|OXC_|RAYON_|MALLOC_|OPENBLAS_|VECLIB_|MLX_)[A-Z0-9_]*$";
 const UNIT_SLASH: &str = r"^[(\[]?(?:[A-Za-zµ%]{1,8}/(?:s|sec|ms|us|min|h|token|tokens|tok|run|step|core|thread|pass|layer|row|block|request|req|image|px|W|GB|GiB|MiB|K|1K)|\d{1,6}/\d{1,6})[)\].,;:]*$";
 const DENY_KEYS: &[&str] = &[
     "home",
@@ -897,7 +898,7 @@ fn scrub_run(words: &[String]) -> Result<i32> {
         for (suffix, replacement) in [
             ("/Work/local-ai", "$LAB_ROOT"),
             ("/.local/share/ai-stack", "$AI_STACK"),
-            ("/.local/state/local-ai", "$LOCAL_AI_STATE"),
+            ("/.local/state/oxc", "$OXC_STATE"),
             ("", "$HOME"),
         ] {
             patterns.push((

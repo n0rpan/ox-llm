@@ -35,8 +35,8 @@ class BootstrapContract(unittest.TestCase):
 
     def invoke(self, operation, args, expected=0):
         variable, module = {
-            'bootstrap': ('OXC_BOOTSTRAP_COMMAND', 'snapdragon_ai_lab.bootstrap'),
-            'install': ('OXC_INSTALL_COMMAND', 'snapdragon_ai_lab.bootstrap_install'),
+            'bootstrap': ('OXC_BOOTSTRAP_COMMAND', 'oxc.bootstrap'),
+            'install': ('OXC_INSTALL_COMMAND', 'oxc.bootstrap_install'),
         }[operation]
         command = shlex.split(os.environ[variable]) if variable in os.environ else [sys.executable, '-m', module]
         result = subprocess.run(command + [str(arg) for arg in args], cwd=self.home, env=self.env,
@@ -45,7 +45,7 @@ class BootstrapContract(unittest.TestCase):
         return result
 
     def stage_payload(self):
-        self.invoke('bootstrap', ['--project', ROOT / 'lab', 'stage', self.stage, '--target-home', self.target])
+        self.invoke('bootstrap', ['--project', ROOT / 'oxc', 'stage', self.stage, '--target-home', self.target])
         self.invoke('bootstrap', ['verify-stage', self.stage])
         return digest(self.stage / 'stage-manifest.json')
 
@@ -61,12 +61,12 @@ class BootstrapContract(unittest.TestCase):
             for original in GOLDENS.glob('*.service'):
                 expected = original.read_text().replace(
                     'ExecStart=/usr/bin/python3 %h/.local/share/ai-stack/runtime/controller.py',
-                    'ExecStart=%h/.local/bin/local-ai serve').replace(
+                    'ExecStart=%h/.local/bin/oxc serve').replace(
                     'ExecStart=/usr/bin/python3 %h/.local/share/ai-stack/runtime/studio',
-                    'ExecStart=%h/.local/bin/local-ai studio')
+                    'ExecStart=%h/.local/bin/oxc studio')
                 self.assertEqual((NATIVE_UNITS / original.name).read_text(), expected)
             payload = self.stage / 'payload'
-            self.assertEqual((payload / '.local/bin/local-ai').read_bytes()[:4], b'\x7fELF')
+            self.assertEqual((payload / '.local/bin/oxc').read_bytes()[:4], b'\x7fELF')
             self.assertEqual(list((payload / '.local/share/ai-stack/runtime').glob('*.py')), [])
         return NATIVE_UNITS if native else GOLDENS
 
@@ -77,7 +77,7 @@ class BootstrapContract(unittest.TestCase):
         return ['rollback', '--journal', self.journal, '--journal-sha256', identity]
 
     def invoke_reference_install(self, args):
-        result = subprocess.run([sys.executable, '-m', 'snapdragon_ai_lab.bootstrap_install',
+        result = subprocess.run([sys.executable, '-m', 'oxc.bootstrap_install',
                                  *(str(arg) for arg in args)], cwd=self.home, env=self.env,
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -104,21 +104,21 @@ class BootstrapContract(unittest.TestCase):
             installed = self.target / '.config/systemd/user' / golden.name
             self.assertEqual(installed.read_bytes(), golden.read_bytes())
             self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o600)
-        config = self.target / '.config/local-ai/llm/runtime.json'
+        config = self.target / '.config/oxc/llm/runtime.json'
         runtime = json.loads(config.read_text())
         self.assertFalse(runtime['ready'])
         self.assertFalse(runtime['profiles']['ornith-35b-a3b-local']['ready'])
         self.assertEqual(runtime['selected_model'], 'ornith-35b-a3b-local')
         self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
-        executable = self.target / '.local/bin/local-ai'
+        executable = self.target / '.local/bin/oxc'
         self.assertEqual(stat.S_IMODE(executable.stat().st_mode), 0o700)
         installed_env = {**self.env, 'HOME': str(self.target)}
         installed_env.pop('PYTHONPATH')  # Installed help must work without the checkout package.
         help_result = subprocess.run([str(executable), '--help'], env=installed_env, cwd=self.target,
                                      capture_output=True, timeout=5)
         self.assertEqual(help_result.returncode, 0, help_result.stderr.decode())
-        self.assertIn(b'usage: local-ai', help_result.stdout)
-        lease = self.target / '.local/state/local-ai/inference.lock'
+        self.assertIn(b'usage: oxc', help_result.stdout)
+        lease = self.target / '.local/state/oxc/inference.lock'
         lease_inode = lease.stat().st_ino
         self.assertEqual(stat.S_IMODE(lease.stat().st_mode), 0o600)
         self.invoke('install', ['rollback', '--journal', self.journal,
@@ -137,7 +137,7 @@ class BootstrapContract(unittest.TestCase):
 
     def test_existing_managed_file_is_preserved(self):
         stage_digest = self.stage_payload()
-        executable = self.target / '.local/bin/local-ai'
+        executable = self.target / '.local/bin/oxc'
         executable.parent.mkdir(parents=True, mode=0o700)
         executable.write_bytes(b'synthetic owner file\n')
         executable.chmod(0o700)
@@ -159,7 +159,7 @@ class BootstrapContract(unittest.TestCase):
 
     def test_tampered_source_refuses_before_any_target_mutation(self):
         identity = self.stage_payload()
-        (self.stage / 'payload/.local/bin/local-ai').write_bytes(b'synthetic changed payload\n')
+        (self.stage / 'payload/.local/bin/oxc').write_bytes(b'synthetic changed payload\n')
         self.invoke('install', self.apply_args(identity), expected=1)
         self.assertFalse(self.target.exists())
         self.assertFalse(self.journal.exists())
@@ -173,7 +173,7 @@ class BootstrapContract(unittest.TestCase):
 
     def test_staged_file_symlink_is_refused(self):
         identity = self.stage_payload()
-        path = self.stage / 'payload/.local/bin/local-ai'
+        path = self.stage / 'payload/.local/bin/oxc'
         outside = self.home / 'unrelated'
         outside.write_bytes(path.read_bytes())
         path.unlink()
@@ -199,27 +199,27 @@ class BootstrapContract(unittest.TestCase):
 
     def test_rollback_preserves_owner_edits_and_unrecorded_files(self):
         installed = self.install_payload()
-        executable = self.target / '.local/bin/local-ai'
+        executable = self.target / '.local/bin/oxc'
         executable.write_bytes(b'synthetic owner edit\n')
         unrecorded = self.target / 'owner-note.txt'
         unrecorded.write_bytes(b'synthetic owner note\n')
         result = json.loads(self.invoke('install', self.undo_args(installed['journal_sha256'])).stdout)
-        self.assertIn('.local/bin/local-ai', result['preserved'])
+        self.assertIn('.local/bin/oxc', result['preserved'])
         self.assertEqual(executable.read_bytes(), b'synthetic owner edit\n')
         self.assertEqual(unrecorded.read_bytes(), b'synthetic owner note\n')
-        self.assertFalse((self.target / '.config/local-ai/llm/runtime.json').exists())
+        self.assertFalse((self.target / '.config/oxc/llm/runtime.json').exists())
 
     def test_wrong_rollback_hash_preserves_installation(self):
         self.install_payload()
         journal = self.journal.read_bytes()
-        executable = self.target / '.local/bin/local-ai'
+        executable = self.target / '.local/bin/oxc'
         identity = digest(executable)
         self.invoke('install', self.undo_args('0' * 64), expected=1)
         self.assertEqual(self.journal.read_bytes(), journal)
         self.assertEqual(digest(executable), identity)
 
     def test_existing_canonical_lease_is_never_replaced_or_truncated(self):
-        lease = self.target / '.local/state/local-ai/inference.lock'
+        lease = self.target / '.local/state/oxc/inference.lock'
         lease.parent.mkdir(parents=True, mode=0o700)
         lease.write_bytes(b'synthetic existing lease\n')
         lease.chmod(0o600)
@@ -232,7 +232,7 @@ class BootstrapContract(unittest.TestCase):
 
     def test_busy_canonical_lease_refuses_and_rolls_back_created_files(self):
         identity = self.stage_payload()
-        lease = self.target / '.local/state/local-ai/inference.lock'
+        lease = self.target / '.local/state/oxc/inference.lock'
         lease.parent.mkdir(parents=True, mode=0o700)
         lease.write_bytes(b'synthetic held lease\n')
         lease.chmod(0o600)
@@ -245,11 +245,11 @@ class BootstrapContract(unittest.TestCase):
         self.assertFalse(state['installed'])
         self.assertEqual(lease.stat().st_ino, inode)
         self.assertEqual(lease.read_bytes(), b'synthetic held lease\n')
-        self.assertFalse((self.target / '.local/bin/local-ai').exists())
+        self.assertFalse((self.target / '.local/bin/oxc').exists())
 
     def test_public_canonical_lease_refuses_before_journal_creation(self):
         identity = self.stage_payload()
-        lease = self.target / '.local/state/local-ai/inference.lock'
+        lease = self.target / '.local/state/oxc/inference.lock'
         lease.parent.mkdir(parents=True, mode=0o700)
         lease.write_bytes(b'')
         lease.chmod(0o644)
@@ -267,7 +267,7 @@ class BootstrapContract(unittest.TestCase):
                 identity = self.stage_payload()
                 self.invoke('install', self.apply_args(identity), expected=1)
                 self.assertFalse(self.journal.exists())
-                self.assertFalse((self.target / '.local/bin/local-ai').exists())
+                self.assertFalse((self.target / '.local/bin/oxc').exists())
 
     def test_forged_journal_cannot_name_an_unplanned_file(self):
         self.install_payload()
@@ -290,27 +290,27 @@ class BootstrapContract(unittest.TestCase):
 
     def test_installed_journal_can_be_rolled_back_by_reference(self):
         installed = self.install_payload()
-        lease = self.target / '.local/state/local-ai/inference.lock'
+        lease = self.target / '.local/state/oxc/inference.lock'
         inode = lease.stat().st_ino
         self.invoke_reference_install(self.undo_args(installed['journal_sha256']))
-        self.assertFalse((self.target / '.local/bin/local-ai').exists())
+        self.assertFalse((self.target / '.local/bin/oxc').exists())
         self.assertEqual(lease.stat().st_ino, inode)
 
     def test_reference_journal_can_be_rolled_back_by_alternate(self):
         installed = self.invoke_reference_install(self.apply_args(self.stage_payload()))
-        lease = self.target / '.local/state/local-ai/inference.lock'
+        lease = self.target / '.local/state/oxc/inference.lock'
         inode = lease.stat().st_ino
         self.invoke('install', self.undo_args(installed['journal_sha256']))
-        self.assertFalse((self.target / '.local/bin/local-ai').exists())
+        self.assertFalse((self.target / '.local/bin/oxc').exists())
         self.assertEqual(lease.stat().st_ino, inode)
 
     def test_pinned_asset_plans_match_reference_for_both_image_sets(self):
         for image in ('flux2-klein', 'z-image'):
             with self.subTest(image=image):
-                args = ['--project', ROOT / 'lab', 'plan', '--target-home', self.target,
+                args = ['--project', ROOT / 'oxc', 'plan', '--target-home', self.target,
                         '--image-model', image]
                 actual = json.loads(self.invoke('bootstrap', args).stdout)
-                reference = subprocess.run([sys.executable, '-m', 'snapdragon_ai_lab.bootstrap',
+                reference = subprocess.run([sys.executable, '-m', 'oxc.bootstrap',
                     *(str(arg) for arg in args)], cwd=self.home, env=self.env,
                     capture_output=True, text=True, timeout=20, check=True)
                 self.assertEqual(actual, json.loads(reference.stdout))
@@ -318,7 +318,7 @@ class BootstrapContract(unittest.TestCase):
 
     def test_installed_service_entry_points_start_without_models(self):
         self.install_payload()
-        for unit, route in (('local-ai-chat.service', '/_local/status'),
+        for unit, route in (('oxc-chat.service', '/_local/status'),
                             ('prompt-studio-app.service', '/')):
             with self.subTest(unit=unit):
                 text = (self.target / '.config/systemd/user' / unit).read_text()
@@ -370,20 +370,20 @@ class BootstrapContract(unittest.TestCase):
                 with self.subTest(operation=operation, action=action):
                     args = ([action] if action else []) + ['--help']
                     actual = self.invoke(operation, args)
-                    reference = subprocess.run([sys.executable, '-m', 'snapdragon_ai_lab.' + module, *args],
+                    reference = subprocess.run([sys.executable, '-m', 'oxc.' + module, *args],
                         cwd=self.home, env=self.env, capture_output=True, text=True, timeout=10, check=True)
                     self.assertEqual(actual.stdout, reference.stdout)
                     self.assertEqual(actual.stderr, reference.stderr)
 
     def test_equal_option_forms_are_preserved(self):
-        self.invoke('bootstrap', ['--project=' + str(ROOT / 'lab'), 'stage', self.stage,
+        self.invoke('bootstrap', ['--project=' + str(ROOT / 'oxc'), 'stage', self.stage,
                                  '--target-home=' + str(self.target), '--image-model=z-image'])
         args = ['apply', '--stage=' + str(self.stage), '--target-home=' + str(self.target),
                 '--journal=' + str(self.journal), '--stage-manifest-sha256=' + digest(self.stage / 'stage-manifest.json')]
         installed = json.loads(self.invoke('install', args).stdout)
         self.invoke('install', ['rollback', '--journal=' + str(self.journal),
                                '--journal-sha256=' + installed['journal_sha256']])
-        self.assertFalse((self.target / '.local/bin/local-ai').exists())
+        self.assertFalse((self.target / '.local/bin/oxc').exists())
 
     def test_agent_identity_refresh_retains_the_canonical_lease(self):
         source = self.home / 'synthetic-agent.c'
@@ -399,7 +399,7 @@ class BootstrapContract(unittest.TestCase):
 int main(int argc, char **argv) {
     if (argc != 4 || strcmp(argv[1], "identity") || strcmp(argv[2], "--refresh") || strcmp(argv[3], "--offline")) return 2;
     char path[4096];
-    snprintf(path, sizeof(path), "%s/.local/state/local-ai/inference.lock", getenv("HOME"));
+    snprintf(path, sizeof(path), "%s/.local/state/oxc/inference.lock", getenv("HOME"));
     int fd = open(path, O_RDWR | O_NOFOLLOW);
     int held = fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
     if (fd >= 0) close(fd);
@@ -413,7 +413,7 @@ int main(int argc, char **argv) {
 ''')
         subprocess.run(['/usr/bin/cc', '-o', str(binary), str(source)], env=self.env,
                        cwd=self.home, capture_output=True, timeout=20, check=True)
-        self.invoke('bootstrap', ['--project', ROOT / 'lab', 'stage', self.stage,
+        self.invoke('bootstrap', ['--project', ROOT / 'oxc', 'stage', self.stage,
                                  '--target-home', self.target, '--oxa-binary', binary])
         install_args = self.apply_args(digest(self.stage / 'stage-manifest.json'))
         # argparse stores the last spelling. Refresh must use that validated

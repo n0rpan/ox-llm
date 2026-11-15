@@ -12,40 +12,34 @@ use std::{
 };
 use tokio::io::AsyncReadExt;
 const TRIAL_UNITS: &[(&str, &str)] = &[
-    ("local-ai-planning-live.service", "http"),
-    ("local-ai-flash-final-agent.service", "coding"),
-    ("local-ai-flash-code-screen.service", "coding"),
-    ("local-ai-flash-agent.service", "coding"),
-    ("local-ai-flash-native-http.service", "http"),
-    ("local-ai-flash-prefill.service", "prefill"),
-    ("local-ai-flash-wide-prefill.service", "prefill"),
-    ("local-ai-flash-thp.service", "memory"),
-    ("local-ai-flash-cache-screen.service", "memory"),
-    ("local-ai-flash-overlap.service", "overlap"),
-    ("local-ai-flash-smoke.service", "baseline"),
-    ("local-ai-flash-profile-cache-abba.service", "memory"),
-    ("local-ai-flash-profile-hot-parity.service", "baseline"),
-    ("local-ai-flash-profile-hot-abba.service", "memory"),
-    ("local-ai-flash-profile-cpu-quota-abba.service", "coding"),
-    ("local-ai-flash-profile-decode46.service", "coding"),
-    ("local-ai-flash-profile-decode48.service", "coding"),
-    ("local-ai-flash-profile-selective-q8.service", "coding"),
-    ("local-ai-flash-profile-placement.service", "coding"),
-    ("local-ai-flash-profile-combined-parity.service", "coding"),
-    (
-        "local-ai-flash-profile-combined-coalescing.service",
-        "coding",
-    ),
-    (
-        "local-ai-flash-profile-combined-predictive.service",
-        "coding",
-    ),
-    ("local-ai-flash-profile-ngram-capture.service", "memory"),
-    ("local-ai-flash-profile-ngram-screen.service", "coding"),
-    ("local-ai-flash-profile-cache-full-12288.service", "coding"),
-    ("local-ai-flash-profile-cache-full-13312.service", "coding"),
-    ("local-ai-flash-profile-io-full-4.service", "coding"),
-    ("local-ai-flash-profile-io-full-8.service", "coding"),
+    ("oxc-planning-live.service", "http"),
+    ("oxc-flash-final-agent.service", "coding"),
+    ("oxc-flash-code-screen.service", "coding"),
+    ("oxc-flash-agent.service", "coding"),
+    ("oxc-flash-native-http.service", "http"),
+    ("oxc-flash-prefill.service", "prefill"),
+    ("oxc-flash-wide-prefill.service", "prefill"),
+    ("oxc-flash-thp.service", "memory"),
+    ("oxc-flash-cache-screen.service", "memory"),
+    ("oxc-flash-overlap.service", "overlap"),
+    ("oxc-flash-smoke.service", "baseline"),
+    ("oxc-flash-profile-cache-abba.service", "memory"),
+    ("oxc-flash-profile-hot-parity.service", "baseline"),
+    ("oxc-flash-profile-hot-abba.service", "memory"),
+    ("oxc-flash-profile-cpu-quota-abba.service", "coding"),
+    ("oxc-flash-profile-decode46.service", "coding"),
+    ("oxc-flash-profile-decode48.service", "coding"),
+    ("oxc-flash-profile-selective-q8.service", "coding"),
+    ("oxc-flash-profile-placement.service", "coding"),
+    ("oxc-flash-profile-combined-parity.service", "coding"),
+    ("oxc-flash-profile-combined-coalescing.service", "coding"),
+    ("oxc-flash-profile-combined-predictive.service", "coding"),
+    ("oxc-flash-profile-ngram-capture.service", "memory"),
+    ("oxc-flash-profile-ngram-screen.service", "coding"),
+    ("oxc-flash-profile-cache-full-12288.service", "coding"),
+    ("oxc-flash-profile-cache-full-13312.service", "coding"),
+    ("oxc-flash-profile-io-full-4.service", "coding"),
+    ("oxc-flash-profile-io-full-8.service", "coding"),
 ];
 const PRIMARY: &str = "ornith-35b-a3b-local";
 const SECONDARY: &str = "qwen3.6-35b-a3b-local";
@@ -224,7 +218,7 @@ fn failure_row(value: &Value, flash: bool, ornith: bool) -> Option<Value> {
         "cgroup_oom"=>"The model ran out of its memory allowance and was stopped. Try again, or pick a smaller Flash tier.",
         "host_oom_kill"=>"The system ran out of memory and the model was stopped. Close a few apps and try again.",
         "own_swap_nonzero"=>"The model was stopped because part of it was swapped to disk. Try again in a moment.",
-        "own_swap_limit_not_zero"=>"The model was stopped: its swap limit is not set as expected. Run `local-ai status` and check the setup.",
+        "own_swap_limit_not_zero"=>"The model was stopped: its swap limit is not set as expected. Run `oxc status` and check the setup.",
         "cgroup_pids_limit"=>"The model was stopped: it started too many processes. Try again; if it repeats, reinstall the runtime.",
         _=>&reason,
     };
@@ -363,11 +357,11 @@ fn preferred(installed: &str, legacy: &str) -> PathBuf {
     }
 }
 fn compute_busy() -> Value {
-    let path = std::env::var_os("LOCAL_AI_LEASE")
+    let path = std::env::var_os("OXC_LEASE")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             preferred(
-                ".local/state/local-ai/inference.lock",
+                ".local/state/oxc/inference.lock",
                 "Work/prompt-studio/generation.lock",
             )
         });
@@ -432,7 +426,7 @@ async fn active_download() -> bool {
             "--user",
             "is-active",
             "--quiet",
-            "local-ai-flash-download.service",
+            "oxc-flash-download.service",
         ])
         .stdin(Stdio::inherit())
         .stdout(Stdio::null())
@@ -443,12 +437,12 @@ async fn active_download() -> bool {
 async fn download_status(qualification: &Value) -> Value {
     let empty = json!({"flash_download_state":"absent","flash_download_bytes":0,"flash_download_total_bytes":0,
         "flash_download_shards":0,"flash_verified_shards":0,"flash_download_active":false,"flash_waiting_verification":false});
-    let state = std::env::var_os("LOCAL_AI_FLASH_DOWNLOAD_STATE")
+    let state = std::env::var_os("OXC_FLASH_DOWNLOAD_STATE")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            paths::xdg("XDG_STATE_HOME", ".local/state").join("local-ai/downloads/flash-next")
+            paths::xdg("XDG_STATE_HOME", ".local/state").join("oxc/downloads/flash-next")
         });
-    let models = std::env::var_os("LOCAL_AI_FLASH_MODELS")
+    let models = std::env::var_os("OXC_FLASH_MODELS")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::env::var_os("XDG_DATA_HOME")
@@ -728,11 +722,11 @@ pub async fn project() -> Result<Value, String> {
     };
     let flash = cli::offered(FLASH).await;
     let ornith = cli::offered(PRIMARY).await;
-    let npu = std::env::var_os("LOCAL_AI_NPU_STATUS")
+    let npu = std::env::var_os("OXC_NPU_STATUS")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             preferred(
-                ".config/local-ai/npu-status.json",
+                ".config/oxc/npu-status.json",
                 "Work/local-ai-optimization/npu-status.json",
             )
         });
@@ -792,7 +786,7 @@ pub async fn run(as_json: bool) -> i32 {
     let value = match project().await {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("local-ai: {error}");
+            eprintln!("oxc: {error}");
             return 1;
         }
     };

@@ -20,8 +20,8 @@ fn mode(config: &Value) -> &str {
         .unwrap_or("off")
 }
 fn key_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("LOCAL_AI_SHARE_KEY_FILE")
-        .filter(|s| !s.to_string_lossy().trim().is_empty())
+    if let Some(path) =
+        std::env::var_os("OXC_SHARE_KEY_FILE").filter(|s| !s.to_string_lossy().trim().is_empty())
     {
         return PathBuf::from(path.to_string_lossy().trim());
     }

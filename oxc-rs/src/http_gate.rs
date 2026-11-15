@@ -136,7 +136,7 @@ fn loopback_origin(origin: &str, port: u16) -> bool {
 // None means authentication is disabled. An empty key means configured but
 // unreadable/empty, and is deliberately impossible to authenticate with.
 fn api_key(config: &Value) -> Option<Vec<u8>> {
-    if let Ok(value) = std::env::var("LOCAL_AI_API_KEY") {
+    if let Ok(value) = std::env::var("OXC_API_KEY") {
         if !value.trim().is_empty() {
             return Some(value.trim().as_bytes().to_vec());
         }

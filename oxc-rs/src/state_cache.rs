@@ -70,7 +70,7 @@ pub fn root(config: &Value) -> io::Result<PathBuf> {
             "state_cache_root_override_invalid",
         )
     };
-    let environment = std::env::var_os("LOCAL_AI_STATE_CACHE_ROOT").filter(|s| !s.is_empty());
+    let environment = std::env::var_os("OXC_STATE_CACHE_ROOT").filter(|s| !s.is_empty());
     let raw = environment
         .map(|v| v.into_string().map_err(|_| invalid()))
         .transpose()?
@@ -104,7 +104,7 @@ pub fn root(config: &Value) -> io::Result<PathBuf> {
     Ok(path)
 }
 pub fn overridden(config: &Value) -> bool {
-    std::env::var_os("LOCAL_AI_STATE_CACHE_ROOT").is_some_and(|s| !s.is_empty())
+    std::env::var_os("OXC_STATE_CACHE_ROOT").is_some_and(|s| !s.is_empty())
         || !config["cache"]["root"].is_null()
 }
 pub fn conversation_args(config: &Value, args: Vec<String>) -> io::Result<Vec<String>> {

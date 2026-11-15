@@ -25,14 +25,14 @@ CASES = ('fresh-repeat-rotate', 'json-flag', 'existing-unshown', 'existing-shown
 def capture(name):
     home = CANONICAL_HOME
     env = isolated_env(home)
-    env['LOCAL_LLM_CONFIG'] = str(home / 'config/local-ai/llm/runtime.json')
-    key = home / 'config/local-ai/lan-share-key.json'
+    env['LOCAL_LLM_CONFIG'] = str(home / 'config/oxc/llm/runtime.json')
+    key = home / 'config/oxc/lan-share-key.json'
     if name == 'override':
         key = home / 'synthetic keys/nested/key.json'
-        env['LOCAL_AI_SHARE_KEY_FILE'] = str(key)
+        env['OXC_SHARE_KEY_FILE'] = str(key)
     elif name == 'relative-override':
         key = home / 'relative-key.json'
-        env['LOCAL_AI_SHARE_KEY_FILE'] = '  relative-key.json  '
+        env['OXC_SHARE_KEY_FILE'] = '  relative-key.json  '
     seeded = name in ('existing-unshown', 'existing-shown', 'invalid-json', 'invalid-key', 'public-key',
                        'public-rotate', 'symlink', 'symlink-rotate')
     if seeded or name in ('lock-symlink', 'existing-parent'):
@@ -64,7 +64,7 @@ def capture(name):
         (home / 'lock-target').write_text('synthetic untouched lock')
         key.with_name('.' + key.name + '.lock').symlink_to(home / 'lock-target')
     entry = home / 'oxc'
-    entry.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+    entry.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
     reference = [sys.executable, str(entry)]
     command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else reference
 

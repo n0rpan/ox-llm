@@ -38,15 +38,15 @@ def capture(name):
     home = CANONICAL_HOME
     with Daemon(configured=True, home=home, port=8092) as daemon:
         entry = home / 'oxc'
-        entry.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+        entry.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
         reference = [sys.executable, str(entry)]
         ledger, directory = home / 'digest-ledger', home / 'digest-output'
         ledger.mkdir(mode=0o700)
         directory.mkdir(mode=0o755)
         directory.chmod(0o755)
         engine_log = home / 'digest-engine.jsonl'
-        environment = {**daemon.env, 'LOCAL_AI_DIGEST_DIR': str(directory),
-                       'LOCAL_AI_LEDGER_DIR': str(ledger), 'LOCAL_AI_ENGINE_LOG': str(engine_log), 'TZ': 'UTC'}
+        environment = {**daemon.env, 'OXC_DIGEST_DIR': str(directory),
+                       'OXC_LEDGER_DIR': str(ledger), 'OXC_ENGINE_LOG': str(engine_log), 'TZ': 'UTC'}
         when = datetime.date.today() if name.startswith('today-') else DAY
         path = ledger / ('requests-' + when.strftime('%Y%m%d') + '.jsonl')
         arguments = ['digest', '--day', when.isoformat(), '--json']
@@ -111,7 +111,7 @@ def capture(name):
         if name in ('write-private', 'write-failure'):
             arguments.append('--write')
             if name == 'write-failure':
-                environment['LOCAL_AI_DIGEST_DIR'] = str(home / 'not-a-directory' / 'digest')
+                environment['OXC_DIGEST_DIR'] = str(home / 'not-a-directory' / 'digest')
                 (home / 'not-a-directory').write_text('synthetic unrelated file')
         if name.startswith('today-'):
             agent = home / '.local/bin/oxa'

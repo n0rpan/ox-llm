@@ -24,7 +24,7 @@ use std::{
     time::Duration,
 };
 
-const LEASE: &str = ".local/state/local-ai/inference.lock";
+const LEASE: &str = ".local/state/oxc/inference.lock";
 const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const DIR_FLAGS: OFlag = OFlag::O_RDONLY
     .union(OFlag::O_DIRECTORY)
@@ -128,14 +128,14 @@ fn identity(info: &FileStat) -> Value {
 fn allowed_file(name: &str) -> bool {
     [
         LEASE,
-        ".local/bin/local-ai",
+        ".local/bin/oxc",
         ".local/bin/oxa",
-        ".config/systemd/user/local-ai-chat.service",
+        ".config/systemd/user/oxc-chat.service",
         ".config/systemd/user/prompt-studio-app.service",
     ]
     .contains(&name)
         || [
-            ".config/local-ai/",
+            ".config/oxc/",
             ".config/omarchy/plugins/snapdragon.local-ai/",
             ".local/share/ai-stack/runtime/",
             ".local/share/ai-stack/notices/",
@@ -159,7 +159,7 @@ fn allowed_directories(files: &[String]) -> Result<BTreeSet<String>> {
     let leaves = [
         "Work",
         "Pictures/sd/_uploads",
-        ".local/state/local-ai/prefix-cache",
+        ".local/state/oxc/prefix-cache",
         ".local/share/ai-stack/releases/llama-cpu",
         ".local/share/ai-stack/releases/sd-cpu-repack",
         ".local/share/ai-stack/models/llm",
@@ -461,7 +461,7 @@ fn check_disabled(stage: &Path, manifest: &Value) -> Result<()> {
     {
         return Err("unsupported_payload_directory".into());
     }
-    let config = bootstrap::read_json(&stage.join("payload/.config/local-ai/llm/runtime.json"))?;
+    let config = bootstrap::read_json(&stage.join("payload/.config/oxc/llm/runtime.json"))?;
     if config["ready"] != false
         || config["profiles"]
             .as_object()
@@ -470,7 +470,7 @@ fn check_disabled(stage: &Path, manifest: &Value) -> Result<()> {
         return Err("source_install_cannot_enable_profiles".into());
     }
     for name in ["cpu-profile.json", "gpu-profile.json"] {
-        let path = stage.join("payload/.config/local-ai/images").join(name);
+        let path = stage.join("payload/.config/oxc/images").join(name);
         if path.exists() {
             let value = bootstrap::read_json(&path)?;
             if value["enabled"] != false || value["validated"] != false {

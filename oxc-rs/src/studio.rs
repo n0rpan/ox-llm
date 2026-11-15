@@ -219,7 +219,7 @@ pub async fn run() -> i32 {
     if std::fs::create_dir_all(output.join("_uploads")).is_err() {
         return 1;
     }
-    let lease = std::env::var_os("LOCAL_AI_LEASE")
+    let lease = std::env::var_os("OXC_LEASE")
         .map(PathBuf::from)
         .unwrap_or_else(|| project.join("generation.lock"));
     if lease

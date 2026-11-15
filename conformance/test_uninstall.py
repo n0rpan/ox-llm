@@ -31,7 +31,7 @@ def capture(name):
     program = home / '.local/bin/oxa'
     program.parent.mkdir(parents=True)
     program.write_text('synthetic installed program\n')
-    unit = home / '.config/systemd/user/local-ai-chat.service'
+    unit = home / '.config/systemd/user/oxc-chat.service'
     unit.parent.mkdir(parents=True)
     unit.write_text('synthetic controller unit\n')
     studio = unit.with_name('prompt-studio-app.service')
@@ -92,7 +92,7 @@ def capture(name):
             linked = home / 'linked-models'
             linked.symlink_to(outside_dir, target_is_directory=True)
             model = linked / outside.name
-        config = home / '.config/local-ai/llm/runtime.json'
+        config = home / '.config/oxc/llm/runtime.json'
         config.parent.mkdir(parents=True)
         config.write_text(json.dumps({'models': [{'model_path': str(model), 'sidecar_path': str(model)}]}))
         if name != 'models-kept':
@@ -110,7 +110,7 @@ def capture(name):
                          'installed_sha256': {'entry': sha(program), 'unit': sha(unit)},
                          'release_dir': str(release), 'runtime_source_sha256': {'controller.txt': sha(runtime)},
                          'engine_dir': str(engine), 'server_sha256': sha(server)}))
-        update = home / '.local/state/local-ai/update/state.json'
+        update = home / '.local/state/oxc/update/state.json'
         update.parent.mkdir(parents=True)
         stage = home / 'stage'
         stage.mkdir()
@@ -138,7 +138,7 @@ def capture(name):
         shell.parent.mkdir(parents=True)
         shell.write_text('{"bar": ["snapdragon.local-ai", "synthetic-owner-widget"]}')
         observed.append(shell)
-    state = {'units': {'local-ai-chat.service': 'active', 'prompt-studio-app.service': 'active'}}
+    state = {'units': {'oxc-chat.service': 'active', 'prompt-studio-app.service': 'active'}}
     for case, option in (('stop-refused', 'stop_refused'), ('stop-unavailable', 'short_reply'),
                          ('disable-failed', 'disable_failed'), ('reload-failed', 'daemon-reload_failed')):
         if name == case:
@@ -147,7 +147,7 @@ def capture(name):
         state['change_on_stop'] = str(program)
     (home / 'systemd-state.json').write_text(json.dumps(state))
     entry = home / 'oxc'
-    entry.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+    entry.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
     command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(entry)]
     environment = {**os.environ, 'PATH': str(binary_dir) + ':/usr/bin:/bin', 'FAKE_UNINSTALL_HOME': str(home)}
     if name in ('root-home', 'relative-home'):

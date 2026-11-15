@@ -972,14 +972,14 @@ fn thermal(row: &mut Value) {
         .collect::<Vec<_>>());
 }
 fn write(state: &mut State, row: &Value) -> io::Result<()> {
-    if std::env::var("LOCAL_AI_LEDGER").as_deref() == Ok("0") {
+    if std::env::var("OXC_LEDGER").as_deref() == Ok("0") {
         return Ok(());
     }
     let root = private_dir()?;
     let day = Local::now().format("%Y%m%d").to_string();
     if state.pruned_day.as_ref() != Some(&day) {
         state.pruned_day = Some(day.clone());
-        let keep = std::env::var("LOCAL_AI_LEDGER_DAYS")
+        let keep = std::env::var("OXC_LEDGER_DAYS")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
             .filter(|v| v.is_finite() && *v > 0.0)
