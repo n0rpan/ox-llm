@@ -78,6 +78,9 @@ pub const TOOLCHAIN_READ: &[&str] = &[
 pub const CACHE_WRITE: &[&str] = &[
     ".cargo/registry",
     ".cargo/git",
+    ".cache/mise",
+    // Only `tracked-configs`: `trusted-configs` (trust records) must stay read-only.
+    ".local/state/mise/tracked-configs",
     ".cache/pip",
     ".cache/uv",
     ".cache/go-build",
@@ -165,6 +168,10 @@ pub struct Layout {
     /// sbx-git: the git data of the cwd outside it (a worktree's gitdir and common dir, shared
     /// alternates), resolved once by `Bwrap::with_git_dirs`. Empty until then.
     pub git: GitBinds,
+    /// sbx-ipc: mask the host runtime sockets (`/run/user/<uid>`, the buses, Docker/Podman,
+    /// systemd-resolved) in the argv. Set by the front end ([`Bwrap::detect`] and the CLI's
+    /// layout); off in the pure-argv tests, whose `Layout::default()` is not a sandbox.
+    pub mask_runtime_ipc: bool,
 }
 
 /// The inputs of [`Layout::build`].
@@ -198,6 +205,18 @@ fn denied(p: &Path, deny: &[PathBuf]) -> bool {
 }
 
 impl Layout {
+    /// Whether `build` keeps an extra path (the same checks it applies to every configured
+    /// path: absolute, existing, not a credential path, not the home itself or `/`).
+    pub fn keeps_extra(home: &Path, agent_dir: Option<&Path>, p: &Path) -> bool {
+        let deny = sensitive_paths(home, agent_dir);
+        p.is_absolute() && p.exists() && !denied(p, &deny) && p != home && p != Path::new("/")
+    }
+
+    /// Whether some writable mount lies strictly inside `p`.
+    pub fn has_writable_inside(&self, p: &Path) -> bool {
+        self.write.iter().any(|w| w != p && w.starts_with(p))
+    }
+
     /// Build the layout from the user's environment and settings (see the module docs).
     pub fn build(i: &LayoutInputs) -> Layout {
         let deny = sensitive_paths(&i.home, i.agent_dir.as_deref());
@@ -222,9 +241,7 @@ impl Layout {
         read.extend(i.read_extra.iter().cloned());
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
-        let keep = |p: &PathBuf| {
-            p.is_absolute() && p.exists() && !denied(p, &deny) && p != &i.home && p != Path::new("/")
-        };
+        let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
         read.retain(keep);
         write.retain(keep);
         read.sort();
@@ -268,6 +285,16 @@ impl Layout {
             })
             .cloned()
             .collect();
+        // Version-manager shims (mise) write cache/state under the read-only home and warn on
+        // every call; point them at the sandbox /tmp unless the caller set them.
+        for (k, v) in [
+            ("MISE_CACHE_DIR", "/tmp/mise-cache"),
+            ("MISE_STATE_DIR", "/tmp/mise-state"),
+        ] {
+            if !env.iter().any(|(n, _)| n == k) {
+                env.push((k.to_string(), v.to_string()));
+            }
+        }
         env.sort();
         env.dedup_by(|a, b| a.0 == b.0);
         Layout {
@@ -278,6 +305,7 @@ impl Layout {
             env,
             allow_home_write: i.allow_home_write,
             git: GitBinds::default(),
+            mask_runtime_ipc: false,
         }
     }
 

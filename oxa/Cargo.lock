@@ -403,6 +403,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "oxa-a2a"
 version = "0.2.0"
 dependencies = [
+ "oxa-a2a",
  "serde",
  "serde_json",
 ]
@@ -555,6 +556,16 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "oxa-orchestrator"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "oxa-fake",
+ "oxa-orchestrator",
+ "serde_json",
 ]
 
 [[package]]
