@@ -12,12 +12,13 @@ use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{Fault, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    Access, CommandSpec, EntryBody, Exposure, HeadlessUi, HookPoint, HookReply, Hooks, OxaError, Role,
-    Source, ThinkingLevel, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, VecSink,
+    codes, Access, CommandSpec, Entry, EntryBody, Exposure, HeadlessUi, HookPoint, HookReply, Hooks,
+    OxaError, Role, Source, ThinkingLevel, Tool, ToolCall, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui,
+    Value, VecSink,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
-use oxa_session::{MemStore, SessionStore};
+use oxa_session::{MemStore, SessionHeader, SessionMeta, SessionRef, SessionStore};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -134,6 +135,58 @@ impl Hooks for Recorder {
     }
 }
 
+/// A store that fails the next append after [`FailOnceStore::fail_next`] (a disk error mid
+/// compaction), and delegates everything else to [`MemStore`].
+struct FailOnceStore {
+    inner: MemStore,
+    fail_next: AtomicBool,
+}
+
+impl FailOnceStore {
+    fn new() -> FailOnceStore {
+        FailOnceStore {
+            inner: MemStore::new(),
+            fail_next: AtomicBool::new(false),
+        }
+    }
+
+    fn fail_next(&self) {
+        self.fail_next.store(true, Ordering::SeqCst);
+    }
+}
+
+impl SessionStore for FailOnceStore {
+    fn create(
+        &self,
+        cwd: &std::path::Path,
+        id: Option<&str>,
+        parent: Option<&std::path::Path>,
+    ) -> Result<SessionRef, OxaError> {
+        self.inner.create(cwd, id, parent)
+    }
+    fn append(&self, s: &SessionRef, e: &Entry) -> Result<(), OxaError> {
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            return Err(OxaError::new(codes::IO, "disk full"));
+        }
+        self.inner.append(s, e)
+    }
+    fn load(&self, s: &SessionRef) -> Result<Vec<Entry>, OxaError> {
+        self.inner.load(s)
+    }
+    fn header(&self, s: &SessionRef) -> Result<SessionHeader, OxaError> {
+        self.inner.header(s)
+    }
+    fn list(&self, cwd: Option<&std::path::Path>) -> Vec<SessionMeta> {
+        self.inner.list(cwd)
+    }
+    fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {
+        self.inner.resolve(id_or_path)
+    }
+    fn delete(&self, s: &SessionRef) -> Result<(), OxaError> {
+        self.inner.delete(s)
+    }
+}
+
 /// `progress` streams one partial result; `probe` reads outside the working directory, so the
 /// policy asks (print-like UI: the answer is no).
 struct TestTool {
@@ -195,7 +248,7 @@ fn deps(
         sandbox: Arc::new(NoSandbox),
         // Keep only the newest message, so that a manual compaction always has a cut.
         settings: Settings::from_values(
-            json!({"compaction": {"keepRecentTokens": 1}, "oxa": {"profile": "pi"}}),
+            json!({"compaction": {"keepRecentTokens": 1}, "oxa": {"envNote": false}}),
             json!({}),
         ),
         dirs: Dirs::under(env.root()),
@@ -250,17 +303,23 @@ fn drive() -> Vec<(HookPoint, Value)> {
         chunked(ScriptTurn::text("done two")),
     ]));
     let rec = Arc::new(Recorder::default());
-    let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
-    let mut s = Session::open(deps(&env, store, engine, rec.clone()), Open::New).expect("open");
+    let store = Arc::new(FailOnceStore::new());
+    let store_ref: Arc<dyn SessionStore> = store.clone();
+    let mut s = Session::open(deps(&env, store_ref, engine, rec.clone()), Open::New).expect("open");
     let mut sink = VecSink::default();
     let mut ui = HeadlessUi::default();
 
     s.prompt("one".into(), Vec::new(), &mut sink, &mut ui)
         .expect("prompt one");
+    // The scripted summary fails (R4 replaces it with the mechanical record) and the store
+    // fails the entry append: a non-summary error, so the compaction fails and
+    // `session_compact_failed` fires.
+    store.fail_next();
     assert!(
         s.compact(None, &mut sink, &mut ui).is_err(),
-        "the scripted summary fails"
+        "a store failure is a compaction error"
     );
+    // The next compaction succeeds and the session goes on.
     s.compact(None, &mut sink, &mut ui).expect("compact");
     s.prompt("two".into(), Vec::new(), &mut sink, &mut ui)
         .expect("prompt two");
@@ -279,7 +338,7 @@ fn drive() -> Vec<(HookPoint, Value)> {
 }
 
 #[test]
-fn every_hook_point_fires_with_pis_payload() {
+fn every_hook_point_fires() {
     let record = drive();
     let fired: BTreeSet<&str> = record.iter().map(|(p, _)| p.as_str()).collect();
     let front: BTreeSet<&str> = FRONT_END_ONLY.iter().map(|(p, _)| p.as_str()).collect();
@@ -423,7 +482,14 @@ fn payload_values_follow_pi() {
     assert_eq!(first(HookPoint::ThinkingLevelSelect)["level"], "high");
     assert_eq!(first(HookPoint::SessionInfoChanged)["name"], "named");
     assert_eq!(first(HookPoint::ModelSelect)["model"], "other-model");
-    assert_eq!(first(HookPoint::SessionCompactFailed)["aborted"], false);
+    // A non-summary compaction error (the store failed) fires the failed hook, not
+    // `session_compact`: the wire is unchanged.
+    let failed = first(HookPoint::SessionCompactFailed);
+    assert_eq!(failed["aborted"], false);
+    assert!(
+        failed["errorMessage"].as_str().is_some_and(|m| !m.is_empty()),
+        "{failed}"
+    );
     assert_eq!(first(HookPoint::ProviderStreamEvent)["provider"], "oxe");
 }
 

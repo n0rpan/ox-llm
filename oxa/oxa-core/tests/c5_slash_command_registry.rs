@@ -181,7 +181,6 @@ fn builtins_list() {
         "mode",
         "scoped-models",
         "export",
-        "import",
         "bug",
         "copy",
         "name",

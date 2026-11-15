@@ -1,6 +1,5 @@
-//! OXA-LOCAL-FIRST R4 (lane l5-compact): the mechanical summary fallback under profile `local`
-//! (a failed, cut or twice-cancelled summary, and a failed overflow summary) and the unchanged
-//! `pi` behaviour, over the scripted fake engine.
+//! OXA-LOCAL-FIRST R4 (lane l5-compact): the mechanical summary fallback (a failed, cut or
+//! twice-cancelled summary, and a failed overflow summary), over the scripted fake engine.
 //! Isolation: `oxa_fake::TestEnv` for every file and directory.
 
 use oxa_compact::prompt;
@@ -11,7 +10,7 @@ use oxa_fake::{Fault, Recorded, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
     AgentEvent, CancelToken, CompactReason, Engine, EntryBody, Finish, FrozenPrefix, HeadlessUi, Level, Mode,
-    Policy, Profile, Role, ThinkingLevel, ToolCall, Usage, VecSink, WireMsg,
+    Policy, Role, ThinkingLevel, ToolCall, Usage, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -95,16 +94,10 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, compact: CompactPolicy, setting
     }
 }
 
-fn state(
-    env: &TestEnv,
-    turns: Vec<ScriptTurn>,
-    settings: Settings,
-    profile: Profile,
-) -> (SessionState, Arc<ScriptedEngine>) {
+fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionState, Arc<ScriptedEngine>) {
     let eng = Arc::new(ScriptedEngine::new(turns));
     let engine: Arc<dyn Engine> = eng.clone();
-    let mut st = build(env, engine, policy(1), settings);
-    st.stats.profile = profile;
+    let st = build(env, engine, policy(1), settings);
     (st, eng)
 }
 
@@ -199,17 +192,9 @@ fn warned(events: &[AgentEvent]) -> bool {
     })
 }
 
-fn threshold_with(
-    summary: ScriptTurn,
-    profile: Profile,
-) -> (SessionState, Arc<ScriptedEngine>, bool, Vec<AgentEvent>) {
+fn threshold_with(summary: ScriptTurn) -> (SessionState, Arc<ScriptedEngine>, bool, Vec<AgentEvent>) {
     let env = TestEnv::new();
-    let (mut st, eng) = state(
-        &env,
-        vec![ScriptTurn::text("done two"), summary],
-        idle_off(),
-        profile,
-    );
+    let (mut st, eng) = state(&env, vec![ScriptTurn::text("done two"), summary], idle_off());
     history(&mut st);
     crossed(&mut st);
     let mut sink = VecSink::default();
@@ -218,14 +203,14 @@ fn threshold_with(
 }
 
 #[test]
-fn failed_summary_becomes_mechanical_under_local() {
+fn failed_summary_becomes_mechanical() {
     let fault = || {
         ScriptTurn::fault(Fault::Http {
             status: 400,
             body: "bad request".into(),
         })
     };
-    let (st, eng, done, events) = threshold_with(fault(), Profile::Local);
+    let (st, eng, done, events) = threshold_with(fault());
     assert!(done, "the session compacts without the model");
     assert!(mechanical_end(&events) && warned(&events));
     assert_eq!(
@@ -238,113 +223,84 @@ fn failed_summary_becomes_mechanical_under_local() {
         "the kept tail"
     );
     assert_eq!(kinds(&eng.requests()), ["chat", "compaction", "prefill"]);
-
-    // pi: today's failure, the wire unchanged.
-    let (st, _, done, events) = threshold_with(fault(), Profile::Pi);
-    assert!(!done && !mechanical_end(&events) && !warned(&events));
-    assert!(events.iter().any(|e| matches!(
-        e,
-        AgentEvent::CompactionEnd {
-            error_message: Some(_),
-            ..
-        }
-    )));
-    assert_eq!(st.transcript.wire()[0], WireMsg::user("task one: fix the parser"));
 }
 
 #[test]
-fn cut_summary_becomes_mechanical_under_local() {
+fn cut_summary_becomes_mechanical() {
     let cut = || ScriptTurn {
         finish: Finish::Length,
         ..ScriptTurn::text("## Goal\nhalf a summ")
     };
-    let (st, _, done, events) = threshold_with(cut(), Profile::Local);
+    let (st, _, done, events) = threshold_with(cut());
     assert!(done && mechanical_end(&events));
     assert_eq!(
         st.transcript.wire()[0],
         WireMsg::user(prompt::summary_user_message(&golden()))
     );
-    let (_, _, done, _) = threshold_with(cut(), Profile::Pi);
-    assert!(!done, "pi: a cut summary fails as today");
 }
 
 #[test]
-fn cancelled_twice_becomes_mechanical_under_local() {
-    for profile in [Profile::Local, Profile::Pi] {
-        let env = TestEnv::new();
-        let (mut st, eng) = state(&env, vec![ScriptTurn::text("done two")], idle_off(), profile);
-        history(&mut st);
-        crossed(&mut st);
-        let mut outcomes = Vec::new();
-        for _ in 0..2 {
-            // The user's input is queued: the background summary is cancelled before it is sent.
-            st.shared.queue.lock().unwrap().follow_up.push("more".into());
-            let mut sink = VecSink::default();
-            let done = maybe_compact(&mut st, true, &mut sink, &mut HeadlessUi::default()).expect("compact");
-            outcomes.push((done, mechanical_end(&sink.0)));
-            st.shared.queue.lock().unwrap().follow_up.clear();
-        }
-        assert_eq!(kinds(&eng.requests()), ["chat"], "no summary request was sent");
-        match profile {
-            Profile::Local => {
-                assert_eq!(outcomes, [(false, false), (true, true)]);
-                assert_eq!(
-                    st.transcript.wire()[0],
-                    WireMsg::user(prompt::summary_user_message(&golden()))
-                );
-            }
-            Profile::Pi => assert_eq!(outcomes, [(false, false), (false, false)]),
-        }
+fn cancelled_twice_becomes_mechanical() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state(&env, vec![ScriptTurn::text("done two")], idle_off());
+    history(&mut st);
+    crossed(&mut st);
+    let mut outcomes = Vec::new();
+    for _ in 0..2 {
+        // The user's input is queued: the background summary is cancelled before it is sent.
+        st.shared.queue.lock().unwrap().follow_up.push("more".into());
+        let mut sink = VecSink::default();
+        let done = maybe_compact(&mut st, true, &mut sink, &mut HeadlessUi::default()).expect("compact");
+        outcomes.push((done, mechanical_end(&sink.0)));
+        st.shared.queue.lock().unwrap().follow_up.clear();
     }
+    assert_eq!(kinds(&eng.requests()), ["chat"], "no summary request was sent");
+    assert_eq!(outcomes, [(false, false), (true, true)]);
+    assert_eq!(
+        st.transcript.wire()[0],
+        WireMsg::user(prompt::summary_user_message(&golden()))
+    );
 }
 
 /// An overflow (mid-run) compaction whose summary fails no longer blocks the session.
 #[test]
-fn failed_overflow_summary_does_not_block_under_local() {
-    for profile in [Profile::Local, Profile::Pi] {
-        let env = TestEnv::new();
-        let (mut st, eng) = state(
-            &env,
-            vec![
-                ScriptTurn::fault(Fault::Overflow),
-                ScriptTurn::fault(Fault::Http {
-                    status: 400,
-                    body: "bad request".into(),
-                }),
-                ScriptTurn::text("answer after the compaction"),
-            ],
-            idle_off(),
-            profile,
-        );
-        say(&mut st, "task one: fix the parser");
-        push(&mut st, read_call("c1", "src/parse.rs"));
-        push(&mut st, WireMsg::tool_result("c1", "fn parse() {}"));
-        push(&mut st, WireMsg::assistant("fixed"));
-        say(&mut st, "task two");
-        let mut sink = VecSink::default();
-        let end = run_loop(&mut st, &mut sink, &mut HeadlessUi::default()).expect("run_loop");
-        match profile {
-            Profile::Local => {
-                assert_eq!(end, RunEnd::Stopped, "the session continues");
-                assert!(mechanical_end(&sink.0));
-                let wire = st.transcript.wire();
-                let head = format!(
-                    "{}\n\n## User messages\n1. task one: fix the parser\n\n<read-files>\nsrc/parse.rs\n</read-files>\n\nTool results left out: 1.",
-                    prompt::MECHANICAL_SUMMARY_HEADER
-                );
-                assert_eq!(wire[0], WireMsg::user(prompt::summary_user_message(&head)));
-                assert_eq!(wire[1], WireMsg::user("task two"), "the prompt is kept");
-                assert_eq!(wire[2], WireMsg::assistant("answer after the compaction"));
-                assert_eq!(kinds(&eng.requests()), ["chat", "compaction", "chat"]);
-            }
-            Profile::Pi => assert!(matches!(end, RunEnd::Failed(_)), "pi: blocked as today"),
-        }
-    }
+fn failed_overflow_summary_does_not_block() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state(
+        &env,
+        vec![
+            ScriptTurn::fault(Fault::Overflow),
+            ScriptTurn::fault(Fault::Http {
+                status: 400,
+                body: "bad request".into(),
+            }),
+            ScriptTurn::text("answer after the compaction"),
+        ],
+        idle_off(),
+    );
+    say(&mut st, "task one: fix the parser");
+    push(&mut st, read_call("c1", "src/parse.rs"));
+    push(&mut st, WireMsg::tool_result("c1", "fn parse() {}"));
+    push(&mut st, WireMsg::assistant("fixed"));
+    say(&mut st, "task two");
+    let mut sink = VecSink::default();
+    let end = run_loop(&mut st, &mut sink, &mut HeadlessUi::default()).expect("run_loop");
+    assert_eq!(end, RunEnd::Stopped, "the session continues");
+    assert!(mechanical_end(&sink.0));
+    let wire = st.transcript.wire();
+    let head = format!(
+        "{}\n\n## User messages\n1. task one: fix the parser\n\n<read-files>\nsrc/parse.rs\n</read-files>\n\nTool results left out: 1.",
+        prompt::MECHANICAL_SUMMARY_HEADER
+    );
+    assert_eq!(wire[0], WireMsg::user(prompt::summary_user_message(&head)));
+    assert_eq!(wire[1], WireMsg::user("task two"), "the prompt is kept");
+    assert_eq!(wire[2], WireMsg::assistant("answer after the compaction"));
+    assert_eq!(kinds(&eng.requests()), ["chat", "compaction", "chat"]);
 }
 
-/// `maybe_compact` mid-run (above `hard`) with a failed summary: `Ok(true)` under local.
+/// `maybe_compact` mid-run (above `hard`) with a failed summary: `Ok(true)`.
 #[test]
-fn mid_run_failure_is_mechanical_under_local() {
+fn mid_run_failure_is_mechanical() {
     let env = TestEnv::new();
     let (mut st, _) = state(
         &env,
@@ -353,7 +309,6 @@ fn mid_run_failure_is_mechanical_under_local() {
             body: "bad".into(),
         })],
         idle_off(),
-        Profile::Local,
     );
     say(&mut st, "task one");
     push(&mut st, WireMsg::assistant("ok"));
@@ -393,7 +348,6 @@ fn degraded_context_notice_counts_the_dropped_turns() {
         &env,
         vec![ScriptTurn::text("done two"), fault(), fault()],
         idle_off(),
-        Profile::Local,
     );
     history(&mut st);
     crossed(&mut st);

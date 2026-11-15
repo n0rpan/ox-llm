@@ -66,7 +66,6 @@ Earlier releases launched OpenCode. ox-llm v0.2.0 removes that launcher: the cod
   Remove those entries yourself if you no longer use OpenCode with ox-llm.
 - **To keep using OpenCode** (or pi, or another client) against ox-llm, point it at the controller
   yourself: [lab/docs/OTHER-CLIENTS.md](lab/docs/OTHER-CLIENTS.md).
-- **Coming from pi:** `oxa config --import-pi` imports your pi settings.
 
 ## Flash: the expert sidecar on an unencrypted partition
 

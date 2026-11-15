@@ -310,10 +310,9 @@ pub struct StatusModel {
     pub yolo_approved: u64,
 }
 
-/// The look of the interactive UI. `Pi` is pi's look, byte for byte (the default, and the
-/// only look of the `pi` profile unless `ui.skin` says otherwise). `Oxa` is OXA's own look
-/// (frames, HUD line, hint bar; OXA-UI-DESIGN.md); `OxaAscii` is the same with ASCII glyphs
-/// for terminals without UTF-8.
+/// The look of the interactive UI. `Oxa` is OXA's own look (frames, HUD line, hint bar;
+/// OXA-UI-DESIGN.md); `OxaAscii` is the same with ASCII glyphs for terminals without UTF-8.
+/// `Pi` is the plain look (the parity reference), reachable with `ui.skin = "pi"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Skin {
     #[default]
@@ -356,7 +355,7 @@ pub struct ViewSettings {
     /// Copy the selection to the clipboard when the mouse button is released.
     pub copy_on_select: bool,
     pub hyperlinks: bool,
-    /// The look (`ui.skin`, else by profile).
+    /// The look (`ui.skin` / `OXA_SKIN`, else OXA's).
     pub skin: Skin,
 }
 
@@ -400,14 +399,12 @@ pub struct ViewModel {
 // Commands to the worker thread
 // ---------------------------------------------------------------------------------------------
 
-/// How to open the next session (`/new`, `/resume`, `/fork`, `/clone`, `/import`).
+/// How to open the next session (`/new`, `/resume`, `/fork`, `/clone`).
 pub enum Reopen {
     New,
     Resume(SessionRef),
     /// Fork the given session file into a new one and open it.
     Fork(SessionRef),
-    /// Import a pi session file (migrated, cache cold) and open it.
-    Import(PathBuf),
 }
 
 /// Builds the next session for [`Reopen`]. The second argument carries the model and thinking
@@ -491,11 +488,11 @@ pub enum WorkerMsg {
     /// Fresh status after a settle.
     Status(StatusModel),
     /// Which session the worker holds now (D-INT): sent once when the worker starts and after
-    /// every swap (`/new`, `/resume`, `/fork`, `/clone`, import) and reload.
+    /// every swap (`/new`, `/resume`, `/fork`, `/clone`) and reload.
     Session(SessionInfo),
     /// The answer to [`SessionCmd::Snapshot`].
     Tree(oxa_session::Tree),
-    /// The worker opened another `Session` object (`/new`, `/resume`, import): this is its
+    /// The worker opened another `Session` object (`/new`, `/resume`): this is its
     /// control handle (D-INT). Abort, steering and follow-ups go to it from now on; what was
     /// still queued for the previous session is handed back to the user, never sent.
     Rebind(oxa_core::Handle),
@@ -705,7 +702,7 @@ pub struct InteractiveOpts {
     pub env: Vec<(String, String)>,
     /// Capability overrides resolved by the CLI; `None` = detect from `env`.
     pub caps: Option<TermCaps>,
-    /// Builds the next session for `/new`, `/resume`, fork, clone and import. Runs on the
+    /// Builds the next session for `/new`, `/resume`, fork and clone. Runs on the
     /// worker thread after the previous session was dropped. The second argument is the model
     /// and thinking level of the session being left (only for [`Reopen::New`], which carries
     /// them over; `None` for the other modes, which restore the target session's own).

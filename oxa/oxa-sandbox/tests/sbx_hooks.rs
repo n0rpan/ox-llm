@@ -220,7 +220,12 @@ fn existing_hooks_and_config_keep_the_argv_byte_for_byte() {
     want.extend(ro("<root>/work/full/.oxa"));
     want.extend(ro("<root>/work/full/.git/hooks"));
     want.extend(ro("<root>/work/full/.git/config"));
-    want.extend(strs(&["--chdir", "<root>/work/full"]));
+    want.extend(strs(&[
+        "--remount-ro",
+        "<root>/home",
+        "--chdir",
+        "<root>/work/full",
+    ]));
     let at = index_of_run(&args, &strs(&["--bind", "<root>/work/full"])).expect("cwd bind");
     // The deny-list masks of an empty TestEnv home are not shown (the cwd is outside home).
     assert_eq!(args[at..at + want.len()].to_vec(), want, "{args:?}");

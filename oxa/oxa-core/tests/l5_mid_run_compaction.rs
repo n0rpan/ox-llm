@@ -6,7 +6,7 @@
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Handle, Open, Session, ToolSelection};
-use oxa_fake::{golden::request_hashes, Fault, Recorded, ScriptTurn, ScriptedEngine, TestEnv};
+use oxa_fake::{Fault, Recorded, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
     AgentEvent, CommandSpec, CompactReason, Engine, Exposure, HeadlessUi, HookPoint, HookReply, Hooks,
@@ -19,7 +19,7 @@ use oxa_session::{MemStore, SessionStore};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
-/// Bytes of each file the scripted run reads. Under `local` with `softTokens` set, one tool
+/// Bytes of each file the scripted run reads. With `softTokens` set, one tool
 /// result is bounded to a quarter of the compaction point (at least 2048 bytes, L4): the shape
 /// of a real run, where each read is bounded and the context grows step by step. A bounded
 /// result is still above the A1 elision threshold (1000 tokens), so an elided last batch shows.
@@ -96,17 +96,14 @@ impl Hooks for Recorder {
     }
 }
 
-/// The settings of a case: profile, `oxa.compaction.softTokens` and `oxa.compaction.midRun`
-/// (left out when `None`).
-fn cfg(profile: &str, soft: u32, mid_run: Option<bool>) -> Settings {
+/// The settings of a case: `oxa.compaction.softTokens` and `oxa.compaction.midRun` (left out
+/// when `None`).
+fn cfg(soft: u32, mid_run: Option<bool>) -> Settings {
     let mut compaction = json!({ "softTokens": soft });
     if let Some(m) = mid_run {
         compaction["midRun"] = json!(m);
     }
-    Settings::from_values(
-        json!({"oxa": {"profile": profile, "compaction": compaction}}),
-        json!({}),
-    )
+    Settings::from_values(json!({"oxa": {"compaction": compaction}}), json!({}))
 }
 
 fn open(env: &TestEnv, eng: Arc<ScriptedEngine>, hooks: Vec<Arc<dyn Hooks>>, settings: Settings) -> Session {
@@ -189,41 +186,33 @@ fn assert_paired(wire: &[WireMsg]) {
 }
 
 /// One prompt over `script`; returns the engine and the events.
-fn run(
-    profile: &str,
-    soft: u32,
-    mid_run: Option<bool>,
-    script: Vec<ScriptTurn>,
-) -> (Arc<ScriptedEngine>, Vec<AgentEvent>) {
-    run_in(&TestEnv::new(), profile, soft, mid_run, script)
+fn run(soft: u32, mid_run: Option<bool>, script: Vec<ScriptTurn>) -> (Arc<ScriptedEngine>, Vec<AgentEvent>) {
+    run_in(&TestEnv::new(), soft, mid_run, script)
 }
 
 /// [`run`] in a given environment (two runs in one environment share the system prompt's
 /// working directory, so their requests can be compared byte for byte).
 fn run_in(
     env: &TestEnv,
-    profile: &str,
     soft: u32,
     mid_run: Option<bool>,
     script: Vec<ScriptTurn>,
 ) -> (Arc<ScriptedEngine>, Vec<AgentEvent>) {
-    run_env(env, profile, soft, mid_run, script, Vec::new(), true)
+    run_env(env, soft, mid_run, script, Vec::new(), true)
 }
 
 fn run_with(
-    profile: &str,
     soft: u32,
     mid_run: Option<bool>,
     script: Vec<ScriptTurn>,
     hooks: Vec<Arc<dyn Hooks>>,
     auto: bool,
 ) -> (Arc<ScriptedEngine>, Vec<AgentEvent>) {
-    run_env(&TestEnv::new(), profile, soft, mid_run, script, hooks, auto)
+    run_env(&TestEnv::new(), soft, mid_run, script, hooks, auto)
 }
 
 fn run_env(
     env: &TestEnv,
-    profile: &str,
     soft: u32,
     mid_run: Option<bool>,
     script: Vec<ScriptTurn>,
@@ -231,7 +220,7 @@ fn run_env(
     auto: bool,
 ) -> (Arc<ScriptedEngine>, Vec<AgentEvent>) {
     let eng = Arc::new(ScriptedEngine::new(script));
-    let mut s = open(env, eng.clone(), hooks, cfg(profile, soft, mid_run));
+    let mut s = open(env, eng.clone(), hooks, cfg(soft, mid_run));
     s.set_auto_compaction(auto);
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     s.prompt("read the files".into(), Vec::new(), &mut sink, &mut ui)
@@ -271,7 +260,7 @@ fn settled_cleanly(events: &[AgentEvent]) -> bool {
             .any(|e| matches!(e, AgentEvent::AgentSettled { aborted: true }))
 }
 
-/// The regression of the ruling (O-188): profile `local`, a small soft limit, one prompt whose
+/// The regression of the ruling (O-188): a small soft limit, one prompt whose
 /// run reads six different large files. Between tool steps the context is compacted, every
 /// chat request stays small, the batch the model has not answered is kept verbatim, and the
 /// run ends with its answer without an aborted turn.
@@ -279,18 +268,18 @@ fn settled_cleanly(events: &[AgentEvent]) -> bool {
 fn long_multi_tool_run_stays_under_the_cap() {
     // Without the mid-run compaction (setting off): six steps, then the answer, then the
     // after-reply compaction of today.
-    let (off, off_events) = run("local", SOFT, Some(false), steps(&[], true));
+    let (off, off_events) = run(SOFT, Some(false), steps(&[], true));
     let mut plain = vec!["chat"; STEPS + 1];
     plain.push("compaction");
     assert_eq!(kinds(&off), plain);
     assert!(settled_cleanly(&off_events));
     let off_max = chats(&off).iter().map(wire_bytes).max().unwrap_or(0);
 
-    // With it (local default): step 1 has no earlier step to fold; every later step folds
+    // With it (the default): step 1 has no earlier step to fold; every later step folds
     // the previous batch before the next request. After the answer the kept tail fits
     // `keepRecentTokens`, so the after-reply check has nothing to cut.
     let folds: Vec<usize> = (2..=STEPS).collect();
-    let (on, events) = run("local", SOFT, None, steps(&folds, false));
+    let (on, events) = run(SOFT, None, steps(&folds, false));
     let mut expected = vec!["chat", "chat"];
     for _ in 2..=STEPS {
         expected.extend(["compaction", "chat"]);
@@ -376,7 +365,7 @@ fn tiny_soft_point_never_thrashes() {
         ScriptTurn::text("s3"),
     ];
     script.push(ScriptTurn::text("done"));
-    let (eng, _) = run("local", 1, None, script);
+    let (eng, _) = run(1, None, script);
     let k = kinds(&eng);
     assert_eq!(
         k,
@@ -398,12 +387,12 @@ fn tiny_soft_point_never_thrashes() {
 /// no summary request is sent mid-run.
 #[test]
 fn a_single_step_has_nothing_to_fold() {
-    let (eng, _) = run("local", 1, None, vec![step(1), ScriptTurn::text("done")]);
+    let (eng, _) = run(1, None, vec![step(1), ScriptTurn::text("done")]);
     // (After the answer the whole wire fits `keepRecentTokens`: nothing to cut either.)
     assert_eq!(kinds(&eng), vec!["chat", "chat"]);
 }
 
-/// 3d: under `local` a failed summary becomes the mechanical record, and the next request
+/// 3d: a failed summary becomes the mechanical record, and the next request
 /// still ends with the unanswered batch verbatim.
 #[test]
 fn failed_summary_is_mechanical_and_keeps_the_batch() {
@@ -416,7 +405,7 @@ fn failed_summary_is_mechanical_and_keeps_the_batch() {
         }),
         ScriptTurn::text("done"),
     ];
-    let (eng, events) = run("local", SOFT, None, script);
+    let (eng, events) = run(SOFT, None, script);
     assert_eq!(kinds(&eng), vec!["chat", "chat", "compaction", "chat"]);
     let mechanical = events.iter().any(|e| match e {
         AgentEvent::CompactionEnd { result: Some(r), .. } => r.details["mechanical"] == json!(true),
@@ -446,7 +435,7 @@ fn hooks_fire_and_a_cancel_leaves_the_run_going() {
         ScriptTurn::text("done"),
         ScriptTurn::text("end summary"),
     ];
-    let (_eng, _) = run_with("local", SOFT, None, script, vec![rec.clone()], true);
+    let (_eng, _) = run_with(SOFT, None, script, vec![rec.clone()], true);
     let seen = rec.seen.lock().unwrap().clone();
     let reasons = |p: HookPoint| {
         seen.iter()
@@ -462,7 +451,7 @@ fn hooks_fire_and_a_cancel_leaves_the_run_going() {
         seen: Mutex::new(Vec::new()),
     });
     let script = vec![step(1), step(2), step(3), ScriptTurn::text("done")];
-    let (eng, events) = run_with("local", SOFT, None, script, vec![cancel.clone()], true);
+    let (eng, events) = run_with(SOFT, None, script, vec![cancel.clone()], true);
     assert_eq!(kinds(&eng), vec!["chat", "chat", "chat", "chat"]);
     let reqs = sent(&eng);
     // The wire only grew: each request extends the previous one.
@@ -475,42 +464,10 @@ fn hooks_fire_and_a_cancel_leaves_the_run_going() {
     assert!(settled_cleanly(&events));
 }
 
-/// 4: profile `pi`, setting unset: the same requests as with the setting off, byte for byte,
-/// and no summary between tool steps.
+/// The explicit setting wins: on compacts mid-run, off does not.
 #[test]
-fn pi_unset_is_unchanged() {
-    let env = TestEnv::new();
-    let (unset, _) = run_in(&env, "pi", SOFT, None, steps(&[], true));
-    let (off, _) = run_in(&env, "pi", SOFT, Some(false), steps(&[], true));
-    let mut plain = vec!["chat"; STEPS + 1];
-    plain.push("compaction");
-    assert_eq!(kinds(&unset), plain);
-    // Each session's own id (spill paths, hints) and idempotency keys are replaced.
-    let strip = |reqs: Vec<Recorded>| -> Vec<Recorded> {
-        reqs.into_iter()
-            .map(|mut r| {
-                for m in &mut r.messages {
-                    if let Some(c) = &mut m.content {
-                        *c = c.replace(&r.session, "SESSION");
-                    }
-                }
-                r.session = String::new();
-                r.idem_key = String::new();
-                r
-            })
-            .collect()
-    };
-    assert_eq!(
-        request_hashes(&strip(sent(&unset))),
-        request_hashes(&strip(sent(&off)))
-    );
-}
-
-/// The explicit setting wins: on under `pi` compacts mid-run, off under `local` does not.
-#[test]
-fn explicit_setting_wins_in_both_profiles() {
-    let (pi_on, _) = run(
-        "pi",
+fn explicit_setting_wins() {
+    let (on, _) = run(
         SOFT,
         Some(true),
         vec![
@@ -521,29 +478,26 @@ fn explicit_setting_wins_in_both_profiles() {
             ScriptTurn::text("end"),
         ],
     );
-    assert_eq!(
-        kinds(&pi_on),
-        vec!["chat", "chat", "compaction", "chat", "compaction"]
-    );
-    let (local_off, _) = run(
-        "local",
+    assert_eq!(kinds(&on), vec!["chat", "chat", "compaction", "chat"]);
+    let (off, _) = run(
         SOFT,
         Some(false),
         vec![
             step(1),
             step(2),
+            ScriptTurn::text("s2"),
             ScriptTurn::text("done"),
             ScriptTurn::text("end"),
         ],
     );
-    assert_eq!(kinds(&local_off), vec!["chat", "chat", "chat", "compaction"]);
+    assert_eq!(kinds(&off), vec!["chat", "chat", "chat", "compaction"]);
 }
 
 /// Auto-compaction switched off at runtime: no mid-run compaction (and none after the run).
 #[test]
 fn runtime_auto_compaction_off_disables_it() {
     let script = vec![step(1), step(2), step(3), ScriptTurn::text("done")];
-    let (eng, events) = run_with("local", SOFT, None, script, Vec::new(), false);
+    let (eng, events) = run_with(SOFT, None, script, Vec::new(), false);
     assert_eq!(kinds(&eng), vec!["chat", "chat", "chat", "chat"]);
     assert!(!events
         .iter()
@@ -551,7 +505,7 @@ fn runtime_auto_compaction_off_disables_it() {
 }
 
 /// 3a with a result far above the elision threshold (an explicit `oxa.toolOutputCap` wins over
-/// the local budget): the last batch is kept whole and in the kept tail, while the earlier
+/// the byte budget): the last batch is kept whole and in the kept tail, while the earlier
 /// batch is summarised.
 #[test]
 fn oversized_last_batch_is_kept_whole() {
@@ -564,7 +518,7 @@ fn oversized_last_batch_is_kept_whole() {
         ScriptTurn::text("end summary"),
     ]));
     let settings = Settings::from_values(
-        json!({"oxa": {"profile": "local", "toolOutputCap": 16384,
+        json!({"oxa": {"toolOutputCap": 16384,
             "compaction": {"softTokens": SOFT}}, "compaction": {"keepRecentTokens": 2000}}),
         json!({}),
     );
@@ -628,7 +582,7 @@ fn abort_during_the_summary_ends_the_run() {
         step(3),
         ScriptTurn::text("done"),
     ]));
-    let mut s = open(&env, eng.clone(), Vec::new(), cfg("local", SOFT, None));
+    let mut s = open(&env, eng.clone(), Vec::new(), cfg(SOFT, None));
     let mut sink = AbortOnCompaction {
         handle: s.handle(),
         events: Vec::new(),
@@ -691,7 +645,7 @@ fn hard_limit_backstop_still_compacts() {
     const N_CTX: u32 = 13_000;
     let settings = |reserve: u32| {
         Settings::from_values(
-            json!({"oxa": {"profile": "local", "toolOutputCap": 16384,
+            json!({"oxa": {"toolOutputCap": 16384,
                 "compaction": {"softTokens": SOFT}},
                 "compaction": {"reserveTokens": reserve}}),
             json!({}),

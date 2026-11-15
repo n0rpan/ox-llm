@@ -4,7 +4,7 @@ use crate::descriptions::{self, errors};
 use crate::jobs::JobRegistry;
 use oxa_proto::{Access, ExecSpec, Mode, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// `bash {command, timeout?}`: runs through `ToolCtx::sandbox` (never directly). `writable` = mode is not Plan; `net` = [`net_for`] (O-167(b): the sandbox network by mode and `oxa.sandbox.net`; `access` keeps `net: false`). Output streams to `live`; the result text is the merged output plus pi's exit-code / timeout lines; no timing text (W4). If `sandbox.check()` fails the result is that error (`is_error`). `ToolOutput::ui` = `{"exit": n|null, "timedOut": bool}`. Environment: `ToolCtx::env`.
@@ -18,7 +18,7 @@ pub struct BashTool {
 impl BashTool {
     pub fn new() -> BashTool {
         BashTool {
-            spec: crate::spec_of(&descriptions::BASH),
+            spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell: ShellConfig::default(),
             jobs: Arc::new(JobRegistry::new()),
         }
@@ -26,7 +26,7 @@ impl BashTool {
     /// H: the tool with pi's `shellPath` / `shellCommandPrefix` settings.
     pub fn with_shell(shell: ShellConfig) -> BashTool {
         BashTool {
-            spec: crate::spec_of(&descriptions::BASH),
+            spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
             jobs: Arc::new(JobRegistry::new()),
         }
@@ -34,7 +34,7 @@ impl BashTool {
     /// Issue #127 (b): the tool with `shell` and a shared [`JobRegistry`] (the session's).
     pub fn with_shell_and_jobs(shell: ShellConfig, jobs: Arc<JobRegistry>) -> BashTool {
         BashTool {
-            spec: crate::spec_of(&descriptions::BASH),
+            spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
             jobs,
         }
@@ -212,6 +212,30 @@ pub(crate) fn diet_output(text: &str) -> String {
     format!("{}{tail}", out.join("\n"))
 }
 
+/// A hedged note for `No such file or directory` on a path under the real home that is outside
+/// the workspace. The sandbox may hide unbound home paths, but a missing file under a mounted
+/// directory (a read-only toolchain bind, a configured bind) is simply absent, so the note never
+/// claims the path is unmounted; it tells the reader to check the parent directory first.
+/// Only the workspace (`cwd`) counts as visible: neither `ToolCtx` nor `Sandbox` exposes the
+/// bound/extra paths, so no mount introspection is done here.
+pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Option<String> {
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return None;
+    }
+    let prefix = format!("{home}/");
+    for line in output.lines().filter(|l| l.contains("No such file or directory")) {
+        for tok in line.split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ':')) {
+            if tok.starts_with(&prefix) && !Path::new(tok).starts_with(cwd) {
+                return Some(format!(
+                    "{tok}: not found. It may be hidden because the path is outside the sandbox mounts (only the workspace and listed binds are visible), or it may simply not exist; check whether its parent directory exists before concluding it is unmounted"
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// O-167(b): the network of a bash command. `sandbox_net` is the sandbox's answer
 /// (`oxa.sandbox.net`, default on, and never on while offline). Per mode: plan = never (a
 /// read-only mode does not gain the network silently); workspace = `sandbox_net`; ask =
@@ -318,6 +342,7 @@ impl BashTool {
             return ToolOutput::error(e.to_string());
         }
         let backgrounded = looks_backgrounded(command);
+        let raw_command = command;
         let command = match self.shell.command(command) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(e),
@@ -344,7 +369,21 @@ impl BashTool {
             live(&String::from_utf8_lossy(&pending));
         }
 
-        let output = String::from_utf8_lossy(&res.output).into_owned();
+        let mut output = String::from_utf8_lossy(&res.output).into_owned();
+        let persistence_relevant = raw_command.contains("/tmp")
+            || raw_command.contains("TMPDIR")
+            || (res.exit != Some(0)
+                && [
+                    "read-only file system",
+                    "permission denied",
+                    "operation not permitted",
+                ]
+                .iter()
+                .any(|error| output.to_ascii_lowercase().contains(error)));
+        if let Some(notice) = cx.sandbox.persistence_notice().filter(|_| persistence_relevant) {
+            output.push_str("\n\n");
+            output.push_str(notice);
+        }
         // TOOL-DIET: the result text only; the raw bytes went to `live` above.
         let output = if cx.tune.diet {
             diet_output(&output)
@@ -362,8 +401,13 @@ impl BashTool {
             output
         };
         let ui = json!({ "exit": res.exit, "timedOut": res.timed_out });
+        let note = std::env::var("HOME")
+            .ok()
+            .and_then(|h| unmounted_home_note(&output, &h, cx.cwd));
         let shown = if output.is_empty() {
             errors::BASH_NO_OUTPUT.to_string()
+        } else if let Some(n) = note {
+            format!("{}\n[{n}]", output.trim_end())
         } else {
             output.clone()
         };
@@ -497,6 +541,27 @@ echo '\''a'\'''"#
         let mut streamed = String::new();
         let out = BashTool::new().run(&args, &cx, &mut |t| streamed.push_str(t));
         (out, streamed)
+    }
+
+    #[test]
+    fn note_for_unmounted_home_path_only() {
+        let cwd = Path::new("/home/u/proj");
+        let msg = "touch: cannot touch '/home/u/lab/probe': No such file or directory\n";
+        let note = unmounted_home_note(msg, "/home/u", cwd).expect("note");
+        assert!(note.contains("/home/u/lab/probe: not found."));
+        assert!(note.contains("may"));
+        assert!(note.contains("parent directory"));
+        assert!(!note.contains("path outside the sandbox (not mounted)"));
+        let mounted_parent = "ls: cannot access '/home/u/.cargo/bin/nothing': No such file or directory\n";
+        let hedged = unmounted_home_note(mounted_parent, "/home/u", cwd).expect("note");
+        assert!(hedged.contains("may"));
+        assert!(hedged.contains("parent directory"));
+        assert!(!hedged.contains("path outside the sandbox (not mounted)"));
+        let inside = "cat: /home/u/proj/x: No such file or directory\n";
+        assert!(unmounted_home_note(inside, "/home/u", cwd).is_none());
+        let other = "cat: /etc/x: No such file or directory\n";
+        assert!(unmounted_home_note(other, "/home/u", cwd).is_none());
+        assert!(unmounted_home_note("/home/u/lab/p: Permission denied", "/home/u", cwd).is_none());
     }
 
     #[test]

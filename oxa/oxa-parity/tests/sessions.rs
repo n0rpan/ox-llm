@@ -28,7 +28,7 @@ mod rig;
 #[path = "support/tree_pty.rs"]
 mod tree_pty;
 use rig::{session_lines, user_texts, Rig, RigOpts, Screen, WAIT};
-use tree_pty::{dialog_choice, open_tree, select_listed, select_row, selected};
+use tree_pty::{open_tree, select_listed, select_row, selected};
 
 // ---------------------------------------------------------------- helpers
 
@@ -49,7 +49,7 @@ fn oxa_in(env: &TestEnv, cwd: &Path, url: &str, extra: &[(&str, &str)], args: &[
         .current_dir(cwd)
         .env_clear()
         .envs(envs)
-        .envs(oxa_parity::profile_env())
+        .envs(oxa_parity::note_off_env())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -196,7 +196,7 @@ impl Rpc {
             .current_dir(env.work())
             .env_clear()
             .envs(env.envs(url))
-            .envs(oxa_parity::profile_env())
+            .envs(oxa_parity::note_off_env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -758,7 +758,7 @@ fn ses_007() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The session picker and /import through the pty (lane tui, wave H)
+// The session picker through the pty (lane tui, wave H)
 // ---------------------------------------------------------------------------------------------
 
 /// Three sessions of the work directory (apple, banana, cherry; cherry named `fruit bowl`),
@@ -822,75 +822,6 @@ fn picker_rig(env: TestEnv, opts: RigOpts) -> Rig {
         .wait_for_named("the picker", |s| picker_rows(s).len() == 3, WAIT)
         .unwrap();
     rig
-}
-
-/// pi docs: sessions.md "`/import <path>`" (slash-commands.md: preserves its ID and working
-/// directory). invariant: oxa-only migration of pi v1-v3 files; assistant entries lack the
-/// exact wire bytes, so the cache is cold on the first request.
-#[test]
-fn ses_008() {
-    // pi docs: slash-commands.md "`/import <path>` Import a JSONL session, preserving its ID and
-    // working directory"; interactive-mode.ts asks "Replace current session with <path>?" and
-    // reports "Session imported from: <path>".
-    // invariant: pi v1-v3 files are migrated; their assistant entries lack the exact wire
-    // bytes, so the first request after the import starts cold (the wire is rebuilt).
-    let env = TestEnv::new();
-    let proj = env.root().join("proj");
-    std::fs::create_dir_all(&proj).unwrap();
-    let id = "0f6c2d9e-1111-4222-8333-944455556666";
-    let src = env.write(
-        "import/pi-session.jsonl",
-        &[
-            json!({"type":"session","version":3,"id":id,"timestamp":"2026-01-01T00:00:00.000Z","cwd":proj}),
-            json!({"type":"message","id":"a1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z",
-                   "message":{"role":"user","content":"imported question","timestamp":1}}),
-            json!({"type":"message","id":"a2","parentId":"a1","timestamp":"2026-01-01T00:00:02.000Z",
-                   "message":{"role":"assistant","content":[{"type":"text","text":"imported answer"}],
-                              "stopReason":"stop","timestamp":2}}),
-        ]
-        .iter()
-        .map(|v| format!("{v}\n"))
-        .collect::<String>(),
-    );
-    let rig = Rig::start(rig::replies(2), RigOpts { ..RigOpts::default() });
-    let _ = &env;
-    // Cancel first: nothing changes.
-    let cmd = format!("/import {}", src.display());
-    rig.slash(&cmd);
-    rig.pty.wait_for_text("Replace current session with").unwrap();
-    rig.pty.send_key("escape");
-    rig.pty.wait_for_text("Import cancelled").unwrap();
-    assert!(!rig.screen().contains("imported question"));
-    // Confirm.
-    rig.slash(&cmd);
-    rig.pty.wait_for_text("Replace current session with").unwrap();
-    rig.pty
-        .wait_for_named("Yes chosen", |s| dialog_choice(s) == "Yes", WAIT)
-        .unwrap();
-    rig.pty.send_key("enter");
-    rig.pty.wait_for_text("Session imported from:").unwrap();
-    let s = rig.pty.wait_for_text("imported answer").unwrap();
-    assert!(s.contains("imported question"), "{s:?}");
-    // Stored with the same id and cwd.
-    let files = session_files(&sessions_root(&rig.env));
-    let imported = files
-        .iter()
-        .find(|f| header_of(f)["id"] == json!(id))
-        .unwrap_or_else(|| panic!("a session with id {id}: {files:?}"));
-    assert_eq!(
-        header_of(imported)["cwd"],
-        json!(proj),
-        "the working directory is kept"
-    );
-    // The next prompt continues the imported conversation.
-    rig.prompt("follow up", "reply 1");
-    let last = rig.generating().last().cloned().unwrap();
-    let texts: Vec<String> = last
-        .messages
-        .iter()
-        .map(|m| m.content.clone().unwrap_or_default())
-        .collect();
-    assert_eq!(texts, vec!["imported question", "imported answer", "follow up"]);
 }
 
 /// pi docs: sessions.md "`--no-session`": an ephemeral run keeps nothing on disk.
@@ -1361,7 +1292,7 @@ fn fn_body(id: &str) -> &'static str {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = ses_rows();
-    assert_eq!(rows.len(), 16, "the SES area has 16 rows: {rows:?}");
+    assert_eq!(rows.len(), 15, "the SES area has 15 rows: {rows:?}");
     for (id, verdict, test) in &rows {
         let fn_name = id.to_ascii_lowercase().replace('-', "_");
         assert!(

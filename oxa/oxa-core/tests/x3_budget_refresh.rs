@@ -391,7 +391,7 @@ fn reload_applies_changed_compaction_settings() {
 #[test]
 fn runtime_auto_compaction_overrides_the_setting() {
     let env = TestEnv::new();
-    // `local` turns on turn-start compaction; this test is about the runtime switch, so keep
+    // Turn-start compaction is on by default; this test is about the runtime switch, so keep
     // the after-reply compaction the only Threshold per prompt.
     let off = r#"{"compaction": {"enabled": false, "reserveTokens": 1024, "keepRecentTokens": 1}, "oxa": {"compaction": {"softTokens": 50, "turnStart": false}}}"#;
     write_settings(&env, off);

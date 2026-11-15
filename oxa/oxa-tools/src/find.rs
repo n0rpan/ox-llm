@@ -14,7 +14,7 @@ pub struct FindTool {
 impl FindTool {
     pub fn new() -> FindTool {
         FindTool {
-            spec: crate::spec_of(&descriptions::FIND),
+            spec: crate::spec_of(&descriptions::builtin_specs::FIND_DEFAULT),
         }
     }
 }

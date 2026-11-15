@@ -1,9 +1,7 @@
-//! parity-local (O-167): under profile `local` a failed model summary is replaced by the
-//! mechanical one (R4). An extension still learns that the model summary failed: the
-//! compaction happened, so `session_compact` fires with `mechanical: true` and `summaryError`
-//! (the failure's text); `session_compact_failed` does not fire (it means the wire is
-//! unchanged). Under `pi` the failure fires `session_compact_failed` as before and the
-//! `session_compact` payload of a normal compaction has no new key.
+//! R4: a failed model summary is replaced by the mechanical one. An extension still learns that
+//! the model summary failed: the compaction happened, so `session_compact` fires with
+//! `mechanical: true` and `summaryError` (the failure's text); `session_compact_failed` does
+//! not fire (it means the wire is unchanged).
 //! Isolation: `oxa_fake::TestEnv` for every file and directory.
 
 use oxa_compact::CompactPolicy;
@@ -15,7 +13,7 @@ use oxa_fake::{Fault, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
     AgentEvent, AssistantTurn, CancelToken, CommandSpec, CompactReason, Engine, EngineInfo, EntryBody,
-    FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode, OxaError, Policy, Profile, StreamEvent,
+    FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode, OxaError, Policy, StreamEvent,
     ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
@@ -60,7 +58,7 @@ impl Hooks for Recorder {
     }
 }
 
-fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>, profile: Profile) -> SessionState {
+fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>) -> SessionState {
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     let cwd = env.work();
     let sref = store.create(&cwd, None, None).expect("create session");
@@ -80,7 +78,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>, profile: 
         dirty: AtomicBool::new(false),
         gate: Default::default(),
     });
-    let mut st = SessionState {
+    let st = SessionState {
         engine,
         store,
         hooks: vec![hooks as Arc<dyn Hooks>],
@@ -125,7 +123,6 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>, profile: 
         compact_memo: Default::default(),
         jobs: oxa_core::fresh_jobs(),
     };
-    st.stats.profile = profile;
     st
 }
 
@@ -142,11 +139,11 @@ fn push(st: &mut SessionState, wire: WireMsg) {
 
 /// A threshold compaction whose summary request is answered by `summary`; returns the hooks
 /// seen, whether it compacted, and the reported `estimated_tokens_after` (when it compacted).
-fn compact_with(summary: ScriptTurn, profile: Profile) -> (Arc<Recorder>, bool, Option<u32>) {
+fn compact_with(summary: ScriptTurn) -> (Arc<Recorder>, bool, Option<u32>) {
     let env = TestEnv::new();
     let rec = Arc::new(Recorder::default());
     let engine: Arc<dyn Engine> = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("done two"), summary]));
-    let mut st = build(&env, engine, rec.clone(), profile);
+    let mut st = build(&env, engine, rec.clone());
     push(&mut st, WireMsg::user("task one: fix the parser"));
     push(&mut st, WireMsg::assistant("done one"));
     push(&mut st, WireMsg::user("task two"));
@@ -179,7 +176,7 @@ fn fault() -> ScriptTurn {
 
 #[test]
 fn local_mechanical_fallback_fires_session_compact_with_the_failure() {
-    let (rec, done, after) = compact_with(fault(), Profile::Local);
+    let (rec, done, after) = compact_with(fault());
     assert!(done, "the session compacts without the model");
     assert!(after.is_some(), "a compaction reports its estimated tokens after");
     assert!(
@@ -197,25 +194,14 @@ fn local_mechanical_fallback_fires_session_compact_with_the_failure() {
 }
 
 #[test]
-fn pi_failure_still_fires_session_compact_failed() {
-    let (rec, done, after) = compact_with(fault(), Profile::Pi);
-    assert!(!done);
-    assert!(after.is_none(), "a failed pi compaction reports no result");
-    assert!(rec.of(HookPoint::SessionCompact).is_empty());
-    assert_eq!(rec.of(HookPoint::SessionCompactFailed).len(), 1);
-}
-
-#[test]
-fn a_model_summary_adds_no_key_under_either_profile() {
-    for profile in [Profile::Pi, Profile::Local] {
-        let (rec, done, after) = compact_with(ScriptTurn::text("## Goal\nsummary"), profile);
-        assert!(done, "{profile:?}");
-        assert!(after.is_some(), "{profile:?}");
-        let compact = rec.of(HookPoint::SessionCompact);
-        assert_eq!(compact.len(), 1, "{profile:?}");
-        assert!(compact[0].get("mechanical").is_none(), "{profile:?}");
-        assert!(compact[0].get("summaryError").is_none(), "{profile:?}");
-    }
+fn a_model_summary_adds_no_key() {
+    let (rec, done, after) = compact_with(ScriptTurn::text("## Goal\nsummary"));
+    assert!(done);
+    assert!(after.is_some());
+    let compact = rec.of(HookPoint::SessionCompact);
+    assert_eq!(compact.len(), 1);
+    assert!(compact[0].get("mechanical").is_none());
+    assert!(compact[0].get("summaryError").is_none());
 }
 
 /// An engine that cannot count a prompt exactly (`count_prompt` -> `Ok(None)`), so the
@@ -254,7 +240,7 @@ fn manual_compaction_after_a_rebase_without_usage_reports_a_nonzero_after() {
         ScriptTurn::text("## Goal\nsummary"),
     ]));
     let engine: Arc<dyn Engine> = Arc::new(NoCount(inner));
-    let mut st = build(&env, engine, rec.clone(), Profile::Local);
+    let mut st = build(&env, engine, rec.clone());
     push(&mut st, WireMsg::user("task one: fix the parser"));
     push(&mut st, WireMsg::assistant("done one"));
     push(&mut st, WireMsg::user("task two"));
@@ -306,7 +292,7 @@ fn an_estimated_after_is_smaller_than_the_context_before_compaction() {
         ScriptTurn::text("## Goal\nsummary"),
     ]));
     let engine: Arc<dyn Engine> = Arc::new(NoCount(inner));
-    let mut st = build(&env, engine, rec.clone(), Profile::Local);
+    let mut st = build(&env, engine, rec.clone());
     push(&mut st, WireMsg::user("task one: fix the parser"));
     push(&mut st, WireMsg::assistant("done one"));
     push(&mut st, WireMsg::user("task two"));

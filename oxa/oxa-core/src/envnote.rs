@@ -1,4 +1,4 @@
-//! The environment note (`oxa.envNote`, on under profile `local`): what the model cannot know
+//! The environment note (`oxa.envNote`, on by default): what the model cannot know
 //! by itself, the date, time and time zone, and the session's runtime facts.
 //!
 //! Cache rule (W1/W3): nothing here goes into the frozen prefix. The note is appended to the
@@ -12,7 +12,7 @@
 //! so the editor refill and the display drop exactly that suffix ([`strip_note`]) and nothing a
 //! user typed (a literal `<env>` block, an older session, `envNote` off).
 use crate::SessionState;
-use oxa_proto::{Part, Profile, Role, WireMsg};
+use oxa_proto::{Part, Role, WireMsg};
 use oxa_session::LocalTime;
 
 /// First line of the full block; a wire message containing it carries the date.
@@ -158,8 +158,7 @@ fn kernel() -> String {
 /// setting for this process (the PARITY harness turns the note off: it checks pi's bytes).
 pub const ENV_SWITCH: &str = "OXA_ENV_NOTE";
 
-/// Whether the note is on for this session: [`ENV_SWITCH`], else `oxa.envNote` (unset = on
-/// under `local`).
+/// Whether the note is on for this session: [`ENV_SWITCH`], else `oxa.envNote` (unset = on).
 pub fn enabled(st: &SessionState) -> bool {
     let forced = std::env::var(ENV_SWITCH)
         .ok()
@@ -168,10 +167,7 @@ pub fn enabled(st: &SessionState) -> bool {
             "1" | "true" | "yes" | "on" => Some(true),
             _ => None,
         });
-    forced.unwrap_or_else(|| {
-        st.settings
-            .bool("oxa.envNote", st.stats.profile == Profile::Local)
-    })
+    forced.unwrap_or_else(|| st.settings.bool("oxa.envNote", true))
 }
 
 /// The facts of `st` now.
@@ -289,7 +285,7 @@ mod tests {
         // A typed text that itself ends like a note keeps it: only the recorded suffix goes.
         let literal = "Explain this format:\n\n<env>\nexample\n</env>";
         assert_eq!(strip_note(&append_note(literal, short), &noted(short)), literal);
-        // No recorded note (note off, pi profile, an older session): the text as stored.
+        // No recorded note (note off, an older session): the text as stored.
         assert_eq!(strip_note(literal, &[]), literal);
         assert_eq!(
             strip_note("hi\n\n[local time 13:42 CET]", &[]),

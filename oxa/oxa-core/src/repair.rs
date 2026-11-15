@@ -1,4 +1,4 @@
-//! T2 (wave H lane `local`): the append-only repair turn for a malformed tool call.
+//! T2 (wave H): the append-only repair turn for a malformed tool call.
 //!
 //! The engine returns a tool call it cannot parse as plain content (lenient final parse: the
 //! text from the failed call on is appended to `content`, glued to the prose before it, since

@@ -536,7 +536,7 @@ fn start_tool_prefill(
 ) -> bool {
     if i == 0
         || !matches!(prepared[i].plan, Plan::Run { .. })
-        || !st.settings.prefill_tools(st.stats.profile)
+        || !st.settings.prefill_tools()
         || !st.info.prefill_only
         || st.settings.string("cacheWarming").as_deref() == Some("off")
         || st.shared.cancel.is_cancelled()
