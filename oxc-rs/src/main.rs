@@ -4,6 +4,7 @@ mod cli;
 mod daemon;
 mod diagnostics;
 mod engine;
+mod engine_cache;
 mod guard;
 mod harness;
 mod ledger;

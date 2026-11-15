@@ -58,8 +58,24 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/v1/models':
             return self.json_reply(200, {'object': 'list', 'data': [
                 {'id': self.server.alias, 'object': 'model', 'created': 0, 'owned_by': 'local'}]})
+        if self.path == '/state-cache' and self.server.state_root:
+            return self.state_reply({'budget_bytes': self.server.state_budget, 'used_bytes': 1234,
+                                     'preload': self.server.preload_status})
         return self.json_reply(404, {'error': {'message': 'Unknown synthetic route.',
                                              'type': 'not_found_error', 'code': 404}})
+
+    def state_reply(self, body, status=200):
+        # Independently scripted protocol receipts. The mock never trims the
+        # seeded KV files, so tests detect any controller mutation while owned.
+        fault = Path(os.environ['FAKE_ENGINE_EVENTS']).with_name('engine-cache-fault')
+        mode = fault.read_text().strip() if fault.exists() else ''
+        if mode == 'error':
+            return self.json_reply(503, {'error': 'Synthetic cache refusal.'})
+        if mode == 'malformed':
+            return self.json_reply(200, ['synthetic non-object'])
+        if mode == 'oversized':
+            return self.json_reply(200, {'synthetic': 'x' * (1024**2 + 1)})
+        return self.json_reply(status, body)
 
     def wait_gate(self, body):
         if '[hold]' not in json.dumps(body):
@@ -85,6 +101,14 @@ class Handler(BaseHTTPRequestHandler):
             # Only bounded synthetic hint headers; never authentication material.
             names = ('X-Oxe-Session', 'X-Oxe-Turn-Kind', 'X-Oxe-Snapshot', 'X-Oxe-Probe')
             event('hints', values={name: self.headers.get(name) for name in names})
+        if self.server.state_root and self.path == '/state-cache/budget':
+            self.server.state_budget = body['bytes']
+            return self.state_reply({'used_bytes': 777, 'freed_bytes': 222})
+        if self.server.state_root and self.path == '/state-cache/clear':
+            return self.state_reply({'freed_bytes': 333, 'sessions': 2})
+        if self.server.state_root and self.path == '/state-cache/preload':
+            self.server.preload_status = {'status': 'done', 'pos': 256, 'ms': 12.345}
+            return self.state_reply({'status': 'started'}, status=202)
         if not self.wait_gate(body):
             self.close_connection = True
             return
@@ -201,6 +225,9 @@ def main():
     parser.add_argument('--alias', required=True)
     parser.add_argument('--model', required=True)
     parser.add_argument('--ctx-size', type=int)
+    parser.add_argument('--state-cache')
+    parser.add_argument('--state-budget-bytes', type=int)
+    parser.add_argument('--state-ttl-secs', type=int)
     args = parser.parse_args()
     if diagnostic := os.environ.get('FAKE_ENGINE_STDERR'):
         os.write(2, diagnostic.encode())
@@ -212,9 +239,19 @@ def main():
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
     server.alias = args.alias
+    server.state_root, server.state_budget = args.state_cache, args.state_budget_bytes
+    server.preload_status = {'status': 'idle'}
+    state_args = None
+    if args.state_cache:
+        directory = Path(args.state_cache)
+        before = directory.exists()
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        state_args = {'root': args.state_cache, 'budget': args.state_budget_bytes,
+                      'ttl': args.state_ttl_secs, 'existed': before}
     event('started', pid=os.getpid(), alias=args.alias,
           affinity=sorted(os.sched_getaffinity(0)),
-          **({'context_size': args.ctx_size} if args.ctx_size is not None else {}))
+          **({'context_size': args.ctx_size} if args.ctx_size is not None else {}),
+          **({'state_cache': state_args} if os.environ.get('FAKE_ENGINE_STATE_CACHE') == '1' else {}))
     server.serve_forever()
 
 

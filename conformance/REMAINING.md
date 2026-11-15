@@ -17,7 +17,7 @@ The following gaps remain visible rather than being represented by skipped tests
   symlink refusals. Budget persistence and controller eviction now cover TTL,
   value ranking, shared blocks, pins, opaque manifests and private lease ownership.
   Controller clear now covers all/model/session/hint scopes and shared ownership.
-  PrefixStore lookup/save, preload, engine-owned mutation and further race
+  PrefixStore lookup/save, legacy conversation-store launch rewriting and further race
   coverage remain pending.
 - LAN sharing: actual listener configuration, key rotation and file permissions,
   origin/route/header restrictions, rates, shared/local priority and preemption.
@@ -63,7 +63,7 @@ run/review, mark ready deliberately or dispatch checks.yml once for the branch.
 The merge queue runs full integration CI again. If waiting is needed, use one
 blocking gh pr checks --watch; never poll CI status.
 
-Next implementation step: disk-cache preload, engine adapters and remaining CLI
+Next implementation step: legacy conversation-store launch rewriting, engine-ledger capture and remaining CLI
 commands. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
 opt-in learning, memory-only operation, streaming, bounded candidates/prefixes,
@@ -82,6 +82,9 @@ private durable manifest rewrites, lease/busy refusal, retained primers and
 legacy Rust prefixes. Classic PrefixStore clearing preserves its private-directory,
 pending/prune, recognized-name and fsync rules; symlink roots and invalid budgets
 refuse the operation, and other clear scopes retain that store.
-State-cache-capable engines and the automatic engine-ledger bridge currently
-refuse launch explicitly until their adapters are ported. Full Rust conformance
+Nine engine-cache cases cover ownership, authenticated controls, bounded replies,
+private overrides, budget zero, explicit/async preload, saved/in-memory session
+hints, and immediate ownership release after engine death.
+The automatic engine-ledger bridge and legacy conversation-store launch flags
+still refuse launch explicitly until their adapters are ported. Full Rust conformance
 remains FAIL, and no native deployment or readiness claim is made.

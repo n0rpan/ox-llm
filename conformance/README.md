@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `2d5825e19301dead4703362c556ddc11c4635662`.
-The current suite passes 323 scenarios in 53 unittest methods. This remains a
+The current suite passes 332 scenarios in 54 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -35,7 +35,9 @@ contracts verify private permissions, visible control characters and refusal of
 symlink/hard-link targets. No runner cgroup settings are changed.
 The synthetic `/proc` view delegates other metadata to live procfs and exposes
 engine PIDs before readiness. The daemon receives SIGTERM directly for graceful
-shutdown, rather than terminating the bubblewrap supervisor.
+shutdown, rather than terminating the bubblewrap supervisor. Daemon fixtures set
+the installed service's private umask and restore the caller's setting on exit;
+permission checks are independent of the runner's shell umask.
 
 Configured wire goldens contain both client replies and the exact inference
 requests received by the fake engine. SSE event names and frame order are
@@ -77,6 +79,7 @@ python3 conformance/test_state_cache.py --record-python
 python3 conformance/test_cache_budget.py --record-python
 python3 conformance/test_cache_clear.py --record-python
 python3 conformance/test_context_modes.py --record-python
+python3 conformance/test_engine_cache.py --record-python
 python3 conformance/test_storage.py --record-python
 python3 conformance/test_harnesses.py --record-python
 python3 conformance/test_ledger.py --record-python
@@ -95,9 +98,10 @@ do not refresh goldens merely because an alternate implementation fails them.
 | CLI runtime | PASS, 48 cases | Partial: 29/48 native CLI cases against Python daemon | More success/failure branches, qualified Flash/plan launch, populated digest/ledger |
 | HTTP empty install | PASS, 7 cases | PASS | Additional setup failures |
 | Configured HTTP | PASS, 62 cases | PASS: chat, completions and Responses JSON/SSE | More option combinations and engine error paths |
-| Cache usage | PASS, 9 cases | PASS | Clear, preload and active-engine ownership |
+| Cache usage | PASS, 9 cases | PASS | More malformed/advisory I/O cases |
 | Cache budgets | PASS, 12 cases | PASS: persistence, value/TTL eviction, pins/recent sessions, shared blocks, orphan echo, opaque models, lease refusal and symlink safety | State-cache engine adapter and mutation races |
-| Cache clear | PASS, 18 cases | PASS: all/model/session/hint scopes, shared/anonymous owners, opaque manifests, private durable rewrites, busy/lease refusal, classic/Rust prefixes and retained primers | Engine-owned clear and more mutation races |
+| Cache clear | PASS, 18 cases | PASS: all/model/session/hint scopes, shared/anonymous owners, opaque manifests, private durable rewrites, busy/lease refusal, classic/Rust prefixes and retained primers | More mutation races |
+| Engine-owned cache | PASS, 9 cases | PASS: launch flags, disk off, private override, authenticated usage/budget/clear, bounded replies, explicit/async preload, saved/in-memory hints and crashed-owner recovery | Legacy conversation-store launch rewriting and more preload states/races |
 | Context modes | PASS, 8 cases | PASS: limits/capabilities, fast/deep/max, RSS-proof gates, active/cap-changing controls and private config writes | Execution override adapters and more malformed profiles |
 | Storage inventory | PASS, 5 cases | PASS | Deletion, races and additional identity variants |
 | HTTP gates | PASS, 18 cases | PASS | LAN share listeners and rate limits |

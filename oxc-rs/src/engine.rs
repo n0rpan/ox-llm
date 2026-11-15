@@ -244,6 +244,20 @@ struct State {
     stop_pending: Option<String>,
     pressure_streak: u32,
 }
+#[derive(Clone)]
+struct CacheBackend {
+    backend: Backend,
+    owned: Arc<Mutex<bool>>,
+    generation: usize,
+    preload: bool,
+}
+struct PreloadNote {
+    generation: usize,
+    state: &'static str,
+    src: Value,
+    ms: Value,
+    at: Instant,
+}
 
 pub struct Manager {
     pub harness: Mutex<crate::harness::Registry>,
@@ -261,6 +275,10 @@ pub struct Manager {
     stop: watch::Sender<bool>,
     port: u16,
     preload: Mutex<Option<Value>>,
+    cache_backend: RwLock<Option<CacheBackend>>,
+    cache_preload: Mutex<Option<PreloadNote>>,
+    session_hints: Mutex<std::collections::HashMap<String, String>>,
+    launches: AtomicUsize,
 }
 struct Waiting(Arc<Manager>);
 impl Drop for Waiting {
@@ -298,6 +316,7 @@ impl Drop for Admission {
         self.manager.finished.notify_waiters();
     }
 }
+#[derive(Clone)]
 pub struct Backend {
     pub url: String,
     pub key: String,
@@ -334,6 +353,10 @@ impl Manager {
             last_used: Mutex::new(Instant::now()),
             last_failure: Mutex::new(None),
             preload: Mutex::new(None),
+            cache_backend: RwLock::new(None),
+            cache_preload: Mutex::new(None),
+            session_hints: Mutex::new(std::collections::HashMap::new()),
+            launches: AtomicUsize::new(0),
             stop,
             port,
         });
@@ -366,6 +389,164 @@ impl Manager {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+    pub fn launches(&self) -> usize {
+        self.launches.load(Ordering::SeqCst)
+    }
+    fn cache_backend(&self) -> Option<CacheBackend> {
+        let backend = self
+            .cache_backend
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        if let Ok(mut state) = self.state.try_lock() {
+            if let Some(running) = state.running.as_mut() {
+                let _ = running.process.poll();
+            }
+        }
+        let live = *backend.owned.lock().unwrap_or_else(|e| e.into_inner());
+        live.then_some(backend)
+    }
+    pub fn remember_session(&self, model: &str, hint: &str) {
+        self.session_hints
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(model.into(), hint.into());
+    }
+    pub async fn cache_usage(&self, config: &Value) -> std::io::Result<Value> {
+        let mut value = crate::state_cache::usage(config)?;
+        if let Some(backend) = self.cache_backend() {
+            value["engine"] = match crate::engine_cache::request(
+                &backend.backend,
+                reqwest::Method::GET,
+                "/state-cache",
+                None,
+                &[200],
+                1 << 20,
+                30.0,
+            )
+            .await
+            {
+                Ok(engine) => Value::Object(
+                    ["budget_bytes", "used_bytes"]
+                        .iter()
+                        .filter_map(|key| {
+                            engine
+                                .get(*key)
+                                .filter(|v| v.is_i64() || v.is_u64())
+                                .map(|v| ((*key).into(), v.clone()))
+                        })
+                        .collect(),
+                ),
+                Err(_) => Value::Null,
+            };
+        }
+        Ok(value)
+    }
+    fn preload_status(&self) -> Value {
+        let idle = |state: &str| json!({"state":state,"src":null,"ms":null,"age_s":null});
+        if self.phase() == "unloaded" {
+            return idle("idle");
+        }
+        let Some(backend) = self.cache_backend().filter(|b| b.preload) else {
+            return idle("unavailable");
+        };
+        let note = self.cache_preload.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(note) = note.as_ref().filter(|n| n.generation == backend.generation) {
+            json!({"state":note.state,"src":note.src,"ms":note.ms,"age_s":note.at.elapsed().as_secs()})
+        } else {
+            idle("idle")
+        }
+    }
+    fn note_preload(&self, generation: usize, value: &Value) {
+        if !self
+            .cache_backend()
+            .is_some_and(|b| b.generation == generation)
+        {
+            return;
+        }
+        let (state, src, ms) = crate::engine_cache::preload_view(value);
+        *self.cache_preload.lock().unwrap_or_else(|e| e.into_inner()) = Some(PreloadNote {
+            generation,
+            state,
+            src,
+            ms,
+            at: Instant::now(),
+        });
+    }
+    pub fn preload_state(self: &Arc<Self>, model: &str, generation: usize) {
+        let Some(backend) = self
+            .cache_backend()
+            .filter(|b| b.preload && b.generation == generation)
+        else {
+            return;
+        };
+        if !self.loaded().is_some_and(|p| p["model_alias"] == model) {
+            return;
+        }
+        let hint = self
+            .session_hints
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(model)
+            .cloned()
+            .or_else(|| crate::request_ledger::last_session(model));
+        let payload = hint
+            .map(|hint| json!({"session":hint}))
+            .unwrap_or_else(|| json!({}));
+        self.note_preload(generation, &json!({"status":"running"}));
+        let manager = self.clone();
+        let mut stop = self.stop.subscribe();
+        tokio::spawn(async move {
+            let reply = crate::engine_cache::request(
+                &backend.backend,
+                reqwest::Method::POST,
+                "/state-cache/preload",
+                Some(&payload),
+                &[200, 202],
+                4096,
+                5.0,
+            )
+            .await
+            .unwrap_or(Value::Null);
+            manager.note_preload(generation, &reply);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                let running = manager
+                    .cache_preload
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .is_some_and(|n| n.generation == generation && n.state == "running");
+                if !running || tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::select! {_=stop.changed()=>return,_=tokio::time::sleep(Duration::from_millis(500))=>{}}
+                if !manager
+                    .cache_backend()
+                    .is_some_and(|b| b.generation == generation)
+                {
+                    return;
+                }
+                let usage = crate::engine_cache::request(
+                    &backend.backend,
+                    reqwest::Method::GET,
+                    "/state-cache",
+                    None,
+                    &[200],
+                    1 << 20,
+                    30.0,
+                )
+                .await;
+                match usage {
+                    Ok(usage) => manager.note_preload(generation, &usage["preload"]),
+                    Err(_) => {
+                        manager.note_preload(generation, &Value::Null);
+                        return;
+                    }
+                }
+            }
+        });
     }
     pub fn sampling(&self, alias: &str) -> Option<Vec<String>> {
         if !self.loaded().is_some_and(|p| p["model_alias"] == alias) {
@@ -422,7 +603,7 @@ impl Manager {
         json!({"state":self.phase(),"model":profile["model_alias"],"selected_model":models::resolve(config,None).ok().map(|p|p["model_alias"].clone()),
             "validated":models::eligible(&profile),"active_requests":self.active.load(Ordering::SeqCst),"queued_requests":self.queued.load(Ordering::SeqCst),
             "capabilities":["models","active"],"context_size":profile["context_size"],"context":models::context(&profile,config),"model_limits":limits,"memory_policy":memory,
-            "last_error":self.last_failure.lock().unwrap_or_else(|e|e.into_inner()).clone(),"model_preload":self.preload.lock().unwrap_or_else(|e|e.into_inner()).clone()})
+            "last_error":self.last_failure.lock().unwrap_or_else(|e|e.into_inner()).clone(),"model_preload":self.preload.lock().unwrap_or_else(|e|e.into_inner()).clone(),"preload":self.preload_status()})
     }
     pub async fn set_harness_learning(
         &self,
@@ -484,7 +665,7 @@ impl Manager {
     }
     async fn clear_cache_inner(&self, control: Value) -> Result<Value, (u16, Value)> {
         let scope = control["scope"].as_str().unwrap_or("all");
-        let state = self.state.lock().await;
+        let mut state = self.state.lock().await;
         if self.busy() {
             return Err((
                 409,
@@ -517,10 +698,44 @@ impl Manager {
                 .ledger
                 .session_hint(control["hint"].as_str().unwrap_or(""))
                 .ok_or_else(failure)?;
-            Some(format!("{:x}", Sha256::digest(hint.as_bytes()))[..32].to_owned())
+            Some(hint)
         } else {
             None
         };
+        if let Some(running) = state.running.as_mut() {
+            let _ = running.process.poll();
+        }
+        if let Some(backend) = self.cache_backend() {
+            let mut body = json!({"scope":scope});
+            if scope == "model" {
+                body["model"] = control["model"].clone();
+            }
+            if scope == "session" {
+                body["session"] = control["session"].clone();
+            }
+            if scope == "hint" {
+                body["hint"] = json!(hint);
+            }
+            let engine = crate::engine_cache::request(
+                &backend.backend,
+                reqwest::Method::POST,
+                "/state-cache/clear",
+                Some(&body),
+                &[200],
+                1 << 20,
+                30.0,
+            )
+            .await
+            .map_err(|_| failure())?;
+            let mut result =
+                json!({"scope":scope,"freed_bytes":engine["freed_bytes"],"applied_by":"engine"});
+            if scope == "hint" {
+                result["sessions"] = engine["sessions"].clone();
+            }
+            return Ok(json!({"cleared":true,"state_cache":result}));
+        }
+        let hint =
+            hint.map(|hint| format!("{:x}", Sha256::digest(hint.as_bytes()))[..32].to_owned());
         let lease = if state.running.is_none() {
             let path = std::env::var_os("LOCAL_AI_LEASE")
                 .map(PathBuf::from)
@@ -622,7 +837,7 @@ impl Manager {
                 json!({"error":"The cache budget could not be applied."}),
             )
         };
-        let state = tokio::time::timeout(Duration::from_secs(2), self.state.lock())
+        let mut state = tokio::time::timeout(Duration::from_secs(2), self.state.lock())
             .await
             .map_err(|_| {
                 (
@@ -637,6 +852,15 @@ impl Manager {
         config["cache"] = Value::Object(cache);
         paths::write_config(&config)
             .map_err(|_| (409, json!({"error":"The cache budget could not be saved."})))?;
+        if let Some(running) = state.running.as_mut() {
+            let _ = running.process.poll();
+        }
+        if let Some(backend) = self.cache_backend() {
+            let engine=crate::engine_cache::request(&backend.backend,reqwest::Method::POST,"/state-cache/budget",Some(&json!({"bytes":budget})),&[200],1<<20,30.0).await.map_err(|_|(409,json!({"error":"The budget was saved; the engine did not apply it yet (it will at the next load)."})))?;
+            return Ok(
+                json!({"budget_bytes":budget,"used_bytes":engine["used_bytes"],"freed_bytes":engine["freed_bytes"],"applied_by":"engine"}),
+            );
+        }
         crate::state_cache::root(&config).map_err(|e| {
             if e.kind() == std::io::ErrorKind::InvalidInput {
                 (400, json!({"error":e.to_string()}))
@@ -840,7 +1064,11 @@ impl Manager {
         let manager = self.clone();
         let started_alias = alias.clone();
         tokio::spawn(async move {
+            let before = manager.launches();
             let result = manager.load_inner(profile, true).await;
+            if result.is_ok() && manager.launches() != before {
+                manager.preload_state(started_alias.as_str().unwrap_or(""), manager.launches());
+            }
             *manager.preload.lock().unwrap_or_else(|e| e.into_inner()) = Some(
                 json!({"state":if result.is_ok() {"ready"} else {"failed"},"model":started_alias,"error":result.err(),"t":chrono::Utc::now().timestamp()}),
             );
@@ -973,11 +1201,29 @@ impl Manager {
         }) {
             return Err("The legacy conversation-store launch adapter is not implemented by the Rust controller yet.".into());
         }
-        if has_state_cache(Path::new(&args[0]))? {
-            return Err(
-                "The state-cache launch adapter is not implemented by the Rust controller yet."
-                    .into(),
-            );
+        let settings = crate::state_cache::Settings::new(&profile);
+        let overridden = crate::state_cache::overridden(&profile);
+        let state_root = if settings.budget > 0 || overridden {
+            Some(crate::state_cache::root(&profile).map_err(|_|"LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?)
+        } else {
+            None
+        };
+        let state_engine = settings.budget > 0 && has_state_cache(Path::new(&args[0]))?;
+        let state_preload = state_engine
+            && binary_holds(Path::new(&args[0]), &[b"oxe-capability state-preload-v1"])?;
+        if state_engine {
+            let root = state_root.as_ref().expect("state root");
+            if overridden {
+                crate::state_cache::make_private(root).map_err(|_|"LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?;
+            }
+            args.extend([
+                "--state-cache".into(),
+                root.to_string_lossy().into_owned(),
+                "--state-budget-bytes".into(),
+                settings.budget.to_string(),
+                "--state-ttl-secs".into(),
+                settings.ttl.to_string(),
+            ]);
         }
         if profile["environment"]["LOCAL_AI_ENGINE_LEDGER"] == "1"
             && !args
@@ -1037,6 +1283,20 @@ impl Manager {
             .stderr
             .take()
             .map(|stderr| spawn_stderr(stderr, token.value.clone()));
+        let generation = self.launches.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.cache_preload.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .cache_backend
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = state_engine.then(|| CacheBackend {
+            backend: Backend {
+                url: format!("http://127.0.0.1:{}", self.port),
+                key: token.value.clone(),
+            },
+            owned: process.owned.clone(),
+            generation,
+            preload: state_preload,
+        });
         state.running = Some(Running {
             process,
             _lease: lease,
@@ -1154,6 +1414,10 @@ impl Manager {
             }
         }
         state.running = None;
+        *self
+            .cache_backend
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         state.stop_pending = None;
         state.pressure_streak = 0;
         *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = None;
@@ -1332,18 +1596,23 @@ fn idle_due(profile: &Value, idle: f64, streak: &mut u32) -> bool {
     *streak >= 3
 }
 fn has_state_cache(path: &Path) -> Result<bool, String> {
+    binary_holds(
+        path,
+        &[
+            b"--state-cache ",
+            b"--state-budget-bytes ",
+            b"--state-ttl-secs ",
+        ],
+    )
+}
+fn binary_holds(path: &Path, flags: &[&[u8]]) -> Result<bool, String> {
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
         .map_err(|_| "The engine binary became unreadable.")?
         .take(256 * 1024 * 1024 + 1);
-    let flags = [
-        b"--state-cache ".as_slice(),
-        b"--state-budget-bytes ".as_slice(),
-        b"--state-ttl-secs ".as_slice(),
-    ];
-    let mut found = [false; 3];
+    let mut found = vec![false; flags.len()];
     let mut buffer = vec![0_u8; 1024 * 1024 + 64];
     let mut tail = 0;
     loop {

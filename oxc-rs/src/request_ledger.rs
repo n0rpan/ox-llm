@@ -1078,3 +1078,45 @@ pub fn recent(limit: usize) -> Value {
     }
     json!({"object":"list","available":true,"rows":rows,"medians":medians,"answered":answered.len()})
 }
+pub fn last_session(model: &str) -> Option<String> {
+    let mut paths = fs::read_dir(ledger::directory())
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with("requests-") && s.ends_with(".jsonl"))
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths.into_iter().rev().take(2) {
+        let read = || -> io::Result<Vec<u8>> {
+            let mut file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path)?;
+            let size = file.metadata()?.len();
+            file.seek(SeekFrom::Start(size.saturating_sub(262144)))?;
+            let mut bytes = Vec::new();
+            file.take(262144).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        };
+        if let Ok(bytes) = read() {
+            for line in bytes.split(|b| *b == b'\n').rev() {
+                if let Ok(row) = serde_json::from_slice::<Value>(line) {
+                    if row["model"] == model {
+                        if let Some(session) = row["session"].as_str().filter(|s| {
+                            s.len() == 16
+                                && s.bytes()
+                                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        }) {
+                            return Some(session.into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}

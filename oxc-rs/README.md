@@ -22,7 +22,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 323 passing scenarios in 53
+suite has 332 passing scenarios in 54
 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
@@ -76,6 +76,13 @@ Classic PrefixStore clear preserves the reference constructor's private director
 pending cleanup and pruning rules, then removes only recognized cache names and
 syncs the directory. File operations use its opened directory descriptor.
 
+The engine-owned cache adapter passes nine reference cases: capability-probed
+launch flags, private overrides, disk off, authenticated/bounded control calls,
+ownership recovery after a crash, and disk preload after explicit or asynchronous
+model loads. Preload uses a recent ledger session or an in-memory hint when
+ledger writes are disabled; stale engine generations cannot replace its status.
+Controller eviction never substitutes for a failed engine-owned operation.
+
 Fast/deep/max modes publish per-model limits and capabilities and preserve
 unknown config fields, symlinks and permission bits. Max context requires the
 same engine-hash-bound RSS proof and 27 GiB ceiling as Python. Cap changes unload
@@ -83,11 +90,11 @@ an idle model and refuse an active request; the synthetic engine verifies the
 new context reaches its launch arguments. This is fixture validation only.
 
 Complete status/control state, optional turn diagnostics, PrefixStore lookup/save,
-disk-cache launch/preload adapters,
+legacy conversation-store launch rewriting,
 qualified Flash/classic and execution-override profiles, installers,
 update/rollback, sharing/cloud secrets and remaining CLI commands are pending.
-State-cache-capable binaries and automatic native engine-ledger capture explicitly
-refuse launch until their adapters are implemented. Flash/classic
+Legacy conversation-store launch flags and automatic native engine-ledger capture
+explicitly refuse launch until their adapters are implemented. Flash/classic
 profiles remain ineligible while their qualification adapters are missing. Full
 Rust conformance fails; no installation switch or hardware readiness is claimed.
 

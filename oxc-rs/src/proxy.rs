@@ -1153,6 +1153,13 @@ pub async fn handle(
     };
     if let Some(entry) = record.entry.as_mut() {
         entry.admitted(admission.queue_seconds, admission.begin_seconds);
+        if chat {
+            if let (Some(model), Some(session)) =
+                (entry.row["model"].as_str(), entry.row["session"].as_str())
+            {
+                manager.remember_session(model, session);
+            }
+        }
     }
     record.admission = Some(admission);
     record.status = 503;

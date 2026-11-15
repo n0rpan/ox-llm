@@ -186,6 +186,31 @@ fn presented_key(headers: &HeaderMap) -> Option<&str> {
     None
 }
 
+fn after_load(
+    mut response: Response,
+    manager: Arc<engine::Manager>,
+    model: String,
+    generation: usize,
+) -> Response {
+    use futures_util::StreamExt;
+    let body = std::mem::replace(response.body_mut(), axum::body::Body::empty());
+    let stream = futures_util::stream::unfold(
+        (body.into_data_stream(), Some((manager, model, generation))),
+        |(mut body, callback)| async move {
+            match body.next().await {
+                Some(chunk) => Some((chunk, (body, callback))),
+                None => {
+                    if let Some((manager, model, generation)) = callback {
+                        manager.preload_state(&model, generation);
+                    }
+                    None
+                }
+            }
+        },
+    );
+    *response.body_mut() = axum::body::Body::from_stream(stream);
+    response
+}
 async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     let started = std::time::Instant::now();
     let method = request.method().clone();
@@ -386,7 +411,11 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         return context.reply(200, crate::request_ledger::recent(limit));
     }
     if path == "/_local/cache" && [Method::GET, Method::HEAD].contains(&method) {
-        return match crate::state_cache::usage(fresh.as_ref().unwrap_or(&Value::Null)) {
+        return match app
+            .engine
+            .cache_usage(fresh.as_ref().unwrap_or(&Value::Null))
+            .await
+        {
             Ok(value) => context.reply(200, value),
             Err(_) => context.error(503, "Cache usage is unavailable.", "", "", None),
         };
@@ -633,8 +662,17 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 Err(error) => context.error(409, &error, "", "", None),
             };
         }
+        let before = app.engine.launches();
+        let model = profile["model_alias"].as_str().unwrap_or("").to_owned();
         return match app.engine.load(profile).await {
-            Ok(()) => context.reply(200, json!({"state":"ready"})),
+            Ok(()) => {
+                let response = context.reply(200, json!({"state":"ready"}));
+                if app.engine.launches() != before {
+                    after_load(response, app.engine.clone(), model, app.engine.launches())
+                } else {
+                    response
+                }
+            }
             Err(error) => context.error(503, &error, "", "", None),
         };
     }

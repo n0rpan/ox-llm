@@ -106,6 +106,16 @@ class Daemon:
         self.fixed_port, self.fixed_home = port, home
 
     def __enter__(self):
+        # Match the installed service and keep fixture modes independent of the
+        # runner's shell umask. Restore the caller's setting on every exit path.
+        self.previous_umask = os.umask(0o077)
+        try:
+            return self.enter_private()
+        except BaseException:
+            os.umask(self.previous_umask)
+            raise
+
+    def enter_private(self):
         self.temp = None if self.fixed_home else tempfile.TemporaryDirectory(prefix='oxc-http-conformance-')
         self.home = home = Path(self.fixed_home or self.temp.name)
         ports = set()
@@ -189,6 +199,12 @@ class Daemon:
         # A regular owned executable, hash-pinned exactly as an installed engine is.
         binary = self.home / 'fake-engine'
         source = (ROOT / 'conformance/fixtures/fake_engine.py').read_text()
+        # Real controller capability probes inspect usage strings in the pinned
+        # executable. Only opt-in fixtures advertise the mock cache routes.
+        if self.environ.get('FAKE_ENGINE_STATE_CACHE') == '1':
+            source += '\n# supported flags: --state-cache --state-budget-bytes --state-ttl-secs \n'
+        if self.environ.get('FAKE_ENGINE_STATE_PRELOAD') == '1':
+            source += '\n# oxe-capability state-preload-v1\n'
         binary.write_text('#!' + sys.executable + '\n' + source.split('\n', 1)[1])
         binary.chmod(0o700)
         model = self.home / 'synthetic.gguf'
@@ -261,6 +277,12 @@ class Daemon:
         raise AssertionError('Engine event did not arrive: ' + repr(self.events()))
 
     def __exit__(self, *_):
+        try:
+            self.exit_private()
+        finally:
+            os.umask(self.previous_umask)
+
+    def exit_private(self):
         self.stop()
         # If the daemon crashed, clean up only children whose command still
         # names this temporary fixture (never signal a recycled unrelated PID).

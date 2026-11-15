@@ -1,0 +1,1139 @@
+{
+  "crashed-owner": [
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "unavailable"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": {
+          "budget_bytes": 64000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "applied_by": "controller",
+        "budget_bytes": 0,
+        "freed_bytes": 249,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 0,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 2
+        },
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 60,
+        "used_bytes": 2
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "launches": [
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/.cache/local-ai/snapdragon-engine/state",
+          "ttl": 60
+        }
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": []
+    }
+  ],
+  "disk-off": [
+    {
+      "body": {
+        "budget_bytes": 0,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "unavailable"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 0,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "launches": [
+        null
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": []
+    }
+  ],
+  "faults": [
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "unavailable"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": {
+          "budget_bytes": 64000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": null,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "The budget was saved; the engine did not apply it yet (it will at the next load)."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Saved state could not be cleared."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "engine": null,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "The budget was saved; the engine did not apply it yet (it will at the next load)."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Saved state could not be cleared."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "engine": null,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "The budget was saved; the engine did not apply it yet (it will at the next load)."
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": "Saved state could not be cleared."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "engine": {
+          "budget_bytes": 4000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "saved_budget": 4000000000
+    },
+    {
+      "launches": [
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/.cache/local-ai/snapdragon-engine/state",
+          "ttl": 60
+        }
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": [
+        {
+          "body": {
+            "bytes": 4000000000
+          },
+          "path": "/state-cache/budget"
+        },
+        {
+          "body": {
+            "scope": "all"
+          },
+          "path": "/state-cache/clear"
+        },
+        {
+          "body": {
+            "bytes": 4000000000
+          },
+          "path": "/state-cache/budget"
+        },
+        {
+          "body": {
+            "scope": "all"
+          },
+          "path": "/state-cache/clear"
+        },
+        {
+          "body": {
+            "bytes": 4000000000
+          },
+          "path": "/state-cache/budget"
+        },
+        {
+          "body": {
+            "scope": "all"
+          },
+          "path": "/state-cache/clear"
+        }
+      ]
+    }
+  ],
+  "override": [
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {},
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 60,
+        "used_bytes": 0
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "unavailable"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": {
+          "budget_bytes": 64000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {},
+        "sessions": {
+          "count": 0,
+          "newest_atime": null,
+          "oldest_atime": null
+        },
+        "ttl_secs": 60,
+        "used_bytes": 0
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "launches": [
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/cache-override/state",
+          "ttl": 60
+        }
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": []
+    }
+  ],
+  "owned-controls": [
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "unavailable"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": {
+          "budget_bytes": 64000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "applied_by": "engine",
+        "budget_bytes": 4000000000,
+        "freed_bytes": 222,
+        "used_bytes": 777
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "engine",
+          "freed_bytes": 333,
+          "scope": "all"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "engine",
+          "freed_bytes": 333,
+          "scope": "model"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "engine",
+          "freed_bytes": 333,
+          "scope": "session"
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "cleared": true,
+        "state_cache": {
+          "applied_by": "engine",
+          "freed_bytes": 333,
+          "scope": "hint",
+          "sessions": 2
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "budget_bytes": 4000000000,
+        "engine": {
+          "budget_bytes": 4000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "launches": [
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/.cache/local-ai/snapdragon-engine/state",
+          "ttl": 60
+        }
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": [
+        {
+          "body": {
+            "bytes": 4000000000
+          },
+          "path": "/state-cache/budget"
+        },
+        {
+          "body": {
+            "scope": "all"
+          },
+          "path": "/state-cache/clear"
+        },
+        {
+          "body": {
+            "model": "aaaaaaaaaaaaaaaa",
+            "scope": "model"
+          },
+          "path": "/state-cache/clear"
+        },
+        {
+          "body": {
+            "scope": "session",
+            "session": "first"
+          },
+          "path": "/state-cache/clear"
+        },
+        {
+          "body": {
+            "hint": "c30ff6058c491c2a",
+            "scope": "hint"
+          },
+          "path": "/state-cache/clear"
+        }
+      ]
+    }
+  ],
+  "preload": [
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": "<elapsed:seconds>",
+        "ms": 12.3,
+        "src": "disk",
+        "state": "done"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": {
+          "budget_bytes": 64000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": "<elapsed:seconds>",
+        "ms": 12.3,
+        "src": "disk",
+        "state": "done"
+      }
+    },
+    {
+      "launches": [
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/.cache/local-ai/snapdragon-engine/state",
+          "ttl": 60
+        }
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": [
+        {
+          "body": {
+            "session": "dddddddddddddddd"
+          },
+          "path": "/state-cache/preload"
+        }
+      ]
+    }
+  ],
+  "preload-async": [
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "model": "ornith-35b-a3b-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": "<elapsed:seconds>",
+        "ms": 12.3,
+        "src": "disk",
+        "state": "done"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": {
+          "budget_bytes": 64000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "launches": [
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/.cache/local-ai/snapdragon-engine/state",
+          "ttl": 60
+        }
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": [
+        {
+          "body": {},
+          "path": "/state-cache/preload"
+        }
+      ]
+    }
+  ],
+  "preload-memory": [
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": "<elapsed:seconds>",
+        "ms": 12.3,
+        "src": "disk",
+        "state": "done"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": {
+          "budget_bytes": 64000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": "<elapsed:seconds>",
+        "ms": 12.3,
+        "src": "disk",
+        "state": "done"
+      }
+    },
+    {
+      "launches": [
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/.cache/local-ai/snapdragon-engine/state",
+          "ttl": 60
+        },
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/.cache/local-ai/snapdragon-engine/state",
+          "ttl": 60
+        }
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": [
+        {
+          "body": {},
+          "path": "/state-cache/preload"
+        },
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 4,
+            "messages": [
+              {
+                "content": "Synthetic prompt.",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "temperature": 0
+          },
+          "path": "/v1/chat/completions"
+        },
+        {
+          "body": {
+            "session": "f16e0dbffeda120e"
+          },
+          "path": "/state-cache/preload"
+        }
+      ]
+    }
+  ],
+  "preload-no-marker": [
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "idle"
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "preload": {
+        "age_s": null,
+        "ms": null,
+        "src": null,
+        "state": "unavailable"
+      }
+    },
+    {
+      "body": {
+        "budget_bytes": 64000000000,
+        "engine": {
+          "budget_bytes": 64000000000,
+          "used_bytes": 1234
+        },
+        "invalid_settings": [],
+        "models": {
+          "aaaaaaaaaaaaaaaa": 251
+        },
+        "sessions": {
+          "count": 1,
+          "newest_atime": 1234,
+          "oldest_atime": 1234
+        },
+        "ttl_secs": 60,
+        "used_bytes": 251
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "launches": [
+        {
+          "budget": 64000000000,
+          "existed": true,
+          "root": "<home>/.cache/local-ai/snapdragon-engine/state",
+          "ttl": 60
+        }
+      ],
+      "state_mode": 448
+    },
+    {
+      "backend_posts": []
+    }
+  ]
+}

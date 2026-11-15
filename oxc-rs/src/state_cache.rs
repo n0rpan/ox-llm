@@ -103,6 +103,35 @@ pub fn root(config: &Value) -> io::Result<PathBuf> {
     }
     Ok(path)
 }
+pub fn overridden(config: &Value) -> bool {
+    std::env::var_os("LOCAL_AI_STATE_CACHE_ROOT").is_some_and(|s| !s.is_empty())
+        || !config["cache"]["root"].is_null()
+}
+pub fn make_private(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let mut missing = Vec::new();
+    let mut current = path;
+    while fs::symlink_metadata(current).is_err_and(|e| e.kind() == io::ErrorKind::NotFound) {
+        missing.push(current.to_owned());
+        let Some(parent) = current.parent().filter(|p| *p != current) else {
+            break;
+        };
+        current = parent;
+    }
+    for path in missing.into_iter().rev() {
+        fs::DirBuilder::new().mode(0o700).create(&path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    let home = paths::realpath(&paths::home())?;
+    let real = paths::realpath(path)?;
+    if real == home || !real.starts_with(home) || !path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "state_cache_root_override_invalid",
+        ));
+    }
+    Ok(())
+}
 fn hex(text: &str, len: usize) -> bool {
     text.len() == len
         && text
