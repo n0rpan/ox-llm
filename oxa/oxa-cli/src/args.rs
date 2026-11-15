@@ -65,8 +65,14 @@ pub struct Args {
     pub list_models: Option<Option<String>>,
     /// `--thinking <level>`.
     pub thinking: Option<ThinkingLevel>,
-    /// `-c`, `--continue`.
+    /// `-c`, `--continue [id]`.
     pub continue_: bool,
+    /// Explicit session id supplied to `--continue`.
+    pub continue_id: Option<String>,
+    /// The word after a bare `--continue`, and where it sat among the messages. It is a session
+    /// id only if a session with that id exists; otherwise it stays a prompt word
+    /// (`--continue fix` always continued the latest session with the prompt "fix").
+    pub continue_word: Option<(String, usize)>,
     /// `-r`, `--resume`.
     pub resume: bool,
     /// `--session <path|id>`.
@@ -216,8 +222,8 @@ const OPTIONS: &[(&str, &str)] = &[
         "Export a session file to HTML and exit",
     ),
     (
-        "--continue, -c",
-        "Continue the most recent session for the current directory",
+        "--continue [id], -c",
+        "Continue the named session, or the most recent session when no id is given",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -423,7 +429,7 @@ fn check_tool_list(flag: &str, entries: &[String]) -> Result<(), OxaError> {
     Ok(())
 }
 
-fn valid_session_id(id: &str) -> bool {
+pub(crate) fn valid_session_id(id: &str) -> bool {
     let b = id.as_bytes();
     let alnum = |c: u8| c.is_ascii_alphanumeric();
     match (b.first(), b.last()) {
@@ -521,9 +527,18 @@ fn parse_flag(
                 }
             });
         }
-        "-c" | "--continue" => {
+        "-c" => {
             no_value(inline, flag)?;
             a.continue_ = true;
+        }
+        "--continue" => {
+            a.continue_ = true;
+            match inline {
+                Some(v) => a.continue_id = Some(v.to_string()),
+                None => {
+                    a.continue_word = optional_value(argv, i, None).map(|w| (w, a.messages.len()));
+                }
+            }
         }
         "-r" | "--resume" => {
             no_value(inline, flag)?;
@@ -697,6 +712,17 @@ fn parse_extension_or_unknown(
 fn check_conflicts(a: &Args) -> Result<(), OxaError> {
     if a.continue_ && a.resume {
         return Err(usage("--continue cannot be combined with --resume"));
+    }
+    if let Some(id) = &a.continue_id {
+        if !valid_session_id(id) {
+            return Err(usage(SESSION_ID_ERROR));
+        }
+        if a.no_session {
+            return Err(usage("--continue cannot be combined with --no-session"));
+        }
+        if a.session.is_some() {
+            return Err(usage("--continue cannot be combined with --session"));
+        }
     }
     if a.session.is_some() && a.no_session {
         return Err(usage("--session cannot be combined with --no-session"));

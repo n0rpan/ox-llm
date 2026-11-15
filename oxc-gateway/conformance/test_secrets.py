@@ -13,7 +13,7 @@ HOME = Path('/home/oxc-secret-contract')
 KEY = 'synthetic-private-key'
 GOLDENS = Path(__file__).with_name('secrets.json')
 CASES = ('object', 'flat', 'missing', 'relative', 'directory', 'symlink', 'dangling',
-         'parent-symlink', 'symlink-loop', 'git-directory', 'git-file', 'source-tree',
+         'parent-symlink', 'symlink-loop', 'git-directory', 'git-empty', 'git-file', 'source-tree',
          'mode', 'owner', 'oversized', 'size-boundary', 'bad-json', 'not-object',
          'missing-provider', 'empty-key', 'space-key', 'newline-key', 'unicode-key',
          'long-key', 'max-key', 'utf8-bom', 'utf16', 'utf32', 'nonfinite-extra',
@@ -75,7 +75,7 @@ def fixture(name):
         path.rename(parent / path.name)
         (HOME / 'link').symlink_to(parent, target_is_directory=True)
         path = HOME / 'link' / path.name
-    elif name in ('git-directory', 'git-file', 'source-tree'):
+    elif name in ('git-directory', 'git-empty', 'git-file', 'source-tree'):
         parent = HOME / 'repository'
         parent.mkdir()
         path.rename(parent / path.name)
@@ -85,8 +85,11 @@ def fixture(name):
             (parent / 'engine').mkdir()
         elif name == 'git-file':
             (parent / '.git').write_text('gitdir: synthetic\n')
+        elif name == 'git-empty':
+            (parent / '.git').mkdir()  # a mount placeholder still counts: the check is not loosened
         else:
             (parent / '.git').mkdir()
+            (parent / '.git' / 'HEAD').write_text('ref: refs/heads/main\n')
     elif name == 'mode':
         path.chmod(0o640)
     spec = {'path': 'provider.json' if name == 'relative' else str(path), 'expected': expected}
