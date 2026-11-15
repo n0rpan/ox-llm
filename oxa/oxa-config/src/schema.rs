@@ -268,7 +268,7 @@ const SCHEMA: &[KeyDef] = &[
         "null",
     ),
     key("ui.reducedMotion", Kind::Bool, "false"),
-    key("ui.skin", Kind::Enum(&["auto", "pi", "oxa"]), "\"auto\""),
+    key("ui.skin", Kind::Enum(&["auto", "pi", "oxa", "ascii"]), "\"auto\""),
     verdict_o("warnings.anthropicExtraUsage", Kind::Bool, "true"),
     verdict_o("websocketConnectTimeoutMs", Kind::Any, "15000"),
 ];
