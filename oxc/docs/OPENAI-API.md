@@ -105,7 +105,7 @@ for every client; nothing depends on who the client is. Reproduce: section 8.
 | `/v1/chat/completions` | `logprobs`, `top_logprobs` [C] | supported | non-streamed, and on the streamed delta chunks (v0.2.0 engine) |
 | `/v1/chat/completions` | `tools`, `tool_choice` auto / none / required / named, `parallel_tool_calls` [C] | partial | calls come back as `tool_calls` (also streamed), `finish_reason: "tool_calls"`. `tool_choice` is a strong instruction, not enforced by sampling; a named function narrows the tool list to it |
 | `/v1/chat/completions` | `system`, `developer` roles; a system message after the first turn; a trailing assistant message [C] | supported | a late system message becomes a `<system-reminder>` user turn |
-| `/v1/chat/completions` | `reasoning_effort` [C] | supported | `none` / `minimal`: thinking off; `low` / `medium` / `high` (and `xhigh`): thinking on. The models have an on/off switch, no budget levels. Absent: the server default (off). An explicit `chat_template_kwargs.enable_thinking` wins. An unknown value is ignored with `X-Local-AI-Warning`. Flash ignores it (`X-Local-AI-Ignored`) |
+| `/v1/chat/completions` | `reasoning_effort` [C] | supported | `none` / `minimal`: thinking off; `low` / `medium` / `high` (and `xhigh`): thinking on. This standard field selects on/off; the separate local `thinking_budget` caps reasoning tokens. Absent: the server default (off). An explicit `chat_template_kwargs.enable_thinking` wins. An unknown value is ignored with `X-Local-AI-Warning`. Flash ignores it (`X-Local-AI-Ignored`) |
 | `/v1/chat/completions` | `response_format` `json_object`, `json_schema` (not strict) [C] | partial | best effort: an instruction (with the schema) is added to the end of the last user message, and a non-streamed reply is checked: a JSON value in prose or a code fence is cut out; anything still invalid is returned as written with `X-Local-AI-Warning`. Streamed replies are not checked |
 | `/v1/chat/completions` | `response_format` `json_schema` with `strict: true` [C] | unsupported | `400`, `param: "response_format.json_schema.strict"`: no grammar-constrained sampling yet, so no guarantee is offered. Send `strict: false` or use a tool |
 | `/v1/chat/completions` | `prompt_cache_key` [C] | supported | the session hint, the same as an `X-Session-Id` header with that value (queue lane, cache, replay); the header wins when both are sent |
@@ -185,6 +185,36 @@ Extra fields in replies that OpenAI does not have: `timings` (llama.cpp's block,
 `cache_n` and `prompt_n`), and `reasoning_content` on a message when thinking is on.
 Thinking is off unless the request sends `reasoning_effort` `low` or higher, or
 `"chat_template_kwargs": {"enable_thinking": true}`.
+
+### Local thinking-token budget (opt-in)
+
+On a supporting local oxe model, send `thinking_budget` on a chat-completions request:
+
+```json
+{"model":"ornith-35b-a3b-local","messages":[{"role":"user","content":"Explain the fix."}],"max_tokens":2048,"thinking_budget":512,"chat_template_kwargs":{"enable_thinking":true}}
+```
+
+The non-negative integer counts **generated reasoning text tokens**, excluding the think
+markers. At the cap the engine evaluates a real `</think>` token and continues generating
+an answer or tool call within the original total output limit. It does not append a fabricated
+answer or retry the request. Zero closes reasoning immediately. An omitted or null budget
+preserves the existing behavior, and the field does not itself enable thinking.
+
+`max_tokens` / `max_completion_tokens` remains the total ceiling, including reasoning and
+the closing marker. The effective reasoning budget is clamped to reserve a closing marker
+and at least one answer token, also within the context window. A positive total limit of one
+is refused with 400; zero remains prefill-only. Explicit stops, EOS and cancellation still
+apply, so a budget bounds reasoning rather than guaranteeing a correct or complete answer.
+`usage.completion_tokens_details.reasoning_tokens` includes the closing marker and can be
+one greater than the reasoning-text cap.
+
+Discovery: `/_local/status` `model_limits[id].capabilities.thinking_budget` is true only for
+a local Rust engine binary advertising this extension; old/unknown binaries report false and refuse a non-null budget before loading.
+The loaded engine's `/props.thinking_budget` also checks that the template and tokenizer
+have the required single-token think markers. Unsupported templates and invalid values
+(negative, fractional, boolean or string) return 400. Cloud models, LAN-share requests and
+non-chat endpoints refuse a non-null budget before inference; it is not a provider's
+reasoning-budget parameter. No profile default is changed by this API extension.
 
 Talking to the engine port directly (no controller) is for tests. The v0.2.0 engine has its own
 output default, `/v1/models/{id}`, string error codes and the sampling controls; it has no
