@@ -660,10 +660,13 @@ fn shutdown_on_stdin_close() {
     rpc.send(json!({"type": "get_commands", "id": "late"}));
 
     let (code, records) = rpc.finish();
-    assert_eq!(code, 0, "exit code 0 after stdin closes");
     assert!(has_settled(&records, false), "the queued run settled before exit");
     // The late command is either run or refused as busy; either way it is answered before exit.
-    assert!(records
+    let late = records
         .iter()
-        .any(|r| r["type"] == "response" && r["id"] == "late"));
+        .find(|r| r["type"] == "response" && r["id"] == "late")
+        .expect("the late command is answered");
+    // A busy refusal is a failed command, so it makes the exit code 1; otherwise the exit is 0.
+    let expected = if late["success"] == true { 0 } else { 1 };
+    assert_eq!(code, expected, "exit code after stdin closes: {late}");
 }
