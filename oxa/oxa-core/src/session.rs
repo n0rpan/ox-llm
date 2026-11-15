@@ -1140,6 +1140,9 @@ fn settle_runs(
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
     loop {
+        if end == RunEnd::Stopped && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            return run_loop(st, sink, ui);
+        }
         while end == RunEnd::Stopped {
             let follow = st.shared.take_follow_up();
             if follow.is_empty() {
@@ -1155,6 +1158,9 @@ fn settle_runs(
             return Ok(end);
         }
         crate::maybe_compact(st, true, sink, ui)?;
+        if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            return run_loop(st, sink, ui);
+        }
         if st.shared.cancel.is_cancelled() {
             return Ok(RunEnd::Aborted);
         }

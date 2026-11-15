@@ -211,6 +211,12 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
+    if a.max_time.is_some() && mode == RunMode::Interactive {
+        return report(
+            &mut *stderr,
+            &OxaError::new(codes::USAGE, "--max-time requires print, JSON or RPC mode"),
+        );
+    }
     if mode == RunMode::Rpc && !a.files.is_empty() {
         let e = OxaError::new(codes::USAGE, "@file arguments are not supported in RPC mode")
             .with_hint(USAGE_HINT);
@@ -289,7 +295,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         }
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, dirs, stdin, stdout, &mut *stderr)
+            run_rpc(prep, a.max_time, dirs, stdin, stdout, &mut *stderr)
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -305,7 +311,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
             }
-            run_headless(mode, prep, prompts, &mut *stdout, &mut *stderr)
+            run_headless(mode, a.max_time, prep, prompts, &mut *stdout, &mut *stderr)
         }
     }
 }
@@ -931,6 +937,7 @@ fn choose_open(
 /// The mode runs that print to stdout and exit: `-p` and `--mode json`.
 fn run_headless(
     mode: RunMode,
+    max_time: Option<std::time::Duration>,
     prep: Prep,
     prompts: Vec<(String, Vec<Part>)>,
     stdout: &mut dyn Write,
@@ -961,6 +968,10 @@ fn run_headless(
             );
         }
     }
+    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time) {
+        Ok(limit) => limit,
+        Err(error) => return finish_outcome(Err(error), stderr),
+    };
     let result = match mode {
         RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
         _ => run_print_outcome(&mut session, prompts, stdout, stderr),
@@ -975,6 +986,7 @@ fn run_headless(
 /// `--mode rpc`: the protocol owns stdin and stdout; notices go to stderr.
 fn run_rpc(
     prep: Prep,
+    max_time: Option<std::time::Duration>,
     dirs: Dirs,
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
@@ -994,6 +1006,10 @@ fn run_rpc(
     };
     notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
+    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time) {
+        Ok(limit) => limit,
+        Err(error) => return finish_outcome(Err(error), stderr),
+    };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
     finish_outcome(serve_outcome(session, dirs, input, out), stderr)

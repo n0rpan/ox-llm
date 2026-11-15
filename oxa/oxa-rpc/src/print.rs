@@ -15,6 +15,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// a message followed by tool calls and one line per tool call go to `err`, the final reply of
 /// the last prompt goes to `out`; every write is flushed at once, so a killed run leaves a log.
 struct PrintSink<'a> {
+    wrap_up: Option<oxa_core::Handle>,
     out: &'a mut dyn Write,
     err: &'a mut dyn Write,
     /// The last assistant message of the current prompt.
@@ -106,7 +107,12 @@ impl EventSink for PrintSink<'_> {
             }
             AgentEvent::TurnStart => self.flush_pending(),
             AgentEvent::AgentEnd { .. } => {
-                if self.is_last_prompt {
+                if self.is_last_prompt
+                    || self
+                        .wrap_up
+                        .as_ref()
+                        .is_some_and(|handle| handle.wrap_up_requested())
+                {
                     self.final_text = self.pending.take();
                 } else {
                     self.flush_pending();
@@ -161,6 +167,7 @@ pub fn run_print_outcome(
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
     let mut sink = PrintSink {
+        wrap_up: Some(session.handle()),
         out,
         err,
         last: None,
@@ -217,6 +224,10 @@ pub fn run_print_outcome(
                     return Err(e);
                 }
             }
+        }
+        if session.handle().wrap_up_requested() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
         }
     }
 
@@ -300,6 +311,10 @@ pub fn run_json_outcome(
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
         outcome.include(*session.outcome());
+        if session.handle().wrap_up_requested() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
     }
     if done_failed(session, err) {
         outcome.include(RunOutcome::Failed("done_checks_failed"));
@@ -469,6 +484,7 @@ mod tests {
     fn reply_followed_by_another_turn_is_progress_not_the_final_reply() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut sink = PrintSink {
+            wrap_up: None,
             out: &mut out,
             err: &mut err,
             last: None,

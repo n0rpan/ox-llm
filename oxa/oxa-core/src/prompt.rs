@@ -755,3 +755,6 @@ mod tests {
         assert_eq!(truncate_chars("abcdef", 0), "");
     }
 }
+
+/// Appended as a user message at the safe boundary of a soft termination request (W1/W3).
+pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one short final turn to commit only changes made during this run if appropriate, or summarize the current state and remaining work. Leave pre-existing changes alone. Do not start new work.";

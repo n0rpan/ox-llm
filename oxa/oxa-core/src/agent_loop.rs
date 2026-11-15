@@ -95,7 +95,23 @@ fn run_inner(
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
     let mut done = crate::done::DoneState::default();
-    loop {
+    let mut wrapping_up = false;
+    'turns: loop {
+        if !wrapping_up {
+            let reason = match st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
+                1 => Some(crate::WrapUpReason::TimeLimit),
+                2 => Some(crate::WrapUpReason::Signal),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                wrapping_up = true;
+                push_user(st, crate::prompt::WRAP_UP.to_string(), sink, ui, run_msgs)?;
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Info,
+                    text: reason.notice().to_string(),
+                });
+            }
+        }
         // E-INT 1: host requests that arrived since the last step (queries, appends) are
         // served between steps; session-shape actions wait for settlement.
         crate::host::serve_host(st, false, sink, ui);
@@ -122,15 +138,15 @@ fn run_inner(
         crate::think::before_reply(st, ui);
         let mut opts = RequestOpts {
             kind: TurnKind::Chat,
-            max_tokens: None,
-            thinking: None,
+            max_tokens: wrapping_up.then_some(1024),
+            thinking: wrapping_up.then_some(false),
             background: false,
             snapshot_keep: false,
             extra: Vec::new(),
             events: true,
             idem_key: String::new(),
         };
-        let thinking_on = crate::think::request_thinking(st, TurnKind::Chat);
+        let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
         let turn = loop {
             let mut capture = Capture {
@@ -141,7 +157,11 @@ fn run_inner(
                 cancel: st.shared.cancel.clone(),
                 looped: false,
             };
-            let res = chat_with_retry(st, &opts, &mut capture, ui);
+            let res = if wrapping_up {
+                crate::exec::request(st, &opts, &mut capture, ui)
+            } else {
+                chat_with_retry(st, &opts, &mut capture, ui)
+            };
             let partial = std::mem::take(&mut capture.text);
             let got_data = capture.got_data;
             let looped = capture.looped;
@@ -179,7 +199,13 @@ fn run_inner(
                         partial
                     };
                     persist(st, EntryBody::Shown { text, why }, sink)?;
-                    return Ok(if why == shown_why::ABORTED {
+                    if !wrapping_up
+                        && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0
+                        && e.code != oxa_proto::codes::ABORTED
+                    {
+                        continue 'turns;
+                    }
+                    return Ok(if wrapping_up || why == shown_why::ABORTED {
                         RunEnd::Aborted
                     } else {
                         RunEnd::Failed(e)
@@ -329,6 +355,12 @@ fn run_inner(
             if st.shared.cancel.is_cancelled() {
                 return Ok(RunEnd::Aborted);
             }
+            if wrapping_up {
+                return Ok(RunEnd::Aborted);
+            }
+            if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                continue;
+            }
             // The repeat guard gave up: the same call after its notices ends the run.
             if let Some(r) = results.iter().find(|r| r.stop) {
                 let text = crate::repeat::stop_text(&r.tool_name);
@@ -374,6 +406,12 @@ fn run_inner(
 
         turn_end(st, sink, ui, reply, Vec::new(), (turn_index, &reply_entry, &[]));
         turn_index += 1;
+        if wrapping_up {
+            return Ok(RunEnd::Aborted);
+        }
+        if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            continue;
+        }
         if crate::repair::repair_turn(st, &turn, sink)? {
             continue;
         }
@@ -382,6 +420,9 @@ fn run_inner(
         }
         if let Some(text) = crate::done::check(st, &mut done, sink, ui) {
             crate::done::inject(st, text, sink, ui, run_msgs)?;
+            continue;
+        }
+        if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             continue;
         }
         return Ok(RunEnd::Stopped);

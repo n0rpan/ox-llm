@@ -44,6 +44,10 @@ These results cover orderly returns, including startup refusals. A process kille
 
 Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. Once output has streamed, a failure is returned without replaying the request. Print mode immediately flushes a one-line `retrying request in ... ms` notice to stderr; JSON and RPC modes emit it as a flushed `notice` record. Provider-level retries (`retry.provider.maxRetries`) are visible too. All attempts for a logical request reuse its idempotency key. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
 
+`--max-time <seconds>` sets a soft runtime limit for print, JSON and RPC modes, measured after startup/session loading. Fractional seconds are accepted. At the limit, or on SIGTERM, oxa lets the active tool batch finish, then gives the agent one final turn (up to 1,024 output tokens, thinking off) to commit changes from this run or summarize its state. That final request is not retried by the agent. The session and completed tool results are retained; the outcome is `interrupted` (130), and later prompts are left unstarted. Resume with the session id and a new instruction. RPC also exits on a limit/SIGTERM while stdin is still open. `--no-session` continues to disable session storage.
+
+This is a graceful limit: an active tool or model request finishes before the final turn, so elapsed time can exceed the requested duration. SIGTERM does not cancel that tool. SIGKILL and process/system crashes cannot run a wrap-up turn.
+
 ## Commands
 
 Commands take the place of the message. They do not start a session.
@@ -99,6 +103,7 @@ $ oxa mcp logout <name>
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
+| `--max-time <seconds>` | softly limit a headless run, then allow one final wrap-up turn |
 | `--export <input> [output]` | export a session file to HTML and exit |
 | `--tui-mode <mode>` | `fullscreen` (default) or `regular` |
 | `--verbose` | show more start-up information |
