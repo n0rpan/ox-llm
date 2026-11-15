@@ -50,6 +50,8 @@ pub struct EngineCaps {
     pub preserve_thinking: Option<bool>,
     /// `park == "disk"`: a parked session of this model is restored from disk only (Flash).
     pub park_disk_only: bool,
+    /// The model is a remote (cloud) catalog model (`data[].remote == true`), not the local engine.
+    pub remote: bool,
 }
 
 /// The capability string an engine puts in the `oxe_hints.hints` array of its `/props` when it

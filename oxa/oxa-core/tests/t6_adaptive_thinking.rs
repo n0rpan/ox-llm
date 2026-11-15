@@ -106,7 +106,16 @@ fn state(
     settings: Settings,
     level: ThinkingLevel,
 ) -> (SessionState, Arc<ScriptedEngine>) {
-    let eng = Arc::new(ScriptedEngine::new(turns));
+    state_with(env, ScriptedEngine::new(turns), settings, level)
+}
+
+fn state_with(
+    env: &TestEnv,
+    eng: ScriptedEngine,
+    settings: Settings,
+    level: ThinkingLevel,
+) -> (SessionState, Arc<ScriptedEngine>) {
+    let eng = Arc::new(eng);
     let engine: Arc<dyn Engine> = eng.clone();
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     let cwd = env.work();
@@ -579,4 +588,113 @@ fn searching_for_test_commands_never_counts_as_a_pass() {
         thinking(&eng),
         vec![true, true, true, true, true, true, true, false]
     );
+}
+
+// ---- #184: thinking that uses the whole output budget (finish=length, reasoning only) ----
+
+const OVERRUN_NOTICE: &str = "thinking used the whole output budget; answered without thinking";
+
+/// A reply that thought until the output limit and never answered.
+fn overrun() -> ScriptTurn {
+    let mut t = ScriptTurn::text("");
+    t.text = None;
+    t.reasoning = Some("hmm ".repeat(50));
+    t.finish = oxa_proto::Finish::Length;
+    t
+}
+
+fn notice_texts(events: &[AgentEvent], level: Level) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Notice { level: l, text } if *l == level => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn answered(st: &SessionState, text: &str) -> bool {
+    st.transcript
+        .wire()
+        .iter()
+        .any(|m| m.role == Role::Assistant && m.content.as_deref() == Some(text))
+}
+
+#[test]
+fn overrun_retries_once_without_thinking() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state(
+        &env,
+        vec![overrun(), ScriptTurn::text("the answer")],
+        settings(json!({})),
+        ThinkingLevel::Medium,
+    );
+    let r = run(&mut st, "explain a.txt");
+    assert!(matches!(r.end, RunEnd::Stopped));
+    assert_eq!(thinking(&eng), vec![true, false]);
+    let reqs = eng.requests();
+    assert_eq!(
+        reqs[0].messages, reqs[1].messages,
+        "same messages, so the prefix is cached"
+    );
+    assert!(answered(&st, "the answer"));
+    assert_eq!(
+        notice_texts(&r.events, Level::Info)
+            .iter()
+            .filter(|t| *t == OVERRUN_NOTICE)
+            .count(),
+        1
+    );
+    // The reasoning-only reply never reaches the wire.
+    assert!(!st.transcript.wire().iter().any(|m| m.reasoning.is_some()));
+}
+
+#[test]
+fn overrun_twice_is_an_error_not_a_loop() {
+    let env = TestEnv::new();
+    let mut again = overrun();
+    again.reasoning = None;
+    let (mut st, eng) = state(
+        &env,
+        vec![overrun(), again, ScriptTurn::text("never asked")],
+        settings(json!({})),
+        ThinkingLevel::Medium,
+    );
+    let r = run(&mut st, "explain a.txt");
+    assert!(matches!(r.end, RunEnd::Failed(_)), "{:?}", r.end);
+    assert_eq!(eng.requests().len(), 2, "no further retry");
+    assert_eq!(notice_texts(&r.events, Level::Error).len(), 1);
+}
+
+#[test]
+fn remote_model_is_unchanged() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state_with(
+        &env,
+        ScriptedEngine::new(vec![overrun(), ScriptTurn::text("never asked")]).with_remote(),
+        settings(json!({})),
+        ThinkingLevel::Medium,
+    );
+    let r = run(&mut st, "explain a.txt");
+    assert!(matches!(r.end, RunEnd::Stopped));
+    assert_eq!(eng.requests().len(), 1);
+    assert!(notice_texts(&r.events, Level::Info)
+        .iter()
+        .all(|t| t != OVERRUN_NOTICE));
+}
+
+#[test]
+fn overrun_stops_later_escalation_in_the_task() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state(
+        &env,
+        vec![overrun(), failing_test("c1"), ScriptTurn::text("done")],
+        settings(json!({})),
+        ThinkingLevel::Medium,
+    );
+    // The retry (no thinking) answers with a failing call; the failure would escalate.
+    let r = run(&mut st, "fix the failing test");
+    assert!(matches!(r.end, RunEnd::Stopped));
+    assert_eq!(thinking(&eng), vec![true, false, false]);
+    assert!(notices(&r.events).is_empty());
 }

@@ -124,6 +124,9 @@ pub struct Escalation {
     pub fruitless: u32,
     /// The prompt asks to fix, debug or implement something ([`task_prompt`]).
     pub task: bool,
+    /// #184: a turn of this run used the whole output budget thinking; no escalation (and no
+    /// thinking on a later prompt reply) for the rest of the run.
+    pub overrun: bool,
 }
 
 /// What a request answers, for the thinking policy. New kinds (a repair turn, ...) are added
@@ -213,8 +216,41 @@ pub fn thinking_for(st: &SessionState, kind: ReplyKind) -> bool {
                     ToolFollowups::Auto => st.stats.escalation.on.is_some(),
                 }
         }
-        ThinkingPolicy::Auto => level && kind.thinks(),
+        ThinkingPolicy::Auto => level && kind.thinks() && !st.stats.escalation.overrun,
     }
+}
+
+/// The notice shown when a thinking-only overrun is retried without thinking.
+pub const OVERRUN_NOTICE: &str = "thinking used the whole output budget; answered without thinking";
+
+/// A reply cut at the output limit with nothing to show or run.
+pub(crate) fn empty_length(turn: &oxa_proto::AssistantTurn) -> bool {
+    turn.finish == oxa_proto::Finish::Length
+        && turn.msg.tool_calls.is_empty()
+        && turn.msg.content.as_deref().is_none_or(|c| c.trim().is_empty())
+}
+
+/// #184: a local turn that thought (`thinking_on`) up to the output limit and produced neither
+/// text nor a tool call. Never for a remote model.
+pub(crate) fn reasoning_only_overrun(
+    st: &SessionState,
+    turn: &oxa_proto::AssistantTurn,
+    thinking_on: bool,
+) -> bool {
+    thinking_on
+        && !st.info.caps.remote
+        && empty_length(turn)
+        && turn
+            .msg
+            .reasoning
+            .as_deref()
+            .is_some_and(|r| !r.trim().is_empty())
+}
+
+/// Remember the overrun for the rest of the run: thinking is no longer escalated.
+pub(crate) fn record_overrun(st: &mut SessionState) {
+    st.stats.escalation.overrun = true;
+    st.stats.escalation.on = None;
 }
 
 /// Whether the escalation can change anything: policy `auto`, `toolFollowups: auto`, a level
@@ -242,6 +278,7 @@ pub(crate) fn before_reply(st: &mut SessionState, ui: &mut dyn Ui) {
         st,
         Escalation {
             task,
+            overrun: st.stats.escalation.overrun,
             ..Escalation::default()
         },
         None,
@@ -283,7 +320,7 @@ pub(crate) fn observe(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) {
-    if !escalation_applies(st) {
+    if !escalation_applies(st) || st.stats.escalation.overrun {
         return;
     }
     let limit = st.settings.u32(FRUITLESS_CALLS, FRUITLESS_DEFAULT);

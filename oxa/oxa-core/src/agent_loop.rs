@@ -120,7 +120,7 @@ fn run_inner(
 
         // Adaptive thinking (`think.rs`): a reply to a prompt starts the escalation from off.
         crate::think::before_reply(st, ui);
-        let opts = RequestOpts {
+        let mut opts = RequestOpts {
             kind: TurnKind::Chat,
             max_tokens: None,
             thinking: None,
@@ -130,58 +130,94 @@ fn run_inner(
             events: true,
             idem_key: String::new(),
         };
-        let mut capture = Capture {
-            inner: &mut *sink,
-            text: String::new(),
-            got_data: false,
-            detector: crate::loopguard::LoopDetector::new(),
-            cancel: st.shared.cancel.clone(),
-            looped: false,
-        };
-        let res = chat_with_retry(st, &opts, &mut capture, ui);
-        let partial = std::mem::take(&mut capture.text);
-        let got_data = capture.got_data;
-        let looped = capture.looped;
-        // Our own stop (degenerate repetition, #141), not a user abort: clear the flag we set.
-        let res = match res {
-            // The request may also have run to a clean end (finish and `[DONE]` in the same
-            // read as the threshold-crossing delta): `looped` is authoritative either way.
-            r if looped
-                && match &r {
-                    Ok(_) => true,
-                    Err(e) => e.code == oxa_proto::codes::ABORTED,
-                } =>
-            {
-                st.shared.cancel.reset();
-                Err(OxaError::new(
-                    oxa_proto::codes::STREAM_BROKEN,
-                    "Response stopped: the model fell into a repetition loop (the same block of text repeated).",
-                )
-                .with_hint("Rephrase the request or try again; the partial reply is shown but not sent back."))
-            }
-            other => other,
-        };
+        let thinking_on = crate::think::request_thinking(st, TurnKind::Chat);
+        let mut retried = false;
+        let turn = loop {
+            let mut capture = Capture {
+                inner: &mut *sink,
+                text: String::new(),
+                got_data: false,
+                detector: crate::loopguard::LoopDetector::new(),
+                cancel: st.shared.cancel.clone(),
+                looped: false,
+            };
+            let res = chat_with_retry(st, &opts, &mut capture, ui);
+            let partial = std::mem::take(&mut capture.text);
+            let got_data = capture.got_data;
+            let looped = capture.looped;
+            // Our own stop (degenerate repetition, #141), not a user abort: clear the flag we set.
+            let res = match res {
+                // The request may also have run to a clean end (finish and `[DONE]` in the same
+                // read as the threshold-crossing delta): `looped` is authoritative either way.
+                r if looped
+                    && match &r {
+                        Ok(_) => true,
+                        Err(e) => e.code == oxa_proto::codes::ABORTED,
+                    } =>
+                {
+                    st.shared.cancel.reset();
+                    Err(OxaError::new(
+                        oxa_proto::codes::STREAM_BROKEN,
+                        "Response stopped: the model fell into a repetition loop (the same block of text repeated).",
+                    )
+                    .with_hint("Rephrase the request or try again; the partial reply is shown but not sent back."))
+                }
+                other => other,
+            };
 
-        let turn = match res {
-            Ok(t) => t,
-            Err(e) => {
-                let why = failure_why(&e, got_data);
-                // Partial text is shown, never sent (W2); the wire keeps the user message.
-                let text = if partial.is_empty() {
-                    e.to_string()
-                } else if looped {
-                    // Our own stop: the notice must stay visible after the partial reply.
-                    format!("{partial}\n\n{e}")
-                } else {
-                    partial
-                };
-                persist(st, EntryBody::Shown { text, why }, sink)?;
-                return Ok(if why == shown_why::ABORTED {
-                    RunEnd::Aborted
-                } else {
-                    RunEnd::Failed(e)
+            let turn = match res {
+                Ok(t) => t,
+                Err(e) => {
+                    let why = failure_why(&e, got_data);
+                    // Partial text is shown, never sent (W2); the wire keeps the user message.
+                    let text = if partial.is_empty() {
+                        e.to_string()
+                    } else if looped {
+                        // Our own stop: the notice must stay visible after the partial reply.
+                        format!("{partial}\n\n{e}")
+                    } else {
+                        partial
+                    };
+                    persist(st, EntryBody::Shown { text, why }, sink)?;
+                    return Ok(if why == shown_why::ABORTED {
+                        RunEnd::Aborted
+                    } else {
+                        RunEnd::Failed(e)
+                    });
+                }
+            };
+            // #184: thinking ran to the output limit and nothing else came out.
+            if !retried && crate::think::reasoning_only_overrun(st, &turn, thinking_on) {
+                retried = true;
+                opts.thinking = Some(false);
+                crate::think::record_overrun(st);
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Info,
+                    text: crate::think::OVERRUN_NOTICE.to_string(),
                 });
+                continue;
             }
+            if retried && crate::think::empty_length(&turn) {
+                let e = OxaError::new(
+                    oxa_proto::codes::STREAM_BROKEN,
+                    "The reply ran out of output tokens before any answer, even without thinking.",
+                )
+                .with_hint("Ask for a shorter answer or split the task.");
+                persist(
+                    st,
+                    EntryBody::Shown {
+                        text: e.to_string(),
+                        why: shown_why::FAILED,
+                    },
+                    sink,
+                )?;
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Error,
+                    text: e.to_string(),
+                });
+                return Ok(RunEnd::Failed(e));
+            }
+            break turn;
         };
 
         let usage: Usage = turn.usage;

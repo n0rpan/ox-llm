@@ -142,7 +142,8 @@ pub fn parse_info_for(
         .filter(|n| *n > 0)
         .unwrap_or_else(|| DEFAULT_MAX_OUTPUT.min(n_ctx / 4).max(1));
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
-    let (prefill_only, caps) = capabilities(status, &limits_for);
+    let (prefill_only, mut caps) = capabilities(status, &limits_for);
+    caps.remote = remote.is_some();
     let (thinking, images) = modality(status, &limits_for);
 
     Ok(EngineInfo {
@@ -207,6 +208,7 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
             hint_clear: flag(c, "hint_clear"),
             preserve_thinking: c.get("preserve_thinking").and_then(Value::as_bool),
             park_disk_only: c.get("park").and_then(Value::as_str) == Some("disk"),
+            remote: false,
         };
         return (flag(c, "prefill_only"), caps);
     }
@@ -218,6 +220,7 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
                 hint_clear: flag(h, "hint_clear"),
                 preserve_thinking: None,
                 park_disk_only: false,
+                remote: false,
             },
         ),
         None => (false, EngineCaps::default()),
