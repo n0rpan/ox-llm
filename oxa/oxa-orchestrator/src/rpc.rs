@@ -1,4 +1,4 @@
-//! Bounded tool-free RPC handshake and observed worker accounting. No I/O.
+//! Bounded grant-aware RPC handshake and observed worker accounting. No I/O.
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::io::{self, Write};
@@ -36,6 +36,8 @@ pub struct Update {
 #[derive(Clone)]
 pub struct RpcSession {
     model: String,
+    mode: &'static str,
+    tools: &'static [&'static str],
     task: String,
     phase: Phase,
     outcome: Option<Outcome>,
@@ -55,6 +57,23 @@ pub struct RpcSession {
 }
 impl RpcSession {
     pub fn new(model: String, task: String, token_limit: u64) -> io::Result<Self> {
+        Self::new_policy(model, task, token_limit, "plan", &[])
+    }
+    pub fn with_workspace(
+        model: String,
+        task: String,
+        token_limit: u64,
+        copy: &crate::workspace::WorkingCopy,
+    ) -> io::Result<Self> {
+        Self::new_policy(model, task, token_limit, copy.mode(), copy.tools())
+    }
+    fn new_policy(
+        model: String,
+        task: String,
+        token_limit: u64,
+        mode: &'static str,
+        tools: &'static [&'static str],
+    ) -> io::Result<Self> {
         if model.is_empty()
             || model.len() > 256
             || model.chars().any(char::is_control)
@@ -70,6 +89,8 @@ impl RpcSession {
         )?;
         Ok(Self {
             model,
+            mode,
+            tools,
             task,
             phase: Phase::Check,
             outcome: None,
@@ -163,13 +184,21 @@ impl RpcSession {
         let mut commands = Vec::new();
         match kind {
             "response" => self.response(&record, &mut commands)?,
-            "mode_changed" if record["mode"] != "plan" => {
+            "mode_changed" if record["mode"].as_str() != Some(self.mode) => {
                 return Err(invalid("worker permission policy changed"))
             }
             "model_select" if record["model"].as_str() != Some(&self.model) => {
                 return Err(invalid("worker model changed"))
             }
-            "tool_execution_start" => return Err(invalid("tool-free worker attempted a tool")),
+            "tool_execution_start" | "tool_execution_update" | "tool_execution_end" => {
+                if self.phase != Phase::Running
+                    || !record["toolName"]
+                        .as_str()
+                        .is_some_and(|name| self.tools.contains(&name))
+                {
+                    return Err(invalid("worker attempted an ungranted tool"));
+                }
+            }
             "extension_ui_request" => return Err(invalid("tool-free worker requested extension UI")),
             "message_start" if self.phase == Phase::Running && record["message"]["role"] == "assistant" => {
                 if self.assistant_open {
@@ -226,7 +255,14 @@ impl RpcSession {
                                     .ok_or_else(|| invalid("invalid worker text"))?,
                             ),
                             Some("thinking") => {}
-                            Some("toolCall") => return Err(invalid("tool-free worker emitted a tool call")),
+                            Some("toolCall") => {
+                                if !part["name"]
+                                    .as_str()
+                                    .is_some_and(|name| self.tools.contains(&name))
+                                {
+                                    return Err(invalid("worker emitted an ungranted tool call"));
+                                }
+                            }
                             _ => return Err(invalid("unsupported worker content")),
                         }
                     }
@@ -311,7 +347,7 @@ impl RpcSession {
         Ok(())
     }
     fn check_policy(&self, data: &Value, configured: bool) -> io::Result<()> {
-        if data["mode"] != "plan"
+        if data["mode"].as_str() != Some(self.mode)
             || data["model"]["id"].as_str() != Some(&self.model)
             || data["isStreaming"] != false
             || (configured && (data["autoRetryEnabled"] != false || data["autoCompactionEnabled"] != false))
@@ -658,5 +694,71 @@ for line in sys.stdin:
         running(&mut s);
         assert!(s.steer(&"\u{0001}".repeat(64 * 1024)).is_err());
         assert_eq!(s.steer("bounded").unwrap()["id"], "steer-1");
+    }
+    #[test]
+    fn granted_tools_and_mode_are_verified_and_cannot_expand_at_runtime() {
+        use crate::workspace::{Grant, RelativePath, Snapshot};
+        use oxa_fake::TestEnv;
+        use std::fs;
+        use std::os::unix::fs::DirBuilderExt;
+        use std::sync::Arc;
+        for editing in [false, true] {
+            let env = TestEnv::new();
+            env.write("input.txt", "before");
+            let snapshot = Arc::new(
+                Snapshot::approve(env.root(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+            );
+            let grant = Arc::new(if editing {
+                Grant::editing(snapshot, vec![]).unwrap()
+            } else {
+                Grant::read_only(snapshot)
+            });
+            let parent = env.root().join("private");
+            fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+            let copy = grant.materialize(&parent.join("copy")).unwrap();
+            let mut session =
+                RpcSession::with_workspace("mock".into(), "synthetic task".into(), 1000, &copy).unwrap();
+            let mut observed = state();
+            observed["mode"] = json!(if editing { "workspace" } else { "plan" });
+            session
+                .accept(reply("check", "get_state", observed.clone()))
+                .unwrap();
+            session
+                .accept(reply("retry", "set_auto_retry", Value::Null))
+                .unwrap();
+            session
+                .accept(reply("compact", "set_auto_compaction", Value::Null))
+                .unwrap();
+            session.accept(reply("verify", "get_state", observed)).unwrap();
+            session.accept(reply("prompt", "prompt", Value::Null)).unwrap();
+            let before = session.clone();
+            let mut tool = end("toolUse", 10, "");
+            tool["message"]["content"] = json!([{"type":"toolCall","name":"read"}]);
+            session.accept(tool).unwrap();
+            session
+                .accept(json!({"type":"tool_execution_start","toolName":"read"}))
+                .unwrap();
+            let mut write = before.clone();
+            assert_eq!(
+                write
+                    .accept(json!({"type":"tool_execution_start","toolName":"write"}))
+                    .is_ok(),
+                editing
+            );
+            let mut denied = before.clone();
+            assert!(denied
+                .accept(json!({"type":"tool_execution_start","toolName":"bash"}))
+                .is_err());
+            let mut changed = before;
+            assert!(changed
+                .accept(json!({"type":"mode_changed","mode":if editing {"plan"}else{"workspace"}}))
+                .is_err());
+            session.accept(end("stop", 10, "review proposal")).unwrap();
+            assert_eq!(
+                session.accept(settled(false)).unwrap().outcome,
+                Some(Outcome::Completed)
+            );
+            assert_eq!(session.observed_tokens(), Some(38));
+        }
     }
 }

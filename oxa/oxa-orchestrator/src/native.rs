@@ -1,4 +1,4 @@
-//! Explicit tool-free native RPC process ownership. No ambient configuration.
+//! Explicit native RPC process ownership with optional approved private copies.
 use crate::pipes::JsonPipes;
 use serde_json::Value;
 use std::fs::File;
@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::os::unix::{fs::MetadataExt, process::CommandExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Operator assertion that this literal loopback route cannot forward to paid
@@ -57,6 +58,20 @@ pub struct NativeWorker {
 }
 impl NativeWorker {
     pub fn spawn(config: Launch) -> io::Result<Self> {
+        Self::spawn_profile(config, None)
+    }
+    /// The caller must retain this exact copy for post-stop review collection.
+    /// Source checkouts are never mounted; the grant fixes the tool/mode profile.
+    pub fn spawn_with_workspace(
+        config: Launch,
+        copy: Arc<crate::workspace::WorkingCopy>,
+    ) -> io::Result<Self> {
+        Self::spawn_profile(config, Some(copy))
+    }
+    fn spawn_profile(
+        config: Launch,
+        workspace: Option<Arc<crate::workspace::WorkingCopy>>,
+    ) -> io::Result<Self> {
         let deadline = Instant::now()
             .checked_add(config.wall_time)
             .filter(|_| !config.wall_time.is_zero())
@@ -71,6 +86,27 @@ impl NativeWorker {
         let binary = checked_program(&config.worker_binary)?;
         let bwrap = checked_program(&config.bwrap_binary)?;
         let mut command = Command::new(bwrap);
+        let mode = workspace.as_ref().map_or("plan", |w| w.mode());
+        if let Some(copy) = &workspace {
+            let directory = crate::namespace::protected_directory(copy.path())?;
+            let metadata = directory.metadata()?;
+            // SAFETY: geteuid only returns the effective identity.
+            if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+                return Err(invalid("worker copy must be private and operator-owned"));
+            }
+        }
+        if let Some(copy) = &workspace {
+            command
+                .arg(if copy.mode() == "workspace" {
+                    "--bind"
+                } else {
+                    "--ro-bind"
+                })
+                .arg(copy.path())
+                .arg("/work");
+        } else {
+            command.args(["--tmpfs", "/work"]);
+        }
         command
             .args([
                 "--unshare-all",
@@ -104,8 +140,6 @@ impl NativeWorker {
                 "/tmp",
                 "--dir",
                 "/home/worker",
-                "--tmpfs",
-                "/work",
                 "--chdir",
                 "/work",
                 "--ro-bind",
@@ -161,9 +195,9 @@ impl NativeWorker {
                 "rpc",
                 "--offline",
                 "--permission-mode",
-                "plan",
-                "--model",
             ])
+            .arg(mode)
+            .args(["--model"])
             .arg(&config.inference.model)
             .args([
                 "--no-session",
@@ -175,10 +209,13 @@ impl NativeWorker {
                 "--no-themes",
                 "--no-context-files",
                 "--no-approve",
-                "--no-tools",
                 "--append-system-prompt",
             ])
-            .arg(format!("Orchestrator-assigned worker role:\n{}", config.role))
+            .arg(format!(
+                "Orchestrator-assigned worker role:\n{}{}",
+                config.role,
+                workspace.as_ref().map(|w| w.role_context()).unwrap_or_default()
+            ))
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("LANG", "C.UTF-8")
@@ -187,6 +224,11 @@ impl NativeWorker {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        if let Some(copy) = &workspace {
+            command.arg("--tools").arg(copy.tools().join(","));
+        } else {
+            command.arg("--no-tools");
+        }
         let mut child = command.spawn()?;
         let pipes = JsonPipes::new(
             child.stdin.take().expect("piped worker stdin"),
@@ -583,5 +625,64 @@ time.sleep(30)
         assert_eq!(startup_evidence(&failure), Some((pid, true)));
         assert!(child.try_wait().unwrap().is_some());
         assert_eq!(startup_evidence(&io::Error::other("pre-spawn refusal")), None);
+    }
+    #[test]
+    fn workspace_mount_and_tool_mode_follow_the_immutable_grant() {
+        use crate::workspace::{Grant, RelativePath, Snapshot};
+        use std::fs;
+        use std::os::unix::fs::DirBuilderExt;
+        for editing in [false, true] {
+            let (env, config) = fixture("", Duration::from_secs(5));
+            let source = env.write("input.txt", "before\n");
+            let snapshot = Arc::new(
+                Snapshot::approve(env.root(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+            );
+            let grant = Arc::new(if editing {
+                Grant::editing(snapshot.clone(), vec![]).unwrap()
+            } else {
+                Grant::read_only(snapshot.clone())
+            });
+            let parent = env.root().join("private-copy");
+            fs::DirBuilder::new().mode(0o700).create(&parent).unwrap();
+            let copy = Arc::new(grant.materialize(&parent.join("worker")).unwrap());
+            let script = format!(
+                r#"#!/usr/bin/python3 -I
+import os,sys,json
+before=open('/work/input.txt').read()
+try:
+ open('/work/input.txt','w').write('after\n');changed=True
+except OSError:
+ changed=False
+print(json.dumps({{'before':before,'changed':changed,'argv':sys.argv[1:],'sourceVisible':os.path.exists({source:?})}}),flush=True)
+for line in sys.stdin:
+ if json.loads(line).get('type')=='abort':break
+"#
+            );
+            fs::write(&config.worker_binary, script).unwrap();
+            let mut worker = NativeWorker::spawn_with_workspace(config, copy.clone()).unwrap();
+            let observed = records(&mut worker, 1).remove(0);
+            assert_eq!(observed["before"], "before\n");
+            assert_eq!(observed["changed"], editing);
+            assert_eq!(observed["sourceVisible"], false);
+            let argv: Vec<_> = observed["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert!(argv
+                .windows(2)
+                .any(|a| a == ["--permission-mode", if editing { "workspace" } else { "plan" }]));
+            assert!(argv
+                .windows(2)
+                .any(|a| a == ["--tools", if editing { "read,edit,write" } else { "read" }]));
+            assert!(!argv.contains(&"--no-tools"));
+            worker.stop(Duration::from_millis(100)).unwrap();
+            assert!(worker.process_stopped().unwrap());
+            assert_eq!(fs::read_to_string(source).unwrap(), "before\n");
+            let review = copy.collect("worker").unwrap();
+            review.verify(&snapshot, &[]).unwrap();
+            assert_eq!(review.changes.len(), usize::from(editing));
+        }
     }
 }

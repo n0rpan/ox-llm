@@ -266,6 +266,23 @@ pub struct WorkingCopy {
     grant: Arc<Grant>,
 }
 impl WorkingCopy {
+    pub(crate) fn mode(&self) -> &'static str {
+        if self.grant.editing {
+            "workspace"
+        } else {
+            "plan"
+        }
+    }
+    pub(crate) fn tools(&self) -> &'static [&'static str] {
+        if self.grant.editing {
+            &["read", "edit", "write"]
+        } else {
+            &["read"]
+        }
+    }
+    pub(crate) fn role_context(&self) -> String {
+        format!("\nApproved private files under /work:\n{}\nEligible new review files:\n{}\nReturn proposals for review; never apply them to the source checkout.",self.grant.snapshot.paths().map(RelativePath::as_str).collect::<Vec<_>>().join("\n"),self.grant.new_files.iter().map(RelativePath::as_str).collect::<Vec<_>>().join("\n"))
+    }
     pub fn path(&self) -> &Path {
         &self.directory
     }
