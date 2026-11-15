@@ -25,8 +25,8 @@ Checkpoint retention is not proof of remote process cleanup or billed usage:
 read the report's stop confirmation and observed accounting. It adds no replay,
 resume, source apply, publication, auto-delete, or authority to signal recorded
 PIDs. Passive journal/checkpoint verification is described in
-[A2A_INSPECTION.md](A2A_INSPECTION.md); original-agent reconciliation remains
-a later slice.
+[A2A_INSPECTION.md](A2A_INSPECTION.md), with explicit original-agent operations in
+[A2A_RECONCILIATION.md](A2A_RECONCILIATION.md). Queued resume remains unfinished.
 
 Tests cover actual private file publication, no replacement, control escaping,
 serialization/bound failures, pending/final symlinks, an owned child with real

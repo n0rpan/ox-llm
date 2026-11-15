@@ -32,6 +32,9 @@ impl LocalAgent {
     pub fn register_verified_local(client: Client) -> Self {
         Self { client }
     }
+    pub(crate) fn into_client(self) -> Client {
+        self.client
+    }
 }
 
 pub struct A2AWorkerSpec {

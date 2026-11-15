@@ -2,9 +2,9 @@
 
 `a2a_recovery` is a separate default-off `core` API for the scheduler's A2A
 transport. It does not broaden the native inspector: native inspection still
-rejects remote journals. Neither inspector sends requests, starts workers,
-replays input, resumes a goal, deletes data, applies edits or signals a PID.
-Original-agent reconciliation remains a later slice.
+rejects remote journals. Passive inspection sends no requests, starts no workers, and grants no replay,
+resume, deletion, source-apply or PID authority. Explicit original-agent
+reconciliation is described in [A2A_RECONCILIATION.md](A2A_RECONCILIATION.md).
 
 `InspectedRun::inspect` reads a pinned, operator-owned private single-link plain
 file below a protected private parent, with stable metadata checked before and

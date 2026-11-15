@@ -1,4 +1,5 @@
-//! Bounded passive A2A journal inspection. No network, replay or PID authority.
+//! A2A inspection and explicit lease-bound reconciliation. No replay or PID authority.
+pub use crate::a2a_reconcile::{Action, Disposition, ReconcileOptions, Reconciliation};
 use crate::a2a_run::StopConfirmation;
 use crate::supervisor::Outcome;
 use oxa_a2a::wire::TaskState;
@@ -55,7 +56,7 @@ pub struct InspectedRun {
     snapshot: Snapshot,
 }
 /// Exclusive authority over a cooperative journal inode, never a remote task.
-/// Keep this guard alive throughout later original-agent reconciliation.
+/// Keep this guard alive throughout original-agent reconciliation.
 pub struct ExclusiveRun {
     _journal: crate::ownership::Lease,
     inspected: InspectedRun,
