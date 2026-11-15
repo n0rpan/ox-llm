@@ -5,6 +5,7 @@ use std::process::Stdio;
 fn http_client(seconds: u64) -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(seconds))
         .read_timeout(std::time::Duration::from_secs(seconds))
         .build()
@@ -149,4 +150,39 @@ pub(crate) fn storage_id(value: &str) -> bool {
                 .split('-')
                 .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase()))
     })
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn post_redirects_are_not_followed() {
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target_url = format!("http://{}/x", target.local_addr().unwrap());
+        target.set_nonblocking(true).unwrap();
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/y", origin.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut s, _) = origin.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            let reply = format!(
+                "HTTP/1.1 308 Permanent Redirect\r\nLocation: {target_url}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            );
+            s.write_all(reply.as_bytes()).unwrap();
+        });
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (code, _) = rt.block_on(super::request_url(
+            &url,
+            Some(serde_json::json!({"a": 1})),
+            5,
+        ));
+        assert_eq!(code, 308);
+        assert!(target.accept().is_err(), "redirect target was contacted");
+    }
 }
