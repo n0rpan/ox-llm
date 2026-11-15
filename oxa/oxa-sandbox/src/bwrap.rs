@@ -126,6 +126,7 @@ pub(crate) fn bwrap_args_homes(
     let gh = home_c.join(GH_CONFIG);
     let gh_src = canon(&gh);
     let gh_empty = if s.net { private_empty_file() } else { None };
+    let mut gh_masks: Vec<PathBuf> = Vec::new();
     let gh_open = gh_empty.is_some()
         && s.net
         && std::fs::metadata(&gh).is_ok_and(|m| m.is_dir())
@@ -137,15 +138,10 @@ pub(crate) fn bwrap_args_homes(
             &["--ro-bind", &gh_src.to_string_lossy(), &gh.to_string_lossy()],
         );
         // An empty, readable regular file (gh fails on `/dev/null` here: permission denied).
-        if let (true, Some(e)) = (gh_src.join(GH_HOSTS).exists(), &gh_empty) {
-            push(
-                &mut a,
-                &[
-                    "--ro-bind",
-                    &e.to_string_lossy(),
-                    &gh.join(GH_HOSTS).to_string_lossy(),
-                ],
-            );
+        if let (true, Some(_)) = (gh_src.join(GH_HOSTS).exists(), &gh_empty) {
+            // The empty-file masks are emitted late (after every bind that could cover them,
+            // the git and `.git` binds included), see `gh_masks` below.
+            gh_masks.push(gh.join(GH_HOSTS));
             // The same token store at every other visible path of the source (a symlinked
             // config dir inside the cwd, a home workspace entry, another bind, or a place the
             // read-only root shows): the empty file goes over each, after the bind showing it.
@@ -175,14 +171,7 @@ pub(crate) fn bwrap_args_homes(
                 aliases.retain(|p| *p != gh);
             }
             for al in aliases {
-                push(
-                    &mut a,
-                    &[
-                        "--ro-bind",
-                        &e.to_string_lossy(),
-                        &al.join(GH_HOSTS).to_string_lossy(),
-                    ],
-                );
+                gh_masks.push(al.join(GH_HOSTS));
             }
         }
     }
@@ -254,6 +243,13 @@ pub(crate) fn bwrap_args_homes(
         } else if std::fs::symlink_metadata(&dotgit).is_ok_and(|m| m.is_file()) {
             let p = dotgit.to_string_lossy();
             push(&mut a, &["--ro-bind", &p, &p]);
+        }
+    }
+    // #60: the gh token-store masks, after every bind that could cover them (the git data and the
+    // cwd's `.git` above included), like the deny-list below.
+    if let Some(e) = &gh_empty {
+        for m in &gh_masks {
+            push(&mut a, &["--ro-bind", &e.to_string_lossy(), &m.to_string_lossy()]);
         }
     }
     // B3: the deny-list, after every bind so no bind re-exposes it. sbx-symhome: each entry is
