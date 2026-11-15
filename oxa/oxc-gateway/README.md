@@ -23,10 +23,10 @@ before normalizing only that wording. Native uses the symbolic-link message.
 The secrets subset passes both Python versions and native; every other error is
 compared exactly. Credential values and paths must never appear in errors.
 
-This crate belongs to the oxa workspace so oxa can consume the gateway in-process
-without a path dependency leaving its isolated product tree. The native oxc
-controller can depend on this same library from its separate workspace. Both
-entry points retain the same policy, key and settlement implementation; their
-transport adapters supply trusted caller metadata. Default features remain
-empty, and moving the library does not enable a listener or change the default
-engine. The workspace lockfile is `oxa/Cargo.lock`.
+This library lives inside oxa's product tree, so oxa can consume it in-process
+without a path dependency leaving that tree. It has its own workspace and lock,
+preserving independent gateway builds and feature checks. The native oxc
+controller can depend on the same source from its separate workspace. Both entry
+points retain the same policy, key and settlement implementation; transport
+adapters supply trusted caller metadata. Default features remain empty, and
+moving the library does not enable a listener or change the default engine.
