@@ -29,6 +29,7 @@ pub mod rpc_agent;
 mod run;
 #[cfg(feature = "interactive-control")]
 pub mod tui;
+mod usage;
 #[cfg(feature = "interactive-control")]
 pub mod worker_lanes;
 #[cfg(feature = "interactive-control")]

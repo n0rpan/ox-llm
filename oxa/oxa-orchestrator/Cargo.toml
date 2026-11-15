@@ -21,7 +21,7 @@ oxa-proto = { workspace = true, optional = true }
 oxa-tools = { workspace = true, optional = true }
 
 [dev-dependencies]
-oxa-cli = { path = "../oxa-cli" }
+oxa-cli = { path = "../oxa-cli", features = ["orchestrator"] }
 oxa-fake.workspace = true
 oxa-config.workspace = true
 oxa-interactive = { path = "../oxa-interactive", features = ["session-control"] }
