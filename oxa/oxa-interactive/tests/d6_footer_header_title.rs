@@ -1,4 +1,4 @@
-//! D6 acceptance tests: Footer, header, title. Owner: task D6.
+//! D6 acceptance tests: Footer, header, title.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.

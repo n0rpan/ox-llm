@@ -1,4 +1,4 @@
-//! C10 acceptance tests: RPC server, run-control commands. Owner: task C10.
+//! C10 acceptance tests: RPC server, run-control commands.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -812,6 +812,42 @@ fn prompt_while_busy_needs_streaming_behavior() {
         code, 1,
         "reader-side rejection is retained in the terminal outcome"
     );
+}
+
+#[test]
+fn stdin_close_drains_work_and_keeps_the_late_commands_outcome() {
+    for (kind, accepted, expected_code) in [("get_state", true, 0), ("get_commands", false, 1)] {
+        let env = TestEnv::new();
+        let open = Arc::new(AtomicBool::new(false));
+        let engine = Arc::new(GatedEngine {
+            inner: Arc::new(ScriptedEngine::new(vec![ScriptTurn::text(
+                "completed before exit",
+            )])),
+            open: open.clone(),
+            models: Vec::new(),
+        });
+        let mut rpc = Rpc::start(open_session(&env, engine), &env);
+        let prompt = rpc.call("p", json!({"type": "prompt", "message": "finish this"}));
+        assert_eq!(prompt["success"], true);
+        rpc.wait_for("the held run", |record| record["type"] == "agent_start");
+
+        let late = rpc.call("late", json!({"type": kind}));
+        assert_eq!(late["success"], accepted, "{late}");
+        if accepted {
+            assert_eq!(late["data"]["isStreaming"], true);
+        } else {
+            assert!(late["error"].as_str().unwrap().contains("busy"));
+        }
+        // EOF precedes release of the accepted prompt. It must finish even when a
+        // later command was rejected, and that rejection must retain its exit code.
+        drop(rpc.input.take());
+        open.store(true, Ordering::SeqCst);
+        let (code, records) = rpc.finish();
+        assert_eq!(code, expected_code, "{kind}: {records:?}");
+        assert!(has_settled(&records, false));
+        assert!(records.iter().any(|record| record["type"] == "message_end"
+            && record["message"]["content"][0]["text"] == "completed before exit"));
+    }
 }
 
 /// Unit check on the helpers the server exposes: the error envelope keeps the id.

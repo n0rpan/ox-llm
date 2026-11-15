@@ -31,6 +31,7 @@ pub enum Error {
     WrongOwner,
     Permissions,
     TooLarge,
+    InRepository,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,6 +43,7 @@ impl fmt::Display for Error {
             Self::WrongOwner => "the file is owned by another user",
             Self::Permissions => "the file is not mode 0600 (group/other permissions must be off)",
             Self::TooLarge => "the file is larger than 65536 bytes",
+            Self::InRepository => "the key file is inside a repository",
         };
         write!(f, "Cloud credentials are not configured: {reason}.")
     }
@@ -193,7 +195,7 @@ pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
     if resolved.ancestors().skip(1).any(|parent| {
         parent.join(".git").exists() || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
     }) {
-        return Err(Error::Unavailable);
+        return Err(Error::InRepository);
     }
     let file = OpenOptions::new()
         .read(true)

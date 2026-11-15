@@ -1,4 +1,4 @@
-//! B12: SelectList, a scrolling single-choice list. Owner: task B12. Signatures below are frozen; bodies are yours.
+//! B12: SelectList, a scrolling single-choice list.
 // ported from pi packages/tui/src/components/select-list.ts
 use crate::{truncate_to_width, visible_width, Component, Key, KeyKind, Theme};
 use oxa_config::Keymap;

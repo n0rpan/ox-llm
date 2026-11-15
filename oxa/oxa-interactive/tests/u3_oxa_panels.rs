@@ -1,5 +1,5 @@
 //! U3 acceptance tests: the OXA transcript panels, the selector frame and the pi parity guard.
-//! Owner: task U3. Spec: OXA-UI-DESIGN.md sec. 5 and 6.
+//! Spec: OXA-UI-DESIGN.md sec. 5 and 6.
 //! Pure functions only: no environment, no clock, no files (the image case uses a missing file,
 //! which falls back to text).
 

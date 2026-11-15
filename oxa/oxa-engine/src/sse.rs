@@ -1,4 +1,4 @@
-//! A1: SSE parsing and the streaming POST. Owner: task A1. Signatures below are frozen; bodies are yours.
+//! A1: SSE parsing and the streaming POST.
 use crate::http::{build_request, connect, framing_of, header, parse_head, BodyDecoder, Conn};
 use crate::Url;
 use oxa_proto::{codes, CancelToken, OxaError};

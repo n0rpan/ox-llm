@@ -1,4 +1,4 @@
-//! F8: the extension-UI sub-protocol. Owner: task F8. Signatures below are frozen; bodies are yours.
+//! F8: the extension-UI sub-protocol.
 // ported from pi packages/coding-agent/docs/rpc-extension-ui.md and src/modes/rpc/rpc-mode.ts
 use crate::server::write_out;
 use crate::{Out, RpcCommand};

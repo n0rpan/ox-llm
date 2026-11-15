@@ -1,4 +1,4 @@
-//! E9: `oxa mcp add|remove|list|login|logout`. Owner: task E9. Signatures below are frozen; bodies are yours.
+//! E9: `oxa mcp add|remove|list|login|logout`.
 // ported from pi packages/coding-agent/src/cli (mcp commands; docs: cli.md "MCP commands", mcp.md)
 use oxa_config::Dirs;
 use oxa_mcp::{

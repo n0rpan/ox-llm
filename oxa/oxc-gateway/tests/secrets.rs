@@ -49,7 +49,7 @@ fn credentials_are_fresh_and_debug_never_discloses_them() {
 }
 
 #[test]
-fn public_permissions_links_directories_and_source_trees_are_refused() {
+fn public_permissions_links_and_directories_are_refused() {
     let home = Home::new();
     let path = home.write(br#"{"anthropic":"synthetic-credential"}"#);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
@@ -59,8 +59,37 @@ fn public_permissions_links_directories_and_source_trees_are_refused() {
     symlink(&path, &link).unwrap();
     assert!(secrets::read(&link, "anthropic").is_err());
     assert!(secrets::read(&home.0, "anthropic").is_err());
-    fs::create_dir(home.0.join(".git")).unwrap();
-    assert!(secrets::read(&path, "anthropic").is_err());
+}
+
+#[test]
+fn repository_markers_have_a_distinct_refusal_without_disclosing_paths_or_keys() {
+    let missing = Home::new();
+    assert_eq!(
+        secrets::read(&missing.0.join("missing.json"), "anthropic").err(),
+        Some(secrets::Error::Unavailable)
+    );
+    for marker in ["git-empty", "git-head", "git-file", "source-tree"] {
+        let home = Home::new();
+        let path = home.write(br#"{"anthropic":"synthetic-credential"}"#);
+        assert!(secrets::read(&path, "anthropic").is_ok());
+        match marker {
+            "git-empty" => fs::create_dir(home.0.join(".git")).unwrap(),
+            "git-head" => {
+                fs::create_dir(home.0.join(".git")).unwrap();
+                fs::write(home.0.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+            }
+            "git-file" => fs::write(home.0.join(".git"), "gitdir: synthetic\n").unwrap(),
+            _ => {
+                fs::write(home.0.join("AGENTS.md"), "synthetic source tree\n").unwrap();
+                fs::create_dir(home.0.join("engine")).unwrap();
+            }
+        }
+        let error = secrets::read(&path, "anthropic").err().unwrap();
+        assert_eq!(error, secrets::Error::InRepository);
+        let message = format!("{error:?}: {error}");
+        assert!(!message.contains("synthetic-credential"));
+        assert!(!message.contains(path.to_str().unwrap()));
+    }
 }
 
 #[test]

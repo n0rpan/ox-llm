@@ -1,4 +1,4 @@
-//! D13 acceptance tests: Binary and dispatch. Owner: task D13.
+//! D13 acceptance tests: Binary and dispatch.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -349,7 +349,7 @@ fn print_mode_announces_the_session_id_on_stderr() {
     let r = go_with(&envv, &env.work(), &["-p", "hi"], "", false, false);
     assert_eq!(r.code, 0, "stderr: {}", r.err);
     assert!(
-        r.err.contains("oxa: session ") && r.err.contains("--session "),
+        r.err.contains("oxa: session ") && r.err.contains("--continue "),
         "stderr: {}",
         r.err
     );

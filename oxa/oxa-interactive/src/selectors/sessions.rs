@@ -1,4 +1,4 @@
-//! D8: the session picker (`-r`, `/resume`). Owner: task D8. Signatures below are frozen; bodies are yours.
+//! D8: the session picker (`-r`, `/resume`).
 // ported from pi packages/coding-agent/src/modes/interactive/components/{session-selector.ts,session-selector-search.ts}
 use crate::Outcome;
 use oxa_config::Keymap;

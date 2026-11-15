@@ -54,6 +54,10 @@ impl std::error::Error for OxaError {}
 /// Process exit code for a spent daily cloud budget (`codes::BUDGET_EXHAUSTED`).
 pub const EXIT_BUDGET: i32 = 3;
 
+/// Message prefix of a `stream_broken` that wraps a refusal arriving after reply data (budget,
+/// settlement, malformed chunk): never replayed, unlike a plain transport cut (#456).
+pub const CUT_BY_REFUSAL: &str = "the reply was cut: ";
+
 /// Stable error codes. A new code is added here by the architect; tasks pick from this list.
 pub mod codes {
     /// The engine endpoint refused the connection or is not reachable. Always carries a hint.

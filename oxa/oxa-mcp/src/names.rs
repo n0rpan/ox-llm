@@ -1,4 +1,4 @@
-//! E9: tool and server naming. Owner: task E9. Signatures below are frozen; bodies are yours.
+//! E9: tool and server naming.
 // ported from pi packages/mcp/src/naming.ts
 use sha2::{Digest, Sha256};
 

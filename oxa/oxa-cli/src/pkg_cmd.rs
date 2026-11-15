@@ -1,4 +1,4 @@
-//! E10: `oxa install|remove|update|list`. Owner: task E10. Signatures below are frozen; bodies are yours.
+//! E10: `oxa install|remove|update|list`.
 // ported from pi packages/coding-agent/src/package-manager-cli.ts (docs: packages.md)
 use oxa_config::{Dirs, Settings};
 use oxa_perm::TrustStore;

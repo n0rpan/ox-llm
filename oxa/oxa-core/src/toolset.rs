@@ -1,4 +1,4 @@
-//! C7: tool selection and the file-mutation queue. Owner: task C7. Signatures below are frozen; bodies are yours.
+//! C7: tool selection and the file-mutation queue.
 // ported from pi packages/coding-agent/src/core/tools/index.ts (selection) and file-mutation-queue.ts
 use oxa_proto::{Exposure, Source, Tool, ToolSpec};
 use std::collections::HashSet;
