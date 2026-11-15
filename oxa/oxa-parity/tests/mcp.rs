@@ -1,4 +1,4 @@
-//! G11 PARITY tests (mcp). Owner: task G11.
+//! G11 PARITY tests (mcp).
 //! One test per PARITY.md row of this area, named after the row id (`MCP-012` -> `fn mcp_012()`).
 //! Each row test documents its verdict in its doc comment: `pi:` (P: compared with pi's
 //! documented output in `packages/coding-agent/docs/mcp.md`), `invariant:` (A: the adapted

@@ -1,4 +1,4 @@
-//! D8 acceptance tests: Session picker. Owner: task D8.
+//! D8 acceptance tests: Session picker.
 //! One test per acceptance bullet of WAVES.toml, plus unit tests of the picker. The picker is
 //! pure: no terminal, no engine, no file system. Keys come from `Keymap::defaults()`.
 //! Isolation: nothing here reads the real home; sessions are built in memory.

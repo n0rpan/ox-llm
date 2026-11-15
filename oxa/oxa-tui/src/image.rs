@@ -1,4 +1,4 @@
-//! C14: inline images (kitty, iTerm2) and capability detection. Owner: task C14. Signatures below are frozen; bodies are yours.
+//! C14: inline images (kitty, iTerm2) and capability detection.
 // ported from pi packages/tui/src/terminal-image.ts
 use crate::{ColorMode, ImageProtocol, TermCaps};
 use base64::Engine;

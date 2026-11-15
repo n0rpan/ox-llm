@@ -72,6 +72,22 @@ pub(crate) fn judge(
     let Some(args) = parse(args_raw) else {
         return Verdict::Pass;
     };
+    // #439: a blocking poll (`wait_s`) of a job that is still running is not a repeat: it waited
+    // for the job to change. Judged from the status header (first line) only, never from the
+    // job's output, and a poll without a real wait (under 1 s) still trips the guard (#150).
+    if name == "bash"
+        && args.get("job").is_some()
+        && args
+            .get("wait_s")
+            .and_then(|w| w.as_f64())
+            .is_some_and(|w| w >= 1.0)
+        && text
+            .lines()
+            .next()
+            .is_some_and(|h| h.starts_with("Job ") && h.contains(": running ("))
+    {
+        return Verdict::Pass;
+    }
     // The batch first (newest), then the wire, both walked back from the newest.
     let mut found = Found::default();
     for (n, a, t) in in_batch.iter().rev() {

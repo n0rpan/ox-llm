@@ -1,4 +1,4 @@
-//! B12: Input, a single-line text field. Owner: task B12. Signatures below are frozen; bodies are yours.
+//! B12: Input, a single-line text field.
 // ported from pi packages/tui/src/components/input.ts
 use crate::{
     pad_to_width, slice_by_column, truncate_to_width, visible_width, Component, CursorPos, Interactive, Key,

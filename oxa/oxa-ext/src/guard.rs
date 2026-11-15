@@ -1,4 +1,4 @@
-//! E2: the W-guard. Owner: task E2. Signatures below are frozen; bodies are yours.
+//! E2: the W-guard.
 use oxa_proto::{codes, GuardClass, HookPoint, HookReply, OxaError, WireMsg};
 
 /// What the guard decided about one reply.

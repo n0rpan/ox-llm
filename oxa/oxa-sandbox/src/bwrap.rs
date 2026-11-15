@@ -1,4 +1,4 @@
-//! A9: the bwrap argv. Owner: task A9. Signatures below are frozen; bodies are yours.
+//! A9: the bwrap argv.
 use crate::gitdirs::{
     alias_refusal, configured_hooks_paths, hooks_alias_refusal, is_real_dir, protected_entries,
     unsafe_reason, Mounts,

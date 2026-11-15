@@ -145,15 +145,19 @@ fn retries_stop_at_the_configured_limit() {
     );
 }
 
+/// #456: a transport cut after output is resent once and the run completes; the cut partial
+/// is not part of the printed answer.
 #[test]
-fn output_already_streamed_is_not_replayed() {
+fn output_cut_mid_stream_is_replayed_and_completes() {
     let mut turn = ScriptTurn::text(&"partial ".repeat(100));
     turn.chunk = 1;
     turn.fault = Some(Fault::DropAt { bytes: 300 });
-    let (output, requests) = run("print", vec![turn, ScriptTurn::text("must not run")], 0);
-    assert_ne!(output.status.code(), Some(0));
-    assert_eq!(requests, 1);
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("retrying request"));
+    let (output, requests) = run("print", vec![turn, ScriptTurn::text("finished")], 0);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    assert_eq!(requests, 2);
+    assert!(stdout.contains("finished"), "{stdout}");
+    assert!(!stdout.contains("partial"), "{stdout}");
 }
 
 #[test]

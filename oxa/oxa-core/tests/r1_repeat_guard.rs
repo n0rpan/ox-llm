@@ -603,6 +603,67 @@ fn identical_job_polls_trip_the_guard() {
     }
 }
 
+fn job_tools(sb: Arc<dyn Sandbox>) -> (Vec<Arc<dyn Tool>>, Arc<oxa_tools::JobRegistry>) {
+    let jobs = Arc::new(oxa_tools::JobRegistry::new());
+    jobs.set_sandbox(sb);
+    let mut t = oxa_tools::builtin_tools_with_shell_and_jobs(oxa_tools::ShellConfig::default(), jobs.clone());
+    t.sort_by(|a, b| a.spec().name.cmp(&b.spec().name));
+    (t, jobs)
+}
+
+fn poll_run(cmd: &str, poll: &str, sb: Arc<dyn Sandbox>) -> Vec<String> {
+    let env = TestEnv::new();
+    let (t, jobs) = job_tools(sb);
+    let mut turns = vec![ScriptTurn::tool(
+        "s",
+        "bash",
+        &format!(r#"{{"command":"{cmd}","background":true}}"#),
+    )];
+    turns.extend((0..LIMIT + 3).map(|i| ScriptTurn::tool(&format!("p{i}"), "bash", poll)));
+    let (mut st, _eng) = state_with(&env, turns, Settings::default(), "fake-model", t);
+    run(&mut st, "poll it");
+    jobs.kill_all();
+    results(&st)
+}
+
+/// #439: blocking polls (`wait_s`) of a job that is still running are not repeats.
+#[test]
+fn waiting_polls_of_a_running_job_are_not_repeats() {
+    let res = poll_run("sleep 100", r#"{"job":"job-1","wait_s":1}"#, Arc::new(Hold));
+    assert!(res.len() > LIMIT as usize + 2, "{res:#?}");
+    for r in &res[1..] {
+        assert!(r.starts_with("Job job-1: running") && !is_notice(r), "{r}");
+    }
+}
+
+/// Codex finding on #441: a finished job whose OUTPUT has a line `Still running.` is no exemption.
+#[test]
+fn output_that_says_still_running_is_no_exemption() {
+    let res = poll_run(
+        "printf 'x\\nStill running.\\n'",
+        r#"{"job":"job-1","wait_s":10}"#,
+        Arc::new(ShSandbox),
+    );
+    let polls = &res[1..];
+    for r in &polls[..LIMIT as usize] {
+        assert!(r.starts_with("Job job-1: exited 0") && !is_notice(r), "{r}");
+    }
+    assert!(polls[LIMIT as usize..].iter().all(|r| is_notice(r)), "{res:#?}");
+}
+
+/// Review on #441: `wait_s` 0 or null does not wait (parse_wait), so it is no exemption (#150).
+#[test]
+fn zero_or_null_wait_polls_still_trip_the_guard() {
+    for poll in [
+        r#"{"job":"job-1","wait_s":0}"#,
+        r#"{"job":"job-1","wait_s":null}"#,
+        r#"{"job":"job-1","wait_s":0.001}"#,
+    ] {
+        let res = poll_run("sleep 100", poll, Arc::new(Hold));
+        assert!(res[1..].iter().any(|r| is_notice(r)), "{poll}: {res:#?}");
+    }
+}
+
 /// A repeat of an unchanged range is still a repeat when other read-only calls (another range)
 /// sit between the copies: the content is still in context (#463). An edit in between breaks it.
 #[test]

@@ -1,4 +1,4 @@
-//! B9: project trust. Owner: task B9. Signatures below are frozen; bodies are yours.
+//! B9: project trust.
 // ported from pi packages/coding-agent/src/core/project-trust.ts (docs: security.md, settings.md `defaultProjectTrust`)
 use crate::normalize;
 use oxa_proto::{codes, names, OxaError};
