@@ -160,10 +160,10 @@ impl Served {
     }
 
     /// Close stdin; `serve` must return within `secs`.
-    fn close(self, secs: u64) -> Vec<Value> {
+    fn close(self, secs: u64, expected_code: i32) -> Vec<Value> {
         self.input.lock().unwrap().take();
         match self.done.recv_timeout(Duration::from_secs(secs)) {
-            Ok(r) => assert_eq!(r.expect("serve returns Ok"), 0),
+            Ok(r) => assert_eq!(r.expect("serve returns Ok"), expected_code),
             Err(_) => panic!(
                 "serve did not return {secs} s after stdin closed: {:?}",
                 self.lines()
@@ -199,7 +199,7 @@ fn prompt_pipelined_on_agent_settled_is_accepted() {
     s.wait("every run to settle", |l| {
         l.iter().filter(|v| v["type"] == "agent_settled").count() == ROUNDS + 1
     });
-    let lines = s.close(10);
+    let lines = s.close(10, 0);
     for i in 0..=ROUNDS {
         let r = response(&lines, &format!("p{i}")).unwrap_or_else(|| panic!("no response to p{i}"));
         assert_eq!(r["success"], true, "p{i} refused: {r}");
@@ -247,7 +247,7 @@ fn commands_and_get_state_pipelined_on_records_see_fresh_state() {
     s.wait("every run to settle", |l| {
         l.iter().filter(|v| v["type"] == "agent_settled").count() == ROUNDS + 1
     });
-    let lines = s.close(10);
+    let lines = s.close(10, 0);
     for i in 1..=ROUNDS {
         let name = response(&lines, &format!("name{i}")).expect("name response");
         assert_eq!(
@@ -312,7 +312,7 @@ fn abort_right_after_started_aborts_that_run() {
         let s = Served::start(session, &env, react);
         s.send(json!({"id": "p", "type": "prompt", "message": "go"}));
         s.wait("the abort response", |l| response(l, "a").is_some());
-        let lines = s.close(10);
+        let lines = s.close(10, 130);
         let settled = lines
             .iter()
             .position(|v| v["type"] == "agent_settled")
@@ -382,7 +382,7 @@ fn eof_cancels_waiting_dialogs_and_serve_returns() {
         l.iter()
             .any(|v| v["type"] == "extension_ui_request" && v["method"] == "input")
     });
-    let lines = s.close(10);
+    let lines = s.close(10, 0);
     assert_eq!(
         *hooks.seen.lock().unwrap(),
         vec![
@@ -553,7 +553,7 @@ fn abort_at_each_point_before_the_first_byte_settles_aborted() {
         s.wait("the get_state answer", |l| response(l, "st").is_some());
         let _ = release_tx.send(());
         s.wait("the abort response", |l| response(l, "a").is_some());
-        let lines = s.close(10);
+        let lines = s.close(10, 130);
         let started = response(&lines, "p").expect("prompt response");
         assert_eq!(
             started["data"]["disposition"], "started",

@@ -644,7 +644,7 @@ fn error_shapes() {
     }
 
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
 }
 
 /// exit code 0

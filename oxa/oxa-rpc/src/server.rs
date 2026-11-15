@@ -15,7 +15,7 @@
 // sends after reading any of those records therefore meets an idle session and fresh state.
 use crate::events::{event_to_json, state_to_json, write_record};
 use crate::{cmd_run, handle_session, Out, RpcCx, RpcUi, UiRouter};
-use oxa_core::{Handle, Session};
+use oxa_core::{Handle, RunOutcome, Session};
 use oxa_proto::{codes, AgentEvent, Level, OxaError, Value};
 use serde_json::{json, Map};
 use std::cell::RefCell;
@@ -134,10 +134,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// A command that needs the session, queued for the session thread. `reply` is false for a
 /// prompt: its response was written when it was accepted. `claimed` marks a prompt that took
 /// the run claim ([`Gate::claimed`]) when it was accepted.
-struct Job {
-    cmd: RpcCommand,
-    reply: bool,
-    claimed: bool,
+enum Job {
+    Command {
+        cmd: RpcCommand,
+        reply: bool,
+        claimed: bool,
+    },
+    /// Reader failures share the command FIFO so they cannot overtake an earlier run.
+    Outcome(RunOutcome),
 }
 
 /// What the reader and the session thread decide together, under one lock.
@@ -179,9 +183,18 @@ impl Front {
     fn reply(&self, cmd: &RpcCommand, r: Result<Value, OxaError>) {
         let v = match r {
             Ok(data) => response_ok(cmd, data),
-            Err(e) => response_err(cmd, &e),
+            Err(e) => {
+                self.record_error(&e);
+                response_err(cmd, &e)
+            }
         };
         write_out(&self.out, &v);
+    }
+
+    fn record_error(&self, error: &OxaError) {
+        // No session claim or gate lock: this can be called while a rejected command holds
+        // the gate. The worker folds the error after all earlier accepted commands.
+        let _ = self.tx.send(Job::Outcome(RunOutcome::from_error(error)));
     }
 
     /// After a queue change made here: the `queue_update` record, at once (pi emits it when the
@@ -198,7 +211,7 @@ impl Front {
     /// Queue a job (the caller holds the gate). `claimed` = the job carries the run claim.
     fn enqueue(&self, gate: &mut Gate, cmd: &RpcCommand, reply: bool, claimed: bool) {
         gate.pending += 1;
-        let job = Job {
+        let job = Job::Command {
             cmd: cmd.clone(),
             reply,
             claimed,
@@ -385,8 +398,17 @@ fn session_loop(
     cache: Arc<Mutex<Published>>,
     gate: Arc<Mutex<Gate>>,
     bash_running: Arc<AtomicBool>,
-) -> i32 {
-    while let Ok(Job { cmd, reply, claimed }) = rx.recv() {
+) -> RunOutcome {
+    let mut outcome = RunOutcome::NothingToDo;
+    while let Ok(job) = rx.recv() {
+        let (cmd, reply, claimed) = match job {
+            Job::Command { cmd, reply, claimed } => (cmd, reply, claimed),
+            Job::Outcome(next) => {
+                outcome.include(next);
+                continue;
+            }
+        };
+        let _ = cx.session.take_outcome();
         let is_bash = cmd.kind == "bash";
         bash_running.store(is_bash, Ordering::SeqCst);
         hold_settled();
@@ -408,6 +430,18 @@ fn session_loop(
             // The client was told `started`: it is owed the closing record even when the
             // session ran no turn for the prompt after all.
             settled.push(event_to_json(&AgentEvent::AgentSettled { aborted: false }));
+        }
+        let current = match &result {
+            Some(Err(error)) => RunOutcome::from_error(error),
+            None => RunOutcome::Failed(codes::INVALID),
+            Some(Ok(_)) if cmd.kind != "prompt" && settled.is_empty() => RunOutcome::Done,
+            _ => *cx.session.outcome(),
+        };
+        outcome.include(current);
+        for record in &mut settled {
+            if let Some(fields) = record.as_object_mut() {
+                fields.insert("result".to_string(), current.record());
+            }
         }
         let record = match (result, reply) {
             (Some(Ok(data)), true) => Some(response_ok(&cmd, data)),
@@ -447,7 +481,7 @@ fn session_loop(
         router: cx.ui.clone(),
     };
     cx.session.shutdown(&mut ui);
-    0
+    outcome
 }
 
 /// Reads commands until EOF, answering each one as the front does.
@@ -459,6 +493,7 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
             Ok(0) => break,
             Ok(_) => {}
             Err(e) => {
+                front.record_error(&OxaError::io("cannot read RPC commands", &e));
                 eprintln!("oxa rpc: cannot read commands: {e}");
                 break;
             }
@@ -467,6 +502,7 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
             Ok(t) => t,
             Err(e) => {
                 let err = OxaError::new(codes::INVALID, format!("the line is not UTF-8: {e}"));
+                front.record_error(&err);
                 write_out(&front.out, &parse_error(&err));
                 continue;
             }
@@ -477,7 +513,10 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
         }
         match parse_command(text) {
             Ok(cmd) => front.accept(cmd),
-            Err(e) => write_out(&front.out, &parse_error(&e)),
+            Err(e) => {
+                front.record_error(&e);
+                write_out(&front.out, &parse_error(&e));
+            }
         }
     }
 }
@@ -486,12 +525,12 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
 /// extension-UI responses (`ext_ui`), `handle_run`, `handle_session`, else pi's
 /// unknown-command error. Events are written to `out` as records while prompts run. Returns
 /// the process exit code.
-pub fn serve(
+pub fn serve_outcome(
     session: Session,
     dirs: oxa_config::Dirs,
     input: Box<dyn BufRead + Send>,
     out: Out,
-) -> Result<i32, OxaError> {
+) -> Result<RunOutcome, OxaError> {
     let handle = session.handle();
     let router = Arc::new(UiRouter::new());
     let gate = Arc::new(Mutex::new(Gate::default()));
@@ -529,5 +568,15 @@ pub fn serve(
     // queue and exit.
     router.close();
     drop(front);
-    Ok(worker.join().unwrap_or(1))
+    Ok(worker.join().unwrap_or(RunOutcome::Failed(codes::INTERNAL)))
+}
+
+/// Serve RPC commands through EOF and return the aggregate process exit code.
+pub fn serve(
+    session: Session,
+    dirs: oxa_config::Dirs,
+    input: Box<dyn BufRead + Send>,
+    out: Out,
+) -> Result<i32, OxaError> {
+    serve_outcome(session, dirs, input, out).map(|outcome| outcome.exit_code())
 }

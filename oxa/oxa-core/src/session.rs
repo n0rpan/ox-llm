@@ -106,6 +106,10 @@ pub struct Stats {
     /// The last round of `done` checks had a failure (no later round passed). Print mode reads
     /// it at the end for its exit code.
     pub done_failed: bool,
+    /// Whether the last assistant reply stopped at its output token limit.
+    pub output_truncated: bool,
+    /// Terminal result of the last prompt or extension-triggered run.
+    pub outcome: crate::RunOutcome,
     /// Adaptive thinking on tool follow-ups (`think.rs`) of the current run. Never persisted.
     pub escalation: crate::think::Escalation,
 }
@@ -160,6 +164,16 @@ impl Drop for BusyGuard {
 }
 
 impl Session {
+    /// Outcome of the last prompt, including errors retained after the loop settles.
+    pub fn outcome(&self) -> &crate::RunOutcome {
+        &self.st.stats.outcome
+    }
+
+    /// Consume the last prompt outcome before dispatching a new headless message.
+    pub fn take_outcome(&mut self) -> crate::RunOutcome {
+        std::mem::take(&mut self.st.stats.outcome)
+    }
+
     /// Open per `how`. New / Fork without a stored prefix: fire `ResourcesDiscover` and
     /// `SessionStart`, attach the host to every hook set, read `Engine::info`, build the first
     /// epoch (`epoch::open_epoch`). Resume / Continue: replay the stored prefix bytes
@@ -293,6 +307,7 @@ impl Session {
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
             return self.run_command(&name, &args, sink, ui);
         }
+        self.st.stats.output_truncated = false;
         let guard = self.begin()?;
         let result = oxa_proto::panic::contain(|| self.run_prompt(text, parts, sink, ui))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
@@ -312,6 +327,15 @@ impl Session {
                 aborted = *end == Some(RunEnd::Aborted);
             }
         }
+        self.st.stats.outcome = match result
+            .as_ref()
+            .err()
+            .or(triggered.as_ref().err())
+            .or(boundary.as_ref().err())
+        {
+            Some(error) => crate::RunOutcome::from_error(error),
+            None => settled_outcome(&self.st, boundary.as_ref().ok().and_then(|end| end.as_ref())),
+        };
         flush_queue(&self.st, sink);
         // The `agent_settled` hook observes the settled run while the session is still claimed;
         // the `AgentSettled` record is the last thing a prompt does: the claim is released
@@ -351,6 +375,15 @@ impl Session {
         let triggered = settle_triggered(&mut self.st, can_run, sink, ui);
         let last = last_end(&result, &triggered);
         let boundary = crate::fire::before_settle(&mut self.st, last.clone(), sink, ui);
+        self.st.stats.outcome = match result
+            .as_ref()
+            .err()
+            .or(triggered.as_ref().err())
+            .or(boundary.as_ref().err())
+        {
+            Some(error) => crate::RunOutcome::from_error(error),
+            None => settled_outcome(&self.st, boundary.as_ref().ok().and_then(|end| end.as_ref())),
+        };
         flush_queue(&self.st, sink);
         let ran = match (&boundary, &last) {
             (Ok(Some(end)), _) | (Err(_), Some(end)) => Some(*end == RunEnd::Aborted),
@@ -569,6 +602,10 @@ impl Session {
             });
             report_hook_errors(hook.as_ref(), sink);
             let (triggered, settled) = settle_and_report(&mut self.st, sink, ui);
+            if result.is_ok() && triggered.is_ok() && self.st.stats.outcome == crate::RunOutcome::NothingToDo
+            {
+                self.st.stats.outcome = crate::RunOutcome::Done;
+            }
             drop(_guard);
             emit_settled(sink, settled);
             return result.and(triggered);
@@ -992,6 +1029,10 @@ fn settle_and_report(
         Ok(last) => crate::fire::before_settle(st, last, sink, ui),
         Err(e) => Err(e),
     };
+    st.stats.outcome = match &triggered {
+        Ok(end) => settled_outcome(st, end.as_ref()),
+        Err(error) => crate::RunOutcome::from_error(error),
+    };
     let ran = match &triggered {
         Ok(Some(end)) => Some(*end == RunEnd::Aborted),
         Ok(None) => None,
@@ -1027,6 +1068,19 @@ fn emit_settled(sink: &mut dyn EventSink, settled: Option<bool>) {
 }
 
 /// The end of the last run of an operation: a triggered turn's, else the prompt's own.
+fn settled_outcome(st: &SessionState, end: Option<&RunEnd>) -> crate::RunOutcome {
+    let outcome = crate::RunOutcome::from_end(end);
+    if outcome == crate::RunOutcome::Done {
+        if st.stats.done_failed {
+            return crate::RunOutcome::Failed("done_checks_failed");
+        }
+        if st.stats.output_truncated {
+            return crate::RunOutcome::Failed("output_limit");
+        }
+    }
+    outcome
+}
+
 fn last_end(
     result: &Result<Option<RunEnd>, OxaError>,
     triggered: &Result<Option<RunEnd>, OxaError>,
