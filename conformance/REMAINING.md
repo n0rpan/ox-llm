@@ -15,6 +15,12 @@ The following gaps remain visible rather than being represented by skipped tests
   port the previous gateway. Twenty-one engine-free HTTP foundation cases pass
   with no model/engine fixtures and an untouched foreign inference lease.
   The review runner refuses a cloud-only parity claim until real contracts exist.
+- Engine-free HTTP policy: 49 additional wire cases now match the reference for
+  header precedence/whitespace, request-target normalization, navigation queries,
+  key-file settings and CORS. Ten differences were shown failing before their
+  fixes. More malformed fields, numeric/config encodings and keep-alive races
+  remain. Root setup/chat HTML and further helper/resource pass-through paths
+  still need reference captures and implementation after the cloud baseline.
 - Model-free config files: six contracts now compare exact Python JSON bytes,
   Unicode/control/astral escaping, unrelated fields, preserved permission bits,
   atomic replacement and stable symlink chains. A native UTF-8-versus-escaped

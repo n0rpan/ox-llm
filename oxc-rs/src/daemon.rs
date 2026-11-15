@@ -104,9 +104,14 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
         }
         last.clone()
     };
-    if let Some(response) =
-        crate::http_gate::authorize(&mut context, app.port, headers, method.clone(), &config)
-    {
+    if let Some(response) = crate::http_gate::authorize(
+        &mut context,
+        app.port,
+        headers,
+        method.clone(),
+        request.uri().query().is_some_and(|query| !query.is_empty()),
+        &config,
+    ) {
         return response;
     }
     if [Method::GET, Method::HEAD].contains(&method)
@@ -475,7 +480,16 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
     if path.starts_with("/_local/") {
         return context.error(404, "Unknown local control route.", "", "", None);
     }
-    if path == "/health" && models::resolve(&config, None).is_ok_and(|p| models::eligible(&p)) {
+    if path == "/health" && [Method::GET, Method::HEAD].contains(&method) {
+        if app.engine.status(&config)["validated"] != true {
+            return context.error(
+                503,
+                "Model setup is not finished yet. Run `local-ai status` to follow it.",
+                "unavailable_error",
+                "service_unavailable",
+                None,
+            );
+        }
         return context.reply(
             200,
             json!({"status":"ok","sleeping":app.engine.phase()=="unloaded"}),
@@ -496,7 +510,7 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
         );
     }
     if let Some(length) = headers.get("content-length").and_then(|h| h.to_str().ok()) {
-        match length.parse::<i64>() {
+        match length.trim().parse::<i64>() {
             Ok(length) if !(0..=16 * 1024 * 1024).contains(&length) => {
                 return context.error(
                     413,

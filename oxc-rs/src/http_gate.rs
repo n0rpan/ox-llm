@@ -141,7 +141,9 @@ fn api_key(config: &Value) -> Option<Vec<u8>> {
             return Some(value.trim().as_bytes().to_vec());
         }
     }
-    let path = config["openai_api"].get("api_key_file")?;
+    let path = config["openai_api"]
+        .get("api_key_file")
+        .filter(|path| !path.is_null())?;
     let Some(path) = path
         .as_str()
         .filter(|path| std::path::Path::new(path).is_absolute())
@@ -159,7 +161,7 @@ fn api_key(config: &Value) -> Option<Vec<u8>> {
         return Some(Vec::new());
     };
     let first = text
-        .lines()
+        .split(['\r', '\n'])
         .next()
         .unwrap_or("")
         .chars()
@@ -193,23 +195,31 @@ pub(crate) fn decompress_gzip(mut input: &[u8]) -> std::io::Result<Vec<u8>> {
     }
     Ok(output)
 }
-pub(crate) fn presented_key(headers: &HeaderMap) -> Option<&str> {
-    if let Some(value) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
+fn header_text(value: &HeaderValue) -> String {
+    // BaseHTTPRequestHandler decodes field bytes as ISO-8859-1. API key
+    // comparison then uses UTF-8 for both this text and the private key file.
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| char::from(*byte))
+        .collect()
+}
+pub(crate) fn presented_key(headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = headers.get("authorization").map(header_text) {
         if value
             .get(..7)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bearer "))
         {
-            return Some(value[7..].trim());
+            return Some(value[7..].trim().to_owned());
         }
     }
     for name in ["x-api-key", "api-key"] {
         if let Some(value) = headers
             .get(name)
-            .and_then(|h| h.to_str().ok())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .map(header_text)
+            .filter(|s| !s.trim().is_empty())
         {
-            return Some(value);
+            return Some(value.trim().to_owned());
         }
     }
     None
@@ -326,6 +336,7 @@ pub(crate) fn authorize<R>(
     port: u16,
     headers: &HeaderMap,
     method: Method,
+    has_query: bool,
     config: &Value,
 ) -> Option<Response> {
     let path = context.path.clone();
@@ -345,6 +356,7 @@ pub(crate) fn authorize<R>(
     let navigation = origin.is_none()
         && [Method::GET, Method::HEAD].contains(&method)
         && path == "/"
+        && !has_query
         && [
             ("sec-fetch-mode", "navigate"),
             ("sec-fetch-dest", "document"),
@@ -379,6 +391,7 @@ pub(crate) fn authorize<R>(
             "access-control-allow-headers",
             headers
                 .get("access-control-request-headers")
+                .filter(|value| !value.is_empty())
                 .cloned()
                 .unwrap_or(HeaderValue::from_static("authorization, content-type")),
         );

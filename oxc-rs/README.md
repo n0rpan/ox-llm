@@ -38,7 +38,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-and native suites both pass 842 scenarios in 104 unittest methods.
+and native suites both pass 891 scenarios in 105 unittest methods.
 
 Twenty-one engine-free HTTP cases need no fake model/engine or host-memory
 namespace. They compare the real gates while another owner holds the inference
@@ -254,9 +254,17 @@ and mode bits, atomically replace the target and leave symlink chains intact.
 Both Unicode regressions were reproduced before the fix.
 
 HTTP replies, error normalization, Host/Origin/CORS/auth checks and bounded gzip
-decoding now live in a separate 415-line policy module. It depends on no engine,
+decoding now live in a separate 428-line policy module. It depends on no engine,
 model catalog, upstream proxy or sharing runtime. The daemon supplies its
 sharing admission state through a generic context. Host checks still precede
 configuration refresh, followed by Origin/auth checks in the original order.
 This prepares a separate transport/policy slice without extracting the whole
 daemon or porting an older cloud gateway.
+
+Forty-nine engine-free HTTP policy cases use owned wire requests, synthetic key
+files and a held foreign inference lease. Ten regressions failed before fixing:
+the parser now retains significant trailing field whitespace, keeps empty bearer
+precedence and Python header decoding, and applies Python's leading-slash
+normalization. Navigation remains query-sensitive; null/CR/Unicode key-file
+settings, health setup refusals and empty CORS request-header defaults match the
+reference. All existing header/body/credential bounds are retained.

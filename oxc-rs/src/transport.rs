@@ -214,9 +214,17 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
     if !parsed.parse(raw).map_err(|_| invalid())?.is_complete() {
         return Err(invalid());
     }
+    let target = parsed.path.ok_or_else(invalid)?;
+    // Python's HTTP parser collapses leading slashes before the controller's
+    // canonical-target and admission gates see the request.
+    let target = if target.starts_with("//") {
+        format!("/{}", target.trim_start_matches('/'))
+    } else {
+        target.to_owned()
+    };
     let mut request = Request::builder()
         .method(parsed.method.ok_or_else(invalid)?)
-        .uri(parsed.path.ok_or_else(invalid)?)
+        .uri(target)
         .version(if parsed.version == Some(0) {
             Version::HTTP_10
         } else {
@@ -225,11 +233,27 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
     let mut length = 0;
     let mut length_seen = false;
     let mut chunked = false;
+    let mut lines = raw.split(|byte| *byte == b'\n').skip(1);
     for field in parsed.headers {
+        // httparse validates the field syntax but trims trailing whitespace.
+        // Python keeps it: in particular, "Bearer " must block alternative
+        // key headers rather than becoming a different authorization scheme.
+        let line = lines.next().ok_or_else(invalid)?;
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let colon = line
+            .iter()
+            .position(|byte| *byte == b':')
+            .ok_or_else(invalid)?;
+        let value = &line[colon + 1..];
+        let start = value
+            .iter()
+            .position(|byte| !matches!(byte, b' ' | b'\t'))
+            .unwrap_or(value.len());
+        let value = &value[start..];
         if field.name.eq_ignore_ascii_case("content-length") && !length_seen {
             // Keep the original header intact. The handler decides whether it
             // is valid, after authentication, without reading a rejected body.
-            length = std::str::from_utf8(field.value)
+            length = std::str::from_utf8(value)
                 .ok()
                 .and_then(|s| s.trim().parse::<u64>().ok())
                 .filter(|n| *n <= 16 * 1024 * 1024)
@@ -239,7 +263,7 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
         if field.name.eq_ignore_ascii_case("transfer-encoding") {
             chunked = true;
         }
-        request = request.header(field.name, field.value);
+        request = request.header(field.name, value);
     }
     let peer = Peer {
         reader: reader.clone(),
