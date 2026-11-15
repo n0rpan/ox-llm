@@ -391,7 +391,10 @@ fn valid_id(id: &str) -> bool {
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
-fn open_input(path: &Path) -> io::Result<File> {
+pub(crate) fn open_input(path: &Path) -> io::Result<File> {
+    open_input_limit(path, MAX_JOURNAL)
+}
+fn open_input_limit(path: &Path, max: usize) -> io::Result<File> {
     let parent = path.parent().ok_or_else(|| invalid("journal needs a parent"))?;
     let directory = crate::namespace::protected_directory(parent)?;
     let metadata = directory.metadata()?;
@@ -414,7 +417,7 @@ fn open_input(path: &Path) -> io::Result<File> {
     // SAFETY: geteuid only returns this process's effective identity.
     if !metadata.is_file()
         || metadata.nlink() != 1
-        || metadata.len() > MAX_JOURNAL as u64
+        || metadata.len() > max as u64
         || metadata.uid() != unsafe { libc::geteuid() }
         || metadata.mode() & 0o077 != 0
         || metadata.dev() != directory.metadata()?.dev()
@@ -429,12 +432,18 @@ fn open_input(path: &Path) -> io::Result<File> {
         .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
         .open(format!("/proc/self/fd/{}", handle.as_raw_fd()))
 }
-fn read_checked(file: &File) -> io::Result<Vec<u8>> {
+pub(crate) fn read_checked(file: &File) -> io::Result<Vec<u8>> {
+    read_checked_limit(file, MAX_JOURNAL)
+}
+pub(crate) fn read_bounded(path: &Path, max: usize) -> io::Result<Vec<u8>> {
+    read_checked_limit(&open_input_limit(path, max)?, max)
+}
+fn read_checked_limit(file: &File, max: usize) -> io::Result<Vec<u8>> {
     let before = file.metadata()?;
     // SAFETY: geteuid only returns this process's effective identity.
     if !before.is_file()
         || before.nlink() != 1
-        || before.len() > MAX_JOURNAL as u64
+        || before.len() > max as u64
         || before.mode() & 0o077 != 0
         || before.uid() != unsafe { libc::geteuid() }
     {
@@ -442,10 +451,10 @@ fn read_checked(file: &File) -> io::Result<Vec<u8>> {
     }
     let mut bytes = Vec::new();
     Read::by_ref(&mut &*file)
-        .take(MAX_JOURNAL as u64 + 1)
+        .take(max as u64 + 1)
         .read_to_end(&mut bytes)?;
     let after = file.metadata()?;
-    if bytes.len() > MAX_JOURNAL
+    if bytes.len() > max
         || (
             before.dev(),
             before.ino(),

@@ -363,7 +363,26 @@ fn run_a2a(
     cancel: Arc<AtomicBool>,
     observe: impl FnMut(A2AStatus),
 ) -> io::Result<A2ARunReport> {
-    super::run_a2a(settings, plan, Inbox { receiver, cancel }, observe)
+    let directory = settings.directory.clone();
+    let result = super::run_a2a(settings, plan, Inbox { receiver, cancel }, observe);
+    if let Ok(report) = &result {
+        let path = directory.join("transcript.jsonl");
+        let inspected = crate::a2a_recovery::InspectedRun::inspect(&path).unwrap();
+        assert!(inspected.snapshot().recorded_run_finished);
+        assert_eq!(inspected.snapshot().workers.len(), report.workers.len());
+        assert!(crate::recovery::InspectedRun::inspect(&path).is_err());
+        let guard = crate::a2a_recovery::ExclusiveRun::claim(&path).unwrap();
+        assert_eq!(
+            crate::a2a_recovery::ExclusiveRun::claim(&path)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(guard);
+        assert!(crate::a2a_recovery::ExclusiveRun::claim(&path).is_ok());
+    }
+    result
 }
 
 #[test]
@@ -462,8 +481,14 @@ fn checkpoints_require_consent_roundtrip_results_and_match_journal_digest() {
         let finished = rows.iter().find(|r| r["event"] == "finished").unwrap();
         if consent {
             use std::os::unix::fs::MetadataExt;
+            let inspected =
+                crate::a2a_recovery::InspectedRun::inspect(&env.root().join("checkpoint/transcript.jsonl"))
+                    .unwrap();
+            let recovered = inspected.load_checkpoint("one", &path).unwrap();
+            assert_eq!(recovered.task, report.workers[0].task);
+            assert!(inspected.load_checkpoint("unknown", &path).is_err());
             let bytes = std::fs::read(&path).unwrap();
-            assert_eq!(std::fs::metadata(path).unwrap().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
             let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(envelope["version"], 1);
             assert_eq!(envelope["run"], "checkpoint");
@@ -474,7 +499,17 @@ fn checkpoints_require_consent_roundtrip_results_and_match_journal_digest() {
                 finished["details"]["checkpointSha256"],
                 format!("{:x}", Sha256::digest(&bytes))
             );
+            let mut altered = bytes.clone();
+            altered.push(b' ');
+            std::fs::write(&path, altered).unwrap();
+            assert!(inspected.load_checkpoint("one", &path).is_err());
         } else {
+            assert!(crate::a2a_recovery::InspectedRun::inspect(
+                &env.root().join("checkpoint/transcript.jsonl")
+            )
+            .unwrap()
+            .load_checkpoint("one", &path)
+            .is_err());
             assert!(finished["details"]["checkpointSha256"].is_null());
         }
     }

@@ -24,8 +24,9 @@ Pending cleanup on ordinary error is best effort; crash recovery is separate.
 Checkpoint retention is not proof of remote process cleanup or billed usage:
 read the report's stop confirmation and observed accounting. It adds no replay,
 resume, source apply, publication, auto-delete, or authority to signal recorded
-PIDs. Journal/checkpoint verification and original-agent reconciliation remain
-later slices. Remote journal inspection is not enabled by this change.
+PIDs. Passive journal/checkpoint verification is described in
+[A2A_INSPECTION.md](A2A_INSPECTION.md); original-agent reconciliation remains
+a later slice.
 
 Tests cover actual private file publication, no replacement, control escaping,
 serialization/bound failures, pending/final symlinks, an owned child with real
