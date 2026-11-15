@@ -26,7 +26,12 @@ def _close_row(st, status, error=None):
     """Finish the ledger row and remember a write failure so cloud admission fails closed."""
     if st.led is None:
         return
-    st.led.finish(status, error)
+    try:
+        st.led.finish(status, error)
+    except Exception:
+        # An append may have happened before an exception; never retry an ambiguous write.
+        cloud.mark_ledger_failure()
+        return
     if getattr(st.led, 'written', True) is False:
         cloud.mark_ledger_failure()
 
@@ -48,8 +53,8 @@ def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, f
 
     ``cancelled`` = (request_bytes, streamed_bytes) for a client cancel: settled at actual usage
     or an estimate of what was streamed."""
-    if hold is not None and hold.settled:
-        return  # A client write can fail after this request was durably accounted.
+    if hold is not None and hold.accounted:
+        return  # Accounting was attempted; any failure already closed cloud admission.
     row = meter.row(item, secret)
     if cancelled is not None:
         # OpenAI/OpenRouter report usage only in the closing chunk, so any usage seen is final.
@@ -60,6 +65,7 @@ def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, f
         st.led.row.update(row)
         _close_row(st, status, error)
     if hold is not None:
+        hold.accounted = True
         hold.settle()
 
 

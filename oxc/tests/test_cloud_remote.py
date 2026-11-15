@@ -532,6 +532,29 @@ class LedgerFailClosed(CloudCase):
         self.assertEqual(len(rows), 1, rows)
         self.assertEqual(rows[0]['settled'], 'usage')
 
+    def test_ledger_exception_is_not_retried_and_blocks_the_next_call(self):
+        self.start()
+        with patch.object(request_ledger, 'write', side_effect=OSError('synthetic ledger failure')) as write:
+            self.assertEqual(self.chat()[0], 200)
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual(self.chat()[0], 503)
+        self.assertEqual(len(self.upstream.requests), 1)
+
+    def test_ledger_exception_after_append_does_not_duplicate_usage(self):
+        self.start()
+        original = request_ledger.write
+        def append_then_raise(row):
+            self.assertTrue(original(row))
+            raise OSError('synthetic error after append')
+        with patch.object(request_ledger, 'write', side_effect=append_then_raise) as write:
+            self.assertEqual(self.chat()[0], 200)
+        self.assertEqual(write.call_count, 1)
+        rows = self.ledger_rows()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]['settled'], 'usage')
+        self.assertEqual(self.chat()[0], 503)
+        self.assertEqual(len(self.upstream.requests), 1)
+
     def test_a_failed_ledger_write_blocks_the_next_remote_call(self):
         self.start()
         with patch.object(request_ledger, 'write', return_value=False):
