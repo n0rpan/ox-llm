@@ -74,5 +74,17 @@ class ReadSecrets(unittest.TestCase):
         self.assertNotIn(KEY, str(exc))
 
 
+    def test_an_empty_git_directory_is_not_a_repository(self):
+        (self.tmp / '.git').mkdir()
+        self.assertEqual(cloud._read_secrets(_value(self.secrets))['openrouter']['api_key'], KEY)
+
+    def test_a_real_repository_is_refused_and_named(self):
+        (self.tmp / '.git').mkdir()
+        (self.tmp / '.git' / 'HEAD').write_text('ref: refs/heads/main\n')
+        exc = self._refusal()
+        self.assertEqual(exc.code, 'cloud_credentials_unavailable')
+        self.assertIn('inside a repository: %s' % self.tmp.resolve(), str(exc))
+
+
 if __name__ == '__main__':
     unittest.main()

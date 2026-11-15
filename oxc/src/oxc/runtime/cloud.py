@@ -618,9 +618,11 @@ def secrets_file(value):
         for parent in resolved.parents:
             # Check the configured path, independently of source/versioned/flat module layout.
             # Worktree .git files count, as do exported product source trees without Git metadata.
-            if ((parent / '.git').exists() or ((parent / 'AGENTS.md').is_file()
+            # An empty .git directory (a sandbox mount placeholder) is not a repository: needs a HEAD.
+            git = parent / '.git'
+            if (git.is_file() or (git / 'HEAD').exists() or ((parent / 'AGENTS.md').is_file()
                     and (parent / 'engine').is_dir())):
-                raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable')
+                _secrets_refusal('the key file is inside a repository: %s' % parent)
     except (OSError, RuntimeError, ValueError):
         raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable') from None
     return path
