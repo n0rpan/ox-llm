@@ -436,15 +436,22 @@ def _check_ledger_health():
     if directory is None or str(directory) not in _ledger_failures:
         return
     try:
-        lost = _unrecorded.get(str(directory), 0.0)
+        with _budget_lock:
+            lost = _unrecorded.get(str(directory), 0.0)
         written = ctl.request_ledger.write({'remote': True, 'remote_provider': 'ledger_probe',
                                             'cost_usd': lost, 'settled': 'recovered' if lost else 'probe'})
         if written is True:
             spend_today()
             with _budget_lock:
-                _unrecorded.pop(str(directory), None)
-                _ledger_failures.discard(str(directory))
-            return
+                # Subtract only what was written; a failure recorded meanwhile stays latched.
+                left = _unrecorded.get(str(directory), 0.0) - lost
+                if left > 1e-12:
+                    _unrecorded[str(directory)] = left
+                else:
+                    _unrecorded.pop(str(directory), None)
+                    _ledger_failures.discard(str(directory))
+            if str(directory) not in _ledger_failures:
+                return
     except CloudError:
         pass
     raise _latch_error()

@@ -138,13 +138,34 @@ class LedgerLatch(CloudCase):
             self.assertEqual(status, 503)
             message = json.loads(body)['error']['message']
             self.assertIn('Repair', message)
-        before = cloud.spend_today()
         self.assertEqual(self.chat()[0], 200)
-        # The spend whose row could not be written is restored when the latch clears.
-        self.assertGreater(cloud.spend_today(), before + 0.0)
+        # The spend whose row could not be written is restored as a 'recovered' row.
+        recovered = [r for r in self.ledger_rows() if r.get('settled') == 'recovered']
+        self.assertEqual(len(recovered), 1)
+        self.assertGreater(recovered[0]['cost_usd'], 0)
         cloud_status = json.loads(self.call('GET', '/_local/status')[1])['cloud']
         self.assertTrue(cloud_status['ledger_ok'])
         self.assertFalse(cloud_status['ledger_latched'])
+
+
+class LedgerRecoveryRace(CloudCase):
+    def test_failure_during_the_probe_write_is_not_lost(self):
+        self.start()
+        directory = str(cloud._ledger_dir())
+        cloud.mark_ledger_failure(0.25)
+        real = request_ledger.write
+
+        def write(row):
+            cloud.mark_ledger_failure(0.5)   # another request fails while the probe is written
+            return real(row)
+
+        with patch.object(request_ledger, 'write', side_effect=write):
+            with self.assertRaises(cloud.CloudError):
+                cloud._check_ledger_health()
+        self.assertAlmostEqual(cloud._unrecorded.get(directory, 0.0), 0.5)
+        self.assertIn(directory, cloud._ledger_failures)
+        cloud._unrecorded.pop(directory, None)
+        cloud._ledger_failures.discard(directory)
 
 
 class PriceRetry(unittest.TestCase):
