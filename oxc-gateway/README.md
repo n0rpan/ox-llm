@@ -1,27 +1,27 @@
-# Opt-in Rust cloud gateway
+# Opt-in Rust cloud gateway policy
 
-First extraction for #28 and #289: engine-free discovery metadata from the
-Python `oxc` controller. Default features are empty. No binary is installed;
-the example is only a JSON contract driver and opens no listener.
+This #28 slice supplies safe refusal stages: unavailable credentials, offline,
+LAN guests, missing pricing/budget, exhausted spend and unreadable/disabled
+ledgers. Enable the `policy` feature; defaults are empty and nothing is installed.
+The functions consume trusted gateway facts. They neither read a credential nor
+create a reservation or contact a provider. Atomic accounting follows separately.
 
-`Catalog::from_config` selects only `cloud_only: true`, respects cloud-off and
-offline policy, and supplies model rows, chooser rows, model limits, sleeping
-health and the startup line. Its status fragment is composed by a future HTTP
-adapter. It reads no files, keys, environment, hardware or inference leases.
-
-Reference: main `15fe33d6f53e61639b4232a2d229f66444c37f0d`. Eight cases use the
-unmodified Python HTTP controller, an owned mock upstream, a private network
-namespace and HOME, `/usr/bin/python3`, and a foreign lease held through stop.
-Only discovery/status fields owned by this slice are compared. HTTP gates,
-forwarding, secrets, budget/ledger, cancellation and installation remain future
-slices; this is not a complete cloud-only daemon.
+Eleven contracts match main `bbec7919fd54ddcce6de49c6c33264e50e9a7494`.
+Ten use the unmodified Python HTTP controller in private HOME/network namespaces
+with an owned loopback mock and a foreign lease held through stop. Refusals send
+no provider request; the accepted case reaches exactly one mock. The guest case
+exercises the reference's already-authenticated guest context; live LAN listener
+integration remains separate. Native tests exercise the library decision stages.
 
 ```sh
-cargo build --locked --manifest-path oxc-gateway/Cargo.toml --features cloud-only --example catalog_contract
-/usr/bin/python3 oxc-gateway/conformance/test_catalog.py
-OXC_CATALOG_CONTRACT="$PWD/oxc-gateway/target/debug/examples/catalog_contract" /usr/bin/python3 oxc-gateway/conformance/test_catalog.py
+cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
+/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
 ```
 
-Run Clippy with `--all-targets --all-features -- -D warnings`, and `cargo check
---no-default-features`. Bubblewrap is required for source capture. Goldens are
-recorded only with `--record-python`; test/native runs never regenerate them.
+Bubblewrap and `/usr/bin/python3` are required. Goldens are captured only with
+`test_policy.py --record-python`. Run strict all-target/all-feature Clippy,
+formatting and an empty-default build before readying. Companion #294 introduces
+catalog metadata for the same library; preserve both features/modules/examples
+when incorporating it. Full HTTP composition, secrets, atomic settlement and
+upstream protocols remain incomplete. Python behavior stays unchanged.

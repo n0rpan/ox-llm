@@ -8,6 +8,7 @@ publish = false
 [features]
 default = []
 cloud-only = ["dep:serde_json", "dep:url"]
+policy = ["dep:serde_json"]
 
 [dependencies]
 serde_json = { version = "1", optional = true }
@@ -16,6 +17,10 @@ url = { version = "2", optional = true }
 [[example]]
 name = "catalog_contract"
 required-features = ["cloud-only"]
+
+[[example]]
+name = "policy_contract"
+required-features = ["policy"]
 
 [lints.rust]
 unsafe_code = "forbid"
