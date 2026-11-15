@@ -1,0 +1,22 @@
+[package]
+name = "oxc-gateway"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[features]
+default = []
+pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
+
+[dependencies]
+serde_json = { version = "1", optional = true }
+bigdecimal = { version = "0.4", optional = true }
+num-traits = { version = "0.2", optional = true }
+
+[[example]]
+name = "pricing_contract"
+required-features = ["pricing"]
+
+[lints.rust]
+unsafe_code = "forbid"

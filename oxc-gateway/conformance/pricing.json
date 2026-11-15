@@ -1,0 +1,300 @@
+{
+  "aliases": {
+    "actual": 0.001008,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00133
+  },
+  "anthropic": {
+    "actual": 0.000193,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.002064
+  },
+  "anthropic-explicit": {
+    "actual": 0.000163,
+    "pricing": {
+      "cache_read_per_million": 0.1,
+      "cache_write_per_million": 1.25,
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.001314
+  },
+  "anthropic-upstream": {
+    "actual": 0.001048,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00258
+  },
+  "bad-rate-type": {
+    "actual": null,
+    "pricing": null,
+    "reservation": null
+  },
+  "cache-rate-defaults": {
+    "actual": 0.000153,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.002064
+  },
+  "decimal": {
+    "actual": 0.000382839,
+    "pricing": {
+      "cache_read_per_million": 0.0111,
+      "cache_write_per_million": 0.13875,
+      "input_per_million": 0.111,
+      "output_per_million": 4.44
+    },
+    "reservation": 0.00035103750000000007
+  },
+  "free": {
+    "actual": 0.0,
+    "pricing": {
+      "input_per_million": 0.0,
+      "output_per_million": 0.0
+    },
+    "reservation": 0.0
+  },
+  "free-bad-flat": {
+    "actual": 0.0,
+    "pricing": {
+      "input_per_million": 0.0,
+      "output_per_million": 0.0
+    },
+    "reservation": 0.0
+  },
+  "free-bad-tier": {
+    "actual": null,
+    "pricing": null,
+    "reservation": null
+  },
+  "invalid-cache-sum": {
+    "actual": 0.001258,
+    "pricing": {
+      "cache_read_per_million": 0.1,
+      "cache_write_per_million": 1.25,
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.0016425
+  },
+  "invalid-cache-type": {
+    "actual": 0.001258,
+    "pricing": {
+      "cache_read_per_million": 0.1,
+      "cache_write_per_million": 1.25,
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.0016425
+  },
+  "invalid-prompt": {
+    "actual": 8e-06,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00133
+  },
+  "large-rate": {
+    "actual": null,
+    "pricing": null,
+    "reservation": null
+  },
+  "missing-price": {
+    "actual": null,
+    "pricing": null,
+    "reservation": null
+  },
+  "negative-cache": {
+    "actual": 0.001258,
+    "pricing": {
+      "cache_read_per_million": 0.1,
+      "cache_write_per_million": 1.25,
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.0016425
+  },
+  "negative-rate": {
+    "actual": null,
+    "pricing": null,
+    "reservation": null
+  },
+  "one-hour-write": {
+    "actual": 0.000193,
+    "pricing": {
+      "cache_read_per_million": 0.1,
+      "cache_write_per_million": 2.0,
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00258
+  },
+  "openai": {
+    "actual": 0.001008,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.001064
+  },
+  "openai-explicit": {
+    "actual": 0.000163,
+    "pricing": {
+      "cache_read_per_million": 0.1,
+      "cache_write_per_million": 1.25,
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.001314
+  },
+  "output-bound": {
+    "actual": 20.001,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00133
+  },
+  "output-over": {
+    "actual": null,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00133
+  },
+  "prompt-bound": {
+    "actual": 100.000008,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00133
+  },
+  "prompt-over": {
+    "actual": null,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00133
+  },
+  "router": {
+    "actual": 0.001008,
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.00133
+  },
+  "router-explicit": {
+    "actual": 0.000163,
+    "pricing": {
+      "cache_read_per_million": 0.1,
+      "cache_write_per_million": 1.25,
+      "input_per_million": 1.0,
+      "output_per_million": 2.0
+    },
+    "reservation": 0.0016425
+  },
+  "tier-bool-bound": {
+    "actual": null,
+    "pricing": null,
+    "reservation": null
+  },
+  "tier-boundary": {
+    "actual": 2.7e-05,
+    "pricing": {
+      "tiers": [
+        {
+          "cache_read_per_million": 0.1,
+          "cache_write_per_million": 1.25,
+          "input_per_million": 1.0,
+          "max_prompt_tokens": 100,
+          "output_per_million": 2.0
+        },
+        {
+          "cache_read_per_million": 0.1,
+          "cache_write_per_million": 1.25,
+          "input_per_million": 2.0,
+          "max_prompt_tokens": null,
+          "output_per_million": 2.0
+        }
+      ]
+    },
+    "reservation": 0.00258
+  },
+  "tier-high": {
+    "actual": 3.9e-05,
+    "pricing": {
+      "tiers": [
+        {
+          "cache_read_per_million": 0.1,
+          "cache_write_per_million": 1.25,
+          "input_per_million": 1.0,
+          "max_prompt_tokens": 100,
+          "output_per_million": 2.0
+        },
+        {
+          "cache_read_per_million": 0.1,
+          "cache_write_per_million": 1.25,
+          "input_per_million": 2.0,
+          "max_prompt_tokens": null,
+          "output_per_million": 2.0
+        }
+      ]
+    },
+    "reservation": 0.00258
+  },
+  "tier-low": {
+    "actual": 2.6e-05,
+    "pricing": {
+      "tiers": [
+        {
+          "cache_read_per_million": 0.1,
+          "cache_write_per_million": 1.25,
+          "input_per_million": 1.0,
+          "max_prompt_tokens": 100,
+          "output_per_million": 2.0
+        },
+        {
+          "cache_read_per_million": 0.1,
+          "cache_write_per_million": 1.25,
+          "input_per_million": 2.0,
+          "max_prompt_tokens": null,
+          "output_per_million": 2.0
+        }
+      ]
+    },
+    "reservation": 0.00258
+  },
+  "tier-missing-final": {
+    "actual": null,
+    "pricing": null,
+    "reservation": null
+  },
+  "tier-unordered": {
+    "actual": null,
+    "pricing": null,
+    "reservation": null
+  },
+  "tiny-rate": {
+    "actual": 1.012e-23,
+    "pricing": {
+      "input_per_million": 1e-20,
+      "output_per_million": 3e-20
+    },
+    "reservation": 1.3699999999999997e-23
+  }
+}
