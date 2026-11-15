@@ -67,15 +67,41 @@ pub(crate) fn layout(
     } else if home_root {
         notices.push((Level::Warning, home_root_warning(cwd, home_itself)));
     }
-    Layout::build(&LayoutInputs {
+    let read_extra = paths(SETTING_READ_PATHS);
+    let built = Layout::build(&LayoutInputs {
         home: dirs.home.clone(),
         agent_dir: Some(dirs.agent_dir.clone()),
         path_var: env.get("PATH").unwrap_or("").to_string(),
         env: env.pairs().to_vec(),
-        read_extra: paths(SETTING_READ_PATHS),
+        read_extra: read_extra.clone(),
         write_extra: paths(SETTING_WRITE_PATHS),
         allow_home_write,
-    })
+    });
+    // #196: extra read-only paths are never silent; say which are mounted and which are not.
+    let (mounted, skipped): (Vec<_>, Vec<_>) = read_extra
+        .iter()
+        .partition(|p| built.read.iter().chain(&built.write).any(|m| p.starts_with(m)));
+    if !mounted.is_empty() {
+        let list: Vec<_> = mounted.iter().map(|p| p.display().to_string()).collect();
+        notices.push((
+            Level::Info,
+            format!(
+                "bash can also read (never write): {} ({SETTING_READ_PATHS})",
+                list.join(", ")
+            ),
+        ));
+    }
+    if !skipped.is_empty() {
+        let list: Vec<_> = skipped.iter().map(|p| p.display().to_string()).collect();
+        notices.push((
+            Level::Warning,
+            format!(
+                "{SETTING_READ_PATHS} ignored (missing, hidden credentials or the home itself): {}",
+                list.join(", ")
+            ),
+        ));
+    }
+    built
 }
 
 #[cfg(test)]
@@ -136,5 +162,34 @@ mod tests {
         let l = layout(&e, &dirs, &env.work(), true, &mut notices);
         assert!(!l.allow_home_write);
         assert!(notices.is_empty(), "{notices:?}");
+    }
+
+    #[test]
+    fn extra_read_paths_are_announced_and_skipped_ones_flagged() {
+        let env = TestEnv::new();
+        env.write("data/tools/x", "x");
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(
+                r#"{{"oxa":{{"sandbox":{{"readPaths":["{}","{}"]}}}}}}"#,
+                env.root().join("data/tools").display(),
+                env.root().join("nope").display()
+            ),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert!(
+            notices.iter().any(|(l, t)| *l == Level::Info
+                && t.contains("can also read (never write)")
+                && t.contains("data/tools")),
+            "{notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|(l, t)| *l == Level::Warning && t.contains("nope")),
+            "{notices:?}"
+        );
     }
 }
