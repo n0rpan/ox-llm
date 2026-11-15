@@ -136,6 +136,9 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "--setenv",
         "MISE_STATE_DIR",
         "/tmp/mise-state",
+        "--setenv",
+        "SCCACHE_DIR",
+        "/tmp/sccache",
         "--",
         "bash",
         "-c",
@@ -173,7 +176,13 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
     let names: Vec<&str> = l.env.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         names,
-        vec!["CARGO_HOME", "MISE_CACHE_DIR", "MISE_DATA_DIR", "MISE_STATE_DIR"],
+        vec![
+            "CARGO_HOME",
+            "MISE_CACHE_DIR",
+            "MISE_DATA_DIR",
+            "MISE_STATE_DIR",
+            "SCCACHE_DIR"
+        ],
         "no token, no key, nothing unlisted"
     );
 }

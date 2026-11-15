@@ -113,6 +113,7 @@ pub const TOOLCHAIN_ENV: &[&str] = &[
     "PIPX_HOME",
     "PIPX_BIN_DIR",
     "UV_CACHE_DIR",
+    "SCCACHE_DIR",
     "UV_PYTHON_INSTALL_DIR",
     "UV_TOOL_DIR",
     "PYENV_ROOT",
@@ -299,6 +300,7 @@ impl Layout {
         for (k, v) in [
             ("MISE_CACHE_DIR", "/tmp/mise-cache"),
             ("MISE_STATE_DIR", "/tmp/mise-state"),
+            ("SCCACHE_DIR", "/tmp/sccache"),
         ] {
             if !env.iter().any(|(n, _)| n == k) {
                 env.push((k.to_string(), v.to_string()));
@@ -340,6 +342,21 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sccache_gets_a_writable_dir_unless_the_caller_set_one() {
+        let l = Layout::build(&LayoutInputs {
+            home: PathBuf::from("/nonexistent-home"),
+            ..Default::default()
+        });
+        assert!(l.env.contains(&("SCCACHE_DIR".into(), "/tmp/sccache".into())));
+        let l = Layout::build(&LayoutInputs {
+            home: PathBuf::from("/nonexistent-home"),
+            env: vec![("SCCACHE_DIR".into(), "/srv/sc".into())],
+            ..Default::default()
+        });
+        assert!(l.env.contains(&("SCCACHE_DIR".into(), "/srv/sc".into())));
+    }
 
     #[test]
     fn the_running_binary_is_bound_and_named() {
