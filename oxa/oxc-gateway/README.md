@@ -14,7 +14,6 @@ by the gateway; zero is refused here too.
 - `cloud-only`: catalog contracts.
 - `policy`: policy contracts.
 - `secrets`: secrets contracts.
-- `upstream-anthropic-request`: the pure request translator shared with oxc.
 
 Share one `Budget` per daily ledger path across request tasks. `reserve` locks
 spend plus outstanding holds atomically. Mark the hold forwarded before sending

@@ -114,13 +114,16 @@ impl Client {
             .map_err(|_| Error::Setup)
     }
 
-    pub async fn stream(
+    pub async fn stream<F>(
         &self,
         chat: Chat<'_>,
         key: &Key,
         cancel: &Cancellation,
-        on: &mut dyn FnMut(Event) -> Control,
-    ) -> Result<Completed, Error> {
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }

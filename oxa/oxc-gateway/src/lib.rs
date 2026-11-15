@@ -1,5 +1,9 @@
 //! Opt-in, engine-independent cloud gateway building blocks.
 #![forbid(unsafe_code)]
+#[cfg(feature = "anthropic-gateway")]
+pub mod gateway;
+#[cfg(feature = "anthropic-gateway")]
+pub use gateway::Gateway;
 #[cfg(feature = "anthropic-client")]
 pub mod anthropic_client;
 #[cfg(feature = "upstream-anthropic-request")]
