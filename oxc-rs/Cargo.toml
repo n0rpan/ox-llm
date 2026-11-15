@@ -31,3 +31,11 @@ glob = "0.3"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+# Keep the self-contained native executable within the unchanged source-payload
+# budget. The model engines are separate workspaces and retain their profiles.
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

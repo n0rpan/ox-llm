@@ -1,0 +1,13 @@
+usage: bootstrap.py [-h] [--project PROJECT] {plan,stage,verify-stage} ...
+
+Portable fresh-prefix preparation. No host install, service, build or network
+CLI. Run with ``python -m snapdragon_ai_lab.bootstrap`` from a source
+checkout. A staged bundle is NOT an end-to-end qualification or an installed
+runtime.
+
+positional arguments:
+  {plan,stage,verify-stage}
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT

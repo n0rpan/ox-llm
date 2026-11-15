@@ -1,0 +1,672 @@
+{
+  "activity": {
+    "body": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "bad-host": {
+    "body": {
+      "error": "Host not allowed"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 403
+  },
+  "duplicate-host": {
+    "body": {
+      "error": "Host not allowed"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 403
+  },
+  "engine": {
+    "body": {
+      "choices": [
+        "auto",
+        "oxi",
+        "sdcpp"
+      ],
+      "engine": "auto",
+      "labels": {
+        "auto": "auto: oxi at 512 \u00d7 512 (and sizes with a passed size gate), sd.cpp otherwise or if oxi fails",
+        "oxi": "oxi: 512 \u00d7 512 (and gated sizes) on oxi, no fallback when oxi fails (other sizes still sd.cpp)",
+        "sdcpp": "sd.cpp: every size on sd-cli (slower)"
+      },
+      "missing": [
+        "oxi",
+        "sd-cli (probe)",
+        "flux-2-klein-4b-Q8_0.gguf",
+        "Qwen3-4B-Q8_0.gguf",
+        "flux2-vae.safetensors"
+      ],
+      "note": "1024 px and other sizes stay on sd.cpp (slower); edits, refine and upscale use sd.cpp",
+      "oxi_gated_sizes": [],
+      "oxi_ready": false,
+      "oxi_sizes": [
+        "512x512"
+      ]
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "engine-bad-gate": {
+    "body": {
+      "choices": [
+        "auto",
+        "oxi",
+        "sdcpp"
+      ],
+      "engine": "auto",
+      "labels": {
+        "auto": "auto: oxi at 512 \u00d7 512 (and sizes with a passed size gate), sd.cpp otherwise or if oxi fails",
+        "oxi": "oxi: 512 \u00d7 512 (and gated sizes) on oxi, no fallback when oxi fails (other sizes still sd.cpp)",
+        "sdcpp": "sd.cpp: every size on sd-cli (slower)"
+      },
+      "missing": [],
+      "note": "1024 px and other sizes stay on sd.cpp (slower); edits, refine and upscale use sd.cpp",
+      "oxi_gated_sizes": [],
+      "oxi_ready": true,
+      "oxi_sizes": [
+        "512x512"
+      ]
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "engine-configured": {
+    "body": {
+      "choices": [
+        "auto",
+        "oxi",
+        "sdcpp"
+      ],
+      "engine": "sdcpp",
+      "labels": {
+        "auto": "auto: oxi at 512 \u00d7 512 (and sizes with a passed size gate), sd.cpp otherwise or if oxi fails",
+        "oxi": "oxi: 512 \u00d7 512 (and gated sizes) on oxi, no fallback when oxi fails (other sizes still sd.cpp)",
+        "sdcpp": "sd.cpp: every size on sd-cli (slower)"
+      },
+      "missing": [
+        "oxi",
+        "sd-cli (probe)",
+        "flux-2-klein-4b-Q8_0.gguf",
+        "Qwen3-4B-Q8_0.gguf",
+        "flux2-vae.safetensors"
+      ],
+      "note": "1024 px and other sizes stay on sd.cpp (slower); edits, refine and upscale use sd.cpp",
+      "oxi_gated_sizes": [],
+      "oxi_ready": false,
+      "oxi_sizes": [
+        "512x512"
+      ]
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "engine-invalid": {
+    "body": {
+      "error": "Engine must be auto, oxi or sdcpp"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "engine-invalid-json": {
+    "body": {
+      "error": "Invalid request"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "engine-ready": {
+    "body": {
+      "choices": [
+        "auto",
+        "oxi",
+        "sdcpp"
+      ],
+      "engine": "auto",
+      "labels": {
+        "auto": "auto: oxi at 512 \u00d7 512 (and sizes with a passed size gate), sd.cpp otherwise or if oxi fails",
+        "oxi": "oxi: 512 \u00d7 512 (and gated sizes) on oxi, no fallback when oxi fails (other sizes still sd.cpp)",
+        "sdcpp": "sd.cpp: every size on sd-cli (slower)"
+      },
+      "missing": [],
+      "note": "1024 px and other sizes stay on sd.cpp (slower); edits, refine and upscale use sd.cpp",
+      "oxi_gated_sizes": [
+        "768x768"
+      ],
+      "oxi_ready": true,
+      "oxi_sizes": [
+        "512x512"
+      ]
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "engine-set": {
+    "body": {
+      "choices": [
+        "auto",
+        "oxi",
+        "sdcpp"
+      ],
+      "engine": "sdcpp",
+      "labels": {
+        "auto": "auto: oxi at 512 \u00d7 512 (and sizes with a passed size gate), sd.cpp otherwise or if oxi fails",
+        "oxi": "oxi: 512 \u00d7 512 (and gated sizes) on oxi, no fallback when oxi fails (other sizes still sd.cpp)",
+        "sdcpp": "sd.cpp: every size on sd-cli (slower)"
+      },
+      "missing": [
+        "oxi",
+        "sd-cli (probe)",
+        "flux-2-klein-4b-Q8_0.gguf",
+        "Qwen3-4B-Q8_0.gguf",
+        "flux2-vae.safetensors"
+      ],
+      "note": "1024 px and other sizes stay on sd.cpp (slower); edits, refine and upscale use sd.cpp",
+      "oxi_gated_sizes": [],
+      "oxi_ready": false,
+      "oxi_sizes": [
+        "512x512"
+      ]
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "settings_after": {
+      "engine": "sdcpp"
+    },
+    "settings_mode": 384,
+    "status": 200
+  },
+  "get-origin": {
+    "content_type": "text/html; charset=utf-8",
+    "http_version": 10,
+    "page_bytes": 19502,
+    "page_sha256": "16e84e00c12bfb59fc46a0fabd5f200b89004b43058869b3ee5feb2bcc22da40",
+    "status": 200
+  },
+  "missing": {
+    "body": "not found",
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 404
+  },
+  "missing-host": {
+    "body": {
+      "error": "Host not allowed"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 403
+  },
+  "missing-job": {
+    "body": {
+      "error": "no such job",
+      "state": "error"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 404
+  },
+  "models": {
+    "body": {
+      "benchmarks": "",
+      "default_edit_preset": "light",
+      "edit": {
+        "default_size": 512,
+        "estimates": {
+          "512": 75.6,
+          "768": 180.9
+        },
+        "estimates_calibrated": false,
+        "models": {
+          "q4": false,
+          "q8": false
+        },
+        "ready": false,
+        "sizes": [
+          512,
+          768
+        ],
+        "steps": 4
+      },
+      "edit_presets": {
+        "light": 0.3,
+        "reimagine": 0.8,
+        "restyle": 0.55
+      },
+      "engine": {
+        "choices": [
+          "auto",
+          "oxi",
+          "sdcpp"
+        ],
+        "engine": "auto",
+        "labels": {
+          "auto": "auto: oxi at 512 \u00d7 512 (and sizes with a passed size gate), sd.cpp otherwise or if oxi fails",
+          "oxi": "oxi: 512 \u00d7 512 (and gated sizes) on oxi, no fallback when oxi fails (other sizes still sd.cpp)",
+          "sdcpp": "sd.cpp: every size on sd-cli (slower)"
+        },
+        "missing": [
+          "oxi",
+          "sd-cli (probe)",
+          "flux-2-klein-4b-Q8_0.gguf",
+          "Qwen3-4B-Q8_0.gguf",
+          "flux2-vae.safetensors"
+        ],
+        "note": "1024 px and other sizes stay on sd.cpp (slower); edits, refine and upscale use sd.cpp",
+        "oxi_gated_sizes": [],
+        "oxi_ready": false,
+        "oxi_sizes": [
+          "512x512"
+        ]
+      },
+      "gpu": {
+        "optimized": false
+      },
+      "klein": {
+        "estimate_label": "uncalibrated estimate",
+        "estimates": {
+          "1024": 201.8,
+          "512": 51.5,
+          "768": 102.5
+        },
+        "estimates_calibrated": false,
+        "models": {
+          "klein-q4": false,
+          "klein-q8": false
+        },
+        "ready": false,
+        "sizes": [
+          256,
+          1024
+        ],
+        "steps": 4
+      },
+      "presets": {
+        "draft": {
+          "height": 256,
+          "model": "q4",
+          "steps": 8,
+          "width": 256
+        },
+        "draft512": {
+          "height": 512,
+          "model": "klein-q8",
+          "steps": 4,
+          "width": 512
+        },
+        "final": {
+          "height": 1024,
+          "model": "q4",
+          "steps": 8,
+          "width": 1024
+        }
+      },
+      "q4": {
+        "download_mb": 0,
+        "ready": false
+      },
+      "q8": {
+        "download_mb": 0,
+        "ready": false,
+        "setup_state": "not downloaded"
+      },
+      "quality_ready": false,
+      "upscale": {
+        "esrgan": false,
+        "esrgan_scale": 4,
+        "esrgan_x2": false,
+        "estimates_calibrated": false,
+        "max_variations": 4,
+        "refine_strength": 0.45,
+        "refine_target": 1024,
+        "refine_targets": [
+          768,
+          1024
+        ]
+      }
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "models-populated": {
+    "body": {
+      "benchmarks": "Benchmarks: synthetic complete",
+      "default_edit_preset": "light",
+      "edit": {
+        "default_size": 512,
+        "estimates": {
+          "512": 75.6,
+          "768": 180.9
+        },
+        "estimates_calibrated": false,
+        "models": {
+          "q4": false,
+          "q8": true
+        },
+        "ready": true,
+        "sizes": [
+          512,
+          768
+        ],
+        "steps": 4
+      },
+      "edit_presets": {
+        "light": 0.3,
+        "reimagine": 0.8,
+        "restyle": 0.55
+      },
+      "engine": {
+        "choices": [
+          "auto",
+          "oxi",
+          "sdcpp"
+        ],
+        "engine": "auto",
+        "labels": {
+          "auto": "auto: oxi at 512 \u00d7 512 (and sizes with a passed size gate), sd.cpp otherwise or if oxi fails",
+          "oxi": "oxi: 512 \u00d7 512 (and gated sizes) on oxi, no fallback when oxi fails (other sizes still sd.cpp)",
+          "sdcpp": "sd.cpp: every size on sd-cli (slower)"
+        },
+        "missing": [
+          "oxi",
+          "sd-cli (probe)"
+        ],
+        "note": "1024 px and other sizes stay on sd.cpp (slower); edits, refine and upscale use sd.cpp",
+        "oxi_gated_sizes": [],
+        "oxi_ready": false,
+        "oxi_sizes": [
+          "512x512"
+        ]
+      },
+      "gpu": {
+        "models": {
+          "q8": {
+            "max_width": 512
+          }
+        },
+        "optimized": true
+      },
+      "klein": {
+        "estimate_label": "uncalibrated estimate",
+        "estimates": {
+          "1024": 201.8,
+          "512": 51.5,
+          "768": 102.5
+        },
+        "estimates_calibrated": false,
+        "models": {
+          "klein-q4": false,
+          "klein-q8": true
+        },
+        "ready": true,
+        "sizes": [
+          256,
+          1024
+        ],
+        "steps": 4
+      },
+      "presets": {
+        "draft": {
+          "height": 256,
+          "model": "q4",
+          "steps": 8,
+          "width": 256
+        },
+        "draft512": {
+          "height": 512,
+          "model": "klein-q8",
+          "steps": 4,
+          "width": 512
+        },
+        "final": {
+          "height": 1024,
+          "model": "q4",
+          "steps": 8,
+          "width": 1024
+        }
+      },
+      "q4": {
+        "download_mb": 4,
+        "ready": true
+      },
+      "q8": {
+        "download_mb": 0,
+        "ready": true,
+        "setup_state": "synthetic staged"
+      },
+      "quality_ready": true,
+      "upscale": {
+        "esrgan": true,
+        "esrgan_scale": 4,
+        "esrgan_x2": false,
+        "estimates_calibrated": false,
+        "max_variations": 4,
+        "refine_strength": 0.45,
+        "refine_target": 1024,
+        "refine_targets": [
+          768,
+          1024
+        ]
+      }
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "models-settings": {
+    "body": {
+      "benchmarks": "",
+      "default_edit_preset": "light",
+      "edit": {
+        "default_size": 512,
+        "estimates": {
+          "512": 62.5,
+          "768": 115.6
+        },
+        "estimates_calibrated": true,
+        "models": {
+          "q4": false,
+          "q8": false
+        },
+        "ready": false,
+        "sizes": [
+          512,
+          768
+        ],
+        "steps": 4
+      },
+      "edit_presets": {
+        "light": 0.3,
+        "reimagine": 0.8,
+        "restyle": 0.55
+      },
+      "engine": {
+        "choices": [
+          "auto",
+          "oxi",
+          "sdcpp"
+        ],
+        "engine": "auto",
+        "labels": {
+          "auto": "auto: oxi at 512 \u00d7 512 (and sizes with a passed size gate), sd.cpp otherwise or if oxi fails",
+          "oxi": "oxi: 512 \u00d7 512 (and gated sizes) on oxi, no fallback when oxi fails (other sizes still sd.cpp)",
+          "sdcpp": "sd.cpp: every size on sd-cli (slower)"
+        },
+        "missing": [
+          "oxi",
+          "sd-cli (probe)",
+          "flux-2-klein-4b-Q8_0.gguf",
+          "Qwen3-4B-Q8_0.gguf",
+          "flux2-vae.safetensors"
+        ],
+        "note": "1024 px and other sizes stay on sd.cpp (slower); edits, refine and upscale use sd.cpp",
+        "oxi_gated_sizes": [],
+        "oxi_ready": false,
+        "oxi_sizes": [
+          "512x512"
+        ]
+      },
+      "gpu": {
+        "optimized": false
+      },
+      "klein": {
+        "estimate_label": "estimate",
+        "estimates": {
+          "1024": 103.9,
+          "512": 41.0,
+          "768": 67.2
+        },
+        "estimates_calibrated": true,
+        "models": {
+          "klein-q4": false,
+          "klein-q8": false
+        },
+        "ready": false,
+        "sizes": [
+          256,
+          1024
+        ],
+        "steps": 4
+      },
+      "presets": {
+        "draft": {
+          "expected_seconds": 1.5,
+          "height": 512,
+          "model": "q8",
+          "steps": 8,
+          "width": 512
+        },
+        "draft512": {
+          "height": 512,
+          "model": "klein-q4",
+          "steps": 4,
+          "width": 768
+        },
+        "final": {
+          "height": 1024,
+          "model": "q4",
+          "steps": 8,
+          "width": 1024
+        }
+      },
+      "q4": {
+        "download_mb": 0,
+        "ready": false
+      },
+      "q8": {
+        "download_mb": 0,
+        "ready": false,
+        "setup_state": "not downloaded"
+      },
+      "quality_ready": false,
+      "upscale": {
+        "esrgan": false,
+        "esrgan_scale": 2.0,
+        "esrgan_x2": false,
+        "estimates_calibrated": true,
+        "max_variations": 4,
+        "refine_strength": 0.5,
+        "refine_target": 1280,
+        "refine_targets": [
+          768,
+          1024,
+          1280
+        ]
+      }
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "page": {
+    "content_type": "text/html; charset=utf-8",
+    "http_version": 10,
+    "page_bytes": 19502,
+    "page_sha256": "16e84e00c12bfb59fc46a0fabd5f200b89004b43058869b3ee5feb2bcc22da40",
+    "status": 200
+  },
+  "post-bad-length": {
+    "body": {
+      "error": "bad length"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "post-duplicate-origin": {
+    "body": {
+      "error": "Cross-origin request refused"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 403
+  },
+  "post-duplicate-site": {
+    "body": {
+      "error": "Cross-origin request refused"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 403
+  },
+  "post-missing": {
+    "body": "not found",
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 404
+  },
+  "post-negative-length": {
+    "body": {
+      "error": "request too large"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 413
+  },
+  "post-origin": {
+    "body": {
+      "error": "Cross-origin request refused"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 403
+  },
+  "post-oversized": {
+    "body": {
+      "error": "request too large"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 413
+  },
+  "post-same-origin": {
+    "body": "not found",
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 404
+  },
+  "post-site": {
+    "body": {
+      "error": "Cross-origin request refused"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 403
+  }
+}

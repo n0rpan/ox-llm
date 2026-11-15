@@ -1,0 +1,15 @@
+usage: bootstrap.py stage [-h] --target-home TARGET_HOME
+                          [--image-model {flux2-klein,z-image}]
+                          [--oxa-binary OXA_BINARY]
+                          destination
+
+positional arguments:
+  destination
+
+options:
+  -h, --help            show this help message and exit
+  --target-home TARGET_HOME
+  --image-model {flux2-klein,z-image}
+                        default: flux2-klein; z-image is an explicit opt-in
+  --oxa-binary OXA_BINARY
+                        a built oxa binary to install as ~/.local/bin/oxa

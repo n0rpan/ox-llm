@@ -27,8 +27,24 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite covers 573 scenarios in 76
+suite covers 630 scenarios in 97
 unittest methods.
+
+Native bootstrap/install passes 34 scenarios in 24 methods: pinned asset plans,
+model-free native bundles, installed help and service startup, create-only file
+transactions, hash/inode-bound journals and rollback, owner edits, canonical lease
+preservation, refusals and Python/Rust journal interoperability. The inference
+lease remains held through offline agent identity refresh and child cleanup.
+Release size optimization keeps the executable inside the unchanged 8 MiB
+payload bound. Bundles include no Python runtime; the two ExecStart lines become
+`local-ai serve` and `local-ai studio`, with every other unit byte checked against
+the original snapshots. Installation starts no service and enables no qualification.
+
+Twenty-seven Studio cases cover the unchanged frontend, HTTP/1.0 and private
+request gates, model metadata, settings, metadata estimates, executable readiness and
+hash-bound size-gate consumption. Fixtures use placeholder files and executables;
+no image engine or model runs. HTTP estimates, uploads, files, jobs, generation planners, pixel
+operations and image-slot/engine adapters remain pending.
 
 Thirty-eight receipt-tool cases cover the native scanner, exporter and scrubber:
 reference rules/order, machine identifiers and explicit exemptions, Unicode line
@@ -157,14 +173,14 @@ an idle model and refuse an active request; the synthetic engine verifies the
 new context reaches its launch arguments. This is fixture validation only.
 
 Complete status/control state and failure provenance, optional turn diagnostics, PrefixStore lookup/save,
-qualified Flash/classic and execution-override profiles, installers,
+qualified Flash/classic and execution-override profiles, transfer/build flows,
 generated runtime materialization, sharing/cloud secrets and further CLI edges are pending.
 Automatic native engine-ledger capture passes twelve reference cases: profile
 opt-in, a dedicated inherited pipe, numeric/enum filtering, bounded lines,
 stdout isolation, private rotation, advisory storage failures and unload/reload
 drain. Engine stdin remains `/dev/null`, and no unsafe Rust is used. Flash/classic
 profiles remain ineligible while their qualification adapters are missing. Full
-Rust conformance fails; no installation switch or hardware readiness is claimed.
+product parity remains incomplete; no installation switch or hardware readiness is claimed.
 
 Run the complete black-box suite to see the remaining differences:
 
@@ -175,6 +191,7 @@ OXC_BOOTSTRAP_COMMAND='/absolute/path/to/oxc __bootstrap' \
 OXC_INSTALL_COMMAND='/absolute/path/to/oxc __install' \
 OXC_EXPORT_RECEIPT_COMMAND='/absolute/path/to/oxc __export_receipt' \
 OXC_SCRUB_RECEIPTS_COMMAND='/absolute/path/to/oxc __scrub_receipts' \
+OXC_STUDIO_COMMAND='/absolute/path/to/oxc studio' \
 python3 -m unittest discover -s conformance -v
 ```
 

@@ -1,0 +1,10 @@
+usage: bootstrap_install.py apply [-h] --stage STAGE --target-home TARGET_HOME
+                                  --journal JOURNAL --stage-manifest-sha256
+                                  STAGE_MANIFEST_SHA256
+
+options:
+  -h, --help            show this help message and exit
+  --stage STAGE
+  --target-home TARGET_HOME
+  --journal JOURNAL
+  --stage-manifest-sha256 STAGE_MANIFEST_SHA256

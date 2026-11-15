@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
-Reference: main `2e8209c9b276b767d4603d6822f902ddd0537b19`.
-The current suite covers 573 scenarios in 76 unittest methods. This remains a
+Reference: main `f8c482ea3936774c0eb6310cfe1d8e5415ae67e8`.
+The current suite covers 630 scenarios in 97 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -59,8 +59,8 @@ OXC_DAEMON_COMMAND='/absolute/path/to/oxc serve' \
 python3 -m unittest discover -s conformance -v
 ```
 
-Those two overrides exercise the controller and runtime CLI. Bootstrap/install
-and receipt tools have separate command overrides; leaving them unset runs the
+Those two overrides exercise the controller and runtime CLI. Bootstrap/install,
+Studio and receipt tools have separate command overrides; leaving them unset runs the
 Python reference for those components. To check the native helper
 entry points explicitly, also set:
 
@@ -71,11 +71,15 @@ OXC_BOOTSTRAP_COMMAND='/absolute/path/to/oxc __bootstrap' \
 OXC_INSTALL_COMMAND='/absolute/path/to/oxc __install' \
 OXC_EXPORT_RECEIPT_COMMAND='/absolute/path/to/oxc __export_receipt' \
 OXC_SCRUB_RECEIPTS_COMMAND='/absolute/path/to/oxc __scrub_receipts' \
+OXC_STUDIO_COMMAND='/absolute/path/to/oxc studio' \
 python3 -m unittest discover -s conformance -v
 ```
 
-The native receipt helpers pass all 38 cases. Bootstrap/install remains pending;
-its four scenarios still fail with explicit native overrides.
+The captured native helper cases pass with those explicit overrides. This is a
+partial contract suite; complete runtime parity and hardware readiness remain unfinished.
+Bootstrap's native bundle changes only the two service ExecStart lines to
+`local-ai serve` and `local-ai studio`; separate unit snapshots assert every
+other byte remains unchanged. Installation stays unqualified and starts no services.
 
 The daemon command must use the existing `LOCAL_LLM_PORT`, `LOCAL_LLM_CONFIG`,
 `LOCAL_AI_LEASE` and XDG settings. `serve` above is illustrative; its final public
@@ -119,6 +123,7 @@ python3 conformance/test_share_live.py --record-python
 python3 conformance/test_share_network.py --record-python
 python3 conformance/test_share_io.py --record-python
 python3 conformance/test_scans.py --record-python
+python3 conformance/test_studio.py --record-python
 python3 conformance/test_update.py --record-python
 python3 conformance/test_uninstall.py --record-python
 ```
@@ -157,7 +162,8 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Files | PASS, 3 tests | PASS: config and ledger Python/Rust/Python, API-key refresh/fail-closed | Additional state stores and sharing secrets |
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |
-| Bootstrap/install | PASS, 4 scenarios | Not implemented | Transfer/build/install-journal edge cases |
+| Bootstrap/install | PASS, 34 scenarios / 24 methods | PASS: pinned plans, native bundle, installed help and both services, unchanged 8 MiB bound, create-only transactions, journals, leases, owner edits, refusals, agent refresh and Python/Rust rollback | Transfer/build flows, interruption and more filesystem races |
+| Studio | PASS, 27 cases | PASS: unchanged page, HTTP/1.0, Host/Origin/body gates, model metadata, settings and metadata estimates, executable readiness and hash-bound size-gate consumption | HTTP estimate/upload/file/job routes, generation planners, pixel operations, image-slot IPC and native engine adapters |
 | Staged update/rollback | PASS, 15 scenarios / 22 CLI goldens | PASS: generic manifest transactions, sealed/bound hashes, exact restore, created/removed files, private state, receipts, positive identity, agent refresh and owner-edit refusal/recovery | Generated runtime materialization, interruptions and more filesystem races |
 | Uninstall | PASS, 27 cases plus original empty-install CLI cases | PASS: exact journal/stage records, hash/owner-edit protection, dry-run/apply, positive stops/restoration, models kept by default, explicit model deletion, symlinks/parent escape, private-home refusal and partial failures | More concurrent record/filesystem changes and filesystem failure cases |
 | Shipped scans | PASS, 38 cases | PASS: rules/order, machine words, exemptions, Unicode limits, generated trees, structured redaction/hashes, numeric values, directories, refusal before writing and layout-preserving scrubbing | More malformed inputs and filesystem races |
@@ -168,15 +174,15 @@ belongs to the owner's lane.
 
 At this reference SHA there is no cloud gateway implementation in the runtime:
 Wave D in AGENTS.md describes future work. Cloud provider/budget tests cannot yet
-be validated against Python. This remains an explicit baseline gap; neither
-cloud conformance nor full suite completion is claimed.
+be validated against Python. This remains an explicit baseline gap; complete
+cloud parity is not claimed.
 
 Bootstrap contracts use the real source payload in a throwaway prefix, compare
 complete unit text, execute installed CLI help without PYTHONPATH, and verify
 hash-bound rollback plus refusal for altered identity, collisions and symlinks.
-Python's current unit invokes `/usr/bin/python3`; replacing that ExecStart with
-the native entry point will need a documented migration delta while retaining
-its service name, paths, resource limits and hardening settings.
+Python's original units invoke `/usr/bin/python3`. The native snapshots change
+only ExecStart to the serve/studio entries, retaining every other byte of the
+service names, paths, resource limits and hardening settings.
 
 Helper entry points can be replaced independently when the native implementation
 provides them. Each override is a shell command string parsed with shlex:
@@ -187,6 +193,7 @@ provides them. Each override is a shell command string parsed with shlex:
 | `OXC_INSTALL_COMMAND` | `python3 -m snapdragon_ai_lab.bootstrap_install` |
 | `OXC_EXPORT_RECEIPT_COMMAND` | `python3 lab/tools/export_receipt.py` |
 | `OXC_SCRUB_RECEIPTS_COMMAND` | `python3 lab/tools/scrub_receipts.py` |
+| `OXC_STUDIO_COMMAND` | `python3 lab/src/snapdragon_ai_lab/runtime/studio` |
 
 Runtime CLI commands passed in overrides should be outside `/home` and `/tmp`,
 which are private mounts in these tests (a build under the checkout works).

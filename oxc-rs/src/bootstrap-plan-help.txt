@@ -1,0 +1,8 @@
+usage: bootstrap.py plan [-h] --target-home TARGET_HOME
+                         [--image-model {flux2-klein,z-image}]
+
+options:
+  -h, --help            show this help message and exit
+  --target-home TARGET_HOME
+  --image-model {flux2-klein,z-image}
+                        default: flux2-klein; z-image is an explicit opt-in

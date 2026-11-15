@@ -1,0 +1,12 @@
+usage: bootstrap_install.py [-h] {apply,rollback} ...
+
+Create-only source-payload transaction for an explicit sandbox target HOME.
+This step never installs into the current user's HOME, starts services,
+changes a live panel layout, downloads models or enables
+qualification/readiness flags.
+
+positional arguments:
+  {apply,rollback}
+
+options:
+  -h, --help        show this help message and exit

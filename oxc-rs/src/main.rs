@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod bootstrap;
+mod bootstrap_install;
 mod catalog;
 mod cli;
 mod cli_status;
@@ -27,12 +29,14 @@ mod share_tls;
 mod sharing;
 mod state_cache;
 mod storage;
+mod studio;
 mod transport;
 mod uninstall;
 
 fn main() {
     let words: Vec<String> = std::env::args().skip(1).collect();
     match words.first().map(String::as_str) {
+        Some("__bootstrap") => std::process::exit(bootstrap::cli(&words[1..])),
         Some("__export_receipt") => std::process::exit(receipt_tools::export_cli(&words[1..])),
         Some("__scrub_receipts") => std::process::exit(receipt_tools::scrub_cli(&words[1..])),
         _ => {}
@@ -98,7 +102,7 @@ fn main() {
         eprintln!("local-ai: engine exec failed: {error}");
         std::process::exit(1);
     }
-    if words.first().map(String::as_str) == Some("serve") {
+    if matches!(words.first().map(String::as_str), Some("serve" | "studio")) {
         if let Err(error) =
             nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_CORE, 0, 0)
         {
@@ -115,7 +119,11 @@ fn main() {
 
 async fn run() {
     let words: Vec<String> = std::env::args().skip(1).collect();
-    let code = if words.first().map(String::as_str) == Some("serve") {
+    let code = if words.first().map(String::as_str) == Some("__install") {
+        bootstrap_install::cli(&words[1..]).await
+    } else if words.first().map(String::as_str) == Some("studio") {
+        studio::run().await
+    } else if words.first().map(String::as_str) == Some("serve") {
         daemon::run().await
     } else {
         match cli::parse(&words) {

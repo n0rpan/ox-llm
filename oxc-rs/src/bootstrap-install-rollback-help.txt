@@ -1,0 +1,7 @@
+usage: bootstrap_install.py rollback [-h] --journal JOURNAL --journal-sha256
+                                     JOURNAL_SHA256
+
+options:
+  -h, --help            show this help message and exit
+  --journal JOURNAL
+  --journal-sha256 JOURNAL_SHA256

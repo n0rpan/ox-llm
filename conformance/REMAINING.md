@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `2e8209c9b276b767d4603d6822f902ddd0537b19`.
+Reference main: `f8c482ea3936774c0eb6310cfe1d8e5415ae67e8`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -36,8 +36,11 @@ The following gaps remain visible rather than being represented by skipped tests
 - Lifecycle: pressure-based keep-warm, crashed engine/reaper recovery, host
   admission/memory guard variants, queue/replay flags, background preemption,
   CPU pinning and Flash-specific launch adapters/capabilities.
-- Images: the CLI dispatch is covered; the shipped controller's image-slot IPC
-  and related runtime paths need contracts without SDK, device or model content.
+- Images: 27 Studio contracts now cover the unchanged page, HTTP/1.0, request
+  gates, model metadata, settings and metadata estimates, executable readiness and hash-bound
+  size-gate consumption. HTTP estimate/upload/file/job routes, generation planners, pixel
+  operations, controller image-slot IPC and engine adapters still need contracts
+  without SDK, device or model content.
 - CLI: extend malformed metadata, argument combinations and filesystem failures;
   extend populated ledger/digest, valid cache status, sharing keys and offline
   failures. Fifteen desktop/model dispatch cases now cover detached sessions,
@@ -50,8 +53,11 @@ The following gaps remain visible rather than being represented by skipped tests
   and shared harness facts. Detailed failure provenance and additional status
   fields remain pending, along with the Flash/classic qualification adapters.
 - Bootstrap: source transfer/build/check flows need loopback fixtures, never a
-  model download or real API call. Current tests cover source-payload staging,
-  installation, unit text, installed help and rollback/refusal cases.
+  model download or real API call. Native staging/install/rollback now covers 34
+  scenarios: pinned plans, native bundles, exact unit controls, installed help and
+  both service entries, the unchanged 8 MiB bound, create-only transactions,
+  canonical lease preservation, owner edits, refusals, offline agent refresh and
+  Python/Rust journal reads. Further interruption and filesystem races remain.
 - Updates: generated runtime materialization, interruption recovery and additional
   filesystem/service races. Fifteen scenarios (22 CLI snapshots) now pass for
   generic manifest transactions, sealed/bound hashes, exact restore, created and
@@ -71,9 +77,10 @@ The following gaps remain visible rather than being represented by skipped tests
   directory inputs, refusal before writing and layout-preserving scrubbing.
   Never add real secrets or SDK
   content, split strings to evade scanners, or weaken existing scans/exclusions.
-- Installation units: Python ExecStart must become a native entry point while
-  preserving names/paths/resource and hardening controls. Document the necessary
-  executor change; do not silently relax unit comparisons.
+- Installation units: the two ExecStart lines become native serve/studio entry
+  points. Separate snapshots verify every other byte, including names, paths,
+  resources and hardening controls. Bundles remain unqualified; no service starts
+  during installation. Complete Studio behavior and transfer/build remain pending.
 
 Continue `oxc-rs/` (safe Rust, Tokio plus axum) area by area against this same
 suite. The owner authorized starting implementation while conformance/CI are
@@ -93,7 +100,7 @@ run/review, mark ready deliberately or dispatch checks.yml once for the branch.
 The merge queue runs full integration CI again. If waiting is needed, use one
 blocking gh pr checks --watch; never poll CI status.
 
-Next implementation step: native bootstrap/install and generated materialization. Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
+Next implementation step: complete Studio/image contracts and generated materialization. Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
 filtering, stored days, private writes, trend/soak thresholds, stale status, dates,
 installed versions and file interoperability. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
