@@ -553,3 +553,13 @@ fn tab_with_one_candidate_applies_it() {
     assert_eq!(t.text(), "src/main.rs");
     assert!(!t.e.autocomplete_open());
 }
+
+/// restoring queued messages in front of the draft keeps a pasted block's content
+#[test]
+fn prepend_text_keeps_paste_content() {
+    let big = big_paste();
+    let mut t = Ed::new();
+    t.e.paste_text(&big);
+    t.e.prepend_text("queued");
+    assert_eq!(t.e.expanded_text(), format!("queued\n\n{big}"));
+}
