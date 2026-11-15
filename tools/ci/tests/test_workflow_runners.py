@@ -108,7 +108,7 @@ class WorkflowRunners(unittest.TestCase):
             self.assertTrue(problems('x.yml', text), image)
         text = 'jobs:\n  a:\n    strategy:\n      matrix:\n        r: [ubuntu-latest]\n    runs-on: ${{ matrix.r }}\n'
         self.assertTrue(problems('x.yml', text))
-        expr = RUNNER_EXPRESSION.replace("'ubuntu-latest'", "'ubuntu-24.04'")
+        expr = RUNNER_EXPRESSION.replace("|| 'ubuntu-24.04' }}", "|| 'ubuntu-22.04' }}")
         self.assertTrue(problems('x.yml', f'jobs:\n  a:\n    runs-on: {expr}\n'))
 
     def test_accepts_arm_and_expression(self):
