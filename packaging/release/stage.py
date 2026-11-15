@@ -27,22 +27,22 @@ for workspace in ('oxc', 'oxc-rs'):
                 if target.exists():
                     raise SystemExit('duplicate binary: ' + binary.name)
                 shutil.copy2(binary, target)
-lab = dest / 'usr/share/ox-llm/lab'
-shutil.copytree(root / 'lab', lab, ignore=shutil.ignore_patterns(
+oxc = dest / 'usr/share/ox-llm/oxc'
+shutil.copytree(root / 'oxc', oxc, ignore=shutil.ignore_patterns(
     '__pycache__', '*.pyc', '*.egg-info', '.venv', 'build', 'dist',
     'tests', 'tools', 'benchmarks', 'experiments'))
 # Preserve the runtime script and sibling Python modules exactly as the bootstrap
 # installer consumes them. Alias the command without renaming product modules.
 wrapper = dest / 'usr/bin/oxc'
 if not wrapper.exists():
-    wrapper.write_text('#!/bin/sh\nexec /usr/bin/python3 -B /usr/share/ox-llm/lab/src/snapdragon_ai_lab/runtime/local-ai "$@"\n')
+    wrapper.write_text('#!/bin/sh\nexec /usr/bin/python3 -B /usr/share/ox-llm/oxc/src/oxc/runtime/oxc "$@"\n')
     wrapper.chmod(0o755)
-wrapper = dest / 'usr/bin/snapdragon-ai-lab'
-wrapper.write_text('#!/bin/sh\nPYTHONPATH=/usr/share/ox-llm/lab/src exec /usr/bin/python3 -B -m snapdragon_ai_lab "$@"\n')
+wrapper = dest / 'usr/bin/oxc'
+wrapper.write_text('#!/bin/sh\nPYTHONPATH=/usr/share/ox-llm/oxc/src exec /usr/bin/python3 -B -m oxc "$@"\n')
 wrapper.chmod(0o755)
 licenses = dest / 'usr/share/licenses/ox-llm'
 licenses.mkdir(parents=True)
-for product in ('engine', 'oxa', 'lab'):
+for product in ('engine', 'oxa', 'oxc'):
     for name in ('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES', 'LICENSE-QuickJS.txt', 'LICENSE-TLS.txt', 'LICENSE-syntect.txt'):
         source = root / product / name
         if source.is_file():

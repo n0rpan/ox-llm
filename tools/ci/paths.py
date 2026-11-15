@@ -13,10 +13,10 @@ def documentation(path):
         return False
     if len(parts) == 1:
         return parts[0] in ('README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'AGENTS.md', 'SECURITY.md')
-    if parts[0] == 'docs' or (len(parts) >= 3 and parts[0] in ('oxa', 'engine', 'lab')
+    if parts[0] == 'docs' or (len(parts) >= 3 and parts[0] in ('oxa', 'engine', 'oxc')
                               and parts[1] == 'docs'):
         return True
-    return len(parts) == 2 and parts[0] in ('oxa', 'engine', 'lab') and parts[1] in (
+    return len(parts) == 2 and parts[0] in ('oxa', 'engine', 'oxc') and parts[1] in (
         'README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'AGENTS.md', 'SECURITY.md')
 
 
@@ -27,7 +27,7 @@ def classify(paths, full_event=False):
     for path in paths:
         if documentation(path):
             continue
-        component = path.split('/', 1)[0]
+        component = {'oxc': 'lab'}.get(path.split('/', 1)[0], path.split('/', 1)[0])  # dir oxc/ is the lab component (job id kept)
         if component in changed:
             changed[component] = True
         else:
