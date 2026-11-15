@@ -36,8 +36,7 @@ pub(crate) async fn run(args: &Args) -> i32 {
             let Some(name) = args.value("--harness").filter(|name| plain_name(name)) else {
                 return 2;
             };
-            if command("systemctl", &["--user", "start", "local-ai-chat.service"]).await != Some(0)
-            {
+            if command("systemctl", &["--user", "start", "oxc-chat.service"]).await != Some(0) {
                 return 1;
             }
             i32::from(
@@ -66,10 +65,9 @@ pub(crate) async fn run(args: &Args) -> i32 {
         }
         "load" | "unload" => {
             if args.action == "load"
-                && command("systemctl", &["--user", "start", "local-ai-chat.service"]).await
-                    != Some(0)
+                && command("systemctl", &["--user", "start", "oxc-chat.service"]).await != Some(0)
             {
-                notify("The local chat service could not start. Details: journalctl --user -u local-ai-chat.").await;
+                notify("The local chat service could not start. Details: journalctl --user -u oxc-chat.").await;
                 return 1;
             }
             let (code, body) = request_timeout(
@@ -86,7 +84,7 @@ pub(crate) async fn run(args: &Args) -> i32 {
                 if code == 409 || code == 503 {
                     "A model is working. Try again when it finishes."
                 } else {
-                    "The local model service is not answering. Run `local-ai status` to see why."
+                    "The local model service is not answering. Run `oxc status` to see why."
                 },
             );
             notify(&message).await;
@@ -105,9 +103,8 @@ pub(crate) async fn run(args: &Args) -> i32 {
             1
         }
         "storage-delete" => {
-            if command("systemctl", &["--user", "start", "local-ai-chat.service"]).await != Some(0)
-            {
-                notify("The local chat service could not start. Details: journalctl --user -u local-ai-chat.").await;
+            if command("systemctl", &["--user", "start", "oxc-chat.service"]).await != Some(0) {
+                notify("The local chat service could not start. Details: journalctl --user -u oxc-chat.").await;
                 return 1;
             }
             let Some(id) = args.value("--id").filter(|id| storage_id(id)) else {

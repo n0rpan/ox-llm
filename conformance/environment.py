@@ -10,7 +10,7 @@ SECONDARY = 'qwen3.6-35b-a3b-local'
 def isolated_env(home):
     env = {'HOME': str(home), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
            'LC_ALL': 'C.UTF-8', 'TERM': 'dumb', 'COLUMNS': '80',
-           'PYTHONPATH': str(ROOT / 'lab/src')}
+           'PYTHONPATH': str(ROOT / 'oxc/src')}
     for key, subdir in (('XDG_CONFIG_HOME', 'config'), ('XDG_STATE_HOME', 'state'),
                         ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache'),
                         ('XDG_RUNTIME_DIR', 'run')):

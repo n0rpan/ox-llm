@@ -2,7 +2,7 @@
   "ambiguity-after-separator-is-positional": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "ambiguous-h": {
     "exit": 2,
@@ -267,7 +267,7 @@
   "space-negative-id": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "space-negative-limit": {
     "exit": 2,
@@ -291,87 +291,87 @@
   },
   "uninstall-ambiguous-r": {
     "exit": 2,
-    "stderr": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\nlocal-ai uninstall: error: ambiguous option: --r could match --remove-models, --record\n",
+    "stderr": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\noxc uninstall: error: ambiguous option: --r could match --remove-models, --record\n",
     "stdout": ""
   },
   "uninstall-help-before-later-ambiguity": {
     "exit": 0,
     "stderr": "",
-    "stdout": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\n\nRemove ox-llm from this user account (dry run unless --apply).\n\noptions:\n  -h, --help       show this help message and exit\n  --apply          actually remove (default: print the plan)\n  --remove-models  also delete the model files runtime.json names\n  --record PATH    an extra install record: a stage manifest.json or a\n                   bootstrap install journal\n  --json           machine-readable output\n"
+    "stdout": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\n\nRemove ox-llm from this user account (dry run unless --apply).\n\noptions:\n  -h, --help       show this help message and exit\n  --apply          actually remove (default: print the plan)\n  --remove-models  also delete the model files runtime.json names\n  --record PATH    an extra install record: a stage manifest.json or a\n                   bootstrap install journal\n  --json           machine-readable output\n"
   },
   "uninstall-help-explicit": {
     "exit": 2,
-    "stderr": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\nlocal-ai uninstall: error: argument -h/--help: ignored explicit argument 'synthetic'\n",
+    "stderr": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\noxc uninstall: error: argument -h/--help: ignored explicit argument 'synthetic'\n",
     "stdout": ""
   },
   "uninstall-missing-record": {
     "exit": 2,
-    "stderr": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\nlocal-ai uninstall: error: argument --record: expected one argument\n",
+    "stderr": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\noxc uninstall: error: argument --record: expected one argument\n",
     "stdout": ""
   },
   "uninstall-short-help-attached": {
     "exit": 0,
     "stderr": "",
-    "stdout": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\n\nRemove ox-llm from this user account (dry run unless --apply).\n\noptions:\n  -h, --help       show this help message and exit\n  --apply          actually remove (default: print the plan)\n  --remove-models  also delete the model files runtime.json names\n  --record PATH    an extra install record: a stage manifest.json or a\n                   bootstrap install journal\n  --json           machine-readable output\n"
+    "stdout": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\n\nRemove ox-llm from this user account (dry run unless --apply).\n\noptions:\n  -h, --help       show this help message and exit\n  --apply          actually remove (default: print the plan)\n  --remove-models  also delete the model files runtime.json names\n  --record PATH    an extra install record: a stage manifest.json or a\n                   bootstrap install journal\n  --json           machine-readable output\n"
   },
   "uninstall-unknown-then-help": {
     "exit": 0,
     "stderr": "",
-    "stdout": "usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]\n                          [--json]\n\nRemove ox-llm from this user account (dry run unless --apply).\n\noptions:\n  -h, --help       show this help message and exit\n  --apply          actually remove (default: print the plan)\n  --remove-models  also delete the model files runtime.json names\n  --record PATH    an extra install record: a stage manifest.json or a\n                   bootstrap install journal\n  --json           machine-readable output\n"
+    "stdout": "usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]\n\nRemove ox-llm from this user account (dry run unless --apply).\n\noptions:\n  -h, --help       show this help message and exit\n  --apply          actually remove (default: print the plan)\n  --remove-models  also delete the model files runtime.json names\n  --record PATH    an extra install record: a stage manifest.json or a\n                   bootstrap install journal\n  --json           machine-readable output\n"
   },
   "valid-arabic-decimal": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-big-integer": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-devanagari-underscore": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-explicit-negative-underscore": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-fullwidth-signed": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-interpreter-digit-limit": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-negative-unicode": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-surrounding-whitespace": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-underscores": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "valid-unicode-whitespace": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   },
   "version-before-later-ambiguity": {
     "exit": 0,
     "stderr": "",
-    "stdout": "local-ai 0.2.0\n"
+    "stdout": "oxc 0.2.0\n"
   }
 }

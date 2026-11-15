@@ -117,7 +117,7 @@ pub(crate) async fn notify(message: &str) {
         .await
         .is_none()
     {
-        eprintln!("local-ai: {message}");
+        eprintln!("oxc: {message}");
     }
 }
 pub(crate) fn reason(body: &Value, fallback: &str) -> String {
