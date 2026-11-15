@@ -10,19 +10,35 @@ artifact transfers and aggregate gate after this change.
 
 | Full-gate measurement | Before, median of 3 | After, median of 3 |
 |---|---:|---:|
-| oxa required test gate | 28m 48s | Pending hosted measurements |
-| oxa test compilation | 19m 03s | Pending hosted measurements |
+| oxa required test gate | 28m 48s | 5m 16s |
+| oxa test compilation | 19m 03s | 1m 37s |
 | extra parity invocation | 4m 04s | Removed duplicate invocation |
-| MoE engine job | 11m 56s | Pending hosted measurements |
-| Flash engine job | 8m 31s | Pending hosted measurements |
-| lab job | 7m 16s | Pending hosted measurements |
-| clippy job | 1m 51s | Pending hosted measurements |
-| production ARM64 oxa build | 1m 09s | Pending hosted measurements |
+| MoE engine job | 11m 56s | 11m 52s |
+| Flash engine job | 8m 31s | 7m 55s |
+| lab job | 7m 16s | 7m 14s |
+| clippy job | 1m 51s | 1m 40s |
+| production ARM64 oxa build | 1m 09s | 1m 12s |
 
 Old oxa cache results in those runs: **0/3 exact hits**, **2/3 successful prefix restores**.
 The failed restore still spent time looking up the old prefix. The compile step then took
 18m 52s, 19m 35s and 19m 03s. Cache transport success did not mean a useful test build was reused.
-New cache exact-hit outputs and three hosted after runs are required before claiming the target.
+The three successful after runs are
+[43681205618](https://github.com/oxstack/ox-llm/actions/runs/43681205618),
+[43682202613](https://github.com/oxstack/ox-llm/actions/runs/43682202613), and
+[43685496974](https://github.com/oxstack/ox-llm/actions/runs/43685496974).
+Their oxa paths were 6m20s, 5m16s and 4m25s (archive job plus slower worker plus aggregate).
+The longest full-gate job was MoE: 11m52s, 11m02s and 12m03s, median **11m52s**.
+This meets the 10–12 minute target for active execution; runner queue waits and scheduling
+gaps are excluded, so it is not a promise of submission-to-green time under saturation.
+The compilation row measures child-binary/archive compilation; separate retained doctests
+had a median 50s, included in the oxa path. All three runs passed the complete 2,758-test
+inventory with mandatory bwrap, three existing static ignores and zero runtime skips.
+
+Across the six Rust cache jobs, exact hits were **0/6 cold**, **6/6 warm**, and **3/6 after
+source/config changes**: **9/18 overall (50%)**, or **9/12 after the cold run (75%)**.
+The third run's three misses restored compatible dependency prefixes; source changes still
+trigger Cargo freshness checks. These are same-branch measurements, not a claimed cross-PR
+hit rate. Cache transport success alone is not counted as an exact hit.
 Local validation: all 2,758 inventoried tests passed across two archived partitions with mandatory
 bwrap and zero runtime skips; the three opt-in ignores were retained. Both partitions together
 matched the inventory exactly. The partitions took 98.5s and 88.7s locally; these are not hosted
@@ -90,4 +106,9 @@ its notice follows `AgentSettled` in the same FIFO, and exporting does not add a
 The existing controls/navigation assertions and deadlines remain. Both flows retain the
 explicit mock gap, and all 18 daily-driver tests pass locally. This is synchronization,
 not a retry, timeout increase or removed test. The failed attempt remains part of the audit
-record; a full hosted confirmation of the final harness is required.
+record; the third successful sample confirms the final harness.
+
+After measurement, main merged B2. The real workflow conflict was resolved by retaining the
+archive/shard implementation and removing the retired `OXA_PARITY_PROFILE` environment
+variable. A separate full run validates that composition; the timing samples above precede
+that feature deletion and are not presented as measurements of a smaller test inventory.
