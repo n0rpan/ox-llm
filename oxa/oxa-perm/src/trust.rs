@@ -55,6 +55,7 @@ impl TrustStore {
     /// exists but is not a valid trust store is an error and is left untouched.
     pub fn save(&mut self, file: &Path, dir: &Path, trusted: bool) -> Result<(), OxaError> {
         let key = key_for(dir);
+        let _lock = lock_file(file)?;
         let mut entries = read_entries(file)?;
         entries.retain(|(existing, _)| *existing != key);
         entries.push((key, trusted));
@@ -98,6 +99,7 @@ impl TrustStore {
     /// B4: record the current content of the executable project files of `cwd` as approved
     /// (an explicit approval of the user, or the first record of a trusted project).
     pub fn approve(&mut self, file: &Path, cwd: &Path) -> Result<(), OxaError> {
+        let _lock = lock_file(file)?;
         let entries = read_entries(file)?;
         let mut approved = read_approved(file);
         approved.insert(key_string(cwd), manifest(cwd));
@@ -187,17 +189,20 @@ pub fn approval_files(cwd: &Path) -> Vec<PathBuf> {
 }
 
 /// Every regular file below `dir` (symlinks are not followed: a link is hashed as its target
-/// path).
+/// path). Iterative with no depth limit, so approval covers every file the loaders can find.
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        match e.file_type() {
-            Ok(t) if t.is_dir() => walk(&p, out),
-            Ok(_) => out.push(p),
-            Err(_) => {}
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(p),
+                Ok(_) => out.push(p),
+                Err(_) => {}
+            }
         }
     }
 }
@@ -296,6 +301,25 @@ pub fn summary(p: &Path) -> String {
         };
     }
     "system prompt text".to_string()
+}
+
+/// An exclusive `flock` on the sidecar `<file>.lock` (held until dropped), so two oxa processes
+/// doing read-modify-write on the trust file do not drop each other's entries.
+fn lock_file(file: &Path) -> Result<std::fs::File, OxaError> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| OxaError::io(&format!("create {}", dir.display()), &e))?;
+    }
+    let mut name = file.as_os_str().to_owned();
+    name.push(".lock");
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&name)
+        .map_err(|e| OxaError::io("open trust lock", &e))?;
+    lock.lock().map_err(|e| OxaError::io("lock trust store", &e))?;
+    Ok(lock)
 }
 
 /// The approval key of a directory (its trust key, as a string).
