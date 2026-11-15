@@ -1131,10 +1131,10 @@ fn ext_060() {
 
 /// EXT-061 (P): `ctx.waitForIdle()`, `newSession()`, `fork()`, `navigateTree()`, `switchSession()`,
 /// `reload()`. A `waitForIdle` in an event handler the run waits for is refused with `busy`.
-/// invariant: session-shape actions requested mid-run apply when the run settles; `ctx.newSession()` / `ctx.switchSession()` answer `unsupported_in_oxa` (O-175; the user's `/new` and `/resume` do it)
+/// invariant: session-shape actions requested mid-run apply when the run settles; `ctx.newSession()` / `ctx.switchSession()` are held as a swap request that the TUI and print mode apply between messages (front ends that do not poll it get `unsupported_in_oxa`)
 #[test]
 fn ext_061() {
-    // invariant: session-shape actions requested mid-run apply when the run settles; `ctx.newSession()` / `ctx.switchSession()` answer `unsupported_in_oxa` (O-175; the user's `/new` and `/resume` do it)
+    // invariant: see above; the swap itself is tested in oxa-cli h_ext_session_api.rs
     let r = one(
         "oxa.on('agent_start', (e, ctx) => { try { ctx.waitForIdle(); note(ctx, 'wait=ok'); } catch (err) { note(ctx, 'wait=' + (err && (err.code || err.message))); } });",
     );

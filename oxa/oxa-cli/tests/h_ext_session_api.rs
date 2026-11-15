@@ -1,6 +1,5 @@
 //! Extension session API end to end: `ctx.newSession()` / `ctx.switchSession(path)` from an
-//! extension are refused with `unsupported_in_oxa` (O-175; the user's /new and /resume are the
-//! way), and an extension tool's `details` survive a resume. Runs `oxa_cli::run` in-process
+//! extension swap the session (print mode), and an extension tool's `details` survive a resume. Runs `oxa_cli::run` in-process
 //! against `oxa-fake`; the files live under `oxa_fake::TestEnv`.
 
 use oxa_cli::{run, Stdio};
@@ -32,8 +31,9 @@ impl Sink {
 
 const EXTENSION: &str = r#"
 export default function (oxa) {
-  oxa.registerCommand("fresh", { handler: (args, ctx) => { ctx.newSession(); } });
-  oxa.registerCommand("goto", { handler: (args, ctx) => { ctx.switchSession(args); } });
+  let first = "";
+  oxa.registerCommand("fresh", { handler: (args, ctx) => { first = ctx.sessionManager.getSessionId(); ctx.newSession(); } });
+  oxa.registerCommand("back", { handler: (args, ctx) => { ctx.switchSession(first); } });
 }
 "#;
 
@@ -95,41 +95,64 @@ fn containing(env: &TestEnv, needle: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// O-175: the requests are refused; the run goes on in the same session file.
+/// In print mode an extension's `newSession` / `switchSession` take effect between messages.
 #[test]
-fn new_and_switch_session_from_an_extension_are_unsupported() {
+fn new_and_switch_session_from_an_extension_swap_the_session() {
     let env = setup();
+    let fake = FakeServer::start(
+        vec![
+            ScriptTurn::text("one"),
+            ScriptTurn::text("two"),
+            ScriptTurn::text("three"),
+        ],
+        FakeOpts::default(),
+    )
+    .expect("fake");
+    let (code, out, err) = go(
+        &env,
+        &fake.url(),
+        &["-p", "BEFORE-FRESH", "/fresh", "IN-NEW", "/back", "AFTER-BACK"],
+        "",
+    );
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(session_files(&env).len(), 2, "{:?}", session_files(&env));
+    let first = containing(&env, "BEFORE-FRESH");
+    assert_eq!(first, containing(&env, "AFTER-BACK"), "back in the first session");
+    assert_eq!(first.len(), 1);
+    let second = containing(&env, "IN-NEW");
+    assert_eq!(second.len(), 1);
+    assert_ne!(first, second);
+    assert!(containing(&env, "BEFORE-FRESH") != second);
+}
+
+/// A switch asked for by an event handler during a plain prompt (no extension command ran
+/// before) is applied right after that message: the next prompt is written to the new session.
+#[test]
+fn new_session_from_an_event_handler_applies_after_a_plain_prompt() {
+    let env = TestEnv::new();
+    let path = env.agent_dir().join("extensions").join("endswap.js");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"export default function (oxa) {
+  let done = false;
+  oxa.on("agent_end", (e, ctx) => { if (!done) { done = true; ctx.newSession(); } });
+}
+"#,
+    )
+    .unwrap();
     let fake = FakeServer::start(
         vec![ScriptTurn::text("one"), ScriptTurn::text("two")],
         FakeOpts::default(),
     )
     .expect("fake");
-    let (_code, out, err) = go(
-        &env,
-        &fake.url(),
-        &[
-            "-p",
-            "BEFORE-FRESH",
-            "/fresh",
-            "/goto elsewhere.jsonl",
-            "AFTER-GOTO",
-        ],
-        "",
-    );
-    let both = format!("{out}{err}");
-    assert_eq!(
-        both.matches("newSession and switchSession from an extension are not supported in oxa")
-            .count(),
-        2,
-        "both requests are refused: {both}"
-    );
-    assert_eq!(
-        containing(&env, "BEFORE-FRESH"),
-        containing(&env, "AFTER-GOTO"),
-        "one session file: {:?}",
-        session_files(&env)
-    );
-    assert_eq!(session_files(&env).len(), 1);
+    let (code, out, err) = go(&env, &fake.url(), &["-p", "FIRST-MSG", "SECOND-MSG"], "");
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(session_files(&env).len(), 2, "{:?}", session_files(&env));
+    let first = containing(&env, "FIRST-MSG");
+    let second = containing(&env, "SECOND-MSG");
+    assert_eq!((first.len(), second.len()), (1, 1));
+    assert_ne!(first, second, "the second prompt went to the new session");
 }
 
 /// Item 8 of the lane: an extension tool's result `details` survive a resume (pi keeps them on

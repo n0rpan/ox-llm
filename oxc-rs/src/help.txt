@@ -1,0 +1,38 @@
+usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]
+           [--pref {auto,20,18,16,14}] [--harness HARNESS]
+           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]
+           [--all] [--day DAY] [--write] [--status] [--soak] [--check]
+           [--no-chat]
+           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]
+           [rest ...]
+
+Local-only controls. Status never loads a model or reads conversation data.
+
+positional arguments:
+  {panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}
+  rest                  Subcommand words for cache (status, budget GB|off,
+                        clear) and share (status, on [tailscale|lan], off,
+                        key)
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit
+  --rotate              share key: make a new key (the old one stops working)
+  --json                Machine-readable output
+  --id ID               Storage entry id for storage-delete
+  --pref {auto,20,18,16,14}
+                        Flash cache preference for flash-cache
+  --harness HARNESS     Harness name for harness-prepare or harness-forget
+  --mode {fast,deep,max}
+                        Context mode for mode: fast, deep or max (applies to
+                        the client's next session)
+  --limit LIMIT         Ledger rows, 1 to 200
+  --session SESSION     cache clear: one conversation id
+  --all                 cache clear: every saved conversation (default)
+  --day DAY             digest: YYYY-MM-DD, today or yesterday
+  --write               digest: save the day (default yesterday) and the
+                        status line
+  --status              digest: print the panel status line
+  --soak                digest: soak progress (7 green days)
+  --check               update/rollback: check only, change nothing
+  --no-chat             update: skip the test chat after the restart
