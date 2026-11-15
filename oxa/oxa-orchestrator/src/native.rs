@@ -196,10 +196,7 @@ impl NativeWorker {
         );
         let pipes = match pipes {
             Ok(pipes) => pipes,
-            Err(error) => {
-                kill_owned_group(&mut child)?;
-                return Err(error);
-            }
+            Err(error) => return Err(startup_error(&mut child, error)),
         };
         Ok(Self {
             child,
@@ -299,6 +296,28 @@ impl Drop for NativeWorker {
     fn drop(&mut self) {
         let _ = self.terminate();
     }
+}
+// Typed evidence for the narrow post-spawn pipe-setup error path. These PIDs
+// are history only; callers must not adopt/signal them after this call.
+#[derive(Debug)]
+struct StartupFailure {
+    pid: u32,
+    stopped: bool,
+}
+impl std::fmt::Display for StartupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("worker pipe setup failed; consult owned startup cleanup evidence")
+    }
+}
+impl std::error::Error for StartupFailure {}
+fn startup_error(child: &mut Child, error: io::Error) -> io::Error {
+    let pid = child.id();
+    let stopped = kill_owned_group(child).is_ok();
+    io::Error::new(error.kind(), StartupFailure { pid, stopped })
+}
+pub(crate) fn startup_evidence(error: &io::Error) -> Option<(u32, bool)> {
+    let evidence = error.get_ref()?.downcast_ref::<StartupFailure>()?;
+    Some((evidence.pid, evidence.stopped))
 }
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
@@ -547,5 +566,22 @@ time.sleep(30)
         worker.stop(Duration::ZERO).unwrap();
         assert!(worker.process_stopped().unwrap());
         assert_eq!(lease.read(&mut ack).unwrap(), 0);
+    }
+    #[test]
+    fn failed_pipe_setup_retains_distinct_spawn_and_reap_evidence() {
+        let mut child = Command::new("/usr/bin/python3")
+            .args(["-I", "-S", "-c", "import time; time.sleep(30)"])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let failure = startup_error(&mut child, io::Error::other("synthetic pipe setup failure"));
+        assert_eq!(startup_evidence(&failure), Some((pid, true)));
+        assert!(child.try_wait().unwrap().is_some());
+        assert_eq!(startup_evidence(&io::Error::other("pre-spawn refusal")), None);
     }
 }

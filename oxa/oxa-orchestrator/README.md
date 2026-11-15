@@ -1,9 +1,9 @@
 # Opt-in orchestrator foundations
 
-First independently testable slice of rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
+Opt-in foundations extracted from rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
 Private audit storage, JSONL pipe transport and an explicit tool-free native
 worker owner are present here. No worker, listener or CLI hook starts on import;
-no recovery/replay or installed service is enabled.
+no replay or installed service is enabled. Journal inspection is explicit.
 
 The `core` feature exports `AuditJournal`. Its caller explicitly supplies a new
 journal path under an existing mode-0700 operator-owned directory and a byte
@@ -161,7 +161,7 @@ rather than treating reaping alone as loss of the remaining final response.
 The journal holds its exclusive lease throughout ownership and records metadata,
 content hashes and process history, never raw task/role/result text. run_finished
 retains workers/completed counts. The tool-free profile's new truncation and
-unconfirmed-cleanup cases require matching recovery-reader support; no automatic
+unconfirmed-cleanup cases have explicit native inspection support; no automatic
 reconciliation or recorded-PID signalling is introduced here. An infrastructure
 or journal error fails the call and triggers owned-process Drop cleanup; it is
 not a successful report or proof of billing termination.
@@ -178,3 +178,40 @@ steer admission, targeted queued/live cancellation, per-worker/run deadlines,
 output/token overruns and pre-launch validation. Removing the final cancellation
 guard makes the mock-side-effect regression fail; restoring it passes. This is
 local protocol/process acceptance, not a production-model evening-run claim.
+
+## Native journal inspection and exclusive claim
+
+With `core`, `recovery::InspectedRun::inspect` reads an explicitly selected
+private/operator-owned single-link plain journal. It walks protected parents
+without symlinks, reopens the validated inode and checks metadata before/after
+capture. Bounds are 16 MiB total, 64 KiB per complete/incomplete line and 100,000
+records. Complete records require schema/sequence/monotonic-time consistency,
+a complete worker manifest before lifecycle transitions, valid identities/hashes
+and consistent completion counts. Unknown profiles/events and A2A/resume records
+are refused in this native-only slice.
+
+An incomplete final line is fingerprinted with the file but never promoted to
+an accepted record, even if it looks like complete JSON. The metadata-only
+snapshot exports no raw task/role/result or tail content. Recorded process IDs
+are historical data, never live signalling authority. Recorded completion is
+not proof that a provider or background process is currently stopped.
+
+`ExclusiveRun::claim` additionally takes the cooperative inode lease and rejects
+active or poisoned writers that still hold it. Legacy files without the declared
+ownership protocol can be inspected but cannot be claimed. The guard must stay
+alive for any future recovery operation; it establishes exclusive journal access,
+not worker cleanup. The inspection API has no network call, replay, resume, submission,
+file mutation/deletion or recorded-PID signal.
+
+The current tool-free producer uses profile v2 and records explicit cleanup.
+Post-spawn pipe-setup failures preserve their distinct spawn/reap evidence instead
+of claiming the worker never started. v1/legacy records remain readable; where
+they lack cleanup evidence the snapshot retains Unknown (None), including the
+ambiguous v1 starting-without-spawn case. Claiming a file never upgrades that
+unknown status. Native truncation and unconfirmed cleanup are retained explicitly.
+
+Tests read actual supervisor-produced journals, enforce live/failed-writer lease
+exclusion, inspect valid/truncated prefixes, reject lifecycle/format mutations
+and links/FIFOs/oversized files, and exercise the 100,000-record boundary. Startup
+failure tests reap a real owned child. Explicit original-agent reconciliation,
+checkpoint consent, resume and their CLI surfaces remain subsequent slices.
