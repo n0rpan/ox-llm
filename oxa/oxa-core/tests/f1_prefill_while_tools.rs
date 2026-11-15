@@ -566,14 +566,14 @@ fn open_with(
     Session::open(deps, Open::New).expect("open")
 }
 
-/// The OFF arm as shipped: profile `pi`, `oxa.prefill.tools` unset: no extra request at all,
-/// however long the slow call runs past the delay.
+/// The OFF arm: `oxa.prefill.tools` off: no extra request at all, however long the slow call
+/// runs past the delay.
 #[test]
-fn off_arm_profile_pi_unset_sends_no_prefill() {
+fn off_arm_prefill_tools_off_sends_no_prefill() {
     let _g = serial(Duration::from_millis(1));
     let env = TestEnv::new();
     let eng = Arc::new(ScriptedEngine::new(script(reads_then_slow())));
-    let settings = Settings::from_values(json!({"oxa": {"profile": "pi"}}), json!({}));
+    let settings = Settings::from_values(json!({"oxa": {"prefill": {"tools": false}}}), json!({}));
     let mut s = open(
         &env,
         eng.clone(),
@@ -581,7 +581,6 @@ fn off_arm_profile_pi_unset_sends_no_prefill() {
         settings,
         false,
     );
-    assert_eq!(s.stats().profile, oxa_proto::Profile::Pi);
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
         .expect("prompt");

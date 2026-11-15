@@ -327,14 +327,13 @@ fn sampling_is_greedy_unless_the_model_mode_is_set() {
     run(&mut st, "read");
     assert!(eng.requests().iter().all(|r| r.temperature == 0.0));
     // `model`: the card's values by thinking state (thinking on for the prompt reply, off for the
-    // tool follow-up under the `auto` policy of profile `local`).
+    // tool follow-up under the default `auto` policy).
     let env = TestEnv::new();
     let on = Settings::from_values(
-        serde_json::json!({"oxa": {"profile": "local", "sampling": {"mode": "model", "seed": 7}}}),
+        serde_json::json!({"oxa": {"sampling": {"mode": "model", "seed": 7}}}),
         Value::Null,
     );
     let (mut st, eng) = state_for(&env, turns(), on.clone(), "ornith-35b-a3b-local");
-    st.stats.profile = oxa_proto::Profile::Local;
     run(&mut st, "read");
     let reqs = eng.requests();
     assert_eq!(reqs.len(), 2);

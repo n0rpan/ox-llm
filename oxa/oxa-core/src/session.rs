@@ -72,8 +72,6 @@ pub struct State {
     pub leaf: String,
     pub prefix_sha256: [u8; 32],
     pub n_ctx: u32,
-    /// `oxa.profile` of the epoch in force.
-    pub profile: oxa_proto::Profile,
 }
 
 /// The RPC `get_session_stats` data plus cache accounting.
@@ -100,10 +98,11 @@ pub struct Stats {
     /// F11: the token position of the last checkpoint the engine reported kept for an H4
     /// request (`timings.snap_pos`) of this process; `None` = none reported yet.
     pub last_snap_pos: Option<u32>,
-    /// `oxa.profile` of the epoch in force (read once per epoch, stored with it).
-    pub profile: oxa_proto::Profile,
     /// B6: the engine sent a reply without `cached_tokens` (the notice was shown).
     pub cached_unreported: bool,
+    /// The last round of `done` checks had a failure (no later round passed). Print mode reads
+    /// it at the end for its exit code.
+    pub done_failed: bool,
     /// Adaptive thinking on tool follow-ups (`think.rs`) of the current run. Never persisted.
     pub escalation: crate::think::Escalation,
 }
@@ -213,12 +212,7 @@ impl Session {
             .as_deref()
             .and_then(Mode::parse)
             .unwrap_or(Mode::Workspace);
-        let compact = policy_for_model(
-            &info,
-            &settings,
-            model.as_deref().unwrap_or(&info.model),
-            settings.profile(),
-        );
+        let compact = policy_for_model(&info, &settings, model.as_deref().unwrap_or(&info.model));
         let auto_compaction = compact.enabled;
         let auto_retry = settings.retry().enabled;
         let shared = Arc::new(Shared::new(settings.steering_mode(), settings.follow_up_mode()));
@@ -630,7 +624,6 @@ impl Session {
             leaf: st.tree.leaf().to_string(),
             prefix_sha256: st.prefix.sha256,
             n_ctx: st.info.n_ctx,
-            profile: st.stats.profile,
         }
     }
 
@@ -712,7 +705,7 @@ impl Session {
         crate::exec::set_tool_prefill_after_for_tests(after);
     }
 
-    /// V020-OPTIMIZE #13 (`oxa.prefill.paste`, on under profile `local`): while the user is
+    /// V020-OPTIMIZE #13 (`oxa.prefill.paste`): while the user is
     /// still composing, prefill the user message that `prompt(text, parts)` would append now,
     /// in one background zero-token request over `wire + [that message]` (the draft prefill
     /// of `compaction.rs`). The message is built by the functions the
@@ -1253,14 +1246,6 @@ fn restore_locked(
     attach_hosts(st, sink, ui);
     apply_branch_counts(&mut st.stats, &branch);
     st.stats.context_tokens = st.transcript.context();
-    // The profile this session keeps: the branch's when its prefix is replayed (a session keeps
-    // its epoch's profile until a new epoch opens), else the settings' (the epoch opened below).
-    let profile = if replayed.is_some() {
-        crate::profile_of_branch(&branch)
-    } else {
-        st.settings.profile()
-    };
-
     if let Some(cli) = cli {
         let mut all = cli.builtins.clone();
         for h in &st.hooks {
@@ -1275,16 +1260,16 @@ fn restore_locked(
         st.active = active;
     }
 
+    // An old pi session replays its stored prefix bytes; the profile it was opened under is
+    // gone, so the session takes the single default from here on. No migration.
     match replayed {
         Some(prefix) => {
             st.prefix = prefix;
-            st.stats.profile = profile;
             crate::tune::refresh(st);
-            // R5 follows the branch's profile too (the policy of `open` used the settings').
             let enabled = st.compact.enabled;
             st.compact = CompactPolicy {
                 enabled,
-                ..policy_for_model(&st.info, &st.settings, &st.model, profile)
+                ..policy_for_model(&st.info, &st.settings, &st.model)
             };
         }
         None => {
@@ -1433,7 +1418,7 @@ fn user_message(text: &str, parts: &[Part]) -> WireMsg {
 /// now, built by the prompt's own functions; `None` when the draft is not prefilled (see
 /// [`Session::prefill_draft`]).
 fn draft_message(st: &mut SessionState, text: &str, parts: &[Part]) -> Option<WireMsg> {
-    if !st.settings.prefill_paste(st.stats.profile)
+    if !st.settings.prefill_paste()
         || !st.info.prefill_only
         || !engine_on_this_machine(&st.info.base_url)
         || st.settings.string("cacheWarming").as_deref() == Some("off")
@@ -1540,7 +1525,7 @@ pub fn prefill_estimate_secs(tokens: u32) -> u32 {
 fn target_policy(st: &SessionState, m: &str) -> Option<(EngineInfo, CompactPolicy)> {
     match st.engine.info(Some(m)) {
         Ok(info) if info.limits_for == m => {
-            let policy = policy_for_model(&info, &st.settings, m, st.settings.profile());
+            let policy = policy_for_model(&info, &st.settings, m);
             Some((info, policy))
         }
         _ => None,
@@ -1717,7 +1702,7 @@ fn flush_queue(st: &SessionState, sink: &mut dyn EventSink) {
 /// context mode (D5 `compact_at`); else the policy's default.
 #[cfg(test)]
 pub(crate) fn policy_for(info: &EngineInfo, settings: &Settings) -> CompactPolicy {
-    policy_for_model(info, settings, &info.limits_for, oxa_proto::Profile::Pi)
+    policy_for_model(info, settings, &info.limits_for)
 }
 
 /// [`policy_for`] for the session model `model`, with its `compaction.modelOverrides` entry
@@ -1726,15 +1711,9 @@ pub(crate) fn policy_for(info: &EngineInfo, settings: &Settings) -> CompactPolic
 /// Entries of other models do nothing here; a `model` that names another model than `model`
 /// is ignored (see [`override_summary_model`]).
 ///
-/// `profile` is the epoch's (R5): under `local` on a small context the kept tail is
-/// [`crate::tune::SMALL_KEEP_TOKENS`] unless `compaction.keepRecentTokens` is set in a layer or
-/// by the model's override.
-pub(crate) fn policy_for_model(
-    info: &EngineInfo,
-    settings: &Settings,
-    model: &str,
-    profile: oxa_proto::Profile,
-) -> CompactPolicy {
+/// R5: on a small context the kept tail is [`crate::tune::SMALL_KEEP_TOKENS`] unless
+/// `compaction.keepRecentTokens` is set in a layer or by the model's override.
+pub(crate) fn policy_for_model(info: &EngineInfo, settings: &Settings, model: &str) -> CompactPolicy {
     let comp = settings.compaction();
     let entry = settings
         .get("compaction.modelOverrides")
@@ -1750,7 +1729,6 @@ pub(crate) fn policy_for_model(
     let keep_set = settings.get("compaction.keepRecentTokens").is_some()
         || entry.is_some_and(|e| e.get("keepRecentTokens").is_some());
     let keep = crate::tune::keep_tokens(
-        profile,
         info.n_ctx,
         keep_set,
         num("keepRecentTokens", comp.keep_recent_tokens),
@@ -1856,7 +1834,7 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             format!("could not re-read the engine limits ({e}); keeping the previous ones"),
         ),
     }
-    st.compact = policy_for_model(&st.info, &st.settings, &st.model, st.settings.profile());
+    st.compact = policy_for_model(&st.info, &st.settings, &st.model);
     if prev_enabled.is_some_and(|p| p != st.compact.enabled) {
         st.auto_compaction = st.compact.enabled;
     }

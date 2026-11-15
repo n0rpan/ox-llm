@@ -816,8 +816,7 @@ fn apply(
             // inputs. Read-only either way (W3).
             if st.prefix.sections.is_empty() {
                 let (specs, extra) = crate::epoch_inputs(st);
-                let profile = st.settings.profile();
-                let opts = crate::epoch::prefix_opts(st, profile);
+                let opts = crate::epoch::prefix_opts(st);
                 let prefix = crate::build_prefix_with(&st.cwd, &st.resources, &specs, &extra, &opts);
                 return Ok(Value::String(prefix.system_text()));
             }

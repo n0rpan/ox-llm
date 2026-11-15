@@ -1,4 +1,4 @@
-//! O-167(b) (wave H lane `local`): the bash tool's network per permission mode, per
+//! O-167(b) (wave H): the bash tool's network per permission mode, per
 //! `oxa.sandbox.net` and under the offline switch. The argv is what the real bwrap sandbox
 //! would run (`bwrap_args` of the spec that reaches the inner sandbox).
 
@@ -84,6 +84,8 @@ fn expected(home: &Path, cwd: &Path, writable: bool, net: bool) -> Vec<String> {
         if writable { "--bind" } else { "--ro-bind" },
         &cwd,
         &cwd,
+        "--remount-ro",
+        &home,
         "--chdir",
         &cwd,
         "--clearenv",

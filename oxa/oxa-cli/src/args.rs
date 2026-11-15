@@ -18,7 +18,7 @@ pub enum Subcommand {
     Mcp(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
     Pkg(String, Vec<String>),
-    /// `oxa config ..` (incl. `--import-pi`).
+    /// `oxa config ..`.
     Config(Vec<String>),
     /// O-152: `oxa identity [--refresh] [--offline]`.
     Identity(Vec<String>),
@@ -161,10 +161,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Update packages from their git or local sources (not oxa itself or model catalogs)",
     ),
     ("oxa list", "List installed packages"),
-    (
-        "oxa config [-l] [--import-pi]",
-        "Print every setting with its value and source (--import-pi copies pi resources once)",
-    ),
+    ("oxa config [-l]", "Print every setting with its value and source"),
     (
         "oxa mcp <command>",
         "Manage MCP servers: add, remove, list, login, logout",

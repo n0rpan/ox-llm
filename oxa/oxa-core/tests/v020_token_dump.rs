@@ -8,14 +8,14 @@
 //! Each line's `body` carries `chat_template_kwargs` as the engine request sends it (`preserve_thinking`
 //! when the request sets it, `enable_thinking` always), so the harness renders the same template.
 //!
-//! Arms: `pi`, `local`, `local_nodiet` (profile local, output diet and tool diet off), and the
-//! three again with a `subagent` tool declared (`pi_sub`, `local_sub`, `local_nodiet_sub`). Every
-//! arm runs the same script on the same fixture tree: a `grep`, a `read` of the large file, a
-//! second `read` of a 67,000-byte source-like file with no offset or limit, a short final answer.
-//! Byte counts are printed per request for cross-checking.
+//! Arms: `default`, `nodiet` (output diet and tool diet off), and both again with a `subagent`
+//! tool declared (`sub`, `nodiet_sub`). Every arm runs the same script on the same fixture tree:
+//! a `grep`, a `read` of the large file, a second `read` of a 67,000-byte source-like file with
+//! no offset or limit, a short final answer. Byte counts are printed per request for
+//! cross-checking.
 //!
-//! L4: `local_soft8k` and `pi_soft8k` are the same script with `oxa.compaction.softTokens` 8000
-//! (the working size that caps the local tool results at 6000 bytes; pi keeps its 16 KiB).
+//! L4: `soft8k` is the same script with `oxa.compaction.softTokens` 8000 (the working size that
+//! caps the tool results at 6000 bytes).
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
@@ -53,44 +53,29 @@ struct Arm {
     subagent: bool,
 }
 
-const ARMS: [Arm; 8] = [
+const ARMS: [Arm; 5] = [
     Arm {
-        name: "pi",
+        name: "default",
         settings: "{}",
         subagent: false,
     },
     Arm {
-        name: "local",
-        settings: r#"{"oxa": {"profile": "local"}}"#,
+        name: "nodiet",
+        settings: r#"{"oxa": {"diet": {"output": false, "tools": false}}}"#,
         subagent: false,
     },
     Arm {
-        name: "local_nodiet",
-        settings: r#"{"oxa": {"profile": "local", "diet": {"output": false, "tools": false}}}"#,
-        subagent: false,
-    },
-    Arm {
-        name: "pi_sub",
+        name: "sub",
         settings: "{}",
         subagent: true,
     },
     Arm {
-        name: "local_sub",
-        settings: r#"{"oxa": {"profile": "local"}}"#,
+        name: "nodiet_sub",
+        settings: r#"{"oxa": {"diet": {"output": false, "tools": false}}}"#,
         subagent: true,
     },
     Arm {
-        name: "local_nodiet_sub",
-        settings: r#"{"oxa": {"profile": "local", "diet": {"output": false, "tools": false}}}"#,
-        subagent: true,
-    },
-    Arm {
-        name: "local_soft8k",
-        settings: r#"{"oxa": {"profile": "local", "compaction": {"softTokens": 8000}}}"#,
-        subagent: false,
-    },
-    Arm {
-        name: "pi_soft8k",
+        name: "soft8k",
         settings: r#"{"oxa": {"compaction": {"softTokens": 8000}}}"#,
         subagent: false,
     },
@@ -346,8 +331,8 @@ fn dump_token_transcripts() {
             );
             text.push_str(&dump_line(r, &root));
         }
-        // The under-limit grep (turn 2) result, printed for the form check: full lines under pi
-        // and the diet-off local arm; the path-once form only when `oxa.diet.tools` is on.
+        // The under-limit grep (turn 2) result, printed for the form check: full lines with the
+        // tool diet off; the path-once form only when `oxa.diet.tools` is on.
         let small = reqs[3]
             .messages
             .iter()

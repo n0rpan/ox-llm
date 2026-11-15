@@ -450,7 +450,7 @@ fn empty_resources_give_only_preamble_identity_and_cwd() {
         section(&p, "identity"),
         Some(prompt::identity_section(None).as_str())
     );
-    // The default profile is `local`: no `<tools>` section (the chat template renders it).
+    // No `<tools>` section: the chat template renders the tool list from the tool JSON.
     assert_eq!(
         p.sections[0].1,
         prompt::preamble_with(
@@ -463,7 +463,6 @@ fn empty_resources_give_only_preamble_identity_and_cwd() {
             &[],
             true,
             false,
-            true,
             false,
         )
     );

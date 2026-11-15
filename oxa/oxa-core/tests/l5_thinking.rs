@@ -35,18 +35,6 @@ fn script() -> Vec<ScriptTurn> {
 struct Run {
     reqs: Vec<Recorded>,
     events: Vec<AgentEvent>,
-    /// The test root, which the bodies name (cwd, skill paths).
-    root: String,
-}
-
-impl Run {
-    /// The request bodies with the test root replaced, comparable across runs.
-    fn bodies(&self) -> Vec<String> {
-        self.reqs
-            .iter()
-            .map(|q| String::from_utf8_lossy(&q.body).replace(&self.root, "<root>"))
-            .collect()
-    }
 }
 
 fn run(settings: Option<&str>, level: ThinkingLevel, opts: FakeOpts) -> Run {
@@ -93,7 +81,6 @@ fn run(settings: Option<&str>, level: ThinkingLevel, opts: FakeOpts) -> Run {
     Run {
         reqs: server.requests(),
         events: sink.0,
-        root: env.root().to_string_lossy().into_owned(),
     }
 }
 
@@ -149,11 +136,8 @@ const KINDS: [&str; 6] = ["chat", "chat", "chat", "chat", "compaction", "prefill
 
 #[test]
 fn auto_thinks_on_the_first_reply_after_each_prompt_only() {
-    // Unset policy under profile local = auto; an explicit auto under pi is the same.
-    for settings in [
-        r#"{"oxa": {"profile": "local"}}"#,
-        r#"{"oxa": {"thinking": {"policy": "auto"}}}"#,
-    ] {
+    // Unset policy = auto; an explicit auto is the same.
+    for settings in [r#"{"oxa": {}}"#, r#"{"oxa": {"thinking": {"policy": "auto"}}}"#] {
         let r = run(Some(settings), ThinkingLevel::High, FakeOpts::default());
         assert_eq!(kinds(&r), KINDS);
         let got: Vec<Value> = r.reqs.iter().map(kwargs).collect();
@@ -168,47 +152,22 @@ fn auto_thinks_on_the_first_reply_after_each_prompt_only() {
 }
 
 #[test]
-fn fixed_reproduces_todays_requests() {
-    let today = run(
-        Some(r#"{"oxa": {"profile": "pi"}}"#),
+fn fixed_keeps_thinking_on_every_request() {
+    let fixed = run(
+        Some(r#"{"oxa": {"thinking": {"policy": "fixed"}}}"#),
         ThinkingLevel::High,
         FakeOpts::default(),
     );
     assert_eq!(
-        today.reqs.iter().map(kwargs).collect::<Vec<_>>(),
+        fixed.reqs.iter().map(kwargs).collect::<Vec<_>>(),
         golden(&[true, true, true, true, false, true])
     );
-    for settings in [
-        r#"{"oxa": {"profile": "pi"}}"#,
-        r#"{"oxa": {"profile": "pi", "thinking": {"policy": "fixed"}}}"#,
-    ] {
-        let r = run(Some(settings), ThinkingLevel::High, FakeOpts::default());
-        assert_eq!(
-            today.bodies(),
-            r.bodies(),
-            "{settings}: request bodies byte for byte"
-        );
-        assert_cache_holds(&r);
-    }
-    // `fixed` wins under profile local too (the tools differ there; the thinking does not).
-    let r = run(
-        Some(r#"{"oxa": {"profile": "local", "thinking": {"policy": "fixed"}}}"#),
-        ThinkingLevel::High,
-        FakeOpts::default(),
-    );
-    assert_eq!(
-        r.reqs.iter().map(kwargs).collect::<Vec<_>>(),
-        golden(&[true, true, true, true, false, true])
-    );
+    assert_cache_holds(&fixed);
 }
 
 #[test]
 fn level_off_always_wins() {
-    let r = run(
-        Some(r#"{"oxa": {"profile": "local"}}"#),
-        ThinkingLevel::Off,
-        FakeOpts::default(),
-    );
+    let r = run(Some(r#"{"oxa": {}}"#), ThinkingLevel::Off, FakeOpts::default());
     assert_eq!(r.reqs.iter().map(kwargs).collect::<Vec<_>>(), golden(&[false; 6]));
     assert_cache_holds(&r);
 }
@@ -221,11 +180,7 @@ fn auto_acts_as_fixed_where_a_toggle_is_not_cache_safe() {
         models: vec![FakeModel::flash("fake-model", 1 << 20, None)],
         ..FakeOpts::default()
     };
-    let r = run(
-        Some(r#"{"oxa": {"profile": "local"}}"#),
-        ThinkingLevel::High,
-        opts,
-    );
+    let r = run(Some(r#"{"oxa": {}}"#), ThinkingLevel::High, opts);
     let got: Vec<bool> = r.reqs.iter().map(|q| q.thinking).collect();
     assert_eq!(got, vec![true, true, true, true, false, true]);
     // No preserve_thinking on Flash (F8): the kwargs carry the boolean alone.

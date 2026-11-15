@@ -20,7 +20,7 @@ pub struct WriteTool {
 impl WriteTool {
     pub fn new() -> WriteTool {
         WriteTool {
-            spec: crate::spec_of(&crate::descriptions::WRITE),
+            spec: crate::spec_of(&crate::descriptions::builtin_specs::WRITE_DEFAULT),
         }
     }
 }
