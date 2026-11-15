@@ -114,7 +114,7 @@ fn what_needed_no_prompt_is_not_counted() {
 }
 
 #[test]
-fn the_deny_list_stands_under_yolo() {
+fn the_deny_list_stands_under_auto() {
     let env = TestEnv::new();
     let switch = YoloSwitch::new(Autonomy::Auto);
     let p = policy(&env, &switch);
@@ -135,12 +135,12 @@ fn the_deny_list_stands_under_yolo() {
             assert_eq!(
                 p.decide(mode, &Access::Write(path.clone()), &cwd),
                 sensitive,
-                "write {path:?} in {mode:?} under YOLO"
+                "write {path:?} in {mode:?} under auto"
             );
             assert_eq!(
                 p.decide(mode, &Access::Read(path.clone()), &cwd),
                 sensitive,
-                "read {path:?} in {mode:?} under YOLO"
+                "read {path:?} in {mode:?} under auto"
             );
         }
     }
@@ -172,7 +172,7 @@ fn git_files_plan_mode_and_project_config_keep_their_answers() {
             &cwd
         ),
         Decision::Ask,
-        "YOLO does not auto-approve writes to the project configuration"
+        "auto does not auto-approve writes to the project configuration"
     );
     // Plan mode stays read-only.
     assert_eq!(
@@ -203,12 +203,12 @@ fn clones_share_one_switch() {
     assert!(!a.same(&YoloSwitch::new(Autonomy::Auto)));
 }
 
-/// O-182, subagents: a child started with `--yolo` builds its policy from `YoloSwitch::new(Autonomy::Auto)`
+/// O-182, subagents: a child started with `--auto` builds its policy from `YoloSwitch::new(Autonomy::Auto)`
 /// (`dispatch.rs`), the same as the parent with the flag. It allows an ordinary write without
 /// asking, and the floor of the parent holds for it: a write to the project's `.oxa` asks, the
 /// deny-list denies.
 #[test]
-fn a_child_started_with_yolo_allows_a_write_and_still_asks_for_oxa() {
+fn a_child_started_with_auto_allows_a_write_and_still_asks_for_oxa() {
     let env = TestEnv::new();
     let switch = YoloSwitch::new(Autonomy::Auto);
     let p = policy(&env, &switch);
@@ -224,7 +224,7 @@ fn a_child_started_with_yolo_allows_a_write_and_still_asks_for_oxa() {
         assert_eq!(
             p.decide(Mode::Workspace, &Access::Write(cwd.join(rel)), &cwd),
             Decision::Ask,
-            "{rel} still asks under YOLO"
+            "{rel} still asks under auto"
         );
     }
     assert_eq!(
