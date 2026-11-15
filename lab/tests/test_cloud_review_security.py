@@ -1,5 +1,6 @@
 """Review fixes: LAN-share guests never reach cloud models; a cloud alias never shadows a local model."""
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from snapdragon_ai_lab.runtime import cloud
@@ -9,8 +10,8 @@ from test_cloud_remote import REMOTE, CloudCase, profiles
 
 
 class LanShareGuest(CloudCase):
-    def guest(self):
-        self.start()
+    def guest(self, **extra):
+        self.start(cloud_extra=extra)
         def handle(handler, inner):  # the gate's effect on the controller: a hashed guest client
             handler.share_client = 'abc123'
             return inner()
@@ -40,6 +41,53 @@ class LanShareGuest(CloudCase):
         self.assertIn(REMOTE, [row['id'] for row in self.rows()])
         status, body = self.call('GET', '/_local/models')
         self.assertIn(REMOTE, [row['id'] for row in json.loads(body)['data']])
+
+
+class LanShareOptIn(LanShareGuest):
+    def owner_chat(self):
+        # the owner's request on the same stack: no share_client, so not a guest
+        guest = self.stack.server.share_listener
+        self.stack.server.share_listener = None
+        try:
+            return self.chat()
+        finally:
+            self.stack.server.share_listener = guest
+
+    def test_opt_in_allows_lists_and_marks_the_ledger_row(self):
+        self.guest(share_with_lan=True)
+        self.assertIn(REMOTE, [row['id'] for row in self.rows()])
+        status, body = self.call('GET', '/_local/models')
+        self.assertIn(REMOTE, [row['id'] for row in json.loads(body)['data']])
+        status, _ = self.call('GET', '/v1/models/' + REMOTE)
+        self.assertEqual(status, 200)
+        status, body = self.chat()
+        self.assertEqual(status, 200, body)
+        row = self.ledger_rows()[-1]
+        self.assertEqual((row['remote'], row['origin']), (True, 'remote'))
+        status, body = self.call('GET', '/_local/status')
+        self.assertTrue(json.loads(body)['cloud']['share_with_lan'])
+
+    def test_status_shows_sharing_off_by_default(self):
+        self.guest()
+        status, body = self.call('GET', '/_local/status')
+        self.assertFalse(json.loads(body)['cloud']['share_with_lan'])
+
+    def test_lan_cap_refuses_guests_but_not_the_owner(self):
+        # one request reserves up to 64000 * 1e-6 + 4096 * 1e-6 = 0.068 USD in the worst case
+        self.guest(share_with_lan=True, lan_daily_budget_usd=0.07)
+        self.assertEqual(self.chat(max_tokens=1)[0], 200)
+        row = self.ledger_rows()[-1]
+        self.assertGreater(row['cost_usd'], 0)
+        cap = row['cost_usd']
+        # lower the cap to what is spent: the next guest request must be refused
+        value = json.loads(Path(cloud.ctl.CONFIG).read_text())
+        value['cloud']['lan_daily_budget_usd'] = cap
+        Path(cloud.ctl.CONFIG).write_text(json.dumps(value))
+        status, body = self.chat()
+        self.assertEqual(status, 429, body)
+        self.assertEqual(json.loads(body)['error']['code'], 'budget_exceeded')
+        status, body = self.owner_chat()
+        self.assertEqual(status, 200, body)
 
 
 class AliasCollision(CloudCase):

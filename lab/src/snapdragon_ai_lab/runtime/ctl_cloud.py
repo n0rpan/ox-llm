@@ -89,7 +89,7 @@ def forward(self, st):
     value = st.api_value
     if st.led is not None:
         st.led.row.update({'remote': True, 'remote_provider': item['provider']})
-    if st.remote:
+    if st.remote and not cloud.share_with_lan(value):
         return _reply(self, st, 403, 'Cloud models are not available to LAN-share requests.', 'cloud_not_shared')
     if cloud.offline():
         return _reply(self, st, 403, 'Cloud models are unavailable in offline mode.', 'offline')
@@ -111,7 +111,7 @@ def forward(self, st):
     except (TypeError, ValueError, UnicodeError):
         return _reply(self, st, 400, 'Invalid cloud request encoding.', 'invalid_request')
     try:
-        hold = cloud.reserve(value, item, body)
+        hold = cloud.reserve(value, item, body, lan=bool(st.remote))
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, error.code, param=error.param)
     responses = (cloud_openai.ResponsesStream(item, st.payload.get('messages'), key)

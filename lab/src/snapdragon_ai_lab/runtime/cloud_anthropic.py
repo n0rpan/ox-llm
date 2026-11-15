@@ -624,7 +624,7 @@ def forward(self, st, item, key):
     try:
         params = messages_request(payload, item, key)
         client = _client(item, key)
-        hold = cloud.reserve(st.api_value, item, params)
+        hold = cloud.reserve(st.api_value, item, params, lan=bool(st.remote))
     except cloud.CloudError as error:
         if hold is not None and not hold.settled:
             hold.settle()

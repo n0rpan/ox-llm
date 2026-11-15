@@ -179,7 +179,7 @@ class ModelsMixin:
     def models(self, remote=False):
         value = json.loads(ctl.CONFIG.read_text())
         if value.get('cloud_only') is True:  # no local rows; only the remote catalog
-            return [cloud.row(item) for item in cloud.models(value)] if cloud.enabled(value) and not cloud.offline() and not remote else []
+            return [cloud.row(item) for item in cloud.models(value)] if cloud.enabled(value) and not cloud.offline() and (not remote or cloud.share_with_lan(value)) else []
         aliases = [value.get('model_alias', 'qwen-local'), *value.get('profiles', {})]
         if value.get('profiles'): aliases.insert(0, 'qwen-local')
         rows = [{'id': alias, 'object': 'model', 'created': 0, 'owned_by': 'local',
@@ -187,7 +187,7 @@ class ModelsMixin:
                 if self.eligible(self.config(alias))]
         models = openai_api.model_rows(value, rows, value.get('selected_model', value.get('model_alias', 'qwen-local')))
         self._publish_limits(models, value)
-        if cloud.enabled(value) and not cloud.offline() and not remote:  # never to a LAN-share guest
+        if cloud.enabled(value) and not cloud.offline() and (not remote or cloud.share_with_lan(value)):   # a LAN-share guest only on opt-in
             models.extend(cloud.row(item) for item in cloud.models(value))
         return models
 
@@ -238,7 +238,7 @@ class ModelsMixin:
                                           flash_cache=(getattr(self, 'flash_cache_status', None) if loaded and
                                               loaded.get('model_alias') == alias else None)))
         rows.sort(key=model_catalog.sort_key)
-        if cloud.enabled(value) and not cloud.offline() and not remote:
+        if cloud.enabled(value) and not cloud.offline() and (not remote or cloud.share_with_lan(value)):
             rows.extend(cloud.catalog_row(item) for item in cloud.models(value))
         return {'object': 'list', 'default_model': model_catalog.DEFAULT_ALIAS,
                 'selected_model': selected, 'data': rows}
@@ -266,7 +266,8 @@ class ModelsMixin:
                 'ledger_latched': latched,
                 'ledger_error': ledger_error,
                 'providers': cloud.configured(value), 'models': len(cloud.models(value)),
-                'rejected': cloud.rejected(value)}
+                'rejected': cloud.rejected(value),
+                'share_with_lan': cloud.share_with_lan(value), 'lan_daily_budget_usd': cloud.lan_cap(value)}
 
     def flash_qualification(self):
         """M3: Flash's derived status (model_catalog.qualification of the resolved installed

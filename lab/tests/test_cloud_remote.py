@@ -44,13 +44,13 @@ class CloudCase(unittest.TestCase):
         if self.stack is not None:
             self.stack.close()
 
-    def start(self, *, enabled=True, budget=1.0, offline=False, models=None, mock=None, base_suffix='/v1'):
+    def start(self, *, enabled=True, budget=1.0, offline=False, models=None, mock=None, base_suffix='/v1', cloud_extra=None):
         mock = mock or self.upstream
         table = models if models is not None else profiles()
         for row in table.values():
             row['base_url'] = mock.base + base_suffix
         cloud_config = {'enabled': enabled, 'daily_budget_usd': budget, 'secrets_file': str(self.secrets),
-                        'models': table}
+                        'models': table, **(cloud_extra or {})}
         environ = {'LOCAL_AI_LEDGER_DIR': str(self.ledger)}
         if offline:
             environ['OXC_OFFLINE'] = '1'
