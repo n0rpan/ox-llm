@@ -107,11 +107,7 @@ fn runtime_fixture_uses_a_real_owner_only_key_file_outside_the_repository() {
     assert_eq!(key.expose(), CREDENTIAL);
     assert!(!format!("{key:?}").contains(CREDENTIAL));
     assert_eq!(
-        std::fs::metadata(&fixture.key_path)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
+        std::fs::metadata(&fixture.key_path).unwrap().permissions().mode() & 0o777,
         0o600
     );
     assert_eq!(
@@ -153,9 +149,6 @@ fn real_runtime_discovers_the_fixture_without_provider_or_ledger_activity() {
         .to_string()
         .contains(fixture.key_path.to_str().unwrap()));
     assert!(mock.requests().is_empty());
-    assert!(std::fs::read_dir(&fixture.ledger_dir)
-        .unwrap()
-        .next()
-        .is_none());
+    assert!(std::fs::read_dir(&fixture.ledger_dir).unwrap().next().is_none());
     mock.assert_healthy();
 }
