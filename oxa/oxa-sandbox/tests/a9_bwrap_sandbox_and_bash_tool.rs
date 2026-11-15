@@ -127,7 +127,7 @@ fn argv_golden_per_writable_net() {
     let base = |writable: bool, net: bool| {
         let mut s = spec("ls", cwd, writable, net);
         s.env.clear();
-        bwrap_args(&s, home)
+        oxa_sandbox::without_account_home(bwrap_args(&s, home))
     };
     // writable, no network
     assert_eq!(
@@ -415,6 +415,44 @@ fn home_ssh_absent() {
     );
     assert_ne!(cat.exit, Some(0));
     assert!(!String::from_utf8_lossy(&cat.output).contains("PRIVATE"));
+}
+
+/// #52: a secret env var (`GH_TOKEN`) reaches the command through `--args <fd>`, not argv.
+#[test]
+fn gh_token_reaches_the_command_but_not_the_bwrap_command_line() {
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let mut sp = spec("echo \"[$GH_TOKEN]\"", &env.work(), true, false);
+    sp.env.push(("GH_TOKEN".into(), "ghp_SECRET123".into()));
+    let res = sb.run(&sp, &CancelToken::new(), &mut |_| {});
+    let out = String::from_utf8_lossy(&res.output).into_owned();
+    assert!(out.contains("[ghp_SECRET123]"), "{out}");
+}
+
+/// #53: with another `$HOME` the account's real home is an empty directory inside the sandbox,
+/// in every mode (plan: read-only cwd; with and without network).
+#[test]
+fn a_different_home_hides_the_account_home() {
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let Some(real) = oxa_sandbox::account_home()
+        .filter(|r| std::fs::read_dir(r).is_ok_and(|mut d| d.next().is_some()) && !env.work().starts_with(r))
+    else {
+        return;
+    };
+    for (writable, net) in [(true, true), (true, false), (false, false)] {
+        let cmd = format!(
+            "ls -A '{}' | wc -l; test -e '{0}/.ssh' && echo SSH_VISIBLE",
+            real.display()
+        );
+        let res = sb.run(
+            &spec(&cmd, &env.work(), writable, net),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        let out = String::from_utf8_lossy(&res.output).into_owned();
+        assert_eq!(out.trim(), "0", "writable={writable} net={net}: {out}");
+    }
 }
 
 /// needs bwrap

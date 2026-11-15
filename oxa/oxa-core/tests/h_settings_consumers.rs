@@ -464,7 +464,15 @@ fn user_bash_gets_the_prefix_but_not_the_session_variables() {
             _ => None,
         })
         .expect("a bash execution entry");
-    assert!(output.contains("prefixed:unset"), "{output}");
+    // `!cmd` inherits the process environment, so the expected value of OXA_MODEL is whatever
+    // this process has (possibly a developer's `OXA_MODEL=...`). What must hold is that the
+    // session did not inject its own model ("fake-model") on top of it.
+    let inherited = std::env::var("OXA_MODEL").unwrap_or_else(|_| "unset".to_string());
+    assert_ne!(
+        inherited, "fake-model",
+        "test environment already names the session model"
+    );
+    assert_eq!(output.trim_end(), format!("prefixed:{inherited}"), "{output}");
 }
 
 #[test]
