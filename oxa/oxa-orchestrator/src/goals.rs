@@ -59,7 +59,10 @@ pub struct Event {
 #[derive(Clone, Debug, Serialize)]
 pub struct Events {
     pub oldest_sequence: u64,
+    /// Inclusive cursor for the next page, immediately after its last event.
     pub next_sequence: u64,
+    /// Exclusive high-water mark of the ledger, which may be beyond this page.
+    pub latest_sequence: u64,
     pub gap: bool,
     pub events: Vec<Event>,
 }
@@ -153,22 +156,26 @@ impl Goal {
         snapshot.elapsed_ms = self.elapsed().as_millis().min(u64::MAX as u128) as u64;
         snapshot
     }
+    /// Read from the inclusive `after` cursor. Continue with the returned
+    /// `next_sequence`; `latest_sequence` describes the ledger, not the page.
     pub fn events(&self, after: u64, limit: usize) -> Events {
         let oldest = self
             .events
             .front()
             .map_or(self.next_sequence, |event| event.sequence);
+        let events: Vec<_> = self
+            .events
+            .iter()
+            .filter(|event| event.sequence >= after)
+            .take(limit.min(64))
+            .cloned()
+            .collect();
         Events {
             oldest_sequence: oldest,
-            next_sequence: self.next_sequence,
+            next_sequence: events.last().map_or(after, |event| event.sequence + 1),
+            latest_sequence: self.next_sequence,
             gap: after < oldest,
-            events: self
-                .events
-                .iter()
-                .filter(|event| event.sequence >= after)
-                .take(limit.min(64))
-                .cloned()
-                .collect(),
+            events,
         }
     }
     pub fn begin_turn(&mut self) -> Result<(), Error> {
@@ -468,6 +475,41 @@ mod tests {
             summary: "One useful step finished; more remains".into(),
         }
     }
+    #[test]
+    fn event_pages_preserve_unread_history_and_expose_the_high_water_mark() {
+        let mut goal = goal(None);
+        for _ in 0..90 {
+            goal.steered();
+        }
+        let first = goal.events(0, 64);
+        assert_eq!(first.events.len(), 64);
+        assert_eq!(first.next_sequence, 64);
+        assert_eq!(first.latest_sequence, 91);
+        let second = goal.events(first.next_sequence, 64);
+        assert_eq!(second.events.len(), 27);
+        assert_eq!(second.events.first().unwrap().sequence, 64);
+        assert_eq!(second.next_sequence, 91);
+        let empty = goal.events(second.next_sequence, 64);
+        assert!(empty.events.is_empty());
+        assert_eq!(empty.next_sequence, second.next_sequence);
+        let zero = goal.events(0, 0);
+        assert!(zero.events.is_empty());
+        assert_eq!(zero.next_sequence, 0);
+        assert_eq!(zero.latest_sequence, 91);
+
+        for _ in 0..90 {
+            goal.steered();
+        }
+        let retained = goal.events(0, 64);
+        assert!(retained.gap);
+        assert_eq!(retained.events.len(), 64);
+        assert_eq!(retained.events[0].sequence, retained.oldest_sequence);
+        let tail = goal.events(retained.next_sequence, 64);
+        assert!(!tail.gap);
+        assert_eq!(tail.events.len(), 64);
+        assert_eq!(tail.next_sequence, tail.latest_sequence);
+    }
+
     #[test]
     fn a_waiting_goal_can_be_paused_without_starting_or_refunding_a_turn() {
         let mut goal = goal(Some(100));

@@ -89,6 +89,14 @@ hash-only `goal.jsonl` audits turns and controls without raw goal/role/reply/ste
 text. It is not yet a crash-resume journal or input for `orchestrate-inspect`.
 Goal reports are native goal results, not the older A2A fan-in report schema.
 
+The Rust goal ledger's `Goal::events(after, limit)` uses an inclusive cursor and
+returns at most 64 events. Continue with `next_sequence`, immediately after the
+last returned event. `latest_sequence` is the exclusive ledger high-water mark;
+it can be ahead of a partially read page. `gap` means earlier events were evicted
+from the 128-event history. A zero-sized or empty page leaves the cursor unchanged.
+This ledger API is separate from the shared-session socket's `events` response,
+whose existing `next` cursor uses the wire protocol described in SHARED_SESSION.md.
+
 ## Model-free verification
 
 Real RPC fixtures read, edit and verify an approved private file over three goal
