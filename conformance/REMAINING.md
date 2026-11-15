@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `d93f2c5fe0cc87c8fb7d3b33e28c90935280425a`.
+Reference main: `2e8209c9b276b767d4603d6822f902ddd0537b19`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
