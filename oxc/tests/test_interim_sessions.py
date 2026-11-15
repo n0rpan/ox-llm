@@ -354,9 +354,6 @@ class SessionCleanupTests(unittest.TestCase):
             def send(self, cmd):
                 pass
 
-            def get_state(self):
-                return {'profile': 'local'}
-
             def wait_idle(self):
                 return []
 
@@ -374,7 +371,7 @@ class SessionCleanupTests(unittest.TestCase):
                 work = Path(d)
                 for sub in ('mono', 'home'):
                     (work / sub).mkdir()
-                a = SimpleNamespace(profile='local', soft_tokens=32000, base_url='http://127.0.0.1:18791', proxy_port=0, oxa_bin='/usr/bin/true',
+                a = SimpleNamespace(soft_tokens=32000, base_url='http://127.0.0.1:18791', proxy_port=0, oxa_bin='/usr/bin/true',
                                     model='synthetic', budget_min=45, task_cap_s=900)
                 tasks, recs, rows, second = ru.session(a, work, work / 'mono', work / 'home')
                 alive = [t for t in threading.enumerate() if t.name.startswith('Thread') and t.is_alive() and t is not threading.current_thread()]
@@ -465,7 +462,7 @@ class ArmDeadlineTests(unittest.TestCase):
             ru.session, ru.check, ru.time.time = session, check, lambda: clock[0]
             with tempfile.TemporaryDirectory() as d:
                 out = Path(d) / 'out'
-                rc = ru.main(['--out', str(out), '--budget-min', '45', '--profile', 'local'])
+                rc = ru.main(['--out', str(out), '--budget-min', '45'])
                 rep = json.loads((out / 'real-use.json').read_text())
         finally:
             for n, f in zip(names, orig):

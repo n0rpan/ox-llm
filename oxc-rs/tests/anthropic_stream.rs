@@ -3,6 +3,11 @@ use oxc::anthropic_stream::{Field, Redactor, Stream, Usage};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+fn canonical(mut value: Value) -> Vec<u8> {
+    value.sort_all_objects();
+    serde_json::to_vec(&value).unwrap()
+}
+
 struct FixtureRedactor {
     marker: Option<String>,
     held: BTreeMap<Field, String>,
@@ -52,8 +57,8 @@ fn python_stream_contracts() {
             .flat_map(|event| stream.event(event).unwrap())
             .collect();
         assert_eq!(
-            serde_json::to_vec(&chunks).unwrap(),
-            serde_json::to_vec(&row["expected"]).unwrap(),
+            canonical(json!(chunks)),
+            canonical(row["expected"].clone()),
             "{}",
             row["name"]
         );

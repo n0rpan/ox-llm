@@ -504,6 +504,7 @@ class BudgetHold:
         self.output_tokens = output_tokens
         self.started = monotonic() if started is None else started
         self.settled = False
+        self.accounted = False  # A completed accounting attempt, distinct from releasing admission.
 
     def settle(self):
         with _budget_lock:
@@ -828,9 +829,18 @@ class SSEDecoder:
         return event, data
 
 
+def cache_pricing(item):
+    """How cache tokens are priced: explicit catalog rates, provider default or conservative."""
+    price = pricing(item) or {}
+    levels = price['tiers'] if 'tiers' in price else [price]
+    if all('cache_read_per_million' in level and 'cache_write_per_million' in level for level in levels):
+        return 'explicit'
+    return 'provider_default' if item['provider'] == 'anthropic' else 'conservative'
+
+
 def capabilities(item):
     """The Wave D per-model capability block for a remote catalog entry."""
-    return {'remote': True, 'remote_provider': item['provider'], 'echo': False,
+    return {'cache_pricing': cache_pricing(item), 'remote': True, 'remote_provider': item['provider'], 'echo': False,
             'cache_hints': False, 'cancel': item['provider'] != 'openai', 'prefill': False,
             'preserve_thinking': False, 'context_window': item['context_window']}
 
