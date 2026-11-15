@@ -3,7 +3,7 @@
 //! A read-only spec (plan mode) and every other level go to the wrapped sandbox unchanged.
 //! Offline stays a hard switch: the command then runs through bwrap with the network unshared
 //! and the user's file system (as `!cmd` does offline), and is refused without bwrap.
-use crate::{offline_argv, run_argv, run_argv_capture, run_unsandboxed_capture};
+use crate::{offline_argv, run_argv_capture, run_unsandboxed_capture};
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -67,8 +67,7 @@ impl FullAccess {
             return run_unsandboxed_capture(s, c, live, capture);
         }
         match self.launch_argv(s) {
-            Ok(argv) if capture => run_argv(&argv, &[], s.timeout_s, c, live),
-            Ok(argv) => run_argv_capture(&argv, &[], s.timeout_s, c, live, false),
+            Ok(argv) => run_argv_capture(&argv, &[], s.timeout_s, c, live, capture),
             Err(e) => ExecResult {
                 output: if capture {
                     e.to_string().into_bytes()
