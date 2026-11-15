@@ -481,8 +481,8 @@ def _check_ledger_health():
                     _ledger_failures.discard(str(directory))
             if str(directory) not in _ledger_failures:
                 return
-    except CloudError:
-        pass
+    except (CloudError, OSError):
+        pass  # a probe that cannot write or read keeps the latch (fail closed)
     raise _latch_error()
 
 

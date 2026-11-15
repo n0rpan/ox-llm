@@ -87,6 +87,13 @@ class MessagesTranslation(AnthropicBase):
         self.assertEqual([(b['type'], b['text']) for b in blocks],
                          [('text', 'one'), ('text', 'two')])
 
+    def test_empty_tool_result_gets_a_placeholder_not_an_empty_block(self):
+        for content in ('', [], None):
+            status, reply, upstream = self._tool_content(content)
+            self.assertEqual(status, 200, reply)
+            blocks = upstream.requests[0]['body']['messages'][-1]['content'][0]['content']
+            self.assertTrue(all(b['text'].strip() for b in blocks), blocks)
+
     def test_unsupported_tool_result_part_is_a_clear_error(self):
         status, reply, upstream = self._tool_content(
             [{'type': 'text', 'text': 'one'}, {'type': 'audio', 'data': 'x'}])

@@ -84,6 +84,9 @@ def _text_parts(content):
     return out
 
 
+_EMPTY_RESULT = '(no output)'
+
+
 def _tool_result_blocks(content):
     if isinstance(content, list):
         out = []
@@ -96,8 +99,8 @@ def _tool_result_blocks(content):
                 raise cloud.CloudError(
                     'Tool result content part type %r is not supported by this model; '
                     'only text parts are.' % (kind,), 400, 'invalid_value', 'messages')
-        return out or [{'type': 'text', 'text': ''}]
-    return [{'type': 'text', 'text': str(content or '')}]
+        return out or [{'type': 'text', 'text': _EMPTY_RESULT}]
+    return [{'type': 'text', 'text': str(content or '') or _EMPTY_RESULT}]
 
 
 def _tool_use(call):
