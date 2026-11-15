@@ -16,3 +16,8 @@ Source cases use private HOME/network namespaces and synthetic data. No real
 API, credential, SDK material or sign-in is used. Every opt-in module forbids
 unsafe code. Preserve all present feature/module/example entries when merging
 companion slices. Full cloud-only forwarding/accounting remains incomplete.
+
+Main’s `secrets` module and its explicit native contracts are preserved. The
+symlink-loop case validates the two complete interpreter-specific safe refusals
+from Python 3.12/3.13; all other secret errors remain exact. Credentials are read
+from owner-only files and are never logged or included in errors.
