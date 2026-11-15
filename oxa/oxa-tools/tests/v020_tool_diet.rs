@@ -49,14 +49,6 @@ fn ok(tool: &dyn Tool, env: &TestEnv, args: Value, tune: ToolTune) -> String {
     out.text
 }
 
-/// Profile `local` only.
-fn local() -> ToolTune {
-    ToolTune {
-        local: true,
-        ..ToolTune::default()
-    }
-}
-
 /// TOOL-DIET only.
 fn diet() -> ToolTune {
     ToolTune {
@@ -93,10 +85,8 @@ fn default_tune_grep_bytes_are_pi_bytes() {
     env.write("work/x.txt", "a\nhit\nb\n");
     env.write("work/y.txt", "hit\n");
     let args = json!({"pattern": "hit", "context": 1});
-    let out = ok(&GrepTool::new(), &env, args.clone(), ToolTune::default());
+    let out = ok(&GrepTool::new(), &env, args, ToolTune::default());
     assert_eq!(out, "x.txt-1- a\nx.txt:2: hit\nx.txt-3- b\ny.txt:1: hit");
-    // The local profile changes nothing under the limit.
-    assert_eq!(ok(&GrepTool::new(), &env, args, local()), out);
 }
 
 #[test]
@@ -113,7 +103,6 @@ fn default_tune_read_bytes_are_pi_bytes() {
     // A first-page tune on a file that fits one page changes nothing either.
     let paged = ToolTune {
         read_page_lines: 100,
-        local: true,
         ..ToolTune::default()
     };
     assert_eq!(ok(&ReadTool::new(), &env, json!({"path": "f.txt"}), paged), out);
@@ -206,7 +195,6 @@ fn read_first_page_notice_and_continuation() {
     env.write("work/long.txt", &body);
     let paged = ToolTune {
         read_page_lines: 100,
-        local: true,
         ..ToolTune::default()
     };
     let first = ok(&ReadTool::new(), &env, json!({"path": "long.txt"}), paged);
@@ -217,17 +205,6 @@ fn read_first_page_notice_and_continuation() {
     assert_eq!(page.len(), 100);
     assert_eq!(page.first(), Some(&"line 1"));
     assert_eq!(page.last(), Some(&"line 100"));
-
-    // Without the local hint the notice is pi's text.
-    let no_hint = ToolTune {
-        read_page_lines: 100,
-        ..ToolTune::default()
-    };
-    let plain = ok(&ReadTool::new(), &env, json!({"path": "long.txt"}), no_hint);
-    assert!(
-        plain.ends_with("\n\n[Showing lines 1-100 of 251. Use offset=101 to continue.]"),
-        "got: {plain}"
-    );
 
     // The next read, with the offset from the notice, starts at line 101: no gap, no overlap.
     let next = ok(
@@ -262,7 +239,6 @@ fn read_first_page_byte_limit_applies_when_first() {
     let tune = ToolTune {
         read_page_lines: 100,
         read_page_bytes: 50,
-        local: true,
         ..ToolTune::default()
     };
     let out = ok(&ReadTool::new(), &env, json!({"path": "bytes.txt"}), tune);
@@ -288,14 +264,7 @@ fn grep_over_limit_gives_one_notice_and_counts() {
     let env = TestEnv::new();
     write_tree(&env);
     let args = json!({"pattern": "needle", "context": 2, "path": "project"});
-    // Pi's answer keeps the cut list and pi's notice.
-    let pi = ok(&GrepTool::new(), &env, args.clone(), ToolTune::default());
-    assert!(
-        pi.contains("[100 matches limit reached. Use limit=200 for more, or refine pattern."),
-        "got tail: {pi}"
-    );
-
-    let out = ok(&GrepTool::new(), &env, args, local());
+    let out = ok(&GrepTool::new(), &env, args, ToolTune::default());
     let (head, rows) = out.split_once("\n\n").expect("notice, blank line, counts");
     assert_eq!(
         head,
@@ -308,18 +277,8 @@ fn grep_over_limit_gives_one_notice_and_counts() {
     }
 }
 
-#[test]
-fn grep_under_limit_is_unchanged_by_local() {
-    let env = TestEnv::new();
-    write_tree(&env);
-    let args = json!({"pattern": "item 03-", "limit": 1000});
-    let a = ok(&GrepTool::new(), &env, args.clone(), ToolTune::default());
-    let b = ok(&GrepTool::new(), &env, args, local());
-    assert_eq!(a, b);
-}
-
-/// parity-local: a first line that fits pi's cap but not the first page is not refused. The
-/// read falls back to pi's read (the 16 KiB cap and pi's notice), so `local` shows every line a
+/// parity: a first line that fits pi's cap but not the first page is not refused. The read
+/// falls back to pi's read (the 16 KiB cap and pi's notice), so the tuning shows every line a
 /// plain read shows under `pi`, byte for byte.
 #[test]
 fn read_first_page_never_refuses_a_line_pi_shows() {
@@ -329,7 +288,6 @@ fn read_first_page_never_refuses_a_line_pi_shows() {
     let tune = ToolTune {
         read_page_lines: 400,
         read_page_bytes: 8192,
-        local: true,
         ..ToolTune::default()
     };
     let pi = ok(
@@ -338,16 +296,16 @@ fn read_first_page_never_refuses_a_line_pi_shows() {
         json!({"path": "wide.txt"}),
         ToolTune::default(),
     );
-    let local = ok(&ReadTool::new(), &env, json!({"path": "wide.txt"}), tune);
-    assert_eq!(local, pi);
+    let tuned = ok(&ReadTool::new(), &env, json!({"path": "wide.txt"}), tune);
+    assert_eq!(tuned, pi);
     assert!(
-        local.starts_with(&"a".repeat(9000)),
+        tuned.starts_with(&"a".repeat(9000)),
         "the whole first line is shown"
     );
     assert!(
-        local.contains("(16.0KB limit). Use offset=2 to continue.]"),
+        tuned.contains("(16.0KB limit). Use offset=2 to continue.]"),
         "got tail: {}",
-        &local[9000..]
+        &tuned[9000..]
     );
     // A line over pi's cap is refused by both with pi's text.
     env.write("work/huge.txt", &"z".repeat(20_000));

@@ -158,7 +158,7 @@ fn quiet_startup() {
         model: "qwen".to_string(),
         model_remote: false,
         model_provider: None,
-        profile: None,
+
     };
     let keymap = Keymap::defaults();
     let vm = ViewModel::default();
@@ -345,27 +345,6 @@ fn loaded_resources_listing() {
     );
 }
 
-/// Wave H: under the `local` profile the header line carries the word, nothing under `pi`.
-#[test]
-fn header_profile_word() {
-    let mut info = HeaderInfo {
-        version: "0.1.0".to_string(),
-        resources: Vec::new(),
-        engine_url: "http://127.0.0.1:8080".to_string(),
-        model: "qwen".to_string(),
-        model_remote: false,
-        model_provider: None,
-        profile: Some("local".to_string()),
-    };
-    let keymap = Keymap::defaults();
-    let vm = ViewModel::default();
-    let lines = render_header(&info, &vm, &keymap, false, 80, &Theme::plain());
-    assert_eq!(lines[0], "oxa v0.1.0 local");
-    info.profile = None;
-    let lines = render_header(&info, &vm, &keymap, false, 80, &Theme::plain());
-    assert_eq!(lines[0], "oxa v0.1.0");
-}
-
 /// Wave D D4b: the status bar names where the model runs, both states.
 #[test]
 fn footer_and_header_show_the_model_location() {
@@ -418,7 +397,7 @@ fn footer_and_header_show_the_model_location() {
         model: "qwen".to_string(),
         model_remote: false,
         model_provider: None,
-        profile: Some("local".to_string()),
+
     };
     let local_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
     assert!(local_header.contains("local"), "{local_header}");

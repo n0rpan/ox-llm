@@ -1,4 +1,4 @@
-//! P3 / P4 (wave H lane `local`): the engine client. A host that is not loopback is refused
+//! P3 / P4 (wave H): the engine client. A host that is not loopback is refused
 //! when the client is built unless `oxa.engine.allowRemote`; offline, every connect (engine
 //! and `http_request`, which extension fetch uses) is loopback only. The tests share the process network policy, so they hold one lock each.
 

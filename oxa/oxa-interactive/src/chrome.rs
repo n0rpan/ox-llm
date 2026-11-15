@@ -220,8 +220,6 @@ pub struct HeaderInfo {
     /// Wave D D4b: where the model runs; shown in the start banner.
     pub model_remote: bool,
     pub model_provider: Option<&'static str>,
-    /// The profile word after the version (`local`); `None` under `pi`.
-    pub profile: Option<String>,
 }
 
 /// The startup header: logo line, key hints from the keymap, loaded resources. With
@@ -243,14 +241,7 @@ pub fn render_header(
     }
     let mut out = Vec::new();
     out.push(truncate_to_width(
-        &match &info.profile {
-            Some(p) => format!(
-                "{} {}",
-                theme.bold(&format!("oxa v{}", info.version)),
-                theme.dim(p)
-            ),
-            None => theme.bold(&format!("oxa v{}", info.version)),
-        },
+        &theme.bold(&format!("oxa v{}", info.version)),
         w,
         "...",
     ));

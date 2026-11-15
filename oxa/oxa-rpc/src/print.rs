@@ -153,7 +153,8 @@ impl EventSink for PrintSink<'_> {
 
 /// `-p`: run each prompt in order (piped stdin text is prepended to the first one by the
 /// caller), then write only the final assistant text + `\n` to `out`. Notices and errors go to
-/// `err`. Exit code: 0 ok, 1 when the last run failed or was aborted.
+/// `err`. Exit code: 0 ok, 1 when the last run failed or was aborted, or when the `done`
+/// checks still failed after their repair rounds (one stderr line says so).
 pub fn run_print(
     session: &mut Session,
     prompts: Vec<(String, Vec<Part>)>,
@@ -216,6 +217,9 @@ pub fn run_print(
     }
 
     let mut code = 0;
+    if done_failed(session, &mut *sink.err) {
+        code = 1;
+    }
     if failed {
         code = 1;
     } else if let Some(m) = sink.last.clone() {
@@ -288,7 +292,17 @@ pub fn run_json(
         }
         failed = after_run(session, &before, &mut ui, &mut Vec::new(), err);
     }
-    Ok(if failed { 1 } else { 0 })
+    let done = done_failed(session, err);
+    Ok(if failed || done { 1 } else { 0 })
+}
+
+/// Whether the `done` checks still failed after the repair rounds; says so on `err` once.
+fn done_failed(session: &Session, err: &mut dyn Write) -> bool {
+    let failed = session.inner().stats.done_failed;
+    if failed {
+        let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+    }
+    failed
 }
 
 /// The header of the session in use: the stored one, or one built from the session state when
