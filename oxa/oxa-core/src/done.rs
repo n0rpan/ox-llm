@@ -47,7 +47,14 @@ pub(crate) fn check(
     let _ = ui;
     let mut failed = String::new();
     for cmd in &cmds {
+        // A cancel stops the whole done phase: no further command, no notice, no repair text.
+        if st.shared.cancel.is_cancelled() {
+            return None;
+        }
         let (ok, line, out) = run_one(st, cmd);
+        if st.shared.cancel.is_cancelled() {
+            return None;
+        }
         let mut text = line.clone();
         if !out.is_empty() {
             text.push('\n');

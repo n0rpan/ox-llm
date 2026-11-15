@@ -46,6 +46,15 @@ impl Rec {
 }
 
 fn run(env: &TestEnv, done: serde_json::Value, turns: Vec<ScriptTurn>) -> (Rec, Arc<ScriptedEngine>) {
+    run_with(env, done, turns, Arc::new(Direct))
+}
+
+fn run_with(
+    env: &TestEnv,
+    done: serde_json::Value,
+    turns: Vec<ScriptTurn>,
+    sandbox: Arc<dyn Sandbox>,
+) -> (Rec, Arc<ScriptedEngine>) {
     let engine = Arc::new(ScriptedEngine::new(turns));
     let settings = if done.is_null() {
         Settings::default()
@@ -58,7 +67,7 @@ fn run(env: &TestEnv, done: serde_json::Value, turns: Vec<ScriptTurn>) -> (Rec, 
         tools: oxa_tools::builtin_tools(),
         hooks: Vec::new(),
         policy: Box::new(ModePolicy::new()),
-        sandbox: Arc::new(Direct),
+        sandbox,
         settings,
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
@@ -181,4 +190,45 @@ fn failed_check_without_new_edit_is_not_rerun() {
     );
     assert_eq!(rec.checks().len(), 1);
     assert_eq!(engine.requests().len(), 3);
+}
+
+/// Records every command and cancels the token while the first one runs.
+struct CancelDuringFirst(std::sync::Mutex<Vec<String>>);
+impl Sandbox for CancelDuringFirst {
+    fn check(&self) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+        Vec::new()
+    }
+    fn run(&self, s: &ExecSpec, c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        self.0.lock().unwrap().push(s.command.clone());
+        c.cancel();
+        ExecResult {
+            exit: None,
+            ..Default::default()
+        }
+    }
+}
+
+#[test]
+fn cancel_during_first_check_stops_done_phase() {
+    let env = TestEnv::new();
+    let spy = Arc::new(CancelDuringFirst(Default::default()));
+    let (rec, engine) = run_with(
+        &env,
+        json!(["echo first", "echo second"]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::text("must not be requested"),
+        ],
+        spy.clone(),
+    );
+    let ran = spy.0.lock().unwrap().clone();
+    assert_eq!(ran.len(), 1, "{ran:?}");
+    assert!(ran[0].contains("first"), "{ran:?}");
+    assert!(rec.checks().is_empty(), "{:?}", rec.checks());
+    assert_eq!(engine.requests().len(), 2);
+    assert_eq!(engine.remaining(), 1);
 }
