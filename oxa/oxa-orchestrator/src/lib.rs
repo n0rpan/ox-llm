@@ -9,6 +9,7 @@ mod background_process;
 mod checkpoint;
 pub mod cli;
 pub mod control;
+mod control_cli;
 mod git_worktrees;
 #[cfg(feature = "interactive-control")]
 mod goal_agent;

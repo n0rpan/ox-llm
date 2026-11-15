@@ -25,7 +25,7 @@ const CLIENT_TIME: Duration = Duration::from_secs(2);
 
 #[derive(Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
-enum Request {
+pub(crate) enum Request {
     Status {
         id: String,
     },

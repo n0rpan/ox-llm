@@ -15,6 +15,33 @@ length limits apply. Without `--control`, no attachment listener is created.
 
 ## Client requests
 
+The feature-built binary includes an operator client; no Python client or second
+inference runtime is needed:
+
+```sh
+socket="$HOME/.oxa/agent/project-control/session.sock"
+oxa orchestrate-control --socket "$socket" status
+oxa orchestrate-control --socket "$socket" events --after 0
+oxa orchestrate-control --socket "$socket" request < request.json
+```
+
+`request.json` contains one request from the table below, for example
+`{"id":"pause-project-1","method":"pause","revision":7}`. Read the current
+revision first; this example's revision is not an automatic selection. Use a new
+ID for each mutation, read its admission/rejection event, and use the returned
+`next` cursor for another events page. The client does not fetch a replacement
+revision, retry a mutation, follow events indefinitely, or treat queue acceptance
+as admission. Read-only `status`/`events` commands do not read stdin.
+
+Output is one JSON response. Exit 0 means a response without a server error;
+`queued: true` still means queued only. Exit 1 means transport/protocol/server
+failure, and exit 2 means invalid arguments or input. After an uncertain mutation
+response, inspect events before retrying. The client validates the same schema as
+the server, bounds requests to 32 KiB and responses to 1 MiB, and checks response
+IDs. Connected I/O has a three-second deadline. It requires an explicit socket
+path and does not discover settings or start an agent. Operator text is supplied
+on stdin rather than command-line arguments.
+
 Connect to the Unix socket and send one UTF-8 JSON object followed by newline. Read
 one JSON response followed by EOF. Open another connection for each request.
 Multiple clients can read and write concurrently. No writer lease is held by the

@@ -31,6 +31,13 @@ Shell network access is disabled; SDK inference uses the owned gateway. Extensio
 MCP, skills, context files and web search are disabled. No real API key, production
 service or installed binary is used.
 
+Add `--control-client` to run status, goal mutations and event pagination through
+the real `oxa orchestrate-control` executable instead of the embedded Python
+socket client. The expiry/compaction cases require every mutation's unique request
+ID to appear in a `control_admitted` event, with no event-history gap. The actual
+tmux compaction run passes with this option and prints
+`"control_client_verified": true` alongside the same token/summary ledger checks.
+
 The external client sets a budgeted goal in the actual TUI session. The model
 starts a separately budgeted cloud-routed worker with a fixed role and one file
 grant. The worker reads that file through its real tool. A barrier holds its final

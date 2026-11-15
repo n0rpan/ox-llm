@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import uuid
 from unittest.mock import patch
 
 KEY = "synthetic-cloud-key-for-mock-only"
@@ -159,6 +160,25 @@ def run_isolated(args):
     spec.loader.exec_module(live)
     demo = live.Demo(args.bin_dir)
     compacting = args.case == "compaction"
+    mutation_ids = []
+    if args.control_client:
+        def cli_request(method, **fields):
+            command = [str(demo.binaries / "oxa"), "orchestrate-control", "--socket", str(demo.socket)]
+            data = None
+            if method == "status":
+                command.append("status")
+            elif method == "events":
+                command.extend(["events", "--after", str(fields["after"])])
+            else:
+                request_id = "gateway-client-" + uuid.uuid4().hex
+                mutation_ids.append(request_id)
+                data = json.dumps({"id": request_id, "method": method, **fields})
+                command.append("request")
+            result = subprocess.run(command, input=data, capture_output=True, text=True,
+                                    env=demo.env, timeout=5)
+            assert result.returncode == 0, result.stderr or result.stdout
+            return json.loads(result.stdout)
+        demo.request = cli_request
     upstream = mock_type(MockOpenAIResponses, args.case)()
     stack = None
     try:
@@ -274,6 +294,20 @@ def run_isolated(args):
         assert "gateway-worker-final" in json.dumps(parent_requests[-1])
         if compacting:
             assert "gateway-summary-marker" in json.dumps(parent_requests[-1])
+        if args.control_client:
+            cursor = 0
+            admitted = set()
+            while True:
+                page = demo.request("events", after=cursor)
+                assert not page["gap"], "lost admission evidence"
+                for row in page["events"]:
+                    event = row["event"]
+                    if event["kind"] == "control_admitted":
+                        admitted.add(event["request_id"])
+                cursor = page["next"]
+                if cursor == page["latest"]:
+                    break
+            assert set(mutation_ids) <= admitted, (mutation_ids, admitted)
         demo.save_screen("gateway-screen.txt", lambda s: (
             "gateway-parent-final" in s and "Goal Done" in s
             and any("cloud · openai" in line for line in s.splitlines() if " OXA " in line)
@@ -306,7 +340,7 @@ def run_isolated(args):
         else:
             raise AssertionError("TUI exit deadline")
         result = {
-            "real_gateway": True, "root_model": "root-gpt", "worker_model": "worker-gpt",
+            "real_gateway": True, "control_client_verified": args.control_client, "root_model": "root-gpt", "worker_model": "worker-gpt",
             "evicted_native_entries": evicted, "root_tokens": expected_parent_tokens, "worker_tokens": 40,
             "summary_calls": upstream.summaries,
             "gateway_rows": len(rows), "continuation_recovered": True,
@@ -397,6 +431,7 @@ def main():
     parser.add_argument("--gateway-root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--bin-dir", type=Path, default=Path(__file__).resolve().parents[2] / "target" / "debug")
     parser.add_argument("--case", choices=("expiry", "compaction", "cancel-stream", "cancel-quiet"), default="expiry")
+    parser.add_argument("--control-client", action="store_true", help="use the actual CLI control client")
     parser.add_argument("--isolated-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.isolated_root is not None:
@@ -417,6 +452,8 @@ def main():
     command = [sys.executable, "-I", str(Path(__file__).resolve()), "--isolated-root", str(root),
                "--gateway-root", str(args.gateway_root.resolve()), "--bin-dir", str(args.bin_dir.resolve()),
                "--case", args.case]
+    if args.control_client:
+        command.append("--control-client")
     result = subprocess.run(command, env=env)
     print(f"Isolated gateway evidence: {root}")
     raise SystemExit(result.returncode)
