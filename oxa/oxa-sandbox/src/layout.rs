@@ -81,7 +81,6 @@ pub const CACHE_WRITE: &[&str] = &[
     ".cache/mise",
     // Only `tracked-configs`: `trusted-configs` (trust records) must stay read-only.
     ".local/state/mise/tracked-configs",
-    ".cache/sccache",
     ".cache/pip",
     ".cache/uv",
     ".cache/go-build",
@@ -362,16 +361,15 @@ mod tests {
             ..Default::default()
         });
         assert!(l.env.contains(&("SCCACHE_DIR".into(), "/tmp/sccache".into())));
-        let h = std::env::temp_dir().join(format!("oxa-sccache-{}", std::process::id()));
-        std::fs::create_dir_all(h.join(".cache/sccache")).unwrap();
-        let mine = h.join(".cache/sccache").display().to_string();
+        // The host sccache store holds unverified compiled artifacts: never bound writable,
+        // so a caller value inside it falls back to /tmp too.
         let l = Layout::build(&LayoutInputs {
-            home: h.clone(),
-            env: vec![("SCCACHE_DIR".into(), mine.clone())],
+            home: PathBuf::from("/h"),
+            env: vec![("SCCACHE_DIR".into(), "/h/.cache/sccache".into())],
             ..Default::default()
         });
-        assert!(l.env.contains(&("SCCACHE_DIR".into(), mine)));
-        std::fs::remove_dir_all(&h).ok();
+        assert!(l.env.contains(&("SCCACHE_DIR".into(), "/tmp/sccache".into())));
+        assert!(!l.write.iter().any(|w| w.ends_with(".cache/sccache")));
         // A value elsewhere on the read-only home is replaced by a writable one.
         let l = Layout::build(&LayoutInputs {
             home: PathBuf::from("/h"),
