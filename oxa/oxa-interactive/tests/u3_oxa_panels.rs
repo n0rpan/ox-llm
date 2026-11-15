@@ -180,11 +180,13 @@ fn all_blocks() -> Vec<Block> {
         Block::Compaction {
             summary: "Earlier work: the range helpers were reviewed.".to_string(),
             tokens_before: 15260,
+            tokens_after: None,
             expanded: false,
         },
         Block::Compaction {
             summary: "Earlier work: the range helpers were reviewed.".to_string(),
             tokens_before: 15260,
+            tokens_after: None,
             expanded: true,
         },
         Block::BranchSummary {
@@ -635,6 +637,7 @@ fn compaction_collapsed_divider() {
     let block = Block::Compaction {
         summary: "Earlier work.".to_string(),
         tokens_before: 15260,
+        tokens_after: None,
         expanded: false,
     };
     let lines = plain_lines(&render_block(&block, &fx.cx(80)));
@@ -653,6 +656,7 @@ fn compaction_expanded_has_no_hint_and_a_rail() {
     let block = Block::Compaction {
         summary: "Earlier work.".to_string(),
         tokens_before: 15260,
+        tokens_after: None,
         expanded: true,
     };
     let lines = plain_lines(&render_block(&block, &fx.cx(60)));
@@ -848,6 +852,7 @@ fn ascii_skin_with_ascii_input_is_pure_ascii() {
         Block::Compaction {
             summary: "Summary text.".to_string(),
             tokens_before: 99,
+            tokens_after: None,
             expanded: false,
         },
         Block::Notice {

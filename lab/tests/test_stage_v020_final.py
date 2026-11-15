@@ -15,6 +15,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import stage_v020_final as gen  # noqa: E402
 import stage_layout_fixture as v013t  # noqa: E402  (shared synthetic layouts, no legacy generator)
 

@@ -78,6 +78,9 @@ pub enum Block {
     Compaction {
         summary: String,
         tokens_before: u32,
+        /// Estimated context tokens after the compaction, when known (live `/compact` and
+        /// auto-compaction report it; entries resumed from disk predate the estimate).
+        tokens_after: Option<u32>,
         expanded: bool,
     },
     BranchSummary {
