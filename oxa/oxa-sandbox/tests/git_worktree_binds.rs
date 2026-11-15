@@ -205,6 +205,7 @@ fn worktree_binds_its_gitdir_and_common_dir() {
         sorted(vec![
             canon(&w.main_git).join("commondir"),
             canon(&w.main_git.join("config")),
+            canon(&w.main_git).join("gitdir"),
             canon(&w.main_git).join("config.worktree"),
             canon(&w.main_git).join("gitdir"),
             canon(&w.main_git.join("hooks")),
@@ -235,6 +236,21 @@ fn plain_repository_binds_nothing() {
     dir(&git.join("objects/pack"));
     let got = resolve_git_binds(&clone, &env.home(), Some(&env.agent_dir()));
     assert!(got.is_empty(), "{got:?}");
+}
+
+/// Review of #203: the `commondir` holding "." that a writable command leaves on the host is
+/// not a worktree link; the repository stays discoverable from a subdirectory.
+#[test]
+fn plain_repository_with_synthetic_commondir_is_still_found() {
+    let env = TestEnv::new();
+    let top = dir(&env.work().join("top"));
+    let git = dir(&top.join(".git"));
+    file(&git.join("HEAD"), "ref: refs/heads/main\n");
+    file(&git.join("commondir"), ".\n");
+    dir(&git.join("objects/pack"));
+    let sub = dir(&top.join("sub"));
+    let got = resolve_git_binds(&sub, &env.home(), Some(&env.agent_dir()));
+    assert_eq!(got.rw, vec![canon(&git)]);
 }
 
 #[test]

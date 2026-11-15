@@ -54,11 +54,15 @@ impl PathGuard {
         }
         deny.sort();
         deny.dedup();
+        let mut home_protected = home_protected_paths(home);
+        if let Some(r) = real_home.filter(|r| *r != home) {
+            home_protected.extend(home_protected_paths(r));
+        }
         PathGuard {
             deny,
             allow: vec![tmp_dir.to_path_buf()],
             home: home.to_path_buf(),
-            home_protected: home_protected_paths(home),
+            home_protected,
         }
     }
 

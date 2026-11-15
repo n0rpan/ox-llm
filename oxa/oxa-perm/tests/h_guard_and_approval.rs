@@ -435,6 +435,31 @@ fn a_baseline_makes_later_project_config_new() {
     assert!(!TrustStore::load(&file).trusted_as_approved(&cwd));
 }
 
+/// Review of #203: with `$HOME` overridden, a grant in the account's real home never covers
+/// that home's startup files either.
+#[test]
+fn a_grant_in_the_real_home_never_covers_its_startup_files() {
+    let env = TestEnv::new();
+    let real = env.work().join("real-account-home");
+    env.write("work/real-account-home/notes.txt", "n\n");
+    env.write("work/real-account-home/.bashrc", "# rc\n");
+    let guard = PathGuard::with_real_home(
+        &env.home(),
+        Some(&real),
+        &env.agent_dir(),
+        &env.agent_dir().join("tmp"),
+    );
+    let cwd = env.work().join("proj");
+    let mut p = ModePolicy::new().with_guard(guard);
+    let first = Access::Write(real.join("notes.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &first, &cwd), Decision::Ask);
+    p.remember(&first);
+    let rc = Access::Write(real.join(".bashrc"));
+    assert_eq!(p.decide(Mode::Workspace, &rc, &cwd), Decision::Ask);
+    let other = Access::Write(real.join("todo.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &other, &cwd), Decision::Allow);
+}
+
 #[test]
 fn git_worktree_pointer_cannot_be_rewritten_and_fifo_dotgit_does_not_hang() {
     let env = TestEnv::new();
