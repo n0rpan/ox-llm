@@ -70,7 +70,7 @@ STATUS_KEYS = '''
     backend context_size threads execution_policy_mode memory_policy memory_guard_setup validation flash_memory gpu_layers
     active_requests queued_requests idle_unload_seconds image_active image_broker_error loaded_model
     resident_bytes idle_unload_remaining_seconds unload prefix_cache backend_kind engine engine_note
-    flash_qualification engine_ledger harnesses request_compat harness_learning flash_idle_qos capabilities
+    flash_qualification engine_ledger harnesses request_compat harness_learning flash_idle_qos capabilities cloud
     active last_error last_failure error_at error_origin context model_limits preload stop_pending image_slot_stale
     lan_share chat_url api_base keep_warm model_preload
 '''.split()
@@ -78,7 +78,7 @@ BUSY_KEYS = ['state', 'active_requests', 'capabilities', 'active']
 ACTIVE_KEYS = ['phase', 'model', 'seconds', 'queued_requests', 'prompt_tokens_done', 'prompt_tokens_total',
                'tokens_out', 'tokens_per_second']
 CAPABILITIES = ('models', 'storage', 'harness', 'harness_learning', 'ledger', 'active', 'openai_aliases',
-                'state_cache', 'context_modes', 'preload', 'model_preload')
+                'state_cache', 'context_modes', 'preload', 'model_preload', 'cloud')
 
 
 class Namespace(unittest.TestCase):

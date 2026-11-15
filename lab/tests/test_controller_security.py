@@ -75,6 +75,7 @@ class SecurityBase(unittest.TestCase):
             backend_runtime=None,
             status=Mock(return_value={'state': 'unloaded', 'validated': False, 'model': None}),
             models=Mock(return_value=[]),
+            cloud_only=Mock(return_value=False),
             begin=Mock(return_value=None),
             begin_queued=Mock(return_value=None),
             end=Mock(return_value=None),
