@@ -51,6 +51,86 @@ fn worker(server: &FakeServer, id: &str) -> WorkerSpec {
     }
 }
 
+fn native_unknown_after_known_usage_never_completes() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let mut spec = worker(&engine, "unknown-after-known");
+    spec.role = "fixed role\nfixture-unknown-after-known".into();
+    let (_, controls) = mpsc::channel();
+    let report = run(
+        settings(&env, "unknown-after-known"),
+        vec![spec],
+        controls,
+        |_| {},
+    )
+    .unwrap();
+    assert_reaped(&report);
+    assert!(
+        !report.workers[0].task.artifacts.is_empty(),
+        "fixture must have delivered the complete-looking reply before unknown usage"
+    );
+    assert_eq!(report.workers[0].outcome, Outcome::Failed);
+    assert_eq!(report.workers[0].reported_tokens, None);
+    assert_ne!(report.workers[0].task.status.state, TaskState::Completed);
+    assert!(engine.requests().is_empty());
+    for recovered in [false, true] {
+        let mut spec = worker(&engine, "time-only");
+        spec.role = if recovered {
+            "fixed role\nfixture-recovered-after-failure"
+        } else {
+            "fixed role\nfixture-unknown-after-known"
+        }
+        .into();
+        let mut config = settings(
+            &env,
+            if recovered {
+                "recovered-goal"
+            } else {
+                "unknown-goal"
+            },
+        );
+        config.parallelism = 1;
+        config.wall_time = Duration::from_secs(5);
+        let (_, controls) = mpsc::channel();
+        let report = oxa_orchestrator::goal_session::pursue(
+            config,
+            spec,
+            oxa_orchestrator::goals::Budget {
+                wall_ms: 5000,
+                tokens: None,
+                turns: 3,
+            },
+            controls,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        assert!(report.process_stopped);
+        assert!(!Path::new(&format!("/proc/{}", report.process_id)).exists());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&report.last_reply).unwrap()["state"],
+            "done"
+        );
+        assert_eq!(
+            report.goal.state,
+            if recovered {
+                oxa_orchestrator::goals::State::Done
+            } else {
+                oxa_orchestrator::goals::State::Blocked
+            },
+            "a new reply may recover; a stale reply cannot hide later inference failure"
+        );
+        assert_eq!(
+            report.runtime_outcome,
+            if recovered { None } else { Some(Outcome::Failed) }
+        );
+        assert_eq!(
+            report.goal.reported_tokens, None,
+            "recovery never repairs cumulative uncertainty"
+        );
+    }
+}
+
 fn native_response_allowance_and_truncation_keep_settled_usage() {
     for (limit, completed) in [(512, false), (2048, true)] {
         let env = TestEnv::new();
@@ -1113,6 +1193,12 @@ fn hostile_workers_and_run_deadline() {
 /// oxa implementation. These branches are not part of any production binary.
 fn hostile_fixture(args: &[String]) {
     let role = args.last().unwrap();
+    if role.contains("\nfixture-unknown-after-known") || role.contains("\nfixture-recovered-after-failure") {
+        println!(
+            "{}",
+            serde_json::json!({"type":"oxa_owned_inference","phase":"ready","version":1})
+        );
+    }
     if role.ends_with("fixture-cap-mismatch") {
         println!(
             "{}",
@@ -1161,6 +1247,28 @@ fn hostile_fixture(args: &[String]) {
                     "{}",
                     serde_json::json!({"type":"mode_changed","mode":"workspace"})
                 );
+            } else if role.contains("\nfixture-unknown-after-known")
+                || role.contains("\nfixture-recovered-after-failure")
+            {
+                for record in [
+                    serde_json::json!({"type":"oxa_owned_inference","phase":"start","id":1}),
+                    serde_json::json!({"type":"oxa_owned_inference","phase":"end","id":1,"tokens":2}),
+                    serde_json::json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":serde_json::json!({"state":"done","summary":"synthetic reply","evidence":["synthetic check"]}).to_string()}],"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0}}}),
+                    serde_json::json!({"type":"oxa_owned_inference","phase":"start","id":2}),
+                    serde_json::json!({"type":"oxa_owned_inference","phase":"end","id":2,"tokens":null}),
+                ] {
+                    println!("{record}");
+                }
+                if role.contains("\nfixture-recovered-after-failure") {
+                    for record in [
+                        serde_json::json!({"type":"oxa_owned_inference","phase":"start","id":3}),
+                        serde_json::json!({"type":"oxa_owned_inference","phase":"end","id":3,"tokens":2}),
+                        serde_json::json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":serde_json::json!({"state":"done","summary":"new recovery reply","evidence":["new synthetic check"]}).to_string()}],"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0}}}),
+                    ] {
+                        println!("{record}");
+                    }
+                }
+                println!("{}", serde_json::json!({"type":"agent_settled","aborted":false}));
             } else if role.ends_with("fixture-ui") {
                 println!(
                     "{}",
@@ -3283,6 +3391,11 @@ fn main() {
         std::process::exit(code);
     }
     std::env::set_var("OXA_PARENT_PRIVATE_MARKER", "synthetic-parent-value");
+    native_unknown_after_known_usage_never_completes();
+    println!("native unknown usage after a known reply never completes ... ok");
+    if args.first().map(String::as_str) == Some("--unwind-accounting-only") {
+        return;
+    }
     native_response_allowance_and_truncation_keep_settled_usage();
     native_response_allowance_requires_exact_ack_before_dispatch();
     native_goal_truncation_is_blocked_with_known_usage();

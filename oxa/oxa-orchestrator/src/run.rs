@@ -584,6 +584,7 @@ pub(crate) fn run_with_workspaces(
                         completed_tokens: 0,
                         pending_tokens: None,
                         usage_seen: false,
+                        inference_failed: false,
                         meter: crate::usage::Ledger::default(),
                         canceled: false,
                         forced: queued.err().map(|_| Outcome::Failed),
@@ -730,6 +731,7 @@ struct Worker {
     completed_tokens: u64,
     pending_tokens: Option<u64>,
     usage_seen: bool,
+    inference_failed: bool,
     meter: crate::usage::Ledger,
     canceled: bool,
     forced: Option<Outcome>,
@@ -798,10 +800,12 @@ impl Worker {
                 Outcome::Canceled
             } else if self.last_stop.as_deref() == Some("stop")
                 && self.usage_seen
+                && !self.inference_failed
                 && (!self.meter.ready || self.meter.seen)
             {
                 Outcome::Completed
-            } else if self.last_stop.as_deref() == Some("length") && self.usage_seen {
+            } else if self.last_stop.as_deref() == Some("length") && self.usage_seen && !self.inference_failed
+            {
                 Outcome::Truncated
             } else {
                 Outcome::Failed
@@ -830,6 +834,7 @@ impl Worker {
                     return Ok(Some(Outcome::PolicyViolation));
                 }
                 let ended = record["phase"] == "end";
+                let failed = ended && record["tokens"].is_null();
                 if let Err(error) = self.meter.consume(record) {
                     self.meter.unknown = true;
                     return Err(error);
@@ -838,6 +843,9 @@ impl Worker {
                     return Ok(Some(Outcome::PolicyViolation));
                 }
                 if ended {
+                    // An earlier complete-looking assistant reply cannot hide
+                    // a later SDK failure (including summary/prefill failure).
+                    self.inference_failed |= failed;
                     self.pending_tokens = None;
                     self.usage_seen = self.meter.seen;
                 }
@@ -944,6 +952,9 @@ impl Worker {
                         }
                     }
                     self.result = text;
+                    // A genuinely new completed reply can recover a prior
+                    // request failure; lifetime accounting uncertainty remains.
+                    self.inference_failed = false;
                     journal.record(
                         Some(&self.spec.id),
                         "usage",
@@ -1056,6 +1067,7 @@ impl SessionWorker {
                 completed_tokens: 0,
                 pending_tokens: None,
                 usage_seen: false,
+                inference_failed: false,
                 meter: crate::usage::Ledger::default(),
                 canceled: false,
                 forced: None,
@@ -1087,6 +1099,7 @@ impl SessionWorker {
         self.inner.spec.task = task;
         self.inner.result.clear();
         self.inner.last_stop = None;
+        self.inner.inference_failed = false;
         self.inner.pending_tokens = None;
         self.inner.prompt_acked = false;
         self.inner.settled = None;

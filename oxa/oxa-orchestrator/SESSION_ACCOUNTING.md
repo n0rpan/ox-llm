@@ -82,3 +82,35 @@ conservative reservation. That reservation is not an actual bill and does not
 resolve #71. The quiet-stream cancellation gap from #160 remains open. Formal
 reviews, authenticated GitHub work and the full working evening remain gates;
 paid cloud use still requires Oscar's go.
+
+## Native SDK unwinding and per-turn failure
+
+An admitted native inference call owns an accounting closure. Normal completion
+emits its actual SDK usage exactly once; an engine or stream-callback unwind
+attempts an end record with unknown usage. The callback panic remains contained
+by the existing Core boundary. It is not converted into successful inference,
+zero usage or permission to refund a reservation. If the accounting sink itself
+fails, the parent still lacks settlement evidence; the guard neither retries
+output nor claims delivery. Cleanup also contains a secondary sink panic.
+
+The regression invokes the real scripted engine with a panicking stream
+callback inside the existing containment boundary. Before the fix, the ledger
+keeps an active call forever. After it, the ledger is drained but remains
+unknown, with exactly one ready/start/end sequence and no inferred usage.
+
+Separately, a completed assistant reply cannot hide a later SDK failure in the
+same turn, such as failed summary or prefill. The native owner tracks that
+failure independently of the lifetime usage ledger. A time-only goal previously
+accepted an earlier structured DONE reply after such a failure. The owned RPC
+regression fails with DONE before the fix and passes as blocked/native runtime
+failure afterward, with unknown cumulative usage and confirmed process cleanup.
+Ordinary token-bounded fan-out rejection is retained as a positive control.
+
+The failure marker clears when the existing owner admits a new turn, including
+explicit pause/resume, or when a genuinely new valid assistant reply completes
+after the failure. A time-only recovery regression preserves that distinction:
+the new reply may complete its goal, but cumulative usage remains unknown.
+Neither route clears or repairs accounting uncertainty; token-bounded
+continuation remains restricted. Runtime failure does not gain an automatic
+restart or retry path.
+These are local lifecycle/accounting regressions, not provider billing proof.

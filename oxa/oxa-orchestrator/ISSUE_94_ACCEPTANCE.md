@@ -198,3 +198,26 @@ working-session disconnect, owner replacement, retained-history gaps and
 provider/billing behavior remain unverified. See
 [shared-control acceptance](SHARED_SESSION.md). No paid run, shared gateway
 change, credential access or GitHub write is part of this follow-up.
+
+## Contained inference panic and stale DONE follow-up
+
+The owned worker adapter now closes an admitted inference accounting entry with
+unknown usage when an engine/stream callback unwinds. Its regression fails
+before the fix because the ledger retains an active call forever, then passes
+with one end record, a drained ledger and unknown usage. Sink failure remains
+unconfirmed and does not cause a retry or invented zero charge.
+
+An owned native-goal regression also demonstrates a time-only goal accepting an
+earlier structured DONE reply after a later inference failed. The fix tracks
+failure within the current turn, so this now returns blocked/native runtime
+failure with unknown usage and confirmed process cleanup. The ordinary fan-out
+case already refused success and remains a positive control. A genuinely new
+valid reply can recover a time-only goal under its existing
+budget policy; its positive regression still retains unknown cumulative usage.
+Beginning a later admitted turn or receiving that new reply does not clear the
+accounting uncertainty. See
+[accounting lifecycle](SESSION_ACCOUNTING.md).
+
+No Core, native JobRegistry, provider SDK, shared gateway or credential path is
+changed. No paid request is made. The historical smoke and remaining live-provider,
+strict total-token admission and working-evening gates remain unresolved.

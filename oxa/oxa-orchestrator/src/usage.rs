@@ -85,6 +85,28 @@ mod native {
         sync::{Arc, Mutex},
     };
     type Emit = Arc<dyn Fn(Value) -> io::Result<()> + Send + Sync>;
+    /// Every admitted SDK call owns one accounting closure, even on unwind.
+    struct Call<'a> {
+        emit: &'a Emit,
+        id: Option<u64>,
+    }
+    impl Call<'_> {
+        fn finish(mut self, tokens: Option<u64>) -> io::Result<()> {
+            let id = self.id.take().expect("owned inference call");
+            (self.emit)(json!({"type":"oxa_owned_inference","phase":"end","id":id,"tokens":tokens}))
+        }
+    }
+    impl Drop for Call<'_> {
+        fn drop(&mut self) {
+            if let Some(id) = self.id.take() {
+                // Best effort only: a broken output cannot prove settlement to
+                // the parent. Do not retry or double-panic while unwinding.
+                let _ = oxa_proto::panic::contain(|| {
+                    (self.emit)(json!({"type":"oxa_owned_inference","phase":"end","id":id,"tokens":null}))
+                });
+            }
+        }
+    }
     struct Meter {
         inner: Arc<dyn Engine>,
         emit: Emit,
@@ -134,6 +156,10 @@ mod native {
                     .map_err(|_| failure())?;
                 id
             };
+            let call = Call {
+                emit: &self.emit,
+                id: Some(id),
+            };
             let mut bounded = *r;
             if let Some(cap) = self.response_tokens {
                 bounded.max_tokens = bounded.max_tokens.min(cap);
@@ -143,8 +169,7 @@ mod native {
                 .as_ref()
                 .ok()
                 .map(|turn| u64::from(turn.usage.prompt) + u64::from(turn.usage.completion));
-            (self.emit)(json!({"type":"oxa_owned_inference","phase":"end","id":id,"tokens":tokens}))
-                .map_err(|_| failure())?;
+            call.finish(tokens).map_err(|_| failure())?;
             result
         }
     }
@@ -313,6 +338,64 @@ mod native {
                 meter.chat(&request, &CancelToken::new(), &mut |_| {}).unwrap();
                 assert_eq!(inner.requests().last().unwrap().max_tokens, expected);
             }
+        }
+        #[test]
+        fn contained_stream_panic_drains_accounting_with_unknown_usage() {
+            let inner = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("partial reply")]));
+            let records = Arc::new(Mutex::new(vec![
+                json!({"type":"oxa_owned_inference","phase":"ready","version":1}),
+            ]));
+            let output = records.clone();
+            let meter = Meter {
+                inner,
+                emit: Arc::new(move |record| {
+                    output.lock().unwrap().push(record);
+                    Ok(())
+                }),
+                next: Mutex::new(1),
+                ready: true,
+                model: Some("fake-model".into()),
+                response_tokens: None,
+            };
+            let prefix = FrozenPrefix {
+                sections: vec![],
+                tools_json: "[]".into(),
+                sha256: [0; 32],
+            };
+            let messages = vec![WireMsg::user("synthetic panic request")];
+            let request = ChatRequest {
+                prefix: &prefix,
+                messages: &messages,
+                model: "fake-model",
+                max_tokens: 128,
+                thinking: false,
+                preserve_thinking: false,
+                sampling: None,
+                hints: Hints {
+                    session: "owned",
+                    idem_key: "",
+                    kind: TurnKind::Chat,
+                    background: false,
+                    snapshot_keep: false,
+                },
+            };
+            assert!(oxa_proto::panic::contain(|| meter.chat(
+                &request,
+                &CancelToken::new(),
+                &mut |_| panic!("synthetic stream callback failure")
+            ))
+            .is_err());
+            let mut ledger = super::super::Ledger::default();
+            for record in records.lock().unwrap().iter() {
+                ledger.consume(record.clone()).unwrap();
+            }
+            assert!(
+                ledger.drained(),
+                "contained panic must not leave an active inference forever"
+            );
+            assert!(ledger.unknown && !ledger.settled());
+            assert_eq!(ledger.total, 0, "unknown does not fabricate a charge or refund");
+            assert_eq!(records.lock().unwrap().len(), 3, "one ready/start/end, no retry");
         }
         #[test]
         fn unavailable_accounting_refuses_before_inference() {
