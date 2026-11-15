@@ -60,6 +60,7 @@ _lock = threading.Lock()
 LEDGER_LOCK = _lock
 _pruned_day = [None]
 _salt = [None]
+_throwaway = [None]
 _gap_lock = threading.Lock()
 _last_end = OrderedDict()  # session hash -> monotonic time its last request finished
 _log = logging.getLogger('oxc.ledger')
@@ -289,30 +290,47 @@ def origin_of(value):
     return LAB_ORIGIN if isinstance(value, str) and value.strip().lower() == LAB_ORIGIN else 'organic'
 
 
+def _read_salt(fd):
+    try:
+        info = os.fstat(fd)
+        value = os.read(fd, 64)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                info.st_mode & 0o077 or len(value) != 32):
+            raise ValueError('invalid_private_ledger_salt')
+        return value
+    finally:
+        os.close(fd)
+
+
 def _install_salt():
-    """32 random bytes in an owner-only file under the ledger dir; created once."""
+    """32 random bytes in an owner-only file under the ledger dir; created once. The salt also keys
+    engine session hints and state-store keys, so it must stay stable across restarts: with the
+    ledger off an existing file is still read, but nothing is created. Only when there is no file
+    is a throwaway in-memory salt used; it is never cached as the file salt."""
     with _lock:
-        if _salt[0] is None:
-            d = ledger_dir()
-            d.mkdir(parents=True, exist_ok=True)
-            os.chmod(d, 0o700)
-            path = d / '.salt'
+        if _salt[0] is not None:
+            return _salt[0]
+        path = ledger_dir() / '.salt'
+        if not enabled():
             try:
                 fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             except FileNotFoundError:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-                os.write(fd, secrets.token_bytes(32))
-                os.close(fd)
-                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-            try:
-                info = os.fstat(fd)
-                value = os.read(fd, 64)
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
-                        info.st_mode & 0o077 or len(value) != 32):
-                    raise ValueError('invalid_private_ledger_salt')
-                _salt[0] = value
-            finally:
-                os.close(fd)
+                if _throwaway[0] is None:
+                    _throwaway[0] = secrets.token_bytes(32)
+                return _throwaway[0]
+            _salt[0] = _read_salt(fd)
+            return _salt[0]
+        d = ledger_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            os.write(fd, secrets.token_bytes(32))
+            os.close(fd)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        _salt[0] = _read_salt(fd)
         return _salt[0]
 
 

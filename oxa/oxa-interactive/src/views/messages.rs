@@ -113,10 +113,22 @@ pub fn render_compaction(
     expanded: bool,
     cx: &ViewCx,
 ) -> Vec<String> {
+    render_compaction_arrow(summary, tokens_before, tokens_after, expanded, "→", cx)
+}
+
+/// [`render_compaction`] with the arrow glyph chosen by the caller (`->` for the ASCII skin).
+pub fn render_compaction_arrow(
+    summary: &str,
+    tokens_before: u32,
+    tokens_after: Option<u32>,
+    expanded: bool,
+    arrow: &str,
+    cx: &ViewCx,
+) -> Vec<String> {
     let (collapsed, header) = match tokens_after {
         Some(after) => (
-            format!("Compacted {tokens_before} → {after} tokens ("),
-            format!("**Compacted {tokens_before} → {after} tokens**"),
+            format!("Compacted {tokens_before} {arrow} {after} tokens ("),
+            format!("**Compacted {tokens_before} {arrow} {after} tokens**"),
         ),
         None => (
             format!("Compacted from {tokens_before} tokens ("),
