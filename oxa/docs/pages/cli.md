@@ -10,6 +10,8 @@ In `-p` mode, standard output holds only the final reply and a newline. Progress
 
 Exit codes: 0 on success, 1 when a command finished with a reported failure (for example `oxa mcp list` with an invalid server entry, or `-p` when the `done` checks still fail at the end), 2 for a usage error or an engine that cannot be reached.
 
+Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. Once output has streamed, a failure is returned without replaying the request. Print mode immediately flushes a one-line `retrying request in ... ms` notice to stderr; JSON and RPC modes emit it as a flushed `notice` record. Provider-level retries (`retry.provider.maxRetries`) are visible too. All attempts for a logical request reuse its idempotency key. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
+
 ## Commands
 
 Commands take the place of the message. They do not start a session.
