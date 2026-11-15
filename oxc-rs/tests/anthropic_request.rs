@@ -2,9 +2,12 @@
 use oxc::anthropic_request::{translate, translate_with_blocks};
 use serde_json::{json, Value};
 
-/// Sort object keys so the byte comparison holds whether or not serde_json's
-/// `preserve_order` feature is unified in by another feature (native-controller).
+/// Without native-controller the comparison is byte-exact. That feature turns on
+/// serde_json `preserve_order`, so only then are keys sorted on both sides.
 fn sorted(v: &Value) -> Value {
+    if cfg!(not(feature = "native-controller")) {
+        return v.clone();
+    }
     match v {
         Value::Object(m) => {
             let mut keys: Vec<_> = m.keys().collect();
