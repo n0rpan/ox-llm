@@ -75,6 +75,7 @@ pub(crate) fn layout(
         read_extra: paths(SETTING_READ_PATHS),
         write_extra: paths(SETTING_WRITE_PATHS),
         allow_home_write,
+        exe: std::env::current_exe().ok(),
     });
     layout.mask_runtime_ipc = true;
     layout

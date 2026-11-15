@@ -187,6 +187,9 @@ pub struct LayoutInputs {
     pub read_extra: Vec<PathBuf>,
     pub write_extra: Vec<PathBuf>,
     pub allow_home_write: bool,
+    /// The running oxa binary: exposed read-only (when under `$HOME`, which is hidden) and
+    /// named by `OXA_BIN`, so an agent can start the TUI in tmux from inside the sandbox.
+    pub exe: Option<PathBuf>,
 }
 
 /// `~` / `~/x` -> `$HOME` / `$HOME/x`; other paths unchanged.
@@ -227,6 +230,7 @@ impl Layout {
         }
         read.extend(TOOLCHAIN_READ.iter().map(|r| i.home.join(r)));
         read.extend(i.read_extra.iter().cloned());
+        read.extend(i.exe.iter().cloned());
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
         let keep = |p: &PathBuf| {
@@ -285,6 +289,15 @@ impl Layout {
                 env.push((k.to_string(), v.to_string()));
             }
         }
+        if let Some(exe) = i
+            .exe
+            .as_ref()
+            .filter(|e| e.is_absolute() && e.is_file() && !denied(e, &deny))
+        {
+            if !env.iter().any(|(n, _)| n == "OXA_BIN") {
+                env.push(("OXA_BIN".to_string(), exe.display().to_string()));
+            }
+        }
         env.sort();
         env.dedup_by(|a, b| a.0 == b.0);
         Layout {
@@ -312,6 +325,22 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_running_binary_is_bound_and_named() {
+        let d = std::env::temp_dir().join(format!("oxa-exe-{}", std::process::id()));
+        let bin = d.join("home/.oxa/bin/oxa");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "x").unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: d.join("home"),
+            exe: Some(bin.clone()),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(l.read.contains(&bin), "{:?}", l.read);
+        assert!(l.env.contains(&("OXA_BIN".into(), bin.display().to_string())));
+    }
 
     #[test]
     fn secret_names_are_recognised() {
