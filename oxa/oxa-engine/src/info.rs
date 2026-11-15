@@ -173,11 +173,11 @@ fn modality(status: &Value, key: &str) -> (Option<bool>, Option<bool>) {
     match caps {
         Some(c) => (
             // Any thinking value that is not "none"/"off"/false means the model thinks.
-            c.get("thinking").map(|t| {
+            c.get("thinking").and_then(|t| {
                 if let Some(b) = t.as_bool() {
-                    b
+                    Some(b)
                 } else {
-                    !matches!(t.as_str(), Some("none") | Some("off") | None)
+                    t.as_str().map(|s| !matches!(s, "none" | "off"))
                 }
             }),
             c.get("vision").and_then(Value::as_bool),
@@ -675,5 +675,30 @@ mod cancel_advertised_tests {
     fn props_hints_advertise() {
         let props = json!({"oxe_hints": {"hints": ["cancel"]}});
         assert!(cancel_advertised(None, Some(&props)));
+    }
+}
+
+#[cfg(test)]
+mod modality_tests {
+    use super::modality;
+    use serde_json::json;
+
+    #[test]
+    fn null_thinking_is_unknown() {
+        let status = json!({
+            "model_limits": {"m": {"capabilities": {"thinking": null, "vision": false}}}
+        });
+        let (thinking, images) = modality(&status, "m");
+        assert_eq!(thinking, None, "a null thinking value is unknown, not `no`");
+        assert_eq!(images, Some(false));
+    }
+
+    #[test]
+    fn non_bool_non_string_thinking_is_unknown() {
+        let status = json!({
+            "model_limits": {"m": {"capabilities": {"thinking": 7}}}
+        });
+        let (thinking, _) = modality(&status, "m");
+        assert_eq!(thinking, None, "a numeric thinking value is unknown");
     }
 }

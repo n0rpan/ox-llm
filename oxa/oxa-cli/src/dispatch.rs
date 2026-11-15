@@ -178,7 +178,13 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
-        let result = list_models(engine.as_ref(), &endpoint.name, search.as_deref(), &mut *stdout);
+        let result = list_models(
+            engine.as_ref(),
+            &endpoint.name,
+            search.as_deref(),
+            &mut *stdout,
+            &mut *stderr,
+        );
         return finish(result, &mut *stderr);
     }
 
@@ -1079,6 +1085,7 @@ fn list_models(
     provider: &str,
     search: Option<&str>,
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<i32, OxaError> {
     let info = engine.info(None)?;
     let mut ids = info.models.clone();
@@ -1111,14 +1118,17 @@ fn list_models(
                 ],
                 // A failing per-model info call degrades only this row: '?' in the limits
                 // columns (never another model's limits), and the listing continues.
-                Err(_) => [
-                    provider.to_string(),
-                    id,
-                    "?".to_string(),
-                    "?".to_string(),
-                    "?".to_string(),
-                    "?".to_string(),
-                ],
+                Err(e) => {
+                    let _ = writeln!(err, "warning: cannot list {id}: {}", e.message);
+                    [
+                        provider.to_string(),
+                        id,
+                        "?".to_string(),
+                        "?".to_string(),
+                        "?".to_string(),
+                        "?".to_string(),
+                    ]
+                }
             }
         })
         .collect();
@@ -1157,7 +1167,6 @@ fn list_models(
     Ok(0)
 }
 
-/// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
 /// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`.
 fn bool_word(b: bool) -> String {
     if b {
@@ -1167,6 +1176,7 @@ fn bool_word(b: bool) -> String {
     }
 }
 
+/// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
 fn format_tokens(count: u64) -> String {
     let scaled = |div: f64, unit: &str| {
         let v = count as f64 / div;
@@ -1536,13 +1546,14 @@ mod model_limits_tests {
     #[test]
     fn list_models_uses_each_models_limits() {
         let mut out = Vec::new();
-        list_models(&CatalogEngine, "oxe", Some("sonnet"), &mut out).unwrap();
+        let mut err = Vec::new();
+        list_models(&CatalogEngine, "oxe", Some("sonnet"), &mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
         let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
         assert_eq!(&row[1..4], &["anthropic/claude-sonnet-5-5", "200K", "32K"]);
 
         let mut out = Vec::new();
-        list_models(&CatalogEngine, "oxe", Some("local"), &mut out).unwrap();
+        list_models(&CatalogEngine, "oxe", Some("local"), &mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
         let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
         assert_eq!(&row[1..4], &["local", "131.1K", "16.4K"]);
@@ -1582,7 +1593,8 @@ mod model_limits_tests {
             fail_id: "anthropic/claude-sonnet-5-5".to_string(),
         };
         let mut out = Vec::new();
-        list_models(&engine, "oxe", None, &mut out).unwrap();
+        let mut err = Vec::new();
+        list_models(&engine, "oxe", None, &mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
 
         // The listing succeeds and still contains every model id.
@@ -1592,6 +1604,13 @@ mod model_limits_tests {
                 "missing {id}"
             );
         }
+
+        // A one-line warning on stderr names the degrading row and its error.
+        let err = String::from_utf8(err).unwrap();
+        assert!(
+            err.contains("anthropic/claude-sonnet-5-5") && err.contains("boom"),
+            "stderr names the row and error: {err:?}"
+        );
 
         // The failing row shows '?' in the context, max-out, thinking and images columns.
         let row: Vec<_> = text
