@@ -50,6 +50,8 @@ fn the_host_resolver_is_masked() {
         return;
     }
     let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(&sb, &env.work(), &format!("test ! -S {socket}"), true, true);
+    crate::harness::assert_ok(exit, &out, "resolver IPC stays masked online");
     let (exit, out) = run(&sb, &env.work(), "resolvectl status", true, false);
     assert_refused(exit, &out, "systemd-resolved");
     assert!(
@@ -79,4 +81,15 @@ fn container_control_sockets_are_masked() {
         let (exit, out) = run(&sb, &env.work(), &cmd, true, false);
         assert_refused(exit, &out, socket);
     }
+}
+
+/// Online commands may read DNS configuration without reaching resolver IPC or the network.
+#[test]
+fn online_commands_can_read_resolver_configuration() {
+    let env = TestEnv::new();
+    let expected = std::fs::read_to_string("/etc/resolv.conf").expect("host resolver configuration");
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(&sb, &env.work(), "cat /etc/resolv.conf", true, true);
+    crate::harness::assert_ok(exit, &out, "online resolver configuration");
+    assert_eq!(out, expected);
 }

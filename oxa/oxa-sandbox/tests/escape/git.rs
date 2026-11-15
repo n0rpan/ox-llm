@@ -851,3 +851,52 @@ fn a_unicode_custom_hooks_path_preserves_ordinary_work() {
     let (exit, out) = run(&sb, &work, "printf ordinary > generated.txt", true, false);
     assert_ok(exit, &out, "ordinary work with a Unicode hook path");
 }
+
+/// Ancestor pins must preserve explicit read-only layout mounts and safe hook aliases.
+#[test]
+fn hook_pins_preserve_read_only_layout_mounts() {
+    use crate::harness::sandbox_with_layout;
+    let env = TestEnv::new();
+    let work = env.work();
+    config(&work, "[core]\n\thooksPath = sub/hooks\n");
+    dir(&work.join("sub/hooks"));
+    write(&work.join("sub/readonly/payload"), "original");
+    std::os::unix::fs::symlink("../readonly/payload", work.join("sub/hooks/pre-commit")).unwrap();
+    let mut layout = oxa_sandbox::Layout::default();
+    layout.read.push(work.join("sub/readonly"));
+    let Some(sb) = sandbox_with_layout(&env, layout) else {
+        return;
+    };
+    let (exit, out) = run(&sb, &work, "printf changed > sub/readonly/payload", true, false);
+    assert_refused(exit, &out, "read-only layout beneath hook pin");
+    assert_eq!(
+        std::fs::read_to_string(work.join("sub/readonly/payload")).unwrap(),
+        "original"
+    );
+    let (exit, out) = run(&sb, &work, "printf build > sub/build-output", true, false);
+    assert_ok(exit, &out, "ordinary work with a safe read-only hook alias");
+}
+
+/// An unsafe git directory must remain wholly read-only after a project-root pin.
+#[test]
+fn hook_pins_preserve_an_unsafe_git_directory() {
+    let env = TestEnv::new();
+    let work = env.work();
+    config(&work, "[core]\n\thooksPath = hooks\n");
+    dir(&work.join("hooks"));
+    let safe = env.root().join("safe-hooks");
+    dir(&safe);
+    std::fs::remove_dir(work.join(".git/hooks")).unwrap();
+    std::os::unix::fs::symlink(safe, work.join(".git/hooks")).unwrap();
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf changed > .git/objects/new-object",
+        true,
+        false,
+    );
+    assert!(exit.is_some(), "unexpected whole-command refusal: {out}");
+    assert_refused(exit, &out, "unsafe git directory beneath hook pin");
+    assert!(!work.join(".git/objects/new-object").exists());
+}

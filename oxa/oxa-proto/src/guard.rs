@@ -113,7 +113,11 @@ pub const PROTECTED_IN_CWD: &[&str] = &[
 /// Of [`PROTECTED_IN_CWD`]: the ones the file tools never write (git runs them unsandboxed on
 /// the user's next git command; `commondir` and `gitdir` name the directory git takes them from).
 pub const GIT_PROTECTED_IN_CWD: &[&str] = &[
-    ".git/hooks", ".git/config", ".git/config.worktree", ".git/commondir", ".git/gitdir",
+    ".git/hooks",
+    ".git/config",
+    ".git/config.worktree",
+    ".git/commondir",
+    ".git/gitdir",
 ];
 
 /// The deny-list for `home` and the agent directory `agent_dir` (which may live outside

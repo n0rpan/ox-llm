@@ -116,15 +116,22 @@ pub(crate) fn bwrap_args_homes(
         let p = p.to_string_lossy();
         push(&mut a, &["--bind", &p, &p]);
     }
+    let hooks = configured_hook_paths(cwd_path, &home_c, layout);
+    let mounts = hooks_mounts(cwd_path, &home_c, layout, mode);
+    // Pins and layout mounts share parent-first order: a cache bind cannot hide a pin,
+    // and a pin cannot hide a read-only descendant. The cwd is already a mount point.
+    let hook_pins = hook_parent_pins(&hooks, &mounts);
     // B2: toolchains read-only, caches read-write, in path order (a parent before its child).
     let mut binds: Vec<(&Path, bool)> = layout
         .read
         .iter()
         .map(|p| (p.as_path(), false))
         .chain(layout.write.iter().map(|p| (p.as_path(), true)))
+        .chain(hook_pins.iter().map(|p| (p.as_path(), true)))
         .filter(|(p, _)| !cwd_path.starts_with(p) && !cwd_path.starts_with(canon(p)))
         .collect();
     binds.sort();
+    binds.dedup();
     for (p, rw) in &binds {
         let p = p.to_string_lossy();
         push(&mut a, &[if *rw { "--bind" } else { "--ro-bind" }, &p, &p]);
@@ -200,8 +207,7 @@ pub(crate) fn bwrap_args_homes(
         let p = p.to_string_lossy();
         push(&mut a, &[git_rw, &p, &p]);
     }
-    // Pin writable ancestors before every protection mask. Moving an ancestor would otherwise
-    // move its read-only hook mount and leave Git's original pathname replaceable.
+    // Pin the git directory after ancestor/layout binds; unsafe git data stays read-only.
     if writable {
         let dotgit = cwd_path.join(".git");
         if is_real_dir(&dotgit) {
@@ -213,12 +219,6 @@ pub(crate) fn bwrap_args_homes(
             };
             push(&mut a, &[bind, &p, &p]);
         }
-    }
-    let hooks = configured_hook_paths(cwd_path, &home_c, layout);
-    let mounts = hooks_mounts(cwd_path, &home_c, layout, mode);
-    for p in hook_parent_pins(&hooks, &mounts) {
-        let p = p.to_string_lossy();
-        push(&mut a, &["--bind", &p, &p]);
     }
     // This read-only configuration bind must also win over every writable ancestor pin.
     if gh_open {
@@ -286,7 +286,18 @@ pub(crate) fn bwrap_args_homes(
             };
             let ps = p.to_string_lossy();
             if meta.is_dir() {
-                push(&mut a, &["--tmpfs", &ps, "--remount-ro", &ps]);
+                push(&mut a, &["--tmpfs", &ps]);
+                if s.net && p == Path::new("/run/systemd/resolve") {
+                    // Preserve only DNS configuration online; all resolver IPC stays hidden.
+                    for name in ["resolv.conf", "stub-resolv.conf"] {
+                        let file = p.join(name);
+                        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                            let file = file.to_string_lossy();
+                            push(&mut a, &["--ro-bind", &file, &file]);
+                        }
+                    }
+                }
+                push(&mut a, &["--remount-ro", &ps]);
             } else {
                 push(&mut a, &["--ro-bind", "/dev/null", &ps]);
             }
@@ -866,13 +877,13 @@ fn configured_hook_paths(cwd: &Path, home: &Path, layout: &Layout) -> Vec<PathBu
     out
 }
 
-/// A symlink between `root` and `p`: a mount on `p` would not pin a directory the command can
-/// rename (the target of the link is what git opens).
 /// `p` is inside one of `roots`, lexically or after resolving the existing part.
 fn under_any<'a>(p: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
     roots.iter().find(|r| p.starts_with(r) || canon(p).starts_with(r))
 }
 
+/// A symlink between `root` and `p`: a mount on `p` would not pin a directory the command can
+/// rename (the target of the link is what git opens).
 fn has_symlink_ancestor(p: &Path, root: &Path) -> bool {
     let Ok(rel) = p.strip_prefix(root) else {
         // under_any found the canonical target inside a writable root: the spelling reaches
@@ -1020,7 +1031,8 @@ fn dotgit_file_target(dotgit: &Path) -> Option<PathBuf> {
 fn commondir_target(dotgit: &Path) -> Option<PathBuf> {
     let text = std::fs::read_to_string(dotgit.join("commondir")).ok()?;
     let line = text.lines().next()?.trim();
-    if line.is_empty() {
+    if line.is_empty() || line == "." {
+        // Main creates this protected self-reference when masking a missing commondir.
         return None;
     }
     let p = Path::new(line);

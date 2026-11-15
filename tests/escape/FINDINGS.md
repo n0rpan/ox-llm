@@ -27,7 +27,10 @@ sockets, and systemd-resolved — the last one resolves names even when the netw
 is empty, so `--offline` and `oxa.sandbox.net: off` do not keep DNS in.
 
 **Fix:** `bwrap.rs` masks `/run/user/<uid>`, `/run/systemd/resolve`, the two buses, the
-container sockets and the common name-service sockets after every bind. The flag lives on
+container sockets and the common name-service sockets after every bind. Online, the resolver
+directory stays masked, with only its regular `resolv.conf` and `stub-resolv.conf` files
+bound back read-only so `/etc/resolv.conf` still works. Resolver IPC remains hidden.
+The flag lives on
 `Layout::mask_runtime_ipc`, set by `Bwrap::detect` and by the CLI's layout builder; pure-argv
 tests keep the default off. The list is targeted rather than a tmpfs over `/run`, so a NixOS
 `/run/current-system` still works.
