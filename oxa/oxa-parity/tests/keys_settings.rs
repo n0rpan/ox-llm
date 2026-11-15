@@ -3454,8 +3454,12 @@ fn key_014() {
 #[test]
 fn key_015() {
     // invariant: oxa only; the cycle is auto -> yolo -> standard (the default is alt+m).
-    // The mode is display and permission state, never wire text (W3).
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    // The mode is display and permission state, never wire text (W3). Under yolo the badge
+    // row `YOLO full access` sits below the footer, so look at the bottom two rows.
+    let footer = |s: &Screen| {
+        let n = s.size().0;
+        format!("{}\n{}", s.row(n - 2), s.row(n - 1))
+    };
     let t = Setup::new().replies("ok", 2).start();
     assert!(footer(&t.screen()).contains("auto"));
     t.prompt("one", "ok");

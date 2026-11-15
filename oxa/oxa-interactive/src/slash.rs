@@ -139,7 +139,7 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
         // #202: no argument opens the picker; `--save` also makes the mode the default.
         "mode" => {
             let mut words: Vec<&str> = args.split_whitespace().collect();
-            let save = words.iter().any(|w| *w == "--save");
+            let save = words.contains(&"--save");
             words.retain(|w| *w != "--save");
             match words.as_slice() {
                 [] if !save => AppAction::Open(SelectorKind::Mode),

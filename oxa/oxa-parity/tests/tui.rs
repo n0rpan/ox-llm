@@ -1496,7 +1496,7 @@ fn tui_026() {
     vm.status.mode = Some(oxa_proto::Mode::Workspace);
     let text = render_footer(&vm, 120, &oxa_tui::Theme::plain()).join("\n");
     assert!(
-        text.contains("prefill 1200/8000") && text.contains("42.5 tok/s") && text.contains("workspace"),
+        text.contains("prefill 1200/8000") && text.contains("42.5 tok/s") && text.contains("standard"),
         "{text}"
     );
     // Nothing of the footer is on the wire.

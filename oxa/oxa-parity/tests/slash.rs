@@ -257,9 +257,16 @@ fn base64(data: &[u8]) -> String {
 }
 
 /// The footer's second-to-last row: model, thinking and mode (`fake-model • medium ...`).
+/// The status row: the last row, or the one above it when the `YOLO full access` badge row is
+/// drawn below the footer.
 fn footer_last(s: &Screen) -> String {
     let (rows, _) = s.size();
-    s.row(rows - 1)
+    let last = s.row(rows - 1);
+    if last.trim() == "YOLO full access" {
+        s.row(rows - 2)
+    } else {
+        last
+    }
 }
 
 /// Wait until the editor is empty and the run is over (the state after a selector closes).
