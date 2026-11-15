@@ -8,6 +8,7 @@ from oxc.runtime import cloud, cloud_anthropic
 
 from mock_cloud import MockAnthropic
 from test_cloud_remote import CloudCase, KEY
+import test_cloud_remote as remote_controls
 
 
 ANTHROPIC_SDK = importlib.util.find_spec("anthropic") is not None
@@ -63,6 +64,42 @@ class Catalog(AnthropicBase):
 
 
 class MessagesTranslation(AnthropicBase):
+    def _tool_content(self, content):
+        upstream = MockAnthropic()
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        body = {
+            'model': 'anthropic/claude-sonnet-5-5', 'max_tokens': 50,
+            'messages': [
+                {'role': 'user', 'content': 'read x'},
+                {'role': 'assistant', 'content': None,
+                 'tool_calls': [{'id': 'call_1', 'type': 'function',
+                                 'function': {'name': 'read', 'arguments': '{}'}}]},
+                {'role': 'tool', 'tool_call_id': 'call_1', 'content': content}]}
+        status, reply = self.call('POST', '/v1/chat/completions', body)
+        return status, reply, upstream
+
+    def test_array_tool_result_becomes_text_blocks(self):
+        status, reply, upstream = self._tool_content(
+            [{'type': 'text', 'text': 'one'}, {'type': 'text', 'text': 'two'}])
+        self.assertEqual(status, 200, reply)
+        blocks = upstream.requests[0]['body']['messages'][-1]['content'][0]['content']
+        self.assertEqual([(b['type'], b['text']) for b in blocks],
+                         [('text', 'one'), ('text', 'two')])
+
+    def test_empty_tool_result_gets_a_placeholder_not_an_empty_block(self):
+        for content in ('', [], None):
+            status, reply, upstream = self._tool_content(content)
+            self.assertEqual(status, 200, reply)
+            blocks = upstream.requests[0]['body']['messages'][-1]['content'][0]['content']
+            self.assertTrue(all(b['text'].strip() for b in blocks), blocks)
+
+    def test_unsupported_tool_result_part_is_a_clear_error(self):
+        status, reply, upstream = self._tool_content(
+            [{'type': 'text', 'text': 'one'}, {'type': 'audio', 'data': 'x'}])
+        self.assertEqual(status, 400, reply)
+        self.assertEqual(upstream.requests, [])
+
     def test_openai_request_becomes_a_native_messages_request(self):
         upstream = MockAnthropic()
         self.addCleanup(upstream.close)
@@ -469,9 +506,8 @@ class FailedStreams(AnthropicBase):
             connection.close()
         row = self.ledger_rows()[-1]
         payload = {'max_tokens': 1000, 'messages': [{'role': 'user', 'content': 'hello'}]}
-        expected = cloud.worst_case_cost(
-            cloud.entry('anthropic/claude-sonnet-5-5', anthropic_models()['anthropic/claude-sonnet-5-5']),
-            payload)
+        entry = cloud.entry('anthropic/claude-sonnet-5-5', anthropic_models()['anthropic/claude-sonnet-5-5'])
+        expected = cloud.worst_case_cost(entry, cloud_anthropic.messages_request(payload, entry))
         self.assertEqual(row['prompt_tokens'], 100)
         self.assertEqual(row['cost_usd'], expected)
         self.assertTrue(row['usage_missing'])
@@ -500,6 +536,38 @@ class TypedErrors(AnthropicBase):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)['error']['code'], 'invalid_value')
         self.assertEqual(self.upstream.requests, [])
+
+
+
+class NonstreamSettlement(AnthropicBase):
+    def start(self, **kwargs):
+        upstream = MockAnthropic()
+        self.addCleanup(upstream.close)
+        self.upstream = upstream
+        kwargs.setdefault("budget", 10.0)
+        return super().start(mock=upstream, **kwargs)
+
+    # Exercise the same real HTTP boundary for both provider adapters.
+    test_success_waits_for_ledger_settlement_before_client_completion = remote_controls.LedgerFailClosed.test_success_waits_for_ledger_settlement_before_client_completion
+    test_ledger_exception_is_not_retried_and_blocks_the_next_call = remote_controls.LedgerFailClosed.test_ledger_exception_is_not_retried_and_blocks_the_next_call
+    test_ledger_exception_after_append_does_not_duplicate_usage = remote_controls.LedgerFailClosed.test_ledger_exception_after_append_does_not_duplicate_usage
+
+    def test_client_disconnect_preserves_the_settled_success(self):
+        from unittest.mock import patch
+        from oxc.runtime import ctl_http
+        self.start()
+        original = ctl_http.Handler.reply
+        def fail_success(handler, status, *args, **kwargs):
+            if status == 200:
+                raise BrokenPipeError('synthetic client write failure')
+            return original(handler, status, *args, **kwargs)
+        with patch.object(ctl_http.Handler, 'reply', fail_success):
+            with self.assertRaises(http.client.RemoteDisconnected):
+                self.chat()
+        rows = self.ledger_rows()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]['settled'], 'usage')
+        self.assertEqual(rows[0]['status'], 200)
 
 
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
 //! Wave D D4: per-model cloud capabilities, the offline refusal and the remote request body.
 use oxa_engine::{build_body, build_body_for, parse_info_for};
-use oxa_proto::{codes, ChatRequest, FrozenPrefix, Hints, TurnKind, WireMsg};
+use oxa_proto::{codes, ChatRequest, FrozenPrefix, Hints, WireMsg};
 use serde_json::json;
 use std::sync::Mutex;
 
@@ -23,21 +23,17 @@ fn prefix() -> FrozenPrefix {
 
 fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg], model: &'a str) -> ChatRequest<'a> {
     ChatRequest {
-        prefix,
-        messages,
-        model,
         max_tokens: 64,
         thinking: true,
         thinking_budget: None,
         preserve_thinking: true,
-        sampling: None,
         hints: Hints {
             session: "session",
             idem_key: "idem",
-            kind: TurnKind::Chat,
-            background: false,
             snapshot_keep: true,
+            ..Hints::default()
         },
+        ..ChatRequest::new(prefix, messages, model)
     }
 }
 

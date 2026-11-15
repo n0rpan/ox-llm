@@ -10,8 +10,8 @@
 //!   `unsupported_in_oxa` error and exit code 2.
 //! * Mode choice (cli.md tty rules): `--mode rpc` -> RPC; `--mode json` -> JSON; `-p` or stdin
 //!   not a terminal or stdout not a terminal -> print; otherwise interactive.
-//! * Exit codes: 0 ok; 1 runtime failure; 2 usage error and "no engine" (one line on stderr:
-//!   the `engine_down` message and its hint).
+//! * Headless outcomes: one `oxa_result` JSON record on stderr and the documented exit code.
+//!   Subcommands retain 0 success, 1 runtime failure, 2 usage error / no engine.
 //! * `main` is the only place that reads the process environment (`Env::from_process`), the
 //!   terminal state and the real clock for file names.
 //! * No network unless asked: no update check, no telemetry.

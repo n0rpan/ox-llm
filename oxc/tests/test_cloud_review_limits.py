@@ -46,8 +46,13 @@ class CloudReviewLimits(unittest.TestCase):
                 params = cloud_anthropic.messages_request(payload, item)
                 self.assertEqual(params['max_tokens'], expected)
                 self.assertEqual(cloud._max_tokens(payload, item), expected)
-                self.assertEqual(cloud.worst_case_cost(item, payload),
-                                 cloud.worst_case_cost(item, params))
+                # The reservation is made on the translated request: its output part is the
+                # shared catalog-bounded limit and it never exceeds the full-window bound.
+                reserved = cloud.worst_case_cost(item, params)
+                output = cloud._reservation_cost(item, 0, expected)
+                full = cloud._reservation_cost(item, item['context_window'], expected)
+                self.assertGreater(reserved, output)
+                self.assertLessEqual(reserved, full)
 
     def test_invalid_anthropic_limit_fails_closed(self):
         item = cloud.entry('anthropic/mock', next(iter(anthropic_models().values())))
