@@ -78,6 +78,48 @@ synthetic gateway ledger entries and a captured terminal frame. Failure preserve
 the socket status, terminal frame and synthetic upstream requests. Full transcripts
 are local artifacts, not checked-in fixtures. Owned processes stop in `finally`.
 
+## Cancellation diagnostic: active stream passes, quiet stream fails
+
+Two additional manual cases use the same real gateway/TUI/worker and withhold the
+worker's final usage. They send an actual terminal Escape while the parent waits
+for its worker, require the same parent to pause without changing its 40-token
+ledger or original allowance, require the worker to be canceled and reaped, and
+keep the child's unreported total unknown rather than inventing a zero cost.
+
+```sh
+python3 -I oxa-orchestrator/tools/cloud_gateway_demo.py --case cancel-stream
+python3 -I oxa-orchestrator/tools/cloud_gateway_demo.py --case cancel-quiet
+```
+
+`cancel-stream` continuously emits synthetic text. At gateway revision `d5f0ff8`,
+Escape closes the actual upstream connection within three seconds. Four total
+inferences produce four ledger rows, including one positive conservative
+reservation for the canceled worker request with missing final usage. No follow-on
+inference occurs, the canceled cloud worker is visible, and Ctrl-D exits 0. This
+checks transport shutdown and honest uncertainty; a reservation is not a measured
+provider bill and does not satisfy #71's requested accounting behavior.
+
+**`cancel-quiet` currently exits 1**, preserving `cancellation.json`, socket
+status and a failure frame. It sends one text delta, then waits without further
+upstream output. Escape reaps the worker and pauses the same parent, but the
+gateway still retains the upstream connection after the three-second deadline.
+Only the three completed requests have ledger rows at that observation point.
+The fourth request remains in flight; cleanup releases the mock afterward.
+
+The pinned gateway's `ctl_cloud.forward` blocks on `response.read1(65536)` and
+recognizes a disconnected client only on a subsequent write. A silent/reasoning
+period can therefore retain the upstream request after oxa has canceled locally.
+`cloud.capabilities` advertises `cancel: false` for OpenAI; the demo does not
+override that fact or claim provider billing stopped. This gap is distinct from
+#71's Anthropic ledger classification and reservation complaint.
+
+Gateway acceptance needs disconnect observation independent of upstream output,
+closure of the owned upstream transport, and exactly-once settlement with explicit
+cancellation and usage uncertainty. The quiet-stream assertion must pass without
+adding mock heartbeats, waiting for the provider timeout, or converting the
+failure into an expected-success result. No provider implementation is changed by
+this diagnostic. It is not enabled as a passing CI test.
+
 ## Remaining acceptance
 
 This is a reproducible loopback integration demo, not #94's full working evening.

@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import shlex
+import select
+import socket
 import subprocess
 import sys
 import tempfile
@@ -17,7 +19,8 @@ from unittest.mock import patch
 KEY = "synthetic-cloud-key-for-mock-only"
 
 
-def mock_type(base, compacting):
+def mock_type(base, case):
+    compacting = case == "compaction"
     class Upstream(base):
         def __init__(self):
             self.counts = {}
@@ -26,7 +29,34 @@ def mock_type(base, compacting):
             self.summaries = 0
             self.mu = threading.Lock()
             self.release_worker = threading.Event()
+            self.streaming = threading.Event()
+            self.disconnected = threading.Event()
             super().__init__()
+
+        def unfinished_stream(self, handler):
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/event-stream")
+            handler.send_header("Connection", "close")
+            handler.end_headers()
+            event = {"type": "response.output_text.delta", "output_index": 0,
+                     "delta": "synthetic streaming work "}
+            chunk = ("event: response.output_text.delta\ndata: " + json.dumps(event) + "\n\n").encode()
+            handler.wfile.write(chunk)
+            handler.wfile.flush()
+            self.streaming.set()
+            try:
+                while not self.release_worker.is_set():
+                    ready, _, _ = select.select([handler.connection], [], [], 0.02)
+                    if ready and not handler.connection.recv(1, socket.MSG_PEEK):
+                        self.disconnected.set()
+                        break
+                    if case == "cancel-stream":
+                        handler.wfile.write(chunk)
+                        handler.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                self.disconnected.set()
+            finally:
+                handler.close_connection = True
 
         def handle(self, handler, method):
             raw = handler.rfile.read(int(handler.headers.get("Content-Length", "0")))
@@ -72,6 +102,8 @@ def mock_type(base, compacting):
                 if step == 1:
                     name, args = "read", {"path": "input.txt"}
                 elif step == 2:
+                    if case.startswith("cancel-"):
+                        return self.unfinished_stream(handler)
                     # A barrier makes cache expiry deterministic under load.
                     assert self.release_worker.wait(7), "parent did not reach the expiry barrier"
                     name, args = None, {
@@ -127,7 +159,7 @@ def run_isolated(args):
     spec.loader.exec_module(live)
     demo = live.Demo(args.bin_dir)
     compacting = args.case == "compaction"
-    upstream = mock_type(MockOpenAIResponses, compacting)()
+    upstream = mock_type(MockOpenAIResponses, args.case)()
     stack = None
     try:
         (demo.work / "input.txt").write_text("synthetic approved input\n")
@@ -204,10 +236,13 @@ def run_isolated(args):
         demo.mutate("set_goal", status, text="Drive a gateway worker and verify its result", budget=budget)
         funded = demo.wait(lambda v: demo.goal(v)["id"] != "unassigned")
         demo.mutate("resume", funded)
-        demo.wait(lambda v: (
+        waiting = demo.wait(lambda v: (
             demo.goal(v)["state"] == "blocked" and demo.goal(v).get("reason") == "waiting_workers"
             and upstream.counts.get("gpt-6-luna", 0) == 2
         ))
+        if args.case.startswith("cancel-"):
+            check_cancellation(demo, upstream, ledger, waiting, sid, root, args.case)
+            return
         with cloud_openai._HISTORY_LOCK:
             evicted = len(cloud_openai._HISTORY)
             cloud_openai._HISTORY.clear()
@@ -297,11 +332,71 @@ def run_isolated(args):
         upstream.close()
 
 
+def check_cancellation(demo, upstream, ledger, waiting, sid, root, case):
+    assert upstream.streaming.wait(2), "worker never entered upstream streaming"
+    demo.save_screen("gateway-working-screen.txt", lambda s: (
+        "worker-gpt (cloud)" in s and "working" in s
+    ))
+    before = time.monotonic()
+    demo.mux("send-keys", "-t", "demo", "Escape")
+    stopped = demo.wait(lambda v: (
+        demo.goal(v)["state"] == "paused"
+        and v["status"]["workers"][0]["process_stopped"]
+    ), timeout=3)
+    child = stopped["status"]["workers"][0]
+    assert child["state"] == "canceled", child
+    assert not Path("/proc", str(child["process_id"])).exists()
+    assert stopped["status"]["session"]["id"] == sid
+    for field in ("budget", "turns_started", "reported_tokens"):
+        assert demo.goal(stopped)[field] == demo.goal(waiting)[field]
+    assert demo.goal(stopped)["reported_tokens"] == 40
+    assert child["goal"]["reported_tokens"] is None, child
+    closed = upstream.disconnected.wait(max(0, 3 - (time.monotonic() - before)))
+    rows = [json.loads(line) for p in ledger.glob("requests-*.jsonl")
+            for line in p.read_text().splitlines() if line]
+    evidence = {"case": case, "same_parent_paused": True, "worker_reaped": True,
+                "parent_tokens": 40, "worker_tokens": None, "upstream_closed": closed,
+                "upstream_calls": len(upstream.requests), "gateway_rows": len(rows)}
+    (root / "cancellation.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    (root / "status.json").write_text(json.dumps(stopped, indent=2) + "\n")
+    assert closed, "Esc reaped worker, but gateway retained quiet upstream beyond 3 seconds"
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        rows = [json.loads(line) for p in ledger.glob("requests-*.jsonl")
+                for line in p.read_text().splitlines() if line]
+        if len(rows) == 4:
+            break
+        time.sleep(0.02)
+    assert len(rows) == 4, rows
+    canceled = [r for r in rows if r.get("settled") == "reserved"]
+    assert len(canceled) == 1, rows
+    assert canceled[0]["model"] == "worker-gpt" and canceled[0]["usage_missing"]
+    assert canceled[0]["cost_usd"] > 0
+    assert KEY not in json.dumps(rows)
+    assert len(upstream.requests) == 4, "cancellation triggered follow-on inference"
+    demo.save_screen("gateway-canceled-screen.txt", lambda s: (
+        "worker-gpt (cloud)" in s and "canceled" in s
+    ))
+    demo.mux("send-keys", "-t", "demo", "C-d")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        dead = demo.mux("display-message", "-p", "-t", "demo", "#{pane_dead}:#{pane_dead_status}").strip()
+        if dead.startswith("1:"):
+            assert dead == "1:0", dead
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("TUI exit deadline")
+    evidence.update(gateway_rows=len(rows), reserved_cost=True, tui_exit=0)
+    (root / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    print(json.dumps(evidence, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gateway-root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--bin-dir", type=Path, default=Path(__file__).resolve().parents[2] / "target" / "debug")
-    parser.add_argument("--case", choices=("expiry", "compaction"), default="expiry")
+    parser.add_argument("--case", choices=("expiry", "compaction", "cancel-stream", "cancel-quiet"), default="expiry")
     parser.add_argument("--isolated-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.isolated_root is not None:
