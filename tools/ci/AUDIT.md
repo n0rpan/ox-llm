@@ -111,4 +111,12 @@ record; the third successful sample confirms the final harness.
 After measurement, main merged B2. The real workflow conflict was resolved by retaining the
 archive/shard implementation and removing the retired `OXA_PARITY_PROFILE` environment
 variable. A separate full run validates that composition; the timing samples above precede
-that feature deletion and are not presented as measurements of a smaller test inventory.
+that feature deletion and are not presented as measurements of the changed test inventory.
+
+Composition run [43686345472](https://github.com/oxstack/ox-llm/actions/runs/43686345472)
+failed the fullscreen daily-driver script: BETA text appeared before completion, so `/tree`
+was refused as busy. The aggregate correctly failed. A 250ms mock completion gap reproduced
+this exact failure locally at the unchanged 60-second deadline. The fullscreen flow now uses
+the same read-only export fence before model/tree/new/resume transitions; all existing
+navigation, request-history and terminal assertions remain. All 18 daily-driver tests pass,
+with the gap retained. This failed composition run is not a successful timing sample.
