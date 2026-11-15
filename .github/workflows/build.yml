@@ -60,12 +60,19 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-moe engine
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
-          workspaces: engine -> target
-          shared-key: fedora44-moe
-          cache-bin: false
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Build oxe-server and oxi
@@ -121,12 +128,19 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: tools/ci/setup_toolchain.sh "$RUST_VERSION"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-flash engine
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
-          workspaces: engine -> target
-          shared-key: fedora44-flash
-          cache-bin: false
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Model-free Flash package licence fixtures (also without packaging)
@@ -174,12 +188,19 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86-oxa-ci oxa
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
-          workspaces: oxa -> target
-          shared-key: ubuntu24-x86-oxa-ci
-          cache-bin: false
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Pinned nextest
@@ -320,12 +341,19 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-oxa-release oxa
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
-          workspaces: oxa -> target
-          shared-key: fedora44-oxa-release
-          cache-bin: false
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
       - name: Rust cache result
         run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Build oxa

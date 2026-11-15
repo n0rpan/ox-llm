@@ -42,7 +42,7 @@ against the full archive inventory: no lost tests, no duplicates, no runtime ski
 Only the three existing opt-in measurement/transcript-dump ignores are allowed. Missing
 reports, new ignored tests, failures and an unusable sandbox fail closed. Retries stay off.
 
-The compiler-aware Rust cache is pinned to a full upstream commit, runs after toolchain setup,
+The compiler-aware Rust cache uses the permitted, pinned `actions/cache` backend, runs after toolchain setup,
 and separates Fedora/Ubuntu, architecture and feature configurations. Engine MoE and Flash
 keep separate builds because their features and linked libraries differ; clippy performs a
 separate analysis rather than generating reusable runtime objects. Production ARM64 binaries
@@ -64,3 +64,11 @@ partition starts, and the inventory/report comparison proves every parity test r
 Workspace doctests still run separately in the archive job (all were empty in the baseline).
 No test case, security test, sandbox assertion or scanner is removed. No further test deletion
 is proposed without evidence from the new per-test reports.
+
+The first hosted attempt, [43680020949](https://github.com/oxstack/ox-llm/actions/runs/43680020949),
+failed validation before jobs started: repository policy permits only GitHub/oxstack actions,
+so the third-party Rust cache action was rejected. It contributes no timing sample. The final
+implementation uses the existing GitHub cache action with explicit compiler/native-toolchain,
+manifest/config, build-flag and source fingerprints. Source-only changes retain a compatible
+restore prefix; compiler, feature/profile variant and dependency changes do not. Cargo retains
+its normal freshness validation; no source or artifact timestamps are rewritten.
