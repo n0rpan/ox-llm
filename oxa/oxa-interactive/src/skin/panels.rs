@@ -377,7 +377,18 @@ fn compaction_panel(
     let mut out = vec![checkpoint(&label, !expanded, cx)];
     if expanded {
         let inner = at_width(cx, (cx.width as usize).saturating_sub(2));
-        let md = views::render_compaction(summary, tokens_before, tokens_after, true, &inner);
+        let md = views::render_compaction_arrow(
+            summary,
+            tokens_before,
+            tokens_after,
+            true,
+            if cx.settings.skin == Skin::OxaAscii {
+                "->"
+            } else {
+                "→"
+            },
+            &inner,
+        );
         out.extend(rail(md, g.v, "borderMuted", " ", cx.theme));
     }
     out
