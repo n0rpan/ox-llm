@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,7 +12,8 @@ from unittest.mock import Mock, patch
 from snapdragon_ai_lab.runtime import classic_beta as beta, controller, oxe_runtime, profile_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-import oxe_profile_fixture as stage_tool
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import oxe_profile_fixture as stage_tool  # noqa: E402
 
 RUST_SHA = stage_tool.QUALIFIED_SERVER_SHA
 CLASSIC_MEMLAT = dict(threads=8, threads_batch=12, cpu_mask='0xff', cpu_mask_batch='0xfff', cpu_strict=1,

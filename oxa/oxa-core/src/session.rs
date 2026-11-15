@@ -59,6 +59,9 @@ pub struct State {
     pub session_file: Option<PathBuf>,
     pub session_name: Option<String>,
     pub model: String,
+    /// Wave D D4b: the model runs at a cloud provider through the controller; `None` = local.
+    pub model_remote: bool,
+    pub model_provider: Option<&'static str>,
     pub thinking: ThinkingLevel,
     pub mode: Mode,
     pub is_streaming: bool,
@@ -611,6 +614,8 @@ impl Session {
             session_file,
             session_name: session_name(st),
             model: st.model.clone(),
+            model_remote: st.info.caps.remote,
+            model_provider: st.info.caps.remote_provider,
             thinking: st.thinking,
             mode: st.mode,
             is_streaming: st.shared.busy.load(Ordering::SeqCst),
@@ -1573,6 +1578,22 @@ pub(crate) fn plan_switch(st: &SessionState, m: &str) -> SwitchPlan {
     }
 }
 
+/// Offline mode (`OXA_OFFLINE`, `--offline`, `oxa.offline`) is a hard error on the switch path:
+/// a remote model is refused whether the engine client refuses to describe it (`offline`
+/// error) or reports it as remote. Nothing is persisted and the model stays as it was.
+fn refuse_offline_remote(st: &SessionState, m: &str) -> Result<(), OxaError> {
+    if !oxa_proto::offline() {
+        return Ok(());
+    }
+    match st.engine.info(Some(m)) {
+        Err(e) if e.code == codes::OFFLINE => Err(e),
+        Ok(info) if info.limits_for == m && info.caps.remote => {
+            Err(oxa_proto::offline_error(&format!("the cloud model {m}")))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The one door for a model switch (`Session::set_model*`, `HostAction::SetModel`, RPC).
 ///
 /// 1. [`plan_switch`]. Over the target's cap:
@@ -1597,6 +1618,7 @@ pub(crate) fn switch_model(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
+    refuse_offline_remote(st, m)?;
     let plan = plan_switch(st, m);
     let mut cold = plan.cold_tokens;
     if plan.over_cap {
@@ -1827,6 +1849,12 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
                 );
             }
             st.info = merged;
+        }
+        Err(e) if e.code == codes::OFFLINE => {
+            // The engine client refused to describe a remote model: remember it, so a request
+            // is refused (see `exec::request`) instead of going out on the stale local limits.
+            st.info.caps.remote = true;
+            notice(sink, Level::Warning, e.to_string());
         }
         Err(e) => notice(
             sink,
