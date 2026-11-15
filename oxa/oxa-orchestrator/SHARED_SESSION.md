@@ -226,3 +226,33 @@ exit cleanup. The normal feature-enabled TUI regression suite also runs without
 the environment switch to verify ordinary behavior stays inert. Opt-in [background commands and wake-ups](BACKGROUND_TASKS.md) now use that same
 owner. Worker-lane integration is the next priority; full-evening cloud
 acceptance and coordinator/independent review gates remain open.
+
+## Client connection refusal and reconnect acceptance
+
+Control connection admission is nonblocking. If the explicit Unix listener has
+a full backlog, the client returns a transport failure instead of waiting for
+space before its connected-I/O deadline can begin. It does not start another
+runtime, search for another socket or resend a mutation. The owned descriptor
+is close-on-exec and is closed on connection failure. Connected reads retain
+their absolute deadline, response bound and correlation checks. A kernel/filesystem
+stall is not claimed to have a hard elapsed-time bound.
+
+The backlog regression uses a real owned Unix listener, fills its accept queue,
+and proves the old blocking connection misses the test deadline. Cleanup always
+releases the listener and joins the test thread, including on failure. The
+rebuilt real CLI also exits with transport failure against that full backlog.
+
+The actual CLI/tmux demo now deliberately sends one complete steering mutation
+and disconnects without reading the response. It reconnects through
+`oxa orchestrate-control events`, resumes from the captured sequence, checks
+there is no history gap, and finds exactly one matching `control_admitted`
+event. The control CLI then observes the original session. The next inference
+request contains the clarification exactly once, the same parent goal loop
+continues, and the TUI exits normally. Demo mutations use unique request IDs.
+No uncertain mutation is replayed and no second inference session is started.
+
+This is owned-loopback mock evidence for reconnect mechanics. It does not prove
+recovery after history eviction or owner replacement, durable request-ID storage,
+exactly-once inference, or live-provider working-evening acceptance. A history
+gap or missing admission event remains uncertainty and must not authorize blind
+mutation replay.

@@ -1,6 +1,7 @@
 //! Bounded operator client; never discovers settings or starts an inference runtime.
 use serde_json::{json, Value};
 use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -78,9 +79,56 @@ fn parse(args: &[String], input: &mut impl Read) -> Result<(String, Value), ()> 
     Ok((args[1].clone(), request))
 }
 
+/// Local connection admission must not wait for a full listener backlog.
+/// Any incomplete admission fails without sending or replaying a mutation.
+fn connect_once(path: &str) -> io::Result<UnixStream> {
+    // SAFETY: sockaddr_un consists of integer fields and a fixed char array;
+    // zero initialization supplies the required terminator and padding.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let bytes = path.as_bytes();
+    if bytes.is_empty() || bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid control socket path",
+        ));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *slot = *byte as libc::c_char;
+    }
+    // SAFETY: socket takes only constants and returns a newly owned descriptor.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fd is a fresh, valid AF_UNIX stream descriptor, owned exactly once.
+    let socket = unsafe { UnixStream::from_raw_fd(fd) };
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    // SAFETY: address is initialized and remains alive for connect; the length
+    // covers its family and bounded, NUL-terminated path within sockaddr_un.
+    if unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            (&address as *const libc::sockaddr_un).cast(),
+            length as libc::socklen_t,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    socket.set_nonblocking(false)?;
+    Ok(socket)
+}
+
 fn exchange(path: &str, request: &Value) -> io::Result<Value> {
-    let mut socket = UnixStream::connect(path)?;
     let deadline = Instant::now() + Duration::from_secs(3);
+    let mut socket = connect_once(path)?;
     socket.set_write_timeout(Some(Duration::from_secs(3)))?;
     writeln!(socket, "{request}")?;
     let mut bytes = Vec::new();
@@ -133,6 +181,34 @@ mod tests {
         assert!(parse(&base, &mut vec![b' '; REQUEST_LIMIT + 1].as_slice()).is_err());
     }
 
+    #[test]
+    fn full_listener_backlog_never_blocks_connection_admission() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixListener;
+        let env = oxa_fake::TestEnv::new();
+        let path = env.root().join("full.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        // SAFETY: the live listener owns this descriptor; zero permits one
+        // queued local connection on Linux, filled below without accepting it.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let queued = UnixStream::connect(&path).unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let result = exchange(path.to_str().unwrap(), &json!({"id":"observe","method":"status"}));
+            sent.send(result.is_err()).unwrap();
+        });
+        let refused = received.recv_timeout(Duration::from_millis(300));
+        // Always release a blocked old implementation and join it, even when
+        // the assertion fails. No detached test thread or server is left behind.
+        drop(listener);
+        drop(queued);
+        thread.join().unwrap();
+        assert_eq!(
+            refused.ok(),
+            Some(true),
+            "a full backlog must fail promptly without a request retry"
+        );
+    }
     #[test]
     fn observation_commands_do_not_read_stdin() {
         struct NoRead;

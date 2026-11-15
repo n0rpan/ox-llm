@@ -42,6 +42,7 @@ class Demo:
             "defaultProjectTrust": "never", "oxa.bootPreload": False,
         }))
         self.processes = []
+        self.request_number = 0
         self.tmux = ["tmux", "-L", "oxa-a2a-demo-" + uuid.uuid4().hex, "-f", "/dev/null"]
         self.socket = self.agent / "control" / "session.sock"
 
@@ -86,10 +87,11 @@ class Demo:
         return line.split(" ", 1)[1], record
 
     def request(self, method, **fields):
+        self.request_number += 1
         with socket.socket(socket.AF_UNIX) as client:
             client.settimeout(2)
             client.connect(str(self.socket))
-            wire = json.dumps({"id": "live-demo", "method": method, **fields}) + "\n"
+            wire = json.dumps({"id": f"demo-{self.request_number}", "method": method, **fields}) + "\n"
             client.sendall(wire.encode())
             client.shutdown(socket.SHUT_WR)
             chunks = []
@@ -126,7 +128,28 @@ class Demo:
         lines = path.read_text().splitlines(keepends=True)
         return [json.loads(line) for line in lines if line.endswith("\n")]
 
+    def control_cli(self, *args):
+        result = subprocess.run(
+            [str(self.binaries / "oxa"), "orchestrate-control", "--socket", str(self.socket), *args],
+            env=self.env, capture_output=True, text=True, timeout=4, check=True,
+        )
+        return json.loads(result.stdout)
+
+    def full_backlog_refusal(self):
+        path = self.root / "full.sock"
+        with socket.socket(socket.AF_UNIX) as listener, socket.socket(socket.AF_UNIX) as queued:
+            listener.bind(str(path))
+            listener.listen(0)
+            queued.connect(str(path))
+            result = subprocess.run(
+                [str(self.binaries / "oxa"), "orchestrate-control", "--socket", str(path), "status"],
+                env=self.env, capture_output=True, text=True, timeout=1,
+            )
+            assert result.returncode == 1 and not result.stdout, result
+            assert str(path) not in result.stderr, "transport errors must not disclose paths"
+
     def run(self):
+        self.full_backlog_refusal()
         worker_url, worker_record = self.fake(
             "worker", [text_turn("done", "child result", ["synthetic check"]),
                        text_turn("done", "child result", ["synthetic check"])],
@@ -186,13 +209,39 @@ class Demo:
         self.mutate("resume", status)
         running = self.wait(lambda v: v["status"]["session"]["busy"])
         clarification = "Record that external steering reached this same session"
-        self.mutate("steer", running, text=clarification)
+        cursor = running["sequence"]
+        # Simulate a client losing the response after sending a complete mutation.
+        # Reconnect for observations only; never resend the uncertain mutation.
+        with socket.socket(socket.AF_UNIX) as disconnected:
+            disconnected.settimeout(2)
+            disconnected.connect(str(self.socket))
+            disconnected.sendall((json.dumps({
+                "id": "lost-steer-response", "method": "steer",
+                "revision": self.goal(running)["revision"], "text": clarification,
+            }) + "\n").encode())
+            disconnected.shutdown(socket.SHUT_RDWR)
+        correlated = []
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            page = self.control_cli("events", "--after", str(cursor))
+            assert not page["gap"], "uncertain mutation requires retained history"
+            correlated.extend(item["event"] for item in page["events"]
+                              if item["event"].get("request_id") == "lost-steer-response")
+            cursor = page["next"]
+            if correlated:
+                break
+            time.sleep(0.02)
+        assert len(correlated) == 1 and correlated[0]["kind"] == "control_admitted", correlated
+        observed = self.control_cli("status")
+        assert observed["status"]["session"]["id"] == session
         first = self.wait(lambda v: self.goal(v)["state"] == "done")
         assert first["status"]["session"]["id"] == session
         self.save_screen("shared-screen.txt", lambda s: "same-session-demo" in s and "Goal Done" in s)
         self.wait(lambda _: len(self.records(record)) == 2)
         first_records = self.records(record)
-        assert clarification in json.loads(first_records[1]["body"])["messages"][-1]["content"]
+        second_messages = json.loads(first_records[1]["body"])["messages"]
+        assert clarification in second_messages[-1]["content"]
+        assert sum(str(m.get("content", "")).count(clarification) for m in second_messages) == 1
         total = sum(r["usage"]["prompt"] + r["usage"]["completion"] for r in first_records)
         assert self.goal(first)["reported_tokens"] == total
 
@@ -282,6 +331,8 @@ class Demo:
         worker_requests = [json.loads(r["body"]) for r in self.records(worker_record)]
         assert worker_requests and all(r["max_tokens"] == 2048 for r in worker_requests)
         result = {
+            "control_full_backlog_refused": True,
+            "disconnected_client_recovered_without_replay": True,
             "worker_response_tokens": 2048,
             "shared_session_steer": True, "idle_escape_paused_parent": True,
             "worker_footer_verified": True, "worker_canceled_and_reaped": True,

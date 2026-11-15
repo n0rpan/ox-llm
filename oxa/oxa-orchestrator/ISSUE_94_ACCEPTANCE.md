@@ -180,3 +180,21 @@ in the worker-compaction status wait while other acceptance work was running;
 all isolated compaction cases and a full sequential rerun pass with the original
 timeouts and assertions. The cause of that initial timing failure is not
 established, so this is not a claim that long-run timing reliability is solved.
+
+## Control-client backlog and disconnect recovery
+
+The control client no longer blocks on a full Unix-listener backlog before
+starting its I/O deadline. Its new owned-socket regression fails before the fix
+and passes afterward, and the rebuilt actual CLI returns transport failure
+promptly against a deliberately full private listener. No mutation retry or
+second runtime is introduced.
+
+The real CLI/tmux demo now loses a steering response on purpose, reconnects
+through the actual control CLI, recovers the correlated admission event from
+the captured sequence without a history gap, and verifies the same session
+receives the clarification exactly once. Its goal loop completes and the TUI
+exits cleanly. This closes a missing local reconnect acceptance case; a real
+working-session disconnect, owner replacement, retained-history gaps and
+provider/billing behavior remain unverified. See
+[shared-control acceptance](SHARED_SESSION.md). No paid run, shared gateway
+change, credential access or GitHub write is part of this follow-up.
