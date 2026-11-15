@@ -28,18 +28,42 @@ fn gh_token() -> Option<String> {
     gh_token_from(&exe, GH_DEADLINE)
 }
 
-/// `trusted_gh` with the project rule off when the project is the home directory itself (#122):
-/// everything on `PATH` under `~` (`~/.local/bin`) would otherwise count as "inside the
-/// project" and no token would be injected. The writable-directory check still applies.
+/// `trusted_gh` for a cwd that is the home directory (#122). The project rule cannot tell
+/// `~/.local/bin` from `~/project/bin` there, so under `~` only the user's conventional
+/// install directories (`USER_BIN`, including the mise shims) count; a `PATH` entry anywhere else below `~` (a writable
+/// project shim) is refused, as are those whose resolved target is. System paths are unchanged,
+/// and the writable-directory check of `trusted_gh` still applies.
 fn trusted_gh_for(
     path: Option<&std::ffi::OsStr>,
     cwd: Option<&Path>,
     home: Option<&Path>,
 ) -> Option<std::path::PathBuf> {
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    let cwd = cwd.filter(|c| home.is_none_or(|h| canon(c) != canon(h)));
-    trusted_gh(path, cwd)
+    let Some(h) = home.map(canon) else {
+        return trusted_gh(path, cwd);
+    };
+    if !cwd.is_some_and(|c| canon(c) == h) {
+        return trusted_gh(path, cwd);
+    }
+    let allowed: Vec<std::path::PathBuf> = USER_BIN.iter().map(|d| h.join(d)).collect();
+    // Allowed by where it resolves to, so a symlink from `~/.local/bin` into a project is refused.
+    let ok = |d: &Path| {
+        let dc = canon(d);
+        let under_home = |x: &Path| x.starts_with(&h) || x.starts_with(home.unwrap_or(&h));
+        !(under_home(d) || under_home(&dc)) || allowed.iter().any(|a| dc.starts_with(a))
+    };
+    let kept: Vec<std::path::PathBuf> = std::env::split_paths(path?).filter(|d| ok(d)).collect();
+    trusted_gh(Some(&std::env::join_paths(kept).ok()?), None)
 }
+
+/// The directories below `~` where a user installs their own tools.
+const USER_BIN: &[&str] = &[
+    ".local/bin",
+    "bin",
+    ".cargo/bin",
+    ".local/share/mise/shims",
+    ".local/share/mise/installs",
+];
 
 const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -208,6 +232,24 @@ mod tests {
         script(&proj, "gh", "echo EVIL");
         let q = std::env::join_paths([proj.to_str().unwrap()]).unwrap();
         assert_eq!(trusted_gh_for(Some(&q), Some(&proj), Some(&home)), None);
+    }
+
+    /// #122 review: with cwd = home a writable project shim on PATH is still refused.
+    #[test]
+    fn cwd_home_refuses_a_project_shim_under_home() {
+        let d = tmp("homeshim");
+        let home = d.join("home");
+        let proj = home.join("project/bin");
+        std::fs::create_dir_all(&proj).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        let p = std::env::join_paths([proj.to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh_for(Some(&p), Some(&home), Some(&home)), None);
+        // ... also behind a symlink from an allowed directory.
+        let lb = home.join(".local");
+        std::fs::create_dir_all(&lb).unwrap();
+        std::os::unix::fs::symlink(&proj, lb.join("bin")).unwrap();
+        let q = std::env::join_paths([lb.join("bin").to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh_for(Some(&q), Some(&home), Some(&home)), None);
     }
 
     #[test]
