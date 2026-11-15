@@ -81,13 +81,42 @@ impl PathGuard {
 /// `Some(false)` = only after the user confirms, `None` = not protected.
 fn protected_write(p: &Path, cwd: &Path) -> Option<bool> {
     let hit = |list: &[&str]| list.iter().any(|rel| is_inside(p, &cwd.join(rel)));
-    if hit(GIT_PROTECTED_IN_CWD) {
+    if hit(GIT_PROTECTED_IN_CWD) || in_linked_git_dirs(p, cwd) {
         Some(true)
     } else if hit(PROTECTED_IN_CWD) {
         Some(false)
     } else {
         None
     }
+}
+
+/// A worktree's `.git` is a file pointing at its gitdir, whose `commondir` holds the real hooks
+/// and config. `true` when `p` is a hooks dir or config file of either, outside the cwd.
+fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
+    let Some(start) = resolve_real(cwd) else {
+        return false;
+    };
+    let Some(dotgit) = start.ancestors().map(|a| a.join(".git")).find(|d| d.exists()) else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(&dotgit) else {
+        return false; // a normal repository: the cwd table covers it
+    };
+    let Some(raw) = text.trim().strip_prefix("gitdir:") else {
+        return false;
+    };
+    let base = dotgit.parent().unwrap_or(cwd);
+    let gitdir = base.join(raw.trim());
+    let mut dirs = vec![gitdir.clone()];
+    if let Ok(c) = std::fs::read_to_string(gitdir.join("commondir")) {
+        dirs.push(gitdir.join(c.trim()));
+    }
+    dirs.iter().any(|d| {
+        let d = resolve_real(d).unwrap_or_else(|| d.clone());
+        ["hooks", "config", "config.worktree"]
+            .iter()
+            .any(|rel| is_inside(p, &d.join(rel)))
+    })
 }
 
 /// The policy of the crate docs' table, with per-session grants.

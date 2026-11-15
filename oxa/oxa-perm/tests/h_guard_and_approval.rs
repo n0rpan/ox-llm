@@ -305,3 +305,36 @@ fn the_real_account_home_is_denied_as_well_as_a_changed_home() {
         }
     }
 }
+
+#[test]
+fn git_worktree_common_dir_hooks_and_config_are_never_written() {
+    let env = TestEnv::new();
+    let main = env.work().join("main");
+    let wt = env.work().join("wt");
+    let wtgit = main.join(".git/worktrees/wt");
+    std::fs::create_dir_all(main.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(&wtgit).unwrap();
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wtgit.display())).unwrap();
+    std::fs::write(wtgit.join("commondir"), "../..\n").unwrap();
+    let p = guarded(&env);
+    for f in [
+        main.join(".git/hooks/pre-commit"),
+        main.join(".git/config"),
+        wtgit.join("config.worktree"),
+        wtgit.join("hooks/pre-push"),
+    ] {
+        for mode in [Mode::Workspace, Mode::Ask] {
+            assert_eq!(
+                p.decide(mode, &Access::Write(f.clone()), &wt),
+                Decision::Deny(deny_reasons::GIT_PROTECTED),
+                "{f:?} {mode:?}"
+            );
+        }
+    }
+    // Ordinary work in the worktree is unchanged.
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Write(wt.join("src/a.rs")), &wt),
+        Decision::Allow
+    );
+}
