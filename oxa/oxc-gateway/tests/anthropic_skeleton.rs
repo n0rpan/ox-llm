@@ -124,3 +124,88 @@ fn runtime_fixture_uses_a_real_owner_only_key_file_outside_the_repository() {
     assert!(mock.requests().is_empty());
     mock.assert_healthy();
 }
+
+#[cfg(feature = "runtime")]
+#[test]
+fn real_runtime_discovers_the_fixture_without_provider_or_ledger_activity() {
+    let mock = anthropic::MockAnthropic::start(vec![]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let runtime = oxc_gateway::runtime::Runtime::new(
+        fixture.config.clone(),
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        oxc_gateway::runtime::Options::default(),
+    )
+    .unwrap();
+    std::fs::remove_file(&fixture.key_path).unwrap();
+    let discovery = runtime.discovery();
+    assert_eq!(discovery.models["data"].as_array().unwrap().len(), 1);
+    assert_eq!(discovery.models["data"][0]["id"], skeleton::MODEL);
+    assert_eq!(discovery.status["loaded"], false);
+    assert_eq!(discovery.status["sleeping"], true);
+    assert!(!discovery.models.to_string().contains(anthropic::CREDENTIAL));
+    assert!(!discovery
+        .models
+        .to_string()
+        .contains(fixture.key_path.to_str().unwrap()));
+    assert!(mock.requests().is_empty());
+    assert!(std::fs::read_dir(&fixture.ledger_dir).unwrap().next().is_none());
+    mock.assert_healthy();
+}
+
+#[cfg(feature = "anthropic-client")]
+#[tokio::test]
+async fn real_anthropic_client_uses_the_shared_key_and_native_wire_fixture() {
+    use oxc_gateway::anthropic_client::{Cancellation, Chat, Client, Control, Event};
+    let text = format!("Synthetic λ {CREDENTIAL} reply");
+    let mock = MockAnthropic::start(vec![Reply::text(&text, 11, 7, 3, 5)]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let key = oxc_gateway::secrets::read(&fixture.key_path, "anthropic").unwrap();
+    let payload = json!({"model":skeleton::MODEL,"max_tokens":1000,"messages":[{"role":"user","content":"Synthetic request"}],"stream_options":{"include_usage":true}});
+    let base = mock.base_url();
+    let mut sending = 0;
+    let mut chunks = vec![];
+    let completed = Client::new()
+        .unwrap()
+        .stream(
+            Chat {
+                base_url: &base,
+                upstream_model: skeleton::UPSTREAM,
+                alias: skeleton::MODEL,
+                max_output: Some(16),
+                payload: &payload,
+                created: 0,
+            },
+            &key,
+            &Cancellation::default(),
+            &mut |event| {
+                match event {
+                    Event::Sending => sending += 1,
+                    Event::Chunk(value) => chunks.push(value),
+                }
+                Control::Continue
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(sending, 1);
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].target, "/v1/messages");
+    assert_eq!(requests[0].header("x-api-key"), Some(CREDENTIAL));
+    assert_eq!(requests[0].body["model"], skeleton::UPSTREAM);
+    assert_eq!(requests[0].body["max_tokens"], 16);
+    let usage = completed.usage.unwrap().openai();
+    assert_eq!(usage["prompt_tokens"], 21);
+    assert_eq!(usage["completion_tokens"], 5);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 7);
+    assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 3);
+    let normalized: String = chunks
+        .iter()
+        .filter_map(|value| value["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert!(normalized.starts_with("Synthetic λ ") && normalized.ends_with(" reply"));
+    assert!(!normalized.contains(CREDENTIAL));
+    assert!(!completed.assistant.to_string().contains(CREDENTIAL));
+    mock.assert_healthy();
+}
