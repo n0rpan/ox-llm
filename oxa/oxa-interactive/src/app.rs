@@ -483,15 +483,34 @@ pub fn worker_loop_with(
         // before the next command (the commands queued behind it run in the new session).
         if let Some(s) = session.as_mut() {
             s.enable_swap();
-            match s.take_swap_request() {
+            let asked = match s.take_swap_request() {
+                None => None,
+                Some(oxa_core::SwapRequest::New) => Some(Ok((oxa_core::Open::New, Reopen::New))),
+                Some(oxa_core::SwapRequest::Switch(path)) => Some(
+                    s.inner()
+                        .store
+                        .resolve(&path)
+                        .map(|sref| (oxa_core::Open::Resume(sref.clone()), Reopen::Resume(sref))),
+                ),
+            };
+            // The before-switch hook runs (and may cancel) before the old session closes. A
+            // refusal is shown as a notice: no command is running, so no `Done`.
+            let refused = |e: OxaError| {
+                let _ = out.send(WorkerMsg::Event(AgentEvent::Notice {
+                    level: Level::Warning,
+                    text: e.to_string(),
+                }));
+            };
+            match asked {
                 None => {}
-                Some(oxa_core::SwapRequest::New) => backlog.push_front(SessionCmd::Reopen(Reopen::New)),
-                Some(oxa_core::SwapRequest::Switch(path)) => match s.inner().store.resolve(&path) {
-                    Ok(sref) => backlog.push_front(SessionCmd::Reopen(Reopen::Resume(sref))),
-                    Err(e) => {
-                        let _ = out.send(WorkerMsg::Done(Err(e)));
+                Some(Err(e)) => refused(e),
+                Some(Ok((open, how))) => {
+                    let mut sink = ChanSink(out.clone());
+                    match s.before_switch(&open, &mut sink, &mut ui_proxy) {
+                        Ok(_) => backlog.push_front(SessionCmd::Reopen(how)),
+                        Err(e) => refused(e),
                     }
-                },
+                }
             }
         }
         while let Ok(more) = cmds.try_recv() {

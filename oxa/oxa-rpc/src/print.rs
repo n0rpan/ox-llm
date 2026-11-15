@@ -342,19 +342,20 @@ fn prompt_or_command(
     sink: &mut dyn oxa_proto::EventSink,
     ui: &mut dyn oxa_proto::Ui,
 ) -> Result<Message, OxaError> {
-    match oxa_core::expand_input(session.inner(), &text) {
-        oxa_core::Expanded::Hook { name, args } => {
-            session.enable_swap();
-            session.run_command(&name, &args, sink, ui)?;
-            // The command may have asked for another session (`ctx.newSession()`).
-            apply_swap(session, sink, ui)?;
-            Ok(Message::Extension)
-        }
+    // Extension session switches are held until the message is over, whatever the message was
+    // (a command, or a prompt whose event handlers or tools asked for one).
+    session.enable_swap();
+    let message = match oxa_core::expand_input(session.inner(), &text) {
+        oxa_core::Expanded::Hook { name, args } => session
+            .run_command(&name, &args, sink, ui)
+            .map(|_| Message::Extension),
         oxa_core::Expanded::Builtin { name, args } => {
             oxa_core::run_builtin(session, &name, &args, sink, ui).map(Message::Command)
         }
         _ => session.prompt(text, parts, sink, ui).map(|_| Message::Prompt),
-    }
+    }?;
+    apply_swap(session, sink, ui)?;
+    Ok(message)
 }
 
 /// Apply the session swap an extension asked for, between two messages.

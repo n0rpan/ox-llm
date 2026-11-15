@@ -125,6 +125,36 @@ fn new_and_switch_session_from_an_extension_swap_the_session() {
     assert!(containing(&env, "BEFORE-FRESH") != second);
 }
 
+/// A switch asked for by an event handler during a plain prompt (no extension command ran
+/// before) is applied right after that message: the next prompt is written to the new session.
+#[test]
+fn new_session_from_an_event_handler_applies_after_a_plain_prompt() {
+    let env = TestEnv::new();
+    let path = env.agent_dir().join("extensions").join("endswap.js");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        r#"export default function (oxa) {
+  let done = false;
+  oxa.on("agent_end", (e, ctx) => { if (!done) { done = true; ctx.newSession(); } });
+}
+"#,
+    )
+    .unwrap();
+    let fake = FakeServer::start(
+        vec![ScriptTurn::text("one"), ScriptTurn::text("two")],
+        FakeOpts::default(),
+    )
+    .expect("fake");
+    let (code, out, err) = go(&env, &fake.url(), &["-p", "FIRST-MSG", "SECOND-MSG"], "");
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(session_files(&env).len(), 2, "{:?}", session_files(&env));
+    let first = containing(&env, "FIRST-MSG");
+    let second = containing(&env, "SECOND-MSG");
+    assert_eq!((first.len(), second.len()), (1, 1));
+    assert_ne!(first, second, "the second prompt went to the new session");
+}
+
 /// Item 8 of the lane: an extension tool's result `details` survive a resume (pi keeps them on
 /// the toolResult message; the todo example rebuilds its state from them at session_start).
 #[test]

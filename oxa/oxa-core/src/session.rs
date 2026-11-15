@@ -424,12 +424,7 @@ impl Session {
     /// `SessionBeforeSwitch` (cancellable) and re-attaches hosts.
     pub fn switch(&mut self, how: Open, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<(), OxaError> {
         self.ensure_idle()?;
-        let payload = crate::fire::before_switch_payload(&how);
-        if let HookReply::Cancel(reason) =
-            first_reply(&mut self.st, HookPoint::SessionBeforeSwitch, &payload, sink, ui)
-        {
-            return Err(OxaError::new(codes::ABORTED, reason));
-        }
+        let payload = self.before_switch(&how, sink, ui)?;
         let target = payload["targetSessionFile"].as_str().map(str::to_string);
         let reason = payload["reason"].as_str().unwrap_or("new");
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
@@ -437,6 +432,23 @@ impl Session {
         enter(&mut self.st, how, None, sink, ui)?;
         self.preloaded = false;
         Ok(())
+    }
+
+    /// Fire `session_before_switch` for `how` and honour a cancel (`aborted`). Returns the
+    /// hook payload. A front end that reopens sessions itself calls this first.
+    pub fn before_switch(
+        &mut self,
+        how: &Open,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<serde_json::Value, OxaError> {
+        let payload = crate::fire::before_switch_payload(how);
+        if let HookReply::Cancel(reason) =
+            first_reply(&mut self.st, HookPoint::SessionBeforeSwitch, &payload, sink, ui)
+        {
+            return Err(OxaError::new(codes::ABORTED, reason));
+        }
+        Ok(payload)
     }
 
     /// Opt in to extension session swaps: a front end that calls this polls
