@@ -698,3 +698,61 @@ fn overrun_stops_later_escalation_in_the_task() {
     assert_eq!(thinking(&eng), vec![true, false, false]);
     assert!(notices(&r.events).is_empty());
 }
+
+#[test]
+fn overrun_after_an_escalation_clears_the_footer() {
+    let env = TestEnv::new();
+    let (mut st, _eng) = state(
+        &env,
+        vec![failing_test("c1"), overrun(), ScriptTurn::text("done")],
+        settings(json!({})),
+        ThinkingLevel::Medium,
+    );
+    let r = run(&mut st, "fix the failing test");
+    assert!(matches!(r.end, RunEnd::Stopped), "{:?}", r.end);
+    let key_status: Vec<_> = r.status.iter().filter(|(k, _)| k == "thinking").collect();
+    assert!(
+        key_status.iter().any(|(_, t)| t.is_some()),
+        "the test escalated: {:?}",
+        r.status
+    );
+    // Cleared right at the overrun, not only at the end of the run.
+    let first_overrun_notice = r
+        .events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Notice { text, .. } if text == OVERRUN_NOTICE))
+        .unwrap();
+    assert!(first_overrun_notice > 0);
+    assert_eq!(key_status.last().unwrap().1, None);
+}
+
+#[test]
+fn the_discarded_overrun_request_is_counted() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state(
+        &env,
+        vec![overrun(), ScriptTurn::text("the answer")],
+        settings(json!({})),
+        ThinkingLevel::Medium,
+    );
+    run(&mut st, "explain a.txt");
+    assert_eq!(eng.requests().len(), 2);
+    assert_eq!(st.stats.requests, 2, "both requests are in the stats");
+    assert_eq!(st.stats.assistant_messages, 1, "only the answer is a message");
+}
+
+#[test]
+fn both_requests_are_counted_when_the_retry_overruns_too() {
+    let env = TestEnv::new();
+    let mut again = overrun();
+    again.reasoning = None;
+    let (mut st, _eng) = state(
+        &env,
+        vec![overrun(), again],
+        settings(json!({})),
+        ThinkingLevel::Medium,
+    );
+    let r = run(&mut st, "explain a.txt");
+    assert!(matches!(r.end, RunEnd::Failed(_)));
+    assert_eq!(st.stats.requests, 2);
+}

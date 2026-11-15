@@ -190,7 +190,8 @@ fn run_inner(
             if !retried && crate::think::reasoning_only_overrun(st, &turn, thinking_on) {
                 retried = true;
                 opts.thinking = Some(false);
-                crate::think::record_overrun(st);
+                crate::think::record_overrun(st, ui);
+                account_discarded(st, &turn);
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: crate::think::OVERRUN_NOTICE.to_string(),
@@ -198,6 +199,7 @@ fn run_inner(
                 continue;
             }
             if retried && crate::think::empty_length(&turn) {
+                account_discarded(st, &turn);
                 let e = OxaError::new(
                     oxa_proto::codes::STREAM_BROKEN,
                     "The reply ran out of output tokens before any answer, even without thinking.",
@@ -513,6 +515,15 @@ fn turn_end(
     });
     crate::resume::sync_turn(st, sink); // R1: the turn's appends are durable
     crate::fire::turn_end(st, ids.0, &message, &tool_results, (ids.1, ids.2), sink, ui);
+}
+
+/// A request whose reply is not kept (the overrun turn and a failed retry): its tokens still
+/// count in the stats. No `Usage` entry, so the cache expectation is not moved by it.
+fn account_discarded(st: &mut SessionState, turn: &oxa_proto::AssistantTurn) {
+    st.stats.requests += 1;
+    st.stats.prompt_tokens += turn.usage.prompt as u64;
+    st.stats.completion_tokens += turn.usage.completion as u64;
+    st.stats.cached_tokens += turn.usage.cached as u64;
 }
 
 fn account_reply(st: &mut SessionState, timings: Option<oxa_proto::Timings>, usage: Usage) {

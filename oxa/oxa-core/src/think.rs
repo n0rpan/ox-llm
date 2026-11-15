@@ -248,9 +248,13 @@ pub(crate) fn reasoning_only_overrun(
 }
 
 /// Remember the overrun for the rest of the run: thinking is no longer escalated.
-pub(crate) fn record_overrun(st: &mut SessionState) {
-    st.stats.escalation.overrun = true;
-    st.stats.escalation.on = None;
+pub(crate) fn record_overrun(st: &mut SessionState, ui: &mut dyn Ui) {
+    let next = Escalation {
+        overrun: true,
+        task: st.stats.escalation.task,
+        ..Escalation::default()
+    };
+    set(st, next, None, ui);
 }
 
 /// Whether the escalation can change anything: policy `auto`, `toolFollowups: auto`, a level
