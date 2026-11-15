@@ -80,3 +80,14 @@ and excludes generated targets. The new x86_64 workers are pinned to Ubuntu 24.0
 the ARM64 sandbox baseline: `ubuntu-latest` had migrated to 26, whose symlink error text broke
 an existing read-only assertion. The assertion is retained unchanged. The native OS identity
 also enters the cache fingerprint.
+
+The third hosted attempt, [43683257769](https://github.com/oxstack/ox-llm/actions/runs/43683257769),
+caught a pre-existing TUI script race in two daily-driver tests: seeing the final reply text
+is earlier than receiving `AgentSettled`, so `/new` or `/tree` could be rejected as busy.
+A 250ms mock gap before SSE `[DONE]` reproduced it locally (the old script failed at its
+unchanged 60-second deadline). The scripts now use a read-only HTML export as a worker fence:
+its notice follows `AgentSettled` in the same FIFO, and exporting does not add a tree entry.
+The existing controls/navigation assertions and deadlines remain. Both flows retain the
+explicit mock gap, and all 18 daily-driver tests pass locally. This is synchronization,
+not a retry, timeout increase or removed test. The failed attempt remains part of the audit
+record; a full hosted confirmation of the final harness is required.

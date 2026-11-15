@@ -647,18 +647,37 @@ fn regular_mode_flow() {
 /// the custom prompt goes back to the question; the user message refills the editor.
 #[test]
 fn tree_navigator_follows_pis_dialog_rules() {
-    let world = World::new(vec![
-        ScriptTurn::text("ONE answer."),
-        ScriptTurn::text("TWO answer."),
-    ]);
+    let world = World::with(
+        vec![ScriptTurn::text("ONE answer."), ScriptTurn::text("TWO answer.")],
+        FakeOpts {
+            done_gap_ms: 250,
+            ..FakeOpts::default()
+        },
+    );
     let steps = vec![
         step("open", &["oxa v"], typed("first question", &["enter"])),
+        // Reply text can precede [DONE]. HTML export is a read-only worker fence:
+        // its notice follows AgentSettled in the same FIFO, without adding a tree entry.
         step(
             "first reply",
             &["ONE answer."],
+            typed("/export first-idle.html", &["enter"]),
+        ),
+        step(
+            "first run idle",
+            &["Exported the session to", "first-idle.html"],
             typed("second question", &["enter"]),
         ),
-        step("second reply", &["TWO answer."], typed("/tree", &["enter"])),
+        step(
+            "second reply",
+            &["TWO answer."],
+            typed("/export second-idle.html", &["enter"]),
+        ),
+        step(
+            "second run idle",
+            &["Exported the session to", "second-idle.html"],
+            typed("/tree", &["enter"]),
+        ),
         // The selection starts at the leaf (the TWO reply): Enter there moves nothing.
         step(
             "tree on the leaf",
@@ -808,16 +827,33 @@ fn dropped_image_path_is_attached() {
 #[test]
 fn controls_are_rebound_to_the_new_session() {
     let hold_ms = 20_000;
-    let world = World::new(vec![
-        ScriptTurn::text("ALPHA answer."),
-        ScriptTurn {
-            fault: Some(Fault::HoldHeaders { ms: hold_ms }),
-            ..ScriptTurn::text("LATE answer.")
+    let world = World::with(
+        vec![
+            ScriptTurn::text("ALPHA answer."),
+            ScriptTurn {
+                fault: Some(Fault::HoldHeaders { ms: hold_ms }),
+                ..ScriptTurn::text("LATE answer.")
+            },
+        ],
+        FakeOpts {
+            done_gap_ms: 250,
+            ..FakeOpts::default()
         },
-    ]);
+    );
     let steps = vec![
         step("open", &["oxa v"], typed("first", &["enter"])),
-        step("first reply", &["ALPHA answer."], typed("/new", &["enter"])),
+        // A final content delta does not mean the worker is idle. The queued,
+        // read-only export notice proves AgentSettled has reached the UI first.
+        step(
+            "first reply",
+            &["ALPHA answer."],
+            typed("/export controls-idle.html", &["enter"]),
+        ),
+        step(
+            "first run idle",
+            &["Exported the session to", "controls-idle.html"],
+            typed("/new", &["enter"]),
+        ),
         step(
             "new session",
             &["New session started"],
