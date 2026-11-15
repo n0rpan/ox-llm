@@ -63,8 +63,10 @@
 //! refuses to run commands in that repository (`bwrap.rs`).
 use crate::layout::{is_home_or_above, sensitive_paths};
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -99,6 +101,10 @@ pub struct GitBinds {
     /// sbx-gitsym: the repository's git directories (the gitdir and the common dir, canonical,
     /// also when they lie in the cwd), for the per-command alias check. Binds nothing.
     pub dirs: Vec<PathBuf>,
+    /// sbx-hooks: the worktree root (the directory that holds the `.git` entry), canonical. Git
+    /// resolves a relative `core.hooksPath` from here, not from the session cwd, which may be a
+    /// nested directory. `None` when the cwd is not in a repository.
+    pub worktree: Option<PathBuf>,
 }
 
 impl GitBinds {
@@ -130,6 +136,9 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
     let Some((gitdir, common)) = locate(&dotgit, &ctx) else {
         return GitBinds::default();
     };
+    // The worktree root is the directory holding the `.git` entry, also when the session cwd
+    // is a nested directory below it. Git resolves a relative `core.hooksPath` from here.
+    let worktree = dotgit.parent().map(Path::to_path_buf);
     let objects = common.join("objects");
     let mut alternates = Vec::new();
     let mut seen = BTreeSet::new();
@@ -187,6 +196,7 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
         protect,
         notes,
         dirs,
+        worktree,
     }
 }
 
@@ -571,6 +581,10 @@ fn canon(p: &Path) -> Option<PathBuf> {
 pub(crate) struct Includes {
     pub header: bool,
     pub paths: Vec<Vec<u8>>,
+    /// Every `core.hooksPath` value, in file order (git uses the last one). The sandbox
+    /// protects the directory a repository config names: git runs the hooks there outside
+    /// the sandbox later.
+    pub hooks_paths: Vec<Vec<u8>>,
 }
 
 /// A byte stream with git's `get_next_char`: CR LF reads as LF.
@@ -655,6 +669,12 @@ pub(crate) fn parse_includes(bytes: &[u8]) -> Result<Includes, String> {
             match value {
                 Some(v) if !v.is_empty() => out.paths.push(v),
                 _ => return Err("an include path without a value".into()),
+            }
+        } else if section == b"core" && key == b"hookspath" {
+            if let Some(v) = value {
+                if !v.is_empty() {
+                    out.hooks_paths.push(v);
+                }
             }
         }
     }
@@ -781,6 +801,60 @@ fn config_includes(p: &Path, repo: &Path) -> Result<Includes, String> {
         }
     }
     Ok(inc)
+}
+
+/// sbx-hooks: the `core.hooksPath` values of `dir`'s config and `config.worktree`, including
+/// the values in files they include (all `includeIf` conditions count: this only protects
+/// more). A value is returned as git wrote it; the caller resolves it against the worktree
+/// root. Unreadable or unparsable files are skipped here: [`unsafe_reason`] and
+/// [`alias_refusal`] already refuse a git directory whose config cannot be checked.
+pub(crate) fn configured_hooks_paths(dir: &Path, home: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for name in ["config", "config.worktree"] {
+        read_hooks_paths(&dir.join(name), home, 0, &mut seen, &mut out);
+    }
+    out
+}
+
+fn read_hooks_paths(
+    path: &Path,
+    home: &Path,
+    depth: usize,
+    seen: &mut BTreeSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+) {
+    if depth > MAX_INCLUDE_DEPTH {
+        return;
+    }
+    let Ok(real) = fs::canonicalize(path) else {
+        return;
+    };
+    if !seen.insert(real.clone()) {
+        return;
+    }
+    let Ok(bytes) = fs::read(&real) else {
+        return;
+    };
+    let Ok(inc) = parse_includes(&bytes) else {
+        return;
+    };
+    for raw in inc.hooks_paths {
+        out.push(PathBuf::from(OsString::from_vec(raw)));
+    }
+    for raw in inc.paths {
+        let raw = PathBuf::from(OsString::from_vec(raw));
+        let p = if raw == Path::new("~") {
+            home.to_path_buf()
+        } else if let Some(rest) = raw.to_str().and_then(|s| s.strip_prefix("~/")) {
+            home.join(rest)
+        } else if raw.is_absolute() {
+            raw
+        } else {
+            real.parent().unwrap_or(Path::new(".")).join(raw)
+        };
+        read_hooks_paths(&p, home, depth + 1, seen, out);
+    }
 }
 
 /// sbx-gitsym: how long the `git config` cross-check may take.
@@ -995,7 +1069,7 @@ impl Mounts {
     /// The command can change `q` (a physical path): its deepest mount is read-write and `q`
     /// lies below it, or is that mount and is the final target (its content is writable; a
     /// mount point itself cannot be renamed). A read-only mount wins a tie.
-    fn writable(&self, q: &Path, last: bool) -> bool {
+    pub(crate) fn writable(&self, q: &Path, last: bool) -> bool {
         let deepest = |xs: &[PathBuf]| {
             xs.iter()
                 .filter(|m| q.starts_with(m))
@@ -1106,6 +1180,19 @@ pub(crate) fn alias_refusal(dirs: &[PathBuf], m: &Mounts, home: &Path) -> Option
         }
     }
     None
+}
+
+/// A configured hooks tree uses the same bounded alias checks as the default git hooks.
+/// A missing directory is masked by the caller; a non-directory cannot contain a git hook.
+pub(crate) fn hooks_alias_refusal(hooks: &Path, mounts: &Mounts) -> Option<String> {
+    match fs::symlink_metadata(hooks) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return None,
+        Ok(m) if !m.is_dir() && !m.file_type().is_symlink() => return None,
+        _ => {}
+    }
+    walk_alias(hooks, mounts)
+        .and_then(|real| check_tree(hooks, &real, mounts))
+        .err()
 }
 
 /// The config file `p` (and what it includes) is safe from the command.

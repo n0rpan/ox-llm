@@ -86,6 +86,11 @@ impl PathGuard {
 /// B4: how a write to `p` inside `cwd` is protected: `Some(true)` = never by a tool (git),
 /// `Some(false)` = only after the user confirms, `None` = not protected.
 fn protected_write(p: &Path, cwd: &Path) -> Option<bool> {
+    // A worktree's `.git` is a file that names the git directory git runs hooks and config
+    // from; it runs outside the sandbox later, like the files below.
+    if p == cwd.join(".git") {
+        return Some(true);
+    }
     let hit = |list: &[&str]| list.iter().any(|rel| is_inside(p, &cwd.join(rel)));
     if hit(GIT_PROTECTED_IN_CWD) || in_linked_git_dirs(p, cwd) {
         Some(true)
