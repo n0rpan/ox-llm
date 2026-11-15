@@ -4,15 +4,18 @@ use std::{
     fs,
     os::unix::fs::{symlink, PermissionsExt},
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 struct Home(PathBuf);
+static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
 impl Home {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "oxc-key-path-{}-{}",
+            "oxc-key-path-{}-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+            NEXT_HOME.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();

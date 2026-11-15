@@ -243,6 +243,31 @@ fn credentials_rotate_per_request_and_specific_repository_refusals_stay_safe() {
 }
 
 #[test]
+fn request_key_handles_allow_mutable_observers_without_caching_secret_bytes() {
+    use std::sync::Arc;
+    let home = Home::new();
+    home.key("synthetic-first");
+    let runtime = home.runtime(config(), Options::default());
+    let mut call = runtime.begin(payload(), Context::default()).unwrap();
+    let handle = call.key_handle();
+    assert!(Arc::ptr_eq(&handle, &call.key_handle()));
+    assert!(std::ptr::eq(handle.as_ref(), call.key()));
+    // The handle is owned independently, like the async client's immutable key
+    // borrow, while its Sending/Chunk callback mutates the same call guard.
+    call.mark_forwarded();
+    call.observe(&canonical());
+    assert_eq!(handle.expose(), "synthetic-first");
+    call.finish(Outcome::Complete, 200, None).unwrap();
+    home.key("synthetic-second");
+    let call = runtime.begin(payload(), Context::default()).unwrap();
+    let second = call.key_handle();
+    assert!(!Arc::ptr_eq(&handle, &second));
+    assert_eq!(handle.expose(), "synthetic-first");
+    assert_eq!(second.expose(), "synthetic-second");
+    assert!(!format!("{handle:?} {second:?}").contains("synthetic-"));
+}
+
+#[test]
 fn default_off_offline_and_policy_refusals_precede_keys_budget_and_io() {
     let home = Home::new();
     let mut disabled = config();
