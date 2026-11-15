@@ -141,6 +141,10 @@ fn unknown_slash_is_local_error_and_help_usage_exist() {
     // is rejected locally (a typo), not sent to the model.
     let (level, _) = notice(expect_some("/zz-nope-qq", fx.run("/zz-nope-qq go")));
     assert_eq!(level, Level::Error);
+    // The error says how to send the line as text, and that escape really reaches the core.
+    let (_, text) = notice(expect_some("/zz-nope-qq", fx.run("/zz-nope-qq go")));
+    assert!(text.contains("//"), "{text}");
+    assert!(fx.run("//zz-nope-qq go").is_none());
     // A template or skill command of the session still goes to the core.
     let mut fx = Fx::new();
     fx.commands.push(CommandSpec {

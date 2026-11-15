@@ -114,7 +114,7 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
         }
         return Some(notify(
             Level::Error,
-            format!("Unknown command /{name}. Type /help for the list of commands."),
+            format!("Unknown command /{name}. Type /help for the list of commands, or start the line with // to send it as text."),
         ));
     }
 
