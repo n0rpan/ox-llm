@@ -1,4 +1,4 @@
-//! A8: the `grep` tool. Owner: task A8. Signatures below are frozen; bodies are yours.
+//! A8: the `grep` tool.
 // ported from pi packages/coding-agent/src/core/tools/grep.ts
 //!
 //! The helpers at the bottom of this file are shared with `find.rs` and `ls.rs` (same owner).

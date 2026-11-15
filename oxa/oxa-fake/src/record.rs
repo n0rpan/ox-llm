@@ -1,4 +1,4 @@
-//! A14: request records. Owner: task A14. Signatures below are frozen; bodies are yours.
+//! A14: request records.
 use crate::Recorded;
 use oxa_proto::{codes, OxaError, Role, ToolCall, Value, WireMsg};
 use serde_json::json;

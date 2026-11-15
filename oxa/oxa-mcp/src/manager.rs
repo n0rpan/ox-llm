@@ -1,4 +1,4 @@
-//! F6: the MCP manager behind `dyn Hooks` (background connect, exposure, resource tools, `mcp.log`). Owner: task F6. Signatures below are frozen; bodies are yours.
+//! F6: the MCP manager behind `dyn Hooks` (background connect, exposure, resource tools, `mcp.log`).
 // ported from pi packages/coding-agent/src/core/mcp-servers.ts and src/extensions/mcp/*
 use crate::{
     effective_exposure, expand_value, project_config_path, result_text, set_server_field, split_full_name,

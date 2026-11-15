@@ -1,4 +1,4 @@
-//! A14: the fake-script format. Owner: task A14. Signatures below are frozen; bodies are yours.
+//! A14: the fake-script format.
 use crate::{Fault, ScriptTurn};
 use oxa_proto::{codes, Finish, OxaError, ToolCall, Value};
 use serde_json::{json, Map};

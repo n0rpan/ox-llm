@@ -1,4 +1,4 @@
-//! A2: request body, reply assembly and the HTTP `Engine`. Owner: task A2. Signatures below are frozen; bodies are yours.
+//! A2: request body, reply assembly and the HTTP `Engine`.
 use crate::hints::{build_headers, new_idem_key};
 use crate::info::{clear_hint, count_tokens, fetch_info_full, http_error_with, send_cancel, stream_error};
 use crate::{post_sse, Flow, SseEvent, StreamOpts, Url};

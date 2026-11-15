@@ -1,4 +1,4 @@
-//! E11 acceptance tests: builtin:subagent. Owner: task E11.
+//! E11 acceptance tests: builtin:subagent.
 //! One test per acceptance bullet of WAVES.toml (plus the OXA-ENGINE-SUPPORT sec. 4 amendments).
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!

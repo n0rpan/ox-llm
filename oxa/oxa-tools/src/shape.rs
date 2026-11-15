@@ -1,4 +1,4 @@
-//! A5: `shape`, the deterministic output cap (W4). Owner: task A5. Signatures below are frozen; bodies are yours.
+//! A5: `shape`, the deterministic output cap (W4).
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, OpenOptions};

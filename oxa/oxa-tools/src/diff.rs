@@ -1,4 +1,4 @@
-//! A7: exact-text edit matching and diff rendering. Owner: task A7. Signatures below are frozen; bodies are yours.
+//! A7: exact-text edit matching and diff rendering.
 // ported from pi packages/coding-agent/src/core/tools/edit-diff.ts
 //
 // Known gap: pi normalises with NFKC. Without a `unicode-normalization` dependency (architect

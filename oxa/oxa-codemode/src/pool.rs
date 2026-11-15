@@ -1,4 +1,4 @@
-//! E6: the worker pool (at most N script VMs alive per process). Owner: task E6. Signatures below are frozen; bodies are yours.
+//! E6: the worker pool (at most N script VMs alive per process).
 // ported from pi packages/codemode/src/runtime/*
 use crate::api::{install_globals, ScriptSink};
 use crate::tool::{output_limit_error, ScriptOptions, ScriptOutcome};

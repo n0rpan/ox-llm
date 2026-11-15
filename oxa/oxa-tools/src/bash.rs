@@ -1,4 +1,4 @@
-//! A9: the `bash` tool. Owner: task A9. Signatures below are frozen; bodies are yours.
+//! A9: the `bash` tool.
 // ported from pi packages/coding-agent/src/core/tools/bash.ts (execution replaced by the sandbox)
 use crate::descriptions::{self, errors};
 use crate::jobs::{JobRegistry, JobStatus};

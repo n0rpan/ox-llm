@@ -1,4 +1,4 @@
-//! B6: directory resolution from the environment. Owner: task B6. Signatures below are frozen; bodies are yours.
+//! B6: directory resolution from the environment.
 use crate::env::{HOME, SESSION_DIR, SYSTEM_SKILLS_DIR};
 use crate::{Dirs, Env};
 use oxa_proto::{codes, names, OxaError};
