@@ -1,0 +1,464 @@
+{
+  "concurrent": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stdout": ""
+    }
+  ],
+  "existing-parent": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 493,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    }
+  ],
+  "existing-shown": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": 1,
+          "key": "<validated:key-0>",
+          "shown": true,
+          "unknown": "synthetic metadata"
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stdout": ""
+    }
+  ],
+  "existing-unshown": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": 1,
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    }
+  ],
+  "fresh-repeat-rotate": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stdout": ""
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-1>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-1>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-1>\n"
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-1>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-1>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stdout": ""
+    }
+  ],
+  "invalid-json": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": null,
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "Share key unavailable: key file is not valid JSON\n",
+      "stdout": ""
+    }
+  ],
+  "invalid-key": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": 1,
+          "key": "invalid",
+          "shown": false,
+          "unknown": "synthetic metadata"
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "Share key unavailable: key file holds no valid key\n",
+      "stdout": ""
+    }
+  ],
+  "json-flag": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    }
+  ],
+  "lock-symlink": [
+    {
+      "disk": null,
+      "exit": 1,
+      "stderr": "Share key unavailable: [Errno 40] Too many levels of symbolic links: '<HOME>/config/local-ai/.lan-share-key.json.lock'\n",
+      "stdout": ""
+    },
+    {
+      "unchanged_target": "lock-target",
+      "value": "synthetic untouched lock"
+    }
+  ],
+  "mixed-concurrent": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stdout": ""
+    }
+  ],
+  "override": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    }
+  ],
+  "public-key": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 420,
+        "parent_mode": 448,
+        "record": {
+          "created": 1,
+          "key": "<validated:key-0>",
+          "shown": false,
+          "unknown": "synthetic metadata"
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "Share key unavailable: key file must be a regular file owned by you with mode 0600\n",
+      "stdout": ""
+    }
+  ],
+  "public-rotate": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-1>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-1>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-1>\n"
+    }
+  ],
+  "relative-override": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    }
+  ],
+  "roundtrip": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-0>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-0>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-0>\n"
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-1>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-1>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-1>\n"
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-1>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-1>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stdout": ""
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-2>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-2>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-2>\n"
+    },
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-2>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 1,
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-2>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stdout": ""
+    }
+  ],
+  "symlink": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": 1,
+          "key": "<validated:key-0>",
+          "shown": false,
+          "unknown": "synthetic metadata"
+        },
+        "symlink": true
+      },
+      "exit": 1,
+      "stderr": "Share key unavailable: key file is unreadable or a symlink\n",
+      "stdout": ""
+    },
+    {
+      "unchanged_target": "key-target",
+      "value": {
+        "created": 1,
+        "key": "<validated:key-0>",
+        "shown": false,
+        "unknown": "synthetic metadata"
+      }
+    }
+  ],
+  "symlink-rotate": [
+    {
+      "disk": {
+        "lock_symlink": false,
+        "mode": 384,
+        "parent_mode": 448,
+        "record": {
+          "created": "<validated:created>",
+          "key": "<validated:key-1>",
+          "shown": true
+        },
+        "symlink": false
+      },
+      "exit": 0,
+      "stderr": "Fingerprint <fingerprint:<validated:key-1>>. It is shown once: store it in your client now (Authorization: Bearer <key>).\n",
+      "stdout": "<validated:key-1>\n"
+    },
+    {
+      "unchanged_target": "key-target",
+      "value": {
+        "created": 1,
+        "key": "<validated:key-0>",
+        "shown": false,
+        "unknown": "synthetic metadata"
+      }
+    }
+  ]
+}

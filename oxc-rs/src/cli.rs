@@ -981,6 +981,28 @@ async fn share(args: &Args) -> i32 {
     if args.flag("--rotate") && command != "key" {
         return bad();
     }
+    if command == "key" && rest.is_empty() {
+        let rotate = args.flag("--rotate");
+        let record = match tokio::task::spawn_blocking(move || crate::sharing::reveal(rotate)).await
+        {
+            Ok(Ok(record)) => record,
+            Ok(Err(error)) => {
+                eprintln!("Share key unavailable: {error}");
+                return 1;
+            }
+            Err(_) => {
+                eprintln!("Share key unavailable: key operation failed");
+                return 1;
+            }
+        };
+        if !record.show {
+            eprintln!("The key was already shown (fingerprint {}). Run `local-ai share key --rotate` for a new one; the old one then stops working.",record.fingerprint());
+            return 1;
+        }
+        println!("{}", record.key());
+        eprintln!("Fingerprint {}. It is shown once: store it in your client now (Authorization: Bearer <key>).",record.fingerprint());
+        return 0;
+    }
     if command == "status" && rest.is_empty() {
         let (code, value) = request_timeout("/_local/share", None, 5).await;
         if code != 200 {

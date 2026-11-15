@@ -19,11 +19,13 @@ The following gaps remain visible rather than being represented by skipped tests
   Controller clear now covers all/model/session/hint scopes and shared ownership.
   PrefixStore lookup/save, engine-side persistence edge cases and further race
   coverage remain pending.
-- LAN sharing: actual listener configuration, key rotation and file permissions,
+- LAN sharing: actual listener configuration and active-listener key revocation,
   origin/route/header restrictions, rates, shared/local priority and preemption.
   Loopback status/off now passes fourteen cases, including key privacy and
   unchanged files, bounded options, config symlink/permission preservation and
   busy local inference. Active listeners refuse activation explicitly.
+  Seventeen host-side key cases now cover show once, rotation, private atomic
+  files, flock interoperability, refusal cases and Python/Rust/Python file reads.
   All listeners/upstreams used in tests must remain synthetic and isolated.
 - Lifecycle: pressure-based keep-warm, crashed engine/reaper recovery, host
   admission/memory guard variants, queue/replay flags, background preemption,

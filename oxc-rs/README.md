@@ -27,7 +27,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 418 passing scenarios in 61
+suite has 435 passing scenarios in 62
 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
@@ -48,7 +48,11 @@ Fourteen sharing-control cases cover loopback status/off, bounded option parsing
 owner-only key metadata, private fingerprints, unchanged key files, active local
 inference, validation and config symlink/permission preservation. Active shared
 listeners still refuse activation explicitly; listener gates, preemption,
-network discovery, rotation and offline CLI fallback are pending.
+network discovery and offline CLI fallback are pending.
+Seventeen host-side key cases cover show-once output, rotation, atomic private
+files, cross-process locking, malformed/public/symlink refusal, path overrides,
+Python/Rust/Python file reads and concurrent reveals by both implementations.
+Raw keys appear only in the explicit CLI reveal, never HTTP status or logs.
 The native `serve` entry point reads the existing config paths and implements
 model metadata, Host/Origin/CORS/authentication gates, API-key file refresh and
 fail-closed behavior, request IDs and the empty-install HTTP contracts.

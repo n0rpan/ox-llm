@@ -1,13 +1,15 @@
 //! Loopback sharing controls. Active shared listeners and their gates remain pending.
 use crate::paths;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use nix::{libc, unistd::Uid};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::PathBuf,
+    io::{Read, Write},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const PAUSED: &str = "paused: network changed, re-enable to share on this network";
@@ -32,37 +34,231 @@ fn key_path() -> PathBuf {
         .unwrap_or_else(|| std::path::Path::new("/"))
         .join("lan-share-key.json")
 }
-fn key_metadata() -> Option<(String, bool)> {
-    // Match the reference's owner-only, no-follow reader. It permits owner-only
-    // read modes and hard links; no key bytes leave this function.
-    let file = OpenOptions::new()
+struct KeyRecord {
+    key: String,
+    created: Value,
+    shown: bool,
+}
+impl KeyRecord {
+    fn value(&self) -> Value {
+        json!({"key":self.key,"created":self.created,"shown":self.shown})
+    }
+}
+pub struct Revealed {
+    key: String,
+    pub show: bool,
+}
+impl Revealed {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+    pub fn fingerprint(&self) -> String {
+        fingerprint(&self.key)
+    }
+}
+fn fingerprint(key: &str) -> String {
+    format!(
+        "sha256:{:.12}",
+        format!("{:x}", Sha256::digest(key.as_bytes()))
+    )
+}
+fn read_key(path: &Path) -> Result<Option<KeyRecord>, String> {
+    // The reference permits owner-only read modes and hard links.
+    let file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(key_path())
-        .ok()?;
-    let info = file.metadata().ok()?;
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("key file is unreadable or a symlink".into()),
+    };
+    let info = file
+        .metadata()
+        .map_err(|_| "key file is unreadable or a symlink")?;
     if !info.is_file() || info.uid() != Uid::current().as_raw() || info.mode() & 0o077 != 0 {
-        return None;
+        return Err("key file must be a regular file owned by you with mode 0600".into());
     }
     let mut bytes = Vec::new();
-    file.take(4097).read_to_end(&mut bytes).ok()?;
-    let record: Value = serde_json::from_slice(&bytes).ok()?;
-    let key = record["key"].as_str()?;
-    let suffix = key.strip_prefix("lai-")?;
+    file.take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "key file is unreadable or a symlink")?;
+    let record: Value = serde_json::from_slice(&bytes).map_err(|_| "key file is not valid JSON")?;
+    let key = record["key"]
+        .as_str()
+        .ok_or("key file holds no valid key")?;
+    let suffix = key
+        .strip_prefix("lai-")
+        .ok_or("key file holds no valid key")?;
     if !(43..=128).contains(&suffix.len())
         || !suffix
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
     {
-        return None;
+        return Err("key file holds no valid key".into());
     }
-    Some((
+    Ok(Some(KeyRecord {
+        key: key.into(),
+        created: record["created"].clone(),
+        shown: record["shown"] == true,
+    }))
+}
+fn key_metadata() -> Option<(String, bool)> {
+    read_key(&key_path())
+        .ok()
+        .flatten()
+        .map(|r| (fingerprint(&r.key), r.shown))
+}
+fn parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+fn path_repr(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let quote = if text.contains('\'') && !text.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut out = quote.to_string();
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch == quote => {
+                out.push('\\');
+                out.push(ch);
+            }
+            ch if ch.is_control() => out.push_str(&format!("\\x{:02x}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out.push(quote);
+    out
+}
+fn os_error(error: std::io::Error, path: &Path) -> String {
+    let message = error.to_string();
+    if let Some(code) = error.raw_os_error() {
+        let suffix = format!(" (os error {code})");
         format!(
-            "sha256:{:.12}",
-            format!("{:x}", Sha256::digest(key.as_bytes()))
-        ),
-        record["shown"] == true,
-    ))
+            "[Errno {code}] {}: {}",
+            message.strip_suffix(&suffix).unwrap_or(&message),
+            path_repr(path)
+        )
+    } else {
+        message
+    }
+}
+fn private_parent(path: &Path) -> Result<(), String> {
+    let parent = parent(path);
+    let created = !parent.exists();
+    if created {
+        let ancestor = parent
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(ancestor).map_err(|e| os_error(e, ancestor))?;
+    }
+    match fs::DirBuilder::new().mode(0o700).create(parent) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && parent.is_dir() => {}
+        Err(error) => return Err(os_error(error, parent)),
+    }
+    if created {
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|e| os_error(e, parent))?;
+    }
+    Ok(())
+}
+fn entropy<const N: usize>() -> Result<[u8; N], String> {
+    let mut bytes = [0; N];
+    getrandom::fill(&mut bytes).map_err(|_| "operating system randomness is unavailable")?;
+    Ok(bytes)
+}
+fn write_key(path: &Path, record: &KeyRecord) -> Result<(), String> {
+    private_parent(path)?;
+    let nonce = entropy::<4>()?
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let temporary = parent(path).join(format!(
+        ".{}.{nonce}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temporary)
+        .map_err(|e| os_error(e, &temporary))?;
+    let result = (|| {
+        let mut bytes = paths::python_json(&record.value()).into_bytes();
+        bytes.push(b'\n');
+        file.write_all(&bytes)
+            .map_err(|e| os_error(e, &temporary))?;
+        file.sync_all().map_err(|e| os_error(e, &temporary))?;
+        // Replace the key path itself. Rotation deliberately replaces a final
+        // symlink, while the symlink's target is retained, as in the reference.
+        fs::rename(&temporary, path).map_err(|e| os_error(e, &temporary))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    if result.is_ok() {
+        if let Ok(directory) = fs::File::open(parent(path)) {
+            let _ = directory.sync_all();
+        }
+    }
+    result
+}
+pub fn reveal(rotate: bool) -> Result<Revealed, String> {
+    let path = key_path();
+    private_parent(&path)?;
+    let lock_path = parent(&path).join(format!(
+        ".{}.lock",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&lock_path)
+        .map_err(|e| os_error(e, &lock_path))?;
+    lock.lock().map_err(|e| os_error(e, &lock_path))?;
+    let mut record = if rotate { None } else { read_key(&path)? };
+    if record.is_none() {
+        let fresh = KeyRecord {
+            key: format!("lai-{}", URL_SAFE_NO_PAD.encode(entropy::<32>()?)),
+            created: json!(SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()),
+            shown: false,
+        };
+        write_key(&path, &fresh)?;
+        record = Some(fresh);
+    }
+    let mut record = record.expect("existing or generated key");
+    let show = !record.shown;
+    if show {
+        record.shown = true;
+        write_key(&path, &record)?;
+    }
+    // Dropping the descriptor releases the cross-process flock only after the
+    // shown marker is durable, before the CLI prints the matching key.
+    drop(lock);
+    Ok(Revealed {
+        key: record.key,
+        show,
+    })
 }
 fn setting(config: &Value, name: &str, default: u64, high: u64) -> u64 {
     config["lan_share_options"][name]
