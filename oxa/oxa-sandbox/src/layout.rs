@@ -84,6 +84,7 @@ pub const CACHE_WRITE: &[&str] = &[
     ".cache/pip",
     ".cache/uv",
     ".cache/go-build",
+    ".cache/sccache",
     ".cache/yarn",
     ".cache/pnpm",
     ".cache/deno",
@@ -348,6 +349,25 @@ mod tests {
         assert!(is_home_or_above(Path::new("/"), home));
         assert!(!is_home_or_above(Path::new("/home/u/project"), home));
         assert!(!is_home_or_above(Path::new("/srv"), home));
+    }
+
+    #[test]
+    fn sccache_dir_is_writable_when_it_exists() {
+        let home = std::env::temp_dir().join(format!("oxa-sccache-{}", std::process::id()));
+        let dir = home.join(".cache/sccache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            agent_dir: None,
+            path_var: String::new(),
+            env: vec![],
+            read_extra: vec![],
+            write_extra: vec![],
+            allow_home_write: false,
+        });
+        let ok = l.write.contains(&dir);
+        std::fs::remove_dir_all(&home).ok();
+        assert!(ok, "~/.cache/sccache must be bound read-write");
     }
 
     #[test]
