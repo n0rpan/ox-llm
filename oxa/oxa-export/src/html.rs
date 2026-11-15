@@ -1,4 +1,4 @@
-//! E12: fill pi's HTML template from a session. Owner: task E12. Signatures below are frozen; bodies are yours.
+//! E12: fill pi's HTML template from a session.
 // ported from pi packages/coding-agent/src/core/export-html/index.ts and tool-renderer.ts
 use crate::template::{
     HIGHLIGHT_JS, MARKED_CJK_FRIENDLY_JS, MARKED_JS, TEMPLATE_CSS, TEMPLATE_HTML, TEMPLATE_JS,

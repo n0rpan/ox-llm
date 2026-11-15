@@ -1,4 +1,4 @@
-//! B12: Boxed, a padded container with a background. Owner: task B12. Signatures below are frozen; bodies are yours.
+//! B12: Boxed, a padded container with a background.
 // ported from pi packages/tui/src/components/box.ts
 use super::text::paint_line;
 use crate::{Component, Key, Theme};

@@ -1,4 +1,4 @@
-//! C9: JSON records for events, messages and entries. Owner: task C9. Signatures below are frozen; bodies are yours.
+//! C9: JSON records for events, messages and entries.
 // ported from pi packages/coding-agent/docs/json.md and src/modes/json (record shapes)
 use oxa_core::State;
 use oxa_proto::{

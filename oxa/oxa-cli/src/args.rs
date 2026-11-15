@@ -1,4 +1,4 @@
-//! C12: command-line parsing. Owner: task C12. Signatures below are frozen; bodies are yours.
+//! C12: command-line parsing.
 // ported from pi packages/coding-agent/src/cli/args.ts (docs: cli.md)
 use oxa_proto::{codes, FlagSpec, Mode, OxaError, ThinkingLevel, Value};
 use std::path::PathBuf;

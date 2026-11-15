@@ -1,4 +1,4 @@
-//! A2: engine info and tokenize. Owner: task A2. Signatures below are frozen; bodies are yours.
+//! A2: engine info and tokenize.
 use crate::{http_request, HttpRequest, Url};
 use oxa_proto::{codes, EngineCaps, EngineInfo, OxaError, Value, CANCEL_HINT, CANCEL_PATH};
 

@@ -1,4 +1,4 @@
-//! B10: the multi-line prompt editor. Owner: task B10. Signatures below are frozen; bodies are yours.
+//! B10: the multi-line prompt editor.
 // ported from pi packages/tui/src/components/editor.ts, kill-ring.ts, undo-stack.ts, word-navigation.ts
 use crate::{
     cluster_boundaries, pad_to_width, truncate_to_width, visible_width, AutocompleteItem,

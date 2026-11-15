@@ -1,4 +1,4 @@
-//! A14: the fake engine over HTTP + SSE. Owner: task A14. Signatures below are frozen; bodies are yours.
+//! A14: the fake engine over HTTP + SSE.
 use crate::record::{parse_recorded, write_log};
 use crate::{cache_bytes, Fault, Recorded, ScriptTurn};
 use oxa_proto::{codes, Finish, OxaError, Usage};
