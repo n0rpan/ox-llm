@@ -182,7 +182,15 @@ struct Front {
 impl Front {
     fn reply(&self, cmd: &RpcCommand, r: Result<Value, OxaError>) {
         let v = match r {
-            Ok(data) => response_ok(cmd, data),
+            Ok(data) => {
+                // A started prompt is only acknowledged here; its eventual turn (or
+                // hook interception) decides its outcome on the worker. Reader-handled
+                // controls have completed and must enter that same ordered aggregate.
+                if cmd.kind != "prompt" || data["disposition"] != "started" {
+                    let _ = self.tx.send(Job::Outcome(RunOutcome::Done));
+                }
+                response_ok(cmd, data)
+            }
             Err(e) => {
                 self.record_error(&e);
                 response_err(cmd, &e)
@@ -273,6 +281,7 @@ impl Front {
                     self.handle.abort_next();
                 }
                 self.handle.abort();
+                let _ = self.tx.send(Job::Outcome(RunOutcome::Done));
                 let response = response_ok(&cmd, Value::Null);
                 if gate.pending > 0 {
                     gate.after_jobs.push(response);
