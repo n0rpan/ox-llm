@@ -8,6 +8,8 @@ use axum::{
 use serde_json::{json, Value};
 use std::{net::Ipv4Addr, path::PathBuf, sync::Arc};
 
+#[path = "studio_files.rs"]
+mod files;
 #[path = "studio_metadata.rs"]
 mod metadata;
 
@@ -15,6 +17,7 @@ struct Studio {
     port: u16,
     project: PathBuf,
     stack: PathBuf,
+    output: PathBuf,
     sha_cache: std::sync::Mutex<Option<(PathBuf, u64, i128, String)>>,
 }
 fn single<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -95,9 +98,16 @@ async fn handle(State(studio): State<Arc<Studio>>, request: Request) -> Response
                 json!({"state":"idle","active_jobs":0,"model":null,"device":null}),
             ),
             "/job" => data(404, json!({"state":"error","error":"no such job"})),
-            "/models" => data(200, studio.models()),
+            "/file" => studio.file(request.uri().query().unwrap_or_default()),
+            "/models" => match studio.models() {
+                Ok(value) => data(200, value),
+                Err(()) => files::silent_close(),
+            },
             "/engine" => data(200, studio.engine_info()),
-            "/estimate" => error(503, "Image estimates are not available."),
+            "/estimate" => match studio.estimate(request.uri().query().unwrap_or_default()) {
+                Ok(value) => data(200, value),
+                Err(()) => error(400, "bad estimate request"),
+            },
             _ => reply(404, b"not found".to_vec(), "application/json"),
         };
     }
@@ -120,6 +130,23 @@ async fn handle(State(studio): State<Arc<Studio>>, request: Request) -> Response
             }
     {
         return error(413, "request too large");
+    }
+    if path == "/upload" {
+        let content_type = request
+            .headers()
+            .get("content-type")
+            .map(|v| {
+                v.as_bytes()
+                    .iter()
+                    .map(|b| char::from(*b))
+                    .collect::<String>()
+                    .into_bytes()
+            })
+            .unwrap_or_default();
+        let Ok(body) = axum::body::to_bytes(request.into_body(), 25 * 1024 * 1024).await else {
+            return error(400, "bad multipart");
+        };
+        return studio.upload(&content_type, &body);
     }
     if ["/generate", "/upscale", "/refine", "/edit", "/engine"].contains(&path.as_str()) {
         let Ok(bytes) = axum::body::to_bytes(request.into_body(), 1024 * 1024).await else {
@@ -190,6 +217,7 @@ pub async fn run() -> i32 {
         port,
         project,
         stack,
+        output,
         sha_cache: std::sync::Mutex::new(None),
     });
     let router = Router::new().fallback(handle).with_state(studio);

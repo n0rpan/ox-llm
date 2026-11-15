@@ -36,9 +36,9 @@ The following gaps remain visible rather than being represented by skipped tests
 - Lifecycle: pressure-based keep-warm, crashed engine/reaper recovery, host
   admission/memory guard variants, queue/replay flags, background preemption,
   CPU pinning and Flash-specific launch adapters/capabilities.
-- Images: 27 Studio contracts now cover the unchanged page, HTTP/1.0, request
-  gates, model metadata, settings and metadata estimates, executable readiness and hash-bound
-  size-gate consumption. HTTP estimate/upload/file/job routes, generation planners, pixel
+- Images: 59 Studio contracts now cover the unchanged page, HTTP/1.0, request
+  gates, metadata/settings, calibrated estimates/routing, private uploads, anchored
+  file reads, MIME quirks and malformed-input EOF. Job/generation planners, pixel
   operations, controller image-slot IPC and engine adapters still need contracts
   without SDK, device or model content.
 - CLI: extend malformed metadata, argument combinations and filesystem failures;

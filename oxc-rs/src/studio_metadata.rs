@@ -14,6 +14,11 @@ fn read(path: &Path) -> Value {
         .and_then(|v| serde_json::from_slice(&v).ok())
         .unwrap_or(Value::Null)
 }
+fn parsed(path: &Path) -> Option<Value> {
+    fs::read(path)
+        .ok()
+        .and_then(|v| serde_json::from_slice(&v).ok())
+}
 fn truthy(value: &Value) -> bool {
     crate::release_files::truthy(value)
 }
@@ -36,6 +41,187 @@ fn variable(name: &str, default: PathBuf) -> PathBuf {
     std::env::var_os(name).map(PathBuf::from).unwrap_or(default)
 }
 impl Studio {
+    fn cpu_optimized(&self, model: &str, width: i64, height: i64, steps: i64, edit: bool) -> bool {
+        if !["q4", "q8"].contains(&model) || steps != 8 {
+            return false;
+        }
+        let profile = read(&self.project.join("cpu-profile.json"));
+        let model_list = profile
+            .get("models")
+            .cloned()
+            .unwrap_or_else(|| json!(["q4"]));
+        let listed = match &model_list {
+            Value::String(s) => s.contains(model),
+            Value::Array(a) => a.contains(&json!(model)),
+            Value::Object(m) => m.contains_key(model),
+            _ => false,
+        };
+        if !listed || !truthy(&profile["enabled"]) || !truthy(&profile["validated"]) {
+            return false;
+        }
+        let dimensions = if edit {
+            if profile["img2img_validated"] != true {
+                return false;
+            }
+            &profile["img2img_dimensions"]
+        } else {
+            &profile["dimensions"]
+        };
+        if !dimensions.as_array().is_some_and(|a| {
+            a.iter().any(|v| {
+                v.as_array().is_some_and(|p| {
+                    p.len() == 2
+                        && p[0].as_f64() == Some(width as f64)
+                        && p[1].as_f64() == Some(height as f64)
+                })
+            })
+        }) {
+            return false;
+        }
+        let Some(binary) = profile["binary"].as_str() else {
+            return false;
+        };
+        let Ok(binary) = fs::canonicalize(binary) else {
+            return false;
+        };
+        let Ok(releases) = fs::canonicalize(self.stack.join("releases")) else {
+            return false;
+        };
+        binary.starts_with(releases)
+            && executable(&binary)
+            && crate::bootstrap::sha(&binary).is_ok_and(|sha| json!(sha) == profile["sha256"])
+    }
+    fn zimage_estimates(&self) -> Value {
+        let mut estimate = json!({"calibrated":false,"q8":{"fixed_s":12.0,"s_per_mpx_step":59.9,"pixel_exponent":1.5},"q4":{"fixed_s":12.0,"s_per_mpx_step":70.7,"pixel_exponent":1.35},"unoptimized_factor":1.59,"vae_encode_s_per_mpx":10.0,"esrgan_fixed_s":3.0,"esrgan_s_per_output_mpx":20.0});
+        if let Some(values) = read(&self.project.join("upscale.json"))["estimate"].as_object() {
+            for (key, value) in values {
+                if key == "calibrated" && value.is_boolean() {
+                    estimate[key] = value.clone();
+                } else if ["q4", "q8"].contains(&key.as_str()) && value.is_object() {
+                    for name in ["fixed_s", "s_per_mpx_step", "pixel_exponent"] {
+                        if let Some(n) = bounded(&value[name], 0.0, 10000.0) {
+                            estimate[key][name] = json!(n);
+                        }
+                    }
+                } else if estimate.get(key).is_some_and(|v| v.is_number()) {
+                    if let Some(n) = bounded(value, 0.0, 10000.0) {
+                        estimate[key] = json!(n);
+                    }
+                }
+            }
+        }
+        estimate
+    }
+    pub(super) fn estimate(&self, query: &str) -> Result<Value, ()> {
+        let url = reqwest::Url::parse(&format!("http://localhost/?{query}")).map_err(|_| ())?;
+        let mut params = std::collections::HashMap::new();
+        for (key, value) in url.query_pairs().filter(|(_, v)| !v.is_empty()) {
+            params
+                .entry(key.into_owned())
+                .or_insert_with(|| value.into_owned());
+        }
+        let get =
+            |key: &str, default: &str| params.get(key).cloned().unwrap_or_else(|| default.into());
+        let model = get("model", "");
+        let klein = ["klein-q8", "klein-q4"].contains(&model.as_str());
+        let width = python_int(&get("width", if klein { "512" } else { "256" })).ok_or(())?;
+        let height = python_int(&get("height", if klein { "512" } else { "256" })).ok_or(())?;
+        let count = python_int(&get("variations", "1")).ok_or(())?;
+        if !(1..=4).contains(&count) {
+            return Err(());
+        }
+        if klein {
+            if ![width, height]
+                .iter()
+                .all(|n| (256..=1024).contains(n) && n % 16 == 0)
+            {
+                return Err(());
+            }
+            let setting = self.engine_setting();
+            let gated = (width, height) != (512, 512);
+            let missing = self.oxi_missing();
+            let (oxi, reason) = if setting == "sdcpp" {
+                (false, "engine setting: sd.cpp".into())
+            } else if model != "klein-q8" {
+                (
+                    false,
+                    "oxi runs FLUX.2 klein Q8 only; this model runs on sd.cpp".into(),
+                )
+            } else if gated && !self.size_gate(width, height) {
+                (false,format!("oxi fast path is 512 × 512 only; {width} × {height} runs on sd.cpp (slower)"))
+            } else if !missing.is_empty() {
+                (
+                    false,
+                    format!(
+                        "oxi is not installed ({}); using sd.cpp",
+                        missing.join(", ")
+                    ),
+                )
+            } else if gated {
+                (
+                    true,
+                    format!("oxi ({width} × {height} passed its size gate)"),
+                )
+            } else {
+                (true, "oxi fast path (512 × 512)".into())
+            };
+            let seconds = if oxi {
+                rounded(
+                    8.0 + count as f64
+                        * 43.0
+                        * (width as f64 * height as f64 / (512.0 * 512.0)).powf(0.75),
+                    1,
+                )
+            } else {
+                self.edit_seconds(width, height, true, count)
+            };
+            return Ok(
+                json!({"seconds":seconds,"optimized":oxi,"calibrated":if oxi{json!(false)}else{self.edit_settings()["calibrated"].clone()},"engine":if oxi{"oxi"}else{"sd.cpp"},"engine_reason":reason}),
+            );
+        }
+        let model = get("model", "q8");
+        let steps = python_int(&get("steps", "8")).ok_or(())?;
+        if !["q4", "q8"].contains(&model.as_str())
+            || ![width, height].iter().all(|n| (256..=1536).contains(n))
+            || !(1..=50).contains(&steps)
+        {
+            return Err(());
+        }
+        let edit = get("edit", "0") == "1";
+        let strength = if edit {
+            Some(python_float(&get("strength", "0.3")).ok_or(())?)
+        } else {
+            None
+        };
+        let sampled = match strength {
+            Some(v) if v.is_nan() => return Err(()),
+            Some(v) if v < 1.0 => {
+                let n = (steps as f64 * v).trunc();
+                if !n.is_finite() {
+                    return Err(());
+                }
+                n + if n == steps as f64 { 0.0 } else { 1.0 }
+            }
+            _ => steps as f64,
+        };
+        let optimized = self.cpu_optimized(&model, width, height, steps, edit);
+        let estimate = self.zimage_estimates();
+        let e = &estimate[&model];
+        let mpx = width as f64 * height as f64 / 1e6;
+        let mut per_image = e["s_per_mpx_step"].as_f64().ok_or(())?
+            * mpx.powf(e["pixel_exponent"].as_f64().ok_or(())?)
+            * sampled;
+        if edit {
+            per_image += estimate["vae_encode_s_per_mpx"].as_f64().ok_or(())? * mpx;
+        }
+        let mut seconds = e["fixed_s"].as_f64().ok_or(())? + per_image * count as f64;
+        if !optimized {
+            seconds *= estimate["unoptimized_factor"].as_f64().ok_or(())?;
+        }
+        Ok(
+            json!({"seconds":rounded(seconds,1),"optimized":optimized,"calibrated":estimate["calibrated"]}),
+        )
+    }
     fn image_models(&self) -> PathBuf {
         self.stack.join("models/images")
     }
@@ -290,6 +476,9 @@ impl Studio {
         let values = read(&self.project.join("presets.json"));
         for key in ["draft", "final", "draft512"] {
             let value = &values[key];
+            if values.get(key).is_some() && !value.is_object() {
+                break;
+            }
             let (Some(w), Some(h), Some(steps), Some(model)) = (
                 integer(&value["width"]),
                 integer(&value["height"]),
@@ -384,7 +573,7 @@ impl Studio {
         };
         json!({"esrgan":self.upscaler(&esrgan),"esrgan_x2":self.upscaler(&x2),"esrgan_scale":scale,"refine_targets":targets,"refine_target":target,"refine_strength":strength,"estimates_calibrated":value["estimate"]["calibrated"].as_bool().unwrap_or(false),"max_variations":4})
     }
-    pub(super) fn models(&self) -> Value {
+    pub(super) fn models(&self) -> Result<Value, ()> {
         let mut out = serde_json::Map::new();
         for (key, filename) in [
             ("q4", "z_image_turbo-Q4_K.gguf"),
@@ -398,18 +587,39 @@ impl Studio {
             out.insert(key.into(), json!({"ready":path.is_file(),"download_mb":mb}));
         }
         let cpu = read(&self.project.join("cpu-profile.json"));
-        let runs = read(&self.project.join("benchmarks/results.json"));
-        let quality = (cpu["validated"] == true
-            && cpu["dimensions"]
-                .as_array()
-                .is_some_and(|a| a.contains(&json!([1024, 1024]))))
-            || runs.as_array().is_some_and(|a| {
-                a.iter().any(|v| {
-                    v["status"] == "ok"
-                        && number(&v["size"]).is_some_and(|n| n >= 1024.0)
-                        && number(&v["steps"]).is_some_and(|n| n >= 8.0)
-                })
-            });
+        let mut quality = false;
+        if cpu["validated"] == true {
+            if let Some(dimensions) = cpu.get("dimensions") {
+                let dimensions = dimensions.as_array().ok_or(())?;
+                quality = dimensions.iter().any(|v| {
+                    v.as_array().is_some_and(|p| {
+                        p.len() == 2
+                            && p[0].as_f64() == Some(1024.0)
+                            && p[1].as_f64() == Some(1024.0)
+                    })
+                });
+            }
+        }
+        if !quality {
+            if let Some(runs) = parsed(&self.project.join("benchmarks/results.json")) {
+                for row in runs.as_array().ok_or(())? {
+                    let row = row.as_object().ok_or(())?;
+                    if row.get("status") == Some(&json!("ok")) {
+                        let numeric = |key: &str| -> Result<f64, ()> {
+                            match row.get(key) {
+                                None => Ok(0.0),
+                                Some(Value::Bool(v)) => Ok(if *v { 1.0 } else { 0.0 }),
+                                Some(v) => v.as_f64().ok_or(()),
+                            }
+                        };
+                        if numeric("size")? >= 1024.0 && numeric("steps")? >= 8.0 {
+                            quality = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         out.insert("presets".into(), self.presets());
         out.insert("quality_ready".into(), json!(quality));
         let gpu = read(&self.project.join("gpu-profile.json"));
@@ -421,24 +631,30 @@ impl Studio {
                 json!({"optimized":false})
             },
         );
-        let setup = read(&self.project.join("q8-status.json"));
         out.get_mut("q8").expect("q8 model")["setup_state"] =
-            setup.get("state").cloned().unwrap_or_else(|| {
-                json!(if setup.is_null() {
-                    "not downloaded"
-                } else {
-                    ""
-                })
-            });
-        let overnight = read(&self.project.join("overnight-status.json"));
-        out.insert(
-            "benchmarks".into(),
-            json!(if overnight.is_object() {
-                format!("Benchmarks: {}", overnight["state"].as_str().unwrap_or(""))
-            } else {
-                String::new()
-            }),
-        );
+            match parsed(&self.project.join("q8-status.json")) {
+                None => json!("not downloaded"),
+                Some(value) => value
+                    .as_object()
+                    .ok_or(())?
+                    .get("state")
+                    .cloned()
+                    .unwrap_or_else(|| json!("")),
+            };
+        let benchmarks = match parsed(&self.project.join("overnight-status.json")) {
+            None => String::new(),
+            Some(value) => format!(
+                "Benchmarks: {}",
+                value
+                    .as_object()
+                    .ok_or(())?
+                    .get("state")
+                    .map(|v| v.as_str().ok_or(()))
+                    .transpose()?
+                    .unwrap_or("")
+            ),
+        };
+        out.insert("benchmarks".into(), json!(benchmarks));
         out.insert(
             "edit_presets".into(),
             json!({"light":0.3,"restyle":0.55,"reimagine":0.8}),
@@ -448,6 +664,50 @@ impl Studio {
         out.insert("edit".into(), self.edit_info(false));
         out.insert("klein".into(), self.edit_info(true));
         out.insert("engine".into(), self.engine_info());
-        Value::Object(out)
+        Ok(Value::Object(out))
     }
+}
+
+fn decimal_ascii(value: &str) -> String {
+    static RANGES: std::sync::OnceLock<Vec<(u32, u32)>> = std::sync::OnceLock::new();
+    let ranges = RANGES.get_or_init(|| {
+        let rx = regex::Regex::new(r"\\u\{([0-9a-f]+)\}(?:-\\u\{([0-9a-f]+)\})?")
+            .expect("decimal range expression");
+        rx.captures_iter(include_str!("receipt-decimal-class.txt"))
+            .map(|c| {
+                let start = u32::from_str_radix(&c[1], 16).expect("decimal range");
+                let end = c.get(2).map_or(start, |s| {
+                    u32::from_str_radix(s.as_str(), 16).expect("decimal range")
+                });
+                (start, end)
+            })
+            .collect()
+    });
+    value
+        .chars()
+        .map(|ch| {
+            let point = ch as u32;
+            if let Some((start, _)) = ranges.iter().find(|(a, b)| (*a..=*b).contains(&point)) {
+                char::from(b'0' + ((point - start) % 10) as u8)
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+fn python_int(value: &str) -> Option<i64> {
+    static RX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let value = decimal_ascii(value);
+    let value = value.trim();
+    RX.get_or_init(|| regex::Regex::new(r"^[+-]?[0-9](?:_?[0-9])*\z").expect("integer expression"))
+        .is_match(value)
+        .then(|| value.replace('_', "").parse().ok())
+        .flatten()
+}
+fn python_float(value: &str) -> Option<f64> {
+    static RX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let value = decimal_ascii(value);
+    let value = value.trim();
+    if !RX.get_or_init(||regex::Regex::new(r"(?i)^[+-]?(?:(?:[0-9](?:_?[0-9])*(?:\.(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)(?:e[+-]?[0-9](?:_?[0-9])*)?|inf(?:inity)?|nan)\z").expect("float expression")).is_match(value){return None;}
+    value.replace('_', "").parse().ok()
 }

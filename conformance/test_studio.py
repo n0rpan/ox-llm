@@ -3,6 +3,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.parse
 
 from harness import ROOT, free_port, isolated_env
 
@@ -20,7 +22,14 @@ CASES = ('page', 'activity', 'models', 'missing', 'missing-job', 'bad-host',
          'post-same-origin', 'post-bad-length', 'post-negative-length',
          'post-oversized', 'engine-invalid', 'engine-invalid-json', 'engine',
          'models-populated', 'models-settings', 'engine-configured', 'engine-ready',
-         'engine-bad-gate', 'engine-set')
+         'engine-bad-gate', 'engine-set', 'estimate-q8', 'estimate-q4', 'estimate-edit',
+         'estimate-nonaligned', 'estimate-bad-size', 'estimate-bad-count', 'estimate-klein-missing',
+         'estimate-klein-ready', 'estimate-klein-gated', 'estimate-forced-sdcpp',
+         'estimate-cpu-profile', 'estimate-cpu-bad-hash', 'estimate-calibrated', 'estimate-unicode',
+         'upload-png', 'upload-webp', 'upload-bad-type', 'upload-no-boundary', 'upload-empty',
+         'upload-oversized', 'file-png', 'file-webp', 'file-outside', 'file-symlink-inside',
+         'file-symlink-outside', 'file-missing', 'file-upload-root-symlink', 'upload-nonutf8-name',
+         'models-invalid-setup', 'models-invalid-benchmarks', 'models-invalid-dimensions', 'file-directory')
 
 
 def capture(name):
@@ -33,7 +42,9 @@ def capture(name):
         env.update(STUDIO_PORT=str(port), LOCAL_IMAGE_CONFIG_DIR=str(project),
                    SD_HOME=str(home / 'stack'), IMG_OUTDIR=str(home / 'pictures'),
                    LOCAL_AI_LEASE=str(home / 'inference.lock'))
-        if name == 'models-populated' or name in ('engine-ready', 'engine-bad-gate'):
+        ready_cases = ('engine-ready', 'engine-bad-gate', 'estimate-klein-ready',
+                       'estimate-klein-gated', 'estimate-forced-sdcpp')
+        if name == 'models-populated' or name in ready_cases:
             models = home / 'stack/models/images'
             for filename in ('z_image_turbo-Q4_K.gguf', 'z_image_turbo-Q8_0.gguf',
                              'flux2-klein/flux-2-klein-4b-Q8_0.gguf',
@@ -51,6 +62,13 @@ def capture(name):
                     ('cpu-profile.json', {'validated': True, 'dimensions': [[1024, 1024]]}),
                     ('gpu-profile.json', {'enabled': True, 'validated': True, 'models': {'q8': {'max_width': 512}}})):
                 (project / filename).write_text(json.dumps(value))
+        if name == 'models-invalid-setup':
+            (project / 'q8-status.json').write_text('[]\n')
+        elif name == 'models-invalid-benchmarks':
+            (project / 'benchmarks').mkdir(mode=0o700)
+            (project / 'benchmarks/results.json').write_text('{"synthetic":1}\n')
+        elif name == 'models-invalid-dimensions':
+            (project / 'cpu-profile.json').write_text('{"validated":true,"dimensions":7}\n')
         if name == 'models-settings':
             (project / 'edit.json').write_text(json.dumps({'estimate': {'calibrated': True,
                 'fixed_s': 20, 's_per_mpx_step': 40, 'pixel_exponent': 1, 'vae_encode_s_per_mpx': 2}}))
@@ -61,9 +79,9 @@ def capture(name):
             (project / 'upscale.json').write_text(json.dumps({'esrgan_scale': 2.0, 'refine_targets': [1024, 768, 1024],
                 'refine_target': 1280, 'refine_strength': .5, 'esrgan_model': '../synthetic-outside.pth',
                 'estimate': {'calibrated': True}}))
-        if name == 'engine-configured':
+        if name in ('engine-configured', 'estimate-forced-sdcpp'):
             (project / 'engine.json').write_text('{"engine":"sdcpp"}\n')
-        if name in ('engine-ready', 'engine-bad-gate'):
+        if name in ready_cases:
             binary = home / 'stack/releases/oxi/oxi'
             probe = home / 'stack/releases/sd-probe/sd-cli'
             for path in (binary, probe):
@@ -76,6 +94,49 @@ def capture(name):
                 'height': 768, 'verdict': 'PASS', 'seeds': [{'pass': True}],
                 'oxi_settings': {'chunk1': 32, 'chunk2': '32', 'attn_prec': 'f32', 'vae_conv': 'f32'},
                 'oxi_sha256': hashlib.sha256(binary.read_bytes()).hexdigest() if name == 'engine-ready' else '0' * 64}))
+            if name in ('estimate-klein-ready', 'estimate-klein-gated', 'estimate-forced-sdcpp'):
+                gate = json.loads((gates / '768x768.json').read_text())
+                gate['oxi_sha256'] = hashlib.sha256(binary.read_bytes()).hexdigest()
+                (gates / '768x768.json').write_text(json.dumps(gate))
+        if name in ('estimate-cpu-profile', 'estimate-cpu-bad-hash'):
+            binary = home / 'stack/releases/synthetic-cpu/sd-cli'
+            binary.parent.mkdir(mode=0o700, parents=True)
+            binary.write_bytes(b'synthetic metadata executable\n')
+            binary.chmod(0o700)
+            (project / 'cpu-profile.json').write_text(json.dumps({'enabled': True, 'validated': True,
+                'models': ['q8'], 'dimensions': [[512, 512]], 'binary': str(binary),
+                'sha256': hashlib.sha256(binary.read_bytes()).hexdigest() if name == 'estimate-cpu-profile' else '0' * 64}))
+        if name == 'estimate-calibrated':
+            (project / 'upscale.json').write_text(json.dumps({'estimate': {'calibrated': True,
+                'unoptimized_factor': 2, 'q8': {'fixed_s': 1, 's_per_mpx_step': 3, 'pixel_exponent': 1}}}))
+        file_path = None
+        if name.startswith('file-'):
+            pictures = home / 'pictures'
+            pictures.mkdir(mode=0o700)
+            file_path = pictures / ('synthetic.webp' if name == 'file-webp' else 'synthetic.png')
+            if name != 'file-missing':
+                file_path.write_bytes(b'synthetic image file bytes\n')
+            if name in ('file-outside', 'file-symlink-outside'):
+                outside = home / 'synthetic-private.png'
+                outside.write_bytes(b'synthetic unrelated file bytes\n')
+                if name == 'file-outside':
+                    file_path = outside
+                else:
+                    file_path.unlink()
+                    file_path.symlink_to(outside)
+            elif name == 'file-symlink-inside':
+                link = pictures / 'synthetic-link.jpg'
+                link.symlink_to(file_path)
+                file_path = link
+            elif name == 'file-upload-root-symlink':
+                external = home / 'synthetic-uploads'
+                external.mkdir(mode=0o700)
+                (pictures / '_uploads').symlink_to(external, target_is_directory=True)
+                file_path = external / 'synthetic.png'
+                file_path.write_bytes(b'synthetic image file bytes\n')
+            elif name == 'file-directory':
+                file_path.unlink()
+                file_path.mkdir(mode=0o700)
         command = shlex.split(os.environ['OXC_STUDIO_COMMAND']) if 'OXC_STUDIO_COMMAND' in os.environ else [
             sys.executable, str(ROOT / 'lab/src/snapdragon_ai_lab/runtime/studio')]
         with tempfile.TemporaryFile() as log:
@@ -98,7 +159,39 @@ def capture(name):
                     raise AssertionError('Studio did not start')
                 method, path, body = 'GET', '/', None
                 headers = [('Host', '127.0.0.1:' + str(port))]
-                if name.startswith('models'):
+                if name.startswith('upload-'):
+                    method, path = 'POST', '/upload'
+                    extension = 'webp' if name == 'upload-webp' else 'exe' if name == 'upload-bad-type' else 'PNG'
+                    body = (b'--synthetic-boundary\r\nContent-Disposition: form-data; name="file"; filename="synthetic.' +
+                            extension.encode() + b'"\r\n\r\nsynthetic upload bytes\r\n\r\n--synthetic-boundary--\r\n')
+                    if name == 'upload-empty':
+                        body = b'--synthetic-boundary--\r\n'
+                    elif name == 'upload-nonutf8-name':
+                        body = body.replace(b'synthetic.PNG', b'synthetic-\xff.PNG')
+                    if name != 'upload-no-boundary':
+                        headers += [('Content-Type', 'multipart/form-data; boundary="synthetic-boundary"')]
+                    headers += [('Content-Length', str(25 * 1024 * 1024 + 1) if name == 'upload-oversized' else str(len(body)))]
+                    if name == 'upload-oversized':
+                        body = None
+                elif name.startswith('file-'):
+                    path = '/file?' + urllib.parse.urlencode({'path': str(file_path)})
+                elif name.startswith('estimate-'):
+                    query = {
+                        'estimate-q8': '', 'estimate-q4': 'model=q4&width=512&height=768&variations=2',
+                        'estimate-edit': 'edit=1&strength=0.55&width=512&height=512',
+                        'estimate-nonaligned': 'width=257&height=259',
+                        'estimate-bad-size': 'width=200', 'estimate-bad-count': 'variations=5',
+                        'estimate-klein-missing': 'model=klein-q8',
+                        'estimate-klein-ready': 'model=klein-q8&variations=2',
+                        'estimate-klein-gated': 'model=klein-q8&width=768&height=768',
+                        'estimate-forced-sdcpp': 'model=klein-q8',
+                        'estimate-cpu-profile': 'width=512&height=512',
+                        'estimate-cpu-bad-hash': 'width=512&height=512',
+                        'estimate-calibrated': 'width=512&height=512',
+                        'estimate-unicode': 'width=' + urllib.parse.quote('٥١٢') + '&height=512',
+                    }[name]
+                    path = '/estimate?' + query
+                elif name.startswith('models'):
                     path = '/models'
                 elif name.startswith('engine') and name not in ('engine-invalid', 'engine-invalid-json', 'engine-set'):
                     path = '/engine'
@@ -143,7 +236,10 @@ def capture(name):
                     for header, value in headers:
                         connection.putheader(header, value)
                     connection.endheaders(body)
-                    response = connection.getresponse()
+                    try:
+                        response = connection.getresponse()
+                    except http.client.RemoteDisconnected:
+                        return {'closed_without_response': True}
                     raw = response.read()
                     value = {'status': response.status, 'http_version': response.version,
                              'content_type': response.getheader('Content-Type')}
@@ -158,6 +254,16 @@ def capture(name):
                     if name == 'engine-set' and (project / 'engine.json').exists():
                         value['settings_after'] = json.loads((project / 'engine.json').read_text())
                         value['settings_mode'] = (project / 'engine.json').stat().st_mode & 0o777
+                    if name in ('upload-png', 'upload-webp', 'upload-nonutf8-name') and response.status == 200:
+                        uploaded = Path(value['body']['path'])
+                        expected_suffix = '.webp' if name == 'upload-webp' else '.png'
+                        if uploaded.parent != home / 'pictures/_uploads' or not re.fullmatch(
+                                r'[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}' + re.escape(expected_suffix), uploaded.name):
+                            raise AssertionError('Upload name is not a private UUID-v4 file')
+                        if uploaded.read_bytes() != b'synthetic upload bytes\r\n':
+                            raise AssertionError('Upload contents changed')
+                        value['uploaded_mode'] = uploaded.stat().st_mode & 0o777
+                        value['body']['path'] = str(uploaded.parent / ('<upload:v4>' + expected_suffix))
                 finally:
                     connection.close()
                 return json.loads(json.dumps(value).replace(str(home), '<HOME>'))

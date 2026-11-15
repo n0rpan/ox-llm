@@ -191,6 +191,195 @@
     "settings_mode": 384,
     "status": 200
   },
+  "estimate-bad-count": {
+    "body": {
+      "error": "bad estimate request"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "estimate-bad-size": {
+    "body": {
+      "error": "bad estimate request"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "estimate-calibrated": {
+    "body": {
+      "calibrated": true,
+      "optimized": false,
+      "seconds": 14.6
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-cpu-bad-hash": {
+    "body": {
+      "calibrated": false,
+      "optimized": false,
+      "seconds": 121.3
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-cpu-profile": {
+    "body": {
+      "calibrated": false,
+      "optimized": true,
+      "seconds": 76.3
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-edit": {
+    "body": {
+      "calibrated": false,
+      "optimized": false,
+      "seconds": 87.2
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-forced-sdcpp": {
+    "body": {
+      "calibrated": false,
+      "engine": "sd.cpp",
+      "engine_reason": "engine setting: sd.cpp",
+      "optimized": false,
+      "seconds": 51.5
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-klein-gated": {
+    "body": {
+      "calibrated": false,
+      "engine": "oxi",
+      "engine_reason": "oxi (768 \u00d7 768 passed its size gate)",
+      "optimized": true,
+      "seconds": 87.0
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-klein-missing": {
+    "body": {
+      "calibrated": false,
+      "engine": "sd.cpp",
+      "engine_reason": "oxi is not installed (oxi, sd-cli (probe), flux-2-klein-4b-Q8_0.gguf, Qwen3-4B-Q8_0.gguf, flux2-vae.safetensors); using sd.cpp",
+      "optimized": false,
+      "seconds": 51.5
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-klein-ready": {
+    "body": {
+      "calibrated": false,
+      "engine": "oxi",
+      "engine_reason": "oxi fast path (512 \u00d7 512)",
+      "optimized": true,
+      "seconds": 94.0
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-nonaligned": {
+    "body": {
+      "calibrated": false,
+      "optimized": false,
+      "seconds": 32.2
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-q4": {
+    "body": {
+      "calibrated": false,
+      "optimized": false,
+      "seconds": 529.2
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-q8": {
+    "body": {
+      "calibrated": false,
+      "optimized": false,
+      "seconds": 31.9
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "estimate-unicode": {
+    "body": {
+      "calibrated": false,
+      "optimized": false,
+      "seconds": 121.3
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "file-directory": {
+    "closed_without_response": true
+  },
+  "file-missing": {
+    "body": "not found",
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 404
+  },
+  "file-outside": {
+    "body": "not found",
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 404
+  },
+  "file-png": {
+    "body": "synthetic image file bytes\n",
+    "content_type": "image/png",
+    "http_version": 10,
+    "status": 200
+  },
+  "file-symlink-inside": {
+    "body": "synthetic image file bytes\n",
+    "content_type": "image/jpeg",
+    "http_version": 10,
+    "status": 200
+  },
+  "file-symlink-outside": {
+    "body": "not found",
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 404
+  },
+  "file-upload-root-symlink": {
+    "body": "synthetic image file bytes\n",
+    "content_type": "image/png",
+    "http_version": 10,
+    "status": 200
+  },
+  "file-webp": {
+    "body": "synthetic image file bytes\n",
+    "content_type": "image/jpeg",
+    "http_version": 10,
+    "status": 200
+  },
   "get-origin": {
     "content_type": "text/html; charset=utf-8",
     "http_version": 10,
@@ -343,6 +532,15 @@
     "content_type": "application/json",
     "http_version": 10,
     "status": 200
+  },
+  "models-invalid-benchmarks": {
+    "closed_without_response": true
+  },
+  "models-invalid-dimensions": {
+    "closed_without_response": true
+  },
+  "models-invalid-setup": {
+    "closed_without_response": true
   },
   "models-populated": {
     "body": {
@@ -668,5 +866,64 @@
     "content_type": "application/json",
     "http_version": 10,
     "status": 403
+  },
+  "upload-bad-type": {
+    "body": {
+      "error": "unsupported image type"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "upload-empty": {
+    "body": {
+      "error": "no file"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "upload-no-boundary": {
+    "body": {
+      "error": "bad multipart"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "upload-nonutf8-name": {
+    "body": {
+      "path": "<HOME>/pictures/_uploads/<upload:v4>.png"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200,
+    "uploaded_mode": 384
+  },
+  "upload-oversized": {
+    "body": {
+      "error": "request too large"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 413
+  },
+  "upload-png": {
+    "body": {
+      "path": "<HOME>/pictures/_uploads/<upload:v4>.png"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200,
+    "uploaded_mode": 384
+  },
+  "upload-webp": {
+    "body": {
+      "path": "<HOME>/pictures/_uploads/<upload:v4>.webp"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200,
+    "uploaded_mode": 384
   }
 }

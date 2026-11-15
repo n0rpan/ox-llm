@@ -125,6 +125,8 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Timed<T> {
 
 #[derive(Clone)]
 pub struct CloseConnection;
+#[derive(Clone)]
+pub struct NoReply;
 
 #[derive(Clone)]
 struct Peer {
@@ -341,6 +343,9 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
             Ok(response) => response,
             Err(error) => match error {},
         };
+        if response.extensions().get::<NoReply>().is_some() {
+            break;
+        }
         // Python closes a shared socket whose body read timed out, without
         // emitting the JSON parse error built from that incomplete body.
         if reader.lock().await.get_mut().read_timed_out {

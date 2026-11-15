@@ -27,7 +27,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite covers 630 scenarios in 97
+suite covers 662 scenarios in 97
 unittest methods.
 
 Native bootstrap/install passes 34 scenarios in 24 methods: pinned asset plans,
@@ -40,11 +40,12 @@ payload bound. Bundles include no Python runtime; the two ExecStart lines become
 `local-ai serve` and `local-ai studio`, with every other unit byte checked against
 the original snapshots. Installation starts no service and enables no qualification.
 
-Twenty-seven Studio cases cover the unchanged frontend, HTTP/1.0 and private
-request gates, model metadata, settings, metadata estimates, executable readiness and
-hash-bound size-gate consumption. Fixtures use placeholder files and executables;
-no image engine or model runs. HTTP estimates, uploads, files, jobs, generation planners, pixel
-operations and image-slot/engine adapters remain pending.
+Fifty-nine Studio cases cover the unchanged frontend, HTTP/1.0, request gates,
+model metadata/settings, calibrated estimates, CPU identity proofs and Oxi routing
+gates, private multipart uploads, descriptor-anchored file reads, MIME quirks and
+malformed-input EOF. Fixtures use synthetic files/executables; no image engine
+or model runs. Jobs, generation planners, pixel operations and image-slot/engine
+adapters remain pending.
 
 Thirty-eight receipt-tool cases cover the native scanner, exporter and scrubber:
 reference rules/order, machine identifiers and explicit exemptions, Unicode line

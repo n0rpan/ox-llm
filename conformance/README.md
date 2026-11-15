@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `f8c482ea3936774c0eb6310cfe1d8e5415ae67e8`.
-The current suite covers 630 scenarios in 97 unittest methods. This remains a
+The current suite covers 662 scenarios in 97 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -163,7 +163,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |
 | Bootstrap/install | PASS, 34 scenarios / 24 methods | PASS: pinned plans, native bundle, installed help and both services, unchanged 8 MiB bound, create-only transactions, journals, leases, owner edits, refusals, agent refresh and Python/Rust rollback | Transfer/build flows, interruption and more filesystem races |
-| Studio | PASS, 27 cases | PASS: unchanged page, HTTP/1.0, Host/Origin/body gates, model metadata, settings and metadata estimates, executable readiness and hash-bound size-gate consumption | HTTP estimate/upload/file/job routes, generation planners, pixel operations, image-slot IPC and native engine adapters |
+| Studio | PASS, 59 cases | PASS: unchanged page, HTTP/1.0, request gates, metadata/settings, calibrated estimates and routing gates, private uploads, anchored file reads, MIME quirks and malformed-input EOF | Job/generation planners, pixel operations, image-slot IPC and native engine adapters |
 | Staged update/rollback | PASS, 15 scenarios / 22 CLI goldens | PASS: generic manifest transactions, sealed/bound hashes, exact restore, created/removed files, private state, receipts, positive identity, agent refresh and owner-edit refusal/recovery | Generated runtime materialization, interruptions and more filesystem races |
 | Uninstall | PASS, 27 cases plus original empty-install CLI cases | PASS: exact journal/stage records, hash/owner-edit protection, dry-run/apply, positive stops/restoration, models kept by default, explicit model deletion, symlinks/parent escape, private-home refusal and partial failures | More concurrent record/filesystem changes and filesystem failure cases |
 | Shipped scans | PASS, 38 cases | PASS: rules/order, machine words, exemptions, Unicode limits, generated trees, structured redaction/hashes, numeric values, directories, refusal before writing and layout-preserving scrubbing | More malformed inputs and filesystem races |
