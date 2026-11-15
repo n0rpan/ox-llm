@@ -1440,6 +1440,7 @@ fn finish(result: Result<i32, OxaError>, err: &mut dyn Write) -> i32 {
 fn exit_code(e: &OxaError) -> i32 {
     match e.code {
         codes::USAGE | codes::ENGINE_DOWN | codes::UNSUPPORTED_IN_OXA => 2,
+        codes::BUDGET_EXHAUSTED => oxa_proto::EXIT_BUDGET,
         _ => 1,
     }
 }
