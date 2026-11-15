@@ -113,6 +113,47 @@ fn choices(values: &[&str]) -> String {
     values.join(", ")
 }
 
+fn decimal(c: char) -> Option<u8> {
+    const ZEROES: &[u32] = &include!("cli-decimal-zeroes.rs");
+    let point = c as u32;
+    ZEROES
+        .iter()
+        .find_map(|zero| (point >= *zero && point < *zero + 10).then(|| (point - zero) as u8))
+}
+// argparse's int conversion accepts Unicode decimal digits and single
+// underscores, with Python's default 4300-digit conversion limit. Saturating
+// the value is sufficient for the CLI's later 1..=200 ledger clamp.
+fn integer(value: &str) -> Option<i64> {
+    let text = value.trim();
+    let negative = text.starts_with('-');
+    let text = text.strip_prefix(['-', '+']).unwrap_or(text);
+    let (mut previous_digit, mut digits, mut number) = (false, 0, 0_i64);
+    for c in text.chars() {
+        if let Some(digit) = decimal(c) {
+            number = number.saturating_mul(10).saturating_add(digit.into());
+            digits += 1;
+            previous_digit = true;
+        } else if c == '_' && previous_digit {
+            previous_digit = false;
+        } else {
+            return None;
+        }
+    }
+    (previous_digit && digits <= 4300).then_some(if negative { -number } else { number })
+}
+fn negative_number(value: &str) -> bool {
+    let Some(text) = value.strip_prefix('-') else {
+        return false;
+    };
+    if let Some((whole, fractional)) = text.split_once('.') {
+        whole.chars().all(|c| decimal(c).is_some())
+            && !fractional.is_empty()
+            && fractional.chars().all(|c| decimal(c).is_some())
+    } else {
+        !text.is_empty() && text.chars().all(|c| decimal(c).is_some())
+    }
+}
+
 pub fn parse(words: &[String]) -> Result<Args, Exit> {
     if words.first().map(String::as_str) == Some("dense") {
         return Err(Exit {code:2, stdout:String::new(), stderr:"The dense Qwen3.8 27B model was retired in v0.1.2. Use `local-ai ornith` or `local-ai moe`.\n".into()});
@@ -134,7 +175,13 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
             positional_only = true;
             continue;
         }
-        if !positional_only && (word == "-h" || word == "--help") {
+        if !positional_only && word.starts_with("-h") && !word.starts_with("--") {
+            if let Some(value) = word.strip_prefix("-h=") {
+                return Err(error(
+                    format!("argument -h/--help: ignored explicit argument '{value}'"),
+                    uninstall,
+                ));
+            }
             return Err(help(uninstall));
         }
         if !positional_only && word.starts_with('-') && word != "-" {
@@ -153,7 +200,7 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
             } else {
                 VALUES
             };
-            let matches: Vec<&str> = flags
+            let mut matches: Vec<&str> = flags
                 .iter()
                 .chain(values.iter())
                 .copied()
@@ -163,6 +210,30 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                         || (requested.starts_with("--") && name.starts_with(requested))
                 })
                 .collect();
+            // argparse preserves option declaration order in ambiguity errors.
+            let order = [
+                "--help",
+                "--version",
+                "--rotate",
+                "--json",
+                "--id",
+                "--pref",
+                "--harness",
+                "--mode",
+                "--limit",
+                "--session",
+                "--all",
+                "--day",
+                "--write",
+                "--status",
+                "--soak",
+                "--check",
+                "--no-chat",
+                "--apply",
+                "--remove-models",
+                "--record",
+            ];
+            matches.sort_by_key(|name| order.iter().position(|item| item == name));
             let name = if matches.contains(&requested) {
                 requested
             } else if matches.len() == 1 {
@@ -170,7 +241,7 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
             } else if matches.len() > 1 {
                 return Err(error(
                     format!(
-                        "ambiguous option: {requested} could match {}",
+                        "ambiguous option: {word} could match {}",
                         matches.join(", ")
                     ),
                     uninstall,
@@ -180,6 +251,12 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                 continue;
             };
             if name == "--help" {
+                if let Some(value) = explicit {
+                    return Err(error(
+                        format!("argument -h/--help: ignored explicit argument '{value}'"),
+                        uninstall,
+                    ));
+                }
                 return Err(help(uninstall));
             }
             if flags.contains(&name) {
@@ -208,7 +285,7 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                         uninstall,
                     ));
                 };
-                if value.starts_with('-') && value.parse::<i64>().is_err() {
+                if value.starts_with('-') && !negative_number(value) {
                     return Err(error(
                         format!("argument {name}: expected one argument"),
                         uninstall,
@@ -233,7 +310,7 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                     ));
                 }
             }
-            if name == "--limit" && value.replace('_', "").parse::<i64>().is_err() {
+            if name == "--limit" && integer(&value).is_none() {
                 return Err(error(
                     format!("argument --limit: invalid int value: '{value}'"),
                     uninstall,

@@ -16,14 +16,21 @@ stack on main. This parser slice does not provide that mode.
 cargo build --locked --release --manifest-path oxc-rs/Cargo.toml \
   --features native-controller --target-dir /tmp/oxc-native-target
 OXC_COMMAND=/tmp/oxc-native-target/release/oxc-native \
-  python3 -m unittest discover -s conformance -p test_cli.py -v
+  python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
 python3 conformance/check_native_scaffold.py /tmp/oxc-native-target/release/oxc-native
 cargo fmt --manifest-path oxc-rs/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path oxc-rs/Cargo.toml \
   --features native-controller --all-targets -- -D warnings
 ```
 
-The 65 black-box parser scenarios use an isolated HOME and cleared environment
+The 104 black-box parser scenarios use an isolated HOME and cleared environment
 and compare exit status, stdout and stderr to the unchanged Python reference.
 They include all action help/error paths, version precedence/abbreviations and
-retired-command behavior. Config and runtime semantics are outside this slice.
+retired-command behavior, explicit/clustered help, ambiguity order, Unicode
+integers/underscores and the interpreter digit limit. A generated table records
+68 public decimal-zero code points from Python Unicode 15.0.0. Config and
+runtime semantics are outside this slice.
+
+Release hold: keep this PR draft until v0.2.0 ships. Test locally and continue
+following main; do not request reviews or dispatch full CI. Post-release review
+is through the orchestrator and oxa.
