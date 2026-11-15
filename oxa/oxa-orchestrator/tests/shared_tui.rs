@@ -1344,6 +1344,8 @@ impl Engine for WorkerDriver {
 fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, recovering: bool, gateway: bool) {
     let canceling = cancellation != "none";
     let aborting = cancellation == "escape";
+    let unscoped = cancellation == "idle_unscoped";
+    let idle_escape = cancellation == "idle_escape" || unscoped;
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     let agent = Dirs::under(env.root()).agent_dir;
@@ -1368,7 +1370,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
             author_script,
             FakeOpts {
                 model: "author-model".into(),
-                hold_headers_ms: if aborting || (gateway && canceling) {
+                hold_headers_ms: if aborting || idle_escape || (gateway && canceling) {
                     1500
                 } else if steering {
                     600
@@ -1385,7 +1387,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
             child_script(),
             FakeOpts {
                 model: "reviewer-model".into(),
-                hold_headers_ms: if aborting || (gateway && canceling) {
+                hold_headers_ms: if aborting || idle_escape || (gateway && canceling) {
                     1500
                 } else if recovering {
                     900
@@ -1446,24 +1448,36 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
     let main_handle = session.handle();
     let done = Arc::new(AtomicBool::new(false));
     let peer_done = done.clone();
+    let escape_now = Arc::new(AtomicBool::new(false));
+    let peer_escape = escape_now.clone();
     let peer_socket = socket.clone();
     let expected_peer = expected.clone();
     let peer_driver = driver.clone();
     let peer_author = author.clone();
     let peer_reviewer = reviewer.clone();
+    let peer_agent = agent.clone();
     let peer = std::thread::spawn(move || {
         let initial = wait_status(&peer_socket, |v| v["status"]["session"]["id"] == expected_peer);
-        request(
-            &peer_socket,
-            json!({"id":"goal","method":"set_goal","revision":revision(&initial),"text":"Start author and reviewer, then collect both results","budget":{"wall_ms":12000,"tokens":200000,"turns":8}}),
-        );
-        let paused = wait_status(&peer_socket, |v| {
-            v["status"]["goal"]["goal"] == "Start author and reviewer, then collect both results"
-        });
-        mutation(&peer_socket, "run", "resume", revision(&paused), None);
+        if !unscoped {
+            request(
+                &peer_socket,
+                json!({"id":"goal","method":"set_goal","revision":revision(&initial),"text":"Start author and reviewer, then collect both results","budget":{"wall_ms":12000,"tokens":200000,"turns":8}}),
+            );
+            let paused = wait_status(&peer_socket, |v| {
+                v["status"]["goal"]["goal"] == "Start author and reviewer, then collect both results"
+            });
+            mutation(&peer_socket, "run", "resume", revision(&paused), None);
+        }
         let waiting = wait_status(&peer_socket, |v| {
-            state(v) == if aborting { "active" } else { "blocked" }
-                && (!(gateway && canceling)
+            state(v)
+                == if unscoped {
+                    "paused"
+                } else if aborting {
+                    "active"
+                } else {
+                    "blocked"
+                }
+                && (!(idle_escape || (gateway && canceling))
                     || (peer_author.requests().iter().any(|r| r.max_tokens > 0)
                         && peer_reviewer.requests().iter().any(|r| r.max_tokens > 0)))
                 && (!canceling
@@ -1474,12 +1488,25 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
                                 .all(|j| j["goal"]["turns_started"].as_u64().is_some_and(|n| n >= 1))
                     }))
         });
-        if !aborting {
+        if !aborting && !unscoped {
             assert_eq!(waiting["status"]["goal"]["reason"], "waiting_workers");
         }
-        assert_eq!(waiting["status"]["goal"]["turns_started"], 1);
+        if !unscoped {
+            assert_eq!(waiting["status"]["goal"]["turns_started"], 1);
+        }
         if aborting {
             main_handle.abort();
+        } else if idle_escape {
+            assert_eq!(waiting["status"]["session"]["busy"], false);
+            assert!(!oxa_orchestrator::tui::interrupt_idle(
+                "unrelated-session",
+                &peer_agent
+            ));
+            assert!(!oxa_orchestrator::tui::interrupt_idle(
+                &expected_peer,
+                peer_agent.parent().unwrap()
+            ));
+            peer_escape.store(true, Ordering::Release);
         } else if canceling {
             mutation(&peer_socket, "cancel-workers", "cancel", revision(&waiting), None);
         }
@@ -1487,6 +1514,8 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
             state(v)
                 == if aborting {
                     "blocked"
+                } else if idle_escape {
+                    "paused"
                 } else if canceling {
                     "canceled"
                 } else {
@@ -1501,6 +1530,14 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
                 })
         });
         assert_eq!(finished["status"]["session"]["id"], expected_peer);
+        if idle_escape {
+            for field in ["budget", "turns_started", "reported_tokens"] {
+                assert_eq!(
+                    finished["status"]["goal"][field],
+                    waiting["status"]["goal"][field]
+                );
+            }
+        }
         if aborting {
             assert_eq!(
                 finished["status"]["goal"]["reason"],
@@ -1584,7 +1621,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
     let mut terminal = LiveTerm {
         inner: TestTerminal::new(160, 35),
         done,
-        typing: Arc::new(AtomicBool::new(false)),
+        typing: escape_now,
         typed: Arc::new(AtomicBool::new(false)),
         deadline: Instant::now() + Duration::from_secs(18),
         quit: false,
@@ -1595,12 +1632,15 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
         } else {
             "lanes-final"
         },
-        escape: false,
+        escape: idle_escape,
         swap_when: None,
         swapped: false,
         rejected: Arc::new(AtomicBool::new(false)),
     };
     let mut options = opts(&env, &engine.url(), store);
+    if unscoped {
+        options.initial_prompt = Some("Start an author and reviewer".into());
+    }
     let (code, last) = run_session(&mut terminal, session, &mut options);
     peer.join().unwrap();
     std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
@@ -1614,7 +1654,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
         let requests = server.requests();
         let chats = requests.iter().filter(|r| r.max_tokens > 0).collect::<Vec<_>>();
         if canceling {
-            if gateway {
+            if gateway || idle_escape {
                 let deadline = Instant::now() + Duration::from_secs(3);
                 loop {
                     let _ = server.in_flight();
@@ -1627,7 +1667,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
                     }
                     assert!(
                         Instant::now() < deadline,
-                        "cancel must close the gateway inference connection"
+                        "cancel must close the worker inference connection"
                     );
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -1674,6 +1714,13 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
             .content
             .as_deref()
             .is_some_and(|text| text.contains("worker-finished") && text.contains("untrusted data"))));
+    }
+    if idle_escape {
+        assert_eq!(chats.len(), 3, "idle Esc prevents a parent wake/continuation");
+        assert!(
+            terminal.typed.load(Ordering::Acquire),
+            "real TUI Esc input was delivered"
+        );
     }
     if !canceling {
         let mut verified = 0;
@@ -2086,6 +2133,17 @@ fn main() {
             oxa_cli::Stdio::real(),
         ));
     }
+    if args.first().map(String::as_str) == Some("--idle-interrupt-only") {
+        model_worker_lanes_wake_same_session(false, "idle_escape", false, false);
+        model_worker_lanes_wake_same_session(false, "idle_escape", false, true);
+        model_worker_lanes_wake_same_session(false, "idle_unscoped", false, false);
+        println!("idle TUI Esc pauses the parent and closes/reaps local and gateway workers ... ok");
+        return;
+    }
+    model_worker_lanes_wake_same_session(false, "idle_escape", false, false);
+    model_worker_lanes_wake_same_session(false, "idle_escape", false, true);
+    model_worker_lanes_wake_same_session(false, "idle_unscoped", false, false);
+    println!("idle TUI Esc pauses the parent and closes/reaps local and gateway workers ... ok");
     let cap = worker_goal_compacts_with_metered_usage(0, false, false);
     worker_goal_compacts_with_metered_usage(cap, false, false);
     worker_goal_compacts_with_metered_usage(0, true, false);
