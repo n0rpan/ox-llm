@@ -1,6 +1,6 @@
 //! A13: the Component trait and the line-diff renderer. Owner: task A13. Signatures below are frozen; bodies are yours.
 // ported from pi packages/tui/src/tui.ts, tui-main-screen.ts and tui-alt-screen.ts
-use crate::{truncate_to_width, CursorPos, Key, Mouse, TermMode, Terminal, Theme};
+use crate::{truncate_to_width, visible_width, CursorPos, Key, Mouse, TermMode, Terminal, Theme};
 
 const RESET: &str = "\x1b[0m";
 const SYNC_ON: &str = "\x1b[?2026h";
@@ -264,6 +264,21 @@ impl Renderer {
             }),
             _ => None,
         };
+        // A narrower terminal has reflowed the old lines into more rows than there are lines.
+        let old_cols = self.size.map_or(cols, |s| s.0);
+        let reflowed_up = if full && cols < old_cols && cols > 0 {
+            let rows_of = |l: &String| visible_width(l).max(1).div_ceil(cols as usize);
+            let end = (self.cursor_row + 1).min(self.prev.len());
+            Some(
+                self.prev[..end]
+                    .iter()
+                    .map(rows_of)
+                    .sum::<usize>()
+                    .saturating_sub(1),
+            )
+        } else {
+            None
+        };
         let prev = if full {
             Vec::new()
         } else {
@@ -274,7 +289,10 @@ impl Renderer {
         if full {
             // Repaint from the first live row; the rows below are cleared unless this is the
             // very first frame (nothing was drawn yet, so there is nothing to clear).
-            body.push_str(&goto(c, 0));
+            match reflowed_up {
+                Some(up) if up > c => body.push_str(&format!("\x1b[{up}A\r")),
+                _ => body.push_str(&goto(c, 0)),
+            }
             if self.size.is_some() {
                 body.push_str("\x1b[J");
             }

@@ -380,3 +380,20 @@ fn repaint_rewrites_the_region_from_its_first_row() {
         "up two rows from the last line, clear, rewrite"
     );
 }
+
+/// narrowing reflows the old live lines into more rows; the clear must start above all of them
+#[test]
+fn narrowing_clears_reflowed_height() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    let full = "x".repeat(20);
+    r.draw(&frame(&[&full, &full, &full]), &mut term);
+    term.take_output();
+    term.resize(10, 20);
+    r.draw(&frame(&[&full[..10], &full[..10], &full[..10]]), &mut term);
+    let out = term.take_output();
+    assert!(
+        out.contains("\x1b[5A\r\x1b[J"),
+        "moves up over the 6 reflowed rows: {out:?}"
+    );
+}
