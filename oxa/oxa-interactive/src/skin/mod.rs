@@ -137,6 +137,9 @@ pub fn glyphs(skin: Skin) -> &'static Glyphs {
 /// where `auto` is OXA's look. `utf8 == false` (a locale without UTF-8) turns `Oxa` into
 /// `OxaAscii`.
 pub fn resolve_skin(setting: Option<&str>, utf8: bool) -> Skin {
+    if setting.map(str::trim) == Some("ascii") {
+        return Skin::OxaAscii;
+    }
     let oxa = !matches!(setting.map(str::trim), Some("pi"));
     match (oxa, utf8) {
         (false, _) => Skin::Pi,
@@ -297,6 +300,7 @@ mod tests {
         assert_eq!(resolve_skin(Some("auto"), false), Skin::OxaAscii);
         assert_eq!(resolve_skin(Some("pi"), true), Skin::Pi);
         assert_eq!(resolve_skin(Some("oxa"), false), Skin::OxaAscii);
+        assert_eq!(resolve_skin(Some("ascii"), true), Skin::OxaAscii);
     }
 
     #[test]
