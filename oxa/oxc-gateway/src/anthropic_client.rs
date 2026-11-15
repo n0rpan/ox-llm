@@ -124,6 +124,20 @@ impl Client {
     where
         F: FnMut(Event) -> Control + ?Sized,
     {
+        self.stream_with_blocks(chat, key, cancel, on, |_| None).await
+    }
+
+    pub(crate) async fn stream_with_blocks<F>(
+        &self,
+        chat: Chat<'_>,
+        key: &Key,
+        cancel: &Cancellation,
+        on: &mut F,
+        restore: impl FnMut(usize) -> Option<Vec<Value>>,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
@@ -144,8 +158,13 @@ impl Client {
             format!("{path}/v1/messages")
         };
         endpoint.set_path(&path);
-        let mut body = anthropic_request::translate(chat.payload, chat.upstream_model, chat.max_output)
-            .map_err(|e| Error::Request(e.param))?;
+        let mut body = anthropic_request::translate_with_blocks(
+            chat.payload,
+            chat.upstream_model,
+            chat.max_output,
+            restore,
+        )
+        .map_err(|e| Error::Request(e.param))?;
         body["stream"] = Value::Bool(true);
         let body = serde_json::to_vec(&body).map_err(|_| Error::Protocol)?;
         if body.len() > MAX_BODY {
