@@ -103,6 +103,7 @@ pub const TOOLCHAIN_ENV: &[&str] = &[
     "GOROOT",
     "GOMODCACHE",
     "GOCACHE",
+    "SCCACHE_DIR",
     "ASDF_DIR",
     "ASDF_DATA_DIR",
     "NVM_DIR",
@@ -242,6 +243,10 @@ impl Layout {
         read.extend(i.read_extra.iter().cloned());
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
+        // A user-chosen sccache directory is the same cache as `~/.cache/sccache`.
+        if let Some((_, d)) = i.env.iter().find(|(k, _)| k == "SCCACHE_DIR") {
+            write.push(PathBuf::from(d));
+        }
         let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
         read.retain(keep);
         write.retain(keep);
@@ -368,6 +373,30 @@ mod tests {
         let ok = l.write.contains(&dir);
         std::fs::remove_dir_all(&home).ok();
         assert!(ok, "~/.cache/sccache must be bound read-write");
+    }
+
+    #[test]
+    fn custom_sccache_dir_is_bound_and_passed() {
+        let home = std::env::temp_dir().join(format!("oxa-sccache2-{}", std::process::id()));
+        let dir = home.join("elsewhere/sc");
+        std::fs::create_dir_all(&dir).unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            agent_dir: None,
+            path_var: String::new(),
+            env: vec![("SCCACHE_DIR".into(), dir.display().to_string())],
+            read_extra: vec![],
+            write_extra: vec![],
+            allow_home_write: false,
+        });
+        let bound = l.write.contains(&dir);
+        let passed = l
+            .env
+            .iter()
+            .any(|(k, v)| k == "SCCACHE_DIR" && *v == dir.display().to_string());
+        std::fs::remove_dir_all(&home).ok();
+        assert!(bound, "SCCACHE_DIR must be bound read-write");
+        assert!(passed, "SCCACHE_DIR must be passed through");
     }
 
     #[test]
