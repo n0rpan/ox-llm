@@ -1,7 +1,7 @@
 # Opt-in orchestrator foundations
 
 First independently testable slice of rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
-Only private audit storage is present here. No worker, listener, CLI command,
+Private audit storage and explicit JSONL pipe transport are present here. No worker, listener, CLI command,
 recovery/replay operation, installed service or inference route is enabled.
 
 The `core` feature exports `AuditJournal`. Its caller explicitly supplies a new
@@ -40,3 +40,29 @@ ordinary workspace test command too, so CI's default test inventory includes the
 seven actual filesystem/fork regressions. Existing binaries do not depend on this
 crate. No workflow or scanner change is needed. See [slice plan](SLICES.md) for
 the remaining dependency order and preserved rollup sources.
+
+## Bounded JSONL transport
+
+With `core`, `pipes::JsonPipes` takes the parent's explicitly supplied child
+stdin/stdout/stderr handles and makes them nonblocking. It creates no process,
+thread or listener. The caller remains responsible for sandboxing, permission
+checks, cancellation, deadlines and confirmed descendant cleanup/reaping. EOF
+reports only pipe state; it does not establish process completion. Dropping the
+transport closes its handles and never joins a reader waiting for EOF.
+
+Each poll services at most eight writes and eight 4-KiB reads per output stream.
+Pending input and one output JSONL record are each capped at 256 KiB. Input
+serialization is bounded before enqueue. Both request and response records must
+be JSON objects. Malformed/non-object/overlong records and an unterminated final
+record fail the transport; blank lines are ignored. Diagnostic bytes are discarded
+and count toward the shared lifetime output allowance. Reads use at most the
+remaining allowance plus one detection byte, and `output_bytes` includes that
+observed overflow byte (saturating only at the counter's integer limit).
+
+An I/O, protocol or admission error permanently closes input and discards pending
+requests. `close_input` can also explicitly discard input while allowing output
+to drain. Polling can successfully return no records without EOF. This slice
+adds no native RPC launch profile, provider model selection or automatic retry.
+Tests use owned local subprocesses with cleared environments and kill/wait guards;
+there are no provider calls. The allowance-overflow regression fails before the
+accounting fix and passes afterward.
