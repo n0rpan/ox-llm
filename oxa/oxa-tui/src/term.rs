@@ -86,6 +86,7 @@ pub struct ProcessTerminal {
     cursor_hidden: bool,
     /// Input bytes not yet parsed (a partial sequence waiting for its tail).
     pending: Vec<u8>,
+    paste_scan: PasteScan,
     /// Events produced while querying at start, delivered by the first `poll`.
     queued: Vec<InputEvent>,
     last_size: (u16, u16),
@@ -122,6 +123,7 @@ impl ProcessTerminal {
             active: Vec::new(),
             cursor_hidden: false,
             pending: Vec::new(),
+            paste_scan: PasteScan::default(),
             queued: Vec::new(),
             last_size: (0, 0),
             pending_since: None,
@@ -191,7 +193,8 @@ impl ProcessTerminal {
     fn wait(&mut self, timeout_ms: u64, out: &mut Vec<InputEvent>) -> bool {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            if !self.pending.is_empty() {
+            let paste_open = self.paste_scan.open(&self.pending);
+            if !self.pending.is_empty() && !paste_open {
                 let (events, used) = parse_input(&self.pending);
                 self.pending.drain(..used);
                 if used > 0 || self.pending.is_empty() {
@@ -204,7 +207,6 @@ impl ProcessTerminal {
             }
             let now = Instant::now();
             let remaining = deadline.saturating_duration_since(now);
-            let paste_open = paste_in_progress(&self.pending);
             // A lone ESC (or an unfinished sequence) waits only the ESC timeout, unless a paste
             // is open: that waits for its end marker. The timeout counts from when the tail
             // began waiting, so polls shorter than it (16 ms while animating) still flush it.
@@ -623,12 +625,58 @@ fn term_size() -> (u16, u16) {
     (80, 24)
 }
 
-fn paste_in_progress(buf: &[u8]) -> bool {
-    buf.starts_with(PASTE_START) && !contains(buf, PASTE_END)
+/// Remembers how much of an open paste was already searched for the end marker, so each new
+/// chunk costs only its own length (a large paste arrives in many small reads).
+#[derive(Default)]
+struct PasteScan {
+    scanned: usize,
 }
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+impl PasteScan {
+    /// True while `buf` starts a paste whose end marker has not arrived yet.
+    fn open(&mut self, buf: &[u8]) -> bool {
+        if !buf.starts_with(PASTE_START) {
+            self.scanned = 0;
+            return false;
+        }
+        let from = self
+            .scanned
+            .saturating_sub(PASTE_END.len() - 1)
+            .max(PASTE_START.len())
+            .min(buf.len());
+        if buf[from..].windows(PASTE_END.len()).any(|w| w == PASTE_END) {
+            self.scanned = 0;
+            return false;
+        }
+        self.scanned = buf.len();
+        true
+    }
+}
+
+#[cfg(test)]
+mod paste_scan_tests {
+    use super::*;
+
+    #[test]
+    fn marker_split_across_chunks_is_found() {
+        let mut s = PasteScan::default();
+        let mut buf = b"\x1b[200~abc\x1b[20".to_vec();
+        assert!(s.open(&buf));
+        buf.extend_from_slice(b"1~");
+        assert!(!s.open(&buf));
+    }
+
+    #[test]
+    fn large_paste_in_small_chunks_is_linear() {
+        let mut s = PasteScan::default();
+        let mut buf = PASTE_START.to_vec();
+        let t = std::time::Instant::now();
+        for _ in 0..4096 {
+            buf.extend_from_slice(&[b'x'; 4096]);
+            assert!(s.open(&buf));
+        }
+        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
+    }
 }
 
 const PASTE_START: &[u8] = b"\x1b[200~";
