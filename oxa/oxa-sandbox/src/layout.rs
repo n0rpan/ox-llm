@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn sccache_dir_is_created_and_bound_when_missing() {
-        let home = std::env::temp_dir().join(format!("oxa-sccache3-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("oxa-sccache5-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".cache")).unwrap();
         let l = Layout::build(&LayoutInputs {
             home: home.clone(),
