@@ -76,7 +76,14 @@ def launcher(prefix, config, port):
     return '\n'.join(lines) + '\n'
 
 
+def exec_quote(value):
+    """One ExecStart= word: double-quoted, backslash and quote escaped, % and $ doubled (systemd.syntax)."""
+    text = str(value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$')
+    return '"' + text + '"'
+
+
 def unit(name, script, prefix):
+    script, prefix = exec_quote(script), str(prefix).replace('%', '%%')
     return ('[Unit]\nDescription=oxc cloud-only controller (%s)\n[Service]\nType=simple\n'
             'ExecStart=%s\nWorkingDirectory=%s\nRestart=on-failure\nRestartSec=5\nUMask=0077\nLimitCORE=0\n'
             '[Install]\nWantedBy=default.target\n') % (name, script, prefix)
@@ -92,7 +99,21 @@ def install(args, runner=subprocess.run):
     prefix, config = Path(args.prefix).absolute(), Path(args.config_dir).absolute()
     models = load_models(args.models_file)
     runtime_json = config / 'runtime.json'
-    if runtime_json.exists() and not args.force:
+    script = prefix / 'bin/oxc-controller'
+    unit_file = None
+    if not args.no_systemd:
+        unit_dir = Path(args.unit_dir).absolute() if args.unit_dir else Path(
+            os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'systemd/user'
+        unit_file = unit_dir / f'{args.unit_name}.service'
+    destinations = [runtime_json, *(prefix / 'share/oxc/runtime' / s.name for s in sorted(RUNTIME.glob('*.py'))), script]
+    if args.oxa_binary:
+        destinations.append(prefix / 'bin/oxa')
+    if unit_file:
+        destinations.append(unit_file)
+    for path in destinations:
+        if os.path.islink(path):
+            raise InstallError(f'refusing to write through a symlink: {path}')
+    if os.path.lexists(runtime_json) and not args.force:
         raise InstallError('runtime.json already exists in the config directory; it was kept (use --force to replace).')
     value = {'cloud_only': True, 'cloud': {'enabled': True, 'daily_budget_usd': args.daily_budget,
                                            'secrets_file': str(config / 'cloud-secrets.json'), 'models': models}}
@@ -101,7 +122,6 @@ def install(args, runner=subprocess.run):
     os.chmod(runtime_json, 0o600)
     copy_runtime(prefix / 'share/oxc/runtime')
     (prefix / 'bin').mkdir(parents=True, exist_ok=True)
-    script = prefix / 'bin/oxc-controller'
     script.write_text(launcher(prefix, config, args.port))
     os.chmod(script, 0o755)
     if args.oxa_binary:
@@ -114,12 +134,10 @@ def install(args, runner=subprocess.run):
     if args.no_systemd:
         result['run'] = str(script)
         return result
-    unit_dir = Path(args.unit_dir).absolute() if args.unit_dir else Path(
-        os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'systemd/user'
     unit_dir.mkdir(parents=True, exist_ok=True)
-    (unit_dir / f'{args.unit_name}.service').write_text(unit(args.unit_name, script, prefix))
+    unit_file.write_text(unit(args.unit_name, script, prefix))
     runner(['systemctl', '--user', 'daemon-reload'], check=True)
-    runner(['systemctl', '--user', 'enable', '--now', f'{args.unit_name}.service'], check=True)
+    runner(['systemctl', '--user', 'enable', '--now', str(unit_file)], check=True)
     result['unit'] = f'{args.unit_name}.service'
     return result
 
