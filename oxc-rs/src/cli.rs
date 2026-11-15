@@ -1,0 +1,277 @@
+use std::collections::{HashMap, HashSet};
+
+const HELP: &str = include_str!("help.txt");
+fn main_help() -> &'static str {
+    if std::env::args_os().next().is_some_and(|name| {
+        std::path::Path::new(&name)
+            .file_name()
+            .is_some_and(|name| name == "local-ai")
+    }) {
+        include_str!("legacy-help.txt")
+    } else {
+        HELP
+    }
+}
+const UNINSTALL_HELP: &str = include_str!("uninstall-help.txt");
+const ACTIONS: &[&str] = &[
+    "panel",
+    "status",
+    "ledger",
+    "storage",
+    "chat",
+    "code",
+    "plan",
+    "images",
+    "load",
+    "unload",
+    "moe",
+    "ornith",
+    "flash",
+    "clear-cache",
+    "storage-delete",
+    "harness-prepare",
+    "harness-forget",
+    "flash-cache",
+    "cache",
+    "mode",
+    "share",
+    "digest",
+    "update",
+    "rollback",
+];
+const FLAGS: &[&str] = &[
+    "--version",
+    "--rotate",
+    "--json",
+    "--all",
+    "--write",
+    "--status",
+    "--soak",
+    "--check",
+    "--no-chat",
+];
+const VALUES: &[&str] = &[
+    "--id",
+    "--pref",
+    "--harness",
+    "--mode",
+    "--limit",
+    "--session",
+    "--day",
+];
+
+pub struct Exit {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(Default)]
+pub struct Args {
+    pub action: String,
+    pub rest: Vec<String>,
+    flags: HashSet<String>,
+    values: HashMap<String, String>,
+    records: Vec<String>,
+}
+
+fn usage(help: &str) -> &str {
+    help.split("\n\n").next().unwrap_or(help)
+}
+fn error(message: String, uninstall: bool) -> Exit {
+    let help = if uninstall {
+        UNINSTALL_HELP
+    } else {
+        main_help()
+    };
+    let program = if uninstall {
+        "local-ai uninstall"
+    } else if main_help() == HELP {
+        "oxc"
+    } else {
+        "local-ai"
+    };
+    Exit {
+        code: 2,
+        stdout: String::new(),
+        stderr: format!("{}\n{program}: error: {message}\n", usage(help)),
+    }
+}
+fn help(uninstall: bool) -> Exit {
+    Exit {
+        code: 0,
+        stdout: if uninstall {
+            UNINSTALL_HELP
+        } else {
+            main_help()
+        }
+        .to_owned(),
+        stderr: String::new(),
+    }
+}
+fn choices(values: &[&str]) -> String {
+    values.join(", ")
+}
+
+pub fn parse(words: &[String]) -> Result<Args, Exit> {
+    if words.first().map(String::as_str) == Some("dense") {
+        return Err(Exit {code:2, stdout:String::new(), stderr:"The dense Qwen3.8 27B model was retired in v0.1.2. Use `local-ai ornith` or `local-ai moe`.\n".into()});
+    }
+    let uninstall = words.first().map(String::as_str) == Some("uninstall");
+    let input = if uninstall { &words[1..] } else { words };
+    let mut result = Args {
+        action: if uninstall { "uninstall" } else { "panel" }.into(),
+        ..Args::default()
+    };
+    let mut action_seen = uninstall;
+    let mut positional_only = false;
+    let mut unknown = Vec::new();
+    let mut index = 0;
+    while index < input.len() {
+        let word = &input[index];
+        index += 1;
+        if !positional_only && word == "--" {
+            positional_only = true;
+            continue;
+        }
+        if !positional_only && (word == "-h" || word == "--help") {
+            return Err(help(uninstall));
+        }
+        if !positional_only && word.starts_with('-') && word != "-" {
+            let (requested, explicit) = word
+                .split_once('=')
+                .map_or((word.as_str(), None), |(k, v)| (k, Some(v)));
+            let uninstall_flags = ["--apply", "--remove-models", "--json"];
+            let uninstall_values = ["--record"];
+            let flags = if uninstall {
+                uninstall_flags.as_slice()
+            } else {
+                FLAGS
+            };
+            let values = if uninstall {
+                uninstall_values.as_slice()
+            } else {
+                VALUES
+            };
+            let matches: Vec<&str> = flags
+                .iter()
+                .chain(values.iter())
+                .copied()
+                .chain(std::iter::once("--help"))
+                .filter(|name| {
+                    **name == *requested
+                        || (requested.starts_with("--") && name.starts_with(requested))
+                })
+                .collect();
+            let name = if matches.contains(&requested) {
+                requested
+            } else if matches.len() == 1 {
+                matches[0]
+            } else if matches.len() > 1 {
+                return Err(error(
+                    format!(
+                        "ambiguous option: {requested} could match {}",
+                        matches.join(", ")
+                    ),
+                    uninstall,
+                ));
+            } else {
+                unknown.push(word.clone());
+                continue;
+            };
+            if name == "--help" {
+                return Err(help(uninstall));
+            }
+            if flags.contains(&name) {
+                if let Some(value) = explicit {
+                    return Err(error(
+                        format!("argument {name}: ignored explicit argument '{value}'"),
+                        uninstall,
+                    ));
+                }
+                if name == "--version" {
+                    return Err(Exit {
+                        code: 0,
+                        stdout: concat!("local-ai ", env!("CARGO_PKG_VERSION"), "\n").into(),
+                        stderr: String::new(),
+                    });
+                }
+                result.flags.insert(name.into());
+                continue;
+            }
+            let value = if let Some(value) = explicit {
+                value.to_owned()
+            } else {
+                let Some(value) = input.get(index) else {
+                    return Err(error(
+                        format!("argument {name}: expected one argument"),
+                        uninstall,
+                    ));
+                };
+                if value.starts_with('-') && value.parse::<i64>().is_err() {
+                    return Err(error(
+                        format!("argument {name}: expected one argument"),
+                        uninstall,
+                    ));
+                }
+                index += 1;
+                value.clone()
+            };
+            let allowed = match name {
+                "--mode" => Some(["fast", "deep", "max"].as_slice()),
+                "--pref" => Some(["auto", "20", "18", "16", "14"].as_slice()),
+                _ => None,
+            };
+            if let Some(allowed) = allowed {
+                if !allowed.contains(&value.as_str()) {
+                    return Err(error(
+                        format!(
+                            "argument {name}: invalid choice: '{value}' (choose from {})",
+                            choices(allowed)
+                        ),
+                        uninstall,
+                    ));
+                }
+            }
+            if name == "--limit" && value.replace('_', "").parse::<i64>().is_err() {
+                return Err(error(
+                    format!("argument --limit: invalid int value: '{value}'"),
+                    uninstall,
+                ));
+            }
+            if uninstall && name == "--record" {
+                result.records.push(value.clone());
+            }
+            result.values.insert(name.into(), value);
+        } else if !action_seen {
+            if !ACTIONS.contains(&word.as_str()) {
+                return Err(error(
+                    format!(
+                        "argument action: invalid choice: '{word}' (choose from {})",
+                        choices(ACTIONS)
+                    ),
+                    uninstall,
+                ));
+            }
+            result.action = word.clone();
+            action_seen = true;
+        } else if uninstall {
+            unknown.push(word.clone());
+        } else {
+            result.rest.push(word.clone());
+        }
+    }
+    if !unknown.is_empty() {
+        return Err(error(
+            format!("unrecognized arguments: {}", unknown.join(" ")),
+            uninstall,
+        ));
+    }
+    if !uninstall
+        && !result.rest.is_empty()
+        && !["cache", "share", "update"].contains(&result.action.as_str())
+    {
+        return Err(error("unexpected arguments".into(), false));
+    }
+    Ok(result)
+}
