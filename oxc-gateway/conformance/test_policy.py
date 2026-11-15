@@ -23,7 +23,7 @@ def inputs(name):
             'credentials': name not in ('no-key', 'no-key-no-budget'),
             'cap': None if name in ('no-budget', 'no-key-no-budget') else False if name == 'bad-budget' else 1,
             'ledger_enabled': name != 'disabled-ledger',
-            'spent': None if name == 'bad-ledger' else .95 if name == 'exhausted' else 0,
+            'spent': None if name == 'bad-ledger' else .999 if name == 'exhausted' else 0,
             'reserved': 0, 'required': .08008}
 
 
@@ -45,7 +45,7 @@ def capture(name):
     ledger = home / '.local/state/oxc/ledger'
     ledger.mkdir(parents=True, mode=0o700)
     if name in ('exhausted', 'bad-ledger'):
-        text = '{"remote":true,"cost_usd":0.95}\n' if name == 'exhausted' else '["synthetic-invalid-row"]\n'
+        text = '{"remote":true,"cost_usd":0.999}\n' if name == 'exhausted' else '["synthetic-invalid-row"]\n'
         (ledger / ('requests-' + time.strftime('%Y%m%d') + '.jsonl')).write_text(text)
     if name == 'guest':
         # Exercise the reference's already-authenticated guest context. The live
