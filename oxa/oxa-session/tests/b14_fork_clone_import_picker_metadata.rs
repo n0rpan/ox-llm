@@ -25,6 +25,7 @@ fn user(id: &str, parent: Option<&str>, text: &str) -> Entry {
         body: EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: vec![Part::Text(text.to_string())],
+            tool: None,
         },
     }
 }
@@ -37,6 +38,7 @@ fn assistant(id: &str, parent: Option<&str>, text: &str) -> Entry {
         body: EntryBody::Msg {
             wire: WireMsg::assistant(text),
             parts: vec![],
+            tool: None,
         },
     }
 }

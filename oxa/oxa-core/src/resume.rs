@@ -23,6 +23,10 @@ pub(crate) fn close_interrupted(st: &mut SessionState, sink: &mut dyn EventSink)
             EntryBody::Msg {
                 wire: WireMsg::tool_result(id.clone(), crate::prompt::TOOL_INTERRUPTED),
                 parts: Vec::new(),
+                tool: Some(oxa_proto::ToolMeta {
+                    is_error: true,
+                    ui: oxa_proto::Value::Null,
+                }),
             },
             sink,
         )?;
