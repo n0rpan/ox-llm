@@ -9,6 +9,7 @@ autobins = false
 [features]
 default = []
 native-controller = []
+upstream-anthropic-stream = ["dep:serde_json"]
 upstream-anthropic-request = ["dep:serde_json"]
 
 [dependencies]

@@ -137,6 +137,9 @@ pub fn glyphs(skin: Skin) -> &'static Glyphs {
 /// where `auto` is OXA's look. `utf8 == false` (a locale without UTF-8) turns `Oxa` into
 /// `OxaAscii`.
 pub fn resolve_skin(setting: Option<&str>, utf8: bool) -> Skin {
+    if setting.map(str::trim) == Some("ascii") {
+        return Skin::OxaAscii;
+    }
     let oxa = !matches!(setting.map(str::trim), Some("pi"));
     match (oxa, utf8) {
         (false, _) => Skin::Pi,
@@ -146,17 +149,19 @@ pub fn resolve_skin(setting: Option<&str>, utf8: bool) -> Skin {
 }
 
 /// `true` when the environment's locale is UTF-8: the first set of `LC_ALL`, `LC_CTYPE`,
-/// `LANG` names `UTF-8` / `utf8` (any case). No locale at all counts as UTF-8 unless
-/// `TERM` is `linux` or `dumb` (pure: `env` is the complete input).
+/// `LANG` names `UTF-8` / `utf8` (any case). `TERM` `linux` or `dumb` is never UTF-8 for this purpose; no locale counts as UTF-8 (pure: `env` is the complete input).
 pub fn env_is_utf8(env: &[(String, String)]) -> bool {
     let get = |k: &str| {
         env.iter()
             .find(|(n, v)| n == k && !v.is_empty())
             .map(|(_, v)| v.to_ascii_lowercase())
     };
+    if matches!(get("TERM").as_deref(), Some("linux") | Some("dumb")) {
+        return false;
+    }
     match get("LC_ALL").or_else(|| get("LC_CTYPE")).or_else(|| get("LANG")) {
         Some(v) => v.contains("utf-8") || v.contains("utf8"),
-        None => !matches!(get("TERM").as_deref(), Some("linux") | Some("dumb")),
+        None => true,
     }
 }
 
@@ -297,6 +302,7 @@ mod tests {
         assert_eq!(resolve_skin(Some("auto"), false), Skin::OxaAscii);
         assert_eq!(resolve_skin(Some("pi"), true), Skin::Pi);
         assert_eq!(resolve_skin(Some("oxa"), false), Skin::OxaAscii);
+        assert_eq!(resolve_skin(Some("ascii"), true), Skin::OxaAscii);
     }
 
     #[test]
@@ -390,6 +396,7 @@ mod tests {
         assert!(env_is_utf8(&e(&[("LANG", "C"), ("LC_ALL", "C.utf8")])));
         assert!(env_is_utf8(&e(&[("TERM", "xterm-256color")])));
         assert!(!env_is_utf8(&e(&[("TERM", "linux")])));
+        assert!(!env_is_utf8(&e(&[("TERM", "dumb"), ("LANG", "en_US.UTF-8")])));
         assert!(env_no_color(&e(&[("NO_COLOR", "1")])));
         assert!(!env_no_color(&e(&[("NO_COLOR", "")])));
         assert!(env_no_color(&e(&[("TERM", "dumb")])));
