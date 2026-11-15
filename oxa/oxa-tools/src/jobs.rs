@@ -13,6 +13,10 @@
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, Sandbox};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// How often a [`JobRegistry::wait`] checks the job and the cancel token.
+const WAIT_TICK: Duration = Duration::from_millis(10);
 
 /// How many background jobs may run at once.
 pub const MAX_JOBS: usize = 4;
@@ -42,10 +46,21 @@ impl JobStatus {
     }
 }
 
+/// The output of one job: the ring buffer plus counters for progress.
+#[derive(Default)]
+struct Out {
+    /// The last [`BUFFER_CAP`] bytes.
+    buf: Vec<u8>,
+    /// Every byte the job has written, ever (not capped).
+    total: u64,
+    /// `total` as of the last read: what the model has seen.
+    seen: u64,
+}
+
 /// The shared state of one job.
 struct Job {
     cancel: CancelToken,
-    output: Arc<Mutex<Vec<u8>>>,
+    output: Arc<Mutex<Out>>,
     status: Arc<Mutex<JobStatus>>,
 }
 
@@ -55,6 +70,8 @@ pub struct JobRead {
     pub status: JobStatus,
     /// The last [`READ_CAP`] bytes of the combined output so far.
     pub output: String,
+    /// Every byte of output the job has written so far (not only the ones kept).
+    pub total: u64,
 }
 
 #[derive(Default)]
@@ -132,7 +149,7 @@ impl JobRegistry {
         state.next += 1;
         let id = format!("job-{}", state.next);
         let cancel = CancelToken::new();
-        let output = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::new(Mutex::new(Out::default()));
         let status = Arc::new(Mutex::new(JobStatus::Running));
         state.jobs.insert(
             id.clone(),
@@ -146,11 +163,12 @@ impl JobRegistry {
 
         std::thread::spawn(move || {
             let mut sink = |chunk: &[u8]| {
-                let mut buf = output.lock().unwrap();
-                buf.extend_from_slice(chunk);
-                if buf.len() > BUFFER_CAP {
-                    let keep = buf.len() - BUFFER_CAP;
-                    buf.drain(..keep);
+                let mut out = output.lock().unwrap();
+                out.total += chunk.len() as u64;
+                out.buf.extend_from_slice(chunk);
+                if out.buf.len() > BUFFER_CAP {
+                    let keep = out.buf.len() - BUFFER_CAP;
+                    out.buf.drain(..keep);
                 }
             };
             let res: ExecResult = sandbox.run_streaming(&spec, &cancel, &mut sink);
@@ -169,10 +187,43 @@ impl JobRegistry {
         let state = self.state.lock().unwrap();
         let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
         let status = *job.status.lock().unwrap();
-        let output = job.output.lock().unwrap();
-        let start = output.len().saturating_sub(READ_CAP);
-        let text = String::from_utf8_lossy(&output[start..]).into_owned();
-        Ok(JobRead { status, output: text })
+        let mut out = job.output.lock().unwrap();
+        out.seen = out.total;
+        let start = out.buf.len().saturating_sub(READ_CAP);
+        let text = String::from_utf8_lossy(&out.buf[start..]).into_owned();
+        Ok(JobRead {
+            status,
+            output: text,
+            total: out.total,
+        })
+    }
+
+    /// #150 (2): block for up to `max` until the job exits, prints output it has not yet shown
+    /// to a read, or `cancel` fires. Returns at once when there is already such news. `Err` for
+    /// an unknown id.
+    pub fn wait(&self, id: &str, max: Duration, cancel: &CancelToken) -> Result<(), String> {
+        let (status, output) = {
+            let state = self.state.lock().unwrap();
+            let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+            (job.status.clone(), job.output.clone())
+        };
+        let deadline = Instant::now() + max;
+        loop {
+            if *status.lock().unwrap() != JobStatus::Running {
+                return Ok(());
+            }
+            {
+                let out = output.lock().unwrap();
+                if out.total != out.seen {
+                    return Ok(());
+                }
+            }
+            let now = Instant::now();
+            if now >= deadline || cancel.is_cancelled() {
+                return Ok(());
+            }
+            std::thread::sleep((deadline - now).min(WAIT_TICK));
+        }
     }
 
     /// The bytes a job's ring buffer holds right now (for tests of the cap). `None` for an
@@ -180,7 +231,7 @@ impl JobRegistry {
     #[doc(hidden)]
     pub fn buffered_len(&self, id: &str) -> Option<usize> {
         let state = self.state.lock().unwrap();
-        state.jobs.get(id).map(|j| j.output.lock().unwrap().len())
+        state.jobs.get(id).map(|j| j.output.lock().unwrap().buf.len())
     }
 
     /// Cancel every running job AND forget them all: ids stop resolving and the slots free
