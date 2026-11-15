@@ -10,7 +10,7 @@ publish.workspace = true
 
 [features]
 default = []
-orchestrator = ["dep:oxa-orchestrator", "oxa-interactive/session-control"]
+orchestrator = ["dep:oxa-orchestrator", "oxa-interactive/session-control", "oxa-sandbox/owned-background"]
 
 [lib]
 name = "oxa_cli"

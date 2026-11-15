@@ -207,6 +207,7 @@ for concurrent external status, pause/resume, goal redirection, steering and
 event polling; see [SHARED_SESSION.md](SHARED_SESSION.md). The existing interactive
 TUI also exposes its actual core session with `OXA_SESSION_CONTROL_DIRECTORY` in
 a feature-enabled build; both clients retain write access and share goal state,
-context and native events. Background-task wake-ups
-and worker-lane integration follow. All implementation stays in the new crates
+context and native events. `OXA_BACKGROUND_TASKS=1` also enables bounded sandboxed
+commands with same-session completion wake-ups; see [BACKGROUND_TASKS.md](BACKGROUND_TASKS.md).
+Worker-lane integration is next. All implementation stays in the new crates
 plus small default-off hooks; cloud execution and merging retain the brief's gates.

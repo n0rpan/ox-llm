@@ -166,6 +166,10 @@ impl Sandbox for NetSandbox {
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         self.inner.bwrap_args(&self.clamp(s))
     }
+    #[cfg(feature = "owned-background")]
+    fn prepare_background(&self, s: &ExecSpec) -> Result<(std::path::PathBuf, Vec<String>), OxaError> {
+        self.inner.prepare_background(&self.clamp(s))
+    }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
         self.redacted_run(s, live, |s, live| self.inner.run(s, c, live))
     }

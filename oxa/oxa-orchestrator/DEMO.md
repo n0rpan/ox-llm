@@ -183,3 +183,19 @@ returns a verified review proposal and preserves the original source. The CLI
 case repairs an unstructured reply without resetting the session or goal budget.
 See [SESSION_GOALS.md](SESSION_GOALS.md) for the concrete operator command, state
 semantics and remaining shared-session/TUI/background-task work.
+
+## Background task continuation (#94 priority 3)
+
+With the feature-enabled `shared_tui` fixture, the model calls
+`background_command start` for a sandboxed `sleep`/`printf` command, immediately
+finishes other work, then receives `background_completed` in the same session.
+Both an idle wake-up and a result delivered during an active inference retain
+the original session ID and earlier messages. A goal's premature DONE is held
+until its pending result reaches the context; the wake spends the same ledger.
+
+The fixture also verifies policy denial/no-tools/plan-mode/network-argument
+boundaries, inability to see the operator socket at its known path, and owned
+cleanup on pause/cancel/deadline/exit/session swap without a late model request.
+Commands are owned local fixtures inside the normal sandbox, and every model
+response is an owned loopback fake. See [BACKGROUND_TASKS.md](BACKGROUND_TASKS.md)
+for opt-in activation and limits. Worker lanes and real cloud acceptance remain open.
