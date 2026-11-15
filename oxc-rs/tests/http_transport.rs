@@ -140,3 +140,62 @@ async fn response_body_error_never_emits_a_successful_terminal_chunk() {
     assert!(!response.ends_with(b"0\r\n\r\n"));
     assert!(response.ends_with(b"data: partial\n\n\r\n"));
 }
+
+#[tokio::test]
+async fn unread_request_payload_is_never_dispatched_as_a_second_request() {
+    let app = Router::new().fallback(|| async { reply(Body::from("ok")) });
+    let payload = b"GET /payload HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let mut wire = format!(
+        "POST /first HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+        payload.len()
+    )
+    .into_bytes();
+    wire.extend(payload);
+    let response = String::from_utf8(exchange(&wire, app).await).unwrap();
+    assert_eq!(response.matches("HTTP/1.1 200 OK").count(), 1);
+}
+
+#[tokio::test]
+async fn short_fixed_response_closes_before_the_next_response() {
+    let app = Router::new().fallback(|| async {
+        Response::builder()
+            .header("content-length", "5")
+            .body(Body::from("ok"))
+            .unwrap()
+    });
+    let response=String::from_utf8(exchange(b"GET /first HTTP/1.1\r\nHost: localhost\r\n\r\nGET /second HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",app).await).unwrap();
+    assert_eq!(response.matches("HTTP/1.1 200 OK").count(), 1);
+}
+
+#[tokio::test]
+async fn head_keeps_the_connection_without_consuming_declared_body_bytes() {
+    let app = Router::new().fallback(|| async { reply(Body::from("ok")) });
+    let response=String::from_utf8(exchange(b"HEAD / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",app).await).unwrap();
+    assert_eq!(response.matches("HTTP/1.1 200 OK").count(), 2);
+    assert_eq!(response.matches("\r\n\r\nok").count(), 1);
+}
+
+#[tokio::test]
+async fn ambiguous_or_unsupported_request_framing_cannot_reuse_the_connection() {
+    for headers in [
+        "Content-Length: invalid",
+        "Transfer-Encoding: gzip",
+        "Content-Length: 0\r\nContent-Length: 40",
+    ] {
+        let app = Router::new().fallback(|| async { reply(Body::from("ok")) });
+        let wire=format!("POST /first HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n\r\nGET /payload HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        let response = String::from_utf8(exchange(wire.as_bytes(), app).await).unwrap();
+        assert_eq!(response.matches("HTTP/1.1 200 OK").count(), 1, "{headers}");
+    }
+}
+
+#[tokio::test]
+async fn oversized_fixed_response_never_writes_past_its_declared_length() {
+    let app = Router::new().fallback(|| async { reply(Body::from("too much data")) });
+    let response = exchange(
+        b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        app,
+    )
+    .await;
+    assert!(response.ends_with(b"\r\n\r\n"));
+}

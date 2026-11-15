@@ -134,6 +134,7 @@ struct Peer {
     done: Arc<AtomicBool>,
     notify: Arc<Notify>,
     monitor: bool,
+    reusable: bool,
 }
 impl Peer {
     fn body_done(&self) {
@@ -232,6 +233,8 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
         });
     let mut length = 0;
     let mut length_seen = false;
+    let mut length_valid = true;
+    let mut length_fields = 0;
     let mut chunked = false;
     let mut lines = raw.split(|byte| *byte == b'\n').skip(1);
     for field in parsed.headers {
@@ -250,14 +253,18 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
             .position(|byte| !matches!(byte, b' ' | b'\t'))
             .unwrap_or(value.len());
         let value = &value[start..];
+        if field.name.eq_ignore_ascii_case("content-length") {
+            length_fields += 1;
+        }
         if field.name.eq_ignore_ascii_case("content-length") && !length_seen {
             // Keep the original header intact. The handler decides whether it
             // is valid, after authentication, without reading a rejected body.
-            length = std::str::from_utf8(value)
+            let parsed_length = std::str::from_utf8(value)
                 .ok()
                 .and_then(|s| s.trim().parse::<u64>().ok())
-                .filter(|n| *n <= 16 * 1024 * 1024)
-                .unwrap_or(0);
+                .filter(|n| *n <= 16 * 1024 * 1024);
+            length_valid = parsed_length.is_some();
+            length = parsed_length.unwrap_or(0);
             length_seen = true;
         }
         if field.name.eq_ignore_ascii_case("transfer-encoding") {
@@ -270,6 +277,7 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
         done: Arc::new(AtomicBool::new(false)),
         notify: Arc::new(Notify::new()),
         monitor,
+        reusable: !chunked && length_fields <= 1 && length_valid,
     };
     let body = if length == 0 || chunked {
         peer.body_done();
@@ -354,6 +362,7 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
                     .headers()
                     .get(header::CONNECTION)
                     .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"keep-alive")));
+        let head_request = request.method() == axum::http::Method::HEAD;
         let handled = tokio::select! {response=app.clone().oneshot(request)=>response,_=peer.disconnected()=>break};
         let response = match handled {
             Ok(response) => response,
@@ -378,7 +387,12 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok())
             .filter(|_| !chunked);
+        let bodyless = head_request
+            || matches!(parts.status.as_u16(), 204 | 304)
+            || parts.status.is_informational();
         let close = close
+            || !peer.reusable
+            || !peer.done.load(Ordering::SeqCst)
             || parts.extensions.get::<CloseConnection>().is_some()
             || (!parts.headers.contains_key(header::CONTENT_LENGTH)
                 && !chunked
@@ -387,6 +401,11 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
                 .headers
                 .get(header::CONNECTION)
                 .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"close"));
+        if close {
+            parts
+                .headers
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+        }
         parts.headers.insert(
             header::DATE,
             HeaderValue::from_str(&httpdate::fmt_http_date(std::time::SystemTime::now()))
@@ -414,6 +433,9 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         let mut body = body.into_data_stream();
         let mut written = 0_u64;
         loop {
+            if bodyless {
+                break;
+            }
             // A client may close immediately after reading Content-Length
             // bytes. The response's finalizer still owns completed work.
             let chunk = if fixed_length.is_some_and(|length| written >= length) {
@@ -430,6 +452,11 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
             if chunk.is_empty() {
                 continue;
             }
+            if fixed_length
+                .is_some_and(|length| written.saturating_add(chunk.len() as u64) > length)
+            {
+                return;
+            }
             if chunked
                 && write
                     .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
@@ -445,6 +472,9 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
             if chunked && write.write_all(b"\r\n").await.is_err() {
                 return;
             }
+        }
+        if !bodyless && fixed_length.is_some_and(|length| written != length) {
+            return;
         }
         if chunked && write.write_all(b"0\r\n\r\n").await.is_err() {
             return;
