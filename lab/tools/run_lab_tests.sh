@@ -52,4 +52,4 @@ fi
 # covers the check itself.
 env -u LOCAL_LLM_CONFIG -u LOCAL_AI_LEASE LOCAL_AI_RUST_FIT_CHECK=off HOME="$root/home" XDG_CONFIG_HOME="$root/config" \
     XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" XDG_CACHE_HOME="$root/cache" \
-    XDG_RUNTIME_DIR="$root/runtime" PYTHONPATH=src nice -n 19 python3 "$@"
+    XDG_RUNTIME_DIR="$root/runtime" PYTHONPATH=src:tests nice -n 19 python3 "$@"
