@@ -72,3 +72,11 @@ implementation uses the existing GitHub cache action with explicit compiler/nati
 manifest/config, build-flag and source fingerprints. Source-only changes retain a compatible
 restore prefix; compiler, feature/profile variant and dependency changes do not. Cargo retains
 its normal freshness validation; no source or artifact timestamps are rewritten.
+
+[43680225010](https://github.com/oxstack/ox-llm/actions/runs/43680225010) exposed two runner
+compatibility issues and is not a successful after sample. Minimal Fedora checkout used a
+source archive without `.git`; the key helper now explicitly supports that checkout mode
+and excludes generated targets. The new x86_64 workers are pinned to Ubuntu 24.04, matching
+the ARM64 sandbox baseline: `ubuntu-latest` had migrated to 26, whose symlink error text broke
+an existing read-only assertion. The assertion is retained unchanged. The native OS identity
+also enters the cache fingerprint.

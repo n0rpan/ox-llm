@@ -28,6 +28,23 @@ def keys(root, files, variant, compiler, flags):
     return prefix + digest(source), prefix
 
 
+def source_files(root, workspaces):
+    if (root / '.git').exists():
+        return subprocess.check_output(['git', 'ls-files', '-z', '--', *workspaces,
+            '.cargo', 'rust-toolchain', 'rust-toolchain.toml'], cwd=root).decode().split('\0')[:-1]
+    # Minimal Fedora images have no git at checkout time: checkout uses a source archive.
+    # That archive contains tracked source only; build outputs must not enter the key.
+    files = []
+    for workspace in [*workspaces, '.cargo']:
+        base = root / workspace
+        for directory, dirs, names in os.walk(base):
+            dirs[:] = [name for name in dirs if name not in ('.git', '__pycache__')
+                       and Path(directory) / name != base / 'target']
+            files.extend(str((Path(directory) / name).relative_to(root)) for name in names)
+    files.extend(name for name in ('rust-toolchain', 'rust-toolchain.toml') if (root / name).is_file())
+    return files
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--variant', required=True)
@@ -35,13 +52,13 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch('[a-zA-Z0-9_-]+', args.variant):
         parser.error('variant must contain only letters, digits, underscore or hyphen')
-    files = subprocess.check_output(['git', 'ls-files', '-z', '--', *args.workspaces,
-                                     '.cargo', 'rust-toolchain', 'rust-toolchain.toml']).decode().split('\0')[:-1]
-    compiler = {}
+    files = source_files(Path.cwd(), args.workspaces)
+    compiler = {'platform': Path('/etc/os-release').read_text()}
     for command in (['rustc', '--version', '--verbose'], ['cc', '--version'], ['c++', '--version']):
         compiler[command[0]] = subprocess.check_output(command, text=True).strip()
     names = ('RUSTFLAGS', 'RUSTDOCFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_BUILD_TARGET',
-             'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS')
+             'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS', 'RUSTC', 'RUSTDOC',
+             'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER')
     flags = {name: value for name, value in os.environ.items()
              if name in names or name.startswith(('CARGO_PROFILE_', 'CARGO_TARGET_'))}
     key, prefix = keys(Path.cwd(), files, args.variant, compiler, flags)

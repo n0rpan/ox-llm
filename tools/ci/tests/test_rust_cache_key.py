@@ -40,3 +40,12 @@ class CacheControls(unittest.TestCase):
         for name in ('Cargo.toml', 'Cargo.lock'):
             (self.root / name).write_text('changed dependency graph')
             self.assertNotEqual(self.key()[1], original[1])
+
+    def test_source_archive_checkout_needs_no_git_metadata_and_omits_build_outputs(self):
+        (self.root / 'oxa/target/ci').mkdir(parents=True)
+        (self.root / 'oxa/src').mkdir()
+        (self.root / 'oxa/Cargo.toml').write_text('manifest')
+        (self.root / 'oxa/src/lib.rs').write_text('source')
+        (self.root / 'oxa/target/ci/build-output').write_text('must not hash generated files')
+        self.assertEqual(sorted(CACHE.source_files(self.root, ['oxa'])),
+                         ['oxa/Cargo.toml', 'oxa/src/lib.rs'])

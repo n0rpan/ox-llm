@@ -178,7 +178,7 @@ jobs:
   oxa-test-build:
     if: inputs.heavy
     name: oxa test archive (x86_64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -244,7 +244,7 @@ jobs:
     if: inputs.heavy
     needs: oxa-test-build
     name: oxa tests shard ${{ matrix.shard }} (x86_64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -302,7 +302,7 @@ jobs:
     if: always() && inputs.heavy
     needs: [oxa-test-build, oxa-test-shards]
     name: oxa tests (bwrap sandbox required)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Every archive and partition must pass
