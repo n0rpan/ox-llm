@@ -55,7 +55,7 @@ class StreamOrder(unittest.TestCase):
                                   ('arguments', '{"path":"x"}', '}SYNTHETIC_KEY')):
             with self.subTest(field=field):
                 delta = ({'tool_calls': [{'index': 0, 'function': {field: text}}]}
-                         if field in ('name', 'arguments') else {field: text})
+                         if field == 'arguments' else {field: text})
                 frames = self.transcode([{
                     'choices': [{'index': 0, 'delta': delta, 'finish_reason': 'stop'}],
                     'usage': {'prompt_tokens': 11, 'completion_tokens': 4}}], key)
@@ -65,7 +65,7 @@ class StreamOrder(unittest.TestCase):
                         part = choice.get('delta', {})
                         value = (''.join(call.get('function', {}).get(field, '')
                                          for call in part.get('tool_calls', []))
-                                 if field in ('name', 'arguments') else part.get(field, ''))
+                                 if field == 'arguments' else part.get(field, ''))
                         if value:
                             fragments.append((position, value))
                         if choice.get('finish_reason') is not None:
@@ -76,6 +76,20 @@ class StreamOrder(unittest.TestCase):
                 self.assertEqual(sum('usage' in frame for frame in frames), 1)
                 if field == 'arguments':
                     self.assertEqual(json.loads(''.join(value for _, value in fragments)), {'path': 'x'})
+
+    def test_tool_names_arrive_whole_in_one_delta(self):
+        for name in ('ls', 'list_files', 'read'):
+            with self.subTest(name=name):
+                frames = self.transcode([
+                    {'choices': [{'index': 0, 'delta': {'tool_calls': [{
+                        'index': 0, 'id': 'c1', 'type': 'function',
+                        'function': {'name': name, 'arguments': ''}}]}, 'finish_reason': None}]},
+                    {'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}],
+                    'synthetic-key')
+                names = [call['function']['name'] for f in frames for c in f.get('choices', [])
+                         for call in c.get('delta', {}).get('tool_calls', [])
+                         if 'name' in call.get('function', {})]
+                self.assertEqual(names, [name])
 
     def test_finishing_one_choice_does_not_flush_another_choices_key_prefix(self):
         key = 'SYNTHETIC_KEY'
