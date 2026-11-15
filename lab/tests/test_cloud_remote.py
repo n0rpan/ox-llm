@@ -487,8 +487,21 @@ class LedgerFailClosed(CloudCase):
 
     def test_a_failed_ledger_write_blocks_the_next_remote_call(self):
         self.start()
-        with patch.object(request_ledger, 'write', return_value=False):
+        marked = threading.Event()
+        mark_failure = cloud.mark_ledger_failure
+
+        def published_failure(*args, **kwargs):
+            mark_failure(*args, **kwargs)
+            marked.set()
+
+        with patch.object(request_ledger, 'write', return_value=False) as failed_write, \
+                patch.object(cloud, 'mark_ledger_failure', side_effect=published_failure):
             status, _ = self.chat()
+            # The nonstream proxy writes its ledger after sending the reply.
+            # Keep fault injection active until that write and its failure
+            # marker are observable; receipt of HTTP bytes is not settlement.
+            self.assertTrue(marked.wait(2), 'failed ledger write was not published')
+            self.assertTrue(failed_write.called)
         self.assertEqual(status, 200)
         status, body = self.chat()
         self.assertEqual(status, 503)

@@ -599,6 +599,8 @@ def forward(self, st, item, key):
     translator = None
     hold = None
     started = False
+    owned_client = None
+    completed_usage = None
     try:
         params = messages_request(payload, item, key)
         client = _client(item, key)
@@ -608,6 +610,17 @@ def forward(self, st, item, key):
             hold.settle()
         return _error(self, st, item, error.status, str(error), key, error.code)
     try:
+        if cloud.settings(st.api_value).get('orchestrator_disconnect_watch') is True:
+            if __package__:
+                from .ctl_seams import ctl
+                from .orchestrator_anthropic import Client
+            else:
+                from ctl_seams import ctl
+                from orchestrator_anthropic import Client
+            if not ctl.lan_share.is_tls(self.connection):
+                client.close()
+                owned_client = client = Client(item, key, min(cloud.DEFAULT_TIMEOUT, 1800.0))
+                st.watcher = ctl.ClientDisconnect(self.connection, client).start()
         if not streamed:
             message = client.messages.create(**params)
             present = _has_usage(message)
@@ -615,6 +628,7 @@ def forward(self, st, item, key):
             row = _row(item)
             if present:
                 _usage_row(row, reply['usage'], item)
+                completed_usage = reply['usage']
             cloud.conservative_cost(row, hold, failed=not present)
             if st.led is not None:
                 st.led.row.update(row)
@@ -649,9 +663,12 @@ def forward(self, st, item, key):
             for chunk in translator.event(event):
                 relay(('data: ' + json.dumps(chunk, ensure_ascii=False) + '\n\n').encode())
         if translator.error is not None or not translator.stopped:
-            _record(st, item, hold, translator.usage, True, 503, 'cloud_stream_error')
+            canceled = translator.error is None and st.watcher is not None and st.client_gone()
+            _record(st, item, hold, translator.usage, True,
+                    499 if canceled else 503, 'client_disconnected' if canceled else 'cloud_stream_error')
             self.close_connection = True
             return
+        completed_usage = translator.usage
         relay(b'data: [DONE]\n\n')
         tail = redactor.finish()
         if tail:
@@ -676,6 +693,15 @@ def forward(self, st, item, key):
                     error.status, error.code)
             self.close_connection = True
     except Exception as error:  # the SDK's own status/connection errors, redacted
+        if owned_client is not None and owned_client.interrupted(error):
+            # message_stop can arrive just before the downstream write fails.
+            if translator is not None and translator.stopped and translator.error is None:
+                completed_usage = translator.usage
+            complete = completed_usage is not None
+            _record(st, item, hold, completed_usage if complete else (translator.usage if translator else None),
+                    not complete, 200 if complete else 499, None if complete else 'client_disconnected')
+            self.close_connection = True
+            return
         status = getattr(error, 'status_code', None) or 503
         if not isinstance(status, int) or not 400 <= status <= 599:
             status = 503
@@ -688,6 +714,10 @@ def forward(self, st, item, key):
                     status, 'cloud_stream_error')
             self.close_connection = True
     finally:
+        if st.watcher is not None:
+            st.watcher.stop()
+        if owned_client is not None:
+            owned_client.close()
         try:
             if stream is not None:
                 stream.close()

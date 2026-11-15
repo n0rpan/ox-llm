@@ -72,3 +72,14 @@ apply, commit or merge the proposed patch, open real PRs or enter a merge queue.
 Actual provider billing, quiet-stream cancellation, authenticated GitHub operations
 and #94's full working evening remain acceptance gates. Paid cloud use still
 requires Oscar's go.
+
+## Native reviewer cancellation
+
+Run the same isolated scenario with `--cancel-reviewer` to hold the native SDK
+reviewer before response headers and enable the default-off disconnect watcher.
+The real TUI sends Esc, then verifies the same parent is paused with unchanged
+budget/accounting, both worker processes are reaped, the provider mock observes
+EOF, and the reviewer ledger row is a reserved 499 with unknown usage. The author
+proposal remains collected, source files stay unchanged, no follow-on inference
+occurs, and Ctrl-D exits zero. The successful review/pricing mode remains the
+default. See CLOUD_CANCELLATION.md for implementation scope and limits.

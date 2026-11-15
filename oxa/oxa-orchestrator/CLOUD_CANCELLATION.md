@@ -90,10 +90,52 @@ sh tools/run_lab_tests.sh discover -s tests -p test_cloud_disconnect.py
 sh tools/run_lab_tests.sh discover -s tests -p test_client_disconnect.py
 ```
 
-All product changes are small default-off hook sites in `ctl_cloud.py`: start the
+The original OpenAI/OpenRouter changes are small default-off hook sites in `ctl_cloud.py`: start the
 existing watcher, classify observed cancellation without corrupting completed
 usage, suppress writes to a vanished client, and join on every exit. No new
 transport implementation, provider SDK, listener, permission or retry is added.
+
+## Native Anthropic opt-in
+
+The same `cloud.orchestrator_disconnect_watch: true` setting now also supervises
+native Anthropic requests. The default route and TLS downstream behavior retain
+the existing synchronous SDK path. For a plain downstream socket, a small hook
+in `cloud_anthropic.py` selects the separate `orchestrator_anthropic.py` facade.
+It uses the already required official SDK's async client, with zero retries and
+the existing endpoint, key and timeout. One owned event-loop thread handles the
+request; cancellation interrupts the async operation before headers as well as
+during quiet streaming. A bounded event queue yields under backpressure so the
+loop can still process cancellation. Cleanup joins both request and EOF watcher
+threads. No additional listener, permission or credential source is introduced.
+
+An interrupted native request records 499/client_disconnected and retains its
+conservative reservation when usage is incomplete. A completed message with
+known usage retains measured cost even when the final downstream write fails.
+Explicit provider status errors remain provider errors. Native partial usage
+does not become a known zero or a settled bill.
+
+Nine owned-loopback regressions cover streaming and nonstream pre-header
+cancellation, quiet streaming, default-off behavior, TLS-downstream refusal of
+the plain-socket watcher, completed responses, redacted provider errors, cleanup,
+and a completed-usage/downstream-disconnect race. Run with the existing pinned
+SDK installed and the isolated lab wrapper:
+
+```sh
+cd lab
+sh tools/run_lab_tests.sh discover -s tests -p test_cloud_anthropic_disconnect.py
+```
+
+The actual TUI/GPT-author/native-reviewer scenario also has a cancellation mode:
+
+```sh
+cd oxa
+python3 -I oxa-orchestrator/tools/review_lane_demo.py --cancel-reviewer
+```
+
+It verifies that Esc pauses the same parent, reaps the reviewer, closes the
+owned upstream before headers, preserves the source and budget, records unknown
+reviewer usage with a reserved cancellation row, and triggers no follow-on
+inference. This demonstrates owned transport shutdown, not real provider billing.
 
 A broad lab run during implementation executed 2,325 tests with two failures and
 17 skips. Both failures reproduce in the untouched `32059c6` baseline: the client
@@ -104,6 +146,6 @@ files is weakened or changed here. The final seven focused cloud-disconnect
 regressions and nine existing watcher tests pass; broader lab validation is not
 claimed green.
 
-This requires T3 review. Public draft checks, real provider billing, native
-Anthropic cancellation, coordinator review and the full working evening remain
+This requires T3 review after release, per coordinator steering. Public draft
+checks, real provider cancellation/billing and the full working evening remain
 separate gates. Paid cloud use still requires Oscar's go.

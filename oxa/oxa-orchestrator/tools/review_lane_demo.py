@@ -6,6 +6,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import select
+import socket
 from pathlib import Path
 import shlex
 import subprocess
@@ -32,7 +34,7 @@ def output(body):
     return values[-1]
 
 
-def providers(openai_base, anthropic_base, tiered_pricing=False):
+def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer=False):
     class AuthorAndParent(openai_base):
         def __init__(self):
             self.counts = {}
@@ -118,6 +120,7 @@ def providers(openai_base, anthropic_base, tiered_pricing=False):
             self.author = author
             self.started = threading.Event()
             self.release = threading.Event()
+            self.disconnected = threading.Event()
             super().__init__()
 
         def handle(self, handler, method):
@@ -142,6 +145,16 @@ def providers(openai_base, anthropic_base, tiered_pricing=False):
             assert received_proposal == self.author.proposal, "reviewer did not receive the exact collected bundle"
             assert not body.get("tools"), "reviewer must have no file or shell tools"
             self.started.set()
+            if cancel_reviewer:
+                try:
+                    while not self.release.wait(0.01):
+                        ready, _, _ = select.select([handler.connection], [], [], 0.01)
+                        if ready and not handler.connection.recv(1, socket.MSG_PEEK):
+                            self.disconnected.set()
+                            return
+                finally:
+                    handler.close_connection = True
+                return
             assert self.release.wait(7), "reviewer barrier was not released"
             events = self.default_stream()
             reply = json.dumps(completed("reviewer verified exact patch"))
@@ -171,7 +184,7 @@ def run(args):
     live = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(live)
     demo = live.Demo(args.bin_dir)
-    author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic, args.pricing)
+    author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic, args.pricing, args.cancel_reviewer)
     author = author_type()
     reviewer = reviewer_type(author)
     stack = None
@@ -207,6 +220,7 @@ def run(args):
                 ]}
         ledger = root / "ledger"
         stack = Stack(author.port, cloud={"enabled": True, "daily_budget_usd": 10.0 if args.pricing else 1.0,
+            "orchestrator_disconnect_watch": args.cancel_reviewer,
             "secrets_file": str(secrets), "models": models}, environ={"LOCAL_AI_LEDGER_DIR": str(ledger)})
         if args.pricing:
             stack.enter_context(patch.object(cloud_prices, "_fetch", refuse_public_fetch))
@@ -253,12 +267,15 @@ def run(args):
         demo.wait(lambda v: demo.goal(v).get("reason") == "waiting_workers" and author.author_finishing.is_set())
         assert (demo.work / "input.txt").read_text() == BEFORE
         author.release_author.set()
-        demo.wait(lambda v: (len(v["status"]["workers"]) == 2
+        waiting = demo.wait(lambda v: (len(v["status"]["workers"]) == 2
             and demo.goal(v).get("reason") == "waiting_workers" and reviewer.started.is_set()))
         assert (demo.work / "input.txt").read_text() == BEFORE
         demo.save_screen("reviewer-working-screen.txt", lambda s: any(
             "reviewer-sonnet (cloud) · working" in line and f"{author_model} (cloud) · completed" in line
             for line in s.splitlines()[-3:]))
+        if args.cancel_reviewer:
+            check_reviewer_cancel(demo, author, reviewer, waiting, ledger, sid, root)
+            return
         reviewer.release.set()
         done = demo.wait(lambda v: demo.goal(v)["state"] == "done" and all(w["process_stopped"] for w in v["status"]["workers"]))
         assert done["status"]["session"]["id"] == sid and demo.goal(done)["budget"] == budget
@@ -346,12 +363,65 @@ def run(args):
         reviewer.close()
 
 
+def check_reviewer_cancel(demo, author, reviewer, waiting, ledger, sid, root):
+    calls = len(author.requests)
+    demo.mux('send-keys', '-t', 'demo', 'Escape')
+    stopped = demo.wait(lambda v: demo.goal(v)['state'] == 'paused'
+                        and all(w['process_stopped'] for w in v['status']['workers']), timeout=3)
+    assert reviewer.disconnected.wait(2), 'native SDK retained reviewer request after Esc'
+    workers = {w['profile']: w for w in stopped['status']['workers']}
+    assert workers['reviewer']['state'] == 'canceled'
+    assert workers['reviewer']['goal']['reported_tokens'] is None
+    assert workers['author']['state'] == 'completed'
+    assert all(not Path('/proc', str(w['process_id'])).exists() for w in workers.values())
+    assert stopped['status']['session']['id'] == sid
+    for field in ('budget', 'reported_tokens', 'turns_started'):
+        assert demo.goal(stopped)[field] == demo.goal(waiting)[field]
+    assert (demo.work / 'input.txt').read_text() == BEFORE
+    deadline = time.monotonic() + 2
+    rows = []
+    canceled = []
+    while time.monotonic() < deadline:
+        rows = [json.loads(line) for p in ledger.glob('requests-*.jsonl')
+                for line in p.read_text().splitlines(keepends=True) if line.endswith('\n')]
+        canceled = [r for r in rows if r['model'] == 'reviewer-sonnet']
+        if len(canceled) == 1:
+            break
+        time.sleep(0.02)
+    assert len(canceled) == 1, rows
+    row = canceled[0]
+    assert (row['status'], row['error']) == (499, 'client_disconnected'), row
+    assert row['settled'] == 'reserved' and row['usage_missing'] and row['cost_usd'] > 0
+    assert all(r['settled'] == 'usage' for r in rows if r['model'] != 'reviewer-sonnet')
+    assert KEY not in json.dumps(rows)
+    time.sleep(0.1)
+    assert len(author.requests) == calls and len(reviewer.requests) == 1, 'follow-on inference after Esc'
+    demo.save_screen('reviewer-canceled-screen.txt', lambda s: 'reviewer-sonnet (cloud)' in s and 'canceled' in s)
+    demo.mux('send-keys', '-t', 'demo', 'C-d')
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        dead = demo.mux('display-message', '-p', '-t', 'demo', '#{pane_dead}:#{pane_dead_status}').strip()
+        if dead.startswith('1:'):
+            assert dead == '1:0', dead
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError('TUI exit deadline')
+    result = {'native_reviewer_pre_header_canceled': True, 'upstream_closed': True,
+              'workers_reaped': True, 'same_parent_paused': True, 'source_unchanged': True,
+              'reviewer_tokens': None, 'reserved_cost': True, 'gateway_rows': len(rows), 'tui_exit': 0}
+    (root / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+    (root / 'status.json').write_text(json.dumps(stopped, indent=2) + '\n')
+    print(json.dumps(result, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gateway-root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--bin-dir", type=Path, default=Path(__file__).resolve().parents[2] / "target" / "debug")
     parser.add_argument("--shared-model", action="store_true", help="author and parent use one gateway model alias")
     parser.add_argument("--pricing", action="store_true", help="require tier/cache pricing from gateway #162")
+    parser.add_argument("--cancel-reviewer", action="store_true", help="verify Esc closes a native SDK request before headers")
     parser.add_argument("--isolated-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.isolated_root is not None:
@@ -371,6 +441,8 @@ def main():
         command.append("--pricing")
     if args.shared_model:
         command.append("--shared-model")
+    if args.cancel_reviewer:
+        command.append("--cancel-reviewer")
     result = subprocess.run(command, env=env)
     print(f"Isolated mixed-provider evidence: {root}")
     raise SystemExit(result.returncode)

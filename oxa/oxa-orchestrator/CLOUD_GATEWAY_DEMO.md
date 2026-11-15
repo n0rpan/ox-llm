@@ -129,8 +129,10 @@ this diagnostic. It is not enabled as a passing CI test.
 
 The later [default-off disconnect supervision hook](CLOUD_CANCELLATION.md) addresses
 this failure for the shared OpenAI/OpenRouter transport. Add `--disconnect-watch`
-to the diagnostic to enable it in the isolated fixture. Default behavior and native
-Anthropic SDK forwarding remain separate. The hook includes automated gateway
+to the diagnostic to enable it in the isolated fixture. Default behavior is unchanged.
+Native Anthropic SDK forwarding is covered separately by the native cancellation tests
+and `review_lane_demo.py --cancel-reviewer` documented in CLOUD_CANCELLATION.md.
+The hook includes automated gateway
 regressions, including quiet TLS upstream and completed-usage race checks.
 
 ## Remaining acceptance
