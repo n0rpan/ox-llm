@@ -28,18 +28,18 @@ CASES = ('authentication', 'unloaded', 'responses', 'payload', 'routes', 'attach
          'keepalive-off', 'refusal-closes', 'connections', 'preempt-stream')
 
 
-def prepare_network(name):
+def prepare_network(name, script=None, address=ADDRESS):
     # CAP_NET_ADMIN is granted only in the wrapper's new user + network namespaces.
     # Add a secondary address on lo; the host interfaces/routing are inaccessible.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
         request = struct.pack('16sH2s4s8s', b'lo:oxc-share', socket.AF_INET, b'\0' * 2,
-                              socket.inet_aton(ADDRESS), b'\0' * 8)
+                              socket.inet_aton(address), b'\0' * 8)
         fcntl.ioctl(control, 0x8916, request)
     # Drop every setup capability before starting the real controller and its
     # nested host fixture. No product process receives network administration.
     os.execve('/usr/bin/setpriv', ['/usr/bin/setpriv', '--bounding-set=-all', '--inh-caps=-all',
               '--ambient-caps=-all', '--securebits=+noroot,+noroot_locked', '--', sys.executable,
-              str(Path(__file__).resolve()), '--case-ready', name], dict(os.environ))
+              str(Path(script or __file__).resolve()), '--case-ready', name], dict(os.environ))
 
 
 def capture(name):

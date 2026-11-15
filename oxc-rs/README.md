@@ -27,7 +27,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 451 passing scenarios in 63
+suite has 483 passing scenarios in 65
 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
@@ -52,8 +52,14 @@ remote ledger labels. Shared inference uses the loaded model without starting or
 switching it, yields to local arrivals before and after streaming starts, and
 keeps its slot through response and ledger finalization. Listener off/rebind
 closes open connections, and per-client connection limits precede authentication.
-LAN network pinning, TLS, idle I/O and more admission/finalization races remain
-pending, along with offline CLI fallback.
+Thirty-one network/TLS cases now cover LAN route/link discovery, private network
+pins, missing gateway MACs, absent networks, automatic pause on a changed network
+and explicit resume. TLS uses rustls with a TLS 1.2 minimum; invalid or mismatched
+certificates refuse sharing. Verified HTTPS/TLS 1.2 and the reference omission of
+its disconnect monitor for TLS sockets pass. A separate scenario observes real
+60-second deadlines for stalled headers, bodies and TLS handshakes concurrently,
+including slot release and no engine startup. Further network/TLS and admission
+races, slow response readers and offline CLI fallback remain pending.
 Seventeen host-side key cases cover show-once output, rotation, atomic private
 files, cross-process locking, malformed/public/symlink refusal, path overrides,
 Python/Rust/Python file reads and concurrent reveals by both implementations.

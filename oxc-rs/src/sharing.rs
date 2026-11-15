@@ -304,6 +304,43 @@ pub(crate) fn ensure_key() -> Result<(), String> {
     }
     Ok(())
 }
+pub(crate) fn change_config(
+    change: impl FnOnce(&mut serde_json::Map<String, Value>),
+) -> std::io::Result<Value> {
+    let mut config = match fs::read(paths::config()) {
+        Ok(v) => serde_json::from_slice::<Value>(&v)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e),
+    };
+    change(
+        config
+            .as_object_mut()
+            .ok_or(std::io::ErrorKind::InvalidData)?,
+    );
+    paths::write_config(&config)?;
+    Ok(config)
+}
+pub(crate) fn save_mode(
+    mode: &str,
+    pin: Option<Value>,
+    paused: Option<Value>,
+) -> std::io::Result<Value> {
+    change_config(|config| {
+        config.insert("lan_share".into(), json!(mode));
+        config.remove("lan_share_paused");
+        if mode != "lan" || paused.is_some() {
+            config.remove("lan_share_pin");
+        }
+        if mode == "lan" {
+            if let Some(pin) = pin {
+                config.insert("lan_share_pin".into(), pin);
+            }
+        }
+        if let Some(paused) = paused {
+            config.insert("lan_share_paused".into(), paused);
+        }
+    })
+}
 pub fn status(config: &Value, port: u16) -> Value {
     let mode = mode(config);
     let key = key_metadata();

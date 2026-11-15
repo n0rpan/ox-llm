@@ -19,8 +19,13 @@ The following gaps remain visible rather than being represented by skipped tests
   Controller clear now covers all/model/session/hint scopes and shared ownership.
   PrefixStore lookup/save, engine-side persistence edge cases and further race
   coverage remain pending.
-- LAN sharing: LAN discovery, network pinning/change auto-pause, TLS, idle I/O,
-  further local/shared admission and finalization races, and offline CLI fallback.
+- LAN sharing: more IPv6, network/config/certificate refresh races, slow response
+  readers, local/shared admission and finalization races, and offline CLI fallback.
+  Thirty-one LAN/TLS cases now cover route/link discovery, persisted network pins,
+  missing MAC/absent networks, auto-pause/resume, malformed discovery/bind failures,
+  certificate/mismatch refusal, verified HTTPS/TLS 1.2 and TLS disconnect behavior.
+  One scenario observes real 60-second stalled-header/body/handshake deadlines
+  concurrently, including slot release and no engine startup.
   Sixteen active Tailscale-listener cases now cover authentication/key revocation,
   route/header/payload restrictions, rates/body limits, loaded-model admission,
   keyed remote ledger records, preemption before/after streaming headers,

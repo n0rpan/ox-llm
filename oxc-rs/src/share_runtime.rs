@@ -1,5 +1,5 @@
 //! Shared listener ownership, authentication and per-device gates.
-use crate::{daemon::Context, paths, request_ledger, sharing};
+use crate::{daemon::Context, paths, request_ledger, share_network, share_tls, sharing};
 use axum::{extract::Request, http::Method, response::Response, Router};
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
@@ -8,7 +8,6 @@ use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
     os::unix::fs::MetadataExt,
-    process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -100,6 +99,7 @@ struct State {
     config: Value,
     mode: String,
     error: Option<String>,
+    tls_on: bool,
     listeners: Vec<Listening>,
     buckets: Vec<(IpAddr, f64, Instant)>,
     signature: Signature,
@@ -128,6 +128,7 @@ impl Manager {
                 config: json!({}),
                 mode: "off".into(),
                 error: None,
+                tls_on: false,
                 listeners: Vec::new(),
                 buckets: Vec::new(),
                 signature: None,
@@ -168,23 +169,31 @@ impl Manager {
         self.apply_inner().await;
     }
     async fn apply_inner(self: &Arc<Self>) {
-        let sig = signature();
-        let config = paths::read_config().unwrap_or_else(|| json!({}));
-        let mode = config["lan_share"]
+        let mut sig = signature();
+        let mut config = paths::read_config().unwrap_or_else(|| json!({}));
+        let mut mode = config["lan_share"]
             .as_str()
             .filter(|m| ["off", "tailscale", "lan"].contains(m))
             .unwrap_or("off")
             .to_owned();
         let (mut addresses, mut error) = if mode == "tailscale" {
-            match discover().await {
+            match share_network::tailscale().await {
                 Ok(v) => (v, None),
                 Err(e) => (Vec::new(), Some(e)),
             }
         } else if mode == "lan" {
-            (
-                Vec::new(),
-                Some("LAN network pinning is not implemented by the Rust controller yet.".into()),
-            )
+            let original = config.clone();
+            let result = self.lan_addresses(&mut config).await;
+            if config != original {
+                sig = signature();
+            }
+            if config["lan_share"] == "off" {
+                mode = "off".into();
+            }
+            match result {
+                Ok(v) => (v, None),
+                Err(e) => (Vec::new(), Some(e)),
+            }
         } else {
             (Vec::new(), None)
         };
@@ -201,19 +210,22 @@ impl Manager {
                 }
             }
         }
-        if config["lan_share_options"]["tls_cert"]
-            .as_str()
-            .is_some_and(|s| std::path::Path::new(s).is_absolute())
-            && config["lan_share_options"]["tls_key"]
-                .as_str()
-                .is_some_and(|s| std::path::Path::new(s).is_absolute())
-            && !addresses.is_empty()
+        let tls = if let Some((cert, key)) =
+            share_tls::settings(&config).filter(|_| !addresses.is_empty())
         {
-            addresses.clear();
-            error =
-                Some("Shared TLS listeners are not implemented by the Rust controller yet.".into());
-        }
+            match tokio::task::spawn_blocking(move || share_tls::load(&cert, &key)).await {
+                Ok(Ok(tls)) => Some(tls),
+                _ => {
+                    addresses.clear();
+                    error = Some("TLS certificate or key could not be loaded; not sharing.".into());
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let mut state = self.state.lock().await;
+        let restart = share_tls::settings(&state.config) != share_tls::settings(&config);
         if sharing::option(&state.config, "rate_per_min", 120, 6000)
             != sharing::option(&config, "rate_per_min", 120, 6000)
             || sharing::option(&state.config, "burst", 30, 1000)
@@ -223,7 +235,7 @@ impl Manager {
         }
         let mut index = 0;
         while index < state.listeners.len() {
-            if !addresses.contains(&state.listeners[index].listener.address) {
+            if restart || !addresses.contains(&state.listeners[index].listener.address) {
                 state.listeners.remove(index).close().await;
             } else {
                 index += 1;
@@ -250,7 +262,19 @@ impl Manager {
             let listener = match bound {
                 Ok(listener) => listener,
                 Err(e) => {
-                    error = Some(format!("Could not share on {address}: {e}"));
+                    let host = if address.is_ipv6() {
+                        format!("[{address}]")
+                    } else {
+                        address.to_string()
+                    };
+                    let detail = e
+                        .raw_os_error()
+                        .map(|n| nix::errno::Errno::from_raw(n).desc().to_owned())
+                        .unwrap_or_else(|| e.to_string());
+                    error = Some(format!(
+                        "Could not listen on {host}:{}: {detail}",
+                        self.port
+                    ));
                     continue;
                 }
             };
@@ -266,6 +290,7 @@ impl Manager {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
             let saved_meta = meta.clone();
+            let tls = tls.clone();
             let task = tokio::spawn(async move {
                 loop {
                     if *stopped.borrow() {
@@ -301,11 +326,21 @@ impl Manager {
                     };
                     if let Some(router) = factory.as_ref().and_then(|f| f(connection.clone())) {
                         let mut closed = stopped.clone();
+                        let tls = tls.clone();
                         tokio::spawn(async move {
                             let _connection = connection;
                             if !*closed.borrow() {
                                 tokio::select! {
-                                    _=crate::transport::serve(stream, router)=>{},
+                                    _=async move {
+                                        let timeout=Duration::from_secs(60);
+                                        if let Some(tls)=tls {
+                                            if let Ok(Ok(stream))=tokio::time::timeout(timeout,tls.accept(stream)).await {
+                                                crate::transport::serve_with_timeout(stream,router,Some(timeout),false).await;
+                                            }
+                                        } else {
+                                            crate::transport::serve_with_timeout(stream,router,Some(timeout),true).await;
+                                        }
+                                    }=>{},
                                     _=closed.changed()=>{},
                                 }
                             }
@@ -322,32 +357,54 @@ impl Manager {
         state.signature = sig;
         state.mode = mode;
         state.error = error;
+        state.tls_on = tls.is_some();
         state.config = config;
+    }
+    async fn lan_addresses(&self, config: &mut Value) -> Result<Vec<IpAddr>, String> {
+        let network = share_network::lan().await?;
+        let pin = if let Some(pin) = share_network::configured_pin(config) {
+            pin
+        } else {
+            let network = network.as_ref().ok_or(share_network::NO_LAN)?;
+            let pin = share_network::pin(network);
+            let saved = pin.clone();
+            *config = tokio::task::spawn_blocking(move || {
+                sharing::change_config(|v| {
+                    v.insert("lan_share_pin".into(), saved);
+                })
+            })
+            .await
+            .map_err(|_| "Could not list network addresses: OSError")?
+            .map_err(|_| "Could not list network addresses: OSError")?;
+            pin
+        };
+        match share_network::compare(&pin,network.as_ref()) {
+            "same"=>Ok(vec![network.as_ref().and_then(|v|v["address"].as_str()).and_then(|v|v.parse().ok()).ok_or(share_network::NO_LAN)?]),
+            "absent"=>Err("Not connected to the network LAN share was turned on for; waiting for it.".into()),
+            "unverified"=>Err("Checking that this is the network LAN share was turned on for (the gateway's address is not known yet).".into()),
+            _=>{
+                let paused=json!({"reason":"network_changed","t":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()});
+                *config=tokio::task::spawn_blocking(move ||sharing::save_mode("off",None,Some(paused))).await
+                    .map_err(|_|"Could not list network addresses: OSError")?
+                    .map_err(|_|"Could not list network addresses: OSError")?;
+                eprintln!("local-ai: LAN share: the network changed (another subnet, gateway or gateway MAC); sharing is OFF. Run `local-ai share on lan` to share on this network.");
+                Ok(Vec::new())
+            }
+        }
     }
     pub async fn set_mode(self: &Arc<Self>, mode: String) -> Result<Value, (u16, Value)> {
         let _serial = self.serial.lock().await;
-        if mode == "lan" {
-            return Err((
-                503,
-                json!({"error":"LAN network pinning is not implemented by the Rust controller yet."}),
-            ));
-        }
-        let saved = tokio::task::spawn_blocking(move || {
-            let mut config = match std::fs::read(paths::config()) {
-                Ok(v) => serde_json::from_slice::<Value>(&v)?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
-                Err(e) => return Err(e),
-            };
-            let object = config
-                .as_object_mut()
-                .ok_or(std::io::ErrorKind::InvalidData)?;
-            object.insert("lan_share".into(), json!(mode));
-            object.remove("lan_share_paused");
-            object.remove("lan_share_pin");
-            paths::write_config(&config)
-        })
-        .await;
-        if !matches!(saved, Ok(Ok(()))) {
+        let pin = if mode == "lan" {
+            let network = share_network::lan()
+                .await
+                .map_err(|e| (409, json!({"error":e})))?
+                .ok_or_else(|| (409, json!({"error":share_network::NO_LAN_NOW})))?;
+            Some(share_network::pin(&network))
+        } else {
+            None
+        };
+        let saved = tokio::task::spawn_blocking(move || sharing::save_mode(&mode, pin, None)).await;
+        if !matches!(saved, Ok(Ok(_))) {
             return Err((
                 503,
                 json!({"error":"The LAN share setting could not be saved."}),
@@ -377,7 +434,8 @@ impl Manager {
         out["urls"] = json!(addresses
             .iter()
             .map(|a| format!(
-                "http://{}:{}/v1",
+                "{}://{}:{}/v1",
+                if state.tls_on { "https" } else { "http" },
                 if a.contains(':') {
                     format!("[{a}]")
                 } else {
@@ -388,6 +446,15 @@ impl Manager {
             .collect::<Vec<_>>());
         out["addresses"] = json!(addresses);
         out["error"] = json!(state.error);
+        if state.tls_on {
+            out["encryption"] = json!("tls");
+            out["warning"] = Value::Null;
+        }
+        if state.mode == "lan" {
+            if let Some(pin) = share_network::configured_pin(&state.config) {
+                out["pinned_network"] = json!({"interface":pin["interface"],"subnet":pin["subnet"],"gateway":pin["gateway"],"gateway_mac_known":!pin["gateway_mac"].is_null()});
+            }
+        }
         out["remote_active"] = json!(u8::from(self.slot.available_permits() == 0));
         out["remote_requests"] = json!(self.requests.load(Ordering::SeqCst));
         out["remote_refused"] = json!(self.refused.load(Ordering::SeqCst));
@@ -583,71 +650,6 @@ const FORWARD: &[&str] = &[
     "x-session-id",
     "session-id",
 ];
-async fn discover() -> Result<Vec<IpAddr>, String> {
-    let mut command = tokio::process::Command::new("ip");
-    command
-        .args(["-j", "addr", "show"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(5), command.output())
-        .await
-        .map_err(|_| "Could not list network addresses: TimeoutExpired")?
-        .map_err(|_| "Could not list network addresses: OSError")?;
-    if !output.status.success() {
-        return Err("Could not list network addresses: CalledProcessError".into());
-    }
-    let text = String::from_utf8(output.stdout)
-        .map_err(|_| "Could not list network addresses: UnicodeDecodeError")?;
-    let data: Value = serde_json::from_str(&text)
-        .map_err(|_| "Could not list network addresses: JSONDecodeError")?;
-    // The reference queries routes even for tailscale discovery.
-    let mut routes = tokio::process::Command::new("ip");
-    routes
-        .args(["-j", "-4", "route", "show", "default"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let result = tokio::time::timeout(Duration::from_secs(5), routes.status())
-        .await
-        .map_err(|_| "Could not list network addresses: TimeoutExpired")?
-        .map_err(|_| "Could not list network addresses: OSError")?;
-    if !result.success() {
-        return Err("Could not list network addresses: CalledProcessError".into());
-    }
-    let mut addresses = Vec::new();
-    for link in data.as_array().into_iter().flatten() {
-        if !link["ifname"]
-            .as_str()
-            .is_some_and(|s| s.starts_with("tailscale"))
-        {
-            continue;
-        }
-        for info in link["addr_info"].as_array().into_iter().flatten() {
-            let Some(address) = info["local"]
-                .as_str()
-                .and_then(|s| s.parse::<IpAddr>().ok())
-            else {
-                continue;
-            };
-            let valid = match address {
-                IpAddr::V4(a) => {
-                    let b = a.octets();
-                    b[0] == 100 && (64..128).contains(&b[1])
-                }
-                IpAddr::V6(a) => a.octets()[..6] == [0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0],
-            };
-            if valid && !addresses.contains(&address) {
-                addresses.push(address);
-            }
-        }
-    }
-    if addresses.is_empty() {
-        return Err("Tailscale is not up: no 100.64/10 or fd7a:115c:a1e0::/48 address on a tailscale interface.".into());
-    }
-    Ok(addresses)
-}
 pub fn payload(value: Value, limit: u64) -> Result<Value, ()> {
     let object = value.as_object().ok_or(())?;
     let mut out = serde_json::Map::new();

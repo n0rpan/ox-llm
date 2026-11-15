@@ -10,21 +10,118 @@ use axum::{
 };
 use futures_util::StreamExt;
 use std::{
+    future::Future,
     io,
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    task::{Context, Poll},
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::{tcp::OwnedReadHalf, TcpStream},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf},
     sync::{Mutex, Notify},
 };
 use tower::ServiceExt;
 
-type Reader = Arc<Mutex<BufReader<OwnedReadHalf>>>;
+type Reader = Arc<Mutex<BufReader<Timed<Box<dyn AsyncRead + Send + Unpin>>>>>;
+
+// A deadline measures one stalled I/O operation, not total request or generation
+// time. Progress resets it, matching the shared Python socket's timeout.
+struct Timed<T> {
+    inner: T,
+    timeout: Option<Duration>,
+    read: Option<Pin<Box<tokio::time::Sleep>>>,
+    write: Option<Pin<Box<tokio::time::Sleep>>>,
+    read_timed_out: bool,
+}
+impl<T> Timed<T> {
+    fn new(inner: T, timeout: Option<Duration>) -> Self {
+        Self {
+            inner,
+            timeout,
+            read: None,
+            write: None,
+            read_timed_out: false,
+        }
+    }
+}
+fn deadline(
+    timer: &mut Option<Pin<Box<tokio::time::Sleep>>>,
+    timeout: Option<Duration>,
+    cx: &mut Context<'_>,
+) -> Poll<io::Result<()>> {
+    let Some(timeout) = timeout else {
+        return Poll::Pending;
+    };
+    let timer = timer.get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
+    if timer.as_mut().poll(cx).is_ready() {
+        Poll::Ready(Err(io::ErrorKind::TimedOut.into()))
+    } else {
+        Poll::Pending
+    }
+}
+impl<T: AsyncRead + Unpin> AsyncRead for Timed<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_read(cx, buf) {
+            Poll::Ready(value) => {
+                this.read = None;
+                Poll::Ready(value)
+            }
+            Poll::Pending => {
+                let value = deadline(&mut this.read, this.timeout, cx);
+                if value.is_ready() {
+                    this.read = None;
+                    this.read_timed_out = true;
+                }
+                value
+            }
+        }
+    }
+}
+impl<T: AsyncWrite + Unpin> AsyncWrite for Timed<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_write(cx, buf) {
+            Poll::Ready(value) => {
+                this.write = None;
+                Poll::Ready(value)
+            }
+            Poll::Pending => deadline(&mut this.write, this.timeout, cx).map_ok(|()| 0),
+        }
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_flush(cx) {
+            Poll::Ready(value) => {
+                this.write = None;
+                Poll::Ready(value)
+            }
+            Poll::Pending => deadline(&mut this.write, this.timeout, cx),
+        }
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_shutdown(cx) {
+            Poll::Ready(value) => {
+                this.write = None;
+                Poll::Ready(value)
+            }
+            Poll::Pending => deadline(&mut this.write, this.timeout, cx),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct CloseConnection;
@@ -34,6 +131,7 @@ struct Peer {
     reader: Reader,
     done: Arc<AtomicBool>,
     notify: Arc<Notify>,
+    monitor: bool,
 }
 impl Peer {
     fn body_done(&self) {
@@ -41,6 +139,11 @@ impl Peer {
         self.notify.notify_waiters();
     }
     async fn disconnected(&self) {
+        // The reference deliberately omits its peek-based disconnect monitor
+        // for TLS sockets. Preserve that admission behavior for encrypted peers.
+        if !self.monitor {
+            std::future::pending::<()>().await;
+        }
         loop {
             let ready = self.notify.notified();
             if self.done.load(Ordering::SeqCst) {
@@ -53,9 +156,16 @@ impl Peer {
             // Leave pipelined bytes for the next request. Peeking must never
             // consume a subsequent request while an inference is running.
             if reader.buffer().is_empty() {
-                let mut byte = [0_u8; 1];
-                if !matches!(reader.get_mut().peek(&mut byte).await,Ok(n) if n>0) {
-                    return;
+                match reader.fill_buf().await {
+                    Ok([]) => return,
+                    Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                        // A peek watches for EOF during backend generation; it
+                        // does not impose a request-wide generation deadline.
+                        reader.get_mut().read_timed_out = false;
+                        continue;
+                    }
+                    Err(_) => return,
+                    _ => {}
                 }
             }
             drop(reader);
@@ -67,6 +177,7 @@ impl Peer {
 async fn head(reader: &Reader) -> io::Result<Option<Vec<u8>>> {
     let mut head = Vec::new();
     let mut reader = reader.lock().await;
+    reader.get_mut().read = None;
     for index in 0..101 {
         let mut line = Vec::new();
         let count = (&mut *reader)
@@ -94,7 +205,7 @@ async fn head(reader: &Reader) -> io::Result<Option<Vec<u8>>> {
     ))
 }
 
-fn parse(raw: &[u8], reader: Reader) -> io::Result<(Request<Body>, Peer)> {
+fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>, Peer)> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP request");
     let mut headers = [httparse::EMPTY_HEADER; 100];
     let mut parsed = httparse::Request::new(&mut headers);
@@ -132,6 +243,7 @@ fn parse(raw: &[u8], reader: Reader) -> io::Result<(Request<Body>, Peer)> {
         reader: reader.clone(),
         done: Arc::new(AtomicBool::new(false)),
         notify: Arc::new(Notify::new()),
+        monitor,
     };
     let body = if length == 0 || chunked {
         peer.body_done();
@@ -174,15 +286,25 @@ fn parse(raw: &[u8], reader: Reader) -> io::Result<(Request<Body>, Peer)> {
         .map_err(|_| invalid())
 }
 
-pub async fn serve(stream: TcpStream, app: Router) {
-    let (read, mut write) = stream.into_split();
-    let reader = Arc::new(Mutex::new(BufReader::new(read)));
+pub async fn serve<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(stream: S, app: Router) {
+    serve_with_timeout(stream, app, None, true).await;
+}
+pub async fn serve_with_timeout<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+    stream: S,
+    app: Router,
+    timeout: Option<Duration>,
+    monitor: bool,
+) {
+    let (read, write) = tokio::io::split(stream);
+    let read: Box<dyn AsyncRead + Send + Unpin> = Box::new(read);
+    let mut write = Timed::new(write, timeout);
+    let reader = Arc::new(Mutex::new(BufReader::new(Timed::new(read, timeout))));
     loop {
         let raw = match head(&reader).await {
             Ok(Some(raw)) => raw,
             _ => break,
         };
-        let (request, peer) = match parse(&raw, reader.clone()) {
+        let (request, peer) = match parse(&raw, reader.clone(), monitor) {
             Ok(request) => request,
             Err(_) => {
                 let _=write.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
@@ -203,6 +325,11 @@ pub async fn serve(stream: TcpStream, app: Router) {
             Ok(response) => response,
             Err(error) => match error {},
         };
+        // Python closes a shared socket whose body read timed out, without
+        // emitting the JSON parse error built from that incomplete body.
+        if reader.lock().await.get_mut().read_timed_out {
+            break;
+        }
         let (mut parts, body) = response.into_parts();
         let chunked = parts
             .headers
@@ -294,6 +421,7 @@ pub async fn serve(stream: TcpStream, app: Router) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpStream;
     #[tokio::test]
     async fn delivered_response_finalizes_after_client_closes() {
         assert!(close_after(b"ok").await);
