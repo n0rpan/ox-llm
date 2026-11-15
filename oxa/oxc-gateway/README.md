@@ -55,10 +55,10 @@ contracts use synthetic data only; no real keys or API calls. Existing policy
 contracts still run with explicit native drivers. Hosted x86/ARM gates run these
 checks when ready; drafts retain cheap checks.
 
-Still missing: HTTP composition and private request metadata integration,
-provider forwarding/cancel and installer. Companion discovery/secrets slices stay
-independent. Preserve all present modules/features/examples when merging them;
-this library alone is not a complete cloud-only daemon.
+These accounting contracts alone do not establish a complete cloud-only daemon.
+The private metadata/runtime and Anthropic composition are described below;
+HTTP composition and installation remain incomplete. Preserve all present
+modules/features/examples when merging the independent slices.
 
 Main’s `secrets` module and its explicit native contracts are preserved. The
 symlink-loop case validates the two complete interpreter-specific safe refusals
@@ -175,3 +175,13 @@ complementing the existing live HTTP policy contracts. The native peer triggers
 actual Runtime failures; six cases failed before the fix because their rows
 were missing. An extra native regression covers a failed unpaid append, original
 credential refusal preservation, and blocked spending after key creation.
+
+Ten paid-row contracts execute Python's actual Messages translator, reservation,
+recorder and private file writer, then compare Runtime/Call's committed rows.
+They cover cache reads/writes, missing/failed/final cancelled usage, the three
+output-limit fields, keyed system/session metadata and header/body/message session
+precedence. Original request limits stay in the ledger while forwarding uses the
+catalog bound. All ten failed on the preceding runtime because it recorded the
+clamped limit; the current runtime matches. File/return equality, exactly one
+committed row, owner-only modes and absence of raw content/identifiers are checked.
+These are component contracts; the shared mock separately proves provider I/O.

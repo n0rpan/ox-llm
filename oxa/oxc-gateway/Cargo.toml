@@ -54,6 +54,10 @@ required-features = ["accounting"]
 name = "refusal_rows_contract"
 required-features = ["runtime"]
 
+[[example]]
+name = "paid_rows_contract"
+required-features = ["runtime"]
+
 [lints.rust]
 unsafe_code = "forbid"
 
