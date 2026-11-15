@@ -453,6 +453,25 @@ class BudgetRace(CloudCase):
         self.assertTrue(row['usage_missing'])
 
 
+class SpendIncremental(CloudCase):
+    def test_spend_only_parses_rows_appended_since_the_last_read(self):
+        directory = self.tmp / 'ledger3'
+        directory.mkdir()
+        path = directory / 'requests-20260102.jsonl'
+        row = json.dumps({'remote': True, 'cost_usd': 0.5}) + '\n'
+        path.write_text(row * 50)
+        with patch.dict(os.environ, {'OXC_LEDGER_DIR': str(directory)}):
+            self.assertEqual(cloud.spend_today(day='20260102'), 25.0)
+            with open(path, 'a') as f:
+                f.write(row)
+            real = json.loads
+            with patch.object(cloud.json, 'loads', side_effect=real) as loads:
+                self.assertEqual(cloud.spend_today(day='20260102'), 25.5)
+            self.assertEqual(loads.call_count, 1)
+            path.write_text(json.dumps({'remote': True, 'cost_usd': 0.1}) * 1 + '\n')
+            self.assertEqual(cloud.spend_today(day='20260102'), 0.1)
+
+
 class LedgerFailClosed(CloudCase):
     def _today(self):
         return self.ledger / ('requests-%s.jsonl' % time.strftime('%Y%m%d'))
