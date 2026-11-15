@@ -52,3 +52,8 @@ Still missing: HTTP composition and private request metadata integration,
 provider forwarding/cancel and installer. Companion discovery/secrets slices stay
 independent. Preserve all present modules/features/examples when merging them;
 this library alone is not a complete cloud-only daemon.
+
+Main’s `secrets` module and its explicit native contracts are preserved. The
+symlink-loop case validates the two complete interpreter-specific safe refusals
+from Python 3.12/3.13; all other secret errors remain exact. Credentials are read
+from owner-only files and are never logged or included in errors.

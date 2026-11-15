@@ -9,3 +9,8 @@ pub mod pricing;
 pub mod accounting;
 #[cfg(feature = "accounting")]
 pub mod spend;
+
+#[cfg(feature = "secrets")]
+pub mod secrets;
+#[cfg(feature = "secrets")]
+pub mod redaction;
