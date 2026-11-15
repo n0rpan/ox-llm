@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
+#[cfg(feature = "ledger")]
+pub mod ledger;
 #[cfg(feature = "policy")]
 pub mod policy;
 #[cfg(feature = "pricing")]
