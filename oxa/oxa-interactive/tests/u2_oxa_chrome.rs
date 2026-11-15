@@ -1145,15 +1145,19 @@ fn hud_thinking_label_claude_55_effective_effort() {
 }
 
 #[test]
-fn own_slot_wait_is_not_called_queued() {
+fn waiting_behind_another_request_stays_queued() {
     let plain = Theme::plain();
-    for pos in [None, Some(1)] {
+    for (pos, place) in [(None, false), (Some(1), true), (Some(2), true)] {
         let st = activity(Activity::Queued { pos, wait_s: 2 }, 3000);
         let line = oxa_activity_line(&st, &keymap(), 200, &plain, Skin::Oxa).unwrap_or_default();
         assert!(
-            !line.contains("QUEUED") && line.contains("[STARTING]"),
+            line.contains("[QUEUED]") && !line.contains("STARTING"),
             "{line:?}"
         );
-        assert!(!line.contains("#1"), "{line:?}");
+        assert_eq!(
+            line.contains(&format!("#{}", pos.unwrap_or(0))),
+            place,
+            "{line:?}"
+        );
     }
 }

@@ -621,11 +621,6 @@ pub(super) fn activity_style(activity: &Activity) -> Option<(&'static str, &'sta
         Activity::Compacting => ("COMPACTING", "accent"),
         Activity::Retrying { .. } => ("RETRY", "warning"),
         Activity::Blocked => ("WAITING", "warning"),
-        // Alone in the queue (or no place reported): the engine is loading or prefilling.
-        Activity::Queued {
-            pos: None | Some(0 | 1),
-            ..
-        } => ("STARTING", "muted"),
         Activity::Queued { .. } => ("QUEUED", "muted"),
     })
 }
@@ -655,8 +650,8 @@ fn activity_detail(activity: &Activity, working: Option<&str>, g: &Glyphs) -> Op
             delay_ms.div_ceil(1000)
         )),
         Activity::Blocked => Some("for your answer".to_string()),
-        Activity::Queued { pos: Some(pos), .. } if *pos > 1 => Some(format!("#{pos}")),
-        Activity::Queued { .. } => None,
+        Activity::Queued { pos: Some(pos), .. } => Some(format!("#{pos}")),
+        Activity::Queued { pos: None, .. } => None,
     }
 }
 
