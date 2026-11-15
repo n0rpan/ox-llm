@@ -167,7 +167,7 @@ def entry(alias, raw):
     if base_url is None or not isinstance(upstream, str) or not upstream.strip() or context is None:
         return None
     price = _pricing(raw)
-    if provider == 'openrouter':
+    if provider == 'openrouter' and (price is not None or raw.get('pricing') is None):
         price = cloud_prices.overlay(price, upstream.strip())
     return {'id': alias, 'kind': raw.get('kind', 'remote'), 'provider': provider,
             'base_url': base_url, 'upstream_model': upstream.strip(),

@@ -89,6 +89,21 @@ class PriceRefresh(unittest.TestCase):
             raw.pop('pricing')
             self.assertEqual(cloud.entry(REMOTE, raw)['pricing']['input_per_million'], 3)
 
+    def test_live_metadata_cannot_hide_an_invalid_configured_price_or_tier(self):
+        self.assertTrue(self.refresh())
+        invalid = ({'tiers': [{'max_prompt_tokens': 100, 'input_per_million': 100,
+                              'output_per_million': 200}]},
+                   {'input_per_million': -1, 'output_per_million': 2})
+        with patch.object(cloud_prices, 'cache_path', return_value=self.path):
+            for price in invalid:
+                with self.subTest(price=price):
+                    raw = profiles()[REMOTE]
+                    raw['pricing'] = price
+                    item = cloud.entry(REMOTE, raw)
+                    self.assertIsNone(item['pricing'])
+                    with self.assertRaises(cloud.CloudError):
+                        cloud.validate_remote_request({}, item)
+
     def test_corrupt_or_symlink_cache_is_not_read_as_a_price(self):
         self.path.parent.mkdir(parents=True)
         self.path.write_text('not json')
