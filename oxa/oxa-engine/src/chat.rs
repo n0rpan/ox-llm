@@ -101,6 +101,12 @@ pub struct ReplyAssembler {
     model: String,
     /// Wire `index` of each entry of `calls`, in the same order.
     indices: Vec<usize>,
+    /// Inside a `<think>` block that arrived as `content` text.
+    in_think: bool,
+    /// A think block has closed: the rest of the answer is literal text.
+    think_done: bool,
+    /// Held-back tail of `content` that may be the start of a think tag.
+    held: String,
 }
 
 impl ReplyAssembler {
@@ -152,10 +158,7 @@ impl ReplyAssembler {
                 }
             }
             if let Some(c) = delta.get("content").and_then(Value::as_str) {
-                push_text(&mut self.content, c);
-                if !c.is_empty() {
-                    events.push(StreamEvent::Text(c.to_string()));
-                }
+                self.content_delta(c, &mut events);
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for (pos, tc) in calls.iter().enumerate() {
@@ -199,6 +202,61 @@ impl ReplyAssembler {
             }
         }
         Ok(events)
+    }
+
+    /// Routes a `content` delta: `<think>..</think>` at the start of the text is reasoning
+    /// (an engine that does not split it into `reasoning_content`), the rest is answer text.
+    fn content_delta(&mut self, c: &str, events: &mut Vec<StreamEvent>) {
+        const OPEN: &str = "<think>";
+        const CLOSE: &str = "</think>";
+        let mut buf = std::mem::take(&mut self.held);
+        buf.push_str(c);
+        loop {
+            if self.in_think {
+                if let Some(i) = buf.find(CLOSE) {
+                    self.emit_reasoning(&buf[..i], events);
+                    buf = buf[i + CLOSE.len()..].to_string();
+                    self.in_think = false;
+                    self.think_done = true;
+                    continue;
+                }
+                let keep = tag_prefix_len(&buf, CLOSE);
+                let cut = buf.len() - keep;
+                self.emit_reasoning(&buf[..cut], events);
+                self.held = buf[cut..].to_string();
+                return;
+            }
+            let at_start = !self.think_done && self.content.as_deref().is_none_or(|t| t.trim().is_empty());
+            if at_start {
+                let lead = buf.len() - buf.trim_start().len();
+                let rest = &buf[lead..];
+                if let Some(after) = rest.strip_prefix(OPEN) {
+                    buf = after.to_string();
+                    self.in_think = true;
+                    continue;
+                }
+                if rest.is_empty() || OPEN.starts_with(rest) {
+                    self.held = buf;
+                    return;
+                }
+            }
+            self.emit_text(&buf, events);
+            return;
+        }
+    }
+
+    fn emit_reasoning(&mut self, r: &str, events: &mut Vec<StreamEvent>) {
+        if !r.is_empty() {
+            push_text(&mut self.reasoning, r);
+            events.push(StreamEvent::Reasoning(r.to_string()));
+        }
+    }
+
+    fn emit_text(&mut self, t: &str, events: &mut Vec<StreamEvent>) {
+        if !t.is_empty() {
+            push_text(&mut self.content, t);
+            events.push(StreamEvent::Text(t.to_string()));
+        }
     }
 
     /// Parse a comment line (M2, S2 / F10); other comments -> `None`.
@@ -250,8 +308,25 @@ impl ReplyAssembler {
         })
     }
 
+    /// Delivers the held tail (a literal `<` or `<thi`, or a partial `</think>` at a length
+    /// stop) once the stream has ended. The events must reach the stream callback; the caller
+    /// calls this before [`Self::finish`], which then has nothing left to route.
+    pub fn flush(&mut self) -> Vec<StreamEvent> {
+        let held = std::mem::take(&mut self.held);
+        let mut events = Vec::new();
+        if self.in_think {
+            self.emit_reasoning(&held, &mut events);
+        } else {
+            self.emit_text(&held, &mut events);
+        }
+        events
+    }
+
     /// Finish after `[DONE]`. No `finish_reason` or no usage = `stream_broken`.
-    pub fn finish(self, level: ThinkingLevel) -> Result<AssistantTurn, OxaError> {
+    pub fn finish(mut self, level: ThinkingLevel) -> Result<AssistantTurn, OxaError> {
+        // Any held tail not yet flushed still joins the assembled reply; its events are dropped
+        // here because the stream loop delivers them through `flush` first.
+        let _ = self.flush();
         let finish = self
             .finish
             .ok_or_else(|| broken("the stream ended without a finish_reason".to_string()))?;
@@ -297,6 +372,14 @@ impl ReplyAssembler {
 
 /// Append a delta to an optional text. A delta of the kind arrived, so the field becomes `Some`
 /// even when the delta is empty.
+/// Length of the longest proper prefix of `tag` that ends `s`.
+fn tag_prefix_len(s: &str, tag: &str) -> usize {
+    (1..tag.len())
+        .rev()
+        .find(|&n| s.ends_with(&tag[..n]))
+        .unwrap_or(0)
+}
+
 fn push_text(field: &mut Option<String>, delta: &str) {
     field.get_or_insert_with(String::new).push_str(delta);
 }
@@ -566,6 +649,9 @@ impl Engine for HttpEngine {
                     } else if !end.done {
                         Err(broken("the engine closed the stream before [DONE]".to_string()))
                     } else {
+                        for e in asm.flush() {
+                            on(e);
+                        }
                         asm.finish(level)
                     }
                 }

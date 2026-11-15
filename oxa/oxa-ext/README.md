@@ -52,7 +52,7 @@ and exec hooks (`settings.json` `hooks`). Both are `dyn oxa_proto::Hooks` to `ox
 - E3: registerTool (schema validation), Command, Shortcut, Flag; sendMessage / sendUserMessage
   delivery modes; appendEntry; active tools.
 - E4: ui dialogs; session read API; compact; context usage;
-  fork/navigateTree/reload/waitForIdle (newSession/switchSession -> `unsupported_in_oxa`);
+  fork/navigateTree/reload/waitForIdle (newSession/switchSession: swap request applied by the TUI and print mode);
   exec + fs + fetch through
   `Policy`.
 - E5: JSON in/out contract; runs in bwrap; timeout; a failing hook blocks only where documented.

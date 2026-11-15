@@ -62,7 +62,6 @@ Some functions of the earlier extension API are not in oxa. They are:
 
 - `registerProvider`, `unregisterProvider`, `registerVirtualModel` and `unregisterVirtualModel`: model providers and virtual models are not registered by extensions;
 - `registerMcpServer`, `unregisterMcpServer` and `getMcpServers`: MCP servers come from `mcp.json` ([mcp.md](mcp.md));
-- `ctx.newSession` and `ctx.switchSession`: the user starts or switches sessions with `/new` and `/resume`;
 - the `before_provider_headers` event;
 - Node and npm imports.
 

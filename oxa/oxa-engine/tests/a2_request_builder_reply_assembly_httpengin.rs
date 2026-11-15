@@ -699,6 +699,130 @@ fn reply_assembler_prefill_comment() {
     assert_eq!(asm.comment("queuedx 3", 1), None);
 }
 
+fn run_reasoning_case(turn: ScriptTurn) -> (Vec<StreamEvent>, oxa_proto::AssistantTurn) {
+    let server = FakeServer::start(vec![turn], FakeOpts::default()).unwrap();
+    let engine = HttpEngine::new(&server.url(), None).unwrap();
+    let p = prefix("SYS", "[]");
+    let go = [WireMsg::user("go")];
+    let r = request(&p, &go, 4096, hints("s-r", KEY));
+    let mut events = Vec::new();
+    let t = engine
+        .chat(&r, &CancelToken::new(), &mut |e| events.push(e))
+        .unwrap();
+    (events, t)
+}
+
+fn joined(events: &[StreamEvent]) -> (String, String) {
+    let (mut r, mut t) = (String::new(), String::new());
+    for e in events {
+        match e {
+            StreamEvent::Reasoning(d) => r.push_str(d),
+            StreamEvent::Text(d) => t.push_str(d),
+            _ => {}
+        }
+    }
+    (r, t)
+}
+
+/// `reasoning_content` deltas are reasoning events, not answer text.
+#[test]
+fn reasoning_content_field_is_thinking() {
+    let (events, turn) = run_reasoning_case(ScriptTurn {
+        reasoning: Some("pondering".to_string()),
+        text: Some("answer".to_string()),
+        ..ScriptTurn::text("")
+    });
+    assert_eq!(joined(&events), ("pondering".to_string(), "answer".to_string()));
+    assert_eq!(turn.msg.reasoning.as_deref(), Some("pondering"));
+    assert_eq!(turn.msg.content.as_deref(), Some("answer"));
+}
+
+/// `<think>..</think>` in content text (split across tiny chunks) is reasoning too.
+#[test]
+fn think_tags_in_content_are_thinking() {
+    for chunk in [1usize, 3, 1000] {
+        let (events, turn) = run_reasoning_case(ScriptTurn {
+            text: Some("<think>\nlook first\n</think>\n\nthe answer".to_string()),
+            chunk,
+            ..ScriptTurn::text("")
+        });
+        let (r, t) = joined(&events);
+        assert_eq!(r.trim(), "look first", "chunk {chunk}");
+        assert_eq!(t.trim(), "the answer", "chunk {chunk}");
+        assert_eq!(turn.msg.reasoning.as_deref().map(str::trim), Some("look first"));
+        assert_eq!(turn.msg.content.as_deref().map(str::trim), Some("the answer"));
+        assert!(
+            matches!(events.first(), Some(StreamEvent::Reasoning(_))),
+            "chunk {chunk}"
+        );
+    }
+}
+
+/// A think tag mentioned later in the answer is left alone.
+#[test]
+fn think_tag_after_answer_text_is_text() {
+    let (events, _) = run_reasoning_case(ScriptTurn::text("use <think> tags"));
+    assert_eq!(joined(&events), (String::new(), "use <think> tags".to_string()));
+}
+
+/// A stream that ends on a held prefix (`<`, `<thi`) must still deliver that tail through the
+/// callback: the joined live events equal the assembled reply.
+#[test]
+fn held_prefix_at_stream_end_reaches_the_callback() {
+    for text in ["<", "<thi", "ok <"] {
+        for chunk in [1usize, 1000] {
+            let (events, turn) = run_reasoning_case(ScriptTurn {
+                text: Some(text.to_string()),
+                chunk,
+                ..ScriptTurn::text("")
+            });
+            let (r, t) = joined(&events);
+            assert_eq!(r, "", "{text:?} chunk {chunk}");
+            assert_eq!(t, text, "{text:?} chunk {chunk}");
+            assert_eq!(turn.msg.content.as_deref(), Some(text), "{text:?} chunk {chunk}");
+        }
+    }
+}
+
+/// Leading whitespace before a think block is routed the same however the stream is chunked.
+#[test]
+fn leading_whitespace_before_think_is_chunk_independent() {
+    let mut seen = Vec::new();
+    for chunk in [1usize, 2, 1000] {
+        let (events, turn) = run_reasoning_case(ScriptTurn {
+            text: Some(" \n<think>x</think>answer".to_string()),
+            chunk,
+            ..ScriptTurn::text("")
+        });
+        let (r, t) = joined(&events);
+        assert_eq!(r, "x", "chunk {chunk}");
+        seen.push((t, turn.msg.content.clone()));
+    }
+    assert!(seen.windows(2).all(|w| w[0] == w[1]), "{seen:?}");
+    assert_eq!(seen[0].0, "answer");
+}
+
+/// Once a think block has closed, the answer is literal: a second `<think>` block in the
+/// answer (an example of the syntax) is answer text, not more reasoning.
+#[test]
+fn second_think_block_after_close_is_text() {
+    for chunk in [1usize, 1000] {
+        let (events, turn) = run_reasoning_case(ScriptTurn {
+            text: Some("<think>reasoning</think><think>example</think>".to_string()),
+            chunk,
+            ..ScriptTurn::text("")
+        });
+        let (r, t) = joined(&events);
+        assert_eq!(r, "reasoning", "chunk {chunk}");
+        assert_eq!(t, "<think>example</think>", "chunk {chunk}");
+        assert_eq!(
+            turn.msg.content.as_deref(),
+            Some("<think>example</think>"),
+            "chunk {chunk}"
+        );
+    }
+}
+
 #[test]
 fn expired_cloud_continuation_is_reported_without_retry() {
     let body =
