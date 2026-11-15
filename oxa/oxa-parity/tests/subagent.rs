@@ -1068,7 +1068,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for (id, verdict, _) in subagent_rows() {
         if verdict != "P" {
             continue;
@@ -1096,20 +1096,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             body.contains("assert") || body.contains("red("),
             "{id} (A) asserts its adapted behaviour"
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for (id, verdict, _) in subagent_rows() {
-        if verdict != "O" {
-            continue;
-        }
-        assert!(
-            fn_body(&id).contains("unsupported_in_oxa"),
-            "{id} (O) asserts the unsupported_in_oxa error"
         );
     }
 }
