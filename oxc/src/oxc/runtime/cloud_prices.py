@@ -141,10 +141,21 @@ def overlay(configured, model):
         for field, rate in current.items():
             # The live list price is the short-context rate; a higher configured tier is never
             # lowered by it, so long prompts are still reserved at their own rate.
-            out[field] = rate if base else max(out.get(field, rate), rate)
+            if base:
+                # A zero live price never lowers a configured rate (it would disable the budget cap).
+                out[field] = rate if rate > 0 else out.get(field, rate)
+            else:
+                out[field] = max(out.get(field, rate), rate)
         return out
     if 'tiers' in configured:
-        return {'tiers': [floor(tier, index == 0) for index, tier in enumerate(configured['tiers'])]}
+        tiers = []
+        for index, tier in enumerate(configured['tiers']):
+            tier = floor(tier, index == 0)
+            for field, rate in (tiers[-1].items() if tiers else ()):
+                if field.endswith('_per_million'):  # longer prompts never cost less per token
+                    tier[field] = max(tier.get(field, rate), rate)
+            tiers.append(tier)
+        return {'tiers': tiers}
     return floor(configured, True)
 
 
