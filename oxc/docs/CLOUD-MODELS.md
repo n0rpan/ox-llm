@@ -314,3 +314,38 @@ zero fallback. Unknown prices still refuse. Fetched rates can raise configured p
 explicit configured rates and tiers remain conservative floors. A missing public cache rate
 does not erase a configured one. Public list prices can still differ from the chosen routed
 provider's bill: #47's validated `usage.cost` remains an additional settlement floor.
+
+## Experimental: ChatGPT subscription (`chatgpt/<model>`, opt-in)
+
+> **Experimental and unsupported.** This route signs in with the public PKCE client of OpenAI's
+> own command-line coding agent and calls the ChatGPT subscription Responses backend, the way
+> several third-party agents do. OpenAI does not document it; it is tolerated and **may break
+> without notice**. The official "Sign in with ChatGPT" program (#247) replaces it.
+
+It is off by default. It needs `cloud.enabled: true`, catalog entries of kind
+`remote/chatgpt` named `chatgpt/<model>`, and an explicit sign-in:
+
+```sh
+oxc login chatgpt                 # browser PKCE sign-in, redirect to http://localhost:1455
+oxc login chatgpt --paste         # headless: open the URL anywhere, paste the redirected address
+oxc login chatgpt --import ~/.codex/auth.json   # reuse an existing CLI login once (read only)
+oxc logout chatgpt                # removes the token file
+```
+
+```json
+"chatgpt/gpt-5": {"kind": "remote/chatgpt", "upstream_model": "gpt-5",
+                  "base_url": "https://chatgpt.com/backend-api/codex",
+                  "context_window": 272000, "max_output": 128000}
+```
+
+- Tokens live in `chatgpt-auth.json` next to `cloud-secrets.json` (mode 0600, never logged or
+  shown, redacted from replies). oxc refreshes them itself, one refresher at a time. oxa's
+  sandbox denies the file in every mode.
+- Requests are always streamed upstream, never stored (`store: false`); system/developer
+  messages become `instructions`; the output cap is not sent (the backend rejects it).
+- Cost class `subscription`: ledger rows cost 0 USD but keep their token counts. The daily USD
+  budget does not apply; optional caps `cloud.chatgpt.daily_requests` and
+  `cloud.chatgpt.daily_tokens` do.
+- `/_local/status` → `cloud.subscription` shows `signed_in` and the remaining allowance the
+  backend reported (`used_percent`, `resets_at`, `window_minutes`).
+- LAN-share guests never see or reach these models; offline mode refuses them.

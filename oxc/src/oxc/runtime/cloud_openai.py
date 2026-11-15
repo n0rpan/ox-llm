@@ -77,6 +77,8 @@ RESPONSES_MODELS = {'gpt-6-astra': False, 'gpt-6.1-sol': False,
 
 
 def endpoint(item):
+    if item.get('provider') == 'chatgpt':
+        return '/responses'  # the subscription backend speaks Responses only
     return '/responses' if item['upstream_model'] in RESPONSES_MODELS else '/chat/completions'
 
 
@@ -254,7 +256,7 @@ def responses_request(payload, item, key=None):
         effort = 'medium'
     if not isinstance(effort, str) or effort not in EFFORT:
         raise cloud.CloudError('Unsupported reasoning effort.', 400, 'invalid_value', 'reasoning_effort')
-    if effort == 'minimal' or (effort == 'none' and not RESPONSES_MODELS[item['upstream_model']]):
+    if effort == 'minimal' or (effort == 'none' and not RESPONSES_MODELS.get(item['upstream_model'], False)):
         effort = 'low'
     messages = payload.get('messages') or []
     inputs = []

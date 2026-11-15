@@ -23,14 +23,15 @@ import urllib.parse
 
 if __package__:
     from .ctl_seams import ctl
-    from . import cloud_prices
+    from . import cloud_chatgpt, cloud_prices
 else:
     from ctl_seams import ctl
+    import cloud_chatgpt
     import cloud_prices
 
-PROVIDERS = ('openrouter', 'anthropic', 'openai')
+PROVIDERS = ('openrouter', 'anthropic', 'openai', 'chatgpt')
 KINDS = {'remote': None, 'remote/openrouter': 'openrouter', 'remote/anthropic': 'anthropic',
-         'remote/openai': 'openai'}
+         'remote/openai': 'openai', 'remote/chatgpt': 'chatgpt'}
 ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}')
 ENV_OFFLINE = 'OXC_OFFLINE'
 LEGACY_OFFLINE = 'OXC_OFFLINE'
@@ -166,17 +167,22 @@ def entry(alias, raw):
     upstream = raw.get('upstream_model') or raw.get('upstream')
     context = _positive_number(raw, 'context_window')
     output = _positive_number(raw, 'max_output')
-    if provider == 'openai' and output is None:
+    if provider in ('openai', 'chatgpt') and output is None:
         return None
+    if provider == 'chatgpt' and not alias.startswith(cloud_chatgpt.ALIAS_PREFIX):
+        return None  # subscription models are always named chatgpt/<model>
     if base_url is None or not isinstance(upstream, str) or not upstream.strip() or context is None:
         return None
     price = _pricing(raw)
+    if provider == 'chatgpt':
+        price = {'input_per_million': 0.0, 'output_per_million': 0.0}  # cost class subscription
     if provider == 'openrouter' and (price is not None or raw.get('pricing') is None):
         price = cloud_prices.overlay(price, upstream.strip())
     return {'id': alias, 'kind': raw.get('kind', 'remote'), 'provider': provider,
             'base_url': base_url, 'upstream_model': upstream.strip(),
             'context_window': int(context), 'max_output': int(output) if output is not None else None,
-            'pricing': price, 'display_name': raw.get('name') if isinstance(raw.get('name'), str) else alias}
+            'pricing': price, 'cost_class': 'subscription' if provider == 'chatgpt' else 'usage',
+            'display_name': raw.get('name') if isinstance(raw.get('name'), str) else alias}
 
 
 _PREFIXES = ('openai/', 'openai_compatible/', 'local/')
@@ -234,10 +240,19 @@ def entries(value, include_disabled=False):
     if not isinstance(models, dict):
         return {}
     out = {}
+    signed_in = None
     for alias, raw in models.items():
         item = entry(alias, raw)
         if item is None:
             continue
+        if item['provider'] == 'chatgpt':
+            if signed_in is None:
+                try:
+                    signed_in = cloud_chatgpt.signed_in(secrets_file(value))
+                except CloudError:
+                    signed_in = False
+            if not signed_in:
+                continue  # opt-in: listed only after `oxc login chatgpt`
         if collides(alias, value) is not None:
             if alias not in _warned:
                 _warned.add(alias)
@@ -501,6 +516,8 @@ def validate_remote_request(payload, item):
 def reserve(value, item, payload):
     """Atomically reserve the worst-case cost before forwarding, or raise a clear CloudError."""
     validate_remote_request(payload, item)
+    if item.get('cost_class') == 'subscription':
+        return _reserve_subscription(value, item, payload)
     cap = _cap(value)
     if cap is None:
         raise CloudError('Cloud models need a per-day USD budget (`cloud.daily_budget_usd`).',
@@ -518,6 +535,74 @@ def reserve(value, item, payload):
             raise CloudError('The daily cloud budget is exhausted.', 429, 'budget_exceeded')
         _reserved[day] = already + worst
     return BudgetHold(day, worst, _max_tokens(payload, item))
+
+
+_sub_inflight = {}
+
+
+def _subscription_use(day):
+    """(requests, tokens) of today's subscription rows in the ledger (fail closed)."""
+    directory = _ledger_dir()
+    if directory is None:
+        raise _ledger_error()
+    path = Path(directory) / ('requests-%s.jsonl' % day)
+    requests = tokens = 0
+    lock = getattr(ctl.request_ledger, 'LEDGER_LOCK', None)
+    try:
+        if lock is not None:
+            lock.acquire()
+        try:
+            stream = open(path, encoding='utf-8')
+        except FileNotFoundError:
+            return 0, 0
+        with stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError
+                if row.get('remote') is True and row.get('cost_class') == 'subscription':
+                    requests += 1
+                    tokens += sum(row.get(name) or 0 for name in ('prompt_tokens', 'completion_tokens')
+                                  if type(row.get(name)) is int)
+    except (OSError, UnicodeError, ValueError):
+        raise _ledger_error() from None
+    finally:
+        if lock is not None:
+            lock.release()
+    return requests, tokens
+
+
+class _SubscriptionHold(BudgetHold):
+    def settle(self):
+        with _budget_lock:
+            if self.settled:
+                return
+            left = _sub_inflight.get(self.day, 0) - 1
+            if left > 0:
+                _sub_inflight[self.day] = left
+            else:
+                _sub_inflight.pop(self.day, None)
+            self.settled = True
+
+
+def _reserve_subscription(value, item, payload):
+    """No USD budget for a subscription; optional daily request/token caps instead."""
+    if not getattr(ctl.request_ledger, 'enabled', lambda: True)():
+        raise CloudError('The request ledger is disabled; cloud calls are blocked until it is enabled.',
+                         503, 'cloud_ledger_unavailable')
+    _check_ledger_health()
+    max_requests, max_tokens = cloud_chatgpt.caps(value)
+    day = spend_day()
+    with _budget_lock:
+        requests, tokens = _subscription_use(day)
+        inflight = _sub_inflight.get(day, 0)
+        if ((max_requests is not None and requests + inflight >= max_requests)
+                or (max_tokens is not None and tokens >= max_tokens)):
+            raise CloudError('The daily subscription cap is reached.', 429, 'subscription_cap_exceeded')
+        _sub_inflight[day] = inflight + 1
+    return _SubscriptionHold(day, 0.0, _max_tokens(payload, item))
 
 
 def spend_day():
@@ -653,12 +738,27 @@ def configured(value):
     """{provider: bool} for status; never the key or its path."""
     out = {}
     for provider in PROVIDERS:
+        if provider == 'chatgpt':
+            try:
+                out[provider] = cloud_chatgpt.signed_in(secrets_file(value))
+            except CloudError:
+                out[provider] = False
+            continue
         try:
             secret(provider, value)
             out[provider] = True
         except CloudError:
             out[provider] = False
     return out
+
+
+def subscription_status(value):
+    """The experimental subscription block for status: sign-in and allowance, never a token."""
+    try:
+        path = secrets_file(value)
+    except CloudError:
+        path = None
+    return cloud_chatgpt.status(path)
 
 
 def redact(text, key):
@@ -799,7 +899,7 @@ class SSEDecoder:
 def capabilities(item):
     """The Wave D per-model capability block for a remote catalog entry."""
     return {'remote': True, 'remote_provider': item['provider'], 'echo': False,
-            'cache_hints': False, 'cancel': item['provider'] != 'openai', 'prefill': False,
+            'cache_hints': False, 'cancel': item['provider'] not in ('openai', 'chatgpt'), 'prefill': False,
             'preserve_thinking': False, 'context_window': item['context_window']}
 
 
@@ -854,6 +954,8 @@ def remote_payload(payload, item):
 
 
 def path_for(item):
+    if item['provider'] == 'chatgpt':
+        return urllib.parse.urlsplit(item['base_url']).path.rstrip('/') + '/responses'
     if item['provider'] == 'openai':
         if __package__:
             from . import cloud_openai
@@ -865,7 +967,7 @@ def path_for(item):
     return urllib.parse.urlsplit(item['base_url']).path.rstrip('/') + '/chat/completions'
 
 
-def connection(item, key):
+def connection(item, key, account=None):
     """(connection, path, headers) for the upstream call.  Raises CloudError only."""
     parts = urllib.parse.urlsplit(item['base_url'])
     try:
@@ -884,6 +986,9 @@ def connection(item, key):
         headers.update({'x-api-key': key, 'anthropic-version': '2023-06-01'})
     else:
         headers['Authorization'] = 'Bearer ' + key
+    if item['provider'] == 'chatgpt':
+        headers.update({'chatgpt-account-id': account or '', 'OpenAI-Beta': 'responses=experimental',
+                        'Accept': 'text/event-stream'})
     return connection, path, headers
 
 
@@ -958,6 +1063,8 @@ class Meter:
         prompt, completion = self.prompt, self.completion
         out = {'remote': True, 'remote_provider': item['provider'],
                'remote_model': item['upstream_model']}
+        if item.get('cost_class') == 'subscription':
+            out['cost_class'] = 'subscription'
         if prompt is not None:
             out['prompt_tokens'] = prompt
         if completion is not None:
@@ -996,12 +1103,13 @@ def upstream_payload(payload, item, key=None):
     ``high``); a local ``enable_thinking`` switch is mapped the same way.  A stream asks for
     the final usage chunk so the ledger and budget see the provider's own numbers.
     """
-    if item['provider'] == 'openai':
+    if item['provider'] in ('openai', 'chatgpt'):
         if __package__:
             from . import cloud_openai
         else:
             import cloud_openai
-        return cloud_openai.request(payload, item, key)
+        body = cloud_openai.request(payload, item, key)
+        return cloud_chatgpt.adapt(body) if item['provider'] == 'chatgpt' else body
     body = remote_payload(payload, item)
     effort = body.get('reasoning_effort')
     kwargs = body.pop('chat_template_kwargs', None)

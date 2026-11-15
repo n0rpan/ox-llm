@@ -1008,6 +1008,21 @@ mod tests {
     }
 
     #[test]
+    fn chatgpt_auth_file_is_masked() {
+        let env = TestEnv::new();
+        env.write("home/.config/oxc/llm/chatgpt-auth.json", "SYNTH-CHATGPT-TOKEN");
+        let f = env.home().join(".config/oxc/llm/chatgpt-auth.json");
+        for online in [false, true] {
+            let on = bwrap_args_homes(&spec(&env.home(), online), &env.home(), &Layout::default(), None);
+            let hidden = f.ancestors().take_while(|a| *a != env.home()).any(|a| {
+                let a = a.to_string_lossy();
+                on.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == a) || on.iter().any(|x| *x == a)
+            });
+            assert!(hidden, "{on:?}");
+        }
+    }
+
+    #[test]
     fn gh_token_store_is_masked_but_benign_config_stays_online() {
         let env = TestEnv::new();
         env.write("home/.config/gh/hosts.yml", "SYNTH-OTHER-HOST-TOKEN");

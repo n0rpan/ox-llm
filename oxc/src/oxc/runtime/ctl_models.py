@@ -262,7 +262,8 @@ class ModelsMixin:
                 'daily_budget_usd': cap, 'spend_today_usd': spend, 'ledger_ok': ledger_error is None,
                 'ledger_error': ledger_error,
                 'providers': cloud.configured(value), 'models': len(cloud.models(value)),
-                'rejected': cloud.rejected(value)}
+                'rejected': cloud.rejected(value),
+                'subscription': cloud.subscription_status(value)}
 
     def flash_qualification(self):
         """M3: Flash's derived status (model_catalog.qualification of the resolved installed

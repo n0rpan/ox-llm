@@ -26,6 +26,9 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".config/oxc",
     ".config/oxc/llm/cloud-secrets.json",
     ".config/local-ai/llm/cloud-secrets.json",
+    // #252: the experimental ChatGPT subscription tokens, beside the cloud keys.
+    ".config/oxc/llm/chatgpt-auth.json",
+    ".config/local-ai/llm/chatgpt-auth.json",
     ".local/state/oxc",
     ".oxa/agent",
     ".pi/agent",
@@ -191,6 +194,8 @@ mod tests {
         for rel in [
             ".config/oxc/llm/cloud-secrets.json",
             ".config/local-ai/llm/cloud-secrets.json",
+            ".config/oxc/llm/chatgpt-auth.json",
+            ".config/local-ai/llm/chatgpt-auth.json",
         ] {
             let p = home.join(rel);
             assert!(
