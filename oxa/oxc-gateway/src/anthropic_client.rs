@@ -2,7 +2,7 @@
 //! The caller owns discovery, admission, request-time key reads and settlement.
 use crate::{
     anthropic_request,
-    anthropic_stream::{self, Completed, Field, Redactor},
+    anthropic_stream::{self, Completed, Field, Redactor, Usage},
     redaction,
     secrets::Key,
 };
@@ -124,7 +124,9 @@ impl Client {
     where
         F: FnMut(Event) -> Control + ?Sized,
     {
-        self.stream_with_blocks(chat, key, cancel, on, |_| None).await
+        let mut terminal_usage = None;
+        self.stream_with_blocks(chat, key, cancel, on, |_| None, &mut terminal_usage)
+            .await
     }
 
     pub(crate) async fn stream_with_blocks<F>(
@@ -134,6 +136,7 @@ impl Client {
         cancel: &Cancellation,
         on: &mut F,
         restore: impl FnMut(usize) -> Option<Vec<Value>>,
+        terminal_usage: &mut Option<Usage>,
     ) -> Result<Completed, Error>
     where
         F: FnMut(Event) -> Control + ?Sized,
@@ -236,24 +239,33 @@ impl Client {
                     continue;
                 };
                 let chunks = translated.event(&event).map_err(|_| Error::Protocol)?;
-                for chunk in chunks {
-                    if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
-                        return Err(Error::Cancelled);
-                    }
-                }
                 if event["type"] == "message_stop" {
                     let completed = translated.finish().map_err(|_| Error::Protocol)?;
+                    // Preserve trusted private metering before a callback can
+                    // stop delivery of the finish/public usage chunks.
+                    *terminal_usage = Some(completed.usage.ok_or(Error::Protocol)?);
+                    deliver(chunks, cancel, on)?;
                     if cancel.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
-                    if completed.usage.is_none() {
-                        return Err(Error::Protocol);
-                    }
                     return Ok(completed);
                 }
+                deliver(chunks, cancel, on)?;
             }
         }
     }
+}
+
+fn deliver<F>(chunks: Vec<Value>, cancel: &Cancellation, on: &mut F) -> Result<(), Error>
+where
+    F: FnMut(Event) -> Control + ?Sized,
+{
+    for chunk in chunks {
+        if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
+            return Err(Error::Cancelled);
+        }
+    }
+    Ok(())
 }
 
 struct KeyRedactor<'a> {

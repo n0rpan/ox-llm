@@ -148,6 +148,7 @@ impl Gateway {
         let request_bytes = serde_json::to_vec(&bounded).map_or(0, |v| v.len());
         let mut streamed_bytes = 0;
         let mut usage_final = false;
+        let mut terminal_usage = None;
         let request = Chat {
             base_url: model["base_url"]
                 .as_str()
@@ -185,17 +186,17 @@ impl Gateway {
                     let id = history.at(index)?;
                     self.replay.lock().ok()?.restore(id)
                 },
+                &mut terminal_usage,
             )
             .await;
+        // This record survives cancellation during final chunk delivery and
+        // public usage opt-out; both must settle the actual cache categories.
+        if let Some(usage) = terminal_usage {
+            call.observe(&json!({"usage":usage.openai()}));
+            usage_final = true;
+        }
         let (outcome, status, code) = match &result {
-            Ok(completed) => {
-                // Accounting needs final usage even when a caller opted out of
-                // public usage chunks. Cache reads and writes remain separate.
-                let usage = completed.usage.expect("client requires trusted terminal usage");
-                call.observe(&json!({"usage":usage.openai(),
-                    "choices":[{"finish_reason":completed.finish_reason}]}));
-                (Outcome::Complete, 200, None)
-            }
+            Ok(_) => (Outcome::Complete, 200, None),
             Err(anthropic_client::Error::Cancelled) => (
                 Outcome::Cancelled {
                     request_bytes,
