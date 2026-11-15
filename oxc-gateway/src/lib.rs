@@ -5,6 +5,6 @@ pub mod catalog;
 #[cfg(feature = "policy")]
 pub mod policy;
 #[cfg(feature = "secrets")]
-pub mod secrets;
-#[cfg(feature = "secrets")]
 pub mod redaction;
+#[cfg(feature = "secrets")]
+pub mod secrets;

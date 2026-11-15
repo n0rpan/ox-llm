@@ -255,7 +255,7 @@
           "battery_start_percent": null,
           "capabilities": {
             "cache_hints": false,
-            "cache_pricing": "conservative",
+            "cache_pricing": "explicit",
             "cancel": true,
             "context_window": 64000,
             "echo": false,
@@ -292,7 +292,7 @@
     "model": {
       "capabilities": {
         "cache_hints": false,
-        "cache_pricing": "conservative",
+        "cache_pricing": "explicit",
         "cancel": true,
         "context_window": 64000,
         "echo": false,
@@ -317,7 +317,7 @@
         {
           "capabilities": {
             "cache_hints": false,
-            "cache_pricing": "conservative",
+            "cache_pricing": "explicit",
             "cancel": true,
             "context_window": 64000,
             "echo": false,
@@ -348,7 +348,7 @@
           "cap": 64000,
           "capabilities": {
             "cache_hints": false,
-            "cache_pricing": "conservative",
+            "cache_pricing": "explicit",
             "cancel": true,
             "context_window": 64000,
             "echo": false,

@@ -45,8 +45,8 @@ fn truth(value: &Value) -> bool {
 
 // Discovery needs only the classification, not settlement arithmetic. Invalid
 // prices must not claim explicit cache rates merely because both keys exist.
-fn cache_pricing(provider: &str, raw: &Value) -> &'static str {
-    let explicit = || -> Option<()> {
+fn price_fields(raw: &Value) -> Option<Vec<(bool, bool)>> {
+    let normalized = || -> Option<Vec<(bool, bool)>> {
         let price = raw["pricing"].as_object()?;
         let levels = match price.get("tiers") {
             None => vec![&raw["pricing"]],
@@ -54,6 +54,7 @@ fn cache_pricing(provider: &str, raw: &Value) -> &'static str {
             _ => return None,
         };
         let mut previous = 0;
+        let mut fields = Vec::new();
         for (index, level) in levels.iter().enumerate() {
             let mut merged = price.clone();
             merged.extend(level.as_object()?.clone());
@@ -63,11 +64,23 @@ fn cache_pricing(provider: &str, raw: &Value) -> &'static str {
                 ("cache_read_per_million", "cache_read_per_million"),
                 ("cache_write_per_million", "cache_write_per_million"),
             ] {
-                let number = merged.get(name).or_else(|| merged.get(alias))?.as_f64()?;
+                let value = merged.get(name).or_else(|| merged.get(alias));
+                if name.starts_with("cache_") && value.is_none_or(Value::is_null) {
+                    continue;
+                }
+                let number = value?.as_f64()?;
                 if !(0.0..=1e12).contains(&number) {
                     return None;
                 }
             }
+            fields.push((
+                merged
+                    .get("cache_read_per_million")
+                    .is_some_and(|v| !v.is_null()),
+                merged
+                    .get("cache_write_per_million")
+                    .is_some_and(|v| !v.is_null()),
+            ));
             if price.contains_key("tiers") {
                 let bound = &level["max_prompt_tokens"];
                 if index == levels.len() - 1 {
@@ -83,9 +96,28 @@ fn cache_pricing(provider: &str, raw: &Value) -> &'static str {
                 }
             }
         }
-        Some(())
+        Some(fields)
     };
-    if explicit().is_some() {
+    let fields = normalized();
+    if fields.is_some() || raw["pricing"].get("tiers").is_some() {
+        fields
+    } else {
+        (raw["free"] == true).then(|| vec![(false, false)])
+    }
+}
+fn cache_pricing(provider: &str, raw: &Value, current: Option<&Value>) -> &'static str {
+    let current = current
+        .filter(|p| p.get("tiers").is_none())
+        .and_then(|p| price_fields(&json!({"pricing":p})))
+        .and_then(|p| p.first().copied());
+    let fields = price_fields(raw)
+        .or_else(|| (raw["pricing"].is_null() && current.is_some()).then(|| vec![(false, false)]));
+    let overlay = current.unwrap_or((false, false));
+    if fields.is_some_and(|fields| {
+        fields
+            .iter()
+            .all(|(read, write)| (*read || overlay.0) && (*write || overlay.1))
+    }) {
         "explicit"
     } else if provider == "anthropic" {
         "provider_default"
@@ -95,7 +127,7 @@ fn cache_pricing(provider: &str, raw: &Value) -> &'static str {
 }
 
 impl Model {
-    fn parse(alias: &str, raw: &Value) -> Option<Self> {
+    fn parse(alias: &str, raw: &Value, prices: &Value) -> Option<Self> {
         if !(1..=128).contains(&alias.len())
             || !alias.as_bytes()[0].is_ascii_alphanumeric()
             || !alias
@@ -152,7 +184,13 @@ impl Model {
             name: raw["name"].as_str().unwrap_or(alias).into(),
             context,
             output: output.unwrap_or(Value::Null),
-            cache_pricing: cache_pricing(provider, raw),
+            cache_pricing: cache_pricing(
+                provider,
+                raw,
+                (provider == "openrouter")
+                    .then(|| prices.get(upstream.trim()))
+                    .flatten(),
+            ),
         })
     }
     fn capabilities(&self) -> Value {
@@ -185,7 +223,9 @@ pub struct Catalog {
 }
 impl Catalog {
     /// Returns `None` for a local-engine configuration. Cloud is off by default.
-    pub fn from_config(config: &Value, offline: bool) -> Option<Self> {
+    /// `prices` is a trusted snapshot of validated per-million public rates,
+    /// keyed by upstream ID. The caller owns bounded, safe cache-file loading.
+    pub fn from_config(config: &Value, offline: bool, prices: &Value) -> Option<Self> {
         if config["cloud_only"] != true {
             return None;
         }
@@ -195,7 +235,7 @@ impl Catalog {
                 models.extend(
                     entries
                         .iter()
-                        .filter_map(|(alias, raw)| Model::parse(alias, raw)),
+                        .filter_map(|(alias, raw)| Model::parse(alias, raw, prices)),
                 );
             }
         }
