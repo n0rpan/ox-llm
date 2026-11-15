@@ -66,4 +66,6 @@ the same augmentation hook as the actual feature-built binary.
 No new hooks in existing crates or public RPC changes are added. No production
 service, provider key, real gateway or paid model is used. Provider-reported
 monetary costs and gateway settlement remain separate; this source counts the
-SDK's reported inference tokens. Main-session engine-level accounting and compaction, long cloud runs, and issues #47/#48/#64/#71 remain open.
+SDK's reported inference tokens. The main TUI has a separate
+[engine source and compaction opt-in](MAIN_USAGE.md). Long cloud runs and issues
+#47/#48/#64/#71 remain open.

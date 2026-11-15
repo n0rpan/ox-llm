@@ -16,6 +16,8 @@ pub mod goal_session;
 pub mod goals;
 mod journal;
 pub mod lineage;
+#[cfg(feature = "interactive-control")]
+mod main_usage;
 mod namespace;
 mod ownership;
 mod process;

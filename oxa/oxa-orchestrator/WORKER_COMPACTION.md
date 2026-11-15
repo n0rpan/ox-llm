@@ -55,8 +55,8 @@ The error case uses an explicit nonrecoverable response; the SDK's existing
 transport reconnect behavior is unchanged.
 
 All implementation remains in `oxa-orchestrator`; no new Core/RPC/sandbox hooks
-are added. This is worker compaction, not main-TUI goal compaction. Main-session
-engine-level metering and compaction are still outstanding. No actual cloud
+are added. For main-TUI goal metering and its separate compaction opt-in, see
+[MAIN_USAGE.md](MAIN_USAGE.md). No actual cloud
 service, provider keys or paid calls were used. Provider billing/cancellation,
 #64 continuation recovery, #47/#48/#71 settlement, upstream #60 integration, the
 working-evening acceptance run and the required reviews remain unverified.

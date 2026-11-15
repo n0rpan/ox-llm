@@ -487,6 +487,7 @@ impl Tool for CommandTool {
 /// Default-off CLI hook before Session::open; normal policy and sandbox guards remain authoritative.
 pub fn augment(mut deps: Deps) -> Deps {
     deps = crate::usage::augment(deps);
+    deps = crate::main_usage::augment(deps);
     deps = crate::worker_lanes::augment(deps);
     if std::env::var("OXA_BACKGROUND_TASKS").as_deref() != Ok("1")
         || std::env::var_os("OXA_SESSION_CONTROL_DIRECTORY").is_none()

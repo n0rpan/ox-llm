@@ -2108,6 +2108,372 @@ fn worker_goal_compacts_with_metered_usage(limit: u64, failure: bool, canceling:
     panic!("summary request missing");
 }
 
+fn main_goal_compacts_with_metered_usage(
+    limit: u64,
+    failure: bool,
+    canceling: bool,
+    exact: bool,
+) -> (u64, u64) {
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    std::fs::create_dir_all(&agent).unwrap();
+    let directory = agent.join("control");
+    let socket = directory.join("session.sock");
+    std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+    std::env::set_var("OXA_GOAL_AUTO_COMPACTION", "1");
+    let timed = limit == u64::MAX;
+    let limited = limit != 0 && !timed && !exact;
+    let cap = (!timed).then_some(if limit != 0 && !timed { limit } else { 2000000 });
+    let mut summary = ScriptTurn::text("main-summary-marker: retain the completed project steps");
+    if failure {
+        summary.fault = Some(oxa_fake::Fault::Http {
+            status: 400,
+            body: "unrecoverable summary failure".into(),
+        });
+    } else if canceling {
+        summary.fault = Some(oxa_fake::Fault::HoldHeaders { ms: 1500 });
+    }
+    let engine = Arc::new(FakeServer::start(vec![
+        ScriptTurn::text(r#"{"state":"continue","summary":"first project step checked"}"#),
+        ScriptTurn::text(r#"{"state":"continue","summary":"second project step checked"}"#),
+        summary,
+        ScriptTurn::text(r#"{"state":"done","summary":"main-compaction-final","evidence":["all project steps checked"]}"#),
+        ScriptTurn::text("main-summary-marker: final steps checked"),
+    ], FakeOpts {
+        model: "compact-model".into(), n_ctx: 50000,
+        models: vec![oxa_fake::FakeModel { alias: "compact-model".into(), cap: 50000, max_output: Some(1024), caps: Some(oxa_fake::FakeCaps::rust_moe()) }],
+        ..Default::default()
+    }).unwrap());
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let mut config = deps(&engine.url(), env.root(), &env.work(), store.clone());
+    config.model = Some("compact-model".into());
+    let session = Session::open(config, Open::New).unwrap();
+    let expected = session.state().session_id;
+    let peer_id = expected.clone();
+    let peer_engine = engine.clone();
+    let done = Arc::new(AtomicBool::new(false));
+    let peer_done = done.clone();
+    let peer = std::thread::spawn(move || {
+        let initial = wait_status(&socket, |v| v["status"]["session"]["id"] == peer_id);
+        request(
+            &socket,
+            json!({"id":"goal","method":"set_goal","revision":revision(&initial),"text":format!("Check all project steps. {}", "x".repeat(14000)),"budget":{"wall_ms":12000,"tokens":cap,"turns":8}}),
+        );
+        let paused = wait_status(&socket, |v| v["status"]["goal"]["id"] != "unassigned");
+        let goal_id = paused["status"]["goal"]["id"].clone();
+        mutation(&socket, "resume", "resume", revision(&paused), None);
+        if canceling {
+            let running = wait_status(&socket, |_| {
+                peer_engine.requests().iter().any(|r| r.kind == "compaction")
+            });
+            mutation(&socket, "cancel-summary", "cancel", revision(&running), None);
+        }
+        let terminal = wait_status(&socket, |v| {
+            state(v)
+                == if canceling {
+                    "canceled"
+                } else if failure {
+                    "blocked"
+                } else if limited {
+                    "budget_exhausted"
+                } else {
+                    "done"
+                }
+                && v["status"]["goal"]["turn_active"] == false
+                && v["status"]["session"]["busy"] == false
+        });
+        let goal = &terminal["status"]["goal"];
+        assert_eq!(goal["id"], goal_id);
+        assert_eq!(goal["budget"]["tokens"], json!(cap));
+        let requests = peer_engine.requests();
+        let known: u64 = requests
+            .iter()
+            .filter_map(|r| r.usage.as_ref())
+            .map(|u| u64::from(u.prompt) + u64::from(u.completion))
+            .sum();
+        if failure || canceling {
+            assert!(
+                goal["reported_tokens"].is_null(),
+                "failed/aborted summary stays unknown: {goal}"
+            );
+            assert_eq!(goal["turns_started"], 2);
+        } else {
+            assert_eq!(
+                goal["reported_tokens"].as_u64(),
+                Some(known),
+                "all SDK requests belong to the same main goal"
+            );
+            assert_eq!(goal["turns_started"], if limited { 2 } else { 3 });
+            if exact {
+                assert_eq!(Some(known), cap, "DONE at exactly the cap is valid");
+            }
+        }
+        assert_eq!(terminal["status"]["session"]["id"], peer_id);
+        // Keep the TUI and broker alive after settlement: late background work
+        // and completion wakes must not issue another inference.
+        let count = requests.len();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(peer_engine.requests().len(), count);
+        peer_done.store(true, Ordering::Release);
+    });
+    let mut terminal = LiveTerm {
+        inner: TestTerminal::new(160, 35),
+        done,
+        typing: Arc::new(AtomicBool::new(false)),
+        typed: Arc::new(AtomicBool::new(false)),
+        deadline: Instant::now() + Duration::from_secs(18),
+        quit: false,
+        final_text: if limited || failure || canceling {
+            "Goal"
+        } else {
+            "main-compaction-final"
+        },
+        escape: false,
+        swap_when: None,
+        swapped: false,
+        rejected: Arc::new(AtomicBool::new(false)),
+    };
+    let mut options = opts(&env, &engine.url(), store);
+    let (code, last) = run_session(&mut terminal, session, &mut options);
+    peer.join().unwrap();
+    std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+    std::env::remove_var("OXA_GOAL_AUTO_COMPACTION");
+    assert_eq!(code, 0);
+    assert_eq!(last.unwrap().id, expected);
+    let requests = engine.requests();
+    assert!(
+        requests.iter().any(|r| r.kind == "compaction"),
+        "actual compaction required: {:?}",
+        requests
+            .iter()
+            .map(|r| (&r.kind, r.max_tokens, r.usage))
+            .collect::<Vec<_>>()
+    );
+    assert!(requests
+        .iter()
+        .all(|r| r.session == expected && r.model == "compact-model"));
+    if failure || limited || canceling {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.kind == "chat" && r.max_tokens > 0)
+                .count(),
+            2,
+            "stop prevents a third goal turn"
+        );
+        assert_eq!(
+            requests.iter().filter(|r| r.kind == "compaction").count(),
+            1,
+            "summary must not silently retry"
+        );
+    } else {
+        assert!(
+            requests
+                .iter()
+                .filter(|r| r.kind == "chat")
+                .any(|r| r.messages.iter().any(|m| m
+                    .content
+                    .as_deref()
+                    .is_some_and(|s| s.contains("main-summary-marker")))),
+            "later chat retains summary context"
+        );
+    }
+    if canceling {
+        let seq = requests.iter().find(|r| r.kind == "compaction").unwrap().seq;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let _ = engine.in_flight();
+            if engine
+                .timings()
+                .iter()
+                .any(|t| t.seq == Some(seq) && t.client_closed)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "cancel must close the in-flight main summary"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    let mut before = 0;
+    for request in &requests {
+        if request.kind == "compaction" {
+            return (
+                before + 100,
+                requests
+                    .iter()
+                    .filter_map(|r| r.usage.as_ref())
+                    .map(|u| u64::from(u.prompt) + u64::from(u.completion))
+                    .sum(),
+            );
+        }
+        let usage = request.usage.as_ref().unwrap();
+        before += u64::from(usage.prompt) + u64::from(usage.completion);
+    }
+    panic!("missing summary");
+}
+
+fn source_prefill(engine: &dyn Engine, session: &str) -> Result<oxa_proto::AssistantTurn, OxaError> {
+    let prefix = oxa_proto::FrozenPrefix {
+        sections: vec![],
+        tools_json: "[]".into(),
+        sha256: [0; 32],
+    };
+    let messages = vec![oxa_proto::WireMsg::user("owned background prefix")];
+    engine.chat(
+        &oxa_proto::ChatRequest {
+            prefix: &prefix,
+            messages: &messages,
+            model: "fake-model",
+            max_tokens: 0,
+            thinking: false,
+            preserve_thinking: false,
+            hints: oxa_proto::Hints {
+                session,
+                idem_key: "",
+                kind: oxa_proto::TurnKind::Prefill,
+                background: true,
+                snapshot_keep: false,
+            },
+        },
+        &CancelToken::new(),
+        &mut |_| {},
+    )
+}
+fn main_goal_settles_pending_prefill(canceling: bool) {
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    std::fs::create_dir_all(&agent).unwrap();
+    let directory = agent.join("control");
+    let socket = directory.join("session.sock");
+    std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+    let server = Arc::new(
+        FakeServer::start(
+            vec![ScriptTurn::text(
+                r#"{"state":"done","summary":"prefill-final","evidence":["SDK calls settled"]}"#,
+            )],
+            FakeOpts {
+                hold_headers_ms: 250,
+                hold_prefill_ms: 650,
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let session = Session::open(
+        deps(&server.url(), env.root(), &env.work(), store.clone()),
+        Open::New,
+    )
+    .unwrap();
+    let expected = session.state().session_id;
+    let peer_id = expected.clone();
+    let metered_engine = session.inner().engine.clone();
+    let peer_server = server.clone();
+    let done = Arc::new(AtomicBool::new(false));
+    let peer_done = done.clone();
+    let peer = std::thread::spawn(move || {
+        let initial = wait_status(&socket, |v| v["status"]["session"]["id"] == peer_id);
+        request(
+            &socket,
+            json!({"id":"goal","method":"set_goal","revision":revision(&initial),"text":"Verify the final result after all SDK calls settle","budget":{"wall_ms":8000,"tokens":100000,"turns":4}}),
+        );
+        let paused = wait_status(&socket, |v| v["status"]["goal"]["id"] != "unassigned");
+        mutation(&socket, "run", "resume", revision(&paused), None);
+        wait_status(&socket, |_| {
+            peer_server.requests().iter().any(|r| r.max_tokens > 0)
+        });
+        let engine = metered_engine.clone();
+        let id = peer_id.clone();
+        let prefill = std::thread::spawn(move || source_prefill(engine.as_ref(), &id));
+        wait_status(&socket, |_| {
+            peer_server.requests().iter().any(|r| r.max_tokens == 0)
+        });
+        let settling = wait_status(&socket, |v| {
+            v["status"]["session"]["busy"] == false && v["status"]["goal"]["turn_active"] == true
+        });
+        assert_ne!(
+            state(&settling),
+            "done",
+            "a pending SDK return cannot be declared known"
+        );
+        assert!(settling["status"]["goal"]["reported_tokens"].is_null());
+        if canceling {
+            mutation(&socket, "cancel-prefill", "cancel", revision(&settling), None);
+        }
+        let finished = wait_status(&socket, |v| {
+            state(v) == if canceling { "canceled" } else { "done" }
+                && v["status"]["goal"]["turn_active"] == false
+        });
+        let prefill = prefill.join().unwrap();
+        let requests = peer_server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(finished["status"]["goal"]["turns_started"], 1);
+        if canceling {
+            assert!(prefill.is_err());
+            assert!(finished["status"]["goal"]["reported_tokens"].is_null());
+        } else {
+            prefill.unwrap();
+            let tokens: u64 = requests
+                .iter()
+                .map(|r| {
+                    let usage = r.usage.as_ref().unwrap();
+                    u64::from(usage.prompt) + u64::from(usage.completion)
+                })
+                .sum();
+            assert_eq!(
+                finished["status"]["goal"]["reported_tokens"].as_u64(),
+                Some(tokens)
+            );
+        }
+        assert!(
+            source_prefill(metered_engine.as_ref(), &peer_id).is_err(),
+            "late prefill must be refused before SDK entry"
+        );
+        assert_eq!(peer_server.requests().len(), 2);
+        peer_done.store(true, Ordering::Release);
+    });
+    let mut terminal = LiveTerm {
+        inner: TestTerminal::new(160, 35),
+        done,
+        typing: Arc::new(AtomicBool::new(false)),
+        typed: Arc::new(AtomicBool::new(false)),
+        deadline: Instant::now() + Duration::from_secs(12),
+        quit: false,
+        final_text: "prefill-final",
+        escape: false,
+        swap_when: None,
+        swapped: false,
+        rejected: Arc::new(AtomicBool::new(false)),
+    };
+    let mut options = opts(&env, &server.url(), store);
+    let (code, last) = run_session(&mut terminal, session, &mut options);
+    peer.join().unwrap();
+    std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+    assert_eq!(code, 0);
+    assert_eq!(last.unwrap().id, expected);
+    if canceling {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let _ = server.in_flight();
+            if server
+                .timings()
+                .iter()
+                .any(|t| t.max_tokens == Some(0) && t.client_closed)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "cancel closes the pending prefill connection"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--mode") {
@@ -2132,6 +2498,24 @@ fn main() {
             &oxa_config::Env::from_process(),
             oxa_cli::Stdio::real(),
         ));
+    }
+    main_goal_settles_pending_prefill(false);
+    main_goal_settles_pending_prefill(true);
+    println!("main goal waits for a pending SDK prefill and cancels it without fabricating usage ... ok");
+    if args.first().map(String::as_str) == Some("--main-prefill-only") {
+        return;
+    }
+    let (main_cap, main_done_cap) = main_goal_compacts_with_metered_usage(0, false, false, false);
+    main_goal_compacts_with_metered_usage(main_done_cap, false, false, true);
+    main_goal_compacts_with_metered_usage(main_cap, false, false, false);
+    main_goal_compacts_with_metered_usage(0, true, false, false);
+    main_goal_compacts_with_metered_usage(u64::MAX, true, false, false);
+    main_goal_compacts_with_metered_usage(0, false, true, false);
+    println!(
+        "main goal compaction meters summaries/prefill and honors caps, failure and cancellation ... ok"
+    );
+    if args.first().map(String::as_str) == Some("--main-compaction-only") {
+        return;
     }
     if args.first().map(String::as_str) == Some("--idle-interrupt-only") {
         model_worker_lanes_wake_same_session(false, "idle_escape", false, false);
