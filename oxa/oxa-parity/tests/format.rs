@@ -1440,7 +1440,11 @@ fn fmt_021() {
     rpc.ok(json!({"type": "set_mode", "mode": "plan"}));
     rpc.prompt("second");
     let file = rpc.file();
-    assert_eq!(rpc.finish(), Some(0));
+    assert_eq!(
+        rpc.finish(),
+        Some(1),
+        "the first failed prompt remains the terminal outcome"
+    );
     let ls = lines(&file);
     let shown = of_type(&ls, "shown");
     let failed = shown

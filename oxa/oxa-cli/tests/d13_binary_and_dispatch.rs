@@ -141,12 +141,15 @@ fn exit_codes() {
 
 /// message + hint
 #[test]
-fn no_engine_one_line_exit_2() {
+fn no_engine_diagnostic_and_typed_result_exit_2() {
     let env = TestEnv::new();
     let result = go(&env, &closed_url(), &["-p", "hello"]);
     assert_eq!(result.code, 2, "no engine is exit 2");
     let lines: Vec<&str> = result.err.lines().collect();
-    assert_eq!(lines.len(), 1, "one line on stderr, got {:?}", result.err);
+    assert_eq!(lines.len(), 2, "diagnostic and result, got {:?}", result.err);
+    let result_record: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(result_record["error_class"], "engine_down");
+    assert_eq!(result_record["exit_code"], 2);
     assert!(
         lines[0].contains("cannot reach the engine"),
         "message: {}",
