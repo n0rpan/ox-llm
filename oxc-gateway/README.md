@@ -16,3 +16,9 @@ Source cases use private HOME/network namespaces and synthetic data. No real
 API, credential, SDK material or sign-in is used. Every opt-in module forbids
 unsafe code. Preserve all present feature/module/example entries when merging
 companion slices. Full cloud-only forwarding/accounting remains incomplete.
+
+The secrets loop contract explicitly supports Python 3.12's generic refusal and
+3.13's symbolic-link refusal: it validates one of those two complete messages
+before normalizing only that wording. Native uses the symbolic-link message.
+The secrets subset passes both Python versions and native; every other error is
+compared exactly. Credential values and paths must never appear in errors.
