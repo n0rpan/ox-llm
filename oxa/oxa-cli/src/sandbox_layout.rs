@@ -80,7 +80,13 @@ pub(crate) fn layout(
     // #196: extra read-only paths are never silent; say which are mounted and which are not.
     // A bind that contains the cwd is never mounted (the cwd bind covers it): its siblings
     // stay hidden and the cwd keeps its own access.
-    let holds_cwd = |m: &Path| cwd.starts_with(m) || resolved.as_deref().is_some_and(|r| r.starts_with(m));
+    let holds_cwd = |m: &Path| {
+        let canon = m.canonicalize().ok();
+        [Some(cwd), resolved.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|c| c.starts_with(m) || canon.as_deref().is_some_and(|k| c.starts_with(k)))
+    };
     let (kept, skipped): (Vec<_>, Vec<_>) = read_extra
         .iter()
         .partition(|p| Layout::keeps_extra(&dirs.home, Some(&dirs.agent_dir), p));
@@ -373,6 +379,31 @@ mod tests {
             notices
                 .iter()
                 .any(|(_, t)| t.contains("contains the workspace") && t.contains("data")),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn symlinked_read_path_above_the_workspace_is_not_called_readable() {
+        let env = TestEnv::new();
+        env.write("data/app/x", "x");
+        std::os::unix::fs::symlink(env.root().join("data"), env.root().join("link")).unwrap();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(
+                r#"{{"oxa":{{"sandbox":{{"readPaths":["{}"]}}}}}}"#,
+                env.root().join("link").display()
+            ),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        layout(&e, &dirs, &env.root().join("data/app"), false, &mut notices);
+        assert!(
+            !notices.iter().any(|(_, t)| t.contains("never write")),
+            "{notices:?}"
+        );
+        assert!(
+            notices.iter().any(|(_, t)| t.contains("contains the workspace")),
             "{notices:?}"
         );
     }

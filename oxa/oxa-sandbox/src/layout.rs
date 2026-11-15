@@ -209,11 +209,6 @@ impl Layout {
         p.is_absolute() && p.exists() && !denied(p, &deny) && p != home && p != Path::new("/")
     }
 
-    /// Whether `p` ends up writable in this (built) layout.
-    pub fn is_writable(&self, p: &Path) -> bool {
-        self.write.iter().any(|w| p.starts_with(w))
-    }
-
     /// Whether some writable mount lies strictly inside `p`.
     pub fn has_writable_inside(&self, p: &Path) -> bool {
         self.write.iter().any(|w| w != p && w.starts_with(p))
