@@ -10,6 +10,7 @@ autobins = false
 default = []
 native-controller = []
 upstream-anthropic-request = ["dep:serde_json", "dep:oxc-gateway", "oxc-gateway/upstream-anthropic-request"]
+upstream-anthropic-stream = ["dep:serde_json", "dep:oxc-gateway", "oxc-gateway/upstream-anthropic-stream"]
 
 [dependencies]
 oxc-gateway = { path = "../oxa/oxc-gateway", default-features = false, optional = true }
