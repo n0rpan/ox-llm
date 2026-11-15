@@ -76,6 +76,12 @@ def capture(name):
                        {'LOCAL_AI_OFFLINE': 'yes'} if name == 'old-offline-name-ignored' else {})
         lease = home / 'state/oxc/inference.lock'
         lease.parent.mkdir(parents=True, mode=0o700)
+        if name == 'enabled':
+            cache = lease.parent / 'openrouter-prices.json'
+            cache.write_text(json.dumps({'data': [{'id': 'synthetic-upstream-openrouter',
+                'pricing': {'prompt': '0.000001', 'completion': '0.000002',
+                            'input_cache_read': '0.0000001', 'input_cache_write': '0.00000125'}}]}))
+            cache.chmod(0o600)
         with lease.open('xb') as owner:
             owner.write(b'synthetic-other-owner\n')
             owner.flush()

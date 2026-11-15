@@ -8,16 +8,20 @@ The owner authorized starting Rust while the remaining conformance work and CI
 proceed. Python product code remains unchanged; reference goldens follow merged main;
 new tests still establish Python behavior before checking a ported path.
 
-Cloud-only mode (no local engine) is the first complete runtime target. Its
-gateway and installation contracts will follow #24 and the cloud-only stack
-from merged main #180. Hardware A/B waits for that suite to be green. See the
-[reviewable merge plan](../conformance/MERGE_PLAN.md); draft
-[#177](https://github.com/oxstack/ox-llm/pull/177) extracts only the opt-in parser
-binary. Draft [#186](https://github.com/oxstack/ox-llm/pull/186) adds the independent
-bounded control client on top. Draft
-[#197](https://github.com/oxstack/ox-llm/pull/197) adds only the read-only ledger
-CLI and its minimal helpers, with a separate file-reader conformance subset.
-This integration branch stays draft #28.
+Cloud-only mode (no local engine) is the first complete target. Main is merged
+normally through `2f23a0e`; the discovery proof also includes #294's current
+snapshot API. Native discovery passes nine live HTTP cases, including an owned
+public-price cache, and eight public refusal cases. They hold a foreign inference
+lease throughout and install no engine/model. Positive forwarding, accounting,
+explicit cancel and installer composition are still incomplete; metadata parity
+alone does not establish those paths. Hardware A/B waits for the full suite.
+
+The [reviewable merge plan](../conformance/MERGE_PLAN.md) keeps independent
+opt-in slices against main. #177, #297 and #327 are merged. The CLI/transport
+lane owns #186, #197 and #271; rust-cloud owns #294/#320/#353/#367/#379 and
+wires the translators from rust-upstreams #334 after landing. This integration
+branch stays draft #28 and must never be merged as a monolith. Validation counts
+below describe earlier scoped baselines unless a current result is stated.
 
 Build locally, keeping generated binaries outside the source checkout:
 

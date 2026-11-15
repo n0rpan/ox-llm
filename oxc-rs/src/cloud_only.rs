@@ -17,14 +17,15 @@ struct App {
     port: u16,
     config: Mutex<Value>,
     preload: Mutex<Option<Value>>,
+    prices: Value,
 }
 
-fn discovery(config: &Value) -> Catalog {
+fn discovery(config: &Value, prices: &Value) -> Catalog {
     // Engine mode is selected at startup. A configuration refresh cannot
     // construct a local engine or change this runtime into a local controller.
     let mut config = config.clone();
     config["cloud_only"] = json!(true);
-    Catalog::from_config(&config, catalog::offline()).expect("cloud-only metadata")
+    Catalog::from_config(&config, catalog::offline(), prices).expect("cloud-only metadata")
 }
 
 async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
@@ -64,15 +65,11 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     }
     if [Method::GET, Method::HEAD].contains(&method) {
         if ["/models", "/v1/models"].contains(&path.as_str()) {
-            return context.reply(200, discovery(&config).models());
+            return context.reply(200, discovery(&config, &app.prices).models());
         }
         if let Some((_, wanted)) = path.split_once("/models/") {
-            if let Some(item) = catalog::visible(&config)
-                .iter()
-                .find(|item| item["id"] == wanted)
-                .cloned()
-            {
-                return context.reply(200, catalog::row(&item));
+            if let Some(item) = discovery(&config, &app.prices).model(wanted) {
+                return context.reply(200, item);
             }
             return context.error(
                 404,
@@ -83,10 +80,17 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             );
         }
         if path == "/health" {
-            return context.reply(200, discovery(&config).health());
+            return context.reply(200, discovery(&config, &app.prices).health());
         }
         if path == "/_local/status" {
             let mut status = catalog::status(&config, app.port);
+            status.as_object_mut().unwrap().extend(
+                discovery(&config, &app.prices)
+                    .status_fragment()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
             status["model_preload"] = app
                 .preload
                 .lock()
@@ -96,7 +100,10 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             return context.reply(200, status);
         }
         if path == "/_local/models" {
-            return context.reply(200, catalog::catalog(&config));
+            return match discovery(&config, &app.prices).chooser() {
+                Ok(body) => context.reply(200, body),
+                Err(_) => context.reply(503, json!({"error":"Model setup is not finished yet. Run `oxc status` to follow it."})),
+            };
         }
         if path == "/_local/ledger" {
             return context.reply(200, crate::request_ledger::recent(50));
@@ -339,10 +346,12 @@ pub async fn run() -> i32 {
         port,
         config: Mutex::new(paths::read_config().unwrap_or_else(|| json!({}))),
         preload: Mutex::new(None),
+        prices: catalog::public_prices(),
     });
     if let Some(catalog) = Catalog::from_config(
         &app.config.lock().unwrap_or_else(|e| e.into_inner()),
         catalog::offline(),
+        &app.prices,
     ) {
         eprintln!("{}", catalog.startup_line());
     }

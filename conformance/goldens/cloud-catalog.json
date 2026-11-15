@@ -7,6 +7,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -35,6 +36,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -63,6 +65,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -117,6 +120,7 @@
       "body": {
         "capabilities": {
           "cache_hints": false,
+          "cache_pricing": "conservative",
           "cancel": true,
           "context_window": 64000,
           "echo": false,
@@ -146,6 +150,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -168,6 +173,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -190,6 +196,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -254,7 +261,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -370,6 +378,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -387,6 +396,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -404,6 +414,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -554,7 +565,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -802,7 +814,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -969,6 +982,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -997,6 +1011,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -1025,6 +1040,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "explicit",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1079,6 +1095,7 @@
       "body": {
         "capabilities": {
           "cache_hints": false,
+          "cache_pricing": "explicit",
           "cancel": true,
           "context_window": 64000,
           "echo": false,
@@ -1108,6 +1125,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1130,6 +1148,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -1152,6 +1171,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "explicit",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1216,7 +1236,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -1332,6 +1353,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1349,6 +1371,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -1366,6 +1389,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "explicit",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1435,6 +1459,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1463,6 +1488,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -1491,6 +1517,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1545,6 +1572,7 @@
       "body": {
         "capabilities": {
           "cache_hints": false,
+          "cache_pricing": "conservative",
           "cancel": true,
           "context_window": 64000,
           "echo": false,
@@ -1574,6 +1602,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1596,6 +1625,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -1618,6 +1648,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1682,7 +1713,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -1798,6 +1830,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1815,6 +1848,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -1832,6 +1866,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1901,6 +1936,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -1929,6 +1965,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -1957,6 +1994,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2011,6 +2049,7 @@
       "body": {
         "capabilities": {
           "cache_hints": false,
+          "cache_pricing": "conservative",
           "cancel": true,
           "context_window": 64000,
           "echo": false,
@@ -2040,6 +2079,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2062,6 +2102,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -2084,6 +2125,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2148,7 +2190,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -2264,6 +2307,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2281,6 +2325,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -2298,6 +2343,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2448,7 +2494,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -2615,6 +2662,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2643,6 +2691,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -2671,6 +2720,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2725,6 +2775,7 @@
       "body": {
         "capabilities": {
           "cache_hints": false,
+          "cache_pricing": "conservative",
           "cancel": true,
           "context_window": 64000,
           "echo": false,
@@ -2754,6 +2805,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2776,6 +2828,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -2798,6 +2851,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2862,7 +2916,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -2978,6 +3033,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -2995,6 +3051,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -3012,6 +3069,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -3081,6 +3139,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -3109,6 +3168,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -3137,6 +3197,7 @@
             "battery_start_percent": null,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -3191,6 +3252,7 @@
       "body": {
         "capabilities": {
           "cache_hints": false,
+          "cache_pricing": "conservative",
           "cancel": true,
           "context_window": 64000,
           "echo": false,
@@ -3220,6 +3282,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -3242,6 +3305,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -3264,6 +3328,7 @@
           {
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -3328,7 +3393,8 @@
           "context_modes",
           "preload",
           "model_preload",
-          "cloud"
+          "cloud",
+          "cancel"
         ],
         "chat_url": "http://127.0.0.1:<PORT>",
         "cloud": {
@@ -3444,6 +3510,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "provider_default",
               "cancel": true,
               "context_window": 64000,
               "echo": false,
@@ -3461,6 +3528,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": false,
               "context_window": 64000,
               "echo": false,
@@ -3478,6 +3546,7 @@
             "cap": 64000,
             "capabilities": {
               "cache_hints": false,
+              "cache_pricing": "conservative",
               "cancel": true,
               "context_window": 64000,
               "echo": false,

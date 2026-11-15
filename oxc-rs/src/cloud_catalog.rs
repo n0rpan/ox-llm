@@ -120,18 +120,71 @@ pub fn capabilities(item: &Value) -> Value {
     json!({"remote":true,"remote_provider":item["provider"],"echo":false,"cache_hints":false,
         "cancel":item["provider"]!="openai","prefill":false,"preserve_thinking":false,"context_window":item["context_window"]})
 }
-pub fn row(item: &Value) -> Value {
-    json!({"id":item["id"],"object":"model","created":0,"owned_by":item["provider"],"name":item["display_name"],
-        "remote":true,"provider":item["provider"],"context_length":item["context_window"],"context_window":item["context_window"],
-        "max_output_tokens":item["max_output"],"capabilities":capabilities(item)})
-}
-pub fn catalog(config: &Value) -> Value {
-    let rows:Vec<_>=visible(config).iter().map(|item|json!({"id":item["id"],"key":"cloud","name":item["display_name"],
-        "engine":"remote","engine_status":"remote","qualification":null,"memory_gib":null,"battery_start_percent":null,
-        "prefix":"off","selected":false,"default":false,"state":"unloaded","remote":true,"provider":item["provider"],
-        "context_window":item["context_window"],"max_output":item["max_output"],"capabilities":capabilities(item)})).collect();
-    json!({"object":"list","data":rows,"default_model":"ornith-35b-a3b-local",
-        "selected_model":config.get("selected_model").or_else(||config.get("model_alias")).cloned().unwrap_or_else(||json!("qwen-local"))})
+/// One bounded public-cache snapshot at startup; no network refresh or key IO.
+pub fn public_prices() -> Value {
+    let read = || -> Option<Value> {
+        let state = std::env::var_os("XDG_STATE_HOME")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| paths::home().join(".local/state"));
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
+            .open(state.join("oxc/openrouter-prices.json"))
+            .ok()?;
+        let info = file.metadata().ok()?;
+        if !info.is_file()
+            || info.len() > 4 * 1024 * 1024
+            || info.uid() != nix::unistd::Uid::current().as_raw()
+            || info.mode() & 0o022 != 0
+        {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        file.take(4 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() > 4 * 1024 * 1024 {
+            return None;
+        }
+        let value: Value = serde_json::from_slice(&bytes).ok()?;
+        let rows = value["data"]
+            .as_array()
+            .filter(|rows| rows.len() <= 20_000)?;
+        let mut prices = Map::new();
+        for row in rows {
+            let Some(id) = row["id"].as_str().filter(|id| id.chars().count() <= 128) else {
+                continue;
+            };
+            let rates = || -> Option<Value> {
+                let mut out = Map::new();
+                for (source, target) in [
+                    ("prompt", "input_per_million"),
+                    ("completion", "output_per_million"),
+                    ("input_cache_read", "cache_read_per_million"),
+                    ("input_cache_write", "cache_write_per_million"),
+                ] {
+                    let value = &row["pricing"][source];
+                    if value.is_null() && source.starts_with("input_cache_") {
+                        continue;
+                    }
+                    let rate = value
+                        .as_f64()
+                        .or_else(|| value.as_str()?.trim().parse().ok())?;
+                    if !(0.0..=1e6).contains(&rate) {
+                        return None;
+                    }
+                    out.insert(target.into(), json!(rate * 1e6));
+                }
+                Some(Value::Object(out))
+            };
+            if let Some(price) = rates() {
+                prices.insert(id.into(), price);
+            }
+        }
+        Some(Value::Object(prices))
+    };
+    read().unwrap_or_else(|| json!({}))
 }
 fn local_description(config: &Value) -> Option<&Value> {
     let selected = config["selected_model"]
@@ -274,7 +327,7 @@ pub fn status(config: &Value, port: u16) -> Value {
         "flash_qualification":null,"engine_ledger":{"enabled":false},"harnesses":{},
         "harness_learning":{"enabled":false,"persistent":true,"min_requests":3,"min_prefix_chars":3000,"candidates":[],"ignored":[]},
         "flash_idle_qos":{"enabled":false,"unit":null,"started":false,"error":null},
-        "capabilities":["models","storage","harness","harness_learning","ledger","active","openai_aliases","state_cache","context_modes","preload","model_preload","cloud"],
+        "capabilities":["models","storage","harness","harness_learning","ledger","active","openai_aliases","state_cache","context_modes","preload","model_preload","cloud","cancel"],
         "cloud":summary(config),"active":{"model":null,"phase":"idle","seconds":null,"tokens_out":null,"tokens_per_second":null,"prompt_tokens_done":null,"prompt_tokens_total":null,"queued_requests":0},
         "last_error":null,"last_failure":null,"error_at":null,"error_origin":null,"context":{"mode":null,"modes":[],"cap":null},"model_limits":limits,
         "preload":{"state":"idle","src":null,"ms":null,"age_s":null},"model_preload":null,"stop_pending":null,"image_slot_stale":0,
