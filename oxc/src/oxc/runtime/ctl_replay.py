@@ -81,10 +81,11 @@ def _mac(*fields):
 
 
 class Identity:
-    __slots__ = ('key', 'body_hash', 'lane')
+    __slots__ = ('key', 'body_hash', 'lane', 'session', 'idem')
 
-    def __init__(self, key, body_hash, lane):
+    def __init__(self, key, body_hash, lane, session=None, idem=None):
         self.key, self.body_hash, self.lane = key, body_hash, lane
+        self.session, self.idem = session, idem
 
 
 def _header(handler, name):
@@ -132,12 +133,13 @@ def identity(handler, st):
     basis = ['idem', idem] if idem is not None else ['body', body_hash]
     key = _mac('oxe-replay-v1', handler.command, st.path, principal, session, target.get('model_alias'),
                getattr(handler.manager, 'launches', None), row.get('mode'), *basis)
-    return Identity(key, body_hash, _mac('lane', principal, session))
+    return Identity(key, body_hash, _mac('lane', principal, session), session, idem)
 
 
 class Entry:
     def __init__(self, ident):
         self.key, self.body_hash, self.lane = ident.key, ident.body_hash, ident.lane
+        self.session, self.idem = ident.session, ident.idem
         self.cond = threading.Condition(threading.Lock())
         self.status = None
         self.headers = None
@@ -225,6 +227,20 @@ def _abort(entry):
             entry.upstream.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
+
+
+def cancel_explicit(session, idem=None):
+    """POST /_local/cancel: the client deliberately cancelled. Every live or cut entry of this session (and
+    idempotency key, when given) ends now: the engine socket is closed and the grace is over. Returns the
+    number cancelled; an unknown request is 0 (idempotent)."""
+    wanted = {'h:' + session, 'i:' + (idem or session)}
+    with STORE.lock:
+        found = [e for e in STORE.entries.values() if e.session in wanted and (idem is None or e.idem == idem)
+                 and e.state in ('live', 'cut')]
+    for entry in found:
+        _abort(entry)
+        STORE.drop(entry)
+    return len(found)
 
 
 def yield_cut_entries():

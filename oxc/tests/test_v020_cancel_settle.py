@@ -56,6 +56,36 @@ class CancelSettle(pre.PreemptOverHttp):
         pre.wait_for(lambda: self.engine.cut.get(0) is not None, timeout=12)
         self.assertTrue(self.engine.cut[0], 'the cancelled generation was not cancelled at the engine')
 
+    def test_explicit_cancel_frees_the_engine_at_once(self):
+        def behave(index, body, conn):
+            conn.sendall(pre.SSE_HEAD)
+            deadline = time.monotonic() + 10
+            try:
+                while time.monotonic() < deadline:
+                    conn.sendall(b'data: "tok"\n\n')
+                    time.sleep(0.02)
+                self.engine.cut[index] = False
+            except OSError:
+                self.engine.cut[index] = True
+        self.use_engine(behave)
+        first = pre.Client(self.proxy.server_port, self.body('essay', temperature=0),
+                           (('X-Session-Id', 'oxa.parent'), ('Idempotency-Key', 'k-essay')), leave_at=b'"tok"')
+        pre.wait_for(lambda: first.closed == 'client')
+        import http.client, json
+        cut_at = time.monotonic()
+        conn = http.client.HTTPConnection('127.0.0.1', self.proxy.server_port, timeout=5)
+        conn.request('POST', '/_local/cancel', json.dumps({'idempotency_key': 'k-essay', 'session': 'oxa.parent'}),
+                     {'Content-Type': 'application/json'})
+        reply = conn.getresponse()
+        self.assertEqual(reply.status, 200)
+        self.assertEqual(json.loads(reply.read())['cancelled'], 1)
+        pre.wait_for(lambda: self.engine.cut.get(0) is not None, timeout=5)
+        self.assertTrue(self.engine.cut[0])
+        self.assertLess(time.monotonic() - cut_at, SETTLE_LIMIT_S)
+        first.join()
+        from oxc.runtime import ctl_env
+        self.assertIn('cancel', ctl_env.CAPABILITIES)
+
 
 if __name__ == '__main__':
     unittest.main()

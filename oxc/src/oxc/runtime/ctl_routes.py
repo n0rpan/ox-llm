@@ -68,7 +68,7 @@ class ControlRoutes:
                 return self.json_reply(503, {'error': 'Cache usage is unavailable.'})
         if path in ('/_local/load', '/_local/preload', '/_local/unload', '/_local/select', '/_local/cache/clear', '/_local/cache/budget', '/_local/harness/prepare', '/_local/harness/forget',
                     '/_local/harness/learning', '/_local/harness/learn', '/_local/harness/label',
-                    '/_local/storage/delete', '/_local/flash/cache', '/_local/mode', '/_local/share') and self.command == 'POST':
+                    '/_local/storage/delete', '/_local/flash/cache', '/_local/mode', '/_local/share', '/_local/cancel') and self.command == 'POST':
             # Consume control bodies so a persistent HTTP connection remains
             # usable. These actions accept no prompt or image data.
             try:
@@ -84,6 +84,12 @@ class ControlRoutes:
                     control = json.loads(self.rfile.read(control_length))
                     if not isinstance(control, dict): raise ValueError()
                 except ValueError: return self.json_reply(400, {'error': 'Invalid control request.'})
+        if path == '/_local/cancel' and self.command == 'POST':
+            session, idem = control.get('session'), control.get('idempotency_key')
+            if not isinstance(session, str) or not 1 <= len(session) <= 200 or not (idem is None or isinstance(idem, str)):
+                return self.json_reply(400, {'error': 'Send {"session": "...", "idempotency_key": "..."}.'})
+            from . import ctl_replay
+            return self.json_reply(200, {'cancelled': ctl_replay.cancel_explicit(session, idem)})
         if path == '/_local/share':
             share = getattr(self.manager, 'share', None)
             if self.command in ('GET', 'HEAD'):
