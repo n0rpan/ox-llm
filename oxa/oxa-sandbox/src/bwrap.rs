@@ -203,6 +203,9 @@ pub(crate) fn bwrap_args_homes(
         .rw
         .iter()
         .filter(|p| !p.starts_with(cwd_path) && !cwd_path.starts_with(p))
+        // The session may outlive the worktree's git dir (pruned, moved): bwrap dies on a
+        // missing source, taking every command with it. Skip it; git then fails alone.
+        .filter(|p| std::fs::symlink_metadata(p).is_ok())
     {
         let p = p.to_string_lossy();
         push(&mut a, &[git_rw, &p, &p]);
@@ -1566,6 +1569,18 @@ mod git_files_tests {
         let cfg = work.join(".git/config").to_string_lossy().into_owned();
         assert!(a.windows(3).any(|w| w == ["--ro-bind", &cfg, &cfg]), "{a:?}");
         assert!(!a.iter().any(|x| x == "/dev/null"), "{a:?}");
+    }
+
+    #[test]
+    fn a_vanished_git_dir_is_not_bound() {
+        let env = TestEnv::new();
+        env.write("work/x", "");
+        let gone = env.home().join("main/.git/worktrees/w");
+        let mut layout = Layout::default();
+        layout.git.rw.push(gone.clone());
+        let a = bwrap_args_with(&spec(&env.work(), true), &env.home(), &layout);
+        let g = gone.to_string_lossy().into_owned();
+        assert!(!a.iter().any(|x| *x == g), "{a:?}");
     }
 
     #[test]
