@@ -11,7 +11,7 @@ cloud-only = ["dep:serde_json", "dep:url"]
 policy = ["dep:serde_json"]
 
 [dependencies]
-serde_json = { version = "1", optional = true }
+serde_json = { version = "1", features = ["arbitrary_precision"], optional = true }
 url = { version = "2", optional = true }
 
 [[example]]

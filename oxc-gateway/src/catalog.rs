@@ -19,10 +19,26 @@ fn positive(value: &Value) -> Option<Value> {
     if !number.is_finite() || number <= 0.0 {
         return None;
     }
-    if let Some(number) = value.as_u64() {
-        Some(json!(number))
-    } else {
-        Some(json!(number.trunc()))
+    let raw = value.as_number()?.to_string();
+    if !raw.contains(['.', 'e', 'E']) {
+        return Some(value.clone());
+    }
+    // Python publishes int(float), including values above u64::MAX. Keep
+    // the wire type integer without saturating or rounding its token limit.
+    format!("{:.0}", number.trunc())
+        .parse::<serde_json::Number>()
+        .ok()
+        .map(Value::Number)
+}
+
+fn truth(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_none_or(|value| value != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
     }
 }
 
@@ -43,11 +59,9 @@ impl Model {
             "remote/openai" => Some("openai"),
             _ => return None,
         };
-        let provider = match raw.get("provider") {
-            Some(Value::String(s)) if !s.is_empty() => Some(s.as_str()),
-            None | Some(Value::Null | Value::Bool(false)) => derived,
-            Some(Value::String(_)) => derived,
-            _ => None,
+        let provider = match raw.get("provider").filter(|value| truth(value)) {
+            Some(value) => value.as_str(),
+            None => derived,
         }?;
         if !PROVIDERS.contains(&provider) {
             return None;
@@ -69,7 +83,7 @@ impl Model {
         }
         let upstream = raw
             .get("upstream_model")
-            .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+            .filter(|value| truth(value))
             .or_else(|| raw.get("upstream"))?
             .as_str()?;
         if upstream.trim().is_empty() {
