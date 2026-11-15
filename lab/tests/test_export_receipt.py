@@ -396,7 +396,11 @@ class RepoAllowFileTests(unittest.TestCase):
         self.assertIsNotNone(match)
         return match.group("owner")
 
-    def scan_host_hits(self, text, deny, base, name="README.md"):
+    LICENSE_TEXT = "MIT License\n\nCopyright (c) 2026 Ada Example (%s)\n"
+
+    def scan_host_hits(self, text, deny, base, name="README.md", license=True):
+        if license:
+            (Path(base) / "LICENSE").write_text(self.LICENSE_TEXT % "zorblax")
         path = Path(base) / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
@@ -421,6 +425,7 @@ class RepoAllowFileTests(unittest.TestCase):
         deny = {handle: "host-name"}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / "LICENSE").write_text(self.LICENSE_TEXT % handle)
             (root / "README.md").write_text(
                 "Copyright (c) 2026 Oscar Nordström (%s)\n"
                 "download https://github.com/%s/ox-llm/releases\n"
@@ -432,6 +437,46 @@ class RepoAllowFileTests(unittest.TestCase):
                 "From: Oscar Nordstrom <13300531+%s@users.noreply.github.com>\n" % handle)
             hits = [h for h in er.scan_paths([tmp], deny, (), self.contexts(), tmp) if h[1] == "host-name"]
             self.assertEqual(hits, [])
+
+    # (b2) the exemption is bound to the approved VALUE, not only to the slot --------
+    def test_other_word_in_owner_slot_is_still_flagged(self):
+        deny = {"quuxhost": "host-name", "zorblax": "host-name"}
+        cases = [
+            ("THIRD_PARTY_NOTICES", "Build host (quuxhost)\n"),
+            ("README.md", "Copyright (c) 2026 Ada Example (quuxhost)\n"),
+            ("README.md", "see https://github.com/quuxhost/ox-llm/releases\n"),
+            ("README.md", "gh attestation verify x --repo quuxhost/ox-llm\n"),
+            ("patches/llama-x.patch", "From: A <1+quuxhost@users.noreply.github.com>\n"),
+        ]
+        for name, text in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertTrue(self.scan_host_hits(text, deny, tmp, name), (name, text))
+
+    def test_approved_owner_passes_in_each_context_shape(self):
+        deny = {"zorblax": "host-name"}
+        cases = [
+            ("THIRD_PARTY_NOTICES", "Ada Example (ZorBlax)\n"),
+            ("README.md", "Copyright (c) 2026 Ada Example (zorblax)\n"),
+            ("README.md", "see https://github.com/zorblax/ox-llm/releases\n"),
+            ("README.md", "gh attestation verify x --repo zorblax/ox-llm\n"),
+            ("patches/llama-x.patch", "From: A <1+zorblax@users.noreply.github.com>\n"),
+        ]
+        for name, text in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(self.scan_host_hits(text, deny, tmp, name), [], (name, text))
+
+    def test_missing_or_ambiguous_license_fails_closed(self):
+        deny = {"zorblax": "host-name"}
+        text = "Copyright (c) 2026 Ada Example (zorblax)\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(self.scan_host_hits(text, deny, tmp, license=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "LICENSE").write_text("MIT License\n\nNo copyright line here.\n")
+            self.assertTrue(self.scan_host_hits(text, deny, tmp, license=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "LICENSE").write_text(
+                "Copyright (c) 2026 Ada Example (zorblax)\nCopyright (c) 2026 Bo Example (quuxhost)\n")
+            self.assertTrue(self.scan_host_hits(text, deny, tmp, license=False))
 
     # (c) the real files from the old whole-file entries scan clean for host-name ---------
     def test_real_owner_files_scan_clean_for_host_name(self):

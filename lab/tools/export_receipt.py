@@ -204,17 +204,34 @@ def _deny_hits(text, deny_words=None, allow_exact=()):
     return hits
 
 
-def _apply_context_allow(hits, text, contexts, rel):
+_LICENSE_OWNER_RX = re.compile(r"^[ \t]*Copyright \(c\) \d{4} [^\n(]+ \((?P<owner>[^)\s]+)\)", re.M | re.I)
+
+
+def approved_owner(base):
+    """The approved public owner value: the handle in the Copyright line of base/LICENSE.
+
+    Returns it lower-cased, or None (fail closed) when LICENSE is missing, unreadable, has no
+    such line, or names several different values."""
+    try:
+        text = (Path(base or os.getcwd()) / "LICENSE").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    values = {m.group("owner").lower() for m in _LICENSE_OWNER_RX.finditer(text)}
+    return values.pop() if len(values) == 1 else None
+
+
+def _apply_context_allow(hits, text, contexts, rel, owner=None):
     """Drop deny hits covered by a context exemption on their own line.
 
     Accepts per-occurrence hits (rule, line_no, start, end) from _deny_hits and returns
     (rule, line_no) for the survivors. A hit is dropped only when its rule matches the
     exemption's rule, the file's relative path matches the exemption's glob, and the denied
     word's whole-word span equals the span of the 'owner' group in a CONTEXT match on that
-    same line. The matched value is never examined or printed."""
+    same line, and the text of that span equals `owner` (the approved value, case-insensitive).
+    With owner=None nothing is exempted (fail closed). The value is never printed."""
     import fnmatch
     matching = [(rule, rx) for glob, rule, rx, _reason in contexts if fnmatch.fnmatchcase(rel, glob)]
-    if not matching:
+    if not matching or not owner:
         return [(rule, no) for rule, no, _start, _end in hits]
     lines = [line[:200_000] for line in text.splitlines()]
     kept = []
@@ -228,7 +245,7 @@ def _apply_context_allow(hits, text, contexts, rel):
                 continue
             for match in rx.finditer(lines[no - 1]):
                 owner_spans.add(match.span("owner"))
-        if (start, end) not in owner_spans:
+        if (start, end) not in owner_spans or lines[no - 1][start:end].lower() != owner:
             kept.append((rule, no))
     return kept
 
@@ -256,6 +273,7 @@ def scan_paths(paths, deny_words=None, allow_exact=(), allow_contexts=None, base
     exemptions, as returned by load_allow_contexts. base is the directory those contexts'
     globs are relative to (default: current directory)."""
     out = []
+    owner = approved_owner(base) if allow_contexts else None
     for raw in paths:
         root = Path(raw)
         files = sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts) if root.is_dir() else [root]
@@ -273,7 +291,7 @@ def scan_paths(paths, deny_words=None, allow_exact=(), allow_contexts=None, base
                 rel = os.path.relpath(str(path), base) if base else str(path)
                 rules = scan_text(text)
                 deny_hits = _apply_context_allow(_deny_hits(text, deny_words, allow_exact),
-                                                 text, allow_contexts, rel.replace(os.sep, "/"))
+                                                 text, allow_contexts, rel.replace(os.sep, "/"), owner)
                 hits = rules + deny_hits
             else:
                 hits = scan_text(text, deny_words, allow_exact)
