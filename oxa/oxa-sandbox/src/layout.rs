@@ -78,6 +78,8 @@ pub const TOOLCHAIN_READ: &[&str] = &[
 pub const CACHE_WRITE: &[&str] = &[
     ".cargo/registry",
     ".cargo/git",
+    ".cache/mise",
+    ".local/state/mise",
     ".cache/pip",
     ".cache/uv",
     ".cache/go-build",

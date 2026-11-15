@@ -846,3 +846,24 @@ fn real_gh_hosts_file_is_readable_empty_and_hides_the_token_store() {
         "SYNTH-HOST-TOKEN-SENTINEL"
     );
 }
+
+/// #250: mise shims (`gh`, `claude`, ...) write their cache and tracked-config state; those
+/// directories are writable when they exist, so the shim does not fail on a read-only home.
+#[test]
+fn mise_cache_and_state_are_writable() {
+    let env = TestEnv::new();
+    env.write("home/.cache/mise/gh/keep", "");
+    env.write("home/.local/state/mise/tracked-configs/keep", "");
+    let home = env.home();
+    let l = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin".into(),
+        env: Vec::new(),
+        read_extra: Vec::new(),
+        write_extra: Vec::new(),
+        allow_home_write: false,
+    });
+    assert!(l.write.contains(&home.join(".cache/mise")), "{:?}", l.write);
+    assert!(l.write.contains(&home.join(".local/state/mise")), "{:?}", l.write);
+}
