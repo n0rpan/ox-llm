@@ -317,18 +317,18 @@ provider's bill: #47's validated `usage.cost` remains an additional settlement f
 
 ## Experimental: ChatGPT subscription (`chatgpt/<model>`, opt-in)
 
-> **Experimental and unsupported.** This route signs in with the public PKCE client of OpenAI's
-> own command-line coding agent and calls the ChatGPT subscription Responses backend, the way
+> **Experimental and unsupported.** This route signs in with the OAuth client registered for
+> ox-llm (`cloud.chatgpt.client_id`; oxc ships none and never borrows another app's client
+> identity, so sign-in stays unavailable until that registration exists) and calls the ChatGPT subscription Responses backend, the way
 > several third-party agents do. OpenAI does not document it; it is tolerated and **may break
 > without notice**. The official "Sign in with ChatGPT" program (#247) replaces it.
 
 It is off by default. It needs `cloud.enabled: true`, catalog entries of kind
-`remote/chatgpt` named `chatgpt/<model>`, and an explicit sign-in:
+`remote/chatgpt` named `chatgpt/<model>`, `cloud.chatgpt.client_id`, and an explicit sign-in:
 
 ```sh
 oxc login chatgpt                 # browser PKCE sign-in, redirect to http://localhost:1455
 oxc login chatgpt --paste         # headless: open the URL anywhere, paste the redirected address
-oxc login chatgpt --import ~/.codex/auth.json   # reuse an existing CLI login once (read only)
 oxc logout chatgpt                # removes the token file
 ```
 

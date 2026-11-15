@@ -34,7 +34,6 @@ PROVIDER = 'chatgpt'
 ALIAS_PREFIX = 'chatgpt/'
 TOKEN_FILE = 'chatgpt-auth.json'
 LOCK_FILE = 'chatgpt-auth.lock'
-CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'  # the published public PKCE client (#252)
 AUTH_URL = 'https://auth.openai.com'
 REDIRECT_PORT = 1455
 REDIRECT_PATH = '/auth/callback'
@@ -64,6 +63,19 @@ def _settings(value):
 def auth_url(value):
     raw = _settings(value).get('auth_url')
     return raw.rstrip('/') if isinstance(raw, str) and raw.startswith(('https://', 'http://127.0.0.1')) else AUTH_URL
+
+
+def client_id(value):
+    """The OAuth client registered for ox-llm (``cloud.chatgpt.client_id``); None when unset.
+
+    oxc ships no client identity of its own and never borrows another app's (AGENTS.md D7):
+    sign-in and refresh stay unavailable until the maintainer configures the registered one."""
+    raw = _settings(value).get('client_id')
+    return raw if isinstance(raw, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', raw) else None
+
+
+NO_CLIENT = ('no registered client: set cloud.chatgpt.client_id to the OAuth client registered for '
+             'ox-llm (oxc does not borrow another app\'s client identity)')
 
 
 def token_path(secrets_file):
@@ -237,9 +249,12 @@ def _credentials(secrets_file, value):
             if not _fresh(tokens):
                 if not isinstance(tokens.get('refresh_token'), str):
                     raise LoginError('the sign-in expired (run `oxc login chatgpt`)')
+                registered = client_id(value)
+                if registered is None:
+                    raise LoginError(NO_CLIENT)
                 reply = _post_form(auth_url(value) + '/oauth/token', {
                     'grant_type': 'refresh_token', 'refresh_token': tokens['refresh_token'],
-                    'client_id': CLIENT_ID, 'scope': 'openid profile email'})
+                    'client_id': registered, 'scope': 'openid profile email'})
                 tokens = _record(reply, tokens)
                 store(path, tokens)
         finally:
@@ -311,7 +326,8 @@ def status(secrets_file):
 class Flow:
     """One PKCE authorization: verifier, challenge, state and the token exchange."""
 
-    def __init__(self, base=AUTH_URL, port=REDIRECT_PORT):
+    def __init__(self, client, base=AUTH_URL, port=REDIRECT_PORT):
+        self.client = client
         self.base = base.rstrip('/')
         self.redirect = 'http://localhost:%d%s' % (port, REDIRECT_PATH)
         self.port = port
@@ -322,7 +338,7 @@ class Flow:
         if self.state is None:
             self.state = _random.token_urlsafe(32)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(self.verifier.encode()).digest()).rstrip(b'=').decode()
-        query = {'response_type': 'code', 'client_id': CLIENT_ID, 'redirect_uri': self.redirect,
+        query = {'response_type': 'code', 'client_id': self.client, 'redirect_uri': self.redirect,
                  'scope': SCOPE, 'code_challenge': challenge, 'code_challenge_method': 'S256',
                  'state': self.state, 'id_token_add_organizations': 'true'}
         return self.base + '/oauth/authorize?' + urllib.parse.urlencode(query)
@@ -338,7 +354,7 @@ class Flow:
     def exchange(self, code):
         return _record(_post_form(self.base + '/oauth/token', {
             'grant_type': 'authorization_code', 'code': code, 'redirect_uri': self.redirect,
-            'client_id': CLIENT_ID, 'code_verifier': self.verifier}))
+            'client_id': self.client, 'code_verifier': self.verifier}))
 
     def wait_loopback(self, timeout=300):
         """Serve one redirect on 127.0.0.1; returns the redirected URL or None (port busy)."""
@@ -373,22 +389,6 @@ class Flow:
         return None if path is None else 'http://localhost' + path
 
 
-def import_login(source):
-    """Read an existing CLI login file once (never written).  Accepts {tokens: {...}}."""
-    try:
-        with open(source, 'rb') as stream:
-            value = json.loads(stream.read(MAX_BYTES))
-    except (OSError, ValueError):
-        raise LoginError('the import file cannot be read') from None
-    tokens = value.get('tokens') if isinstance(value, dict) else None
-    if not isinstance(tokens, dict):
-        raise LoginError('the import file holds no ChatGPT login')
-    reply = {'access_token': tokens.get('access_token'), 'refresh_token': tokens.get('refresh_token'),
-             'id_token': tokens.get('id_token')}
-    record = _record(reply, {'account_id': tokens.get('account_id')})
-    return record
-
-
 def _config_secrets(config):
     try:
         value = json.loads(Path(config).read_text())
@@ -410,7 +410,6 @@ def main(argv, flow=None):
     parser.add_argument('action', choices=('login', 'logout'))
     parser.add_argument('provider', nargs='?', default=PROVIDER, choices=(PROVIDER,))
     parser.add_argument('--paste', action='store_true', help='headless: paste the redirected URL instead of a loopback listener')
-    parser.add_argument('--import', dest='source', help='read an existing CLI login file once (never written)')
     parser.add_argument('--config', default=None, help='runtime.json (default: the controller\'s)')
     args = parser.parse_args(argv)
     config = args.config or os.environ.get('LOCAL_LLM_CONFIG') or str(
@@ -425,22 +424,23 @@ def main(argv, flow=None):
         remove(path)
         print('Signed out of ChatGPT; the token file was removed.')
         return 0
+    registered = client_id(value)
+    if registered is None:
+        print('oxc: sign-in unavailable: %s; nothing was changed.' % NO_CLIENT, file=sys.stderr)
+        return 1
     print(NOTICE, file=sys.stderr)
     try:
-        if args.source:
-            record = import_login(args.source)
-        else:
-            flow = flow or Flow(auth_url(value))
-            url = flow.authorize_url()
-            redirected = None
-            if not args.paste:
-                print('Open this URL in a browser to sign in:\n  ' + url, file=sys.stderr)
-                redirected = flow.wait_loopback()
-            if redirected is None:
-                print('Open this URL in any browser, sign in, then paste the full address of the page '
-                      'it redirects to (it may fail to load; that is fine):\n  ' + url, file=sys.stderr)
-                redirected = input('Redirected URL: ')
-            record = flow.exchange(flow.code_from(redirected))
+        flow = flow or Flow(registered, auth_url(value))
+        url = flow.authorize_url()
+        redirected = None
+        if not args.paste:
+            print('Open this URL in a browser to sign in:\n  ' + url, file=sys.stderr)
+            redirected = flow.wait_loopback()
+        if redirected is None:
+            print('Open this URL in any browser, sign in, then paste the full address of the page '
+                  'it redirects to (it may fail to load; that is fine):\n  ' + url, file=sys.stderr)
+            redirected = input('Redirected URL: ')
+        record = flow.exchange(flow.code_from(redirected))
         store(path, record)
     except LoginError as error:
         print('oxc: sign-in failed: %s' % error, file=sys.stderr)

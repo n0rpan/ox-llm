@@ -1109,7 +1109,7 @@ def main(argv=None):
         print(RETIRED_KEYS[words[0]], file=sys.stderr)
         return 2
     if words and words[0] in ('login', 'logout'):
-        # oxc login chatgpt [--paste|--import FILE] / oxc logout chatgpt: the experimental,
+        # oxc login chatgpt [--paste] / oxc logout chatgpt: the experimental,
         # opt-in ChatGPT subscription sign-in (runtime/cloud_chatgpt.py).
         try:
             module = runtime_module('cloud_chatgpt')

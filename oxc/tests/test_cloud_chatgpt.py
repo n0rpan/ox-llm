@@ -102,6 +102,9 @@ class FakeAuth:
         self.server.server_close()
 
 
+CLIENT = 'oxllm-test-client'  # synthetic stand-in for the client registered for ox-llm
+
+
 def models():
     return {MODEL: {'kind': 'remote/chatgpt', 'upstream_model': 'gpt-sub',
                     'context_window': 200000, 'max_output': 4096}}
@@ -125,7 +128,7 @@ class Base(CloudCase):
         kwargs.setdefault('mock', self.backend)
         stack = CloudCase.start(self, budget=budget, base_suffix='/api', **kwargs)
         value = json.loads(stack.config_path.read_text())
-        value['cloud']['chatgpt'] = {'auth_url': self.auth.base, **(extra or {})}
+        value['cloud']['chatgpt'] = {'auth_url': self.auth.base, 'client_id': CLIENT, **(extra or {})}
         if budget is None:
             value['cloud'].pop('daily_budget_usd', None)
         stack.config_path.write_text(json.dumps(value))
@@ -287,27 +290,28 @@ class Subscription(Base):
 
 
 class Login(Base):
-    def test_pkce_paste_login_import_and_logout(self):
+    def test_pkce_paste_login_and_logout(self):
         config = self.tmp / 'runtime.json'
         config.write_text(json.dumps({'cloud': {'secrets_file': str(self.secrets),
-                                                'chatgpt': {'auth_url': self.auth.base}}}))
-        flow = cloud_chatgpt.Flow(self.auth.base)
+                                                'chatgpt': {'auth_url': self.auth.base, 'client_id': CLIENT}}}))
+        flow = cloud_chatgpt.Flow(CLIENT, self.auth.base)
         url = urllib.parse.urlsplit(flow.authorize_url())
         query = dict(urllib.parse.parse_qsl(url.query))
         self.assertEqual(query['code_challenge_method'], 'S256')
-        self.assertEqual(query['client_id'], cloud_chatgpt.CLIENT_ID)
+        self.assertEqual(query['client_id'], CLIENT)
         redirect = query['redirect_uri'] + '?code=c0de&state=' + query['state']
         with patch('builtins.input', return_value=redirect), patch('builtins.print'):
             self.assertEqual(cloud_chatgpt.main(['login', '--paste', '--config', str(config)], flow=flow), 0)
         exchange = self.auth.calls[-1]['form']
         self.assertEqual(exchange['grant_type'], 'authorization_code')
         self.assertEqual(exchange['code'], 'c0de')
+        self.assertEqual(exchange['client_id'], CLIENT)
         self.assertTrue(exchange['code_verifier'])
         saved = json.loads(self.tokens.read_text())
         self.assertEqual(saved['account_id'], ACCOUNT)
         self.assertEqual(stat.S_IMODE(os.stat(self.tokens).st_mode), 0o600)
         # A wrong state is refused and changes nothing.
-        flow = cloud_chatgpt.Flow(self.auth.base)
+        flow = cloud_chatgpt.Flow(CLIENT, self.auth.base)
         flow.authorize_url()
         with patch('builtins.input', return_value='http://localhost/cb?code=x&state=forged'), \
                 patch('builtins.print'):
@@ -317,17 +321,26 @@ class Login(Base):
         with patch('builtins.print'):
             self.assertEqual(cloud_chatgpt.main(['logout', '--config', str(config)]), 0)
         self.assertFalse(self.tokens.exists())
-        # Import an existing login once, read-only.
-        source = self.tmp / 'other-auth.json'
-        source.write_text(json.dumps({'tokens': {'access_token': ACCESS, 'refresh_token': REFRESH,
-                                                 'id_token': id_token()}}))
-        os.chmod(source, 0o600)
-        before = source.read_bytes(), source.stat().st_mtime_ns
-        with patch('builtins.print'):
-            self.assertEqual(cloud_chatgpt.main(['login', '--import', str(source), '--config', str(config)]), 0)
-        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
-        saved = json.loads(self.tokens.read_text())
-        self.assertEqual((saved['access_token'], saved['account_id']), (ACCESS, ACCOUNT))
+
+    def test_no_borrowed_client_identity(self):
+        # Codex review P1: login used another app's OAuth client id.  oxc ships none; without
+        # cloud.chatgpt.client_id login, refresh and importing another app's login all refuse.
+        source_text = Path(cloud_chatgpt.__file__).read_text()
+        self.assertNotIn('app_EMoam', source_text)
+        self.assertFalse(hasattr(cloud_chatgpt, 'CLIENT_ID'))
+        config = self.tmp / 'runtime.json'
+        config.write_text(json.dumps({'cloud': {'secrets_file': str(self.secrets),
+                                                'chatgpt': {'auth_url': self.auth.base}}}))
+        with patch('builtins.input', side_effect=AssertionError('no prompt')), patch('builtins.print'):
+            self.assertEqual(cloud_chatgpt.main(['login', '--paste', '--config', str(config)]), 1)
+        with self.assertRaises(SystemExit), patch('sys.stderr'):
+            cloud_chatgpt.main(['login', '--import', str(self.tmp / 'x.json'), '--config', str(config)])
+        self.assertEqual(self.auth.calls, [])
+        self.assertFalse(self.tokens.exists())
+        self.sign_in(expires_in=-10)
+        with self.assertRaisesRegex(cloud_chatgpt.LoginError, 'client_id'):
+            cloud_chatgpt.credentials(self.secrets, {'cloud': {'chatgpt': {'auth_url': self.auth.base}}})
+        self.assertEqual(self.auth.calls, [])
 
     def test_login_refuses_a_relative_or_in_repository_destination(self):
         # Codex review: login wrote tokens wherever cloud.secrets_file pointed, unlike the
@@ -335,15 +348,11 @@ class Login(Base):
         self.addCleanup(lambda: __import__('shutil').rmtree('relative', ignore_errors=True))
         checkout = self.tmp / 'checkout'
         (checkout / '.git').mkdir(parents=True)
-        source = self.tmp / 'other-auth.json'
-        source.write_text(json.dumps({'tokens': {'access_token': ACCESS, 'refresh_token': REFRESH,
-                                                 'id_token': id_token()}}))
         for raw in ('relative/cloud-secrets.json', str(checkout / 'sub/cloud-secrets.json')):
             config = self.tmp / 'runtime.json'
-            config.write_text(json.dumps({'cloud': {'secrets_file': raw}}))
-            with patch('builtins.print'):
-                self.assertEqual(cloud_chatgpt.main(['login', '--import', str(source),
-                                                     '--config', str(config)]), 1, raw)
+            config.write_text(json.dumps({'cloud': {'secrets_file': raw, 'chatgpt': {'client_id': CLIENT}}}))
+            with patch('builtins.input', side_effect=AssertionError('no prompt')), patch('builtins.print'):
+                self.assertEqual(cloud_chatgpt.main(['login', '--paste', '--config', str(config)]), 1, raw)
         self.assertEqual(list(checkout.rglob(cloud_chatgpt.TOKEN_FILE)), [])
         self.assertFalse(Path('relative').exists())
 
