@@ -63,3 +63,6 @@ mod git_worktrees;
 
 #[cfg(feature = "core")]
 pub mod registration;
+
+#[cfg(feature = "interactive-control")]
+pub mod goals;

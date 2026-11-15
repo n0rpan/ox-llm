@@ -9,6 +9,8 @@ publish.workspace = true
 
 [features]
 default = []
+# Preparatory state machine only; no CLI/TUI, listener or worker admission hook.
+interactive-control = ["core"]
 core = ["dep:libc", "dep:serde_json", "dep:sha2", "dep:serde", "dep:oxa-a2a"]
 
 [dependencies]
