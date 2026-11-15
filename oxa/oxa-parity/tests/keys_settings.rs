@@ -2175,7 +2175,7 @@ fn set_051() {
 
     // Ten-byte deltas; the stall starts after 200 body bytes, i.e. after the first data event
     // (a silence before any data would be retried with the same Idempotency-Key, which replays).
-    let stalled = json!({"text": "a reply that stalls half way", "chunk": 10, "fault": {"kind": "stall", "bytes": 200, "ms": 8000}});
+    let stalled = json!({"text": "a reply that stalls half way", "chunk": 10, "fault": {"kind": "stall", "bytes": 200, "ms": 6000}});
     let silent = Rig::with_fake(std::slice::from_ref(&stalled), &[]);
     silent.user_settings(json!({ "httpIdleTimeoutMs": 300, "retry": { "enabled": false } }));
     let started = std::time::Instant::now();
@@ -2187,8 +2187,8 @@ fn set_051() {
         stdout(&out)
     );
     assert!(
-        took < Duration::from_millis(6500),
-        "the idle limit (300 ms), not the 8 s stall, ended the request: {took:?}"
+        took < Duration::from_millis(5000),
+        "the idle limit (300 ms), not the 6 s stall, ended the request: {took:?}"
     );
     assert!(
         !stdout(&out).contains("a reply that stalls half way"),
