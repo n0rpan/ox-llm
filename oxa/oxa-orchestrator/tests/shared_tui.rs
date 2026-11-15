@@ -1224,6 +1224,8 @@ struct WorkerDriver {
     inner: oxa_fake::ScriptedEngine,
     step: AtomicU64,
     author: Arc<FakeServer>,
+    recovering: bool,
+    before_retarget: std::sync::Mutex<Option<Value>>,
 }
 impl Engine for WorkerDriver {
     fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, OxaError> {
@@ -1263,9 +1265,17 @@ impl Engine for WorkerDriver {
                     "worker_lane",
                     r#"{"operation":"start","profile":"reviewer","goal":"Review a synthetic change"}"#,
                 ),
+                2 if self.recovering => ScriptTurn::text(
+                    r#"{"state":"done","summary":"premature","evidence":["workers still running"]}"#,
+                ),
                 2 => {
                     let deadline = Instant::now() + Duration::from_secs(3);
-                    while !self.author.requests().iter().any(|r| r.max_tokens > 0) {
+                    while !self
+                        .author
+                        .requests()
+                        .iter()
+                        .any(|r| r.max_tokens > 0 && (!self.recovering || r.reply.is_some()))
+                    {
                         assert!(Instant::now() < deadline);
                         std::thread::sleep(Duration::from_millis(2));
                     }
@@ -1275,6 +1285,45 @@ impl Engine for WorkerDriver {
                         &json!({"operation":"status","worker_id":author()["worker"]["id"]}).to_string(),
                     )
                 }
+                3 if self.recovering => ScriptTurn::tool(
+                    "inspect-blocked",
+                    "worker_lane",
+                    &json!({"operation":"status","worker_id":author()["worker"]["id"]}).to_string(),
+                ),
+                4 if self.recovering => {
+                    let worker = author();
+                    assert_eq!(
+                        worker["goal"]["state"], "blocked",
+                        "worker event precedes recovery"
+                    );
+                    *self.before_retarget.lock().unwrap() = Some(worker["goal"].clone());
+                    ScriptTurn::tool("clarify-author","worker_lane",&json!({"operation":"retarget","worker_id":worker["worker"]["id"],"revision":worker["goal"]["revision"],"goal":"Write the synthetic change with clarified-worker-goal"}).to_string())
+                }
+                5 if self.recovering => {
+                    std::thread::sleep(Duration::from_millis(100));
+                    ScriptTurn::tool(
+                        "inspect-redirect",
+                        "worker_lane",
+                        &json!({"operation":"status","worker_id":author()["worker"]["id"]}).to_string(),
+                    )
+                }
+                6 if self.recovering => {
+                    let worker = author();
+                    if worker["goal"]["state"] != "paused" {
+                        self.step.store(5, Ordering::Release);
+                        std::thread::sleep(Duration::from_millis(100));
+                        ScriptTurn::tool(
+                            "wait-redirect",
+                            "worker_lane",
+                            &json!({"operation":"status","worker_id":worker["worker"]["id"]}).to_string(),
+                        )
+                    } else {
+                        ScriptTurn::tool("resume-author","worker_lane",&json!({"operation":"resume","worker_id":worker["worker"]["id"],"revision":worker["goal"]["revision"]}).to_string())
+                    }
+                }
+                7 if self.recovering => ScriptTurn::text(
+                    r#"{"state":"done","summary":"premature","evidence":["workers still running"]}"#,
+                ),
                 3 => {
                     let worker = author();
                     ScriptTurn::tool("steer-author","worker_lane",&json!({"operation":"steer","worker_id":worker["worker"]["id"],"revision":worker["goal"]["revision"],"text":"model-live-worker-clarification"}).to_string())
@@ -1292,7 +1341,7 @@ impl Engine for WorkerDriver {
     }
 }
 
-fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str) {
+fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, recovering: bool) {
     let canceling = cancellation != "none";
     let aborting = cancellation == "escape";
     use std::os::unix::fs::PermissionsExt;
@@ -1310,9 +1359,13 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str) {
             ),
         ]
     };
+    let mut author_script = child_script();
+    if recovering {
+        author_script[0] = ScriptTurn::text(r#"{"state":"blocked","reason":"need-worker-clarification"}"#);
+    }
     let author = Arc::new(
         FakeServer::start(
-            child_script(),
+            author_script,
             FakeOpts {
                 model: "author-model".into(),
                 hold_headers_ms: if aborting {
@@ -1332,7 +1385,13 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str) {
             child_script(),
             FakeOpts {
                 model: "reviewer-model".into(),
-                hold_headers_ms: if aborting { 1500 } else { 350 },
+                hold_headers_ms: if aborting {
+                    1500
+                } else if recovering {
+                    900
+                } else {
+                    350
+                },
                 ..Default::default()
             },
         )
@@ -1375,6 +1434,8 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str) {
         inner: oxa_fake::ScriptedEngine::new(vec![]),
         step: AtomicU64::new(0),
         author: author.clone(),
+        recovering,
+        before_retarget: std::sync::Mutex::new(None),
     });
     let mut config = deps(&engine.url(), env.root(), &env.work(), store.clone());
     if steering {
@@ -1387,6 +1448,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str) {
     let peer_done = done.clone();
     let peer_socket = socket.clone();
     let expected_peer = expected.clone();
+    let peer_driver = driver.clone();
     let peer = std::thread::spawn(move || {
         let initial = wait_status(&peer_socket, |v| v["status"]["session"]["id"] == expected_peer);
         request(
@@ -1445,6 +1507,36 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str) {
         assert!(jobs.iter().any(|j| j["model"] == "author-model"));
         assert!(jobs.iter().any(|j| j["model"] == "reviewer-model"));
         for job in jobs {
+            if recovering && job["profile"] == "author" {
+                let baseline = peer_driver.before_retarget.lock().unwrap();
+                let before = baseline.as_ref().unwrap();
+                assert_eq!(job["goal"]["id"], before["id"]);
+                assert_eq!(job["goal"]["budget"], before["budget"]);
+                assert_eq!(
+                    job["goal"]["goal"],
+                    "Write the synthetic change with clarified-worker-goal"
+                );
+                assert_eq!(job["goal"]["turns_started"], 2);
+                let expected_tokens: u64 = peer_driver
+                    .author
+                    .requests()
+                    .iter()
+                    .filter(|r| r.max_tokens > 0)
+                    .map(|r| {
+                        let usage = r.usage.as_ref().unwrap();
+                        u64::from(usage.prompt) + u64::from(usage.completion)
+                    })
+                    .sum();
+                assert_eq!(job["goal"]["reported_tokens"].as_u64().unwrap(), expected_tokens);
+                assert!(
+                    job["goal"]["reported_tokens"].as_u64().unwrap()
+                        > before["reported_tokens"].as_u64().unwrap()
+                );
+                assert!(
+                    job["goal"]["elapsed_ms"].as_u64().unwrap()
+                        >= before["elapsed_ms"].as_u64().unwrap() + 500
+                );
+            }
             let pid = job["process_id"].as_u64().unwrap();
             assert!(
                 !Path::new(&format!("/proc/{pid}")).exists(),
@@ -1502,16 +1594,28 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str) {
         assert_eq!(chats.len(), 2, "worker performs two goal turns");
         assert!(chats.iter().all(|r| r.model == model));
         assert!(chats.iter().all(|r| r.system.contains(role)));
-        assert!(chats[1].messages.iter().any(|m| m
-            .content
-            .as_deref()
-            .is_some_and(|text| text.contains("first worker step"))));
+        assert!(chats[1]
+            .messages
+            .iter()
+            .any(|m| m.content.as_deref().is_some_and(|text| text.contains(
+                if recovering && model == "author-model" {
+                    "need-worker-clarification"
+                } else {
+                    "first worker step"
+                }
+            ))));
         assert_eq!(chats[0].session, chats[1].session);
         if steering && model == "author-model" {
-            assert!(chats[1].messages.iter().any(|m| m
-                .content
-                .as_deref()
-                .is_some_and(|s| s.contains("model-live-worker-clarification"))));
+            assert!(chats[1]
+                .messages
+                .iter()
+                .any(
+                    |m| m.content.as_deref().is_some_and(|s| s.contains(if recovering {
+                        "clarified-worker-goal"
+                    } else {
+                        "model-live-worker-clarification"
+                    }))
+                ));
         }
     }
     let requests = if steering {
@@ -1569,9 +1673,11 @@ fn main() {
             "Esc settlement stops workers and preserves unknown usage",
         ),
     ] {
-        model_worker_lanes_wake_same_session(steering, cancellation);
+        model_worker_lanes_wake_same_session(steering, cancellation, false);
         println!("{name} ... ok");
     }
+    model_worker_lanes_wake_same_session(true, "none", true);
+    println!("blocked worker retarget/resume preserves context and cumulative budget ... ok");
     if args.first().map(String::as_str) == Some("--workers-only") {
         return;
     }
