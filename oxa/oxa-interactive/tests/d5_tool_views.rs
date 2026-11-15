@@ -364,3 +364,66 @@ fn unknown_tool_generic_view() {
         ]
     );
 }
+
+/// Issue #409: control characters in tool arguments, live output, diffs and write content never
+/// reach the terminal (OSC 52 clipboard writes, screen clears, title changes).
+#[test]
+fn tool_views_drop_control_characters_from_untrusted_text() {
+    let theme = Theme::plain();
+    let settings = ViewSettings::default();
+    let hooks: Vec<Arc<dyn Hooks>> = Vec::new();
+    let cx = cx(&theme, &settings, &hooks);
+    let evil = "x\u{1b}]52;c;aGk=\u{7}\u{1b}[2J\u{9b}2Jy";
+    let no_esc = |lines: &[String], what: &str| {
+        let all = lines.join("\n");
+        assert!(
+            !all.chars().any(|c| c.is_control() && c != '\n'),
+            "{what}: control char in {all:?}"
+        );
+        assert!(
+            all.contains('x') && all.contains('y'),
+            "{what}: text kept: {all:?}"
+        );
+    };
+    for (name, args) in [
+        ("bash", json!({"command": evil})),
+        ("grep", json!({"pattern": evil, "path": evil})),
+        ("find", json!({"pattern": evil})),
+        ("read", json!({"path": evil})),
+        ("ls", json!({"path": evil})),
+        ("mcp__x__y", json!({"q": evil})),
+    ] {
+        let lines = render_tool(&block(name, args, ToolState::Done), &cx);
+        no_esc(&lines, name);
+    }
+    let mut streaming = block("mcp__x__y", Value::Null, ToolState::Streaming);
+    streaming.args_raw = format!("{{\"q\": \"{evil}");
+    no_esc(&render_tool(&streaming, &cx), "args_raw");
+    for name in ["bash", "mcp__x__y"] {
+        let mut t = block(name, json!({}), ToolState::Running);
+        t.partial = evil.to_string();
+        no_esc(&render_tool(&t, &cx), "partial");
+    }
+    no_esc(
+        &tool_result_lines(
+            "write",
+            &json!({"path": "a.txt", "content": evil}),
+            "",
+            false,
+            &Value::Null,
+            &cx,
+        ),
+        "write",
+    );
+    no_esc(
+        &tool_result_lines(
+            "edit",
+            &json!({"path": "a"}),
+            "",
+            false,
+            &json!({"diff": format!("+1 {evil}")}),
+            &cx,
+        ),
+        "diff",
+    );
+}
