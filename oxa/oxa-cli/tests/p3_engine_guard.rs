@@ -50,7 +50,9 @@ fn a_remote_engine_url_is_refused_at_startup_with_the_fix() {
     let (code, out, err) = go(&env, "http://10.255.0.2:8092", &[], &["-p", "--no-session", "x"]);
     assert_ne!(code, 0);
     assert_eq!(out, "");
-    assert_eq!(err, REFUSAL);
+    assert_eq!(err.lines().next().unwrap(), REFUSAL.trim_end());
+    let record: serde_json::Value = serde_json::from_str(err.lines().last().unwrap()).unwrap();
+    assert_eq!(record["error_class"], "remote_engine");
     // The same for a models.json endpoint (the engine URL of the environment is loopback).
     env.write(
         "home/.oxa/agent/models.json",
@@ -58,7 +60,7 @@ fn a_remote_engine_url_is_refused_at_startup_with_the_fix() {
     );
     let (code, _, err) = go(&env, "http://127.0.0.1:9", &[], &["-p", "--no-session", "x"]);
     assert_ne!(code, 0);
-    assert!(err.ends_with(REFUSAL), "{err}");
+    assert_eq!(err.lines().next().unwrap(), REFUSAL.trim_end());
 }
 
 #[test]
@@ -76,7 +78,9 @@ fn a_project_cannot_allow_a_remote_engine() {
         &["-p", "--no-session", "--approve", "x"],
     );
     assert_ne!(code, 0);
-    assert_eq!(err, REFUSAL);
+    assert_eq!(err.lines().next().unwrap(), REFUSAL.trim_end());
+    let record: serde_json::Value = serde_json::from_str(err.lines().last().unwrap()).unwrap();
+    assert_eq!(record["error_class"], "remote_engine");
 }
 
 #[test]
