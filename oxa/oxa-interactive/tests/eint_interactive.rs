@@ -669,6 +669,10 @@ fn engine_queue_activity_is_shown_and_cleared() {
         },
     );
     assert!(matches!(vm.status.activity, Activity::Prefill { .. }));
+    assert_eq!(
+        vm.status.context_tokens, 100,
+        "CTX counts the prompt during prefill"
+    );
     assert_eq!(queued_text(&vm.status.activity), None);
 
     // An abort while queued: the shown entry ends the wait, settlement makes it idle.

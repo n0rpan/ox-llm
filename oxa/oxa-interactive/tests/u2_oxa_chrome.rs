@@ -1143,3 +1143,17 @@ fn hud_thinking_label_claude_55_effective_effort() {
     let line = hud_for("qwen-local", ThinkingLevel::Off);
     assert!(line.contains("off") && !line.contains("adaptive"), "{line}");
 }
+
+#[test]
+fn own_slot_wait_is_not_called_queued() {
+    let plain = Theme::plain();
+    for pos in [None, Some(1)] {
+        let st = activity(Activity::Queued { pos, wait_s: 2 }, 3000);
+        let line = oxa_activity_line(&st, &keymap(), 200, &plain, Skin::Oxa).unwrap_or_default();
+        assert!(
+            !line.contains("QUEUED") && line.contains("[STARTING]"),
+            "{line:?}"
+        );
+        assert!(!line.contains("#1"), "{line:?}");
+    }
+}
