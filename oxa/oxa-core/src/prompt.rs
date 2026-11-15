@@ -610,6 +610,9 @@ pub fn repair_wrong_type(tool: &str, param: &str, expected: &str) -> String {
 /// Cause: the block does not follow the call format at all.
 pub const REPAIR_FORMAT: &str = "The call does not follow the format <tool_call><function=NAME><parameter=NAME>value</parameter></function></tool_call>.";
 
+/// Appended as a user message at the safe boundary of a soft termination request (W1/W3).
+pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one short final turn to commit only changes made during this run if appropriate, or summarize the current state and remaining work. Leave pre-existing changes alone. Do not start new work.";
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -761,6 +764,3 @@ mod tests {
         assert_eq!(truncate_chars("abcdef", 0), "");
     }
 }
-
-/// Appended as a user message at the safe boundary of a soft termination request (W1/W3).
-pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one short final turn to commit only changes made during this run if appropriate, or summarize the current state and remaining work. Leave pre-existing changes alone. Do not start new work.";
