@@ -20,11 +20,14 @@ without an external coding-agent driver substituting for oxa's goal loop.
 | GitHub in online Workspace mode | [Private capability integration](UPSTREAM_INTEGRATION.md) passes synthetic sandbox/redaction tests | Authenticated `gh` executed by oxa under its actual Workspace sandbox; this agent's GitHub connector reads do not prove that path |
 | Full working evening | No acceptance run yet | Real reviews, fixes, validation and owner-authorized queue operations from oxa; deterministic mock replies do not establish this |
 
-The most recent broad lab run executed 2,306 tests with three failures and six
-skips. Two scanner findings reproduce on an untouched baseline. The third was a
-missing runtime installation entry introduced by the SDK bridge; it is fixed,
-and all ten installation integration tests pass. That broad run is not
-retroactively green. No scanner, allow-list or test expectation was relaxed.
+The latest broad lab run, following `2261a3a`, executed 2,310 tests with seven
+reported failures and six skips. Five failures are bootstrap manifest pin
+mismatches introduced by the optional module inventory change; the other two
+are scanner findings reproduced on an untouched baseline. Installation
+completeness passes, as do the thirteen focused native SDK/cleanup tests and
+thirty-five combined native SDK tests, but the broad suite is not green. Both
+real-TUI native TLS modes pass: cancellation and completed tier/cache review.
+No scanner, allow-list, qualification flag or test expectation was relaxed.
 
 A later bootstrap isolation reveals an additional integration gate: adding the
 optional SDK bridge to `bootstrap.py`'s installation inventory changes that
