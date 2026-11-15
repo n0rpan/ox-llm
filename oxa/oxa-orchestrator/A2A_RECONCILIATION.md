@@ -32,8 +32,8 @@ historical outcome, and separately reports the new disposition, stop assertion,
 observed task and bytes. A late terminal result cannot rewrite an original
 budget/deadline failure into success. Raw result content remains untrusted data,
 not authority to edit source or mark a parent goal complete. Keep the exclusive
-journal guard alive throughout the operation. Queued resume and lineage remain
-separate unfinished capabilities.
+journal guard alive throughout the operation. Narrow queue recovery is described
+in [QUEUED_RESUME.md](QUEUED_RESUME.md); lineage remains unfinished.
 
 Local acceptance: 107 ordinary crate tests pass, including eight authenticated
 loopback reconciliation tests. They cover explicit observation/cancellation,

@@ -1,8 +1,8 @@
 # Original plan and clock bindings
 
 The default-off `core` A2A scheduler now records versioned run/worker bindings
-for future queued recovery. This slice adds metadata and deadline enforcement;
-it does not consume a queue, publish a resume receipt or launch a resumed run.
+for queued recovery. These bindings add metadata and deadline enforcement;
+the explicit one-time execution API is described in [QUEUED_RESUME.md](QUEUED_RESUME.md).
 
 A run binding fixes its original kernel boot-identity hash, CLOCK_BOOTTIME start
 and deadline, parallelism, response reservation, journal bound, request timeout,
@@ -31,4 +31,4 @@ expiry/reboot and downtime arithmetic, fingerprints changing for each original
 input/route/allowance, serialization roundtrip without raw input/route text,
 13 malformed or widened metadata cases, and all actual scheduler journal and
 checkpoint fixtures. No model, shared gateway, paid request or UI is involved.
-Queue consumption, exact-plan resubmission and lineage remain unfinished work.
+Queue consumption is documented separately; multi-generation lineage remains unfinished.

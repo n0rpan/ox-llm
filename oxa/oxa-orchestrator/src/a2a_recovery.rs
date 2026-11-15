@@ -61,11 +61,17 @@ pub struct InspectedRun {
 /// Keep this guard alive throughout original-agent reconciliation.
 pub struct ExclusiveRun {
     _journal: crate::ownership::Lease,
+    pub(crate) directory: std::fs::File,
     inspected: InspectedRun,
 }
 impl ExclusiveRun {
     pub fn claim(path: &Path) -> io::Result<Self> {
-        let file = crate::recovery::open_input(path)?;
+        let parent = path.parent().ok_or_else(|| invalid("journal needs a parent"))?;
+        let directory = crate::namespace::protected_directory(parent)?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| invalid("journal needs a file name"))?;
+        let file = crate::recovery::open_input_at(&directory, name, 16 * 1024 * 1024)?;
         let journal = crate::ownership::Lease::acquire(file)?;
         let inspected = InspectedRun::from_bytes(crate::recovery::read_checked(&journal)?)?;
         if !inspected.snapshot.exclusive_ownership_supported {
@@ -73,6 +79,7 @@ impl ExclusiveRun {
         }
         Ok(Self {
             _journal: journal,
+            directory,
             inspected,
         })
     }
@@ -102,6 +109,31 @@ impl InspectedRun {
     /// Read one explicitly selected checkpoint bound by a complete finished
     /// record. Orphan/pending data never grants replay or recovery authority.
     pub fn load_checkpoint(&self, worker: &str, path: &Path) -> io::Result<crate::a2a_run::A2AWorkerReport> {
+        self.read_checkpoint(worker, || {
+            crate::recovery::read_bounded(path, crate::checkpoint::MAX_WORKER)
+        })
+    }
+    pub(crate) fn load_checkpoint_at(
+        &self,
+        worker: &str,
+        directory: &std::fs::File,
+    ) -> io::Result<crate::a2a_run::A2AWorkerReport> {
+        if !valid_id(worker) {
+            return Err(invalid("invalid checkpoint worker identity"));
+        }
+        self.read_checkpoint(worker, || {
+            crate::recovery::read_bounded_at(
+                directory,
+                &format!("worker-{worker}.json"),
+                crate::checkpoint::MAX_WORKER,
+            )
+        })
+    }
+    fn read_checkpoint(
+        &self,
+        worker: &str,
+        read: impl FnOnce() -> io::Result<Vec<u8>>,
+    ) -> io::Result<crate::a2a_run::A2AWorkerReport> {
         use oxa_a2a::{collect::Collector, wire::Event};
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -121,7 +153,7 @@ impl InspectedRun {
             .as_ref()
             .filter(|_| worker.phase == Phase::Finished && self.snapshot.persist_results)
             .ok_or_else(|| invalid("no durable worker checkpoint binding"))?;
-        let bytes = crate::recovery::read_bounded(path, crate::checkpoint::MAX_WORKER)?;
+        let bytes = read()?;
         if &format!("{:x}", Sha256::digest(&bytes)) != expected {
             return Err(invalid("checkpoint hash does not match journal"));
         }

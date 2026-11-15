@@ -36,6 +36,10 @@ fn publish(directory: &Path, name: &str, report: &impl serde::Serialize, limit: 
     publish_anchored(&anchor, name, report, limit)
 }
 
+pub(crate) fn consume_resume(directory: &File, receipt: &impl serde::Serialize) -> io::Result<()> {
+    publish_anchored(directory, "resume.json", receipt, 64 * 1024).map(|_| ())
+}
+
 fn publish_anchored(
     anchor: &File,
     name: &str,

@@ -1,10 +1,167 @@
-//! Original plan and boot-clock budget bindings. Queue replay is not implemented.
-use crate::a2a_run::{A2ARunSettings, A2AWorkerSpec};
+//! Explicit one-time recovery of the original never-started A2A queue.
+use crate::a2a_recovery::{ExclusiveRun, Phase};
+use crate::a2a_run::{A2ARunReport, A2ARunSettings, A2AStatus, A2AWorkerSpec, StopConfirmation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, Read};
+use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::time::Duration;
+/// Resume exactly the original never-started jobs under exclusive ownership.
+/// Callers explicitly re-supply inputs and the ORIGINAL local agent registration.
+/// A durable one-time receipt consumes the parent's queue before any child send;
+/// a lost/failed child is never permission to try the parent queue again.
+pub fn resume_queued(
+    owner: &ExclusiveRun,
+    directory: &Path,
+    plan: Vec<A2AWorkerSpec>,
+    inbox: crate::a2a_run::Inbox,
+    observe: impl FnMut(A2AStatus),
+) -> io::Result<A2ARunReport> {
+    let snapshot = owner.inspected().snapshot();
+    if snapshot.recorded_run_finished
+        || snapshot.truncated_tail
+        || snapshot.unlisted_workers != 0
+        || plan.is_empty()
+    {
+        return Err(invalid("run is not eligible for queued recovery"));
+    }
+    let mut binding = snapshot
+        .resume_binding
+        .clone()
+        .ok_or_else(|| invalid("original run budget binding is unavailable"))?;
+    binding.remaining()?;
+    let mut reports = Vec::new();
+    let mut queued = std::collections::BTreeMap::new();
+    for worker in &snapshot.workers {
+        match worker.phase {
+            Phase::Queued => {
+                queued.insert(
+                    worker.worker.as_str(),
+                    worker
+                        .resume_binding
+                        .as_ref()
+                        .ok_or_else(|| invalid("original worker plan binding is unavailable"))?,
+                );
+            }
+            Phase::Finished
+                if worker.recorded_stop != Some(StopConfirmation::Unconfirmed)
+                    && (worker.binding.is_none()
+                        || worker
+                            .recorded_task_state
+                            .as_ref()
+                            .is_some_and(oxa_a2a::wire::TaskState::is_terminal)) =>
+            {
+                reports.push(
+                    owner
+                        .inspected()
+                        .load_checkpoint_at(&worker.worker, &owner.directory)?,
+                );
+            }
+            _ => {
+                return Err(invalid(
+                    "started, ambiguous or stop-unconfirmed workers are not eligible for queued resume",
+                ))
+            }
+        }
+    }
+    if queued.len() != plan.len() {
+        return Err(invalid("resume must supply exactly every never-started worker"));
+    }
+    let mut reserved = 0usize;
+    for spec in &plan {
+        let expected = queued
+            .remove(spec.id.as_str())
+            .ok_or_else(|| invalid("duplicate or changed queued worker identity"))?;
+        if WorkerBinding::capture(spec)? != *expected {
+            return Err(invalid(
+                "resume changed an original worker input, route or budget",
+            ));
+        }
+        reserved = reserved
+            .checked_add(spec.response_bytes)
+            .ok_or_else(|| invalid("resume reservation overflow"))?;
+    }
+    if reserved > binding.response_reservation {
+        return Err(invalid("resume exceeds the original response reservation"));
+    }
+    let directory = if directory.is_absolute() {
+        directory.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(directory)
+    };
+    let parent = directory
+        .parent()
+        .ok_or_else(|| invalid("resume needs a destination parent"))?;
+    let namespace = crate::namespace::protected_directory(parent)?;
+    let name = directory
+        .file_name()
+        .ok_or_else(|| invalid("resume needs a new destination name"))?;
+    let pinned = Path::new("/proc/self/fd")
+        .join(namespace.as_raw_fd().to_string())
+        .join(name);
+    match std::fs::symlink_metadata(&pinned) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "resume destination already exists",
+            ))
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    binding.response_reservation = reserved;
+    let child_run = format!("resume-{}", &snapshot.journal_sha256[..32]);
+    let mut settings = A2ARunSettings {
+        id: child_run.clone(),
+        directory: directory.clone(),
+        persist_results: binding.persist_results,
+        parallelism: binding.parallelism,
+        wall_time: binding.remaining()?,
+        response_reservation: reserved,
+        journal_bytes: binding.journal_bytes,
+        request_timeout: Duration::from_nanos(binding.request_timeout_ns),
+        poll_interval: Duration::from_nanos(binding.poll_interval_ns),
+        cancel_grace: Duration::from_nanos(binding.cancel_grace_ns),
+    };
+    crate::a2a_run::validate(&settings, &plan)?;
+    crate::checkpoint::consume_resume(
+        &owner.directory,
+        &ResumeReceipt {
+            version: 1,
+            journal_sha256: snapshot.journal_sha256.clone(),
+            run: snapshot.run.clone(),
+            child_run: child_run.clone(),
+            destination_sha256: hash(directory.as_os_str().as_bytes()),
+            workers: plan.iter().map(|s| s.id.clone()).collect(),
+            limits: binding.clone(),
+        },
+    )?;
+    // Recheck after durable receipt I/O. A failure now intentionally leaves the
+    // queue consumed; otherwise a storage/crash race could duplicate launches.
+    settings.wall_time = binding.remaining()?;
+    let mut resumed = crate::a2a_run::run_bound(settings, plan, inbox, observe, Some(binding))?;
+    reports.append(&mut resumed.workers);
+    reports.sort_by(|a, b| a.worker.cmp(&b.worker));
+    Ok(A2ARunReport {
+        run: snapshot.run.clone(),
+        workers: reports,
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResumeReceipt {
+    pub version: u32,
+    pub journal_sha256: String,
+    pub run: String,
+    pub child_run: String,
+    pub destination_sha256: String,
+    pub workers: Vec<String>,
+    pub limits: RunBinding,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RunBinding {
@@ -259,3 +416,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<WorkerBinding>(&encoded).unwrap(), original);
     }
 }
+
+#[cfg(test)]
+#[path = "queued_resume_tests.rs"]
+mod queued_tests;

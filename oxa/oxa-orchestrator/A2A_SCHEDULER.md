@@ -23,8 +23,9 @@ the private create-only journal. Explicit `persist_results` consent now enables
 private worker checkpoints; see [WORKER_CHECKPOINTS.md](WORKER_CHECKPOINTS.md).
 Passive remote journal/checkpoint inspection is now in
 [A2A_INSPECTION.md](A2A_INSPECTION.md), with explicit original-agent operations in
-[A2A_RECONCILIATION.md](A2A_RECONCILIATION.md). Queued resume, registration loading
-and CLI hooks remain later slices. Native inspection still rejects this transport.
+[A2A_RECONCILIATION.md](A2A_RECONCILIATION.md) and queue recovery in
+[QUEUED_RESUME.md](QUEUED_RESUME.md). Registration loading and CLI hooks remain
+later slices. Native inspection still rejects this transport.
 Local acceptance: 88 ordinary crate tests pass, including eight scheduler tests
 using authenticated loopback mocks, partial fan-in, lost IDs/no replay, direct
 messages, cleanup budget transfer, paused-task deadlines, slow steering and

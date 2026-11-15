@@ -397,14 +397,21 @@ pub(crate) fn open_input(path: &Path) -> io::Result<File> {
 fn open_input_limit(path: &Path, max: usize) -> io::Result<File> {
     let parent = path.parent().ok_or_else(|| invalid("journal needs a parent"))?;
     let directory = crate::namespace::protected_directory(parent)?;
-    let metadata = directory.metadata()?;
-    // SAFETY: geteuid only returns this process's effective identity.
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
-        return Err(invalid("journal parent must be private and operator-owned"));
-    }
     let name = path
         .file_name()
         .ok_or_else(|| invalid("journal needs a file name"))?;
+    open_input_at(&directory, name, max)
+}
+pub(crate) fn open_input_at(directory: &File, name: &std::ffi::OsStr, max: usize) -> io::Result<File> {
+    let components: Vec<_> = Path::new(name).components().collect();
+    if !matches!(components.as_slice(), [std::path::Component::Normal(_)]) {
+        return Err(invalid("input needs one normal file name"));
+    }
+    let metadata = directory.metadata()?;
+    // SAFETY: geteuid only returns the effective identity.
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
+        return Err(invalid("input parent must be private and operator-owned"));
+    }
     let handle = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -437,6 +444,9 @@ pub(crate) fn read_checked(file: &File) -> io::Result<Vec<u8>> {
 }
 pub(crate) fn read_bounded(path: &Path, max: usize) -> io::Result<Vec<u8>> {
     read_checked_limit(&open_input_limit(path, max)?, max)
+}
+pub(crate) fn read_bounded_at(directory: &File, name: &str, max: usize) -> io::Result<Vec<u8>> {
+    read_checked_limit(&open_input_at(directory, std::ffi::OsStr::new(name), max)?, max)
 }
 fn read_checked_limit(file: &File, max: usize) -> io::Result<Vec<u8>> {
     let before = file.metadata()?;

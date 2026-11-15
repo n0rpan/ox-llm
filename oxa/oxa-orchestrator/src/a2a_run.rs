@@ -239,14 +239,39 @@ pub fn run_a2a(
     settings: A2ARunSettings,
     plan: Vec<A2AWorkerSpec>,
     inbox: Inbox,
+    observe: impl FnMut(A2AStatus),
+) -> io::Result<A2ARunReport> {
+    run_bound(settings, plan, inbox, observe, None)
+}
+pub(crate) fn run_bound(
+    settings: A2ARunSettings,
+    plan: Vec<A2AWorkerSpec>,
+    inbox: Inbox,
     mut observe: impl FnMut(A2AStatus),
+    inherited: Option<crate::resume::RunBinding>,
 ) -> io::Result<A2ARunReport> {
     let Inbox {
         receiver: controls,
         cancel,
     } = inbox;
     validate(&settings, &plan)?;
-    let run_binding = crate::resume::RunBinding::capture(&settings)?;
+    let run_binding = match inherited {
+        None => crate::resume::RunBinding::capture(&settings)?,
+        Some(binding) => {
+            binding.validate()?;
+            if binding.parallelism != settings.parallelism
+                || binding.response_reservation != settings.response_reservation
+                || binding.journal_bytes != settings.journal_bytes
+                || binding.request_timeout_ns as u128 != settings.request_timeout.as_nanos()
+                || binding.poll_interval_ns as u128 != settings.poll_interval.as_nanos()
+                || binding.cancel_grace_ns as u128 != settings.cancel_grace.as_nanos()
+                || binding.persist_results != settings.persist_results
+            {
+                return Err(invalid("inherited run policy disagrees with settings"));
+            }
+            binding
+        }
+    };
     // Read the remaining boot-clock allowance after Instant capture so capture
     // overhead can only shorten the effective scheduling deadline.
     let started = Instant::now();
@@ -935,7 +960,7 @@ fn initial(run: &str, spec: &A2AWorkerSpec) -> SendParams {
         }),
     }
 }
-fn validate(settings: &A2ARunSettings, plan: &[A2AWorkerSpec]) -> io::Result<()> {
+pub(crate) fn validate(settings: &A2ARunSettings, plan: &[A2AWorkerSpec]) -> io::Result<()> {
     if !valid_id(&settings.id)
         || plan.is_empty()
         || plan.len() > 128
