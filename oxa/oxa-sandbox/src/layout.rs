@@ -81,6 +81,7 @@ pub const CACHE_WRITE: &[&str] = &[
     ".cache/mise",
     // Only `tracked-configs`: `trusted-configs` (trust records) must stay read-only.
     ".local/state/mise/tracked-configs",
+    ".cache/sccache",
     ".cache/pip",
     ".cache/uv",
     ".cache/go-build",
@@ -297,6 +298,14 @@ impl Layout {
             .collect();
         // Version-manager shims (mise) write cache/state under the read-only home and warn on
         // every call; point them at the sandbox /tmp unless the caller set them.
+        // A caller SCCACHE_DIR only survives when it lies on a writable bind (or /tmp);
+        // otherwise it sits on the read-only home and sccache would fail.
+        env.retain(|(k, v)| {
+            k != "SCCACHE_DIR" || {
+                let p = Path::new(v);
+                p.starts_with("/tmp") || write.iter().any(|w| p.starts_with(w))
+            }
+        });
         for (k, v) in [
             ("MISE_CACHE_DIR", "/tmp/mise-cache"),
             ("MISE_STATE_DIR", "/tmp/mise-state"),
@@ -350,12 +359,23 @@ mod tests {
             ..Default::default()
         });
         assert!(l.env.contains(&("SCCACHE_DIR".into(), "/tmp/sccache".into())));
+        let h = std::env::temp_dir().join(format!("oxa-sccache-{}", std::process::id()));
+        std::fs::create_dir_all(h.join(".cache/sccache")).unwrap();
+        let mine = h.join(".cache/sccache").display().to_string();
         let l = Layout::build(&LayoutInputs {
-            home: PathBuf::from("/nonexistent-home"),
-            env: vec![("SCCACHE_DIR".into(), "/srv/sc".into())],
+            home: h.clone(),
+            env: vec![("SCCACHE_DIR".into(), mine.clone())],
             ..Default::default()
         });
-        assert!(l.env.contains(&("SCCACHE_DIR".into(), "/srv/sc".into())));
+        assert!(l.env.contains(&("SCCACHE_DIR".into(), mine)));
+        std::fs::remove_dir_all(&h).ok();
+        // A value elsewhere on the read-only home is replaced by a writable one.
+        let l = Layout::build(&LayoutInputs {
+            home: PathBuf::from("/h"),
+            env: vec![("SCCACHE_DIR".into(), "/h/.sccache-elsewhere".into())],
+            ..Default::default()
+        });
+        assert!(l.env.contains(&("SCCACHE_DIR".into(), "/tmp/sccache".into())));
     }
 
     #[test]
