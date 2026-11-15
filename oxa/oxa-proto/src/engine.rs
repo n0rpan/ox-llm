@@ -26,6 +26,11 @@ pub struct EngineInfo {
     pub prefill_only: bool,
     /// The other capabilities of `limits_for` (F4 / EG2).
     pub caps: EngineCaps,
+    /// Whether the model thinks (reasoning). `None` = the controller published no thinking field
+    /// (a plain OpenAI server), so a client must not assume it does.
+    pub thinking: Option<bool>,
+    /// Whether the model accepts images as input. `None` = no input-modality field was published.
+    pub images: Option<bool>,
 }
 
 /// What the engine lets a client use with a model, known before the model loads: the

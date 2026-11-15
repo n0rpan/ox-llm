@@ -9,8 +9,9 @@ maintainer, who says in the PR when a hardware check is needed.
 
 ## How to work
 
-- **One PR per task**, base `main`, branch `agent/<task-id>-<slug>`. Small PRs; rebase on `main` before you
-  mark one ready. `main` is protected: every change goes through a PR with green required checks.
+- **One PR per task**, base `main`, branch `agent/<task-id>-<slug>`. Small PRs; resolve real text conflicts
+  with `main` using normal merge commits, without rebasing just to update the base. `main` is protected:
+  cleared PRs enter the merge queue, which validates the integrated change before merging.
 - **PR description:** what and why (cite the task id), what you removed or changed, the tests you ran and
   the CI result. Label the review tier:
   - **T1:** test tooling, one-off scripts, docs.
@@ -21,9 +22,29 @@ maintainer, who says in the PR when a hardware check is needed.
 - **CI is the judge:** `.github/workflows/checks.yml` on GitHub-hosted runners (x86_64 + aarch64). If a
   workflow does not start on your PR (fork PRs wait for a maintainer's approval), say so in the PR; don't
   work around it.
+- **CI tiers:** draft PRs run formatting and all secret/SDK/isolation/receipt scans (plus cheap path
+  controls). Ready PRs also run clippy, the oxa build and the x86 stub checks. Engine/Flash builds,
+  oxa's mandatory-bwrap workspace tests and the lab suite skip at job level on PR events, so every
+  required check name still reports. The merge queue (`merge_group`), manual and nightly runs execute
+  the full set regardless of changed paths. The queue is the full integration gate. Main pushes run
+  the fast set only: the queue already ran the full set on exactly the tree that lands, and the nightly
+  run re-checks main in full.
+  Only PR events cancel superseded runs; main and merge-group runs are not cancelled in progress.
 - You can build and test x86_64 code locally: the Rust workspace `oxa/`, the Python controller `lab/`, and
   `oxe-server --engine stub` in `engine/`. The model engine is aarch64-only; rely on CI for those jobs.
 - **When a task is ambiguous,** open the PR as a draft with your question at the top instead of guessing.
+
+## Definition of done
+
+Run these before saying a task is done, per area:
+
+- **oxa** (Rust, run from `oxa/`):
+  - `cargo fmt --check`
+  - `cargo clippy -p <crate> -- -D warnings` for each touched crate
+  - `cargo test -p <crate>` for each touched crate
+  - UI/TUI change: build the real binary and drive it in tmux (live check). Unit tests alone are not enough; they have passed for changes that did nothing in the real TUI.
+- **lab** (Python controller): `cd lab && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
+- **Bug fix:** show the new test failing before the fix.
 
 ## Hard rules (never break these)
 

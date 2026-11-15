@@ -404,7 +404,12 @@ fn shown_panel(text: &str, why: &str, cx: &ViewCx) -> Vec<String> {
     };
     let head = theme.fg(token, &theme.bold(&format!("{mark} {label}")));
     let mut body = styled_lines(text.trim(), "text", theme);
-    body.push(theme.fg("muted", "not sent to the model; ask again"));
+    let reason = if why == shown_why::ABORTED {
+        "cancelled; the prompt stays in the conversation"
+    } else {
+        "not sent to the model; ask again"
+    };
+    body.push(theme.fg("muted", reason));
     framed(&head, "", &body, token, cx)
 }
 
