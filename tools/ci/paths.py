@@ -20,26 +20,28 @@ def documentation(path):
         'README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'AGENTS.md', 'SECURITY.md')
 
 
-# Top-level directories per component; the controller component keeps the job id `lab`.
-COMPONENTS = {'engine': 'engine', 'oxa': 'oxa', 'oxc': 'lab', 'oxc-gateway': 'lab', 'oxc-rs': 'lab',
-              'conformance': 'lab'}
-FUZZ = {'fuzz/oxa': 'oxa', 'fuzz/oxe': 'engine'}
+# Top-level directories and the outputs (job groups) they select. `lab` is the Python controller
+# suite, `cli` the oxc CLI conformance (Python and oxc-rs), `gateway` the oxc-gateway jobs. Nothing
+# under oxc/ reads oxc-rs/, oxc-gateway/ or conformance/, so those paths skip `lab`.
+COMPONENTS = {'engine': {'engine'}, 'oxa': {'oxa'}, 'oxc': {'lab', 'cli', 'gateway'},
+              'oxc-rs': {'cli'}, 'conformance': {'cli'}, 'oxc-gateway': {'gateway'}}
+FUZZ = {'fuzz/oxa': {'oxa'}, 'fuzz/oxe': {'engine'}}
+OUTPUTS = ('engine', 'oxa', 'lab', 'cli', 'gateway')
 # Anything else (.github/, tools/, packaging/, root files, new directories) marks every component.
 
 
 def classify(paths, full_event=False):
     paths = list(paths)
     docs = bool(paths) and all(documentation(path) for path in paths)
-    changed = {'oxa': False, 'engine': False, 'lab': False}
+    changed = dict.fromkeys(OUTPUTS, False)
     for path in paths:
         if documentation(path):
             continue
-        component = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
-        if component:
+        components = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
+        for component in components or OUTPUTS:
             changed[component] = True
-        else:
-            changed = dict.fromkeys(changed, True)
-    return {**changed, 'docs': docs, 'full': full_event}
+    md = any(Path(path).suffix.lower() in ('.md', '.rst') for path in paths)
+    return {**changed, 'docs': docs, 'md': md, 'full': full_event}
 
 
 def changed_paths(event, name):
@@ -82,6 +84,10 @@ def main():
     name = os.environ['GITHUB_EVENT_NAME']
     full = full_gate(name, os.environ.get('GITHUB_REF', ''))
     result = classify(changed_paths(event, name), full)
+    if full and name != 'merge_group':
+        # main after a merge, nightly and manual runs test every component; the queue and pull
+        # requests keep the diff result, so the workflow needs no event tests of its own.
+        result.update(dict.fromkeys(OUTPUTS, True))
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
         for key, value in result.items():
             stream.write(f'{key}={str(value).lower()}\n')
