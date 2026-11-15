@@ -890,9 +890,11 @@ class CloudStream:
             safe += redactor.finish()
         return safe.decode('utf-8')
 
-    def _tails(self):
+    def _tails(self, indices=None):
         out = b''
         for (index, field, slot), redactor in self.fields.items():
+            if indices is not None and index not in indices:
+                continue
             tail = redactor.finish().decode('utf-8')
             if not tail:
                 continue
@@ -915,7 +917,6 @@ class CloudStream:
         if not isinstance(value, dict):
             return self._wire(name, data)
         value['model'] = self.model
-        tails = b''
         for choice in value.get('choices') or ():
             if not isinstance(choice, dict):
                 continue
@@ -938,8 +939,6 @@ class CloudStream:
                             if isinstance(function.get(field), str):
                                 function[field] = self._fragment(index, field, function[field],
                                                                  call.get('index', 0))
-            if choice.get('finish_reason') is not None:
-                tails += self._tails()
             _normalize_message(choice.get('message'))
         if isinstance(value.get('usage'), dict):
             try:
@@ -949,7 +948,21 @@ class CloudStream:
             value['usage'] = complete_usage(value['usage'], self.reasoning, value.get('timings'))
         if self.key:
             value = redact_value(value, self.key)
-        return tails + self._wire(name, json.dumps(value, ensure_ascii=False).encode())
+        finished = [choice for choice in value.get('choices') or ()
+                    if isinstance(choice, dict) and choice.get('finish_reason') is not None]
+        tails = self._tails({choice.get('index', 0) for choice in finished}) if finished else b''
+        if tails:
+            # A final delta can itself leave a key-prefix suffix buffered. Preserve
+            # current delta -> suffix -> finish, without flushing unfinished siblings.
+            ending = {**value, 'choices': [
+                {'index': choice.get('index', 0), 'delta': {},
+                 'finish_reason': choice['finish_reason']} for choice in finished]}
+            for choice in finished:
+                choice['finish_reason'] = None
+            value.pop('usage', None)  # Usage belongs to the single final notification.
+            return (self._wire(name, json.dumps(value, ensure_ascii=False).encode()) + tails
+                    + self._wire(name, json.dumps(ending, ensure_ascii=False).encode()))
+        return self._wire(name, json.dumps(value, ensure_ascii=False).encode())
 
     def feed(self, chunk):
         out = b''
