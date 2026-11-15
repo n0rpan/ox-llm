@@ -33,10 +33,22 @@ pub trait SearchProvider: Send + Sync {
     }
 }
 
-fn freshness_ok(s: &str) -> bool {
-    if matches!(s, "pd" | "pw" | "pm" | "py") {
-        return true;
-    }
+/// The Brave `freshness` value of `s`: the codes `pd` / `pw` / `pm` / `py`, the natural words
+/// a model tends to send instead (`day`, `24h`, `today`, `week`, `month`, `year`, any case),
+/// or a date range `YYYY-MM-DDtoYYYY-MM-DD`; `None` = invalid.
+pub fn normalize_freshness(s: &str) -> Option<String> {
+    let lower = s.to_ascii_lowercase();
+    let code = match lower.as_str() {
+        "pd" | "day" | "24h" | "today" => "pd",
+        "pw" | "week" => "pw",
+        "pm" | "month" => "pm",
+        "py" | "year" => "py",
+        _ => return freshness_range_ok(&lower).then_some(lower),
+    };
+    Some(code.to_string())
+}
+
+fn freshness_range_ok(s: &str) -> bool {
     let date = |d: &str| {
         let b = d.as_bytes();
         b.len() == 10
@@ -99,8 +111,10 @@ pub fn parse_query(args: &Value) -> Result<Query, String> {
                     continue;
                 }
                 match k.as_str() {
-                    "freshness" if freshness_ok(&s) => q.freshness = Some(s),
-                    "freshness" => return Err(text::BAD_FRESHNESS.to_string()),
+                    "freshness" => match normalize_freshness(&s) {
+                        Some(f) => q.freshness = Some(f),
+                        None => return Err(text::BAD_FRESHNESS.to_string()),
+                    },
                     "country" if s.len() == 2 && s.bytes().all(|c| c.is_ascii_alphabetic()) => {
                         q.country = Some(s.to_ascii_lowercase())
                     }

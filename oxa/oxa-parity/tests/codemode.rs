@@ -96,6 +96,7 @@ fn spawn(env: &TestEnv, url: &str, args: &[&str], extra: &[(&str, &str)]) -> Out
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(url))
+        .envs(oxa_parity::note_off_env())
         .envs(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

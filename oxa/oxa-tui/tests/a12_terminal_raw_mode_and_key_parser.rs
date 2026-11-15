@@ -537,3 +537,34 @@ fn modify_other_keys_input() {
         KeyId::parse("ctrl+shift+a").unwrap()
     );
 }
+
+/// O-199 first run (foot): the kitty keyboard protocol keeps one flags stack per screen, so
+/// entering the alternate screen with the protocol on pushes the flags there too, and leaving
+/// it pops them before the switch back (the main screen's push stays until the program exits).
+#[test]
+fn the_alternate_screen_gets_its_own_kitty_push() {
+    use oxa_tui::{leave_sequence, switch_sequence, TermMode};
+    let kitty_first = [TermMode::KittyKeyboard];
+    assert_eq!(
+        switch_sequence(&kitty_first, TermMode::AltScreen, true),
+        "\x1b[?1049h\x1b[>7u"
+    );
+    assert_eq!(
+        switch_sequence(&kitty_first, TermMode::AltScreen, false),
+        "\x1b[<u\x1b[?1049l"
+    );
+    // Without the protocol, or for other modes: the plain sequence.
+    assert_eq!(switch_sequence(&[], TermMode::AltScreen, true), "\x1b[?1049h");
+    assert_eq!(
+        switch_sequence(&kitty_first, TermMode::Mouse, false),
+        "\x1b[?1006l\x1b[?1002l\x1b[?1000l"
+    );
+    // Leaving: both pushes are popped, each on its own screen.
+    let active = [
+        TermMode::BracketedPaste,
+        TermMode::KittyKeyboard,
+        TermMode::AltScreen,
+    ];
+    let leave = String::from_utf8(leave_sequence(&active, false)).unwrap();
+    assert_eq!(leave, "\x1b[<u\x1b[?1049l\x1b[<u\x1b[?2004l");
+}

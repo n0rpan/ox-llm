@@ -20,13 +20,13 @@ Source of truth for "what pi does": the pi 1.5.2 documentation (`packages/coding
 - **A** adapted for the oxe engine. The test checks the adapted behaviour and names the invariant that forced it.
 - **O** omitted. Where a surface exists (flag, command, API call) the test asserts the clear `unsupported_in_oxa` error or the documented ignore-with-warning; otherwise the omission is recorded here.
 
-## Profiles
+## Defaults
 
-The suite runs under both `oxa.profile` values: `OXA_PARITY_PROFILE=pi` (default) and `=local`; every place that starts `oxa` passes it on (`oxa_parity::profile_env`). `local` changes formats and defaults only, never capability; a row that asserts pi-exact text branches on the profile and checks the same capability under `local` (TOOLS-006, TOOLS-007: the flat `edit` schema, several edits as several calls; TOOLS-002: the first page of `read`; TOOLS-014, TOOLS-017: the path-once and over-limit forms of `grep`; CMP-014, CMP-016, EXT-017: a failed summary is replaced by the mechanical record, so `session_compact` fires with `mechanical: true` and `summaryError` instead of `session_compact_failed`).
+The suite runs under oxa's single set of defaults (O-205). Every place that starts `oxa` adds `oxa_parity::note_off_env()` after `TestEnv::envs`, which turns the per-prompt environment note off: PARITY compares the user messages with pi's bytes. The defaults change formats only, never capability; a row whose pi text differs checks the same capability in the default form (TOOLS-006, TOOLS-007: the flat `edit` schema, several edits as several calls; TOOLS-002: the first page of `read`; TOOLS-014, TOOLS-017: the path-once and over-limit forms of `grep`; CMP-014, CMP-016, EXT-017: a failed summary is replaced by the mechanical record, so `session_compact` fires with `mechanical: true` and `summaryError` instead of `session_compact_failed`).
 
 ## Ship gate
 
-100% of the rows of the KEEP groups green under both profiles (`OXA_PARITY_PROFILE=pi` and `=local`, O-167): every P and A row has a green test, no row is unclassified, every O row is either tested (the clear `unsupported_in_oxa` error or the unknown-setting warning) or recorded as `omission`. pi features that are not part of oxa's scope (O-175: a small local agent tool) are O rows with the reason `pi-specific, not in oxa`. A row may be reclassified only by the architect, with the reason in the note.
+100% of the rows of the KEEP groups green under the defaults: every P and A row has a green test, no row is unclassified, every O row is either tested (the clear `unsupported_in_oxa` error or the unknown-setting warning) or recorded as `omission`. pi features that are not part of oxa's scope (O-175: a small local agent tool) are O rows with the reason `pi-specific, not in oxa`. A row may be reclassified only by the architect, with the reason in the note.
 
 ## CLI: Command line
 
@@ -201,7 +201,7 @@ pi page(s): keybindings.md. Tests: `oxa-parity/tests/keys_settings.rs`.
 | KEY-006 | Select lists: `tui.select.up` (up), `down` (down), `pageUp`, `pageDown`, `confirm` (enter), `cancel` (escape, ctrl+c) | P |  | `keys_settings.rs::key_006` |
 | KEY-007 | Fullscreen scroll: `tui.altScreen.pageUp`, `pageDown`, `halfPageUp` (none), `halfPageDown` (none), `lineUp` (none), `lineDown` (none), `top` (ctrl+home), `bottom` (ctrl+end) | P |  | `keys_settings.rs::key_007` |
 | KEY-008 | Fullscreen prompt jump: `tui.altScreen.previousPrompt` (ctrl+shift+up), `nextPrompt` (ctrl+shift+down) | P | Linux defaults only | `keys_settings.rs::key_008` |
-| KEY-009 | Fullscreen search: `tui.altScreen.search` (ctrl+shift+f), `searchNext` (enter, ctrl+g), `searchPrevious` (shift+enter, ctrl+shift+g), `searchClose` (escape) | P | Linux defaults only | `keys_settings.rs::key_009` |
+| KEY-009 | Fullscreen search: `tui.altScreen.search` (ctrl+shift+f), `searchNext` (enter, ctrl+g), `searchPrevious` (shift+enter, ctrl+shift+g), `searchClose` (escape) | A | Linux defaults only; oxa adds `alt+s` to `search` (a terminal without the kitty keyboard protocol cannot send ctrl+shift+f), and the footer shows only keys the terminal can send | `keys_settings.rs::key_009` |
 | KEY-010 | Application: `app.interrupt` (escape), `app.clear` (ctrl+c: clear, then exit), `app.exit` (ctrl+d, empty editor), `app.suspend` (ctrl+z), `app.editor.external` (ctrl+g) | P |  | `keys_settings.rs::key_010` |
 | KEY-011 | `app.clipboard.pasteImage` (ctrl+v) | A | pastes files and images into the session; an image is shown, the wire gets the placeholder | `keys_settings.rs::key_011` |
 | KEY-012 | Sessions: `app.session.new`, `tree`, `fork`, `resume` (all none), `togglePath` (ctrl+p), `toggleSort` (ctrl+s), `toggleNamedFilter` (ctrl+n), `rename` (ctrl+r), `delete` (ctrl+d), `deleteNoninvasive` (ctrl+backspace) | P |  | `keys_settings.rs::key_012` |

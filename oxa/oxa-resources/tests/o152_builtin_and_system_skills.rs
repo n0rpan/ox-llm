@@ -245,3 +245,54 @@ fn identity_file_is_read_once_or_missing() {
     let r = discover(&dirs, &env.work(), &Settings::default(), &DiscoverOpts::default());
     assert_eq!(r.identity.as_deref(), Some("oxa is the agent.\n- Machine: test"));
 }
+
+/// A fake HOME laid out like a real one: `~/.agents/skills` holds two plain skills (one a
+/// symlink into the system directory, as Omarchy installs them) and a `synced/<id>/` tree of
+/// skills another product wrote for its own tools, with its `manifest.json`. The synced ones
+/// are skipped by default and listed with `oxa.skills.includeSynced: true`; a sync manifest
+/// outside a `synced/` folder is recognised too.
+#[test]
+fn synced_skills_under_agents_home_are_opt_in() {
+    let env = TestEnv::new();
+    let dirs = dirs_with_system(&env);
+    let write = |p: std::path::PathBuf, name: &str| {
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("SKILL.md"), skill_text(name, &format!("Use {name}."))).unwrap();
+    };
+    let agents = dirs.home.join(".agents").join("skills");
+    let system = dirs.system_skills_dir.clone().unwrap();
+    write(system.join("omarchy"), "omarchy");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::os::unix::fs::symlink(system.join("omarchy"), agents.join("omarchy")).unwrap();
+    write(agents.join("diagnose-crash"), "diagnose-crash");
+    let bucket = agents.join("synced").join("4d5e-aecf");
+    for name in ["computer-use", "docx", "pdf"] {
+        write(bucket.join(name), name);
+    }
+    std::fs::write(
+        bucket.join("manifest.json"),
+        r#"{"skills":[{"skillId":"pdf","name":"pdf"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(agents.join("synced").join(".bucket-4d5e-aecf"), "").unwrap();
+    // The same kind of sync tree under another folder name, found by its manifest.
+    let other = agents.join("from-elsewhere");
+    write(other.join("xlsx"), "xlsx");
+    std::fs::write(other.join("manifest.json"), r#"{"skills":[{"skillId":"xlsx"}]}"#).unwrap();
+
+    let names = |settings: &Settings| -> Vec<String> {
+        let (skills, diags) = discover_skills(&dirs, &env.work(), settings, &DiscoverOpts::default(), &[]);
+        assert!(diags.is_empty(), "{diags:?}");
+        skills
+            .into_iter()
+            .filter(|s| !matches!(s.source, ResourceSource::Builtin))
+            .map(|s| s.name)
+            .collect()
+    };
+    assert_eq!(names(&Settings::default()), ["diagnose-crash", "omarchy"]);
+    let on = Settings::from_values(json!({"oxa": {"skills": {"includeSynced": true}}}), json!({}));
+    assert_eq!(
+        names(&on),
+        ["computer-use", "diagnose-crash", "docx", "omarchy", "pdf", "xlsx"]
+    );
+}

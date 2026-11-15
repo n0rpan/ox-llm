@@ -138,8 +138,11 @@ struct HudParts {
     /// Context: percent, fraction and `used/n_ctx`; `None` when the window is unknown.
     ctx: Option<(u64, f64, String)>,
     repairs: u32,
+    degraded: bool,
     model: String,
     level: Option<&'static str>,
+    /// What the level reads as (`adaptive • low` for Claude 5.5); the token colours it.
+    level_text: Option<String>,
     note: Option<String>,
     mode: Option<Mode>,
     /// Badge word and colour token of the activity; `None` when idle.
@@ -177,12 +180,14 @@ impl HudParts {
             cache,
             ctx,
             repairs: st.tool_repairs,
+            degraded: st.degraded_context,
             model: if model.is_empty() {
                 "no-model".to_string()
             } else {
                 model
             },
             level: st.thinking.map(|level| level.as_str()),
+            level_text: st.thinking_label_with(g.mid),
             note: clean_opt(st.thinking_note.as_deref()),
             mode: st.mode,
             state: activity_style(&st.activity),
@@ -215,8 +220,8 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     // 2: the model, with the thinking note (7th) and the level (9th).
     let mut model_seg = theme.fg("text", model);
     if shown(9) {
-        if let Some(level) = p.level {
-            let text = format!(" {} {level}", g.mid);
+        if let (Some(level), Some(label)) = (p.level, &p.level_text) {
+            let text = format!(" {} {label}", g.mid);
             model_seg.push_str(&theme.fg(Theme::thinking_token(level), &text));
         }
     }
@@ -275,6 +280,11 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     // 7: repairs, only when there are some.
     if p.repairs > 0 && shown(5) {
         segs.push(theme.fg("warning", &format!("repairs {}", p.repairs)));
+    }
+
+    // 7b: the last compaction had no model summary.
+    if p.degraded && shown(5) {
+        segs.push(theme.fg("warning", "no summary"));
     }
 
     // 8: permission mode.
@@ -518,6 +528,28 @@ pub fn oxa_activity_line_with(
     theme: &Theme,
     skin: Skin,
 ) -> Option<String> {
+    let lead = if motion && skin == Skin::Oxa && !theme.is_plain() {
+        activity_sprite(st).map(|sprite| {
+            let (_, token) = activity_style(&st.activity).unwrap_or(("", "muted"));
+            let hot = if sprite == Sprite::Fire { "error" } else { token };
+            theme.fg(hot, sprite_frame(sprite, st.activity_ms))
+        })
+    } else {
+        None
+    };
+    activity_line_lead(st, keymap, lead, width, theme, skin)
+}
+
+/// The activity line behind `lead` (a sprite or a scene, already styled; `None` = the badge
+/// comes first): badge, detail, elapsed time and the cancel key. `None` when idle.
+pub(super) fn activity_line_lead(
+    st: &StatusModel,
+    keymap: &Keymap,
+    lead: Option<String>,
+    width: u16,
+    theme: &Theme,
+    skin: Skin,
+) -> Option<String> {
     let (word, token) = activity_style(&st.activity)?;
     let g = glyphs(skin);
     let mut tail: Vec<String> = Vec::new();
@@ -536,17 +568,8 @@ pub fn oxa_activity_line_with(
             ));
         }
     }
-    let sprite = if motion && skin == Skin::Oxa && !theme.is_plain() {
-        activity_sprite(st)
-    } else {
-        None
-    };
-    let mut line = match sprite {
-        Some(sprite) => {
-            let hot = if sprite == Sprite::Fire { "error" } else { token };
-            let frame = theme.fg(hot, sprite_frame(sprite, st.activity_ms));
-            format!(" {frame} {}", badge(word, token, theme))
-        }
+    let mut line = match lead {
+        Some(lead) => format!(" {lead} {}", badge(word, token, theme)),
         None => format!(" {}", badge(word, token, theme)),
     };
     if !tail.is_empty() {
@@ -557,7 +580,7 @@ pub fn oxa_activity_line_with(
 }
 
 /// The badge word and colour token of an activity (sec. 4.4); `None` when idle.
-fn activity_style(activity: &Activity) -> Option<(&'static str, &'static str)> {
+pub(super) fn activity_style(activity: &Activity) -> Option<(&'static str, &'static str)> {
     Some(match activity {
         Activity::Idle => return None,
         Activity::Prefill { .. } => ("PREFILL", "accent"),

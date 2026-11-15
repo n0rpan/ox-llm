@@ -87,6 +87,8 @@ impl Engine for TwoModels {
             compact_at,
             prefill_only: loaded == MOE.0,
             caps: oxa_proto::EngineCaps::default(),
+            thinking: None,
+            images: None,
         })
     }
     fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {

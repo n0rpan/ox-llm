@@ -39,7 +39,7 @@ One limit applies because of the engine's parameter syntax: a line that is exact
 | Policy | Behaviour |
 |---|---|
 | `fixed` | every request carries the session's thinking level |
-| `auto` (default) | thinking is on for the first reply after each user prompt; it is off for tool follow-ups, for turns after an appended instruction, for summaries and for background requests |
+| `auto` (default) | thinking is on for the first reply after each user prompt; tool follow-ups follow `oxa.thinking.toolFollowups` (default `auto`: off for routine steps, on after a failed call, repeat note or several calls without progress; see [tools.md](tools.md#thinking-on-tool-follow-ups)); it is off for turns after an appended instruction, for summaries and for background requests |
 
 The thinking level `off` always wins: with `off` no request thinks, whatever the policy.
 
@@ -89,6 +89,10 @@ follow the same rule.
 - **Prefill.** While you type, a draft message is prefilled; while a long tool call runs, the
   results before it are prefilled (`oxa.prefill.paste`, `oxa.prefill.tools`; timing only, the
   bytes do not change).
+- **Date and environment.** Each prompt you send ends with a short environment note
+  (`oxa.envNote`): the first one in a session carries the date, time zone, model, context size
+  and permission mode, later ones only the local time. The note is appended to your message,
+  never put in the system prompt, so earlier requests stay byte-identical and the cache is reused.
 
 ## If no summary can be made
 

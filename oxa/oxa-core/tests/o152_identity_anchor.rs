@@ -177,7 +177,7 @@ fn anchor_bytes_are_identical_across_cwd_date_and_session() {
     );
     // What the anchor holds: the identity, the skills index (names and descriptions; bodies
     // stay on disk) and the tool schemas.
-    assert!(anchor.contains("<identity>\noxa is the coding agent of ox-llm"));
+    assert!(anchor.contains("<identity>\noxa is the local agent of ox-llm"));
     assert!(
         anchor.contains("Snapdragon X Elite (X1E80100)") && anchor.contains("  - moe: context 131072 tokens")
     );

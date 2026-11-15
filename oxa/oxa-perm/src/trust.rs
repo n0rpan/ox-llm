@@ -145,6 +145,7 @@ const EXECUTABLE_SETTINGS: &[&str] = &[
     "hooks",
     "shellPath",
     "shellCommandPrefix",
+    "done",
     "packages",
     "extensions",
     "skills",

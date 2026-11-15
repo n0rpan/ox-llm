@@ -118,6 +118,7 @@ rows does not cite the internal work items.
 
 | id | behaviour | how oxa differs |
 |---|---|---|
+| KEY-009 | Fullscreen search: `tui.altScreen.search` (ctrl+shift+f), `searchNext` (enter, ctrl+g), `searchPrevious` (shift+enter, ctrl+shift+g), `searchClose` (escape) | Linux defaults only; oxa adds `alt+s` to `search` (a terminal without the kitty keyboard protocol cannot send ctrl+shift+f), and the footer shows only keys the terminal can send |
 | KEY-011 | `app.clipboard.pasteImage` (ctrl+v) | pastes files and images into the session; an image is shown, the wire gets the placeholder |
 | KEY-013 | Models: `app.model.select` (ctrl+l), `cycleForward` (ctrl+p), `cycleBackward` (shift+ctrl+p), `app.models.save` (ctrl+s) | over engine models; a switch is a new epoch |
 | KEY-014 | Thinking: `app.thinking.cycle` (shift+tab), `app.thinking.save` (ctrl+s), `app.thinking.toggle` (ctrl+t) | boolean; shift+tab stays thinking |

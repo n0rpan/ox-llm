@@ -428,17 +428,28 @@ fn synchronized_updates_are_atomic() {
     assert_eq!(seen[4], ("NEW FRAME".to_string(), false));
 }
 
-/// Harness: `wait_stable` returns only after the application has read the input sent before
-/// it, so a key's effect is on screen when it returns.
+/// Harness: `wait_steady` returns only after the application has read the input sent before
+/// it and the key's effect is on screen (content-based, not quiet-time-based).
 #[test]
 fn wait_stable_waits_for_the_input_to_be_read() {
     let rig = start(TermProfile::xterm(), (24, 80), true);
     for c in ["a", "b", "c", "d", "e"] {
         rig.pty.send_text(c);
-        let s = rig.pty.wait_stable(150, EXIT).unwrap();
+        // Content-based: the key's effect (the character in the editor row) is the done-signal;
+        // quiet time only confirms it stays that way. Under load the redraw can land well after
+        // the key was read, so a quiet period alone is not a frame-complete signal.
+        let s = rig
+            .pty
+            .wait_steady(
+                &format!("{c:?} visible in the editor row"),
+                |s| editor_row(s).ends_with(c),
+                150,
+                EXIT,
+            )
+            .unwrap();
         assert!(
             editor_row(&s).ends_with(c),
-            "{c:?} processed before wait_stable returned\n{s:?}"
+            "{c:?} processed before wait_steady returned\n{s:?}"
         );
     }
     assert_eq!(rig.pty.pending_input(), 0);

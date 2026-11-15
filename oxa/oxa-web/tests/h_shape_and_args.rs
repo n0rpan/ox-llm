@@ -132,7 +132,28 @@ fn argument_validation_is_model_facing_and_fixed() {
             "{good}"
         );
     }
-    for bad in ["day", "2022-04-01", "2022-4-1to2022-07-30"] {
+    // Natural words a model sends map to the codes (any case), so no round trip is wasted.
+    for (word, code) in [
+        ("day", "pd"),
+        ("Day", "pd"),
+        ("24h", "pd"),
+        ("TODAY", "pd"),
+        ("week", "pw"),
+        ("Month", "pm"),
+        ("year", "py"),
+        ("PW", "pw"),
+        (" pd ", "pd"),
+    ] {
+        assert_eq!(
+            parse_query(&json!({"query": "q", "freshness": word}))
+                .unwrap()
+                .freshness
+                .as_deref(),
+            Some(code),
+            "{word}"
+        );
+    }
+    for bad in ["days", "fortnight", "2022-04-01", "2022-4-1to2022-07-30", "pdx"] {
         assert_eq!(
             parse_query(&json!({"query": "q", "freshness": bad})).unwrap_err(),
             text::BAD_FRESHNESS
@@ -234,5 +255,31 @@ fn the_spec_is_strings_and_integers_only() {
     assert_eq!(schema["required"], json!(["query"]));
     for (_, p) in schema["properties"].as_object().unwrap() {
         assert!(matches!(p["type"].as_str(), Some("string" | "integer")), "{p}");
+    }
+}
+
+/// The schema offers the codes as an enum (and the range as a pattern), so a model picks a
+/// valid value the first time; every enum value and an example range pass `parse_query`.
+#[test]
+fn freshness_schema_has_the_enum_and_a_range_pattern() {
+    let schema: serde_json::Value = serde_json::from_str(text::SCHEMA).unwrap();
+    let f = &schema["properties"]["freshness"];
+    assert_eq!(f["type"], "string");
+    let any = f["anyOf"].as_array().unwrap();
+    let codes: Vec<&str> = any[0]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["pd", "pw", "pm", "py"]);
+    assert_eq!(
+        any[1]["pattern"],
+        "^[0-9]{4}-[0-9]{2}-[0-9]{2}to[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    );
+    let desc = f["description"].as_str().unwrap();
+    assert!(desc.contains("pd (past day)") && desc.contains("2026-01-01to2026-01-31"));
+    for code in codes {
+        assert!(parse_query(&json!({"query": "q", "freshness": code})).is_ok());
     }
 }

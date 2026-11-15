@@ -28,6 +28,8 @@ pub fn parse_info(base_url: &str, models: &Value, status: &Value) -> Result<Engi
 ///   `max_output` for that model, loaded or not. When the row exists (with a positive `cap`)
 ///   the limits below are read from it and `limits_for` is that key; otherwise from the top
 ///   level and `limits_for = model`.
+/// * Remote catalog models (`data[].remote == true`) use their positive `context_length`
+///   and `max_output_tokens` ahead of local status limits, without a local compaction threshold.
 /// * `n_ctx`: row `cap`; top level `context.cap` (the cap of the selected context mode),
 ///   `context_size`, `n_ctx`, `default_generation_settings.n_ctx` (`/props`). None of them =
 ///   `engine_http` error.
@@ -82,14 +84,31 @@ pub fn parse_info_for(
         .and_then(|m| m.get(key))
         .filter(|r| first_u32(r, &["/cap"]).is_some_and(|n| n > 0));
 
-    let (limits_for, n_ctx, published_output, compact_at) = match row {
-        Some(r) => (
+    // Cloud limits belong to the requested catalog model, never the loaded local engine.
+    let remote = models
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|m| m.get("id").and_then(Value::as_str) == Some(key))
+        })
+        .filter(|m| m.get("remote").and_then(Value::as_bool) == Some(true));
+    let remote_ctx = remote.and_then(|m| first_u32(m, &["/context_length"]).filter(|n| *n > 0));
+    let (limits_for, n_ctx, published_output, compact_at) = match (remote_ctx, row) {
+        (Some(n_ctx), _) => (
+            key.to_string(),
+            n_ctx,
+            remote.and_then(|m| first_u32(m, &["/max_output_tokens"])),
+            None,
+        ),
+        (None, Some(r)) => (
             key.to_string(),
             first_u32(r, &["/cap"]).unwrap_or(0),
             first_u32(r, &["/max_output"]),
             mode_compact_at(r),
         ),
-        None => {
+        (None, None) => {
             let n_ctx = first_u32(
                 status,
                 &["/context/cap", "/context_size", "/n_ctx", "/default_generation_settings/n_ctx"],
@@ -124,6 +143,7 @@ pub fn parse_info_for(
         .unwrap_or_else(|| DEFAULT_MAX_OUTPUT.min(n_ctx / 4).max(1));
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
     let (prefill_only, caps) = capabilities(status, &limits_for);
+    let (thinking, images) = modality(status, &limits_for);
 
     Ok(EngineInfo {
         base_url: base_url.to_string(),
@@ -136,7 +156,34 @@ pub fn parse_info_for(
         compact_at,
         prefill_only,
         caps,
+        thinking,
+        images,
     })
+}
+
+/// Whether `key` thinks or takes images (see [`EngineInfo::thinking`], [`EngineInfo::images`]):
+/// the controller's `model_limits[key].capabilities` first (`thinking`, `vision`), else `None`
+/// for either field the controller did not publish. A plain OpenAI server publishes neither.
+fn modality(status: &Value, key: &str) -> (Option<bool>, Option<bool>) {
+    let caps = status
+        .get("model_limits")
+        .and_then(|m| m.get(key))
+        .and_then(|r| r.get("capabilities"))
+        .filter(|c| c.is_object());
+    match caps {
+        Some(c) => (
+            // Any thinking value that is not "none"/"off"/false means the model thinks.
+            c.get("thinking").and_then(|t| {
+                if let Some(b) = t.as_bool() {
+                    Some(b)
+                } else {
+                    t.as_str().map(|s| !matches!(s, "none" | "off"))
+                }
+            }),
+            c.get("vision").and_then(Value::as_bool),
+        ),
+        None => (None, None),
+    }
 }
 
 /// `prefill_only` and the other capabilities of `key` (see [`parse_info_for`]): the controller's
@@ -216,7 +263,7 @@ pub fn fetch_info_for(
     api_key: Option<&str>,
     target: Option<&str>,
 ) -> Result<EngineInfo, OxaError> {
-    fetch_info_full(url, api_key, target).map(|(info, _)| info)
+    fetch_info_full(url, api_key, target).map(|(info, _, _)| info)
 }
 
 /// [`fetch_info_for`] plus the deliberate-cancel capability of the endpoint
@@ -226,7 +273,7 @@ pub(crate) fn fetch_info_full(
     url: &Url,
     api_key: Option<&str>,
     target: Option<&str>,
-) -> Result<(EngineInfo, bool), OxaError> {
+) -> Result<(EngineInfo, bool, Option<String>), OxaError> {
     let headers = auth_headers(api_key);
     let models = get_json(url, "/v1/models", &headers)?.ok_or_else(|| {
         OxaError::new(codes::ENGINE_HTTP, "the engine has no /v1/models endpoint")
@@ -245,6 +292,7 @@ pub(crate) fn fetch_info_full(
     };
     // Read before props is merged into the status below.
     let cancel = cancel_advertised(status.as_ref(), props.as_ref());
+    let handshake = crate::handshake::handshake_warning(status.as_ref(), props.as_ref());
     let status = match status {
         Some(mut v) => {
             if let (Some(obj), Some(p)) = (v.as_object_mut(), props.as_ref()) {
@@ -265,7 +313,7 @@ pub(crate) fn fetch_info_full(
         })?,
     };
     let info = parse_info_for(&url_string(url), &models, &status, target)?;
-    Ok((info, cancel))
+    Ok((info, cancel, handshake))
 }
 
 /// PROVISIONAL, capability-gated proposal (cancel-contract.md section 7, see [`CANCEL_PATH`]):
@@ -627,5 +675,30 @@ mod cancel_advertised_tests {
     fn props_hints_advertise() {
         let props = json!({"oxe_hints": {"hints": ["cancel"]}});
         assert!(cancel_advertised(None, Some(&props)));
+    }
+}
+
+#[cfg(test)]
+mod modality_tests {
+    use super::modality;
+    use serde_json::json;
+
+    #[test]
+    fn null_thinking_is_unknown() {
+        let status = json!({
+            "model_limits": {"m": {"capabilities": {"thinking": null, "vision": false}}}
+        });
+        let (thinking, images) = modality(&status, "m");
+        assert_eq!(thinking, None, "a null thinking value is unknown, not `no`");
+        assert_eq!(images, Some(false));
+    }
+
+    #[test]
+    fn non_bool_non_string_thinking_is_unknown() {
+        let status = json!({
+            "model_limits": {"m": {"capabilities": {"thinking": 7}}}
+        });
+        let (thinking, _) = modality(&status, "m");
+        assert_eq!(thinking, None, "a numeric thinking value is unknown");
     }
 }
