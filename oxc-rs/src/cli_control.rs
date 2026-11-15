@@ -1,5 +1,5 @@
 //! Local control commands, independent of the daemon and engine implementation.
-use crate::cli_args::Args;
+use crate::cli::Args;
 use crate::cli_client::{
     command, notify, plain_name, reason, request, request_timeout, storage_id,
 };
