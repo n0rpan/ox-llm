@@ -567,21 +567,23 @@ impl Sandbox for Hold {
     }
 }
 
-/// #150 (1): a job's identical polls (same state, same output) are a stuck loop and trip the
-/// guard exactly like any identical call, with the same notices and stop.
+/// #150 (1): identical polls of a FINISHED job (same state, same output) are a stuck loop and
+/// trip the guard like any identical call. (#439: polls of a running job are exempt.)
 #[test]
 fn identical_job_polls_trip_the_guard() {
     let env = TestEnv::new();
     let jobs = Arc::new(oxa_tools::JobRegistry::new());
-    jobs.set_sandbox(Arc::new(Hold));
+    jobs.set_sandbox(Arc::new(ShSandbox));
     let mut t = oxa_tools::builtin_tools_with_shell_and_jobs(oxa_tools::ShellConfig::default(), jobs.clone());
     t.sort_by(|a, b| a.spec().name.cmp(&b.spec().name));
     let mut turns = vec![ScriptTurn::tool(
         "s",
         "bash",
-        r#"{"command":"sleep 100","background":true}"#,
+        r#"{"command":"echo hi","background":true}"#,
     )];
-    turns.extend((0..20).map(|i| ScriptTurn::tool(&format!("p{i}"), "bash", r#"{"job":"job-1"}"#)));
+    turns.extend(
+        (0..20).map(|i| ScriptTurn::tool(&format!("p{i}"), "bash", r#"{"job":"job-1","wait_s":10}"#)),
+    );
     let (mut st, _eng) = state_with(&env, turns, Settings::default(), "fake-model", t);
     let (end, _) = run(&mut st, "run it in the background and poll it");
     jobs.kill_all();
@@ -595,9 +597,44 @@ fn identical_job_polls_trip_the_guard() {
     );
     assert!(res[0].starts_with("Started background job job-1"), "{}", res[0]);
     for r in &polls[..LIMIT as usize] {
-        assert!(r.starts_with("Job job-1: running") && !is_notice(r), "{r}");
+        assert!(r.starts_with("Job job-1: exited 0") && !is_notice(r), "{r}");
     }
     for r in &polls[LIMIT as usize..] {
         assert!(is_notice(r) && r.contains("(bash {"), "{r}");
+    }
+}
+
+/// #439: identical polls of a job that is still running are never a repeat: its state can
+/// change between calls.
+#[test]
+fn polls_of_a_running_job_are_not_repeats() {
+    let env = TestEnv::new();
+    let mut turns = vec![ScriptTurn::tool(
+        "start",
+        "bash",
+        r#"{"command":"sleep 100","background":true}"#,
+    )];
+    let poll = r#"{"job":"job-1"}"#;
+    for i in 0..(LIMIT + 2) {
+        turns.push(ScriptTurn::tool(&format!("p{i}"), "bash", poll));
+    }
+    turns.push(ScriptTurn::text("done"));
+    let jobs = oxa_core::fresh_jobs();
+    let killer = jobs.clone();
+    jobs.set_sandbox(Arc::new(Hold));
+    let mut tools = tools();
+    tools.retain(|t| t.spec().name != "bash");
+    tools.push(Arc::new(oxa_tools::BashTool::with_shell_and_jobs(
+        Default::default(),
+        jobs,
+    )));
+    tools.sort_by(|a, b| a.spec().name.cmp(&b.spec().name));
+    let (mut st, _eng) = state_with(&env, turns, Settings::default(), "fake-model", tools);
+    run(&mut st, "poll the job");
+    killer.kill_all();
+    let res = results(&st);
+    assert_eq!(res.len(), LIMIT as usize + 3, "{res:#?}");
+    for r in &res[1..] {
+        assert!(r.contains("running") && !is_notice(r), "{r}");
     }
 }

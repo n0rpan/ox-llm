@@ -71,6 +71,10 @@ pub(crate) fn judge(
     let Some(args) = parse(args_raw) else {
         return Verdict::Pass;
     };
+    // #439: a poll of a job that is still running is never a repeat: its state changes on its own.
+    if name == "bash" && args.get("job").is_some() && text.contains("\nStill running.") {
+        return Verdict::Pass;
+    }
     // The batch first (newest), then the wire, both walked back from the newest.
     let mut found = Found::default();
     for (n, a, t) in in_batch.iter().rev() {
