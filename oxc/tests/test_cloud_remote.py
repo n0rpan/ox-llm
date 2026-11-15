@@ -541,6 +541,78 @@ class LedgerFailClosed(CloudCase):
         self.assertEqual(status, 503)
         self.assertEqual(json.loads(body)['error']['code'], 'cloud_ledger_unavailable')
 
+    def test_success_waits_for_ledger_settlement_before_client_completion(self):
+        self.start()
+        entered = threading.Event()
+        release = threading.Event()
+        completed = threading.Event()
+
+        def blocked_write(row):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('test did not release ledger write')
+            return False
+
+        def request():
+            try:
+                return self.chat()
+            finally:
+                completed.set()
+
+        with patch.object(request_ledger, 'write', side_effect=blocked_write):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(request)
+                try:
+                    self.assertTrue(entered.wait(5), 'ledger settlement did not start')
+                    self.assertFalse(completed.wait(0.2),
+                                     'client completed before ledger settlement')
+                finally:
+                    release.set()
+                self.assertEqual(pending.result(timeout=5)[0], 200)
+        self.assertEqual(self.chat()[0], 503)
+        self.assertEqual(len(self.upstream.requests), 1)
+
+    def test_client_write_failure_after_settlement_does_not_charge_twice(self):
+        from oxc.runtime import ctl_http
+        self.start()
+        original = ctl_http.Handler.reply
+
+        def fail_success(handler, status, *args, **kwargs):
+            if status == 200:
+                raise BrokenPipeError('synthetic client write failure')
+            return original(handler, status, *args, **kwargs)
+
+        with patch.object(ctl_http.Handler, 'reply', fail_success):
+            # a failed client write closes the connection without a second reply
+            with self.assertRaises(http.client.RemoteDisconnected):
+                self.chat()
+        rows = self.ledger_rows()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]['settled'], 'usage')
+
+    def test_ledger_exception_is_not_retried_and_blocks_the_next_call(self):
+        self.start()
+        with patch.object(request_ledger, 'write', side_effect=OSError('synthetic ledger failure')) as write:
+            self.assertEqual(self.chat()[0], 200)
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual(self.chat()[0], 503)
+        self.assertEqual(len(self.upstream.requests), 1)
+
+    def test_ledger_exception_after_append_does_not_duplicate_usage(self):
+        self.start()
+        original = request_ledger.write
+        def append_then_raise(row):
+            self.assertTrue(original(row))
+            raise OSError('synthetic error after append')
+        with patch.object(request_ledger, 'write', side_effect=append_then_raise) as write:
+            self.assertEqual(self.chat()[0], 200)
+        self.assertEqual(write.call_count, 1)
+        rows = self.ledger_rows()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]['settled'], 'usage')
+        self.assertEqual(self.chat()[0], 503)
+        self.assertEqual(len(self.upstream.requests), 1)
+
     def test_a_failed_ledger_write_blocks_the_next_remote_call(self):
         self.start()
         with patch.object(request_ledger, 'write', return_value=False):
@@ -610,3 +682,24 @@ class ReviewBoundaries(CloudCase):
         self.assertEqual(self.upstream.requests, [])
         self.assertFalse(cloud._reserved)
         self.assertEqual(self.ledger_rows()[-1]['cost_usd'], 0)
+
+
+class CachePricingFlagTests(unittest.TestCase):
+    def test_flag_values(self):
+        from oxc.runtime import cloud
+        base = {'input_per_million': 3.0, 'output_per_million': 15.0}
+        self.assertEqual(cloud.cache_pricing({'provider': 'anthropic', 'pricing': base}), 'provider_default')
+        self.assertEqual(cloud.cache_pricing({'provider': 'openrouter', 'pricing': base}), 'conservative')
+        full = dict(base, cache_read_per_million=0.3, cache_write_per_million=3.75)
+        self.assertEqual(cloud.cache_pricing({'provider': 'openrouter', 'pricing': full}), 'explicit')
+
+    def test_tiered_flag_follows_tier_rates(self):
+        from oxc.runtime import cloud
+        cache = {'cache_read_per_million': 0.3, 'cache_write_per_million': 3.75}
+        tiers = [dict(input_per_million=3.0, output_per_million=15.0, max_prompt_tokens=200000, **cache),
+                 dict(input_per_million=6.0, output_per_million=22.0, **cache)]
+        item = {'provider': 'openrouter', 'pricing': {'tiers': tiers}}
+        self.assertEqual(cloud.cache_pricing(item), 'explicit')
+        self.assertEqual(cloud.capabilities(dict(item, context_window=1, max_output=1))['cache_pricing'], 'explicit')
+        del tiers[1]['cache_write_per_million']
+        self.assertEqual(cloud.cache_pricing(item), 'conservative')

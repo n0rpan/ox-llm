@@ -10,6 +10,8 @@ In `-p` mode, standard output holds only the final reply and a newline. Progress
 
 Exit codes: 0 on success, 1 when a command finished with a reported failure (for example `oxa mcp list` with an invalid server entry, or `-p` when the `done` checks still fail at the end), 2 for a usage error or an engine that cannot be reached.
 
+Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. Once output has streamed, a failure is returned without replaying the request. Print mode immediately flushes a one-line `retrying request in ... ms` notice to stderr; JSON and RPC modes emit it as a flushed `notice` record. Provider-level retries (`retry.provider.maxRetries`) are visible too. All attempts for a logical request reuse its idempotency key. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
+
 ## Commands
 
 Commands take the place of the message. They do not start a session.
@@ -153,7 +155,7 @@ Variables that oxa reads. Variables marked *set* are set by oxa for the bash too
 | `BRAVE_SEARCH_API_KEY` | Brave Search key for `web_search`; wins over `brave-search.key` ([tools.md](tools.md#web_search)) |
 | `OXA_CODEMODE_MAX_WORKERS` | script workers alive at once in the process. Default 2; overrides `codemode.maxWorkers` |
 | `OXA_CLEAR_ON_SHRINK` | `1` clears empty rows when the rendered output shrinks |
-| `OXA_SKIN` | `pi` or `oxa`: the look of the interactive UI for this run, over the `ui.skin` setting |
+| `OXA_SKIN` | `pi`, `oxa` or `ascii` (ASCII glyphs only): the look of the interactive UI for this run, over the `ui.skin` setting |
 | `OXA_REDUCED_MOTION` | `1` switches the animations of the `oxa` skin off, as the `ui.reducedMotion` setting does |
 | `NO_COLOR` | with the `oxa` skin: no colour and no animation |
 | `OXA_CLIPBOARD_OSC52` | `1` also copies through OSC 52, the escape sequence that terminals relay to the clipboard |

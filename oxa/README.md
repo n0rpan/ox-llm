@@ -67,7 +67,6 @@ Twenty product crates and two test crates. The product crates have no async runt
 
 ## Files that steer the work
 
-- `WAVES.toml`: the task manifest, with the files each task owns and its acceptance tests. `ci/check_manifest.py` checks it against the tree.
 - `PARITY.md`: oxa’s behavior regression contracts, retaining historical row IDs and pi provenance (P: inherited behavior; A: adapted behavior), with the tests that check them.
 - `docs/fake-script.md`: the script format of the fake engine.
 - [Hosted checks](../.github/workflows/checks.yml) build and test the products. `ci/check_net_surface.py` checks where the code connects to the network.
