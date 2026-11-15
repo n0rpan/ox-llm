@@ -4,7 +4,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "oxc-gateway",
     "oxa-a2a",
     "oxa-orchestrator",
     "oxa-proto",
@@ -17,6 +16,7 @@ members = [
     "oxa-cli",
     "oxa-fake", "oxa-parity",
 ]
+exclude = ["oxc-gateway"]
 
 [workspace.package]
 version = "0.2.0"
@@ -27,7 +27,6 @@ publish = false
 
 [workspace.dependencies]
 # internal
-oxc-gateway = { path = "oxc-gateway" }
 oxa-proto = { path = "oxa-proto" }
 oxa-engine = { path = "oxa-engine" }
 oxa-session = { path = "oxa-session" }
