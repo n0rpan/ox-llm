@@ -135,14 +135,14 @@ fn main() {
             None
         };
         let error = command.args(args).exec();
-        eprintln!("local-ai: engine exec failed: {error}");
+        eprintln!("oxc: engine exec failed: {error}");
         std::process::exit(1);
     }
     if matches!(words.first().map(String::as_str), Some("serve" | "studio")) {
         if let Err(error) =
             nix::sys::resource::setrlimit(nix::sys::resource::Resource::RLIMIT_CORE, 0, 0)
         {
-            eprintln!("local-ai: cannot disable core dumps: {error}");
+            eprintln!("oxc: cannot disable core dumps: {error}");
             std::process::exit(1);
         }
     }

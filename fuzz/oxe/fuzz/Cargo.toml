@@ -1,0 +1,49 @@
+[package]
+name = "oxe-fuzz-targets"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxe-fuzz = { path = ".." }
+
+[[bin]]
+name = "chat_request"
+path = "fuzz_targets/chat_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chat_parser"
+path = "fuzz_targets/chat_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chat_session"
+path = "fuzz_targets/chat_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api_params"
+path = "fuzz_targets/api_params.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_access"
+path = "fuzz_targets/http_access.rs"
+test = false
+doc = false
+bench = false

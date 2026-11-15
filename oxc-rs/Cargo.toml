@@ -4,6 +4,21 @@ version = "0.2.0"
 edition = "2021"
 license = "MIT"
 publish = false
+autobins = false
+
+[features]
+default = []
+native-controller = []
+
+[[bin]]
+name = "oxc-native"
+path = "src/parser_main.rs"
+required-features = ["native-controller"]
+
+[[bin]]
+name = "oxc"
+path = "src/main.rs"
+required-features = ["native-controller"]
 
 [dependencies]
 axum = "0.8"
