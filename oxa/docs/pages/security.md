@@ -196,6 +196,6 @@ Session files are `0600`. The Brave key is never written to a session, an export
 
 ## Sandbox persistence
 
-oxa shows no startup notice about this (it would fill small terminals). The note is appended to bash results that mention /tmp or fail with a read-only or permission error, and the model gets the full rules in the bash tool description:
+oxa shows no startup notice about this (it would fill small terminals). The note is appended to bash results that mention /tmp or fail with a read-only or permission error; this contextual reminder is the only place the model sees it.
 
 Workspace writes persist (except protected paths), as do configured writable binds, package caches and permitted git data. Other paths are read-only or hidden. /tmp is private scratch: writes there are discarded after each command, not saved on the host. Do not report scratch files as saved; put deliverables in the workspace.
