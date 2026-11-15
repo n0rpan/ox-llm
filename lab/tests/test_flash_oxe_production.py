@@ -1,7 +1,6 @@
 """Synthetic Rust Flash (oxe --engine flash) switch; never starts an engine, loads weights or reads ~/.config."""
 import copy
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -14,8 +13,7 @@ from unittest.mock import Mock, patch
 from snapdragon_ai_lab.runtime import bigmoe_runtime, controller, oxe_runtime, profile_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('stage_flash_oxe_production', ROOT / 'tools/stage_flash_oxe_production.py')
-stage_tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(stage_tool)
+import flash_profile_fixture as stage_tool
 
 ALIAS = stage_tool.ALIAS
 GIB = 1024**3
@@ -302,96 +300,6 @@ Nice=15
 '''
 
 
-class FlashStageTool(unittest.TestCase):
-    def test_refuses_while_no_flash_server_is_qualified(self):
-        self.assertIsNone(stage_tool.QUALIFIED_FLASH_SERVER_SHA)
-        with self.assertRaisesRegex(ValueError, 'unqualified_rust_flash_server'):
-            stage_tool.add_flash_override(staged_runtime(), '/x', RUST_SHA, sidecar_path=__file__,
-                                          measured_peak_bytes=PEAK)
-
-    def test_qualified_override_is_detached_and_resolves_both_ways(self):
-        before = staged_runtime()
-        with tempfile.TemporaryDirectory() as tmp:
-            sidecar = Path(tmp) / 'sidecar.bin'; sidecar.write_bytes(b's' * 64)
-            with self.assertRaisesRegex(ValueError, 'unqualified'):
-                stage_tool.add_flash_override(before, '/x', RUST_SHA, qualified_sha='b' * 64,
-                                              sidecar_path=sidecar, measured_peak_bytes=PEAK)
-            after = stage_tool.add_flash_override(before, '/synthetic/oxe-server', RUST_SHA, qualified_sha=RUST_SHA,
-                                                  sidecar_path=sidecar, measured_peak_bytes=PEAK)
-        self.assertEqual(before, staged_runtime())
-        merged = {**{k: v for k, v in after.items() if k != 'profiles'}, **after['profiles'][ALIAS]}
-        self.assertEqual(profile_policy.resolve(merged, available=True, oxe_flash_enabled=False), merged)
-        with patch.dict(os.environ, FLASH_ON, clear=True):
-            effective = profile_policy.resolve(merged, available=True)
-        self.assertEqual(effective['backend_kind'], 'oxe')
-        self.assertEqual(effective['oxe_flash']['sidecar_bytes'], 64)
-
-    def test_cache_18_changes_only_the_cache_argument(self):
-        args_20 = stage_tool.flash_override('/x', RUST_SHA, sidecar_path=SIDECAR, sidecar_bytes=1,
-                                            measured_peak_bytes=PEAK, cache_gib=20)['oxe_args']
-        args_18 = stage_tool.flash_override('/x', RUST_SHA, sidecar_path=SIDECAR, sidecar_bytes=1,
-                                            measured_peak_bytes=PEAK, cache_gib=18)['oxe_args']
-        self.assertEqual(args_18[args_18.index('--flash-cache-gib') + 1], '18')
-        self.assertEqual([a for a in args_18 if a != '18'], [a for a in args_20 if a != '20'])
-
-    def test_unit_rewrite_keeps_moe_line_and_adds_flash_once(self):
-        moe_unit = UNIT.replace('Nice=15', 'Nice=15\nEnvironment="LOCAL_AI_ENABLE_OXE=1"')
-        unit = stage_tool.rewrite_unit(moe_unit, '/synthetic/runtime-releases/new')
-        self.assertEqual(unit.count('Environment="LOCAL_AI_ENABLE_OXE=1"'), 1)
-        self.assertEqual(unit.count('Environment="LOCAL_AI_ENABLE_OXE_FLASH=1"'), 1)
-        self.assertLess(unit.index('LOCAL_LLM_CONFIG'), unit.index('LOCAL_AI_ENABLE_OXE_FLASH'))
-        self.assertIn('WorkingDirectory=/synthetic/runtime-releases/new\n', unit)
-        self.assertIn('ExecStart=/usr/bin/python3 "/synthetic/runtime-releases/new/controller.py"\n', unit)
-        with self.assertRaisesRegex(ValueError, 'already_mentions'):
-            stage_tool.rewrite_unit(unit, '/synthetic/runtime-releases/new')
-        with self.assertRaises(ValueError):
-            stage_tool.rewrite_unit('[Service]\nNice=1\n', '/r')
-
-    def test_stage_writes_fresh_bound_payload_and_exact_rollback(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            live_runtime = tmp / 'runtime.json'
-            live_runtime.write_text(json.dumps(staged_runtime()))
-            live_unit = tmp / 'unit.service'
-            live_unit.write_text(UNIT.replace('Nice=15', 'Nice=15\nEnvironment="LOCAL_AI_ENABLE_OXE=1"'))
-            engine = tmp / 'oxe-server'; engine.write_bytes(b'synthetic rust server')
-            sidecar = tmp / 'sidecar.bin'; sidecar.write_bytes(b's' * 4096)
-            digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-            live_before = (live_runtime.read_bytes(), live_unit.read_bytes())
-            stage = tmp / 'stage'
-            result = stage_tool.stage(stage, runtime_path=live_runtime, runtime_sha=digest(live_runtime),
-                                      unit_path=live_unit, unit_sha=digest(live_unit), server_binary=engine,
-                                      releases_root=tmp / 'releases', engine_releases_root=tmp / 'engines',
-                                      sidecar_path=sidecar, measured_peak_bytes=PEAK, qualified_sha=digest(engine))
-            self.assertEqual((live_runtime.read_bytes(), live_unit.read_bytes()), live_before)
-            self.assertEqual((stage / 'rollback/runtime.original').read_bytes(), live_before[0])
-            self.assertEqual((stage / 'rollback/unit.original').read_bytes(), live_before[1])
-            unit = (stage / 'local-ai-chat.service').read_text()
-            self.assertIn(result['release_dir'], unit)
-            self.assertIn('flash-oxe-production-', result['release_dir'])
-            self.assertEqual(unit.count('Environment="LOCAL_AI_ENABLE_OXE=1"'), 1)
-            self.assertEqual(unit.count('Environment="LOCAL_AI_ENABLE_OXE_FLASH=1"'), 1)
-            staged = json.loads((stage / 'runtime.json').read_text())
-            profile = staged['profiles'][ALIAS]
-            # The override names the content-addressed install path, not the build output it was copied from.
-            self.assertEqual(profile['memlat_overrides']['oxe_flash']['server_binary'],
-                             str(stage_tool.engine_install_path(tmp / 'engines', digest(engine))))
-            merged = {**{k: v for k, v in staged.items() if k != 'profiles'}, **profile}
-            with patch.dict(os.environ, FLASH_ON, clear=True):
-                self.assertEqual(profile_policy.resolve(merged, available=True)['backend_kind'], 'oxe')
-            with patch.dict(os.environ, {profile_policy.OXE_FLASH_ENABLE_ENV: '0'}, clear=True):
-                self.assertEqual(profile_policy.resolve(merged, available=True), merged)
-            self.assertTrue((stage / 'runtime-source/controller.py').is_file())
-            self.assertTrue(os.access(stage / 'rollback/rollback.py', os.X_OK))
-            text = (stage / 'rollback/rollback.py').read_text()
-            self.assertIn('Flash is back on BigMoeOnEdge; no model loaded.', text)
-            compile(text, 'rollback.py', 'exec')
-            self.assertFalse(result['installed'] or result['models_started'])
-            with self.assertRaisesRegex(ValueError, 'fresh_absolute'):
-                stage_tool.stage(stage, runtime_path=live_runtime, runtime_sha=digest(live_runtime),
-                                 unit_path=live_unit, unit_sha=digest(live_unit), server_binary=engine,
-                                 releases_root=tmp / 'releases', engine_releases_root=tmp / 'engines',
-                                 sidecar_path=sidecar, measured_peak_bytes=PEAK, qualified_sha=digest(engine))
 
 
 class FlashCacheFallback(unittest.TestCase):
@@ -526,17 +434,6 @@ class FlashMemoryScope(unittest.TestCase):
         with self.assertRaises(ValueError):
             oxe_runtime._validate(config)
 
-    def test_stage_tool_uses_the_profile_scope_for_its_budget(self):
-        runtime = staged_runtime()
-        runtime['profiles'][ALIAS]['flash_memory'] = dict(self.POLICY)
-        with tempfile.NamedTemporaryFile() as sidecar:
-            sidecar.write(b'x' * 16); sidecar.flush()
-            updated = stage_tool.add_flash_override(runtime, '/synthetic/oxe-server', RUST_SHA,
-                                                    sidecar_path=sidecar.name, measured_peak_bytes=28 * GIB,
-                                                    cache_gib=21, qualified_sha=RUST_SHA)
-        override = updated['profiles'][ALIAS]['memlat_overrides']['oxe_flash']
-        self.assertEqual(override['admission']['admitted_budget_bytes'], 29 * GIB)
-        self.assertIn('21', override['oxe_args'])
 
 
 if __name__ == '__main__':

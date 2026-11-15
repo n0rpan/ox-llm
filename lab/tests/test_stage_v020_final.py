@@ -16,7 +16,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import stage_v020_final as gen  # noqa: E402
-import test_stage_v013_final as v013t  # noqa: E402  (module import: its test class must not be collected twice)
+import stage_layout_fixture as v013t  # noqa: E402  (shared synthetic layouts, no legacy generator)
 
 have_git_head, h, tree, ENGINE_REV = v013t.have_git_head, v013t.h, v013t.tree, v013t.ENGINE_REV
 
@@ -33,11 +33,11 @@ def fake_oxa(path, version='0.2.0'):
 @unittest.skipUnless(have_git_head(), 'needs the lab git checkout (git archive of HEAD)')
 class V020StageTest(unittest.TestCase):
     # fixtures borrowed from the v0.1.3 test (same live layout), then moved to the v0.1.3 installed state
-    runtime = v013t.V013StageTest.runtime
-    chat_unit = v013t.V013StageTest.chat_unit
-    studio_unit = v013t.V013StageTest.studio_unit
-    studio_dropin = v013t.V013StageTest.studio_dropin
-    make_engine = v013t.V013StageTest.make_engine
+    runtime = v013t.StageLayout.runtime
+    chat_unit = v013t.StageLayout.chat_unit
+    studio_unit = v013t.StageLayout.studio_unit
+    studio_dropin = v013t.StageLayout.studio_dropin
+    make_engine = v013t.StageLayout.make_engine
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
