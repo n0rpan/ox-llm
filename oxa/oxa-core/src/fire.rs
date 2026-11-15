@@ -958,6 +958,9 @@ pub(crate) fn before_settle(
         if !matches!(last, Some(RunEnd::Stopped)) || st.shared.cancel.is_cancelled() {
             return Ok(last);
         }
+        if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            return crate::session::run_from_wire(st, sink, ui).map(Some);
+        }
         if !wants(st, HookPoint::AgentBeforeSettle) {
             return Ok(last);
         }
@@ -988,7 +991,9 @@ pub(crate) fn before_settle(
             }
             _ => false,
         };
-        let end = if appended {
+        // A limit may have arrived inside the callback even when it queued no work.
+        // Finish the promised final turn before publishing the settled outcome.
+        let end = if appended || st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             Some(crate::session::run_from_wire(st, sink, ui)?)
         } else {
             crate::session::run_pending(st, sink, ui)?
