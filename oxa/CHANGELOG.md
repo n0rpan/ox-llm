@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Permission modes (#202): `auto` is the old YOLO (no prompts, bash sandbox on) and the default on a fresh install; `yolo` now means full access (no prompts, no sandbox); `standard` still prompts. `permissions.defaultMode` (`standard` | `auto` | `yolo` | `plan`) sets the mode at start and replaces `permissions.yolo: "auto"`; a project's settings may lower it but never raise it to `yolo`. `/mode <name> --save` or "make default" in the `/mode` picker writes it, flags override per run, one key cycles standard → auto → yolo and the status bar always shows the mode.
+
 ## [0.2.0] - 2026-11-13
 
 ### Fixed (first run)
