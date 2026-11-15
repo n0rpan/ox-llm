@@ -69,6 +69,14 @@ struct Entry {
 }
 
 impl RpcAgent {
+    pub(crate) fn cleanup_confirmed(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tasks
+            .values()
+            .all(|entry| entry.finished && entry.cleanup_confirmed && entry.thread.is_none())
+    }
     pub fn new(mut config: RpcAgentConfig) -> io::Result<Self> {
         if config.max_live == 0
             || config.max_live > 32

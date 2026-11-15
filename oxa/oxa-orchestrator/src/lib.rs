@@ -60,3 +60,6 @@ pub mod review;
 
 #[cfg(feature = "core")]
 mod git_worktrees;
+
+#[cfg(feature = "core")]
+pub mod registration;
