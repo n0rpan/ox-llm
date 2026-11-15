@@ -79,8 +79,10 @@ links bind to the approved canonical directory, so later retargeting cannot
 select a repository key. Reprepare when configuration/location changes. Every
 read still opens with no-follow and verifies regular-file type, owner, mode,
 size and fresh bytes. Key material is never cached; Debug omits the path.
-Two filesystem regressions cover parent retargeting, rotation, mode changes and
-final symlinks. The 34 source contracts stay unchanged; three native repo refusals
+The parent directory must exist when preparing the location. Create it before
+constructing/reloading the configuration; a missing file within it is allowed.
+Three filesystem regressions cover parent retargeting, missing parents,
+rotation, mode changes and final symlinks. The 34 source contracts stay unchanged; three native repo refusals
 intentionally use the requested specific diagnostic rather than Python's generic
 message. All other errors remain exact, except the already validated Python
 3.12/3.13 symlink-loop wording.

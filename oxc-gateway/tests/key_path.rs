@@ -85,3 +85,13 @@ fn preparation_caches_no_key_and_rechecks_each_opened_file() {
         Error::SymbolicLink
     );
 }
+#[test]
+fn preparation_requires_a_real_parent_before_it_can_bind_the_location() {
+    let home = Home::new();
+    let path = home.0.join("not-created/provider.json");
+    // An unresolved parent must not be approved and then created as a link
+    // into a repository after the single location validation.
+    assert!(KeyFile::prepare(&path).is_err());
+    fs::create_dir(path.parent().unwrap()).unwrap();
+    assert!(KeyFile::prepare(&path).is_ok());
+}
