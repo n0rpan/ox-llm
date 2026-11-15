@@ -4,14 +4,16 @@ This page gets `oxa` running against a local engine and sends a first prompt. Fo
 
 ## Requirements
 
-- A Rust toolchain, 1.87 or newer (the `rust-version` of the workspace in `Cargo.toml`).
+- A Rust toolchain; hosted checks pin Rust 1.99.1.
 - A running engine that speaks the OpenAI-compatible HTTP API. In an ox-llm install this is the controller (`oxc`) on `http://127.0.0.1:8092`.
 - For the bash tool: Linux with `bubblewrap` (`bwrap`) installed and unprivileged user namespaces enabled. Without a usable `bwrap` the bash tool is disabled and oxa says so at startup.
 
 ## Build
 
+Run these commands from the `oxa/` directory of the checkout:
+
 ```console
-$ cargo build --release -p oxa-cli
+$ cargo build --release --locked -p oxa-cli
 $ ./target/release/oxa --version
 ```
 
@@ -40,7 +42,7 @@ oxa is tuned to the models the ox-llm engine serves. [tools-context.md](tools-co
 Start oxa in a project directory:
 
 ```console
-$ cd ~/src/my-project
+$ cd ~/project
 $ oxa
 ```
 
