@@ -145,6 +145,8 @@ struct HudParts {
     degraded: bool,
     model: String,
     level: Option<&'static str>,
+    /// What the level reads as (`adaptive • low` for Claude 5.5); the token colours it.
+    level_text: Option<String>,
     note: Option<String>,
     mode: Option<Mode>,
     /// Badge word and colour token of the activity; `None` when idle.
@@ -190,6 +192,7 @@ impl HudParts {
                 model
             },
             level: st.thinking.map(|level| level.as_str()),
+            level_text: st.thinking_label_with(g.mid),
             note: clean_opt(st.thinking_note.as_deref()),
             mode: st.mode,
             state: activity_style(&st.activity),
@@ -222,8 +225,8 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     // 2: the model, with the thinking note (7th) and the level (9th).
     let mut model_seg = theme.fg("text", model);
     if shown(9) {
-        if let Some(level) = p.level {
-            let text = format!(" {} {level}", g.mid);
+        if let (Some(level), Some(label)) = (p.level, &p.level_text) {
+            let text = format!(" {} {label}", g.mid);
             model_seg.push_str(&theme.fg(Theme::thinking_token(level), &text));
         }
     }

@@ -10,7 +10,79 @@ use std::sync::Arc;
 /// on; always off while offline). Read once at startup.
 pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
     let on = sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
-    Arc::new(NetSandbox::new(sandbox, on, oxa_proto::offline()))
+    let offline = oxa_proto::offline();
+    let token = if on && !offline { gh_token() } else { None };
+    Arc::new(NetSandbox::new(sandbox, on, offline).with_gh_token(token))
+}
+
+/// #52: the GitHub CLI token for the networked sandbox, from `gh auth token` run once here,
+/// outside the sandbox, with a short timeout. Any failure (no `gh`, not logged in, slow) is
+/// `None`. The token is never logged.
+fn gh_token() -> Option<String> {
+    let exe = trusted_gh(
+        std::env::var_os("PATH").as_deref(),
+        std::env::current_dir().ok().as_deref(),
+    )?;
+    gh_token_from(&exe, GH_DEADLINE)
+}
+
+const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Run `exe auth token --hostname github.com` under one `deadline` that covers the process and
+/// the reading of its output.
+fn gh_token_from(exe: &Path, deadline: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(exe)
+        .args(["auth", "token", "--hostname", "github.com"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    // One deadline for the process and for reading its output: the reader runs in a thread so a
+    // helper that leaves the pipe open (a background child) cannot block startup.
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        let ok = (&mut stdout).take(4096).read_to_string(&mut out).is_ok();
+        let _ = tx.send(ok.then_some(out));
+    });
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait().ok()? {
+            Some(st) if st.success() => break,
+            Some(_) => return None,
+            None if start.elapsed() > deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    }
+    let out = rx.recv_timeout(deadline.saturating_sub(start.elapsed())).ok()??;
+    let t = out.trim();
+    (!t.is_empty() && !t.chars().any(char::is_whitespace)).then(|| t.to_string())
+}
+
+/// The `gh` to run: the first executable file named `gh` in an absolute `PATH` entry that is
+/// not inside the project (`cwd`) and not a group- or world-writable directory. Relative
+/// entries (`.`, `bin`, empty) are ignored, so a project shim never runs outside the sandbox.
+fn trusted_gh(path: Option<&std::ffi::OsStr>, cwd: Option<&Path>) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let cwd_c = cwd.and_then(|c| std::fs::canonicalize(c).ok());
+    std::env::split_paths(path?)
+        .filter(|d| d.is_absolute())
+        .filter(|d| {
+            let dc = std::fs::canonicalize(d).unwrap_or_else(|_| d.clone());
+            !cwd.is_some_and(|c| d.starts_with(c) || dc.starts_with(c))
+                && !cwd_c.as_ref().is_some_and(|c| dc.starts_with(c))
+                && std::fs::metadata(&dc).is_ok_and(|m| m.permissions().mode() & 0o022 == 0)
+        })
+        .map(|d| d.join("gh"))
+        .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
 /// The setting that allows an engine host that is not loopback (P3). Read from the user's
@@ -56,4 +128,69 @@ pub(crate) fn check_endpoint(base_url: &str) -> Result<(), OxaError> {
 pub(crate) fn endpoint_notice(base_url: &str) -> Option<(Level, String)> {
     let host = oxa_proto::url_host(base_url)?;
     (!oxa_proto::is_loopback_host(&host)).then(|| (Level::Warning, oxa_proto::remote_engine_notice(&host)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("oxa-ng-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_helper_that_leaves_the_pipe_open_cannot_stall_startup() {
+        let d = tmp("pipe");
+        // Exits 0 at once, but a background child keeps stdout open for 6 s.
+        let gh = script(&d, "gh", "(sleep 6 >&1 &)\necho SYNTH_TOKEN; exit 0");
+        let t = std::time::Instant::now();
+        let r = gh_token_from(&gh, std::time::Duration::from_millis(1500));
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(3),
+            "blocked {:?}",
+            t.elapsed()
+        );
+        assert!(r.is_none() || r.as_deref() == Some("SYNTH_TOKEN"));
+    }
+
+    #[test]
+    fn a_well_behaved_helper_gives_its_token() {
+        let d = tmp("ok");
+        let gh = script(&d, "gh", "echo SYNTH_TOKEN");
+        // A parallel test's fork can hold the script's write fd (ETXTBSY): retry the spawn.
+        let got = (0..5).find_map(|_| gh_token_from(&gh, GH_DEADLINE));
+        assert_eq!(got.as_deref(), Some("SYNTH_TOKEN"));
+    }
+
+    #[test]
+    fn a_project_or_relative_path_entry_never_supplies_gh() {
+        let d = tmp("shim");
+        let proj = d.join("proj");
+        let good = d.join("good");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        script(&good, "gh", "echo GOOD");
+        let sep = |v: &[&str]| std::env::join_paths(v).unwrap();
+        // Relative entries are skipped.
+        let rel = sep(&["bin", ".", "", good.to_str().unwrap()]);
+        assert_eq!(trusted_gh(Some(&rel), Some(&proj)), Some(good.join("gh")));
+        // An absolute entry inside the project directory is skipped too.
+        let p = sep(&[proj.to_str().unwrap(), good.to_str().unwrap()]);
+        assert_eq!(trusted_gh(Some(&p), Some(&proj)), Some(good.join("gh")));
+        // Only untrusted entries: nothing.
+        let only = sep(&[proj.to_str().unwrap(), "rel"]);
+        assert_eq!(trusted_gh(Some(&only), Some(&proj)), None);
+    }
 }

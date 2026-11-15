@@ -34,6 +34,18 @@ maintainer, who says in the PR when a hardware check is needed.
   `oxe-server --engine stub` in `engine/`. The model engine is aarch64-only; rely on CI for those jobs.
 - **When a task is ambiguous,** open the PR as a draft with your question at the top instead of guessing.
 
+## Definition of done
+
+Run these before saying a task is done, per area:
+
+- **oxa** (Rust, run from `oxa/`):
+  - `cargo fmt --check`
+  - `cargo clippy -p <crate> -- -D warnings` for each touched crate
+  - `cargo test -p <crate>` for each touched crate
+  - UI/TUI change: build the real binary and drive it in tmux (live check). Unit tests alone are not enough; they have passed for changes that did nothing in the real TUI.
+- **lab** (Python controller): `cd lab && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
+- **Bug fix:** show the new test failing before the fix.
+
 ## Hard rules (never break these)
 
 1. **Never weaken a security check or scanner:** the secret / SDK-material / product-isolation scans in

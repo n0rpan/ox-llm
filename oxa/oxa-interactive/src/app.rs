@@ -912,6 +912,15 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
         } => {
             if let Some(r) = result {
                 vm.status.degraded_context = r.details["mechanical"] == serde_json::json!(true);
+                vm.status.context_tokens = r.estimated_tokens_after;
+                push_notice(
+                    vm,
+                    Level::Info,
+                    format!(
+                        "Compacted from {} to about {} tokens",
+                        r.tokens_before, r.estimated_tokens_after
+                    ),
+                );
                 vm.blocks.push(Block::Compaction {
                     summary: r.summary.clone(),
                     tokens_before: r.tokens_before,

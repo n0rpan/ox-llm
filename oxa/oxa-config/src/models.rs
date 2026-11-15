@@ -486,7 +486,11 @@ fn match_in<'a>(text: &str, pool: &[&'a ModelRef]) -> Option<&'a ModelRef> {
 }
 
 fn qualified(m: &ModelRef) -> String {
-    format!("{}/{}", m.endpoint, m.model)
+    if m.endpoint.is_empty() {
+        m.model.clone()
+    } else {
+        format!("{}/{}", m.endpoint, m.model)
+    }
 }
 
 fn glob_matches(pattern: &str, m: &ModelRef) -> bool {
