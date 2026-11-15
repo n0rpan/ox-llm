@@ -519,6 +519,7 @@ class BudgetHold:
         self.output_tokens = output_tokens
         self.started = monotonic() if started is None else started
         self.settled = False
+        self.accounted = False  # A completed accounting attempt, distinct from releasing admission.
 
     def settle(self):
         with _budget_lock:
@@ -1227,6 +1228,7 @@ class CloudStream:
     def __init__(self, requested_model, key=None):
         self.key = key
         self.fields = {}
+        self.names = {}  # (choice, slot) -> name pieces held until the call is complete
         self.model = requested_model
         self.parser = SSEDecoder()
         self.reasoning = 0
@@ -1245,6 +1247,15 @@ class CloudStream:
 
     def _tails(self, indices=None):
         out = b''
+        for (index, slot), name in list(self.names.items()):
+            if indices is not None and index not in indices:
+                continue
+            del self.names[(index, slot)]
+            value = {'model': self.model, 'object': 'chat.completion.chunk',
+                     'choices': [{'index': index, 'delta': {'tool_calls': [
+                         {'index': slot, 'function': {'name': redact_value(name, self.key)}}]},
+                         'finish_reason': None}]}
+            out += self._wire(None, json.dumps(value, ensure_ascii=False).encode())
         for (index, field, slot), redactor in self.fields.items():
             if indices is not None and index not in indices:
                 continue
@@ -1288,10 +1299,19 @@ class CloudStream:
                     delta.pop('reasoning', None)
                     for call in delta.get('tool_calls') or []:
                         function = call.get('function') or {}
-                        for field in ('arguments', 'name'):
-                            if isinstance(function.get(field), str):
-                                function[field] = self._fragment(index, field, function[field],
-                                                                 call.get('index', 0))
+                        # A tool name is held whole per call (redacting pieces would split `ls`
+                        # into `l`,`s`; passing pieces would leak a key split across deltas) and
+                        # sent redacted once the call has arguments, or at finish / [DONE].
+                        slot = (index, call.get('index', 0))
+                        if isinstance(function.get('name'), str):
+                            self.names[slot] = self.names.get(slot, '') + function.pop('name')
+                        if isinstance(function.get('arguments'), str):
+                            # _normalize_calls fills a missing arguments with '': only real
+                            # argument text proves the name is complete.
+                            if function['arguments'] and slot in self.names:
+                                function['name'] = redact_value(self.names.pop(slot), self.key)
+                            function['arguments'] = self._fragment(index, 'arguments', function['arguments'],
+                                                                   call.get('index', 0))
             _normalize_message(choice.get('message'))
         if isinstance(value.get('usage'), dict):
             try:

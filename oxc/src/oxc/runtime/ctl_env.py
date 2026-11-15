@@ -140,7 +140,7 @@ _log = logging.getLogger('oxc.controller')
 # Control routes this controller answers itself (status `capabilities`); the panel asks
 # for a route only when it is listed.
 CAPABILITIES = ('models', 'storage', 'harness', 'harness_learning', 'ledger', 'active', 'openai_aliases', 'state_cache',
-                'context_modes', 'preload', 'model_preload', 'cloud')
+                'context_modes', 'preload', 'model_preload', 'cloud', 'cancel')
 
 # Harness prefix registry (which system-prompt + tools prefixes were seen, and primers to
 # re-warm them). OXC_HARNESS_STATE='' keeps it in memory only (no primers, no prepare).

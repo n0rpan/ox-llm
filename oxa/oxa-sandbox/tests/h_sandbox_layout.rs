@@ -68,6 +68,8 @@ fn machine(env: &TestEnv) -> Layout {
         read_extra: Vec::new(),
         write_extra: Vec::new(),
         allow_home_write: false,
+        exe: None,
+        exe_in_workspace: false,
     })
 }
 
@@ -174,6 +176,32 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
         vec!["CARGO_HOME", "MISE_CACHE_DIR", "MISE_DATA_DIR", "MISE_STATE_DIR"],
         "no token, no key, nothing unlisted"
     );
+}
+
+/// #280 / review of #302: no bash command, git included, may write the project's `.oxa` or
+/// `.agents/skills`: git can be made to run programs or check out content the model wrote.
+#[test]
+fn git_commands_keep_oxa_and_skills_read_only() {
+    let env = TestEnv::new();
+    let l = machine(&env);
+    env.write("work/.oxa/settings.json", "{}");
+    env.write("work/.agents/skills/x/SKILL.md", "");
+    for cmd in [
+        "git pull",
+        "git pull --upload-pack=./p.sh .",
+        "git merge -s evil main",
+        "git checkout abc123 -- .oxa/extensions/x.js",
+        "git rebase --exec evil main",
+    ] {
+        let a = bwrap_args_with(&spec(cmd, &env.work(), true), &env.home(), &l);
+        for p in [".oxa", ".agents/skills"] {
+            let want = env.work().join(p).display().to_string();
+            assert!(
+                a.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == want),
+                "{cmd}: {p}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -870,6 +898,8 @@ fn mise_cache_and_state_are_writable() {
         read_extra: Vec::new(),
         write_extra: Vec::new(),
         allow_home_write: false,
+        exe: None,
+        exe_in_workspace: false,
     });
     assert!(l.write.contains(&home.join(".cache/mise")), "{:?}", l.write);
     assert!(
