@@ -25,6 +25,7 @@ mod sharing;
 mod state_cache;
 mod storage;
 mod transport;
+mod uninstall;
 
 fn main() {
     let words: Vec<String> = std::env::args().skip(1).collect();

@@ -77,6 +77,7 @@ pub struct Args {
     pub rest: Vec<String>,
     flags: HashSet<String>,
     values: HashMap<String, String>,
+    records: Vec<String>,
 }
 
 impl Args {
@@ -251,6 +252,9 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                     format!("argument --limit: invalid int value: '{value}'"),
                     uninstall,
                 ));
+            }
+            if uninstall && name == "--record" {
+                result.records.push(value.clone());
             }
             result.values.insert(name.into(), value);
         } else if !action_seen {
@@ -736,6 +740,15 @@ pub async fn run(args: Args) -> i32 {
                 args.flag("--write"),
                 args.flag("--status"),
                 args.flag("--soak"),
+            )
+            .await
+        }
+        "uninstall" => {
+            crate::uninstall::run(
+                args.flag("--apply"),
+                args.flag("--remove-models"),
+                args.flag("--json"),
+                args.records,
             )
             .await
         }

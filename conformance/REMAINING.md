@@ -38,12 +38,12 @@ The following gaps remain visible rather than being represented by skipped tests
   CPU pinning and Flash-specific launch adapters/capabilities.
 - Images: the CLI dispatch is covered; the shipped controller's image-slot IPC
   and related runtime paths need contracts without SDK, device or model content.
-- CLI: port update/rollback and uninstall commands;
+- CLI: port update/rollback commands;
   extend populated ledger/digest, valid cache status, sharing keys and offline
   failures. Fifteen desktop/model dispatch cases now cover detached sessions,
   inherited stdin/umask, exec/service failures, qualification and read-only planning.
   Sixteen status/code/mode cases cover filtered metadata, offline/stopping states,
-  selected models, download phases and bounded trial queries. Forty-four runtime CLI
+  selected models, download phases and bounded trial queries. Forty-six runtime CLI
   cases pass against both the Python and native daemons.
   Direct Oxe chooser/status facts now cover receipt-derived qualification,
   prefix identities, selection/load state, resident bytes, idle/unload availability
@@ -56,9 +56,11 @@ The following gaps remain visible rather than being represented by skipped tests
   checks, rollback refusing unrelated owner edits and exit-3 recovery failure.
   Current stages are identity-free synthetic stages; no release identity claim
   is made.
-- Uninstall: real installed-prefix records, default model retention, explicit model
-  deletion safety, changed files and partial failures. Current CLI fixtures have
-  a synthetic runtime config and cover dry-run/apply only.
+- Uninstall: more record/filesystem mutation races, foreign ownership and
+  filesystem failures. Twenty-seven cases now pass for exact bootstrap/stage
+  records, hashes/owner edits, dry-run/apply, positive stop/restoration, default
+  model retention, explicit model deletion, symlinks/parent escapes, home
+  validation and partial failures. Systemd peers remain synthetic.
 - Receipt scans: additional scanner rule inputs. Never add real secrets or SDK
   content, split strings to evade scanners, or weaken existing scans/exclusions.
 - Installation units: Python ExecStart must become a native entry point while

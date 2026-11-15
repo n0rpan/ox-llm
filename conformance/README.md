@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `2e8209c9b276b767d4603d6822f902ddd0537b19`.
-The current suite passes 510 scenarios in 66 unittest methods. This remains a
+The current suite passes 537 scenarios in 67 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -102,6 +102,7 @@ python3 conformance/test_share_network.py --record-python
 python3 conformance/test_share_io.py --record-python
 python3 conformance/test_scans.py --record-python
 python3 conformance/test_update.py --record-python
+python3 conformance/test_uninstall.py --record-python
 ```
 
 Recording rejects alternate implementation command overrides. Review the diff;
@@ -111,7 +112,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | --- | --- | --- | --- |
 | CLI parsing | PASS, 65 cases | PASS, captured grammar | More option combinations |
 | CLI ledger files | PASS, 5 cases | PASS | Additional historical ledger labels |
-| CLI runtime | PASS, 48 cases | Partial: 44/48 native CLI cases against both Python and native daemons | Update/rollback and uninstall commands |
+| CLI runtime | PASS, 48 cases | Partial: 46/48 native CLI cases against both Python and native daemons | Update/rollback commands |
 | CLI desktop/model dispatch | PASS, 15 cases | PASS: detached session and exec handshake, inherited stdin/umask, service failures, bounded model qualification/errors, selection and read-only planning | More malformed replies and command races |
 | CLI status/code/mode | PASS, 16 cases | PASS: filtered metadata, offline/stopping states, selected-model dispatch, Flash download phases and bounded trial queries | More malformed metadata and clock races |
 | CLI health digests | PASS, 27 cases | PASS: numeric/enum reduction, origin/text filtering, stored days, trend/soak thresholds, private atomic writes, stale status, date validation, installed versions and Python/Rust/Python reads | More malformed numeric/file inputs and interruption races |
@@ -140,7 +141,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |
 | Bootstrap/install | PASS, 4 scenarios | Not implemented | Transfer/build/install-journal edge cases |
 | Staged update/rollback | PASS, 6 scenarios / 9 CLI goldens | Not implemented | Release identity proof, created/removed files, interruption recovery |
-| Uninstall | PASS, dry-run and apply CLI cases | Not implemented | Installed release records and model deletion cases |
+| Uninstall | PASS, 27 cases plus original empty-install CLI cases | PASS: exact journal/stage records, hash/owner-edit protection, dry-run/apply, positive stops/restoration, models kept by default, explicit model deletion, symlinks/parent escape, private-home refusal and partial failures | More concurrent record/filesystem changes and filesystem failure cases |
 | Shipped scans | PASS, 11 cases | Not implemented | More secret/SDK rule inputs (no real secrets or SDK material) |
 | Fake engine benchmark | Python baseline recorded | Not implemented | Repeat identical measurement with Rust |
 
