@@ -262,3 +262,79 @@ fn reader_handled_rpc_controls_count_as_done_and_keep_earlier_failures() {
         }
     }
 }
+
+#[test]
+fn json_output_errors_preserve_the_completed_prompt_failure() {
+    struct HeaderThenClosed(bool);
+    impl Write for HeaderThenClosed {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.0 {
+                self.0 = false;
+                Ok(bytes.len())
+            } else {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    for budget_refusal in [true, false] {
+        let env = TestEnv::new();
+        let turn = if budget_refusal {
+            ScriptTurn::fault(oxa_fake::Fault::Http {
+                status: 429,
+                body:
+                    serde_json::json!({"error":{"code":"budget_exceeded","message":"Daily budget exhausted"}})
+                        .to_string(),
+            })
+        } else {
+            ScriptTurn::text("finished")
+        };
+        let server = FakeServer::start(vec![turn], FakeOpts::default()).unwrap();
+        let owned = env.envs(&server.url());
+        let pairs: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let err = Capture::default();
+        let code = oxa_cli::run(
+            &[
+                "--mode",
+                "json",
+                "--no-session",
+                "--no-tools",
+                "first",
+                "unstarted",
+            ]
+            .map(String::from),
+            &oxa_config::Env::from_pairs(&pairs),
+            oxa_cli::Stdio {
+                stdin: Box::new(Cursor::new(Vec::new())),
+                stdout: Box::new(HeaderThenClosed(true)),
+                stderr: Box::new(err.clone()),
+                stdin_is_tty: false,
+                stdout_is_tty: false,
+                cwd: env.work(),
+            },
+        );
+        let stderr = String::from_utf8(err.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(code, if budget_refusal { 3 } else { 1 }, "{stderr}");
+        let results: Vec<Value> = stderr
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|record| record["type"] == "oxa_result")
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0]["error_class"],
+            if budget_refusal { "budget_exhausted" } else { "io" }
+        );
+        assert!(stderr.contains("cannot write a record"));
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "do not start another prompt after output fails"
+        );
+    }
+}
