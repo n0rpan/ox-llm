@@ -1,0 +1,21 @@
+[package]
+name = "oxc-gateway"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[features]
+default = []
+secrets = ["dep:serde_json", "dep:nix"]
+
+[dependencies]
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
+nix = { version = "0.30", features = ["user"], optional = true }
+
+[[example]]
+name = "secrets_contract"
+required-features = ["secrets"]
+
+[lints.rust]
+unsafe_code = "forbid"
