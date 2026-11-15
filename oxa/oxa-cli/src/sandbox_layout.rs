@@ -83,6 +83,7 @@ pub(crate) fn layout(
             "oxa.sandbox.allowProjectConfigWrite is on: plain git merge/pull/checkout/rebase may write the project's .oxa and .agents/skills".to_string(),
         ));
     }
+    layout.mask_runtime_ipc = true;
     layout
 }
 

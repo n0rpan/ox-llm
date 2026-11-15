@@ -333,6 +333,34 @@ fn print_mode_end_to_end_with_fake() {
     assert!(sent.contains("ping"), "the prompt was sent: {sent}");
 }
 
+/// A print run names its saved session on stderr up front, so a driver can resume it.
+#[test]
+fn print_mode_announces_the_session_id_on_stderr() {
+    let env = TestEnv::new();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("a"), ScriptTurn::text("b")],
+        FakeOpts::default(),
+    )
+    .expect("fake");
+    let envv = env_of(&env, &server.url());
+    let r = go_with(&envv, &env.work(), &["-p", "hi"], "", false, false);
+    assert_eq!(r.code, 0, "stderr: {}", r.err);
+    assert!(
+        r.err.contains("oxa: session ") && r.err.contains("--session "),
+        "stderr: {}",
+        r.err
+    );
+    let none = go_with(
+        &envv,
+        &env.work(),
+        &["-p", "--no-session", "hi"],
+        "",
+        false,
+        false,
+    );
+    assert!(!none.err.contains("oxa: session "), "ephemeral run: {}", none.err);
+}
+
 /// Piped stdin is prepended to the first prompt; `@file` text goes into the first prompt too.
 #[test]
 fn piped_stdin_and_file_arguments_form_the_first_prompt() {

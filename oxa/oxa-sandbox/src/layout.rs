@@ -174,6 +174,10 @@ pub struct Layout {
     /// sbx-git: the git data of the cwd outside it (a worktree's gitdir and common dir, shared
     /// alternates), resolved once by `Bwrap::with_git_dirs`. Empty until then.
     pub git: GitBinds,
+    /// sbx-ipc: mask the host runtime sockets (`/run/user/<uid>`, the buses, Docker/Podman,
+    /// systemd-resolved) in the argv. Set by the front end ([`Bwrap::detect`] and the CLI's
+    /// layout); off in the pure-argv tests, whose `Layout::default()` is not a sandbox.
+    pub mask_runtime_ipc: bool,
 }
 
 /// The inputs of [`Layout::build`].
@@ -277,6 +281,16 @@ impl Layout {
             })
             .cloned()
             .collect();
+        // Version-manager shims (mise) write cache/state under the read-only home and warn on
+        // every call; point them at the sandbox /tmp unless the caller set them.
+        for (k, v) in [
+            ("MISE_CACHE_DIR", "/tmp/mise-cache"),
+            ("MISE_STATE_DIR", "/tmp/mise-state"),
+        ] {
+            if !env.iter().any(|(n, _)| n == k) {
+                env.push((k.to_string(), v.to_string()));
+            }
+        }
         env.sort();
         env.dedup_by(|a, b| a.0 == b.0);
         Layout {
@@ -288,6 +302,7 @@ impl Layout {
             allow_home_write: i.allow_home_write,
             allow_project_config_write: false,
             git: GitBinds::default(),
+            mask_runtime_ipc: false,
         }
     }
 
