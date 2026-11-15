@@ -18,7 +18,7 @@ pub fn parse_info(base_url: &str, models: &Value, status: &Value) -> Result<Engi
 /// Build [`EngineInfo`] from `/v1/models` (`data[].id`) and the status, with the limits of
 /// `target` when the status publishes them (X3).
 ///
-/// The status is the local-ai controller's `/_local/status` (`StatusMixin.status` in the lab's
+/// The status is the oxc controller's `/_local/status` (`StatusMixin.status` in the lab's
 /// `runtime/ctl_status.py`), or a plain llama-server / oxe `/props` when the controller is
 /// absent. Field mapping, first present wins:
 ///
