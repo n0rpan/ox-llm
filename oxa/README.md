@@ -85,7 +85,6 @@ The tests that need `bwrap` are skipped with a message when it is missing, unles
 
 - `!cmd` in the interface and stdio MCP servers run with your rights and outside the bash sandbox. In offline mode they run through `bubblewrap` without network, and they are not otherwise limited.
 - The package caches that the sandbox leaves writable are shared with your own builds.
-- Two oxa processes can write to one session file; oxa does not lock session files.
 - oxa does not update itself. Install a new build to upgrade.
 
 ## Licence

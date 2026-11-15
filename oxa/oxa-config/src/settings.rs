@@ -202,6 +202,13 @@ impl Settings {
             .filter(|s| !s.is_empty())
             .map(|s| resolve_user_path(&s, home, Path::new("/")))
     }
+    /// `done`: shell commands oxa runs itself before it reports completion; empty = off.
+    pub fn done_commands(&self) -> Vec<String> {
+        self.list("done")
+            .into_iter()
+            .filter(|c| !c.trim().is_empty())
+            .collect()
+    }
     /// H: `shellCommandPrefix`; `None` when unset or empty.
     pub fn shell_command_prefix(&self) -> Option<String> {
         self.string("shellCommandPrefix").filter(|s| !s.is_empty())

@@ -78,6 +78,9 @@ fn stats_left(st: &StatusModel, theme: &Theme) -> String {
     if st.tool_repairs > 0 {
         parts.push(theme.fg("warning", &format!("repairs {}", st.tool_repairs)));
     }
+    if st.degraded_context {
+        parts.push(theme.fg("warning", "no summary"));
+    }
     if let Some(mode) = st.mode {
         parts.push(theme.fg(mode_token(mode), mode.as_str()));
     }
@@ -91,9 +94,9 @@ fn stats_right(st: &StatusModel) -> String {
     } else {
         st.model.clone()
     };
-    if let Some(level) = st.thinking {
+    if let Some(level) = st.thinking_label() {
         text.push_str(" • ");
-        text.push_str(level.as_str());
+        text.push_str(&level);
     }
     if let Some(note) = &st.thinking_note {
         text.push_str(" · ");

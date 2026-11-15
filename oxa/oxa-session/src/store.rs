@@ -115,12 +115,20 @@ pub fn new_entry_id(taken: &dyn Fn(&str) -> bool) -> String {
 #[derive(Debug, Clone)]
 pub struct FsStore {
     root: PathBuf,
+    /// The session this process holds open for writing (shared by clones of the store).
+    held: std::sync::Arc<std::sync::Mutex<Option<crate::SessionLock>>>,
+    /// A lock taken by `acquire` that `commit_lock` has not yet made the held one.
+    staged: std::sync::Arc<std::sync::Mutex<Option<crate::SessionLock>>>,
 }
 
 impl FsStore {
     /// `root` is created lazily (0700) on first `create`.
     pub fn new(root: PathBuf) -> FsStore {
-        FsStore { root }
+        FsStore {
+            root,
+            held: Default::default(),
+            staged: Default::default(),
+        }
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -164,6 +172,35 @@ impl SessionStore for FsStore {
         f.write_all(&line)
             .map_err(|e| OxaError::io(&format!("cannot write session {}", path.display()), &e))?;
         Ok(SessionRef { path, id })
+    }
+
+    fn acquire(&self, s: &SessionRef) -> Result<(), OxaError> {
+        check_safe(&s.path)?;
+        let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        let staged = self.staged.lock().unwrap_or_else(|p| p.into_inner());
+        if [held.as_ref(), staged.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|l| l.session() == s.path)
+        {
+            return Ok(());
+        }
+        drop(staged);
+        // The new lock is only staged: the held one stays until `commit_lock`.
+        let new = crate::SessionLock::acquire(&s.path)?;
+        *self.staged.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);
+        Ok(())
+    }
+
+    fn commit_lock(&self) {
+        let staged = self.staged.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(new) = staged {
+            *self.held.lock().unwrap_or_else(|p| p.into_inner()) = Some(new);
+        }
+    }
+
+    fn abort_lock(&self) {
+        drop(self.staged.lock().unwrap_or_else(|p| p.into_inner()).take());
     }
 
     fn append(&self, s: &SessionRef, e: &Entry) -> Result<(), OxaError> {
@@ -609,6 +646,10 @@ fn part_value(p: &Part) -> Value {
             m.insert("type".into(), "text".into());
             m.insert("text".into(), Value::from(text.as_str()));
         }
+        Part::EnvNote(note) => {
+            m.insert("type".into(), "envNote".into());
+            m.insert("text".into(), Value::from(note.as_str()));
+        }
         Part::Image {
             path,
             mime,
@@ -842,6 +883,7 @@ fn decode_part(v: &Value) -> Result<Part, OxaError> {
     let o = v.as_object().ok_or_else(|| invalid("part is not an object"))?;
     match get_str(o, "type")? {
         "text" => Ok(Part::Text(get_str(o, "text")?.to_string())),
+        "envNote" => Ok(Part::EnvNote(get_str(o, "text")?.to_string())),
         "image" => Ok(Part::Image {
             path: PathBuf::from(get_str(o, "path")?),
             mime: get_str(o, "mime")?.to_string(),
@@ -1257,6 +1299,7 @@ pub fn session_files_under(root: &Path) -> Vec<(PathBuf, Option<SessionHeader>)>
 /// `Ok` (the wipe is idempotent).
 pub fn purge_session_file(path: &Path) -> Result<(), OxaError> {
     check_safe(path)?;
+    let _ = fs::remove_file(crate::lock_path_of(path));
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -1351,7 +1394,7 @@ fn meta_of_parts(sref: SessionRef, header: &SessionHeader, entries: &[Entry]) ->
             EntryBody::SessionInfo { name: n } => name = if n.is_empty() { None } else { Some(n.clone()) },
             EntryBody::Msg { wire, .. } if matches!(wire.role, Role::User | Role::Assistant) => {
                 message_count += 1;
-                let text = wire.content.as_deref().unwrap_or("");
+                let text = crate::meta::message_text(&e.body);
                 if !all_text.is_empty() {
                     all_text.push('\n');
                 }

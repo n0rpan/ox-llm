@@ -56,7 +56,8 @@ fn open_session_with(env: &TestEnv, engine: Arc<dyn Engine>, settings: Settings)
         hooks: Vec::new(),
         policy: Box::new(DenyAll),
         sandbox: Arc::new(NoBwrap),
-        settings,
+        // This fixture compares exact prompt/prefill bytes, with notes explicitly off.
+        settings: settings.with_override("oxa.envNote", serde_json::json!(false)),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),

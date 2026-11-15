@@ -624,6 +624,7 @@ fn scripted_engine_answers_trailing_assistant_like_the_real_engine() {
             max_tokens,
             thinking: false,
             preserve_thinking: true,
+            sampling: None,
             hints,
         }
     }
@@ -738,6 +739,7 @@ fn length_stop_over_http_sends_no_unsupported_request() {
         max_tokens,
         thinking: false,
         preserve_thinking: true,
+        sampling: None,
         hints,
     };
     // F9: the engine answers it as a NEW turn (history + reply), not a continuation, not a 400.

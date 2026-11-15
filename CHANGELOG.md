@@ -32,6 +32,10 @@ from two repositories.
 - **Removed dead code:** `flash-iobench`, prompt-lookup drafting (`--spec-type lookup`, `--lookup-*`),
   the no-op `--compaction-cut` flag and the explicit-routing module (`LOCAL_AI_ENABLE_ROUTING`,
   `local-auto`). `oxc plan` opens oxa on Flash with read-only tools.
+- **Fix: oxa's prefix preload on Ornith / Qwen3.5.** The boot preload (system + tools, no user turn,
+  `max_tokens: 0`) got HTTP 400 `No user query found in messages.` from these templates. The engine
+  now renders such a prefill as the exact prefix of the first real request (cut before its user
+  turn), so the first prompt starts warm.
 - **Licences:** the root NOTICE and `oxa/NOTICE` carry the pi (MIT) and QuickJS (MIT) licence texts.
 - Release tooling: one exporter for the whole repository. Private CI is self-hosted only. Version
   0.2.0 everywhere.

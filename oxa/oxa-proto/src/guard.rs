@@ -24,6 +24,7 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".config/gh",
     ".config/hub",
     ".config/oxc",
+    ".config/local-ai/llm/cloud-secrets.json",
     ".local/state/oxc",
     ".oxa/agent",
     ".pi/agent",
@@ -46,6 +47,55 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".config/microsoft-edge",
     ".config/vivaldi",
     ".config/opera",
+    // Other agents' login tokens (oxa may run in the home directory, O-199 first run).
+    ".codex/auth.json",
+    ".claude/.credentials.json",
+    ".dsh/.credentials.yaml",
+    ".gemini/oauth_creds.json",
+];
+
+/// Under `$HOME`: what runs code or holds agent and login configuration later, outside the
+/// sandbox (shell startup files, autostart and service units, the user's own `bin`
+/// directories, the desktop's config, the agents' settings). Never writable by bash in a home
+/// workspace (where the home root and every dot-entry stay read-only anyway, and only these
+/// non-dot entries need naming), and the file tools ask before writing them when the cwd is
+/// the home directory or above it (outside the cwd they ask anyway).
+/// [`SENSITIVE_HOME`] holds on top of this.
+pub const PROTECTED_IN_HOME: &[&str] = &[
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".xprofile",
+    ".xinitrc",
+    ".xsession",
+    ".pam_environment",
+    ".ssh",
+    ".gnupg",
+    ".gitconfig",
+    ".config/systemd",
+    ".config/autostart",
+    ".config/environment.d",
+    ".config/hypr",
+    ".config/omarchy",
+    ".config/fish",
+    ".config/git",
+    ".config/oxa",
+    ".local/bin",
+    ".local/share/applications",
+    ".local/share/systemd",
+    ".oxa",
+    ".dsh",
+    ".codex",
+    ".claude",
+    ".claude.json",
+    "bin",
 ];
 
 /// Inside the cwd: project files that run outside the sandbox later (B4), bound read-only.
@@ -67,6 +117,11 @@ pub fn sensitive_paths(home: &Path, agent_dir: Option<&Path>) -> Vec<PathBuf> {
     out
 }
 
+/// The paths of [`PROTECTED_IN_HOME`] under `home`, whether or not they exist.
+pub fn home_protected_paths(home: &Path) -> Vec<PathBuf> {
+    PROTECTED_IN_HOME.iter().map(|p| home.join(p)).collect()
+}
+
 /// The protected project files of `cwd` (B4), whether or not they exist.
 pub fn protected_paths(cwd: &Path) -> Vec<PathBuf> {
     PROTECTED_IN_CWD.iter().map(|p| cwd.join(p)).collect()
@@ -75,6 +130,21 @@ pub fn protected_paths(cwd: &Path) -> Vec<PathBuf> {
 /// `true` when `cwd` is `$HOME`, `/`, or an ancestor of `$HOME`.
 pub fn is_home_or_above(cwd: &Path, home: &Path) -> bool {
     cwd == Path::new("/") || home.starts_with(cwd)
+}
+
+/// `true` when `cwd` is the home directory itself (not a parent of it, not `/`), also through
+/// a symlink: the one home root that may become a workspace (O-199 first run).
+pub fn is_home_itself(cwd: &Path, home: &Path) -> bool {
+    if home == Path::new("/") {
+        return false;
+    }
+    if cwd == home {
+        return true;
+    }
+    match (std::fs::canonicalize(cwd), std::fs::canonicalize(home)) {
+        (Ok(c), Ok(h)) => c == h,
+        _ => false,
+    }
 }
 
 /// CT-10 (lane `harden`): the directories a project resource walk visits from `cwd` upward,

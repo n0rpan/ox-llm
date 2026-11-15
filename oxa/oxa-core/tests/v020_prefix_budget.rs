@@ -143,8 +143,9 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// Pinned: SHA-256 over every section but `cwd`, then `\0` and the tools JSON, of the default
 /// session (the seven built-ins) and the same with a `subagent` tool. These are the default
 /// bytes: a prefix change is a PARITY event.
-const DEFAULT_STABLE_SHA: &str = "20a32036c93d1547ca4a4784f5b2d02202bd5dbedc5df88300ac94411f20bf9b";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "e8c6bab84d86c2caabb129f6c65b358b12fb00bc2ac55e06d27cb4362bd7f1c5";
+/// 2026-11-14: the identity fallback text changed with the env note PR (#5).
+const DEFAULT_STABLE_SHA: &str = "523d7bd0e822e37a8c562df4216006b9b8717d14f995e6bd7231c54d577484d3";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "10c03ff62015aa2c7d87bcdcf047d48c8932da6808829215c0c14275e1af364f";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {

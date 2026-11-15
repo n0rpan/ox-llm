@@ -39,8 +39,15 @@ pub fn fake_bin() -> PathBuf {
     sibling("oxa-fake", "OXA_FAKE_BIN")
 }
 
-/// Run `oxa <args>` in `env.work()` with only `env.envs(engine_url)` as environment, feeding
-/// `stdin`, and return its output.
+/// The environment every PARITY `oxa` child gets after `TestEnv::envs`: the per-prompt
+/// environment note is off (`OXA_ENV_NOTE=0`). PARITY compares the user messages with pi's
+/// bytes; the note has its own tests (`oxa-core/tests/env_note_cache.rs`).
+pub fn note_off_env() -> Vec<(String, String)> {
+    vec![("OXA_ENV_NOTE".to_string(), "0".to_string())]
+}
+
+/// Run `oxa <args>` in `env.work()` with only `env.envs(engine_url)` and [`note_off_env`] as
+/// environment, feeding `stdin`, and return its output.
 pub fn run_oxa(env: &TestEnv, engine_url: &str, args: &[&str], stdin: &str) -> Output {
     use std::io::Write;
     let mut child = Command::new(oxa_bin())
@@ -48,6 +55,7 @@ pub fn run_oxa(env: &TestEnv, engine_url: &str, args: &[&str], stdin: &str) -> O
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(engine_url))
+        .envs(crate::note_off_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

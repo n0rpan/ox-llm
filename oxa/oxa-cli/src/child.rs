@@ -135,6 +135,9 @@ impl Engine for ChildEngine {
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
         self.inner.info(target)
     }
+    fn handshake_warning(&self) -> Option<String> {
+        self.inner.handshake_warning()
+    }
     fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
         self.inner.count_tokens(text)
     }
@@ -215,6 +218,7 @@ mod tests {
                 max_tokens: 1,
                 thinking: false,
                 preserve_thinking: false,
+                sampling: None,
                 hints: Hints {
                     session: "own-ephemeral-id",
                     idem_key: "k1",

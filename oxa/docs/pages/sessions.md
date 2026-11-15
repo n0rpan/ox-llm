@@ -14,7 +14,7 @@ Each session is one file named after the time it started and its id:
 2026-11-13T14-00-00-000Z_<session-id>.jsonl
 ```
 
-The directories are `0700` and the files `0600`. oxa opens files without following symbolic links, appends each entry, and syncs the file at the end of every turn. A last line cut off by a crash is dropped when the file is read again. Two oxa processes should not write one session at the same time; oxa does not lock files.
+The directories are `0700` and the files `0600`. oxa opens files without following symbolic links, appends each entry, and syncs the file at the end of every turn. A last line cut off by a crash is dropped when the file is read again. One oxa writes a session at a time: it holds a lock (`<session>.jsonl.lock` next to the file) while the session is open. A second oxa that opens the same session stops with `session is open in another oxa (pid N); use --fork to continue separately`; nothing is written. `--fork <id>` (or `/fork`) copies the session into a new file you can continue. The lock belongs to the process, so a crash or `kill` never leaves a stale lock; a leftover `.lock` file is harmless.
 
 With `--no-session` nothing is written. The session lives only for that run, and `OXA_SESSION_FILE` is unset for the bash tool.
 

@@ -330,3 +330,49 @@ fn mid_run_failure_is_mechanical() {
     assert!(mechanical_end(&sink.0));
     assert_eq!(st.transcript.wire()[1], WireMsg::user("task two"));
 }
+
+/// Self-feedback: the warning says how many assistant/tool turns the record dropped from
+/// memory, and the event details carry the number (the TUI footer and the RPC/JSON events show
+/// `mechanical`). The summary fails twice (a retry fails too).
+#[test]
+fn degraded_context_notice_counts_the_dropped_turns() {
+    let fault = || {
+        ScriptTurn::fault(Fault::Http {
+            status: 400,
+            body: "bad request".into(),
+        })
+    };
+    let env = TestEnv::new();
+    let (mut st, _) = state(
+        &env,
+        vec![ScriptTurn::text("done two"), fault(), fault()],
+        idle_off(),
+    );
+    history(&mut st);
+    crossed(&mut st);
+    let mut sink = VecSink::default();
+    assert!(maybe_compact(&mut st, true, &mut sink, &mut HeadlessUi::default()).expect("compact"));
+    let text = sink
+        .0
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Notice {
+                level: Level::Warning,
+                text,
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .expect("a warning notice");
+    // The read call, its result and "fixed" were summarised away.
+    assert!(
+        text.starts_with(
+            "context compacted without a model summary: 3 assistant/tool turns were dropped from memory"
+        ),
+        "{text}"
+    );
+    let dropped = sink.0.iter().find_map(|e| match e {
+        AgentEvent::CompactionEnd { result: Some(r), .. } => Some(r.details["droppedTurns"].clone()),
+        _ => None,
+    });
+    assert_eq!(dropped, Some(json!(3)));
+}
