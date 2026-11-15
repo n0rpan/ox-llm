@@ -9,6 +9,7 @@ publish = false
 default = []
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
+openrouter = ["policy", "secrets"]
 
 [dependencies]
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
@@ -21,6 +22,10 @@ required-features = ["policy"]
 [[example]]
 name = "secrets_contract"
 required-features = ["secrets"]
+
+[[example]]
+name = "openrouter_contract"
+required-features = ["openrouter"]
 
 [lints.rust]
 unsafe_code = "forbid"
