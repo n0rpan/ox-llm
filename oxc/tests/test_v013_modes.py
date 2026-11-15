@@ -270,6 +270,22 @@ class StatusContract(unittest.TestCase):
         stack.manager.process = None  # unloaded: back to the profile
         self.assertIs(caps()[ORNITH]['mtp'], True)
 
+    def test_model_limits_follow_the_loaded_engine_on_thinking_budget(self):
+        """The binary advertising thinking-budget-v1 is not enough: a loaded model whose template
+        cannot think reports /props.thinking_budget false, and the capability follows it."""
+        stack = self.stack()
+        caps = lambda: {a: v['capabilities'] for a, v in stack.manager.model_limits().items()}
+        stack.manager.engine_thinking_budget = False
+        stack.manager.loaded_config = stack.manager.config(ORNITH)
+        stack.manager.process = object()
+        self.addCleanup(setattr, stack.manager, 'process', None)
+        with patch.object(oxe_runtime, 'engine_has_thinking_budget', return_value=True):
+            got = caps()
+            self.assertIs(got[ORNITH]['thinking_budget'], False)
+            self.assertIs(got[QWEN]['thinking_budget'], True)
+            stack.manager.engine_thinking_budget = True
+            self.assertIs(caps()[ORNITH]['thinking_budget'], True)
+
     def test_max_needs_the_proof(self):
         stack = self.stack()
         code, _, got = check.call(stack.base, 'POST', '/_local/mode', {'model': ORNITH, 'mode': 'max'})

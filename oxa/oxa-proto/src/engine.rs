@@ -150,6 +150,7 @@ impl<'a> ChatRequest<'a> {
             model,
             max_tokens: 1024,
             thinking: false,
+            thinking_budget: None,
             preserve_thinking: false,
             sampling: None,
             hints: Hints::default(),

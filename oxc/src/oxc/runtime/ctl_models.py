@@ -358,6 +358,10 @@ class ModelsMixin:
                             and spec.get('fallback')):
                         # the engine runs without the requested MTP drafts (no MTP block in the model)
                         caps = {**caps, 'mtp': False, 'mtp_fallback': str(spec['fallback'])[:300]}
+                    if (isinstance(loaded, dict) and loaded.get('model_alias') == target
+                            and getattr(self, 'engine_thinking_budget', None) is False):
+                        # the loaded model's template/tokens cannot take a cap (engine /props.thinking_budget)
+                        caps = {**caps, 'thinking_budget': False}
                     engine_sampling = self.engine_sampling_for(config)
                     if engine_sampling is not None:
                         caps = {**caps, 'sampling': sorted(engine_sampling)}
