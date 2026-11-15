@@ -546,6 +546,14 @@ jobs:
       - run: cargo fmt --manifest-path oxc-gateway/Cargo.toml --all -- --check
       - run: cargo check --locked --manifest-path oxc-gateway/Cargo.toml --no-default-features
       - run: cargo clippy --locked --manifest-path oxc-gateway/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Rust gateway tests with isolated environment and network
+        run: |
+          gateway_test_home=$(mktemp -d)
+          gateway_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          gateway_rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+          bwrap --unshare-user --unshare-net --cap-drop ALL --die-with-parent --new-session --bind / / --proc /proc --dev /dev -- \
+            env -i PATH="$PATH" HOME="$gateway_test_home" CARGO_HOME="$gateway_cargo_home" RUSTUP_HOME="$gateway_rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+            cargo test --locked --offline --manifest-path oxc-gateway/Cargo.toml --all-features
       - run: cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
       - run: /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
       - run: OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxc-gateway/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v

@@ -48,6 +48,12 @@ class Gate(unittest.TestCase):
         for name in ('changes', 'scans'):
             self.assertNotRegex(job_block(self.checks, name), r'(?m)^    if:', name)
 
+    def test_gateway_executes_rust_tests_with_an_isolated_environment_and_network(self):
+        block = job_block(self.checks, 'gateway')
+        self.assertRegex(block, r'cargo test[^\n]*--all-features')
+        self.assertIn('env -i ', block)
+        self.assertIn('--unshare-net', block)
+
     def test_caches_restore_only_and_save_only_on_main(self):
         for path in sorted(WORKFLOWS.glob('*.y*ml')):
             text = path.read_text()
