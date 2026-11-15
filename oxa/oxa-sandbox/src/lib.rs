@@ -18,6 +18,7 @@ mod layout;
 mod net;
 mod offline;
 mod run;
+mod scratch;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
@@ -30,6 +31,7 @@ pub use offline::{no_network_argv, offline_argv};
 pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
 };
+pub use scratch::{scratch_root, Scratch};
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
@@ -78,7 +80,11 @@ impl Bwrap {
 
 impl Sandbox for Bwrap {
     fn persistence_notice(&self) -> Option<&str> {
-        Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
+        if self.layout.scratch.is_some() {
+            Some(SCRATCH_NOTICE)
+        } else {
+            Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
+        }
     }
     fn check(&self) -> Result<(), OxaError> {
         bwrap::check_bwrap(self)
@@ -116,6 +122,9 @@ impl Sandbox for Bwrap {
         self.launch(s, Some(stdin), c, live, true)
     }
 }
+
+/// #457: the notice with a session directory at `/tmp`.
+pub const SCRATCH_NOTICE: &str = "Sandbox: /tmp is this session's scratch (also TMPDIR and XDG_CACHE_HOME): it persists between commands and is deleted when the session ends; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.";
 
 /// Environment variables that carry a secret: kept out of the bwrap command line (visible to
 /// other processes) and handed over through `bwrap --args <fd>` instead.

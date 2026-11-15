@@ -71,7 +71,7 @@ pub const BASH: ToolText = ToolText {
     prompt_snippet: "Execute bash commands (ls, grep, find, etc.)",
     guidelines: &[
         "You can inspect OXA_* environment variables for current model and session details.",
-        "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is private scratch discarded after each command, even on success. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
+        "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is this session's private scratch (TMPDIR and XDG_CACHE_HOME point into it): it persists between commands and is deleted when the session ends. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
     ],
 };
 

@@ -17,3 +17,4 @@ mod harness;
 mod ipc;
 mod namespace;
 mod offline;
+mod scratch;

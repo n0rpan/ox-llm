@@ -662,6 +662,14 @@ fn prepare(
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
             b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
+            // #457: one session directory at /tmp for every command of this session.
+            match oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&dirs.home)) {
+                Ok(s) => b.layout = b.layout.with_scratch(&dirs.home, s),
+                Err(e) => notices.push((
+                    Level::Warning,
+                    format!("no session scratch directory ({e}); /tmp is discarded after each command"),
+                )),
+            }
             let b = b.with_git_dirs(cwd);
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)

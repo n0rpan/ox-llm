@@ -128,17 +128,17 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "CARGO_HOME",
         "<root>/home/.cargo",
         "--setenv",
-        "GH_CACHE_DIR",
-        "/tmp/gh-cache",
-        "--setenv",
-        "MISE_CACHE_DIR",
-        "/tmp/mise-cache",
-        "--setenv",
         "MISE_DATA_DIR",
         "<root>/home/.local/share/mise",
         "--setenv",
         "MISE_STATE_DIR",
         "/tmp/mise-state",
+        "--setenv",
+        "TMPDIR",
+        "/tmp",
+        "--setenv",
+        "XDG_CACHE_HOME",
+        "/tmp/.cache",
         "--",
         "bash",
         "-c",
@@ -178,10 +178,10 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
         names,
         vec![
             "CARGO_HOME",
-            "GH_CACHE_DIR",
-            "MISE_CACHE_DIR",
             "MISE_DATA_DIR",
-            "MISE_STATE_DIR"
+            "MISE_STATE_DIR",
+            "TMPDIR",
+            "XDG_CACHE_HOME"
         ],
         "no token, no key, nothing unlisted"
     );
@@ -921,35 +921,65 @@ fn mise_cache_and_state_are_writable() {
     assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
 }
 
-/// #362: `gh` writes its cache to `GH_CACHE_DIR`; point it at the sandbox /tmp, never bind the
-/// real `~/.cache/gh`, never create host directories, and leave `XDG_CACHE_HOME` alone.
+/// #457 (supersedes #362): every tool gets one writable cache home, the session directory at
+/// `/tmp`: `XDG_CACHE_HOME` and `TMPDIR` point there even when the user set them to a host
+/// path (read-only inside); no bind of the real `~/.cache/gh`, no host directory created.
 #[test]
-fn gh_cache_dir_is_sandbox_tmp_and_host_untouched() {
+fn cache_home_and_tmpdir_are_the_session_tmp() {
     let env = TestEnv::new();
     let home = env.home();
-    let mk = |env: Vec<(String, String)>| {
-        Layout::build(&LayoutInputs {
-            home: home.clone(),
-            agent_dir: Some(env_agent(&env)),
-            path_var: "/usr/bin".into(),
-            env,
-            read_extra: Vec::new(),
-            write_extra: Vec::new(),
-            allow_home_write: false,
-            exe: None,
-            exe_in_workspace: false,
-        })
-    };
-    fn env_agent(_: &[(String, String)]) -> PathBuf {
-        PathBuf::from("/nonexistent-agent")
-    }
-    let l = mk(Vec::new());
+    let l = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(PathBuf::from("/nonexistent-agent")),
+        path_var: "/usr/bin".into(),
+        env: vec![
+            ("XDG_CACHE_HOME".into(), home.join(".cache").display().to_string()),
+            ("TMPDIR".into(), "/var/tmp/host".into()),
+        ],
+        ..LayoutInputs::default()
+    });
     assert!(
-        l.env.contains(&("GH_CACHE_DIR".into(), "/tmp/gh-cache".into())),
+        l.env.contains(&("XDG_CACHE_HOME".into(), "/tmp/.cache".into())),
         "{:?}",
         l.env
     );
-    assert!(!l.env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"));
+    assert!(l.env.contains(&("TMPDIR".into(), "/tmp".into())), "{:?}", l.env);
+    assert_eq!(l.env.iter().filter(|(k, _)| k == "XDG_CACHE_HOME").count(), 1);
+    assert!(!l
+        .env
+        .iter()
+        .any(|(k, _)| k == "GH_CACHE_DIR" || k == "MISE_CACHE_DIR"));
     assert!(!l.write.contains(&home.join(".cache/gh")));
     assert!(!home.join(".cache/gh").exists(), "build must not touch the host");
+}
+
+/// #457, N28: the session directory replaces `--tmpfs /tmp` at the same place, before the
+/// home tmpfs and before every credential mask, so no mask can be covered by it.
+#[test]
+fn golden_session_dir_is_bound_at_tmp_before_every_mask() {
+    let env = TestEnv::new();
+    let l = machine(&env);
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&env.home())).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let l = l.with_scratch(&env.home(), sc);
+    let a =
+        oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &l));
+    let s = shown(&a, &env);
+    let mut head = strs(HEAD);
+    head[12] = "--bind".into();
+    head[13] = dir
+        .display()
+        .to_string()
+        .replace(&env.root().display().to_string(), "<root>");
+    head.insert(14, "/tmp".into());
+    assert_eq!(s[..head.len()], head[..], "{s:?}");
+    assert!(!s.windows(2).any(|w| w == ["--tmpfs", "/tmp"]), "{s:?}");
+    // The home tmpfs, the binds and the masks all follow it (the prefix above).
+    // Without a session directory nothing changes.
+    let a = oxa_sandbox::without_account_home(bwrap_args_with(
+        &spec("true", &env.work(), true),
+        &env.home(),
+        &machine(&env),
+    ));
+    assert_eq!(shown(&a, &env)[..HEAD.len()], strs(HEAD)[..]);
 }
