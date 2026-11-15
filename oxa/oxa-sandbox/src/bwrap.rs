@@ -49,6 +49,16 @@ pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
 /// (`PATH` of the layout, `HOME`, `LANG`, `TERM=dumb`, `AI_AGENT=oxa`), the layout's
 /// passed-through variables (sorted), then `s.env` in order, then `-- bash -c <command>`.
 pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String> {
+    bwrap_args_homes(s, home, layout, real_home().as_deref())
+}
+
+/// [`bwrap_args_with`] with the real account home given explicitly (tests).
+pub(crate) fn bwrap_args_homes(
+    s: &ExecSpec,
+    home: &Path,
+    layout: &Layout,
+    real_home: Option<&Path>,
+) -> Vec<String> {
     let home_s = home.to_string_lossy().into_owned();
     // sbx-symhome: every decision and every mount uses the canonical cwd and home, so a cwd
     // that only resolves to `$HOME` (or into it) gets the masks of the real one. An
@@ -71,8 +81,26 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
         &["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"],
     );
     push(&mut a, &["--tmpfs", "/tmp"]);
-    push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
-    let mode = cwd_mode(s, home, layout);
+    // #53: a `$HOME` that is not the account's real home leaves the real one visible. Hide it
+    // like `$HOME` (an empty tmpfs; the cwd and the binds below are mounted on top), so its
+    // credentials are absent, not merely emptied by a mask. Never `/` or the sandbox's `$HOME`.
+    let real_c = real_home
+        .filter(|r| r.is_absolute() && *r != Path::new("/") && *r != home && **r != *home_c)
+        .map(canon)
+        .filter(|r| r != &home_c && r.parent().is_some() && std::fs::metadata(r).is_ok_and(|m| m.is_dir()));
+    // #188: parent first. A later tmpfs over an ancestor hides an earlier one below it, and
+    // the final `--remount-ro` of the hidden child then fails; so the outer home goes first.
+    let home_first = real_c.as_ref().is_none_or(|r| !home_c.starts_with(r));
+    if home_first {
+        push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
+    }
+    if let Some(r) = &real_c {
+        push(&mut a, &["--tmpfs", &r.to_string_lossy()]);
+    }
+    if !home_first {
+        push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
+    }
+    let mode = effective_mode(s, home, layout, real_home);
     let writable = mode == CwdMode::Writable;
     let bind = if writable { "--bind" } else { "--ro-bind" };
     push(&mut a, &[bind, &cwd, &cwd]);
@@ -99,6 +127,64 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
     for (p, rw) in &binds {
         let p = p.to_string_lossy();
         push(&mut a, &[if *rw { "--bind" } else { "--ro-bind" }, &p, &p]);
+    }
+    // #52: with network, `gh` may read its benign config (read-only, only the sandbox's own
+    // `$HOME`; offline it stays masked like the rest of the deny-list). The token store
+    // `hosts.yml` is never mounted (empty over it): the one token comes in as `GH_TOKEN`, so
+    // the sandbox never sees the other hosts' tokens. The directory is bound by its canonical
+    // path, and refused when it resolves into (or over) anything on the deny-list of either
+    // home, or when `hosts.yml` is a symlink.
+    let gh = home_c.join(GH_CONFIG);
+    let gh_src = canon(&gh);
+    let gh_empty = if s.net { private_empty_file() } else { None };
+    let mut gh_masks: Vec<PathBuf> = Vec::new();
+    let gh_open = gh_empty.is_some()
+        && s.net
+        && std::fs::metadata(&gh).is_ok_and(|m| m.is_dir())
+        && gh_source_is_safe(&gh_src, &[home, &home_c], real_home, real_c.as_deref(), layout)
+        && !std::fs::symlink_metadata(gh_src.join(GH_HOSTS)).is_ok_and(|m| m.file_type().is_symlink());
+    if gh_open {
+        push(
+            &mut a,
+            &["--ro-bind", &gh_src.to_string_lossy(), &gh.to_string_lossy()],
+        );
+        // An empty, readable regular file (gh fails on `/dev/null` here: permission denied).
+        if let (true, Some(_)) = (gh_src.join(GH_HOSTS).exists(), &gh_empty) {
+            // The empty-file masks are emitted late (after every bind that could cover them,
+            // the git and `.git` binds included), see `gh_masks` below.
+            gh_masks.push(gh.join(GH_HOSTS));
+            // The same token store at every other visible path of the source (a symlinked
+            // config dir inside the cwd, a home workspace entry, another bind, or a place the
+            // read-only root shows): the empty file goes over each, after the bind showing it.
+            let mut aliases: Vec<PathBuf> = Vec::new();
+            if gh_src != gh {
+                let hidden_home = |p: &Path| {
+                    p.starts_with(home)
+                        || p.starts_with(&home_c)
+                        || real_c.as_ref().is_some_and(|r| p.starts_with(r))
+                };
+                // A source under the hidden home is still shown through the cwd bind (an
+                // ordinary project directory inside `$HOME`): mask it there as well.
+                if !hidden_home(&gh_src) || gh_src.starts_with(&cwd_c) || gh_src.starts_with(cwd_path) {
+                    aliases.push(gh_src.clone());
+                }
+                let via = home_entries
+                    .iter()
+                    .map(|p| (p.clone(), canon(p)))
+                    .chain(binds.iter().map(|(b, _)| (b.to_path_buf(), canon(b))));
+                for (dest, src) in via {
+                    if let Ok(rest) = gh_src.strip_prefix(&src) {
+                        aliases.push(dest.join(rest));
+                    }
+                }
+                aliases.sort();
+                aliases.dedup();
+                aliases.retain(|p| *p != gh);
+            }
+            for al in aliases {
+                gh_masks.push(al.join(GH_HOSTS));
+            }
+        }
     }
     // sbx-git: the git data of a worktree or shared clone outside the cwd (resolved once when
     // the session's sandbox is built). Read-only when the command may not write; alternates and
@@ -192,13 +278,22 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
             }
         }
     }
+    // #60: the gh token-store masks, after every bind that could cover them (the git data and the
+    // cwd's `.git` above included), like the deny-list below.
+    if let Some(e) = &gh_empty {
+        for m in &gh_masks {
+            push(&mut a, &["--ro-bind", &e.to_string_lossy(), &m.to_string_lossy()]);
+        }
+    }
     // B3: the deny-list, after every bind so no bind re-exposes it. sbx-symhome: each entry is
     // masked where it is shown: at its own path (as before), at its canonical path when that
     // lies outside the hidden home, and inside every mount whose canonical source holds it
     // (the cwd, the home workspace's entries, the layout's binds at their own destinations,
     // the git data), so a symlink in the way never leaves a second, unmasked route.
     let shown = |p: &Path| {
-        (!p.starts_with(home) && !p.starts_with(&home_c))
+        (!p.starts_with(home)
+            && !p.starts_with(&home_c)
+            && !real_c.as_ref().is_some_and(|r| p.starts_with(r)))
             || p.starts_with(cwd_path)
             || binds.iter().any(|(b, _)| p.starts_with(b))
             || layout.git.paths().any(|b| p.starts_with(b))
@@ -208,7 +303,20 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
     mounts.extend(binds.iter().map(|(b, _)| (b.to_path_buf(), canon(b))));
     mounts.extend(layout.git.paths().map(|b| (b.to_path_buf(), canon(b))));
     let mut masks: Vec<(PathBuf, bool)> = Vec::new();
-    for p in sensitive_paths(home, layout.agent_dir.as_deref()) {
+    // #53: the deny-list of `$HOME` and of the account's real home, so a changed `$HOME`
+    // never widens access.
+    let mut homes: Vec<&Path> = vec![home];
+    homes.extend(real_home.filter(|r| *r != home));
+    let mut deny: Vec<PathBuf> = homes
+        .iter()
+        .flat_map(|h| sensitive_paths(h, layout.agent_dir.as_deref()))
+        .collect();
+    deny.sort();
+    deny.dedup();
+    for p in deny {
+        if gh_open && (p == home.join(GH_CONFIG) || p == gh) {
+            continue;
+        }
         let Ok(meta) = std::fs::metadata(&p) else {
             continue;
         };
@@ -219,7 +327,10 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
         let Ok(pc) = std::fs::canonicalize(&p) else {
             continue;
         };
-        if !pc.starts_with(&home_c) && !pc.starts_with(home) {
+        if !pc.starts_with(&home_c)
+            && !pc.starts_with(home)
+            && !real_c.as_ref().is_some_and(|r| pc.starts_with(r))
+        {
             masks.push((pc.clone(), dir));
         }
         for (dest, src) in &mounts {
@@ -244,6 +355,18 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
             push(&mut a, &["--ro-bind", "/dev/null", &ps]);
         }
     }
+    // Mount points below the hidden home must be created before sealing its root.
+    // Child workspace/cache binds remain writable; unbound home writes now fail with EROFS.
+    // A cwd that is a strict ancestor of home (`/`, `/home`) is bound read-only above and covers
+    // the home tmpfs: home is then no mount of its own (bwrap's remount fails with EINVAL) and
+    // is read-only already. Nothing is bound over home here: a late bind of the host home would
+    // cover the masks above and expose the credentials.
+    // #188: the account home tmpfs is sealed too (a write to it fails), unless the cwd covers it.
+    for h in std::iter::once(&home_c).chain(real_c.as_ref()) {
+        if cwd_path.starts_with(h) || !h.starts_with(cwd_path) {
+            push(&mut a, &["--remount-ro", &h.to_string_lossy()]);
+        }
+    }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
     push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
     push(&mut a, &["--setenv", "HOME", &home_s]);
@@ -260,6 +383,104 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
     a
 }
 
+/// The home of the current uid from the passwd database, never from `$HOME`.
+pub fn account_home() -> Option<PathBuf> {
+    real_home()
+}
+
+/// `argv` without the `--tmpfs <account home>` and `--remount-ro <account home>` pairs that hides the real home (for goldens that
+/// pin a fake `$HOME` and must not depend on the machine they run on).
+pub fn without_account_home(mut argv: Vec<String>) -> Vec<String> {
+    if let Some(r) = real_home().map(|r| canon(&r).to_string_lossy().into_owned()) {
+        if let Some(i) = argv.windows(2).position(|w| w[0] == "--tmpfs" && w[1] == r) {
+            argv.drain(i..i + 2);
+        }
+        if let Some(i) = argv.windows(2).position(|w| w[0] == "--remount-ro" && w[1] == r) {
+            argv.drain(i..i + 2);
+        }
+    }
+    argv
+}
+
+/// The home of the current uid from the passwd database, never from `$HOME`.
+fn real_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0u8; 16384];
+    // SAFETY: getpwuid_r writes only into `pwd` and `buf`, both live and sized as passed.
+    unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut res: *mut libc::passwd = std::ptr::null_mut();
+        let rc = libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            &mut res,
+        );
+        if rc != 0 || res.is_null() || pwd.pw_dir.is_null() {
+            return None;
+        }
+        let dir = std::ffi::CStr::from_ptr(pwd.pw_dir).to_bytes();
+        (!dir.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(dir)))
+    }
+}
+
+/// The GitHub CLI's config directory under the home, open (read-only) in a networked sandbox.
+const GH_CONFIG: &str = ".config/gh";
+/// An empty regular file (mode 0444) in a private directory of ours (`$XDG_RUNTIME_DIR` or the
+/// temp dir, `oxa-empty-<uid>`, mode 0700), created on first use. `None` when the directory or
+/// file is not exactly that (not ours, a symlink, not empty): fail closed.
+fn private_empty_file() -> Option<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join(format!("oxa-empty-{uid}"));
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+    let dm = std::fs::symlink_metadata(&dir).ok()?;
+    if !dm.is_dir() || dm.uid() != uid || dm.permissions().mode() & 0o077 != 0 {
+        return None;
+    }
+    let f = dir.join("empty");
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o444)
+        .open(&f);
+    let fm = std::fs::symlink_metadata(&f).ok()?;
+    (fm.is_file() && fm.uid() == uid && fm.len() == 0 && fm.permissions().mode() & 0o222 == 0).then_some(f)
+}
+
+/// The file in it that holds the tokens of every host.
+const GH_HOSTS: &str = "hosts.yml";
+
+/// `src` (the canonical gh config directory) is not on, inside or above any deny-list entry of
+/// the sandbox's home(s) and the account's real home (the sandbox home's own `gh` entry apart).
+fn gh_source_is_safe(
+    src: &Path,
+    own_homes: &[&Path],
+    real_home: Option<&Path>,
+    real_c: Option<&Path>,
+    layout: &Layout,
+) -> bool {
+    let mut homes: Vec<&Path> = own_homes.to_vec();
+    homes.extend(real_home);
+    homes.extend(real_c);
+    homes.iter().all(|h| {
+        let own = own_homes.contains(h);
+        sensitive_paths(h, layout.agent_dir.as_deref()).iter().all(|d| {
+            if own && *d == h.join(GH_CONFIG) {
+                return true;
+            }
+            let dc = canon(d);
+            !(src.starts_with(d) || src.starts_with(&dc) || d.starts_with(src) || dc.starts_with(src))
+        })
+    })
+}
+
 /// `p` canonical, or `p` itself when it cannot be resolved (the argv stays deterministic; the
 /// sandbox refuses to run a command then, [`refusal`]).
 fn canon(p: &Path) -> PathBuf {
@@ -269,6 +490,11 @@ fn canon(p: &Path) -> PathBuf {
 /// A real file or directory (not a symlink: binding over one would follow it).
 fn is_real(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink())
+}
+
+/// The protected entries that are directories (`hooks`, `info`): a tmpfs masks them when missing.
+fn is_dir_entry(p: &Path) -> bool {
+    p.file_name().is_some_and(|n| n == "hooks" || n == "info")
 }
 
 /// sbx-hooks: keep the missing protected git entry `p` missing for the command: an empty
@@ -284,7 +510,7 @@ fn mask_missing(a: &mut Vec<String>, p: &Path) {
         return;
     }
     let ps = p.to_string_lossy();
-    if p.file_name().is_some_and(|n| n == "hooks") {
+    if is_dir_entry(p) {
         push(a, &["--tmpfs", &ps, "--remount-ro", &ps]);
     } else {
         push(a, &["--ro-bind", "/dev/null", &ps]);
@@ -298,9 +524,19 @@ fn mask_missing(a: &mut Vec<String>, p: &Path) {
 /// are ignored (the argv then masks the file with `/dev/null`). The `hooks` directory needs
 /// no such step: its tmpfs mask is readable.
 pub(crate) fn create_missing_git_files(s: &ExecSpec, home: &Path, layout: &Layout) {
+    create_missing_git_files_homes(s, home, layout, real_home().as_deref());
+}
+
+/// [`create_missing_git_files`] with the real account home given explicitly (tests).
+pub(crate) fn create_missing_git_files_homes(
+    s: &ExecSpec,
+    home: &Path,
+    layout: &Layout,
+    real_home: Option<&Path>,
+) {
     let cwd_c = canon(&s.cwd);
     let cwd = cwd_c.as_path();
-    if cwd_mode(s, home, layout) != CwdMode::Writable {
+    if effective_mode(s, home, layout, real_home) != CwdMode::Writable {
         return;
     }
     // sbx-gitsym: nothing is created for git directories that are bound read-only.
@@ -317,7 +553,7 @@ pub(crate) fn create_missing_git_files(s: &ExecSpec, home: &Path, layout: &Layou
         files.extend(protected_entries(&dotgit, &dotgit));
     }
     for p in files {
-        if p.file_name().is_some_and(|n| n == "hooks") || !p.parent().is_some_and(is_real_dir) {
+        if is_dir_entry(&p) || !p.parent().is_some_and(is_real_dir) {
             continue;
         }
         let _ = std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
@@ -341,7 +577,7 @@ cannot be checked; commands are not run",
         }
     }
     let cwd = canon(&s.cwd);
-    let mode = cwd_mode(s, home, layout);
+    let mode = effective_mode(s, home, layout, real_home().as_deref());
     let writable = mode == CwdMode::Writable;
     let dotgit = cwd.join(".git");
     // sbx-hooks/sbx-gitsym: a `.git` that is not a real directory cannot be pinned and
@@ -705,6 +941,27 @@ pub(crate) enum CwdMode {
 /// The [`CwdMode`] of `s`. A home root is `/`, the home directory or a parent of it, also when
 /// the cwd only resolves to one (a symlink). A parent of the home directory or `/` is never a
 /// workspace, whatever the settings.
+/// [`cwd_mode`], but a cwd at or above the account's real home (under another `$HOME`) is the
+/// home root of that account: never writable as a whole (its startup files would be).
+pub(crate) fn effective_mode(
+    s: &ExecSpec,
+    home: &Path,
+    layout: &Layout,
+    real_home: Option<&Path>,
+) -> CwdMode {
+    let home_c = canon(home);
+    let cwd_c = canon(&s.cwd);
+    let at_real_home = real_home
+        .filter(|r| r.is_absolute() && *r != Path::new("/") && *r != home && **r != *home_c)
+        .map(canon)
+        .filter(|r| r != &home_c && r.parent().is_some() && std::fs::metadata(r).is_ok_and(|m| m.is_dir()))
+        .is_some_and(|r| is_home_or_above(&cwd_c, &r) && !is_home_or_above(&cwd_c, &home_c));
+    match cwd_mode(s, home, layout) {
+        CwdMode::Writable | CwdMode::HomeWorkspace if at_real_home => CwdMode::ReadOnly,
+        m => m,
+    }
+}
+
 pub(crate) fn cwd_mode(s: &ExecSpec, home: &Path, layout: &Layout) -> CwdMode {
     if !s.writable {
         return CwdMode::ReadOnly;
@@ -833,6 +1090,310 @@ fn probe(bwrap: &Path) -> Result<(), OxaError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_fake::TestEnv;
+
+    fn spec(cwd: &Path, net: bool) -> ExecSpec {
+        ExecSpec {
+            command: "true".into(),
+            cwd: cwd.to_path_buf(),
+            writable: true,
+            net,
+            timeout_s: None,
+            env: Vec::new(),
+        }
+    }
+
+    /// `--tmpfs P` or `--ro-bind /dev/null P` masks `P`.
+    fn masked(a: &[String], p: &Path) -> bool {
+        let p = p.to_string_lossy();
+        a.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == p)
+            || a.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == p)
+    }
+
+    fn pos(a: &[String], flag: &str, p: &Path) -> Option<usize> {
+        let p = p.to_string_lossy();
+        a.windows(2).position(|w| w[0] == flag && w[1] == p)
+    }
+
+    /// #188: the home tmpfs mounts go parent first, whatever the relation of `$HOME` and the
+    /// account home; every mask comes after every bind and tmpfs.
+    #[test]
+    fn home_tmpfs_mounts_are_parent_first_in_every_relation() {
+        let env = TestEnv::new();
+        let root = env.root().join("rel");
+        let (real_dir, nested_home) = (root.join("acct"), root.join("acct/priv/home"));
+        let work = root.join("acct/priv/work");
+        for d in [
+            &nested_home,
+            &work,
+            &root.join("outside/home"),
+            &root.join("up/acct"),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for (home, real, label) in [
+            (nested_home.clone(), real_dir.clone(), "home below account"),
+            (real_dir.clone(), nested_home.clone(), "account below home"),
+            (root.join("outside/home"), real_dir.clone(), "unrelated"),
+        ] {
+            let sp = spec(&work, true);
+            let a = bwrap_args_homes(&sp, &home, &Layout::default(), Some(&real));
+            let (hc, rc) = (canon(&home), canon(&real));
+            let h = pos(&a, "--tmpfs", &hc).unwrap_or_else(|| panic!("{label}: {a:?}"));
+            let r = pos(&a, "--tmpfs", &rc).unwrap_or_else(|| panic!("{label}: {a:?}"));
+            let (first, second) = if hc.starts_with(&rc) { (r, h) } else { (h, r) };
+            if hc.starts_with(&rc) || rc.starts_with(&hc) {
+                assert!(first < second, "{label}: {a:?}");
+            }
+            let bind = pos(&a, "--bind", &canon(&work)).unwrap();
+            assert!(h < bind && r < bind, "{label}: {a:?}");
+            // The homes stay read-only: each tmpfs is remounted after both are in place.
+            for p in [&hc, &rc] {
+                let ro = pos(&a, "--remount-ro", p).unwrap_or_else(|| panic!("{label}: {a:?}"));
+                assert!(ro > h && ro > r, "{label}: {a:?}");
+            }
+        }
+        // Masks come after all home tmpfs and binds.
+        env.write("rel/acct/priv/home/.ssh/id", "K");
+        env.write("rel/acct/.ssh/id", "K");
+        let a = bwrap_args_homes(
+            &spec(&work, true),
+            &nested_home,
+            &Layout::default(),
+            Some(&real_dir),
+        );
+        let last_mount = a
+            .iter()
+            .rposition(|x| x == "--bind")
+            .unwrap()
+            .max(pos(&a, "--tmpfs", &canon(&real_dir)).unwrap());
+        for m in [nested_home.join(".ssh"), real_dir.join(".ssh")] {
+            if let Some(i) = pos(&a, "--tmpfs", &m) {
+                assert!(i > last_mount, "{m:?}: {a:?}");
+            }
+        }
+    }
+
+    /// #188, real bwrap: `$HOME` below the account home.
+    #[test]
+    fn nested_home_below_the_account_home_runs_and_stays_sealed() {
+        if std::process::Command::new("bwrap")
+            .args(["--ro-bind", "/", "/", "true"])
+            .status()
+            .map_or(true, |s| !s.success())
+        {
+            assert!(std::env::var("OXA_REQUIRE_BWRAP").map_or(true, |v| v != "1"));
+            return;
+        }
+        let env = TestEnv::new();
+        let real = env.root().join("acct188");
+        let home = real.join("priv/home");
+        let work = real.join("priv/work");
+        env.write("acct188/priv/work/ok.txt", "WORKSPACE_OK");
+        env.write("acct188/priv/home/.ssh/id", "PRIVATE_NESTED");
+        env.write("acct188/.netrc", "PRIVATE_REAL");
+        let run = |cmd: &str| {
+            let mut sp = spec(&work, false);
+            sp.command = cmd.into();
+            let mut argv = bwrap_args_homes(&sp, &home, &Layout::default(), Some(&real));
+            argv.retain(|x| x != "--die-with-parent");
+            let o = std::process::Command::new("bwrap").args(&argv).output().unwrap();
+            (
+                o.status.code(),
+                String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).into_owned(),
+            )
+        };
+        let ok = run("cat ok.txt");
+        assert_eq!(ok.0, Some(0), "{}", ok.1);
+        assert!(ok.1.contains("WORKSPACE_OK"), "{}", ok.1);
+        let creds = run(&format!(
+            "cat '{0}/.ssh/id' '{1}/.netrc' 2>&1; true",
+            home.display(),
+            real.display()
+        ));
+        assert!(!creds.1.contains("PRIVATE"), "{}", creds.1);
+        for d in [&home, &real] {
+            let w = run(&format!("touch '{}/x'", d.display()));
+            assert_ne!(w.0, Some(0), "{}: {}", d.display(), w.1);
+        }
+    }
+
+    #[test]
+    fn a_different_home_hides_the_real_home_in_every_mode() {
+        let env = TestEnv::new();
+        let real = env.root().join("realhome");
+        env.write("realhome/.ssh/id", "K");
+        env.write("realhome/.config/local-ai/llm/cloud-secrets.json", "{}");
+        let real_s = real.to_string_lossy().into_owned();
+        for (writable, net) in [(true, true), (true, false), (false, true), (false, false)] {
+            let mut sp = spec(&env.work(), net);
+            sp.writable = writable;
+            let a = bwrap_args_homes(&sp, &env.home(), &Layout::default(), Some(&real));
+            // An empty tmpfs over the real home: `~/.ssh` and the cloud keys are absent
+            // (`test -r` fails), not just emptied by a mask.
+            assert!(a.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == real_s), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn a_cwd_inside_the_real_home_keeps_its_credentials_masked() {
+        let env = TestEnv::new();
+        let real = env.root().join("realhome");
+        env.write("realhome/proj/x", "1");
+        env.write("realhome/proj/.ssh/id", "K");
+        let cwd = real.join("proj");
+        // A credential path that lies inside the cwd mount is masked there.
+        let layout = Layout {
+            agent_dir: Some(cwd.join(".ssh")),
+            ..Layout::default()
+        };
+        let a = bwrap_args_homes(&spec(&cwd, true), &env.home(), &layout, Some(&real));
+        assert!(masked(&a, &cwd.join(".ssh")), "{a:?}");
+        let real_s = real.to_string_lossy().into_owned();
+        let tmpfs = a.iter().position(|x| *x == real_s).expect("real home hidden");
+        let bind = a
+            .iter()
+            .position(|x| *x == cwd.to_string_lossy())
+            .expect("cwd bound");
+        assert!(tmpfs < bind, "{a:?}");
+    }
+
+    #[test]
+    fn gh_config_is_readable_online_and_hidden_offline() {
+        let env = TestEnv::new();
+        let gh = env.home().join(".config/gh");
+        env.write("home/.config/gh/hosts.yml", "x");
+        let on = bwrap_args_homes(&spec(&env.work(), true), &env.home(), &Layout::default(), None);
+        assert!(on.iter().any(|x| x == "--share-net"));
+        assert!(!masked(&on, &gh), "{on:?}");
+        let ghs = gh.to_string_lossy().into_owned();
+        assert!(
+            on.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == ghs && w[2] == ghs),
+            "{on:?}"
+        );
+        let off = bwrap_args_homes(&spec(&env.work(), false), &env.home(), &Layout::default(), None);
+        // Offline the home is an empty tmpfs: gh's directory is not bound in.
+        assert!(!off.contains(&ghs), "{off:?}");
+    }
+
+    #[test]
+    fn a_cwd_at_the_real_home_is_not_writable_under_another_home() {
+        let env = TestEnv::new();
+        let real = env.root().join("realhome");
+        env.write("realhome/.bashrc", "# rc");
+        env.write("realhome/proj/x", "1");
+        let real_c = canon(&real).to_string_lossy().into_owned();
+        let mut sp = spec(&real, false);
+        sp.writable = true;
+        let a = bwrap_args_homes(&sp, &env.home(), &Layout::default(), Some(&real));
+        assert!(
+            !a.windows(3)
+                .any(|w| w[0] == "--bind" && w[1] == real_c && w[2] == real_c),
+            "the real home is bound writable: {a:?}"
+        );
+    }
+
+    #[test]
+    fn no_git_files_are_created_in_a_cwd_at_the_real_home() {
+        let env = TestEnv::new();
+        let real = env.root().join("realhome");
+        env.write("realhome/.git/HEAD", "ref: refs/heads/main\n");
+        let mut sp = spec(&real, false);
+        sp.writable = true;
+        create_missing_git_files_homes(&sp, &env.home(), &Layout::default(), Some(&real));
+        assert!(!real.join(".git/config").exists());
+        // Control: a normal project still gets its empty config.
+        env.write("work/.git/HEAD", "ref: refs/heads/main\n");
+        let mut sp = spec(&env.work(), false);
+        sp.writable = true;
+        create_missing_git_files_homes(&sp, &env.home(), &Layout::default(), Some(&real));
+        assert!(env.work().join(".git/config").exists());
+    }
+
+    fn binds_src(a: &[String], p: &Path) -> bool {
+        let p = p.to_string_lossy();
+        a.windows(3).any(|w| {
+            (w[0] == "--ro-bind" || w[0] == "--bind") && w[1] != "/dev/null" && (w[1] == p || w[2] == p)
+        })
+    }
+
+    #[test]
+    fn a_symlinked_gh_config_to_a_protected_dir_is_not_exposed() {
+        let env = TestEnv::new();
+        env.write("home/.ssh/id_synth", "SYNTH");
+        std::fs::create_dir_all(env.home().join(".config")).unwrap();
+        let gh = env.home().join(".config/gh");
+        std::os::unix::fs::symlink(env.home().join(".ssh"), &gh).unwrap();
+        let on = bwrap_args_homes(&spec(&env.work(), true), &env.home(), &Layout::default(), None);
+        assert!(!binds_src(&on, &gh), "{on:?}");
+        assert!(!binds_src(&on, &env.home().join(".ssh")), "{on:?}");
+        // Also in the real account home (another `$HOME`).
+        let real = env.root().join("realhome");
+        env.write("realhome/.aws/credentials", "SYNTH");
+        std::fs::create_dir_all(real.join(".config")).unwrap();
+        std::os::unix::fs::symlink(real.join(".aws"), real.join(".config/gh")).unwrap();
+        env.write("home/.config/gh2/x", "");
+        let _ = std::fs::remove_file(&gh);
+        std::os::unix::fs::symlink(real.join(".aws"), &gh).unwrap();
+        let on = bwrap_args_homes(
+            &spec(&env.work(), true),
+            &env.home(),
+            &Layout::default(),
+            Some(&real),
+        );
+        assert!(!binds_src(&on, &gh), "{on:?}");
+    }
+
+    #[test]
+    fn gh_token_store_is_masked_but_benign_config_stays_online() {
+        let env = TestEnv::new();
+        env.write("home/.config/gh/hosts.yml", "SYNTH-OTHER-HOST-TOKEN");
+        env.write("home/.config/gh/config.yml", "editor: vi");
+        let gh = env.home().join(".config/gh");
+        let on = bwrap_args_homes(&spec(&env.work(), true), &env.home(), &Layout::default(), None);
+        assert!(binds_src(&on, &gh), "{on:?}");
+        let hy = gh.join("hosts.yml").to_string_lossy().into_owned();
+        assert!(
+            on.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1].ends_with("/empty") && w[2] == hy),
+            "{on:?}"
+        );
+        assert!(!masked(&on, &gh.join("hosts.yml")), "never /dev/null: {on:?}");
+        let ghs = gh.to_string_lossy().into_owned();
+        let bind = on.iter().position(|x| *x == ghs).unwrap();
+        let mask = on
+            .iter()
+            .position(|x| *x == gh.join("hosts.yml").to_string_lossy())
+            .unwrap();
+        assert!(bind < mask, "mask must come after the bind: {on:?}");
+        let off = bwrap_args_homes(&spec(&env.work(), false), &env.home(), &Layout::default(), None);
+        assert!(!binds_src(&off, &gh), "{off:?}");
+    }
+
+    /// #122: starting in the home directory keeps the credential masks.
+    #[test]
+    fn credential_masks_hold_with_cwd_home() {
+        let env = TestEnv::new();
+        env.write("home/.config/gh/hosts.yml", "SYNTH-TOKEN");
+        env.write("home/.ssh/id_test", "SYNTH");
+        let home = env.home();
+        let on = bwrap_args_homes(&spec(&home, true), &home, &Layout::default(), None);
+        let hy = home.join(".config/gh/hosts.yml").to_string_lossy().into_owned();
+        assert!(
+            on.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1].ends_with("/empty") && w[2] == hy),
+            "{on:?}"
+        );
+        let ssh = home.join(".ssh").to_string_lossy().into_owned();
+        assert!(
+            !on.iter()
+                .any(|x| x == &home.join(".ssh/id_test").to_string_lossy()),
+            "{on:?}"
+        );
+        assert!(!on.windows(3).any(|w| w[0] == "--bind" && w[1] == ssh), "{on:?}");
+    }
 
     #[test]
     fn find_on_path_skips_relative_and_empty_entries() {

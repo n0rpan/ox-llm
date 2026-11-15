@@ -1,4 +1,4 @@
-//! P4 (wave H lane `local`): offline, the package manager does not run `git` for a remote
+//! P4 (wave H): offline, the package manager does not run `git` for a remote
 //! repository; the error is the one offline shape. One process, one policy.
 
 use oxa_config::Dirs;

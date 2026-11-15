@@ -143,7 +143,12 @@ impl Engine for ScriptedEngine {
                 hint_clear: true,
                 preserve_thinking: self.preserve_thinking,
                 park_disk_only: false,
+                cache_hints: true,
+                prefill: true,
+                ..oxa_proto::EngineCaps::default()
             },
+            thinking: None,
+            images: None,
         })
     }
 

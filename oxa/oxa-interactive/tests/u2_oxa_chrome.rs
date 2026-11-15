@@ -34,12 +34,12 @@ fn full_status() -> StatusModel {
     }
 }
 
-fn hud(st: &StatusModel, profile: Option<&str>, width: u16, theme: &Theme) -> String {
-    oxa_hud(st, profile, width, theme, Skin::Oxa)
+fn hud(st: &StatusModel, width: u16, theme: &Theme) -> String {
+    oxa_hud(st, width, theme, Skin::Oxa)
 }
 
 fn plain_hud(st: &StatusModel, width: u16) -> String {
-    hud(st, Some("local"), width, &Theme::plain())
+    hud(st, width, &Theme::plain())
 }
 
 fn info() -> HeaderInfo {
@@ -54,7 +54,8 @@ fn info() -> HeaderInfo {
         ],
         engine_url: "http://127.0.0.1:8090".to_string(),
         model: "qwen3-coder-30b".to_string(),
-        profile: Some("local".to_string()),
+        model_remote: false,
+        model_provider: None,
     }
 }
 
@@ -124,7 +125,7 @@ fn hud_is_one_line_that_fits_every_width() {
     let theme = colour();
     let st = full_status();
     for width in 20..=200u16 {
-        let line = hud(&st, Some("local"), width, &theme);
+        let line = hud(&st, width, &theme);
         assert_one_line(&line, width);
         let plain = plain_hud(&st, width);
         assert_one_line(&plain, width);
@@ -134,9 +135,8 @@ fn hud_is_one_line_that_fits_every_width() {
 #[test]
 fn hud_snapshot_at_120_columns() {
     let st = full_status();
-    let line = strip_ansi(&hud(&st, Some("local"), 120, &colour()));
-    // Profile and speed are not shown: the full line is 122 columns wide, so the profile
-    // (1st) goes first; the speed (2nd) is kept because the line then fits in 120.
+    let line = strip_ansi(&hud(&st, 120, &colour()));
+    // The full line fits in 120 columns: no segment is dropped.
     let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ workspace";
     assert_eq!(line, expected);
 }
@@ -156,7 +156,7 @@ fn hud_drop_order_keeps_title_and_state_down_to_40() {
 fn hud_segments_appear_monotonically_as_width_grows() {
     // A segment that shows at some width shows at every wider width (the drop order is fixed).
     let st = full_status();
-    let markers = ["local", "tok/s", "CACHE", "15k/33k", "medium", "workspace"];
+    let markers = ["tok/s", "CACHE", "15k/33k", "medium", "workspace"];
     for marker in markers {
         let mut seen = false;
         for width in 20..=200u16 {
@@ -169,13 +169,12 @@ fn hud_segments_appear_monotonically_as_width_grows() {
 }
 
 #[test]
-fn hud_drops_profile_first_then_speed() {
+fn hud_drops_speed_first() {
     let st = full_status();
     let at_120 = plain_hud(&st, 120);
-    assert!(!at_120.contains("local"), "profile is the first drop: {at_120:?}");
-    assert!(at_120.contains("tok/s"));
+    assert!(at_120.contains("tok/s"), "the full line fits in 120: {at_120:?}");
     let at_100 = plain_hud(&st, 100);
-    assert!(!at_100.contains("tok/s"), "speed is the second drop: {at_100:?}");
+    assert!(!at_100.contains("tok/s"), "speed is the first drop: {at_100:?}");
     assert!(at_100.contains("CACHE 99%") || at_100.contains("CACHE █████ 99%"));
 }
 
@@ -188,7 +187,7 @@ fn hud_context_thresholds() {
             n_ctx: 100,
             ..StatusModel::default()
         };
-        let line = hud(&st, None, 200, &theme);
+        let line = hud(&st, 200, &theme);
         assert!(
             line.contains(&theme.fg(token, &format!("{used}%"))),
             "{used}% should be {token}: {line:?}"
@@ -209,7 +208,7 @@ fn hud_cache_thresholds() {
             last_prompt: Some(100),
             ..StatusModel::default()
         };
-        let line = hud(&st, None, 200, &theme);
+        let line = hud(&st, 200, &theme);
         assert!(
             line.contains(&theme.fg(token, &format!("{cached}%"))),
             "{cached}% should be {token}: {line:?}"
@@ -752,6 +751,17 @@ fn splash_has_logo_and_part_of_suite_at_120() {
 }
 
 #[test]
+fn splash_shows_where_the_model_runs() {
+    let local = strip_ansi(&oxa_splash(&info(), "oxa", true, 120, &colour(), Skin::Oxa).join("\n"));
+    assert!(local.contains("local"), "local location: {local}");
+    let mut remote = info();
+    remote.model_remote = true;
+    remote.model_provider = Some("anthropic");
+    let cloud = strip_ansi(&oxa_splash(&remote, "oxa", true, 120, &colour(), Skin::Oxa).join("\n"));
+    assert!(cloud.contains("cloud · anthropic"), "cloud location: {cloud}");
+}
+
+#[test]
 fn splash_below_44_has_no_frame_and_no_logo() {
     let lines = oxa_splash(&info(), "oxa", true, 40, &colour(), Skin::Oxa);
     let text = strip_ansi(&lines.join("\n"));
@@ -803,7 +813,6 @@ fn footer_has_hud_hints_and_extension_line() {
     };
     let lines = oxa_footer(
         &vm,
-        Some("local"),
         HintContext::Running,
         &keymap(),
         false,
@@ -817,7 +826,6 @@ fn footer_has_hud_hints_and_extension_line() {
         .insert("a".to_string(), "mcp: 2 up".to_string());
     let lines = oxa_footer(
         &vm,
-        Some("local"),
         HintContext::Running,
         &keymap(),
         false,
@@ -837,7 +845,6 @@ fn footer_override_replaces_everything() {
     };
     let lines = oxa_footer(
         &vm,
-        None,
         HintContext::Dialog,
         &keymap(),
         false,
@@ -907,8 +914,8 @@ fn render_all(st: &StatusModel, theme: &Theme, skin: Skin) -> Vec<String> {
         skin,
     ));
     out.extend(oxa_splash(&info(), "oxa", true, 40, theme, skin));
-    out.push(oxa_hud(st, Some("local"), 120, theme, skin));
-    out.push(oxa_hud(st, None, 50, theme, skin));
+    out.push(oxa_hud(st, 120, theme, skin));
+    out.push(oxa_hud(st, 50, theme, skin));
     for ctx in all_contexts() {
         out.push(oxa_hint_bar(ctx, st, &km, true, 120, theme, skin));
     }
@@ -921,7 +928,6 @@ fn render_all(st: &StatusModel, theme: &Theme, skin: Skin) -> Vec<String> {
     }
     out.extend(oxa_footer(
         &vm,
-        Some("local"),
         HintContext::Running,
         &km,
         false,
@@ -967,7 +973,7 @@ fn ascii_skin_is_pure_ascii() {
     };
     let mut lines = render_all(&st, &theme, Skin::OxaAscii);
     for width in [20u16, 60, 120] {
-        lines.push(oxa_hud(&st, Some("local"), width, &theme, Skin::OxaAscii));
+        lines.push(oxa_hud(&st, width, &theme, Skin::OxaAscii));
         lines.push(oxa_hint_bar(
             HintContext::Overlay,
             &st,
@@ -980,7 +986,6 @@ fn ascii_skin_is_pure_ascii() {
     }
     lines.extend(oxa_footer(
         &vm,
-        Some("local"),
         HintContext::Idle {
             has_text: false,
             slash: false,
@@ -1031,18 +1036,19 @@ fn never_panics_on_odd_content_and_fits_every_width() {
         resources: vec![(String::new(), vec![String::new()])],
         engine_url: "\n".to_string(),
         model: String::new(),
-        profile: Some("\t".to_string()),
+        model_remote: false,
+        model_provider: None,
     };
     for width in 1..=300u16 {
         for skin in [Skin::Oxa, Skin::OxaAscii] {
-            let hud_line = oxa_hud(&odd, Some("ロ\n"), width, &theme, skin);
+            let hud_line = oxa_hud(&odd, width, &theme, skin);
             assert_one_line(&hud_line, width);
             let hint = oxa_hint_bar(HintContext::Overlay, &odd, &km, true, width, &theme, skin);
             assert_one_line(&hint, width);
             if let Some(line) = oxa_activity_line(&odd, &km, width, &theme, skin) {
                 assert_one_line(&line, width);
             }
-            for line in oxa_footer(&vm, None, HintContext::Running, &km, false, width, &theme, skin) {
+            for line in oxa_footer(&vm, HintContext::Running, &km, false, width, &theme, skin) {
                 assert_one_line(&line, width);
             }
             for line in oxa_splash(&odd_info, "\n", true, width, &theme, skin) {
@@ -1051,8 +1057,8 @@ fn never_panics_on_odd_content_and_fits_every_width() {
         }
     }
     // n_ctx 0 shows the unknown window; cached above the prompt is capped at 100 %.
-    assert!(strip_ansi(&oxa_hud(&odd, None, 300, &theme, Skin::Oxa)).contains("CTX ?"));
-    assert!(strip_ansi(&oxa_hud(&odd, None, 300, &theme, Skin::Oxa)).contains("100%"));
+    assert!(strip_ansi(&oxa_hud(&odd, 300, &theme, Skin::Oxa)).contains("CTX ?"));
+    assert!(strip_ansi(&oxa_hud(&odd, 300, &theme, Skin::Oxa)).contains("100%"));
     let _ = oxa_title_text(&vm);
 }
 
@@ -1061,7 +1067,7 @@ fn zero_width_neither_panics_nor_overflows() {
     let st = full_status();
     let theme = colour();
     let km = keymap();
-    assert_one_line(&oxa_hud(&st, Some("local"), 0, &theme, Skin::Oxa), 0);
+    assert_one_line(&oxa_hud(&st, 0, &theme, Skin::Oxa), 0);
     assert_one_line(
         &oxa_hint_bar(HintContext::Dialog, &st, &km, false, 0, &theme, Skin::Oxa),
         0,
@@ -1069,4 +1075,40 @@ fn zero_width_neither_panics_nor_overflows() {
     assert!(oxa_splash(&info(), "oxa", true, 0, &theme, Skin::Oxa)
         .iter()
         .all(|l| visible_width(l) == 0));
+}
+
+/// Thinking label in the oxa skin HUD: Claude 5.5 shows the effective effort, others the level.
+#[test]
+fn hud_thinking_label_claude_55_effective_effort() {
+    let hud_for = |model: &str, level| {
+        let st = StatusModel {
+            model: model.to_string(),
+            thinking: Some(level),
+            ..StatusModel::default()
+        };
+        strip_ansi(&plain_hud(&st, 160))
+    };
+    let all = [
+        ThinkingLevel::Off,
+        ThinkingLevel::Minimal,
+        ThinkingLevel::Low,
+        ThinkingLevel::Medium,
+        ThinkingLevel::High,
+        ThinkingLevel::Xhigh,
+        ThinkingLevel::Max,
+    ];
+    for level in all {
+        let want = if level == ThinkingLevel::Off {
+            "adaptive · low"
+        } else {
+            "adaptive · high"
+        };
+        let line = hud_for("anthropic/claude-haiku-5-5", level);
+        assert!(line.contains(want), "5.5 {level:?}: {line}");
+        assert!(!line.contains(" off"), "5.5 never shows off: {line}");
+    }
+    let line = hud_for("qwen-local", ThinkingLevel::High);
+    assert!(line.contains("high") && !line.contains("adaptive"), "{line}");
+    let line = hud_for("qwen-local", ThinkingLevel::Off);
+    assert!(line.contains("off") && !line.contains("adaptive"), "{line}");
 }

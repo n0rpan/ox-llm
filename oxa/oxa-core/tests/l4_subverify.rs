@@ -1,12 +1,12 @@
-//! L4-SUBVERIFY: the verification rules of the frozen prefix. Under profile `local` with the output
-//! diet on, a parent that declares `subagent` gets [`RULE_SUBAGENT_CHECK`] right after
-//! [`RULE_SUBAGENT`], and a subagent child gets [`RULE_CHILD_VERIFY`] after the diet rules. `pi`
-//! and diet-off prefixes get neither. The options are passed directly (no process environment).
+//! L4-SUBVERIFY: the verification rules of the frozen prefix. With the output diet on, a parent
+//! that declares `subagent` gets [`RULE_SUBAGENT_CHECK`] right after [`RULE_SUBAGENT`], and a
+//! subagent child gets [`RULE_CHILD_VERIFY`] after the diet rules. Diet-off prefixes get
+//! neither. The options are passed directly (no process environment).
 
 use oxa_config::{Dirs, Settings};
-use oxa_core::{build_prefix_with, declared_specs, resolve_toolset, PrefixOpts, ToolSelection};
+use oxa_core::{build_prefix_with, resolve_toolset, PrefixOpts, ToolSelection};
 use oxa_fake::TestEnv;
-use oxa_proto::{Exposure, Profile, Source, ToolClass, ToolSpec};
+use oxa_proto::{Exposure, Source, ToolClass, ToolSpec};
 use oxa_resources::{discover, DiscoverOpts};
 
 const RULE_SUBAGENT: &str =
@@ -30,9 +30,9 @@ fn subagent_spec() -> ToolSpec {
     }
 }
 
-/// The system text of a session of `profile` with the diet on or off, as a parent (`child` false)
-/// or a subagent child, with or without a declared `subagent` tool.
-fn system(env: &TestEnv, profile: Profile, diet_output: bool, child: bool, subagent: bool) -> String {
+/// The system text of a session with the diet on or off, as a parent (`child` false) or a
+/// subagent child, with or without a declared `subagent` tool.
+fn system(env: &TestEnv, diet_output: bool, child: bool, subagent: bool) -> String {
     let dirs = Dirs::under(env.root());
     let settings = Settings::load(&dirs, &env.work(), true);
     let opts = DiscoverOpts {
@@ -41,15 +41,11 @@ fn system(env: &TestEnv, profile: Profile, diet_output: bool, child: bool, subag
     };
     let resources = discover(&dirs, &env.work(), &settings, &opts);
     let (active, _) = resolve_toolset(&oxa_tools::builtin_tools(), &ToolSelection::default());
-    let mut specs = declared_specs(active.specs(), profile);
+    let mut specs = active.specs();
     if subagent {
         specs.push(subagent_spec());
     }
-    let prefix_opts = PrefixOpts {
-        profile,
-        diet_output,
-        child,
-    };
+    let prefix_opts = PrefixOpts { diet_output, child };
     build_prefix_with(&env.work(), &resources, &specs, &[], &prefix_opts).system_text()
 }
 
@@ -68,9 +64,9 @@ fn rule_texts_are_the_pinned_wording() {
 }
 
 #[test]
-fn parent_local_with_subagent_gets_the_check_right_after_the_delegation_rule() {
+fn parent_with_subagent_gets_the_check_right_after_the_delegation_rule() {
     let env = TestEnv::new();
-    let s = system(&env, Profile::Local, true, false, true);
+    let s = system(&env, true, false, true);
     let at = line_of(&s, RULE_SUBAGENT).expect("delegation rule present");
     assert_eq!(
         s.lines().nth(at + 1),
@@ -80,18 +76,18 @@ fn parent_local_with_subagent_gets_the_check_right_after_the_delegation_rule() {
 }
 
 #[test]
-fn parent_local_without_subagent_has_no_check() {
+fn parent_without_subagent_has_no_check() {
     let env = TestEnv::new();
-    let s = system(&env, Profile::Local, true, false, false);
+    let s = system(&env, true, false, false);
     assert!(!s.contains(RULE_SUBAGENT_CHECK));
     assert!(!s.contains(RULE_SUBAGENT));
     assert!(!s.contains(RULE_CHILD_VERIFY));
 }
 
 #[test]
-fn child_local_gets_the_verify_rule_after_the_diet_rules() {
+fn child_gets_the_verify_rule_after_the_diet_rules() {
     let env = TestEnv::new();
-    let s = system(&env, Profile::Local, true, true, false);
+    let s = system(&env, true, true, false);
     let at = line_of(&s, RULE_CHILD_VERIFY).expect("child rule present");
     assert_eq!(s.lines().nth(at - 1), Some(DIET_LAST));
     assert!(
@@ -101,37 +97,19 @@ fn child_local_gets_the_verify_rule_after_the_diet_rules() {
 }
 
 #[test]
-fn a_non_child_local_session_has_no_verify_rule() {
+fn a_non_child_session_has_no_verify_rule() {
     let env = TestEnv::new();
-    let s = system(&env, Profile::Local, true, false, false);
+    let s = system(&env, true, false, false);
     assert!(!s.contains(RULE_CHILD_VERIFY));
     assert!(s.contains(DIET_LAST));
 }
 
 #[test]
-fn pi_parent_and_child_have_neither_rule() {
+fn diet_off_has_neither_rule() {
     let env = TestEnv::new();
     for child in [false, true] {
         for subagent in [false, true] {
-            let s = system(&env, Profile::Pi, true, child, subagent);
-            assert!(
-                !s.contains(RULE_CHILD_VERIFY),
-                "pi child={child} subagent={subagent}"
-            );
-            assert!(
-                !s.contains(RULE_SUBAGENT_CHECK),
-                "pi child={child} subagent={subagent}"
-            );
-        }
-    }
-}
-
-#[test]
-fn diet_off_under_local_has_neither_rule() {
-    let env = TestEnv::new();
-    for child in [false, true] {
-        for subagent in [false, true] {
-            let s = system(&env, Profile::Local, false, child, subagent);
+            let s = system(&env, false, child, subagent);
             assert!(
                 !s.contains(RULE_CHILD_VERIFY),
                 "diet off child={child} subagent={subagent}"
@@ -149,10 +127,10 @@ fn the_new_rules_cost_exactly_their_lines() {
     // One "- " + text + "\n" per rule line: a rule costs its length plus three bytes.
     // One env for all three: the `<cwd>` line carries the temp path, whose length varies per env.
     let env = TestEnv::new();
-    let plain = system(&env, Profile::Local, true, false, false);
-    let child = system(&env, Profile::Local, true, true, false);
+    let plain = system(&env, true, false, false);
+    let child = system(&env, true, true, false);
     assert_eq!(child.len() - plain.len(), RULE_CHILD_VERIFY.len() + 3);
-    let sub_only = system(&env, Profile::Local, true, false, true);
+    let sub_only = system(&env, true, false, true);
     assert_eq!(
         sub_only.len() - plain.len(),
         (RULE_SUBAGENT.len() + 3) + (RULE_SUBAGENT_CHECK.len() + 3),

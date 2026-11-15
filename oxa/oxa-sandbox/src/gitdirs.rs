@@ -23,7 +23,8 @@
 //! Anything that fails is dropped: git then fails as it does today, and bash keeps working.
 //!
 //! sbx-hooks: the entries that git runs or reads outside the sandbox later
-//! ([`protected_entries`]: `hooks` and `config` of the common dir, `config.worktree` of the
+//! (issue #103: in a worktree also `info` of the common dir and `hooks` of the worktree's gitdir,
+//! [`worktree_entries`]; [`protected_entries`]: `hooks` and `config` of the common dir, `config.worktree` of the
 //! common dir and of a worktree's gitdir when `extensions.worktreeConfig` may be on) stay as
 //! they are in a writable sandbox, also when they do not exist yet. An existing entry is bound
 //! read-only; a missing `hooks` is masked with an empty read-only tmpfs, and a missing file is
@@ -175,6 +176,9 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
             }
         }
         protect.extend(protected_entries(d, &common));
+        if gitdir != common {
+            protect.extend(worktree_entries(d, &common));
+        }
     }
     rw.sort();
     ro.sort();
@@ -201,6 +205,9 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
 /// the entry itself, so symlink chains, `..` in a target and a symlinked `hooks` directory are
 /// all refused, whatever they point at.
 pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
+    if let Some(why) = symlinked_info(dir) {
+        return Some(why);
+    }
     for name in ["config", "config.worktree"] {
         let p = dir.join(name);
         let m = match fs::symlink_metadata(&p) {
@@ -226,6 +233,24 @@ pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
         Ok(m) if m.file_type().is_symlink() => Some(format!("{} is a symlink", hooks.display())),
         Ok(m) if !m.is_dir() => Some(format!("{} is not a directory", hooks.display())),
         Ok(_) => unsafe_hooks_entry(&hooks),
+    }
+}
+
+/// A common dir whose `info` (`exclude`, `attributes`) is a symlink: [`worktree_entries`] cannot
+/// protect a symlink, so the replaceable link would stay writable. Unsafe (fail closed). A
+/// real `info` must hold only plain files (no symlink, no hard link: an alias into the worktree
+/// would stay writable); a missing `info` is fine; a gitdir that is not a common dir has none.
+fn symlinked_info(dir: &Path) -> Option<String> {
+    if dir.join("commondir").exists() {
+        return None;
+    }
+    let info = dir.join("info");
+    match fs::symlink_metadata(&info) {
+        Ok(m) if m.file_type().is_symlink() => Some(format!("{} is a symlink", info.display())),
+        Ok(m) if m.is_dir() => unsafe_hooks_entry(&info),
+        Ok(_) => None,
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => Some(format!("{} cannot be checked ({e})", info.display())),
     }
 }
 
@@ -295,6 +320,31 @@ pub(crate) fn protected_entries(dir: &Path, common: &Path) -> Vec<PathBuf> {
     names.sort_unstable();
     names
         .into_iter()
+        .map(|n| dir.join(n))
+        .filter(|p| match fs::symlink_metadata(p) {
+            Ok(m) => !m.file_type().is_symlink(),
+            Err(e) => e.kind() == ErrorKind::NotFound,
+        })
+        .collect()
+}
+
+/// Issue #103: what is protected in the git directories of a *worktree*, on top of
+/// [`protected_entries`], existing or missing: `config.worktree` and `info` of the common dir
+/// (`info` holds `exclude` and `attributes`), `hooks` and `config.worktree` of the worktree's
+/// own gitdir (git reads no hooks there, but a command must not plant one). Everything else
+/// in those directories (objects, refs, logs, packed-refs, the worktree's index and HEAD)
+/// stays writable, which is what a commit needs. Symlinks are left out, as above.
+pub(crate) fn worktree_entries(dir: &Path, common: &Path) -> Vec<PathBuf> {
+    if !is_real_dir(dir) {
+        return Vec::new();
+    }
+    let names: &[&str] = if dir == common {
+        &["config.worktree", "info"]
+    } else {
+        &["config.worktree", "hooks"]
+    };
+    names
+        .iter()
         .map(|n| dir.join(n))
         .filter(|p| match fs::symlink_metadata(p) {
             Ok(m) => !m.file_type().is_symlink(),
@@ -1063,6 +1113,9 @@ fn walk_alias(start: &Path, m: &Mounts) -> Result<PathBuf, String> {
 pub(crate) fn alias_refusal(dirs: &[PathBuf], m: &Mounts, home: &Path) -> Option<String> {
     for d in dirs {
         let repo = common_of(d);
+        if let Some(why) = symlinked_info(d) {
+            return Some(why);
+        }
         for name in ["config", "config.worktree"] {
             let p = d.join(name);
             if fs::symlink_metadata(&p).is_err_and(|e| e.kind() == ErrorKind::NotFound) {

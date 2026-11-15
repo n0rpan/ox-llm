@@ -4,7 +4,7 @@
 The stage is computed against the files that are live NOW (the v0.1.3 install: --base is the
 installed v0.1.3 stage, whose installed_sha256 must match the live files). Six guarded keys, bound
 by stage_rollback_guard and installed by tools/install_staged_release.py (both are copied into
-<stage>/tools, with this file and stage_v013_final.py, whose helpers it reuses):
+<stage>/tools, with this file and stage_shared.py, whose helpers it reuses):
 
   unit           local-ai-chat.service  WorkingDirectory/ExecStart -> the v0.2.0 release, and
                                         LOCAL_LLM_IDLE_SECONDS=600 replaced by
@@ -30,7 +30,7 @@ own configuration is never read as a precondition and never changed; a client co
 wrote (the v0.1.2 stage's client config) gets a one-time note in the manifest and at install.
 
 Subcommands: generate, verify, precheck, record-services, install, materialize, rehearse (as in
-stage_v013_final.py; rehearse runs everything in a PRIVATE HOME with a recording fake systemctl).
+stage_shared.py; rehearse runs everything in a PRIVATE HOME with a recording fake systemctl).
 """
 import argparse
 import hashlib
@@ -49,7 +49,7 @@ TOOLS = Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(TOOLS))
 import stage_rollback_guard as guard  # noqa: E402
-import stage_v013_final as v013  # noqa: E402  (shared helpers: capture, unit/Studio rewrite, seal, install)
+import stage_shared as v013  # noqa: E402  (shared helpers: capture, unit/Studio rewrite, seal, install)
 
 RELEASE = '0.2.0'
 LABEL = 'v020-final'
@@ -241,7 +241,7 @@ def migration_notes(home):
 def generate(*, base, out, lab_repo, lab_rev, engine_rev, engine_artifacts, oxa_binary, oxa_source=None,
              oxa_version=RELEASE, home=None, systemctl='systemctl', forbidden_roots=None, system_roots=None,
              expect=None, label=LABEL, oxa_require_elf=True):
-    import stage_controller_release as controller_release
+    import stage_sources as controller_release
     home = Path(home) if home else Path.home()
     base, out = Path(base), Path(out)
     if not out.is_absolute() or out.exists() or out.is_symlink():
@@ -360,7 +360,7 @@ def generate(*, base, out, lab_repo, lab_rev, engine_rev, engine_artifacts, oxa_
         put('engine/oxe', engine['oxe'], 0o700)
         for name, data in sources.items():
             put('runtime-source/' + name, data, 0o700 if name in EXECUTABLE else 0o600)
-        for name in ('install_staged_release.py', 'stage_rollback_guard.py', 'stage_v013_final.py',
+        for name in ('install_staged_release.py', 'stage_rollback_guard.py', 'stage_shared.py',
                      'stage_v020_final.py'):
             put('tools/' + name, (TOOLS / name).read_bytes(), 0o600 if name == 'stage_rollback_guard.py' else 0o700)
         doc = ('One-step v0.1.3 rollback (v0.2.0 ox-llm): restore the exact v0.1.3 unit, runtime, cli, Studio '

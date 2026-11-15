@@ -1,32 +1,23 @@
-# PARITY: oxa vs pi 1.5.2
+# oxa behavior regression suite
 
-W0-FROZEN (architect-owned). Rows are added or reclassified by the architect only; G tasks fill in tests, H tasks fix red rows.
-
-Source of truth for "what pi does": the pi 1.5.2 documentation (`packages/coding-agent/docs/*.md`) and source at commit `47e9d74`. One row per documented behaviour, grouped by doc page.
+This suite checks oxa's supported tools, context handling, sessions and interfaces.
+It is derived from pi; historical row IDs and source comments retain that provenance.
 
 ## Format
 
-| column | meaning |
-|---|---|
-| id | `<PAGE>-<nnn>`, stable; never reused |
-| behaviour | what pi documents (oxa-only rows say so in the note) |
-| V | verdict, see below |
-| note | for A: the invariant (W1-W6, W-guard, sandbox) or decision that forces the adaptation; for O: the reason |
-| test | `oxa-parity/tests/<file>.rs::<id lowercased, - as _>`, or `omission` for an O row with no callable surface |
-
-## Verdicts
-
-- **P** parity: pi's documented behaviour. The test compares against pi's documented output or a fixture recorded from pi 1.5.2 (names mapped `pi`->`oxa`, `.pi`->`.oxa`, `PI_*`->`OXA_*`).
-- **A** adapted for the oxe engine. The test checks the adapted behaviour and names the invariant that forced it.
-- **O** omitted. Where a surface exists (flag, command, API call) the test asserts the clear `unsupported_in_oxa` error or the documented ignore-with-warning; otherwise the omission is recorded here.
-
-## Profiles
-
-The suite runs under both `oxa.profile` values: `OXA_PARITY_PROFILE=pi` (default) and `=local`; every place that starts `oxa` passes it on (`oxa_parity::profile_env`). `local` changes formats and defaults only, never capability; a row that asserts pi-exact text branches on the profile and checks the same capability under `local` (TOOLS-006, TOOLS-007: the flat `edit` schema, several edits as several calls; TOOLS-002: the first page of `read`; TOOLS-014, TOOLS-017: the path-once and over-limit forms of `grep`; CMP-014, CMP-016, EXT-017: a failed summary is replaced by the mechanical record, so `session_compact` fires with `mechanical: true` and `summaryError` instead of `session_compact_failed`).
+Each row has a stable ID, behavior, verdict, invariant note and executable regression test.
+P records inherited behavior; A records behavior adapted for oxa. Both are oxa contracts.
+IDs are never reused. Features outside oxa's scope are not regression requirements.
 
 ## Ship gate
 
-100% of the rows of the KEEP groups green under both profiles (`OXA_PARITY_PROFILE=pi` and `=local`, O-167): every P and A row has a green test, no row is unclassified, every O row is either tested (the clear `unsupported_in_oxa` error or the unknown-setting warning) or recorded as `omission`. pi features that are not part of oxa's scope (O-175: a small local agent tool) are O rows with the reason `pi-specific, not in oxa`. A row may be reclassified only by the architect, with the reason in the note.
+Every supported row must have a passing behavior test under oxa's single set of defaults.
+Run the whole oxa workspace, including the regression suite and required sandbox checks.
+No alternate profile or pi comparison pass is required. MCP, extensions and all hooks,
+RPC, JSON mode, trust, permissions and offline behavior remain supported contracts.
+
+CLI harnesses apply `oxa_parity::note_off_env()` after `TestEnv::envs` to keep golden
+user messages stable. Environment-note behavior has its own cache/history regressions.
 
 ## CLI: Command line
 
@@ -44,7 +35,6 @@ pi page(s): cli.md. Tests: `oxa-parity/tests/cli.rs`.
 | CLI-008 | `--mode json`: JSONL events to stdout, then exit | P |  | `cli.rs::cli_008` |
 | CLI-009 | `--mode rpc`: JSONL commands on stdin until shutdown | P |  | `cli.rs::cli_009` |
 | CLI-010 | `--export <input> [output]`: export to HTML and exit; derived output name | P |  | `cli.rs::cli_010` |
-| CLI-011 | `--provider <name>` | O | one provider type (the engine); a non-engine provider is a clear error (O-134) | `cli.rs::cli_011` |
 | CLI-012 | `--model <pattern>`: exact id, fuzzy match, optional `:<thinking>` suffix | A | resolved over the engine model list (`/v1/models`); `provider/id` accepted only for a configured engine endpoint; a switch is a new epoch (W3) | `cli.rs::cli_012` |
 | CLI-013 | `--api-key <key>` | A | optional bearer key for an engine endpoint; no provider selection | `cli.rs::cli_013` |
 | CLI-014 | `--thinking <level>`: off..max, overrides the model suffix, clamped | A | W6: off = `enable_thinking:false`, any other level = true | `cli.rs::cli_014` |
@@ -66,7 +56,6 @@ pi page(s): cli.md. Tests: `oxa-parity/tests/cli.rs`.
 | CLI-030 | `-nbt`, `--no-builtin-tools` | P |  | `cli.rs::cli_030` |
 | CLI-031 | `-nt`, `--no-tools` | P |  | `cli.rs::cli_031` |
 | CLI-032 | Default enabled tools are `read`, `bash`, `edit`, `write` | A | all 7 built-ins on by default; `subagent` is on too where the model allows it (not on the Rust Flash engine, not below a 32K window; `oxa.subagent.enabled` wins); `defaultTools` restores pi's four | `cli.rs::cli_032` |
-| CLI-033 | Built-in tool `powershell` | O | Linux only | `cli.rs::cli_033` |
 | CLI-034 | Built-in extensions `codemode` and `tool_search` are off by default; MCP turns them on when needed | A | `tool_search` returns matches as text; calls go through the frozen `call_tool` dispatcher (W3) | `cli.rs::cli_034` |
 | CLI-035 | `-e`, `--extension <path>`: file, directory or `builtin:<name>`; repeatable | A | JavaScript in QuickJS; a `.ts` file is always rejected, with a hint to write JavaScript | `cli.rs::cli_035` |
 | CLI-036 | `-ne`, `--no-extensions`: explicit `-e` still loads | P |  | `cli.rs::cli_036` |
@@ -86,12 +75,7 @@ pi page(s): cli.md. Tests: `oxa-parity/tests/cli.rs`.
 | CLI-050 | Mode choice by tty rules (TUI only when stdin and stdout are terminals) | P |  | `cli.rs::cli_050` |
 | CLI-051 | `pi install <source>` / `pi remove <source>` (`uninstall` alias) / `pi list` | A | `oxa install\|remove\|list`; git and local sources; `npm:` is refused (O-175) | `cli.rs::cli_051` |
 | CLI-052 | `pi config`: choose which package resources load | P | `oxa config` | `cli.rs::cli_052` |
-| CLI-053 | `oxa config --import-pi` | A | oxa only: one-time copy of skills/prompts/themes/keybindings/mcp.json from pi dirs; pi dirs are never read implicitly | `cli.rs::cli_053` |
-| CLI-054 | `pi update` (self), `--self`, `self`, `pi`, `--all`, `PI_SELF_UPDATE_COMMAND`, `selfUpdateCommand` | O | no self-update, no version check (no network unless asked) | `cli.rs::cli_054` |
 | CLI-055 | `pi update --extensions` / `pi update <source>` / `--extension <source>` | A | `oxa update` for git + local packages | `cli.rs::cli_055` |
-| CLI-056 | `pi update --models` | O | no model catalogs | `cli.rs::cli_056` |
-| CLI-057 | `pi auth check\|print-api-key\|print-bearer-token` and their options | O | no provider credentials, no OAuth (O-134) | `cli.rs::cli_057` |
-| CLI-058 | `pi login` options `--api-key`, `--no-browser` | O | no provider sign-in | `cli.rs::cli_058` |
 | CLI-059 | `pi mcp add <server> -- <command> [args]` with `--env`, `--cwd` | P | `oxa mcp add` | `cli.rs::cli_059` |
 | CLI-060 | `pi mcp add <server> --url <url>` with `--header`, `--bearer-token-env-var` | P |  | `cli.rs::cli_060` |
 | CLI-061 | `pi mcp remove <server>` keeps stored credentials and unrelated content | P |  | `cli.rs::cli_061` |
@@ -109,13 +93,7 @@ pi page(s): models.md, models-configuration.md, providers.md, llama-cpp.md. Test
 | MOD-002 | `models.json` custom models | A | names engine endpoints (laptop, LAN) with an optional bearer key; other provider types are a clear error | `cli.rs::mod_002` |
 | MOD-003 | Thinking levels off..max with per-model clamping | A | W6: boolean on the wire; `thinkingBudgets` ignored with a warning | `cli.rs::mod_003` |
 | MOD-004 | Model without preserved thinking: thinking defaults to off, status line says why | A | W6 (oxa only) | `cli.rs::mod_004` |
-| MOD-005 | Providers: 20+ cloud providers, API keys, `auth.json` | O | one provider type: the oxe engine (O-134) | omission |
-| MOD-006 | Subscription / OAuth sign-in (`/login`, `/logout`) | O | no accounts | omission |
-| MOD-007 | Custom providers (`registerProvider`, custom-provider.md) | O | O-134 | omission |
-| MOD-008 | Virtual models (virtual-models.md) | O | O-134 | omission |
-| MOD-009 | Classifier and image models (`models.classify`, `models.generateImage`) | O | no such engine endpoints; calls return `unsupported_in_oxa` | omission |
 | MOD-010 | llama.cpp router management (`/llama`) | A | `/engine`: status and model load over `/_local/status` | `cli.rs::mod_010` |
-| MOD-011 | Remote model catalog refresh | O | no network unless asked | omission |
 
 ## SET: Settings
 
@@ -125,11 +103,9 @@ pi page(s): settings.md. Tests: `oxa-parity/tests/keys_settings.rs`.
 |---|---|---|---|---|
 | SET-001 | User + project `settings.json` merge; project overrides user; nested objects merge | P | read once per epoch (W3) | `keys_settings.rs::set_001` |
 | SET-002 | Unknown or invalid keys produce a diagnostic, never a failure | P |  | `keys_settings.rs::set_002` |
-| SET-003 | `defaultProvider` | O | accepted and ignored with a warning (one provider) | `keys_settings.rs::set_003` |
 | SET-004 | `defaultModel` | A | an engine model id | `keys_settings.rs::set_004` |
 | SET-005 | `defaultThinkingLevel` (default `medium`) | A | W6 boolean | `keys_settings.rs::set_005` |
 | SET-006 | `modelThinkingLevels` | A | keyed by engine model id | `keys_settings.rs::set_006` |
-| SET-007 | `thinkingBudgets` | O | ignored with a warning | `keys_settings.rs::set_007` |
 | SET-008 | `enabledModels` | A | patterns over engine models | `keys_settings.rs::set_008` |
 | SET-009 | `hideThinkingBlock` | P |  | `keys_settings.rs::set_009` |
 | SET-010 | `showCacheMissNotices` | A | uses exact `cached_tokens`; cause from `miss_cause` | `keys_settings.rs::set_010` |
@@ -142,9 +118,7 @@ pi page(s): settings.md. Tests: `oxa-parity/tests/keys_settings.rs`.
 | SET-017 | `defaultProjectTrust` `ask\|always\|never`; agent-directory settings only | P |  | `keys_settings.rs::set_017` |
 | SET-018 | `defaultTools`: plain names replace, `+name` adds, `-name` removes | A | default set is the 7 built-ins + `subagent` where O-146 offers it; `+name`/`-name` edit that set (incl. `subagent`); plain names replace it; resolved per epoch | `keys_settings.rs::set_018` |
 | SET-019 | `codemode.mode` `on\|only` | P |  | `keys_settings.rs::set_019` |
-| SET-020 | `codemode.inlineBudget` (3000) | O | not in oxa: the codemode description is one fixed text, so the frozen prefix does not grow or change with the tool catalogue (W3); tools are found with `searchTools()` / `describeTool()`; the key is an unknown setting | `keys_settings.rs::set_020` |
 | SET-021 | `sessionDir` | A | the session store keeps one sub-directory per working directory below every sessions directory (pi stores flat in a custom `sessionDir`) | `keys_settings.rs::set_021` |
-| SET-022 | `sessionShareDestination` | O | `/share` omitted | `keys_settings.rs::set_022` |
 | SET-023 | `compaction.enabled` | P |  | `keys_settings.rs::set_023` |
 | SET-024 | `compaction.reserveTokens` (16384) | A | W5: hard limit = `n_ctx - max_tokens - reserveTokens` | `keys_settings.rs::set_024` |
 | SET-025 | `compaction.keepRecentTokens` | A | default 4000 instead of 20000 [P]: the kept tail is re-prefilled | `keys_settings.rs::set_025` |
@@ -162,31 +136,20 @@ pi page(s): settings.md. Tests: `oxa-parity/tests/keys_settings.rs`.
 | SET-037 | `editorPaddingX` 0..3 | P |  | `keys_settings.rs::set_037` |
 | SET-038 | `outputPad` 0\|1 | P |  | `keys_settings.rs::set_038` |
 | SET-039 | `autocompleteMaxVisible` 3..20 | P |  | `keys_settings.rs::set_039` |
-| SET-040 | `showHardwareCursor` | O | pi-specific, not in oxa (O-175): the terminal's own cursor is always shown at the editor's cursor (works with input methods); the key is an unknown setting | `keys_settings.rs::set_040` |
 | SET-041 | `terminal.showImages`, `terminal.imageWidthCells` | P | inline display only; nothing reaches the wire | `keys_settings.rs::set_041` |
 | SET-042 | `terminal.clearOnShrink` | P |  | `keys_settings.rs::set_042` |
-| SET-043 | `terminal.showTerminalProgress` (OSC 9;4) | O | pi-specific, not in oxa (O-175): no OSC 9;4 progress; the key is an unknown setting | `keys_settings.rs::set_043` |
-| SET-044 | `terminal.hyperlinks`, `terminal.images`, `terminal.trueColor` overrides | O | pi-specific, not in oxa (O-175): terminal capabilities come from detection only; the keys are unknown settings | `keys_settings.rs::set_044` |
-| SET-045 | `images.autoResize` | O | images are never sent; accepted and ignored | `keys_settings.rs::set_045` |
 | SET-046 | `images.blockImages` | A | always effectively true on the wire; the setting only hides the inline display notice | `keys_settings.rs::set_046` |
 | SET-047 | `markdown.codeBlockIndent` | P |  | `keys_settings.rs::set_047` |
 | SET-048 | `markdown.mermaid` `off\|final\|streaming` | A | Mermaid shown as a highlighted code block; setting accepted | `keys_settings.rs::set_048` |
-| SET-049 | `transport` | O | SSE only; other values warn | `keys_settings.rs::set_049` |
 | SET-050 | `httpProxy` | A | applies to MCP HTTP only; the engine connection is direct | `keys_settings.rs::set_050` |
 | SET-051 | `httpIdleTimeoutMs` | A | silence limit of the engine stream; SSE comments count as liveness; no wall-clock limit | `keys_settings.rs::set_051` |
-| SET-052 | `websocketConnectTimeoutMs` | O | no websocket | `keys_settings.rs::set_052` |
 | SET-053 | `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs`, `retry.maxAgentDelayMs` | A | replay only before the first data byte until `Idempotency-Key` exists (H2) | `keys_settings.rs::set_053` |
 | SET-054 | `retry.provider.timeoutMs`, `retry.provider.maxRetries`, `retry.provider.maxRetryDelayMs` | A | same rule; one HTTP layer | `keys_settings.rs::set_054` |
 | SET-055 | `shellPath` | P |  | `keys_settings.rs::set_055` |
 | SET-056 | `shellCommandPrefix` | P | part of the sandboxed command | `keys_settings.rs::set_056` |
-| SET-057 | `npmCommand` | O | pi-specific, not in oxa (O-175): no npm package sources; the key is an unknown setting (warned, ignored) | `keys_settings.rs::set_057` |
-| SET-058 | `selfUpdateCommand` | O | no self-update | `keys_settings.rs::set_058` |
 | SET-059 | `packages`, `extensions`, `skills`, `prompts`, `themes` resource lists | P |  | `keys_settings.rs::set_059` |
 | SET-060 | `enableSkillCommands` | P |  | `keys_settings.rs::set_060` |
 | SET-061 | `hooks: {event: command}` | A | oxa only: exec hooks (JSON on stdin, reply on stdout, run in bwrap) | `keys_settings.rs::set_061` |
-| SET-062 | `collapseChangelog` | O | pi-specific, not in oxa (O-175): no changelog display; the key is an unknown setting | `keys_settings.rs::set_062` |
-| SET-063 | `enableInstallTelemetry`, `enableAnalytics` | O | no telemetry; accepted and ignored | `keys_settings.rs::set_063` |
-| SET-064 | `warnings.anthropicExtraUsage` | O | no cloud providers | `keys_settings.rs::set_064` |
 
 ## KEY: Keybindings
 
@@ -228,16 +191,11 @@ pi page(s): environment-variables.md. Tests: `oxa-parity/tests/cli.rs`.
 | ENV-005 | `PI_CODING_AGENT_SESSION_DIR`; overridden by `--session-dir` | P | `OXA_SESSION_DIR` | `cli.rs::env_005` |
 | ENV-006 | `PI_PACKAGE_DIR` | P | `OXA_PACKAGE_DIR` | `cli.rs::env_006` |
 | ENV-007 | `PI_OFFLINE` | A | accepted as `OXA_OFFLINE`; the same hard switch as `--offline` (truthy: 1, true, yes) | `cli.rs::env_007` |
-| ENV-008 | `PI_SKIP_VERSION_CHECK`, `PI_SELF_UPDATE_COMMAND`, `PI_TELEMETRY` | O | no version check, self-update or telemetry | omission |
 | ENV-009 | `PI_CODEMODE_MAX_WORKERS` (default 2) | P | `OXA_CODEMODE_MAX_WORKERS` | `cli.rs::env_009` |
-| ENV-010 | `PI_CACHE_RETENTION` | O | engine-side cache; no retention knob | omission |
-| ENV-011 | `PI_SHARE_VIEWER_URL`, `PI_RADIUS_GATEWAY` | O | no uploads | omission |
 | ENV-012 | `PI_CLEAR_ON_SHRINK` | P | `OXA_CLEAR_ON_SHRINK`; `PI_HARDWARE_CURSOR` is not in oxa (O-175) | `cli.rs::env_012` |
 | ENV-013 | `PI_CLIPBOARD_OSC52` | P | `OXA_CLIPBOARD_OSC52`; the hyperlink, program-status, image-protocol and true-colour overrides are not in oxa (O-175) | `cli.rs::env_013` |
-| ENV-014 | `PI_TUI_ESC_TIMEOUT` (default 100 ms) | O | pi-specific, not in oxa (O-175): one constant ESC timeout (10 ms), no variable | omission |
 | ENV-015 | `VISUAL`, `EDITOR` external editor fallback | P |  | `cli.rs::env_015` |
 | ENV-016 | `HTTP_PROXY`, `HTTPS_PROXY` | A | MCP HTTP only | `cli.rs::env_016` |
-| ENV-017 | Provider API key variables (`ANTHROPIC_API_KEY`, ...) | O | no cloud providers | omission |
 
 ## TOOLS: Built-in tools
 
@@ -299,8 +257,6 @@ pi page(s): slash-commands.md. Tests: `oxa-parity/tests/slash.rs`.
 | SLASH-002 | `/model [provider/model]` | A | engine models; new epoch | `slash.rs::slash_002` |
 | SLASH-003 | `/thinking [level]` | A | W6 boolean | `slash.rs::slash_003` |
 | SLASH-004 | `/scoped-models` | A | engine models | `slash.rs::slash_004` |
-| SLASH-005 | `/login [provider]` | O | `unsupported_in_oxa` | `slash.rs::slash_005` |
-| SLASH-006 | `/logout` | O | `unsupported_in_oxa` | `slash.rs::slash_006` |
 | SLASH-007 | `/llama` | A | `/engine`: status, load | `slash.rs::slash_007` |
 | SLASH-008 | `/new` | P |  | `slash.rs::slash_008` |
 | SLASH-009 | `/resume` | P |  | `slash.rs::slash_009` |
@@ -310,16 +266,13 @@ pi page(s): slash-commands.md. Tests: `oxa-parity/tests/slash.rs`.
 | SLASH-013 | `/fork` | P |  | `slash.rs::slash_013` |
 | SLASH-014 | `/clone` | P |  | `slash.rs::slash_014` |
 | SLASH-015 | `/compact [instructions]` | A | W5 summary request | `slash.rs::slash_015` |
-| SLASH-016 | `/import <path>` | A | migrates pi v1-v3; cache cold | `slash.rs::slash_016` |
 | SLASH-017 | `/copy` | P |  | `slash.rs::slash_017` |
 | SLASH-018 | `/export [path]` HTML or JSONL | P |  | `slash.rs::slash_018` |
-| SLASH-019 | `/share` | O | no third-party upload from a local-first tool | `slash.rs::slash_019` |
 | SLASH-020 | `/bug [description]` | A | writes a local redacted bundle; no upload | `slash.rs::slash_020` |
 | SLASH-021 | `/trust` | P |  | `slash.rs::slash_021` |
 | SLASH-022 | `/mcp` | P | exposure change to `direct` takes effect at the next epoch | `slash.rs::slash_022` |
 | SLASH-023 | `/reload` | A | unchanged resources = no new epoch; changed = one new `Prefix` entry + cost notice (W3) | `slash.rs::slash_023` |
 | SLASH-024 | `/hotkeys` | P | reflects the keymap | `slash.rs::slash_024` |
-| SLASH-025 | `/changelog` | O | pi-specific, not in oxa (O-175): `/changelog` removed | omission |
 | SLASH-026 | `/quit` | P |  | `slash.rs::slash_026` |
 | SLASH-027 | `/mode [plan\|workspace\|ask]` | A | oxa only | `slash.rs::slash_027` |
 | SLASH-028 | `/skill:name [args]` commands from skills | P |  | `slash.rs::slash_028` |
@@ -339,13 +292,11 @@ pi page(s): sessions.md. Tests: `oxa-parity/tests/sessions.rs`.
 | SES-005 | `/new`, `/resume`, `/name`, `/session` | P |  | `sessions.rs::ses_005` |
 | SES-006 | `/fork` creates a new session file with a `parentSession` header | P |  | `sessions.rs::ses_006` |
 | SES-007 | `/clone` duplicates the session at its position | P |  | `sessions.rs::ses_007` |
-| SES-008 | `/import <path>` preserves id and cwd | A | pi v1-v3 migrated; assistant entries lack exact wire bytes, so the cache is cold | `sessions.rs::ses_008` |
 | SES-009 | `--no-session` keeps nothing on disk | P |  | `sessions.rs::ses_009` |
 | SES-010 | `sessionDir` / env / flag precedence | P |  | `sessions.rs::ses_010` |
 | SES-011 | Labels on entries (`/tree` Shift+L) | P |  | `sessions.rs::ses_011` |
 | SES-012 | Automatic compaction keeps long sessions usable | A | automatic compaction at the context limit, in idle time when possible | `sessions.rs::ses_012` |
 | SES-013 | `/export` and `--export` produce a self-contained HTML file | P | pi's template | `sessions.rs::ses_013` |
-| SES-014 | `/share` uploads a session | O | no uploads | `sessions.rs::ses_014` |
 | SES-015 | `/bug` prepares a report | A | local redacted bundle | `sessions.rs::ses_015` |
 | SES-016 | Torn last line of a session file is dropped on load | A | oxa only | `sessions.rs::ses_016` |
 
@@ -373,7 +324,6 @@ pi page(s): session-format.md, message-types.md. Tests: `oxa-parity/tests/sessio
 | FMT-016 | `BashExecutionMessage` (`command`, `output`, `exitCode`, `cancelled`, `truncated`, `excludeFromContext`) | P |  | `format.rs::fmt_016` |
 | FMT-017 | Tree structure: `id`/`parentId`; the leaf is the last entry; context building walks leaf to root | P | the wire is a pure fold of the active branch (W1) | `format.rs::fmt_017` |
 | FMT-018 | Context building: compaction replaces entries before `firstKeptEntryId` | A | W5 rebase | `format.rs::fmt_018` |
-| FMT-019 | Session versions 1 and 2 are migrated on load | A | through `/import` | `format.rs::fmt_019` |
 | FMT-020 | `ImageContent` blocks in user messages | A | `Part::Image` stored; never serialised to the wire | `format.rs::fmt_020` |
 | FMT-021 | oxa entry types `shown` and `mode_change` | A | oxa only: aborted/failed/cut replies (W2) and mode changes; ignored by pi tooling | `format.rs::fmt_021` |
 
@@ -532,7 +482,6 @@ pi page(s): tui.md, terminal-setup.md, themes.md (display), tmux.md. Tests: `oxa
 | TUI-008 | LaTeX rendering | A | shown as source text | `tui.rs::tui_008` |
 | TUI-009 | Hyperlinks (OSC 8) with detection | A | detection only, no override (O-175) | `tui.rs::tui_009` |
 | TUI-010 | Clipboard: OSC 52, wl-copy/xclip | P |  | `tui.rs::tui_010` |
-| TUI-011 | Terminal progress (OSC 9;4) and program status (OSC 7501) | O | pi-specific, not in oxa (O-175): no terminal progress or program-status reports | omission |
 | TUI-012 | Inline images: kitty and iTerm2 protocols with detection | A | display only; detection only, no override (O-175) | `tui.rs::tui_012` |
 | TUI-013 | Fullscreen mode: alt screen, follow/scroll, scrollbar modes, wheel lines, prompt jump, resize keeps position | P |  | `tui.rs::tui_013` |
 | TUI-014 | Fullscreen: mouse selection, copy-on-select, transcript search next/previous | P |  | `tui.rs::tui_014` |
@@ -545,7 +494,6 @@ pi page(s): tui.md, terminal-setup.md, themes.md (display), tmux.md. Tests: `oxa
 | TUI-021 | Terminal restored after a panic or signal | A | oxa only | `tui.rs::tui_021` |
 | TUI-022 | Wide characters, ANSI-aware wrap and truncate, shrink clear | P |  | `tui.rs::tui_022` |
 | TUI-023 | tmux setup (passthrough) | A | OSC 52 passthrough; extended keys through tmux are not in oxa (O-175) | `tui.rs::tui_023` |
-| TUI-024 | Windows / Termux / macOS terminal notes | O | Linux only | omission |
 | TUI-025 | Custom screens, overlays and custom editor from extensions | A | JS component `render(width)` + `handleInput`; pi-tui class shim | `tui.rs::tui_025` |
 | TUI-026 | Footer / status line shows mode, cache hit, prefill progress and tok/s | A | oxa only | `tui.rs::tui_026` |
 | TUI-027 | Permission prompt Once / Session / Deny; mode cycle; timed dialogs | A | oxa only | `tui.rs::tui_027` |
@@ -575,8 +523,6 @@ pi page(s): configuration.md. Tests: `oxa-parity/tests/resources.rs`.
 | CFG-004 | `AGENTS.override.md` same-directory rule | P |  | `resources.rs::cfg_004` |
 | CFG-005 | `SYSTEM.md` replaces and `APPEND_SYSTEM.md` appends to the system prompt; project over user | P |  | `resources.rs::cfg_005` |
 | CFG-006 | `.agents/skills` is read | P |  | `resources.rs::cfg_006` |
-| CFG-007 | `auth.json` | O | no credentials store | omission |
-| CFG-008 | pi directories are not read implicitly | A | oxa only: `oxa config --import-pi` | `resources.rs::cfg_008` |
 
 ## SKL: Skills
 
@@ -611,14 +557,10 @@ pi page(s): packages.md. Tests: `oxa-parity/tests/resources.rs`.
 |---|---|---|---|---|
 | PKG-001 | `pi install git:<url>` / `https://` git sources with a ref | P |  | `resources.rs::pkg_001` |
 | PKG-002 | Local path sources | P |  | `resources.rs::pkg_002` |
-| PKG-003 | `npm:` sources | O | pi-specific, not in oxa (O-175): no npm package sources; `npm:` is refused with `unsupported_in_oxa`, use a git URL or a local path | `resources.rs::pkg_003` |
 | PKG-004 | `-l`, `--local` project scope vs user scope; identity rules | P |  | `resources.rs::pkg_004` |
 | PKG-005 | Package manifest (`pi` key in package.json) and conventional directories | A | `oxa` key, `pi` key accepted | `resources.rs::pkg_005` |
 | PKG-006 | Resource filters `!x`, `+x`, `-x` per package in settings | P |  | `resources.rs::pkg_006` |
 | PKG-007 | `pi list`, `pi remove`, `pi update <source>` | P |  | `resources.rs::pkg_007` |
-| PKG-008 | Package dependencies on npm modules | O | no Node runtime: a package that needs Node modules is rejected with a clear error | omission |
-| PKG-009 | Package changelog display | O | pi-specific, not in oxa (O-175): no package changelog display | `resources.rs::pkg_009` |
-| PKG-010 | Install telemetry | O | none | omission |
 
 ## SEC: Security and project trust
 
@@ -648,8 +590,6 @@ pi page(s): codemode.md. Tests: `oxa-parity/tests/codemode.rs`.
 | CM-005 | `console.log/info/warn/error/debug` into `<console_output>` | P |  | `codemode.rs::cm_005` |
 | CM-006 | `store(key, value)` / `load(key)` | P |  | `codemode.rs::cm_006` |
 | CM-007 | `ALL_TOOLS`, `searchTools(query, {limit, namespace})` (BM25, default 8), `describeTool`, `describeNamespace` | P |  | `codemode.rs::cm_007` |
-| CM-008 | `image(value)` | O | `unsupported_in_oxa` | `codemode.rs::cm_008` |
-| CM-009 | `models.list/classify/generateImage` | O | `unsupported_in_oxa` | `codemode.rs::cm_009` |
 | CM-010 | Output cap keeps start and end; full text in a temp file | A | W4 `shape` | `codemode.rs::cm_010` |
 | CM-011 | 256 MB VM memory limit; out-of-memory error | P |  | `codemode.rs::cm_011` |
 | CM-012 | Worker cap (default 2, env override); waiters queue | P |  | `codemode.rs::cm_012` |
@@ -687,10 +627,7 @@ pi page(s): mcp.md. Tests: `oxa-parity/tests/mcp.rs`.
 | MCP-020 | Stop: stdin close, SIGTERM, SIGKILL of the process group | P |  | `mcp.rs::mcp_020` |
 | MCP-021 | `--no-mcp` | P |  | `mcp.rs::mcp_021` |
 | MCP-022 | Permissions: MCP tool calls | A | workspace mode asks for MCP write-class tools | `mcp.rs::mcp_022` |
-| MCP-023 | `pi.registerMcpServer` / `unregisterMcpServer` / `getMcpServers`; `mcp_servers_change` | O | pi-specific, not in oxa (O-175): MCP servers come from `mcp.json` / `oxa mcp add` only; the extension calls throw `unsupported_in_oxa` | `mcp.rs::mcp_023` |
-| MCP-024 | Replacing the built-in MCP support by an extension | O | built in (Rust); `-ne -e builtin:mcp` selection kept | `mcp.rs::mcp_024` |
 | MCP-025 | MCP from the SDK | A | Rust API of `oxa-mcp` | `mcp.rs::mcp_025` |
-| MCP-026 | MCP `sampling/createMessage` (a server asks the client's model) | O | O-144: the engine has one inference slot and a server may not take it; the capability is not advertised and the request gets JSON-RPC -32601; the manager never calls the engine | `mcp.rs::mcp_026` |
 
 ## EXT: Extensions
 
@@ -700,7 +637,6 @@ pi page(s): extensions.md, sdk.md. Tests: `oxa-parity/tests/extensions.rs`.
 |---|---|---|---|---|
 | EXT-001 | Extensions are TypeScript modules loaded in process (jiti); `export default function (pi)` | A | JavaScript in embedded QuickJS, same API shape: `export default function (oxa)`; `.ts` type-stripped at load or rejected with a hint | `extensions.rs::ext_001` |
 | EXT-002 | Extension locations: agent dir, project `.pi/extensions`, packages, settings, `-e` | P | `.oxa/extensions` | `extensions.rs::ext_002` |
-| EXT-003 | Available imports (`@earendil-works/pi-*`, Node built-ins, npm dependencies) | O | no Node/npm imports; host functions only | `extensions.rs::ext_003` |
 | EXT-004 | Sync and async factory functions | P |  | `extensions.rs::ext_004` |
 | EXT-005 | A load error isolates one extension | P |  | `extensions.rs::ext_005` |
 | EXT-006 | Handler order and composition rules | P |  | `extensions.rs::ext_006` |
@@ -735,7 +671,6 @@ pi page(s): extensions.md, sdk.md. Tests: `oxa-parity/tests/extensions.rs`.
 | EXT-035 | event `tool_execution_end` | P |  | `extensions.rs::ext_035` |
 | EXT-036 | event `context` | A | result must have the current wire as a byte prefix, else refused unless `rebase: true` (logged as a miss cause) | `extensions.rs::ext_036` |
 | EXT-037 | event `context_with_system` | A | same rule; the system part is read-only | `extensions.rs::ext_037` |
-| EXT-038 | event `before_provider_headers` | O | one engine; headers are the fixed hints | `extensions.rs::ext_038` |
 | EXT-039 | event `before_provider_request` | A | same rule as `context` | `extensions.rs::ext_039` |
 | EXT-040 | event `after_provider_response` | A | observer; `status` is 200 and `headers` is `{}` (the engine client does not hand them up) | `extensions.rs::ext_040` |
 | EXT-041 | event `provider_stream_event` | A | observer; `data` is oxa's engine increment, not a raw provider chunk | `extensions.rs::ext_041` |
@@ -753,7 +688,6 @@ pi page(s): extensions.md, sdk.md. Tests: `oxa-parity/tests/extensions.rs`.
 | EXT-053 | `ctx.mode`, `ctx.hasUI`, `ctx.cwd`, `ctx.isProjectTrusted()` | P | `ctx.permissionMode` added | `extensions.rs::ext_053` |
 | EXT-054 | `ctx.sessionManager` read API (entries, branch, leaf, labels) | P |  | `extensions.rs::ext_054` |
 | EXT-055 | `ctx.modelRegistry` / `ctx.model` / `ctx.thinkingLevel` / `ctx.scopedModels` | A | engine models only | `extensions.rs::ext_055` |
-| EXT-056 | Streaming model calls from extensions | O | no side requests (W1); `unsupported_in_oxa` | `extensions.rs::ext_056` |
 | EXT-057 | `ctx.signal`, `ctx.isIdle()`, `ctx.abort()`, `ctx.hasPendingMessages()`, `ctx.shutdown()` | P |  | `extensions.rs::ext_057` |
 | EXT-058 | `ctx.getContextUsage()` | P | exact counts | `extensions.rs::ext_058` |
 | EXT-059 | `ctx.compact()` | A | W5 | `extensions.rs::ext_059` |
@@ -775,8 +709,6 @@ pi page(s): extensions.md, sdk.md. Tests: `oxa-parity/tests/extensions.rs`.
 | EXT-075 | `pi.setModel(model)` | A | engine models; new epoch | `extensions.rs::ext_075` |
 | EXT-076 | `pi.getThinkingLevel()` / `setThinkingLevel(level)` | P |  | `extensions.rs::ext_076` |
 | EXT-077 | `pi.events` shared event bus | P |  | `extensions.rs::ext_077` |
-| EXT-078 | `pi.registerProvider` / `unregisterProvider` | O | `unsupported_in_oxa` (O-134) | `extensions.rs::ext_078` |
-| EXT-079 | `pi.registerVirtualModel` / `unregisterVirtualModel` | O | `unsupported_in_oxa` | `extensions.rs::ext_079` |
 | EXT-080 | `pi.getSettings()` | P |  | `extensions.rs::ext_080` |
 | EXT-081 | Host `fs` and `fetch` functions | A | oxa only: no ambient authority; behind `Policy` | `extensions.rs::ext_081` |
 | EXT-082 | Custom tools: `renderCall`, `renderResult`, keybinding hints | P |  | `extensions.rs::ext_082` |
@@ -793,7 +725,6 @@ pi page(s): extensions.md, sdk.md. Tests: `oxa-parity/tests/extensions.rs`.
 | EXT-093 | Example ports: plan-mode, permission-gate, custom-compaction, todo, status-line | A | each loads and passes a scripted session. O-144: pi's custom-compaction summarises with a second (cloud) model; the port sends no model request of its own (one model, one slot) and supplies custom instructions to the W5 summary request | `extensions.rs::ext_093` |
 | EXT-094 | Example ports: tools, commands, input-transform, question, git-checkpoint, trigger-compact, protected-paths | P |  | `extensions.rs::ext_094` |
 | EXT-095 | TypeScript SDK (sdk.md) | A | the Rust API of `oxa-core` is the SDK; other languages use RPC | `extensions.rs::ext_095` |
-| EXT-096 | Examples needing providers, Node modules or macOS (custom-provider-*, with-deps, mac-system-theme, ssh, gondolin) | O | out of scope | `extensions.rs::ext_096` |
 
 ## ENG: Engine support (oxa only, O-144)
 
@@ -824,46 +755,44 @@ pi page(s): (one row per page). Tests: `oxa-parity/tests/cli.rs`.
 
 | id | behaviour | V | note (invariant or reason) | test |
 |---|---|---|---|---|
-| OUT-001 | providers.md: cloud provider setup | O | one provider type: the oxe engine (O-134) | omission |
-| OUT-002 | custom-provider.md | O | O-134 | omission |
-| OUT-003 | virtual-models.md | O | O-134 | omission |
-| OUT-004 | models.md / models-configuration.md beyond the rows in MOD | O | catalogs, costs and provider options do not apply | omission |
-| OUT-005 | llama-cpp.md, nvidia-rtx-llama-cpp.md | O | replaced by the engine's own docs and `/engine` | omission |
-| OUT-006 | windows.md | O | Linux aarch64/x86_64 only | omission |
-| OUT-007 | termux.md | O | Linux aarch64/x86_64 only | omission |
-| OUT-008 | containerization.md | O | replaced by the built-in sandbox (see SEC) | omission |
-| OUT-009 | shell-aliases.md | O | `!cmd` runs `bash -c` with the user's environment; no alias loading | omission |
-| OUT-010 | cli-integration.md (wrapping other CLIs with provider credentials) | O | no provider credentials | omission |
 | OUT-011 | quickstart.md, index.md, how-pi-works.md | A | ported as oxa docs (F11); every command line in them runs against the fake | `cli.rs::out_011` |
+
+## Retired import IDs
+
+- `CLI-053`: omitted (removed with pi import); reserved and never reused.
+- `SLASH-016`: omitted (removed with pi import); reserved and never reused.
+- `SES-008`: omitted (removed with pi import); reserved and never reused.
+- `FMT-019`: omitted (removed with pi import); reserved and never reused.
+- `CFG-008`: omitted (removed with pi import); reserved and never reused.
 
 ## Summary
 
-| section | P | A | O | rows |
-|---|---|---|---|---|
-| CLI Command line | 43 | 15 | 6 | 64 |
-| MOD Models, providers, thinking | 0 | 5 | 6 | 11 |
-| SET Settings | 29 | 20 | 15 | 64 |
-| KEY Keybindings | 15 | 5 | 0 | 20 |
-| ENV Environment variables | 9 | 3 | 5 | 17 |
-| TOOLS Built-in tools | 13 | 11 | 0 | 24 |
-| USE Using the terminal UI | 10 | 2 | 0 | 12 |
-| SLASH Slash commands | 16 | 10 | 4 | 30 |
-| SES Sessions | 11 | 4 | 1 | 16 |
-| FMT Session file format | 11 | 10 | 0 | 21 |
-| TREE Tree navigation and branching | 9 | 3 | 0 | 12 |
-| CMP Compaction | 11 | 8 | 0 | 19 |
-| JSON JSON event stream | 25 | 3 | 0 | 28 |
-| RPC RPC mode | 39 | 13 | 0 | 52 |
-| TUI Terminal UI | 15 | 10 | 2 | 27 |
-| THM Themes | 6 | 0 | 0 | 6 |
-| CFG Configuration files | 5 | 2 | 1 | 8 |
-| SKL Skills | 7 | 0 | 0 | 7 |
-| TPL Prompt templates | 4 | 0 | 0 | 4 |
-| PKG Packages | 5 | 1 | 4 | 10 |
-| SEC Security and project trust | 4 | 4 | 0 | 8 |
-| CM Codemode | 11 | 4 | 2 | 17 |
-| MCP MCP servers | 16 | 7 | 3 | 26 |
-| EXT Extensions | 61 | 29 | 6 | 96 |
-| ENG Engine support (oxa only) | 0 | 16 | 0 | 16 |
-| OUT Out-of-scope pages | 0 | 1 | 10 | 11 |
-| **total** | **375** | **186** | **65** | **626** |
+| section | P | A | rows |
+|---|---|---|---|
+| CLI | 43 | 14 | 57 |
+| MOD | 0 | 5 | 5 |
+| SET | 29 | 20 | 49 |
+| KEY | 15 | 5 | 20 |
+| ENV | 9 | 3 | 12 |
+| TOOLS | 13 | 11 | 24 |
+| USE | 10 | 2 | 12 |
+| SLASH | 16 | 9 | 25 |
+| SES | 11 | 3 | 14 |
+| FMT | 11 | 9 | 20 |
+| TREE | 9 | 3 | 12 |
+| CMP | 11 | 8 | 19 |
+| JSON | 25 | 3 | 28 |
+| RPC | 39 | 13 | 52 |
+| TUI | 15 | 10 | 25 |
+| THM | 6 | 0 | 6 |
+| CFG | 5 | 1 | 6 |
+| SKL | 7 | 0 | 7 |
+| TPL | 4 | 0 | 4 |
+| PKG | 5 | 1 | 6 |
+| SEC | 4 | 4 | 8 |
+| CM | 11 | 4 | 15 |
+| MCP | 16 | 7 | 23 |
+| EXT | 61 | 29 | 90 |
+| ENG | 0 | 16 | 16 |
+| OUT | 0 | 1 | 1 |
+| **total** | **375** | **181** | **556** |

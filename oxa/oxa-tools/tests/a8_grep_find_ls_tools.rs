@@ -89,7 +89,7 @@ fn gitignore_respected() {
     assert_eq!(find, ".gitignore\nkept.txt");
 }
 
-/// default limits with pi's notices
+/// default limits: grep counts over the limit; find and ls keep pi's notices
 #[test]
 fn limits_100_1000_500() {
     let env = TestEnv::new();
@@ -101,16 +101,10 @@ fn limits_100_1000_500() {
     let work = env.work();
 
     let grep = call(&GrepTool::new(), &env, &work, json!({"pattern": "hit"}));
-    let lines: Vec<&str> = grep.split('\n').collect();
+    // Over the limit: one notice and one count per file, not the cut list.
     assert_eq!(
-        lines.len(),
-        100 + 2,
-        "100 matches and a blank line plus the notice"
-    );
-    assert_eq!(lines[100], "");
-    assert_eq!(
-        lines[101],
-        "[100 matches limit reached. Use limit=200 for more, or refine pattern]"
+        grep,
+        "150 matches in total, the limit was 100. Narrow the pattern, path or glob, or raise limit, to see the lines.\n\nmany.txt: 150 matches"
     );
 
     // Exactly the limit is not "reached": the notice needs a match beyond it.
@@ -169,7 +163,8 @@ fn limit_below_one_is_one() {
             json!({"pattern": "hit", "limit": limit.clone()}),
         );
         assert_eq!(
-            grep, "a.txt:1: hit one\n\n[1 matches limit reached. Use limit=2 for more, or refine pattern]",
+            grep,
+            "2 matches in total, the limit was 1. Narrow the pattern, path or glob, or raise limit, to see the lines.\n\na.txt: 2 matches",
             "limit {limit}"
         );
     }
@@ -365,7 +360,7 @@ fn long_lines_truncated() {
 
 // ---- further checks beyond the acceptance bullets ----
 
-/// Output is capped at 16 KB by whole lines, with pi's byte notice.
+/// Output is capped at 16 KB by whole lines, with the byte notice.
 #[test]
 fn grep_output_capped_at_16kb() {
     let env = TestEnv::new();
@@ -376,16 +371,15 @@ fn grep_output_capped_at_16kb() {
     env.write("work/wide.txt", &body);
     let work = env.work();
 
+    // Under the match limit, so the 16 KB cap is what cuts the result.
     let grep = call(
         &GrepTool::new(),
         &env,
         &work,
-        json!({"pattern": "hit", "path": "wide.txt"}),
+        json!({"pattern": "hit", "path": "wide.txt", "limit": 1000}),
     );
     assert!(
-        grep.ends_with(
-            "[100 matches limit reached. Use limit=200 for more, or refine pattern. 16.0KB limit reached]"
-        ),
+        grep.ends_with("[16.0KB limit reached]"),
         "{}",
         &grep[grep.len() - 160..]
     );

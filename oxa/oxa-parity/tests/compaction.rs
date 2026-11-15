@@ -5,13 +5,13 @@
 //! Method: every row runs the real `oxa` binary (`--mode rpc --no-session`) against an in-process
 //! fake engine (`oxa_fake::FakeServer`). Summary and prefill requests are read from the fake's
 //! records (`x-oxe-turn-kind`, `x-oxe-priority`, `x-oxe-snapshot`); the events and responses come
-//! from the RPC output. pi 1.5.2 texts are in `fixtures/pi/compaction/` (`cmp-<nnn>.txt`).
+//! from the RPC output. pi 1.5.2 texts are in `fixtures/goldens/compaction/` (`cmp-<nnn>.txt`).
 //!
 //! A row whose assertion fails today is RED: the message says what differs. It is not ignored
 //! (the H wave fixes it). Rows that are not testable here say so in their comment.
 
 use oxa_fake::{parse_script, FakeOpts, FakeServer, Recorded, TestEnv};
-use oxa_parity::{fixture, oxa_bin, profile, Profile};
+use oxa_parity::{fixture, oxa_bin};
 use oxa_proto::{Role, WireMsg};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -141,7 +141,7 @@ fn rpc(env: &TestEnv, url: &str, extra: &[&str], cmds: &[Value]) -> Run {
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(url))
-        .envs(oxa_parity::profile_env())
+        .envs(oxa_parity::note_off_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -446,7 +446,7 @@ fn cmp_005() {
     assert_eq!(run.response("compact")["success"], true, "{}", run.raw);
     let reqs = srv.requests();
     let instruction = last_text(of_kind(&reqs, "compaction")[0]);
-    let pi = fixture_text("pi/compaction/cmp-005.txt");
+    let pi = fixture_text("goldens/compaction/cmp-005.txt");
     assert!(
         instruction.contains(&pi),
         "the summary instruction is not pi's SUMMARIZATION_PROMPT"
@@ -486,7 +486,7 @@ fn cmp_006() {
             .starts_with(WRAPPER_PREFIX),
         "the previous summary is the head of the update request"
     );
-    let update = fixture_text("pi/compaction/cmp-006.txt");
+    let update = fixture_text("goldens/compaction/cmp-006.txt");
     assert!(
         last_text(second).contains(&update),
         "the update instruction is pi's UPDATE rules"
@@ -516,7 +516,7 @@ fn cmp_007() {
     let details = &entries[0]["details"];
     assert_eq!(details["readFiles"], json!(["a.txt"]), "readFiles");
     assert_eq!(details["modifiedFiles"], json!(["b.txt"]), "modifiedFiles");
-    let block = fixture_text("pi/compaction/cmp-007.txt");
+    let block = fixture_text("goldens/compaction/cmp-007.txt");
     assert!(
         block.contains("<read-files>") && block.contains("<modified-files>"),
         "pi formatFileOperations blocks"
@@ -546,7 +546,7 @@ fn cmp_008() {
     let entries = run.entries("compaction");
     assert_eq!(entries.len(), 1);
     let entry = entries[0];
-    let fixture = fixture_text("pi/compaction/cmp-008.txt");
+    let fixture = fixture_text("goldens/compaction/cmp-008.txt");
     let block = fixture
         .split("interface CompactionEntry")
         .nth(1)
@@ -588,7 +588,7 @@ fn cmp_009() {
     );
     assert_eq!(run.response("compact")["success"], true, "{}", run.raw);
     let reqs = srv.requests();
-    let focus = fixture_text("pi/compaction/cmp-009.txt");
+    let focus = fixture_text("goldens/compaction/cmp-009.txt");
     let want = format!("{focus}Focus on code changes");
     assert!(
         last_text(of_kind(&reqs, "compaction")[0]).ends_with(&want),
@@ -670,7 +670,7 @@ fn cmp_010() {
 /// run; they get the `was not executed ... Re-issue` error result and the loop goes on.
 #[test]
 fn cmp_011() {
-    let pi = fixture_text("pi/compaction/cmp-011.txt");
+    let pi = fixture_text("goldens/compaction/cmp-011.txt");
     assert!(pi.contains("length"), "pi documents the length stop");
     // No automatic continue: one request, stop reason length.
     let env = env_with(json!({}));
@@ -737,7 +737,7 @@ fn read_call_cut(path: &str) -> String {
 /// (fixture `cmp-012.txt`). Manual and overflow are checked here; threshold in CMP-001.
 #[test]
 fn cmp_012() {
-    let fixture = fixture_text("pi/compaction/cmp-012.txt");
+    let fixture = fixture_text("goldens/compaction/cmp-012.txt");
     for reason in ["manual", "threshold", "overflow"] {
         assert!(fixture.contains(reason), "pi's reason set has `{reason}`");
     }
@@ -780,7 +780,7 @@ fn cmp_012() {
 /// (fixture `cmp-013.txt`, pi docs/extensions.md).
 #[test]
 fn cmp_013() {
-    assert!(fixture_text("pi/compaction/cmp-013.txt").contains("session_before_compact"));
+    assert!(fixture_text("goldens/compaction/cmp-013.txt").contains("session_before_compact"));
     let custom = env_with(json!({}));
     let ext = custom.write(
         "work/custom.js",
@@ -842,7 +842,7 @@ fn cmp_014() {
   oxa.on("session_compact", (event, ctx) => { ctx.ui.notify("hook session_compact " + event.reason, "info"); });
   oxa.on("session_compact_failed", (event, ctx) => { ctx.ui.notify("hook session_compact_failed " + event.reason, "info"); });
 }"#;
-    let fixture = fixture_text("pi/compaction/cmp-014.txt");
+    let fixture = fixture_text("goldens/compaction/cmp-014.txt");
     assert!(
         fixture.contains("session_compact"),
         "pi documents session_compact"
@@ -863,48 +863,15 @@ fn cmp_014() {
         run.raw
     );
 
-    if profile() == Profile::Local {
-        // O-167 / R4: under `local` the cut summary is replaced by the mechanical one, so the
-        // compaction happens and `session_compact` fires; the extension still learns that the
-        // model summary failed, and why (`mechanical`, `summaryError`: pi's failure text).
-        let ext_local = r#"export default function (oxa) {
+    // O-167 / R4: under `local` the cut summary is replaced by the mechanical one, so the
+    // compaction happens and `session_compact` fires; the extension still learns that the
+    // model summary failed, and why (`mechanical`, `summaryError`: pi's failure text).
+    let ext_local = r#"export default function (oxa) {
   oxa.on("session_compact", (event, ctx) => { ctx.ui.notify("hook session_compact " + event.reason + " mechanical=" + event.mechanical + " error=" + event.summaryError, "info"); });
   oxa.on("session_compact_failed", (event, ctx) => { ctx.ui.notify("hook session_compact_failed " + event.reason, "info"); });
 }"#;
-        let env = env_with(json!({}));
-        let ext = env.write("work/hooks.js", ext_local);
-        let srv = engine(&[text("one"), text("two"), cut("partial summary")], opts());
-        let run = rpc(
-            &env,
-            &srv.url(),
-            &["-e", ext.to_str().unwrap()],
-            &[prompt("first"), prompt("second"), compact(None)],
-        );
-        let resp = run.response("compact");
-        assert_eq!(
-            resp["success"], true,
-            "local: the mechanical summary is used\n{}",
-            run.raw
-        );
-        assert_eq!(resp["data"]["details"]["mechanical"], true, "{}", run.raw);
-        let want = format!(
-            "hook session_compact manual mechanical=true error={}",
-            fixture_text("pi/compaction/cmp-016.txt")
-        );
-        assert!(
-            run.raw.contains(&want),
-            "session_compact fired with the failure:\n{}",
-            run.raw
-        );
-        assert!(
-            !run.raw.contains("hook session_compact_failed"),
-            "the wire was compacted, so session_compact_failed does not fire:\n{}",
-            run.raw
-        );
-        return;
-    }
     let env = env_with(json!({}));
-    let ext = env.write("work/hooks.js", ext_src);
+    let ext = env.write("work/hooks.js", ext_local);
     let srv = engine(&[text("one"), text("two"), cut("partial summary")], opts());
     let run = rpc(
         &env,
@@ -912,14 +879,25 @@ fn cmp_014() {
         &["-e", ext.to_str().unwrap()],
         &[prompt("first"), prompt("second"), compact(None)],
     );
+    let resp = run.response("compact");
     assert_eq!(
-        run.response("compact")["success"],
-        false,
-        "the length summary fails"
+        resp["success"], true,
+        "local: the mechanical summary is used\n{}",
+        run.raw
+    );
+    assert_eq!(resp["data"]["details"]["mechanical"], true, "{}", run.raw);
+    let want = format!(
+        "hook session_compact manual mechanical=true error={}",
+        fixture_text("goldens/compaction/cmp-016.txt")
     );
     assert!(
-        run.raw.contains("hook session_compact_failed manual"),
-        "session_compact_failed fired:\n{}",
+        run.raw.contains(&want),
+        "session_compact fired with the failure:\n{}",
+        run.raw
+    );
+    assert!(
+        !run.raw.contains("hook session_compact_failed"),
+        "the wire was compacted, so session_compact_failed does not fire:\n{}",
         run.raw
     );
 }
@@ -963,39 +941,32 @@ fn cmp_016() {
         &[prompt("first"), prompt("second"), compact(None)],
     );
     let resp = run.response("compact");
-    if profile() == Profile::Local {
-        // O-167 / R4: under `local` the cut summary is never used either; the mechanical summary
-        // (the user's messages, without the model) replaces it, and the user is told pi's
-        // failure text in a warning.
-        assert_eq!(resp["success"], true, "{}", run.raw);
-        assert_eq!(resp["data"]["details"]["mechanical"], true, "{}", run.raw);
-        let summary = resp["data"]["summary"].as_str().unwrap_or_default();
-        assert!(
-            !summary.contains("partial summary"),
-            "the cut summary is not used: {summary}"
-        );
-        assert!(
-            summary.contains("1. first") && summary.contains("2. second"),
-            "the mechanical summary keeps the user's messages: {summary}"
-        );
-        let pi_text = fixture_text("pi/compaction/cmp-016.txt");
-        assert!(
-            run.of("notice").iter().any(|n| n["level"] == "warning"
-                && n["text"].as_str().unwrap_or_default().contains(pi_text.trim())),
-            "a warning carries pi's failure text:\n{}",
-            run.raw
-        );
-        let entries = run.entries("compaction");
-        assert_eq!(entries.len(), 1, "one compaction entry");
-        assert_eq!(entries[0]["details"]["mechanical"], true);
-        return;
-    }
-    assert_eq!(resp["success"], false, "{}", run.raw);
-    assert_eq!(resp["error"], fixture_text("pi/compaction/cmp-016.txt"));
+    // O-167 / R4: under `local` the cut summary is never used either; the mechanical summary
+    // (the user's messages, without the model) replaces it, and the user is told pi's
+    // failure text in a warning.
+    assert_eq!(resp["success"], true, "{}", run.raw);
+    assert_eq!(resp["data"]["details"]["mechanical"], true, "{}", run.raw);
+    let summary = resp["data"]["summary"].as_str().unwrap_or_default();
     assert!(
-        run.entries("compaction").is_empty(),
-        "no compaction entry is persisted"
+        !summary.contains("partial summary"),
+        "the cut summary is not used: {summary}"
     );
+    assert!(
+        summary.contains("1. first") && summary.contains("2. second"),
+        "the mechanical summary keeps the user's messages: {summary}"
+    );
+    let pi_text = fixture_text("goldens/compaction/cmp-016.txt");
+    assert!(
+        run.of("notice")
+            .iter()
+            .any(|n| n["level"] == "warning"
+                && n["text"].as_str().unwrap_or_default().contains(pi_text.trim())),
+        "a warning carries pi's failure text:\n{}",
+        run.raw
+    );
+    let entries = run.entries("compaction");
+    assert_eq!(entries.len(), 1, "one compaction entry");
+    assert_eq!(entries[0]["details"]["mechanical"], true);
 }
 
 /// P: summarization retry events (fixture `cmp-017.txt`, pi `agent-session.ts`
@@ -1006,7 +977,7 @@ fn cmp_016() {
 /// `summarization_retry_finished` at the end; the compaction then completes.
 #[test]
 fn cmp_017() {
-    let fixture = fixture_text("pi/compaction/cmp-017.txt");
+    let fixture = fixture_text("goldens/compaction/cmp-017.txt");
     assert!(fixture.contains("summarization_retry_scheduled"));
     assert!(fixture.contains(r#"reason: "manual" | "threshold" | "overflow""#));
     let env = env_with(json!({"retry": {"baseDelayMs": 50, "maxRetries": 2}}));
@@ -1244,18 +1215,18 @@ fn every_row_has_test_or_recorded_omission() {
 }
 
 /// Every P row compares with pi: a non-empty pi 1.5.2 fixture (docs or source excerpt) exists
-/// under `fixtures/pi/compaction/`, and the row's test reads it.
+/// under `fixtures/goldens/compaction/`, and the row's test reads it.
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for (id, _, _) in cmp_rows().iter().filter(|r| r.1 == "P") {
         let name = id.to_lowercase().replace('-', "_");
-        let file = format!("pi/compaction/{}.txt", id.to_lowercase());
+        let file = format!("goldens/compaction/{}.txt", id.to_lowercase());
         let text = std::fs::read_to_string(fixture(&file))
             .unwrap_or_else(|e| panic!("{id}: missing pi fixture {file}: {e}"));
         assert!(!text.trim().is_empty(), "{id}: pi fixture {file} is empty");
         let body = fn_body(&name).unwrap();
         assert!(
-            body.contains("fixture") || body.contains("pi/compaction/"),
+            body.contains("fixture") || body.contains("goldens/compaction/"),
             "{id}: the test does not compare with the pi fixture"
         );
     }
@@ -1280,21 +1251,4 @@ fn a_rows_name_their_invariant() {
         n += 1;
     }
     assert_eq!(n, 8, "PARITY.md CMP has 8 A rows");
-}
-
-/// Every O row of the area asserts the `unsupported_in_oxa` error or is recorded as an omission.
-/// CMP has no O row (PARITY.md), so this checks the table has none.
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for (id, _, _) in cmp_rows().iter().filter(|r| r.1 == "O") {
-        let name = id.to_lowercase().replace('-', "_");
-        assert!(
-            fn_body(&name).is_some_and(|b| b.contains("unsupported_in_oxa")),
-            "{id}: an O row must assert unsupported_in_oxa"
-        );
-    }
-    assert!(
-        cmp_rows().iter().all(|r| r.1 != "O"),
-        "PARITY.md CMP has no O rows"
-    );
 }

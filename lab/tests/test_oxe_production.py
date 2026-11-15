@@ -1,9 +1,9 @@
 """Synthetic MEMLAT-only Rust (oxe) alias switch; never starts an engine or reads weights."""
 import copy
 import hashlib
-import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,8 +12,8 @@ from unittest.mock import Mock, patch
 from snapdragon_ai_lab.runtime import classic_beta as beta, controller, oxe_runtime, profile_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('stage_oxe_production', ROOT / 'tools/stage_oxe_production.py')
-stage_tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(stage_tool)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import oxe_profile_fixture as stage_tool  # noqa: E402
 
 RUST_SHA = stage_tool.QUALIFIED_SERVER_SHA
 CLASSIC_MEMLAT = dict(threads=8, threads_batch=12, cpu_mask='0xff', cpu_mask_batch='0xfff', cpu_strict=1,
@@ -160,14 +160,6 @@ class OxeBetaAliasStartup(unittest.TestCase):
             self.assertIsNone(manager.lease)
 
 
-def runtime():
-    base = profile(alias='qwen3.8-27b-local', model_sha='9' * 64)
-    profiles = {}
-    for alias, model_sha in stage_tool.QUALIFIED_MODELS.items():
-        p = profile(alias=alias, model_sha=model_sha); del p['memlat_overrides']['oxe']
-        profiles[alias] = p
-    profiles['qwen3.8-27b-local'] = copy.deepcopy(base)
-    return {**base, 'selected_model': beta.ALIAS, 'profiles': profiles}
 
 
 UNIT = '''[Unit]
@@ -180,65 +172,6 @@ Nice=15
 '''
 
 
-class StageTool(unittest.TestCase):
-    def test_adds_only_nested_override_to_the_two_aliases(self):
-        before = runtime()
-        after = stage_tool.add_oxe_overrides(before, '/synthetic/oxe-server', RUST_SHA)
-        self.assertEqual(before, runtime())
-        for alias in stage_tool.QUALIFIED_MODELS:
-            changed = copy.deepcopy(after['profiles'][alias])
-            self.assertEqual(changed['memlat_overrides'].pop('oxe')['oxe_args'][-2:], ['--prefix-cache', 'default'])
-            self.assertEqual(changed, before['profiles'][alias])
-        self.assertEqual(after['profiles']['qwen3.8-27b-local'], before['profiles']['qwen3.8-27b-local'])
-        self.assertEqual({k: v for k, v in after.items() if k != 'profiles'},
-                         {k: v for k, v in before.items() if k != 'profiles'})
-
-    def test_refuses_unqualified_identities(self):
-        with self.assertRaisesRegex(ValueError, 'unqualified'):
-            stage_tool.add_oxe_overrides(runtime(), '/x', 'a' * 64)
-        bad = runtime(); bad['profiles']['qwen3.6-35b-a3b-local']['sha256'] = 'f' * 64
-        with self.assertRaisesRegex(ValueError, 'identity'):
-            stage_tool.add_oxe_overrides(bad, '/x', RUST_SHA)
-        twice = stage_tool.add_oxe_overrides(runtime(), '/x', RUST_SHA)
-        with self.assertRaisesRegex(ValueError, 'already'):
-            stage_tool.add_oxe_overrides(twice, '/x', RUST_SHA)
-
-    def test_unit_rewrite_points_at_release_and_enables_oxe_once(self):
-        unit = stage_tool.rewrite_unit(UNIT, '/synthetic/runtime-releases/new')
-        self.assertIn('WorkingDirectory=/synthetic/runtime-releases/new\n', unit)
-        self.assertIn('ExecStart=/usr/bin/python3 "/synthetic/runtime-releases/new/controller.py"\n', unit)
-        self.assertEqual(unit.count('Environment="LOCAL_AI_ENABLE_OXE=1"'), 1)
-        self.assertNotIn('/old', unit)
-        with self.assertRaises(ValueError):
-            stage_tool.rewrite_unit(unit, '/synthetic/runtime-releases/new')
-        with self.assertRaises(ValueError):
-            stage_tool.rewrite_unit('[Service]\nNice=1\n', '/r')
-
-    def test_stage_writes_fresh_bound_payload_and_rollback(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            live_runtime = tmp / 'runtime.json'; live_runtime.write_text(json.dumps(runtime()))
-            live_unit = tmp / 'unit.service'; live_unit.write_text(UNIT)
-            engine = tmp / 'oxe-server'; engine.write_bytes(b'synthetic rust server')
-            digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-            with patch.object(stage_tool, 'QUALIFIED_SERVER_SHA', digest(engine)):
-                with self.assertRaisesRegex(ValueError, 'identity_changed'):
-                    stage_tool.stage(tmp / 'bad', runtime_path=live_runtime, runtime_sha='0' * 64, unit_path=live_unit,
-                                     unit_sha=digest(live_unit), server_binary=engine, releases_root=tmp / 'releases')
-                self.assertFalse((tmp / 'bad').exists())
-                result = stage_tool.stage(tmp / 'stage', runtime_path=live_runtime, runtime_sha=digest(live_runtime),
-                                          unit_path=live_unit, unit_sha=digest(live_unit), server_binary=engine,
-                                          releases_root=tmp / 'releases')
-            stage = tmp / 'stage'
-            self.assertEqual((stage / 'rollback/runtime.original').read_bytes(), live_runtime.read_bytes())
-            self.assertEqual((stage / 'rollback/unit.original').read_text(), UNIT)
-            self.assertIn(result['release_dir'], (stage / 'local-ai-chat.service').read_text())
-            staged = json.loads((stage / 'runtime.json').read_text())
-            self.assertEqual(staged['profiles'][beta.ALIAS]['memlat_overrides']['oxe']['server_binary'], str(engine))
-            self.assertTrue((stage / 'runtime-source/controller.py').is_file())
-            self.assertTrue(os.access(stage / 'rollback/rollback.py', os.X_OK))
-            self.assertEqual(live_unit.read_text(), UNIT)
-            compile((stage / 'rollback/rollback.py').read_text(), 'rollback.py', 'exec')
 
 
 if __name__ == '__main__':

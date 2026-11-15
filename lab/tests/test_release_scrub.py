@@ -92,7 +92,8 @@ class TrackedTree(unittest.TestCase):
         if os.environ.get("CI"):
             # A CI runner's own user/host names ("runner", ...) are ordinary words, not this lab's machine.
             deny = {}
-        hits = [h for h in er.scan_paths([str(p) for p in self.files if p.is_file()], deny, exact)
+        contexts = er.load_allow_contexts(ROOT / "tools" / "tree-scan.allow")
+        hits = [h for h in er.scan_paths([str(p) for p in self.files if p.is_file()], deny, exact, contexts, str(ROOT))
                 if h[1] not in er.TREE_PROFILE_SKIPS]
         left, unused = er.apply_allow(hits, entries, str(ROOT))
         summary = sorted({(Path(p).relative_to(ROOT).as_posix(), rule) for p, rule, _ in left})

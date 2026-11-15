@@ -34,6 +34,8 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 
 - **Install:** [lab/README.md](lab/README.md#quick-start) covers the engine tarball, its verification
   and the controller. Bootstrap: [lab/docs/BOOTSTRAP-INSTALL.md](lab/docs/BOOTSTRAP-INSTALL.md).
+- **Cloud only, no local engine:** [lab/docs/CLOUD-ONLY-QUICKSTART.md](lab/docs/CLOUD-ONLY-QUICKSTART.md)
+  (any Linux, x86_64 or arm64; cloud models through oxc, plus oxa).
 - **Code:** run `oxc code` in a project directory, or press the code button in the widget. Both
   start oxa against the controller.
 - **Other clients:** any OpenAI-compatible client can use `http://127.0.0.1:8092/v1`. See
@@ -66,7 +68,6 @@ Earlier releases launched OpenCode. ox-llm v0.2.0 removes that launcher: the cod
   Remove those entries yourself if you no longer use OpenCode with ox-llm.
 - **To keep using OpenCode** (or pi, or another client) against ox-llm, point it at the controller
   yourself: [lab/docs/OTHER-CLIENTS.md](lab/docs/OTHER-CLIENTS.md).
-- **Coming from pi:** `oxa config --import-pi` imports your pi settings.
 
 ## Flash: the expert sidecar on an unencrypted partition
 

@@ -1,4 +1,4 @@
-//! R2 (wave H lane `local`, FIT F4): the engine reloads the model mid-session, against the
+//! R2 (wave H, FIT F4): the engine reloads the model mid-session, against the
 //! HTTP fake. The unload between turns is the fake's `restart` (the engine forgets every
 //! session's state) with `/props` switching from "no model loaded" to loaded; the visible
 //! load is a 503 `model loading` before the first byte.
@@ -41,6 +41,7 @@ fn open(env: &TestEnv, server: &FakeServer) -> Session {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

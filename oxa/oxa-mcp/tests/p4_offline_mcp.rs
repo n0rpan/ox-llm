@@ -1,4 +1,4 @@
-//! P4 (wave H lane `local`): offline, the MCP HTTP transport and the OAuth requests reach no
+//! P4 (wave H): offline, the MCP HTTP transport and the OAuth requests reach no
 //! host that is not loopback; the error is the one offline shape. One process, one policy.
 
 use oxa_mcp::{discover, HttpConfig, HttpTransport, OAuthSettings, Transport};

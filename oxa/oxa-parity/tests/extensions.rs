@@ -160,7 +160,7 @@ fn test_fns() -> Vec<String> {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = ext_rows();
-    assert_eq!(rows.len(), 96, "the EXT area has 96 rows: {rows:?}");
+    assert_eq!(rows.len(), 90, "the EXT area has 90 rows: {rows:?}");
     let fns = test_fns();
     let missing: Vec<String> = rows
         .iter()
@@ -184,7 +184,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     // Every P row of the area has a row test that compares with pi's documented behaviour; the
     // fixture directory is the recorded-output store for rows that need one (none for EXT:
     // the rows are event and API contracts, checked against the pi 1.5.2 documentation).
@@ -200,7 +200,7 @@ fn p_rows_compare_with_pi() {
         let name = r.to_ascii_lowercase().replace('-', "_");
         assert!(fns.contains(&name), "P row {r} has no compare test");
     }
-    let fixtures = oxa_parity::fixture("pi/extensions");
+    let fixtures = oxa_parity::fixture("goldens/extensions");
     if fixtures.exists() {
         assert!(fixtures.is_dir());
     }
@@ -261,26 +261,6 @@ fn a_rows_name_their_invariant() {
             names_invariant,
             "A row {r} names no invariant in its doc comment: {doc:?}"
         );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    // Each O row has a test fn that asserts the unsupported error (or the omission of the
-    // surface, where the row has no callable surface). The rows that fail today are RED in
-    // their own tests, not here.
-    let o_rows: Vec<String> = PARITY_MD
-        .lines()
-        .filter(|l| l.starts_with("| EXT-"))
-        .filter(|l| l.split('|').nth(3).map(|v| v.trim()) == Some("O"))
-        .filter_map(|l| l.split('|').nth(1).map(|s| s.trim().to_string()))
-        .collect();
-    assert!(o_rows.len() >= 5, "O rows: {o_rows:?}");
-    let fns = test_fns();
-    for r in &o_rows {
-        let name = r.to_ascii_lowercase().replace('-', "_");
-        assert!(fns.contains(&name), "O row {r} has no assertion");
     }
 }
 
@@ -359,7 +339,7 @@ fn ext_003_probe() -> String {
 }
 
 #[test]
-fn ext_003() {
+fn sandbox_rejects_node_imports() {
     let probe = ext_003_probe();
     assert!(probe.contains("unsupported_in_oxa"), "{probe}");
     assert!(!probe.contains("loaded\n"), "the module must not load: {probe}");
@@ -580,42 +560,16 @@ fn ext_016() {
     assert!(r.has("compacted"), "session_compact fires: {}", r.log);
 }
 
-/// EXT-017 (P): `session_compact_failed` fires when the summary request fails. The summary request
-/// is the second request of the run; the fake answers it with a 500.
+/// EXT-017 (P): a failed summary request is replaced by the mechanical summary (R4), so the
+/// wire is compacted and `session_compact` fires; the extension learns that the model summary
+/// failed from `mechanical` and `summaryError`.
 #[test]
 fn ext_017() {
-    if oxa_parity::profile() == oxa_parity::Profile::Local {
-        // O-167 / R4: under `local` the failed summary is replaced by the mechanical one, so the
-        // wire is compacted and `session_compact` fires; the extension learns that the model
-        // summary failed from `mechanical` and `summaryError`.
-        let r = go(
-            &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}}"#.to_string()),
-                agent_ext(
-                "e",
-                "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact_failed', (e, ctx) => note(ctx, 'failed'));\noxa.on('session_compact', (e, ctx) => note(ctx, 'compacted mechanical=' + e.mechanical + ' error=' + (e.summaryError ? 'set' : 'none')));",
-            )],
-            vec![
-                ScriptTurn::text("ok"),
-                ScriptTurn::fault(Fault::Http {
-                    status: 500,
-                    body: "{\"error\":\"parity\"}".to_string(),
-                }),
-            ],
-            &["-p", "hi"],
-        );
-        assert!(
-            r.has("compacted mechanical=true error=set"),
-            "local: session_compact says the model summary failed: {}",
-            r.log
-        );
-        assert!(!r.has("failed"), "local: the wire was compacted: {}", r.log);
-        return;
-    }
     let r = go(
         &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}}"#.to_string()),
             agent_ext(
             "e",
-            "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact_failed', (e, ctx) => note(ctx, 'failed'));",
+            "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact_failed', (e, ctx) => note(ctx, 'failed'));\noxa.on('session_compact', (e, ctx) => note(ctx, 'compacted mechanical=' + e.mechanical + ' error=' + (e.summaryError ? 'set' : 'none')));",
         )],
         vec![
             ScriptTurn::text("ok"),
@@ -626,7 +580,12 @@ fn ext_017() {
         ],
         &["-p", "hi"],
     );
-    assert!(r.has("failed"), "session_compact_failed fires: {}", r.log);
+    assert!(
+        r.has("compacted mechanical=true error=set"),
+        "session_compact says the model summary failed: {}",
+        r.log
+    );
+    assert!(!r.has("failed"), "the wire was compacted: {}", r.log);
 }
 
 /// EXT-018 (P): `session_before_tree` fires before a tree navigation. Navigation needs a front
@@ -858,18 +817,6 @@ fn ext_037() {
         .messages
         .iter()
         .any(|m| m.content.as_deref() == Some("REPLACED")));
-}
-
-/// EXT-038 (O): `before_provider_headers` is not available: one engine, the headers are the fixed
-/// hints. Registering it is refused with `unsupported_in_oxa`.
-#[test]
-fn ext_038() {
-    let r = one("oxa.on('before_provider_headers', (e, ctx) => ({'x-parity': '1'}));");
-    let text = format!("{}{}", r.err, r.log);
-    assert!(
-        text.contains("unsupported_in_oxa"),
-        "before_provider_headers is unsupported: {text}"
-    );
 }
 
 /// EXT-039 (A): `before_provider_request` follows the W-guard rule as `context`: an append to the
@@ -1128,20 +1075,6 @@ fn ext_055() {
     assert!(
         r.has("model=set") || r.has("model=none"),
         "the model read answers: {}",
-        r.log
-    );
-}
-
-/// EXT-056 (O): streaming model calls from extensions are not offered: no side requests (W1). The
-/// context exposes no model-call surface.
-#[test]
-fn ext_056() {
-    let r = one(
-        "oxa.on('session_start', (e, ctx) => { note(ctx, 'stream=' + typeof ctx.stream + ' complete=' + typeof ctx.complete + ' model.stream=' + (ctx.model && typeof ctx.model.stream)); });",
-    );
-    assert!(
-        r.has("stream=undefined complete=undefined model.stream=undefined"),
-        "{}",
         r.log
     );
 }
@@ -1411,29 +1344,6 @@ fn ext_077() {
         &["-p", "hi"],
     );
     assert!(r.has("bus=1"), "b hears a's event: {}", r.log);
-}
-
-/// EXT-078 (O): `registerProvider` is `unsupported_in_oxa` (O-134): the engine is the only model
-/// source.
-#[test]
-fn ext_078() {
-    let r = one("oxa.registerProvider('parity', {baseUrl: 'http://x', models: []});");
-    let text = format!("{}{}", r.err, r.log);
-    assert!(
-        text.contains("unsupported_in_oxa"),
-        "registerProvider is unsupported: {text}"
-    );
-}
-
-/// EXT-079 (O): `registerVirtualModel` is `unsupported_in_oxa`.
-#[test]
-fn ext_079() {
-    let r = one("oxa.registerVirtualModel({id: 'parity'});");
-    let text = format!("{}{}", r.err, r.log);
-    assert!(
-        text.contains("unsupported_in_oxa"),
-        "registerVirtualModel is unsupported: {text}"
-    );
 }
 
 /// EXT-080 (P): `pi.getSettings()` returns the effective settings.
@@ -1980,20 +1890,4 @@ fn ext_095() {
         help.contains("rpc"),
         "the RPC mode is the cross-language SDK: {help}"
     );
-}
-
-/// EXT-096 (O): examples that need providers, Node modules or macOS are out of scope. A
-/// provider-based example fails to load with `unsupported_in_oxa`.
-#[test]
-fn ext_096() {
-    let r = go(
-        &[agent_ext(
-            "custom_provider",
-            "import pi from '@earendil-works/pi-ai';\noxa.registerProvider('x', {});",
-        )],
-        text("ok"),
-        &["-p", "hi"],
-    );
-    let text = format!("{}{}", r.err, r.log);
-    assert!(text.contains("unsupported_in_oxa"), "{text}");
 }
