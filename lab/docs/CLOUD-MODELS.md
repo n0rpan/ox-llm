@@ -61,8 +61,8 @@ echoes the key is redacted before it reaches the client.
 ## Privacy and budget
 
 - Every OpenRouter request is forced to
-  `"provider": {"zdr": true, "data_collection": "deny"}`. A client's own `provider` object may
-  add routing preferences but cannot turn either requirement off.
+  `"provider": {"zdr": true, "data_collection": "deny"}`. Client routing preferences
+  are not forwarded.
 - `OXC_OFFLINE=1` (also accepted: `LOCAL_AI_OFFLINE=1`) hard-refuses cloud models with `403`
   and code `offline`, before any DNS or socket call. Remote models are not listed while
   offline.
@@ -271,3 +271,44 @@ definitions; provider-hosted paid tools are refused. Ordinary tool selection, re
 sampling and structured-output controls remain supported, including omitted/null tools.
 Anthropic translation and admission share one validated output limit, including `n_predict`,
 and never exceed the catalog maximum. Invalid limits refuse before an upstream call.
+
+## Prompt tiers, caching and public price refresh (#48)
+
+A price can use an ordered tier list instead of a flat pair. Bounds are inclusive;
+the final tier must omit `max_prompt_tokens` (or use `null`) so every prompt is priced.
+For example, these are synthetic rates, in USD per million tokens:
+
+```json
+"pricing": {"tiers": [
+  {"max_prompt_tokens": 100000, "input_per_million": 1, "output_per_million": 2,
+   "cache_read_per_million": 0.1, "cache_write_per_million": 1.25},
+  {"input_per_million": 5, "output_per_million": 10,
+   "cache_read_per_million": 0.5, "cache_write_per_million": 6.25}
+]}
+```
+
+Settlement selects the tier from actual total prompt tokens, including cache reads and
+writes. It charges uncached input, cache reads and cache writes separately. Optional cache
+rates also work on flat prices and can be inherited from the outer price object by tiers.
+Without an explicit read rate, no read discount is assumed. For Anthropic (including
+Anthropic IDs routed through OpenRouter), an unspecified write rate uses the documented
+2x input bound for one-hour writes; configure an explicit rate for the selected cache policy.
+Malformed/inconsistent usage retains the reservation. Tiny nonzero costs are not rounded
+to free. [Anthropic cache pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+
+Admission retains the full catalog input window, using the highest known input/read/write
+rate and highest output rate across all tiers, plus OpenRouter's routing cushion. This is
+more conservative than a prompt-size estimate near a tier boundary and preserves the bound
+for dense text and images. No cache hit is assumed before the provider reports it.
+
+When cloud is enabled and online, the controller fetches the public
+[OpenRouter model list](https://openrouter.ai/docs/api/api-reference/models/get-models)
+at startup and once per day, without a key or authorization header. Enabling cloud later
+is detected within a minute. Replies are bounded and do not follow redirects. Valid public
+prices are cached atomically in `local-ai/openrouter-prices.json` under the XDG state root;
+the cache contains model prices only. Offline/cloud-off mode makes no refresh request.
+Failures, malformed prices and disappearing models retain the last-known values, never a
+zero fallback. Unknown prices still refuse. Fetched rates can raise configured prices;
+explicit configured rates and tiers remain conservative floors. A missing public cache rate
+does not erase a configured one. Public list prices can still differ from the chosen routed
+provider's bill: #47's validated `usage.cost` remains an additional settlement floor.

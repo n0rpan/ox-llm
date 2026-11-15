@@ -18,7 +18,9 @@ def anthropic_models():
         return {'kind': 'remote/anthropic', 'provider': 'anthropic',
                 'base_url': 'http://127.0.0.1:1', 'upstream_model': model,
                 'context_window': context, 'max_output': output,
-                'pricing': {'input_per_million': price[0], 'output_per_million': price[1]}}
+                # These fixed-price mocks do not charge a cache-write premium.
+                'pricing': {'input_per_million': price[0], 'output_per_million': price[1],
+                            'cache_write_per_million': price[0]}}
     return {'anthropic/claude-haiku-5-5': row('claude-haiku-5-5', price=(0.8, 4.0)),
             'anthropic/claude-sonnet-5-5': row('claude-sonnet-5-5', price=(3.0, 15.0)),
             'anthropic/claude-opus-5-5': row('claude-opus-5-5', price=(15.0, 75.0))}
