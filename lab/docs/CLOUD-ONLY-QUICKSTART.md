@@ -9,8 +9,10 @@ budget.
 ## Requirements
 
 - Linux on x86_64 or arm64
-- `python3`
-- A Rust toolchain, to build oxa
+- `python3` (with `venv`), `curl`
+- A systemd user session for the default service; `--no-systemd` (step 1) needs none
+- A free loopback port (default `8092`; change it with `--port`)
+- A Rust toolchain (`cargo`), to build oxa
 - The Anthropic SDK for the python that runs the controller, if you use `anthropic/*` models
   (step 2; the controller does not install it)
 - An API key for at least one provider (OpenRouter, Anthropic or OpenAI)
@@ -28,6 +30,10 @@ $ ~/oxc/venv/bin/python -m pip install 'anthropic==0.125.0'
 $ PYTHONPATH=src ~/oxc/venv/bin/python -m snapdragon_ai_lab.cloud_install --cloud-only \
     --prefix ~/oxc --config-dir ~/oxc/config --port 8092 --daily-budget 2
 ```
+
+This install writes `cloud.enabled: true` into `runtime.json`; cloud is the only mode it sets up,
+and no engine or model is installed. If another controller already listens on the port you chose
+(check with `ss -ltn`), pick another `--port` and use the same port in steps 4 and 5.
 
 Without the SDK in that interpreter, Anthropic models answer `503` `cloud_sdk_unavailable`;
 OpenRouter and OpenAI models do not need it, so you can skip the `pip` line if you use only those.
@@ -67,8 +73,8 @@ OpenAI models need no extra package. Restart the controller after installing.
 ## 3. Add your keys
 
 The installer never creates or reads the key file. Create `<config-dir>/cloud-secrets.json`
-with the providers you use, in the format of [CLOUD-MODELS.md](CLOUD-MODELS.md#key-file), then
-restrict it:
+with the providers you use, in the format of [CLOUD-MODELS.md](CLOUD-MODELS.md#key-file), for example
+`{"openrouter": {"api_key": "<your key>"}}`. Then restrict it (a new file is usually `0644`, which is refused):
 
 ```console
 $ chmod 600 ~/oxc/config/cloud-secrets.json
@@ -96,17 +102,22 @@ controller's message ("the cloud gateway refused the request (cloud_credentials_
 
 ## 5. Build and run oxa
 
+Run this from the `oxa/` directory of the checkout (from `lab/`, that is `cd ../oxa`):
+
 ```console
-$ cd ../oxa && cargo build --release --locked
+$ cargo build --release --locked
 $ export OXA_ENGINE_URL=http://127.0.0.1:8092
-$ cd ~/my-project && /path/to/oxa/target/release/oxa --model haiku
+$ cd ~/my-project && /path/to/checkout/oxa/target/release/oxa --model haiku
 ```
 
+The binary is `oxa/target/release/oxa` (it is not copied anywhere; `--oxa-binary` in step 1 copies it
+to `<prefix>/bin/oxa` if you pass it).
+
 `OXA_ENGINE_URL` is the controller's address and defaults to `http://127.0.0.1:8092`, so it
-is only needed for another port. oxa picks the first listed model when you give no `--model`. `--model` takes a name pattern
-such as `haiku` (a full id with a provider prefix, like `anthropic/...`, is currently refused);
-the footer shows `cloud · <provider>` and oxa sends no local-engine preload. `oxa --list-models`
-lists the models.
+is only needed for another port. oxa picks the first listed model when you give no `--model`.
+`--model` takes a name pattern such as `haiku`, or a full id such as `anthropic/claude-haiku-5-5`;
+both select the same model. The footer shows `cloud · <provider>` and oxa sends no local-engine
+preload. `oxa --list-models` lists the cloud models from the controller.
 
 ## Uninstall
 
