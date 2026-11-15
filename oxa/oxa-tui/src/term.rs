@@ -680,41 +680,6 @@ impl PasteScan {
     }
 }
 
-#[cfg(test)]
-mod paste_scan_tests {
-    use super::*;
-
-    #[test]
-    fn stalled_paste_runs_out_of_time() {
-        let mut s = PasteScan::default();
-        let buf = b"\x1b[200~abc".to_vec();
-        assert!(s.open(&buf));
-        assert!(s.stall_left(Instant::now()).unwrap() > Duration::from_secs(4));
-        assert!(s.stall_left(Instant::now() + PASTE_STALL).unwrap().is_zero());
-    }
-
-    #[test]
-    fn marker_split_across_chunks_is_found() {
-        let mut s = PasteScan::default();
-        let mut buf = b"\x1b[200~abc\x1b[20".to_vec();
-        assert!(s.open(&buf));
-        buf.extend_from_slice(b"1~");
-        assert!(!s.open(&buf));
-    }
-
-    #[test]
-    fn large_paste_in_small_chunks_is_linear() {
-        let mut s = PasteScan::default();
-        let mut buf = PASTE_START.to_vec();
-        let t = std::time::Instant::now();
-        for _ in 0..4096 {
-            buf.extend_from_slice(&[b'x'; 4096]);
-            assert!(s.open(&buf));
-        }
-        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
-    }
-}
-
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
@@ -749,5 +714,40 @@ fn read_stdin() -> Option<Vec<u8>> {
         Some(Vec::new())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod paste_scan_tests {
+    use super::*;
+
+    #[test]
+    fn stalled_paste_runs_out_of_time() {
+        let mut s = PasteScan::default();
+        let buf = b"\x1b[200~abc".to_vec();
+        assert!(s.open(&buf));
+        assert!(s.stall_left(Instant::now()).unwrap() > Duration::from_secs(4));
+        assert!(s.stall_left(Instant::now() + PASTE_STALL).unwrap().is_zero());
+    }
+
+    #[test]
+    fn marker_split_across_chunks_is_found() {
+        let mut s = PasteScan::default();
+        let mut buf = b"\x1b[200~abc\x1b[20".to_vec();
+        assert!(s.open(&buf));
+        buf.extend_from_slice(b"1~");
+        assert!(!s.open(&buf));
+    }
+
+    #[test]
+    fn large_paste_in_small_chunks_is_linear() {
+        let mut s = PasteScan::default();
+        let mut buf = PASTE_START.to_vec();
+        let t = std::time::Instant::now();
+        for _ in 0..4096 {
+            buf.extend_from_slice(&[b'x'; 4096]);
+            assert!(s.open(&buf));
+        }
+        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
     }
 }
