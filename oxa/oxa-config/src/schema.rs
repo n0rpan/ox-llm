@@ -91,6 +91,7 @@ const SCHEMA: &[KeyDef] = &[
         Kind::StringList,
         "[\"read\",\"bash\",\"edit\",\"write\",\"grep\",\"find\",\"ls\"]",
     ),
+    key("done", Kind::StringList, "[]"),
     key(
         "doubleEscapeAction",
         Kind::Enum(&["tree", "fork", "none"]),
