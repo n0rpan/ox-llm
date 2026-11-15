@@ -657,6 +657,7 @@ fn zero_or_null_wait_polls_still_trip_the_guard() {
     for poll in [
         r#"{"job":"job-1","wait_s":0}"#,
         r#"{"job":"job-1","wait_s":null}"#,
+        r#"{"job":"job-1","wait_s":0.001}"#,
     ] {
         let res = poll_run("sleep 100", poll, Arc::new(Hold));
         assert!(res[1..].iter().any(|r| is_notice(r)), "{poll}: {res:#?}");
