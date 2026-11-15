@@ -91,7 +91,11 @@ fn construction_and_discovery_need_no_credential_bytes_or_ledger() {
     let error = runtime.begin(payload(), Context::default()).err().unwrap();
     assert_eq!(error.code, "cloud_credentials_unavailable");
     assert!(error.message.contains("0600"));
-    assert!(!home.0.join("ledger").exists());
+    let rows = home.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["error"], "cloud_credentials_unavailable");
+    assert_eq!(rows[0]["cost_usd"], 0.0);
+    assert_eq!(rows[0]["settled"], "not_forwarded");
 }
 
 #[test]
@@ -151,7 +155,11 @@ fn shared_runtime_admits_atomically_and_releases_only_after_the_row() {
     call.mark_forwarded();
     call.observe(&canonical());
     call.finish(Outcome::Complete, 200, None).unwrap();
-    assert_eq!(home.rows().len(), 1);
+    let rows = home.rows();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["status"], 429);
+    assert_eq!(rows[0]["cost_usd"], 0.0);
+    assert_eq!(rows[1]["settled"], "usage");
     assert!(runtime.begin(payload(), Context::default()).is_ok());
 }
 
@@ -287,7 +295,7 @@ fn request_key_handles_allow_mutable_observers_without_caching_secret_bytes() {
 }
 
 #[test]
-fn default_off_offline_and_policy_refusals_precede_keys_budget_and_io() {
+fn default_off_and_policy_refusals_precede_keys_and_provider_io() {
     let home = Home::new();
     let mut disabled = config();
     disabled["cloud"]["enabled"] = json!(false);
@@ -304,6 +312,7 @@ fn default_off_offline_and_policy_refusals_precede_keys_budget_and_io() {
             .code,
         "cloud_disabled"
     );
+    assert!(!home.0.join("ledger").exists());
     let offline = home.runtime(
         config(),
         Options {
@@ -346,7 +355,12 @@ fn default_off_offline_and_policy_refusals_precede_keys_budget_and_io() {
             .code,
         "cloud_credentials_unavailable"
     );
-    assert!(!home.0.join("ledger").exists());
+    let rows = home.rows();
+    assert_eq!(rows.len(), 3);
+    assert!(rows
+        .iter()
+        .all(|row| row["cost_usd"] == 0.0 && row["settled"] == "not_forwarded"));
+    let home = Home::new();
     home.key("synthetic-private-key");
     let runtime = home.runtime(
         config(),
@@ -364,6 +378,24 @@ fn default_off_offline_and_policy_refusals_precede_keys_budget_and_io() {
         "cloud_ledger_unavailable"
     );
     assert!(!home.0.join("ledger").exists());
+}
+
+#[test]
+fn an_unpaid_append_failure_preserves_the_refusal_and_blocks_later_spending() {
+    let home = Home::new();
+    let path = home.0.join("ledger").join(format!(
+        "requests-{}.jsonl",
+        chrono::Local::now().format("%Y%m%d")
+    ));
+    fs::create_dir_all(&path).unwrap();
+    let runtime = home.runtime(config(), Options::default());
+    let error = runtime.begin(payload(), Context::default()).err().unwrap();
+    assert_eq!(error.code, "cloud_credentials_unavailable");
+    fs::remove_dir(&path).unwrap();
+    home.key("synthetic-private-key");
+    let error = runtime.begin(payload(), Context::default()).err().unwrap();
+    assert_eq!(error.code, "cloud_ledger_unavailable");
+    assert!(!path.exists());
 }
 
 #[test]
