@@ -108,6 +108,7 @@ fn say(st: &mut SessionState, text: &str) {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user");
@@ -123,6 +124,7 @@ fn earlier_exchange(st: &mut SessionState) {
         EntryBody::Msg {
             wire: WireMsg::assistant("an earlier answer"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append assistant");

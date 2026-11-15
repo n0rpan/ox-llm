@@ -331,6 +331,7 @@ fn file_lists_accumulate() {
                     ],
                 ),
                 parts: vec![],
+                tool: None,
             },
         ),
         entry(
