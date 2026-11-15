@@ -96,6 +96,7 @@ fn run_inner(
     let mut turn_index: u32 = 0;
     let mut done = crate::done::DoneState::default();
     let mut wrapping_up = false;
+    let mut wrap_up_failure = None;
     'turns: loop {
         if !wrapping_up {
             let reason = match st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
@@ -203,9 +204,14 @@ fn run_inner(
                         && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0
                         && e.code != oxa_proto::codes::ABORTED
                     {
+                        // The final turn may save work, but cannot erase the failure
+                        // that made this request unsuccessful.
+                        wrap_up_failure = Some(e);
                         continue 'turns;
                     }
-                    return Ok(if wrapping_up || why == shown_why::ABORTED {
+                    return Ok(if let Some(error) = wrap_up_failure {
+                        RunEnd::Failed(error)
+                    } else if why == shown_why::ABORTED {
                         RunEnd::Aborted
                     } else {
                         RunEnd::Failed(e)
@@ -352,11 +358,8 @@ fn run_inner(
             );
             turn_index += 1;
 
-            if st.shared.cancel.is_cancelled() {
-                return Ok(RunEnd::Aborted);
-            }
-            if wrapping_up {
-                return Ok(RunEnd::Aborted);
+            if st.shared.cancel.is_cancelled() || wrapping_up {
+                return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
             }
             if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                 continue;
@@ -407,7 +410,7 @@ fn run_inner(
         turn_end(st, sink, ui, reply, Vec::new(), (turn_index, &reply_entry, &[]));
         turn_index += 1;
         if wrapping_up {
-            return Ok(RunEnd::Aborted);
+            return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
         }
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             continue;
