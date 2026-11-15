@@ -188,9 +188,15 @@ mod tests {
         // #237: an installed build keeps its key at the legacy path; both paths must stay denied.
         let home = std::path::Path::new("/home/u");
         let deny = super::sensitive_paths(home, None);
-        for rel in [".config/oxc/llm/cloud-secrets.json", ".config/local-ai/llm/cloud-secrets.json"] {
+        for rel in [
+            ".config/oxc/llm/cloud-secrets.json",
+            ".config/local-ai/llm/cloud-secrets.json",
+        ] {
             let p = home.join(rel);
-            assert!(deny.iter().any(|d| p.starts_with(d)), "{rel} is not denied: {deny:?}");
+            assert!(
+                deny.iter().any(|d| p.starts_with(d)),
+                "{rel} is not denied: {deny:?}"
+            );
         }
     }
 
