@@ -307,7 +307,7 @@ rows does not cite the internal work items.
 | EXT-055 | `ctx.modelRegistry` / `ctx.model` / `ctx.thinkingLevel` / `ctx.scopedModels` | engine models only |
 | EXT-059 | `ctx.compact` |  |
 | EXT-060 | `ctx.getSystemPrompt` / `getSystemPromptOptions` | returns the frozen prefix; read-only |
-| EXT-061 | `ctx.waitForIdle`, `ctx.newSession`, `ctx.fork`, `ctx.navigateTree`, `ctx.switchSession`, `ctx.reload` | session-shape actions requested mid-run apply when the run settles; `ctx.newSession` / `ctx.switchSession` answer `unsupported_in_oxa` (the user's `/new` and `/resume` do it) |
+| EXT-061 | `ctx.waitForIdle`, `ctx.newSession`, `ctx.fork`, `ctx.navigateTree`, `ctx.switchSession`, `ctx.reload` | session-shape actions requested mid-run apply when the run settles; `ctx.newSession` / `ctx.switchSession` are held as a swap request that the TUI and print mode apply between commands (RPC/SDK front ends that do not poll `Session:take_swap_request` get `unsupported_in_oxa`) |
 | EXT-063 | `pi.registerTool(definition)` with parameter schema validation | JSON Schema objects (no TypeBox import); tools join the frozen list at the next epoch |
 | EXT-073 | `pi.exec(command, args, options)` | through `Policy` + sandbox |
 | EXT-074 | `pi.getActiveTools` / `getAllTools` / `setActiveTools(names)` | a change is a new epoch, applied when the run settles |
