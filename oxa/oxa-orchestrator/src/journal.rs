@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::time::Instant;
@@ -40,12 +41,30 @@ impl Journal {
                 "journal limit must be 1..=16 MiB",
             ));
         }
+        // Reopen the validated directory inode with a sync-capable descriptor.
+        // O_PATH is suitable for namespace validation but rejects fsync. Create
+        // through this pinned parent too, so publication and sync name the same
+        // directory even if a trusted same-UID caller renames it concurrently.
+        let parent = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(format!("/proc/self/fd/{}", namespace.as_raw_fd()))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("journal needs a file name"))?;
+        let target = Path::new("/proc/self/fd")
+            .join(parent.as_raw_fd().to_string())
+            .join(name);
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(path)?;
+            .open(target)?;
         let file = crate::ownership::Lease::acquire(file)?;
+        // A successful record must not outlive its directory entry after a
+        // crash. Persist creation before returning a usable journal; propagate
+        // sync errors without acknowledging durable storage.
+        parent.sync_all()?;
         Ok(Self {
             file,
             sequence: 0,

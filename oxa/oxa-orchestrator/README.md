@@ -8,7 +8,9 @@ The `core` feature exports `AuditJournal`. Its caller explicitly supplies a new
 journal path under an existing mode-0700 operator-owned directory and a byte
 limit in 1..=16 MiB. Ancestors must be operator/root controlled; symlinked
 ancestors and parent traversal are refused. Same-UID processes and root remain
-the trusted namespace boundary. Records are mode 0600, create-only and fsynced.
+the trusted namespace boundary. Records are mode 0600, create-only and fsynced. Creation syncs the pinned parent
+directory before returning a usable writer, so successful records also have a
+persisted directory entry. Filesystem sync failures are propagated.
 
 Each accepted JSONL record has schema, sequence, elapsedMs, worker, event and
 explicit caller-supplied details. `run_started` records name the ownership
