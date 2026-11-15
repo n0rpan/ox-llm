@@ -1649,6 +1649,13 @@ fn fresh_status(s: &Session, last: &mut StatusModel) -> StatusModel {
     let state = s.state();
     let stats = s.stats();
     let next = status_from(&state, &stats, last);
+    #[cfg(feature = "session-control")]
+    let next = {
+        let mut next = next;
+        next.ext_status.retain(|key, _| !key.starts_with("oxa.worker."));
+        next.ext_status.extend(oxa_orchestrator::tui::worker_rows());
+        next
+    };
     *last = next.clone();
     next
 }
@@ -1668,6 +1675,16 @@ fn reopened(s: &Session, last: &mut StatusModel) -> WorkerMsg {
 /// Copy the state-derived fields of a fresh status into the UI's status. Display-only and
 /// event-driven fields (activity, queues, extension status, cwd, branch) stay with the UI.
 pub(crate) fn refresh_status(dst: &mut StatusModel, fresh: StatusModel) {
+    #[cfg(feature = "session-control")]
+    {
+        dst.ext_status.retain(|key, _| !key.starts_with("oxa.worker."));
+        dst.ext_status.extend(
+            fresh
+                .ext_status
+                .into_iter()
+                .filter(|(key, _)| key.starts_with("oxa.worker.")),
+        );
+    }
     dst.model = fresh.model;
     dst.thinking = fresh.thinking;
     dst.mode = fresh.mode;

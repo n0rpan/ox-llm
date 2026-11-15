@@ -1220,7 +1220,362 @@ fn background_owned_cleanup(kind: &str) {
     assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 2);
 }
 
+struct WorkerDriver {
+    inner: oxa_fake::ScriptedEngine,
+    step: AtomicU64,
+    author: Arc<FakeServer>,
+}
+impl Engine for WorkerDriver {
+    fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, OxaError> {
+        self.inner.info(target)
+    }
+    fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+        self.inner.count_tokens(text)
+    }
+    fn chat(
+        &self,
+        r: &oxa_proto::ChatRequest,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(oxa_proto::StreamEvent),
+    ) -> Result<oxa_proto::AssistantTurn, OxaError> {
+        if r.max_tokens > 0 {
+            let step = self.step.fetch_add(1, Ordering::AcqRel);
+            let author = || {
+                r.messages
+                    .iter()
+                    .rev()
+                    .filter_map(|m| {
+                        m.content
+                            .as_deref()
+                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    })
+                    .find(|v| v["profile"] == "author")
+                    .expect("author admission or status")
+            };
+            let turn = match step {
+                0 => ScriptTurn::tool(
+                    "author",
+                    "worker_lane",
+                    r#"{"operation":"start","profile":"author","goal":"Write a synthetic change"}"#,
+                ),
+                1 => ScriptTurn::tool(
+                    "reviewer",
+                    "worker_lane",
+                    r#"{"operation":"start","profile":"reviewer","goal":"Review a synthetic change"}"#,
+                ),
+                2 => {
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    while !self.author.requests().iter().any(|r| r.max_tokens > 0) {
+                        assert!(Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    ScriptTurn::tool(
+                        "inspect-author",
+                        "worker_lane",
+                        &json!({"operation":"status","worker_id":author()["worker"]["id"]}).to_string(),
+                    )
+                }
+                3 => {
+                    let worker = author();
+                    ScriptTurn::tool("steer-author","worker_lane",&json!({"operation":"steer","worker_id":worker["worker"]["id"],"revision":worker["goal"]["revision"],"text":"model-live-worker-clarification"}).to_string())
+                }
+                4 => ScriptTurn::text(
+                    r#"{"state":"done","summary":"premature","evidence":["workers still running"]}"#,
+                ),
+                _ => ScriptTurn::text(
+                    r#"{"state":"done","summary":"lanes-final","evidence":["worker results checked"]}"#,
+                ),
+            };
+            self.inner.push(turn);
+        }
+        self.inner.chat(r, cancel, on)
+    }
+}
+
+fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str) {
+    let canceling = cancellation != "none";
+    let aborting = cancellation == "escape";
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    std::fs::create_dir_all(&agent).unwrap();
+    let directory = agent.join("control");
+    let socket = directory.join("session.sock");
+    std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+    let child_script = || {
+        vec![
+            ScriptTurn::text(r#"{"state":"continue","summary":"first worker step"}"#),
+            ScriptTurn::text(
+                r#"{"state":"done","summary":"worker-finished","evidence":["two steps checked"]}"#,
+            ),
+        ]
+    };
+    let author = Arc::new(
+        FakeServer::start(
+            child_script(),
+            FakeOpts {
+                model: "author-model".into(),
+                hold_headers_ms: if aborting {
+                    1500
+                } else if steering {
+                    600
+                } else {
+                    250
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let reviewer = Arc::new(
+        FakeServer::start(
+            child_script(),
+            FakeOpts {
+                model: "reviewer-model".into(),
+                hold_headers_ms: if aborting { 1500 } else { 350 },
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let profiles = agent.join("workers.json");
+    let profile = |name: &str, role: &str, server: &FakeServer, model: &str| json!({"name":name,"role":role,"engine":server.url().trim_start_matches("http://"),"model":model,"budget":{"wall_ms":8000,"tokens":100000,"turns":8},"turn_ms":2000,"output_bytes":1048576});
+    std::fs::write(&profiles,json!({"version":1,"verified_local_only":true,"parallel":2,"total_tokens":200000,"total_output_bytes":2097152,"profiles":[profile("author","fixed author role",&author,"author-model"),profile("reviewer","fixed reviewer role",&reviewer,"reviewer-model")]}).to_string()).unwrap();
+    std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::env::set_var("OXA_WORKER_PROFILES", &profiles);
+    let final_text = r#"{"state":"done","summary":"lanes-final","evidence":["worker results checked"]}"#;
+    let mut script = vec![
+        ScriptTurn::tool(
+            "author",
+            "worker_lane",
+            r#"{"operation":"start","profile":"author","goal":"Write a synthetic change"}"#,
+        ),
+        ScriptTurn::tool(
+            "reviewer",
+            "worker_lane",
+            r#"{"operation":"start","profile":"reviewer","goal":"Review a synthetic change"}"#,
+        ),
+        ScriptTurn::text(r#"{"state":"done","summary":"premature","evidence":["workers still running"]}"#),
+    ];
+    for _ in 0..4 {
+        script.push(ScriptTurn::text(final_text));
+    }
+    let engine = Arc::new(
+        FakeServer::start(
+            script,
+            FakeOpts {
+                hold_headers_ms: if aborting { 250 } else { 0 },
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let driver = Arc::new(WorkerDriver {
+        inner: oxa_fake::ScriptedEngine::new(vec![]),
+        step: AtomicU64::new(0),
+        author: author.clone(),
+    });
+    let mut config = deps(&engine.url(), env.root(), &env.work(), store.clone());
+    if steering {
+        config.engine = driver.clone();
+    }
+    let session = Session::open(config, Open::New).unwrap();
+    let expected = session.state().session_id;
+    let main_handle = session.handle();
+    let done = Arc::new(AtomicBool::new(false));
+    let peer_done = done.clone();
+    let peer_socket = socket.clone();
+    let expected_peer = expected.clone();
+    let peer = std::thread::spawn(move || {
+        let initial = wait_status(&peer_socket, |v| v["status"]["session"]["id"] == expected_peer);
+        request(
+            &peer_socket,
+            json!({"id":"goal","method":"set_goal","revision":revision(&initial),"text":"Start author and reviewer, then collect both results","budget":{"wall_ms":12000,"tokens":200000,"turns":8}}),
+        );
+        let paused = wait_status(&peer_socket, |v| {
+            v["status"]["goal"]["goal"] == "Start author and reviewer, then collect both results"
+        });
+        mutation(&peer_socket, "run", "resume", revision(&paused), None);
+        let waiting = wait_status(&peer_socket, |v| {
+            state(v) == if aborting { "active" } else { "blocked" }
+                && (!canceling
+                    || v["status"]["workers"].as_array().is_some_and(|jobs| {
+                        jobs.len() == 2
+                            && jobs
+                                .iter()
+                                .all(|j| j["goal"]["turns_started"].as_u64().is_some_and(|n| n >= 1))
+                    }))
+        });
+        if !aborting {
+            assert_eq!(waiting["status"]["goal"]["reason"], "waiting_workers");
+        }
+        assert_eq!(waiting["status"]["goal"]["turns_started"], 1);
+        if aborting {
+            main_handle.abort();
+        } else if canceling {
+            mutation(&peer_socket, "cancel-workers", "cancel", revision(&waiting), None);
+        }
+        let finished = wait_status(&peer_socket, |v| {
+            state(v)
+                == if aborting {
+                    "blocked"
+                } else if canceling {
+                    "canceled"
+                } else {
+                    "done"
+                }
+                && v["status"]["workers"].as_array().is_some_and(|jobs| {
+                    jobs.len() == 2
+                        && jobs.iter().all(|j| {
+                            j["state"] == if canceling { "canceled" } else { "completed" }
+                                && j["process_stopped"] == true
+                        })
+                })
+        });
+        assert_eq!(finished["status"]["session"]["id"], expected_peer);
+        if aborting {
+            assert_eq!(
+                finished["status"]["goal"]["reason"],
+                "token_accounting_unavailable"
+            );
+            assert!(finished["status"]["goal"]["reported_tokens"].is_null());
+        }
+        let jobs = finished["status"]["workers"].as_array().unwrap();
+        assert!(jobs.iter().any(|j| j["model"] == "author-model"));
+        assert!(jobs.iter().any(|j| j["model"] == "reviewer-model"));
+        for job in jobs {
+            let pid = job["process_id"].as_u64().unwrap();
+            assert!(
+                !Path::new(&format!("/proc/{pid}")).exists(),
+                "worker reaped before completion"
+            );
+            if canceling {
+                assert!(job["goal"]["turns_started"].as_u64().unwrap() <= 1);
+                continue;
+            }
+            assert!(job["goal"]["turns_started"]
+                .as_u64()
+                .is_some_and(|n| (1..=2).contains(&n)));
+            if steering && job["profile"] == "author" {
+                assert_eq!(job["last_control"]["kind"], "control_admitted");
+            }
+        }
+        peer_done.store(true, Ordering::Release);
+    });
+    let mut terminal = LiveTerm {
+        inner: TestTerminal::new(160, 35),
+        done,
+        typing: Arc::new(AtomicBool::new(false)),
+        typed: Arc::new(AtomicBool::new(false)),
+        deadline: Instant::now() + Duration::from_secs(18),
+        quit: false,
+        final_text: if aborting {
+            "Worker"
+        } else if canceling {
+            "premature"
+        } else {
+            "lanes-final"
+        },
+        escape: false,
+        swap_when: None,
+        swapped: false,
+        rejected: Arc::new(AtomicBool::new(false)),
+    };
+    let mut options = opts(&env, &engine.url(), store);
+    let (code, last) = run_session(&mut terminal, session, &mut options);
+    peer.join().unwrap();
+    std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+    std::env::remove_var("OXA_WORKER_PROFILES");
+    assert_eq!(code, 0);
+    assert_eq!(last.unwrap().id, expected);
+    for (server, role, model) in [
+        (&author, "fixed author role", "author-model"),
+        (&reviewer, "fixed reviewer role", "reviewer-model"),
+    ] {
+        let requests = server.requests();
+        let chats = requests.iter().filter(|r| r.max_tokens > 0).collect::<Vec<_>>();
+        if canceling {
+            assert!(chats.len() <= 1, "cancel prevents follow-on inference");
+            continue;
+        }
+        assert_eq!(chats.len(), 2, "worker performs two goal turns");
+        assert!(chats.iter().all(|r| r.model == model));
+        assert!(chats.iter().all(|r| r.system.contains(role)));
+        assert!(chats[1].messages.iter().any(|m| m
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("first worker step"))));
+        assert_eq!(chats[0].session, chats[1].session);
+        if steering && model == "author-model" {
+            assert!(chats[1].messages.iter().any(|m| m
+                .content
+                .as_deref()
+                .is_some_and(|s| s.contains("model-live-worker-clarification"))));
+        }
+    }
+    let requests = if steering {
+        driver.inner.requests()
+    } else {
+        engine.requests()
+    };
+    let chats = requests.iter().filter(|r| r.max_tokens > 0).collect::<Vec<_>>();
+    assert!(chats.iter().all(|r| r.session == expected));
+    if !canceling {
+        assert!(chats.last().unwrap().messages.iter().any(|m| m
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("worker-finished") && text.contains("untrusted data"))));
+    }
+    let screen = strip_ansi(&String::from_utf8_lossy(&terminal.inner.out));
+    assert!(
+        screen.contains("100000 tokens"),
+        "worker allowance shown in footer"
+    );
+    assert!(
+        screen.contains("author-model") && screen.contains("reviewer-model"),
+        "worker models visible in TUI"
+    );
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--mode") {
+        std::process::exit(oxa_cli::run(
+            &args,
+            &oxa_config::Env::from_process(),
+            oxa_cli::Stdio::real(),
+        ));
+    }
+    for (steering, cancellation, name) in [
+        (
+            false,
+            "none",
+            "worker roles/models retain context and wake the same TUI session",
+        ),
+        (
+            true,
+            "none",
+            "model steering reaches the running worker's next inference",
+        ),
+        (
+            false,
+            "socket",
+            "parent cancellation stops and reaps owned workers",
+        ),
+        (
+            false,
+            "escape",
+            "Esc settlement stops workers and preserves unknown usage",
+        ),
+    ] {
+        model_worker_lanes_wake_same_session(steering, cancellation);
+        println!("{name} ... ok");
+    }
+    if args.first().map(String::as_str) == Some("--workers-only") {
+        return;
+    }
+
     model_background_task_wakes_same_session(false, true);
     println!("background completion reaches an already running TUI turn ... ok");
     for kind in ["deny", "no_tools", "bad_args", "plan", "control_hidden"] {

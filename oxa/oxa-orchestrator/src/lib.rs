@@ -10,6 +10,8 @@ mod checkpoint;
 pub mod cli;
 pub mod control;
 mod git_worktrees;
+#[cfg(feature = "interactive-control")]
+mod goal_agent;
 pub mod goal_session;
 pub mod goals;
 mod journal;
@@ -27,6 +29,10 @@ pub mod rpc_agent;
 mod run;
 #[cfg(feature = "interactive-control")]
 pub mod tui;
+#[cfg(feature = "interactive-control")]
+pub mod worker_lanes;
+#[cfg(feature = "interactive-control")]
+mod worker_profiles;
 pub mod workspace;
 
 pub use run::*;
