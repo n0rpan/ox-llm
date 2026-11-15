@@ -127,6 +127,11 @@ or unreadable free-space value pauses new work while active jobs finish. Invalid
 JSON files report an error and do not skip other work. `--once` drains available
 work and exits; when disk space blocks pending tasks it exits 1 with their files
 retained. Without `--once`, the directory stays under watch for new files.
+Appending tasks to an existing file queues only new IDs. Discovered task definitions
+are immutable; changing one requires a new ID. Correcting or archiving an invalid
+input clears its current queue errors. Archiving inputs does not interrupt admitted
+work. A controller or monitor error stops admission and drains active workers
+before returning an error.
 
 Queue mode supports `--publish`, `--report-problems` and `--rerun` with the same
 explicit policy as single-file mode. Its worker threads preserve the parent's

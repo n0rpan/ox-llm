@@ -36,7 +36,7 @@ fn command(env: &TestEnv, url: &str, max: &str) -> Command {
     .envs(env.envs(url));
     c
 }
-fn finish(mut c: Command) -> Output {
+fn finish(c: Command) -> Output {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(confirm::output(c));
@@ -403,5 +403,118 @@ esac
     assert!(
         dispositions.contains("filed") && dispositions.contains("existing_issue"),
         "{dispositions:?}"
+    );
+}
+
+fn has_active(env: &TestEnv, count: usize) -> bool {
+    fs::read(env.work().join("queue/.oxa-queue-status.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|state| state["active"].as_array().is_some_and(|ids| ids.len() == count))
+}
+
+#[test]
+fn appended_tasks_and_archived_inputs_do_not_fail_or_interrupt_active_work() {
+    use std::process::Stdio;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    task_file(&env, "input", "first", 1);
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("done"); 2],
+        FakeOpts {
+            hold_headers_ms: 700,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let child = command(&env, &server.url(), "2")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    until(|| has_active(&env, 1));
+    let file = env.work().join("queue/input.json");
+    let mut tasks: Vec<serde_json::Value> = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    tasks.push(
+        serde_json::json!({"id":"second","model":"fake","branch":"agent/second","prompt":"second task"}),
+    );
+    fs::write(&file, serde_json::to_vec(&tasks).unwrap()).unwrap();
+    until(|| has_active(&env, 2));
+    fs::create_dir(env.work().join("archive")).unwrap();
+    fs::rename(&file, env.work().join("archive/input.json")).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{} / {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let events = rows(&out);
+    assert_eq!(events.iter().filter(|v| v["event"] == "task").count(), 2);
+    assert_eq!(events.last().unwrap()["failed"], 0);
+}
+
+#[test]
+fn correcting_a_malformed_file_clears_its_queue_error() {
+    use std::process::Stdio;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write("work/queue/bad.json", "{");
+    task_file(&env, "active", "active", 1);
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("done"); 2],
+        FakeOpts {
+            hold_headers_ms: 700,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let child = command(&env, &server.url(), "2")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    until(|| has_active(&env, 1));
+    task_file(&env, "bad", "corrected", 0);
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{} / {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(rows(&out).last().unwrap()["failed"], 0);
+}
+
+#[test]
+fn a_monitor_error_drains_admitted_workers_before_returning() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    task_file(&env, "input", "active", 1);
+    let finished = Arc::new(AtomicBool::new(false));
+    let observed = finished.clone();
+    let result = oxa_work::run_queue(
+        &env.work().join("project"),
+        &env.work().join("queue"),
+        &oxa_work::QueueOptions {
+            max: 1,
+            min_free_bytes: 0,
+            once: true,
+        },
+        Arc::new(move |task| {
+            std::thread::sleep(Duration::from_millis(100));
+            observed.store(true, Ordering::Release);
+            oxa_work::blocked_record(task, "synthetic worker result".into())
+        }),
+        &mut |_| Err("synthetic monitor failure".into()),
+    );
+    assert!(result.unwrap_err().contains("synthetic monitor failure"));
+    assert!(
+        finished.load(Ordering::Acquire),
+        "controller returned before its admitted worker finished"
     );
 }

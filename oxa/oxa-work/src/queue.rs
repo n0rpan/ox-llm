@@ -1,5 +1,5 @@
 //! Directory queue: oldest regular JSON files first, with bounded independent workers.
-use super::{blocked_record, checked, git, read_tasks, state, Record, Result, Task};
+use super::{blocked_record, checked, git, state, Record, Result, Task};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -97,47 +97,79 @@ fn free_space(repo: &Path, common: &Path, queue: &Path) -> Result<u64> {
         .min(available(queue)?)
         .min(available(tree_volume)?))
 }
+fn input_file(entry: fs::DirEntry) -> Result<Option<(PathBuf, SystemTime, u64)>> {
+    let path = entry.path();
+    if path
+        .file_name()
+        .is_some_and(|s| s.to_string_lossy().starts_with('.'))
+        || path.extension().is_none_or(|s| s != "json")
+    {
+        return Ok(None);
+    }
+    // A user may archive an input after read_dir produced this entry.
+    let meta = match entry.metadata() {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    Ok(Some((
+        path,
+        meta.modified().map_err(|e| e.to_string())?,
+        meta.len(),
+    )))
+}
+#[derive(Default)]
+struct Inputs {
+    files: HashMap<PathBuf, (SystemTime, u64)>,
+    tasks: HashMap<String, (PathBuf, Task)>,
+    errors: HashMap<PathBuf, Vec<String>>,
+}
 fn scan(
     directory: &Path,
     pending: &mut Vec<Job>,
-    seen_files: &mut HashSet<(PathBuf, SystemTime, u64)>,
-    seen_ids: &mut HashSet<String>,
-    failed: &mut usize,
+    inputs: &mut Inputs,
     emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
 ) -> Result<()> {
     let mut files = vec![];
     for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if !entry.file_type().map_err(|e| e.to_string())?.is_file()
-            || path
-                .file_name()
-                .is_some_and(|s| s.to_string_lossy().starts_with('.'))
-            || path.extension().is_none_or(|s| s != "json")
-        {
-            continue;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        if let Some(file) = input_file(entry)? {
+            files.push(file);
         }
-        let meta = entry.metadata().map_err(|e| e.to_string())?;
-        files.push((path, meta.modified().map_err(|e| e.to_string())?, meta.len()));
     }
+    let paths: HashSet<_> = files.iter().map(|(p, _, _)| p.clone()).collect();
+    inputs.files.retain(|p, _| paths.contains(p));
+    inputs.errors.retain(|p, _| paths.contains(p));
     files.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
     for (file, modified, len) in files {
-        if !seen_files.insert((file.clone(), modified, len)) {
+        if inputs.files.get(&file) == Some(&(modified, len)) && !inputs.errors.contains_key(&file) {
             continue;
         }
-        match read_tasks(&file) {
+        let tasks = match fs::read(&file) {
+            Ok(bytes) => super::parse_tasks(&bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => Err(error.to_string()),
+        };
+        let previous = inputs.errors.remove(&file);
+        let mut problems = vec![];
+        match tasks {
             Ok(tasks) => {
                 for (index, task) in tasks.into_iter().enumerate() {
-                    if !seen_ids.insert(task.id.clone()) {
-                        *failed += 1;
-                        emit(QueueEvent::Error {
-                            file: file.clone(),
-                            detail: format!(
-                                "task {} was already queued; use a new id for changed work",
-                                task.id
-                            ),
-                        })?;
+                    if let Some((source, known)) = inputs.tasks.get_mut(&task.id) {
+                        if *known == task && (*source == file || !paths.contains(source)) {
+                            *source = file.clone();
+                            continue;
+                        }
+                        problems.push(format!("task {} was already queued; use a new id for changed work or remove the duplicate input", task.id));
                     } else {
+                        inputs.tasks.insert(task.id.clone(), (file.clone(), task.clone()));
                         pending.push(Job {
                             task,
                             file: file.clone(),
@@ -147,14 +179,36 @@ fn scan(
                     }
                 }
             }
-            Err(detail) => {
-                *failed += 1;
-                emit(QueueEvent::Error { file, detail })?;
+            Err(detail) => problems.push(detail),
+        }
+        inputs.files.insert(file.clone(), (modified, len));
+        if !problems.is_empty() {
+            if previous.as_ref() != Some(&problems) {
+                for detail in &problems {
+                    emit(QueueEvent::Error {
+                        file: file.clone(),
+                        detail: detail.clone(),
+                    })?;
+                }
             }
+            inputs.errors.insert(file, problems);
         }
     }
     Ok(())
 }
+#[derive(Default)]
+struct Workers {
+    handles: HashMap<String, thread::JoinHandle<()>>,
+}
+impl Drop for Workers {
+    fn drop(&mut self) {
+        // Every error path drains admitted work before the CLI can exit.
+        for (_, handle) in self.handles.drain() {
+            let _ = handle.join();
+        }
+    }
+}
+
 pub fn run_queue(
     repo: &Path,
     directory: &Path,
@@ -176,19 +230,11 @@ pub fn run_queue(
     ))?);
     let storage = common.join("oxa-work");
     let (tx, rx) = mpsc::channel();
-    let mut active: HashMap<String, thread::JoinHandle<()>> = HashMap::new();
-    let (mut pending, mut external, mut seen_files, mut seen_ids) =
-        (vec![], vec![], HashSet::new(), HashSet::new());
+    let mut active = Workers::default();
+    let (mut pending, mut external, mut inputs) = (vec![], vec![], Inputs::default());
     let (mut finished, mut failed, mut last) = (0, 0, None);
     loop {
-        scan(
-            &directory,
-            &mut pending,
-            &mut seen_files,
-            &mut seen_ids,
-            &mut failed,
-            emit,
-        )?;
+        scan(&directory, &mut pending, &mut inputs, emit)?;
         // Surviving workers from a dead controller still count toward the concurrency cap.
         let mut waiting = vec![];
         for job in external.drain(..) {
@@ -216,7 +262,7 @@ pub fn run_queue(
             Err(error) => (None, Some(error)),
         };
         let mut disk_blocked = free_bytes.is_none_or(|free| free < options.min_free_bytes);
-        while !disk_blocked && active.len() + external.len() < options.max && !pending.is_empty() {
+        while !disk_blocked && active.handles.len() + external.len() < options.max && !pending.is_empty() {
             // Check again for each admission: earlier workers may already be writing.
             match free_space(repo, &common, &directory) {
                 Ok(free) => {
@@ -252,7 +298,7 @@ pub fn run_queue(
                     let _ = tx.send((input, record));
                 }) {
                 Ok(handle) => {
-                    active.insert(id, handle);
+                    active.handles.insert(id, handle);
                 }
                 Err(error) => {
                     finished += 1;
@@ -264,6 +310,7 @@ pub fn run_queue(
             }
         }
         let mut ids: Vec<_> = active
+            .handles
             .keys()
             .cloned()
             .chain(external.iter().map(|j| j.task.id.clone()))
@@ -274,7 +321,7 @@ pub fn run_queue(
             active: ids,
             pending: pending.len(),
             finished,
-            failed,
+            failed: failed + inputs.errors.values().map(Vec::len).sum::<usize>(),
             free_bytes,
             disk_blocked: disk_blocked && !pending.is_empty(),
             disk_error,
@@ -291,16 +338,20 @@ pub fn run_queue(
             })?;
             last = Some(status.clone());
         }
-        if options.once && active.is_empty() && external.is_empty() && (pending.is_empty() || disk_blocked) {
+        if options.once
+            && active.handles.is_empty()
+            && external.is_empty()
+            && (pending.is_empty() || disk_blocked)
+        {
             return Ok(status);
         }
-        if active.is_empty() {
+        if active.handles.is_empty() {
             thread::sleep(Duration::from_millis(250));
             continue;
         }
         match rx.recv_timeout(Duration::from_millis(250)) {
             Ok((job, record)) => {
-                if let Some(handle) = active.remove(&job.task.id) {
+                if let Some(handle) = active.handles.remove(&job.task.id) {
                     let _ = handle.join();
                 }
                 if busy(&storage, &job.task.id)? {
@@ -316,5 +367,29 @@ pub fn run_queue(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(error.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn archiving_between_directory_read_and_metadata_is_not_a_controller_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxa-queue-scan-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("task.json");
+        fs::write(&path, "[]").unwrap();
+        let entry = fs::read_dir(&dir).unwrap().next().unwrap().unwrap();
+        fs::rename(path, dir.join("archived")).unwrap();
+        let result = input_file(entry);
+        fs::remove_dir_all(dir).unwrap();
+        assert!(result.unwrap().is_none());
     }
 }

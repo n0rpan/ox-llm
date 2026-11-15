@@ -87,8 +87,10 @@ fn git(repo: &Path, args: &[&str]) -> Command {
 }
 
 pub fn read_tasks(path: &Path) -> Result<Vec<Task>> {
-    let tasks: Vec<Task> = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("task file: {e}"))?;
+    parse_tasks(&fs::read(path).map_err(|e| e.to_string())?)
+}
+pub(crate) fn parse_tasks(bytes: &[u8]) -> Result<Vec<Task>> {
+    let tasks: Vec<Task> = serde_json::from_slice(bytes).map_err(|e| format!("task file: {e}"))?;
     if tasks.is_empty() {
         return Err("task file is empty".into());
     }
