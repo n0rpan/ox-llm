@@ -1,5 +1,5 @@
 //! Request-time owner-only credentials. Errors and Debug never contain a path
-//! or credential. No value is cached, logged or placed in the environment.
+//! or credential. Key values are never cached, logged or placed in the environment.
 use nix::{libc, unistd::Uid};
 use serde_json::Value;
 use std::{
@@ -25,6 +25,7 @@ impl fmt::Debug for Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Unavailable,
+    InsideRepository,
     SymbolicLink,
     Unreadable,
     NotRegular,
@@ -36,6 +37,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let reason = match self {
             Self::Unavailable => return f.write_str("Cloud credentials are not configured."),
+            Self::InsideRepository => "the configured path is inside a source repository",
             Self::SymbolicLink => "the configured path is a symbolic link",
             Self::Unreadable => "the file cannot be read",
             Self::NotRegular => "the configured path is not a regular file",
@@ -169,9 +171,13 @@ fn parse(bytes: &[u8]) -> Option<Value> {
             quoted = true;
             normalized.push(byte);
             index += 1;
-        } else if let Some(token) = [b"NaN".as_slice(), b"Infinity".as_slice(), b"-Infinity".as_slice()]
-            .iter()
-            .find(|token| bytes[index..].starts_with(token))
+        } else if let Some(token) = [
+            b"NaN".as_slice(),
+            b"Infinity".as_slice(),
+            b"-Infinity".as_slice(),
+        ]
+        .iter()
+        .find(|token| bytes[index..].starts_with(token))
         {
             normalized.extend_from_slice(b"null");
             index += token.len();
@@ -183,18 +189,52 @@ fn parse(bytes: &[u8]) -> Option<Value> {
     serde_json::from_slice(&normalized).ok()
 }
 /// `path` is chosen by trusted configuration (defaulting belongs to the caller).
-/// The final component is never followed; parent symlinks are resolved for the
-/// source-tree exclusion. All checks are repeated on the opened descriptor.
+/// A path approved for one configuration generation. Prepare when configuration
+/// changes; read fresh bytes and descriptor metadata for every request. Parent
+/// links bind to the approved location, so retargeting them cannot select a key
+/// inside a repository. No key material or opened key descriptor is retained.
+#[derive(Clone)]
+pub struct KeyFile {
+    path: PathBuf,
+}
+impl fmt::Debug for KeyFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("KeyFile([configured])")
+    }
+}
+impl KeyFile {
+    pub fn prepare(path: &Path) -> Result<Self, Error> {
+        if !path.is_absolute() {
+            return Err(Error::Unavailable);
+        }
+        let resolved = resolve(path, &mut 0).map_err(|_| Error::Unavailable)?;
+        if resolved.ancestors().skip(1).any(|parent| {
+            parent.join(".git").exists()
+                || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
+        }) {
+            return Err(Error::InsideRepository);
+        }
+        // A missing parent could later become a link into a repository. Bind
+        // only an existing canonical directory for this config generation.
+        let parent =
+            fs::canonicalize(path.parent().unwrap_or(path)).map_err(|_| Error::Unavailable)?;
+        if !parent.is_dir() {
+            return Err(Error::Unavailable);
+        }
+        Ok(Self {
+            path: parent.join(path.file_name().unwrap_or_default()),
+        })
+    }
+    pub fn read(&self, provider: &str) -> Result<Key, Error> {
+        read_file(&self.path, provider)
+    }
+}
+/// Convenience for callers without a retained configuration. Runtimes should
+/// keep prepare's Result and expose its safe refusal only after policy checks.
 pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
-    if !path.is_absolute() {
-        return Err(Error::Unavailable);
-    }
-    let resolved = resolve(path, &mut 0).map_err(|_| Error::Unavailable)?;
-    if resolved.ancestors().skip(1).any(|parent| {
-        parent.join(".git").exists() || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
-    }) {
-        return Err(Error::Unavailable);
-    }
+    KeyFile::prepare(path)?.read(provider)
+}
+fn read_file(path: &Path, provider: &str) -> Result<Key, Error> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
@@ -232,7 +272,9 @@ pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
     };
     let key = raw
         .as_str()
-        .filter(|key| !key.is_empty() && key.len() <= 8192 && key.bytes().all(|b| (33..=126).contains(&b)))
+        .filter(|key| {
+            !key.is_empty() && key.len() <= 8192 && key.bytes().all(|b| (33..=126).contains(&b))
+        })
         .ok_or(Error::Unavailable)?;
     Ok(Key(key.into()))
 }

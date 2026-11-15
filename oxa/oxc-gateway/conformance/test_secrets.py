@@ -188,7 +188,12 @@ class SecretsContract(unittest.TestCase):
         self.assertEqual(set(expected), set(CASES))
         for name in CASES:
             with self.subTest(case=name):
-                self.assertEqual(invoke(name), expected[name])
+                target = expected[name]
+                if 'OXC_SECRETS_CONTRACT' in os.environ and name in ('git-directory', 'git-file', 'source-tree'):
+                    # #331/#266 explicitly require a specific native reason;
+                    # retain the unchanged Python refusal as the source contract.
+                    target = {'error': 'Cloud credentials are not configured: the configured path is inside a source repository.'}
+                self.assertEqual(invoke(name), target)
 
 
 if __name__ == '__main__':
