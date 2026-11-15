@@ -936,6 +936,8 @@ fn gh_cache_dir_is_sandbox_tmp_and_host_untouched() {
             read_extra: Vec::new(),
             write_extra: Vec::new(),
             allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
         })
     };
     fn env_agent(_: &[(String, String)]) -> PathBuf {
