@@ -428,6 +428,32 @@ fn tool_views_drop_control_characters_from_untrusted_text() {
     );
 }
 
+/// Review of #418: `read` bodies, tool names and multi-line header args are sanitized too.
+#[test]
+fn read_body_tool_name_and_header_newlines_are_sanitized() {
+    let theme = Theme::plain();
+    let settings = ViewSettings::default();
+    let hooks: Vec<Arc<dyn Hooks>> = Vec::new();
+    let cx = cx(&theme, &settings, &hooks);
+    let evil = "x\u{1b}]52;c;aGk=\u{7}y";
+    let body = tool_result_lines(
+        "read",
+        &json!({"path": "a.txt"}),
+        &format!("{evil}\nline2"),
+        false,
+        &Value::Null,
+        &cx,
+    )
+    .join("\n");
+    assert!(!body.chars().any(|c| c.is_control() && c != '\n'), "{body:?}");
+    assert!(body.contains("line2"));
+    let name = format!("mcp__{evil}");
+    let out = render_tool(&block(&name, Value::Null, ToolState::Done), &cx).join("\n");
+    assert!(!out.chars().any(|c| c.is_control() && c != '\n'), "{out:?}");
+    let h = tool_header("bash", &json!({"command": "echo a\necho b"}), &cx).unwrap();
+    assert!(!h.contains('\n'), "{h:?}");
+}
+
 #[test]
 fn write_result_shows_summary_and_added_lines() {
     let theme = Theme::plain();

@@ -109,7 +109,7 @@ pub(crate) fn tool_parts(t: &ToolBlock, cx: &ViewCx, inner: usize) -> ToolParts 
         None => match tool_header(&t.name, &args, &inner_cx) {
             Some(h) => header.push(h),
             None => {
-                header.push(theme.fg("toolTitle", &theme.bold(&t.name)));
+                header.push(theme.fg("toolTitle", &theme.bold(&sanitize_display(&t.name))));
                 let args_text = if t.args.is_null() {
                     sanitize_display(&t.args_raw)
                 } else {
@@ -198,7 +198,11 @@ pub(crate) fn tool_parts(t: &ToolBlock, cx: &ViewCx, inner: usize) -> ToolParts 
 /// home directory as `~`. `None` for a tool that is not built in.
 pub fn tool_header(name: &str, args: &Value, cx: &ViewCx) -> Option<String> {
     let theme = cx.theme;
-    let s = |k: &str| args.get(k).and_then(Value::as_str).map(sanitize_display);
+    let s = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .map(|v| sanitize_display(v).replace(['\n', '\t'], " "))
+    };
     let n = |k: &str| {
         args.get(k)
             .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f.max(0.0) as u64)))
@@ -280,7 +284,7 @@ pub fn tool_result_lines(
     }
     let path = args.get("path").and_then(Value::as_str).unwrap_or("");
     match name {
-        "read" => highlight_code(text, language_from_path(path), theme),
+        "read" => highlight_code(&sanitize_display(text), language_from_path(path), theme),
         "write" => {
             let content = args.get("content").and_then(Value::as_str).unwrap_or(text);
             // A summary line, then the content as added (`+`) lines, so a write does not
