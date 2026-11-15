@@ -83,3 +83,138 @@ fn no_session_keeps_print_runs_ephemeral() {
         .list(None)
         .is_empty());
 }
+
+#[test]
+fn a_prompt_word_after_long_continue_still_continues_the_latest_session() {
+    let env = TestEnv::new();
+    env.write("home/.oxa/agent/settings.json", r#"{"retry":{"enabled":false}}"#);
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text("one"),
+            ScriptTurn::text("two"),
+            ScriptTurn::text("three"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let first = run(&env, &server, &["-p", "--no-tools", "first instruction"]);
+    let id = announced_id(&first);
+    let one = run(&env, &server, &["-p", "--no-tools", "--continue", "fix"]);
+    assert_eq!(announced_id(&one), id);
+    let two = run(
+        &env,
+        &server,
+        &["--no-tools", "--continue", "summarize the diff", "-p"],
+    );
+    assert_eq!(announced_id(&two), id);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(format!("{:?}", requests[1].messages).contains("fix"));
+    assert!(format!("{:?}", requests[2].messages).contains("summarize the diff"));
+}
+
+#[test]
+fn a_prompt_word_matching_an_older_session_prefix_is_kept_as_prompt_text() {
+    let env = TestEnv::new();
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text("old"),
+            ScriptTurn::text("latest"),
+            ScriptTurn::text("continued"),
+            ScriptTurn::text("tests added"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let old = run(
+        &env,
+        &server,
+        &[
+            "-p",
+            "--no-tools",
+            "--session-id",
+            "add-older",
+            "older instruction",
+        ],
+    );
+    assert_eq!(announced_id(&old), "add-older");
+    let latest = run(
+        &env,
+        &server,
+        &[
+            "-p",
+            "--no-tools",
+            "--session-id",
+            "latest-session",
+            "latest instruction",
+        ],
+    );
+    assert_eq!(announced_id(&latest), "latest-session");
+    let continued = run(&env, &server, &["-p", "--no-tools", "--continue", "add", "tests"]);
+    assert_eq!(announced_id(&continued), "latest-session");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let messages = format!("{:?}", requests[2].messages);
+    assert!(
+        messages.contains("latest instruction")
+            && requests[2].messages.iter().any(|message| message
+                .content
+                .as_deref()
+                .is_some_and(|text| text == "add" || text.starts_with("add\n"))),
+        "{messages}"
+    );
+    assert!(!messages.contains("older instruction"));
+    assert!(format!("{:?}", requests[3].messages).contains("tests"));
+}
+
+#[test]
+fn explicit_continue_uses_the_configured_session_store_on_both_parse_passes() {
+    for project_setting in [false, true] {
+        for extension_flag in [false, true] {
+            let env = TestEnv::new();
+            let settings = r#"{"sessionDir":"custom-sessions","retry":{"enabled":false}}"#;
+            if project_setting {
+                env.write(
+                    "home/.oxa/agent/settings.json",
+                    r#"{"defaultProjectTrust":"always"}"#,
+                );
+                env.write("work/.oxa/settings.json", settings);
+            } else {
+                env.write("home/.oxa/agent/settings.json", settings);
+            }
+            let extension = env.write("flags.js", r#"export default function(oxa) { oxa.registerFlag("synthetic-flag", {description:"Fixture flag",type:"boolean",default:false}); }"#);
+            let server = FakeServer::start(
+                vec![
+                    ScriptTurn::text("first"),
+                    ScriptTurn::text("other"),
+                    ScriptTurn::text("continued"),
+                ],
+                FakeOpts::default(),
+            )
+            .unwrap();
+            let first = run(&env, &server, &["-p", "--no-tools", "first instruction"]);
+            let id = announced_id(&first);
+            let other = run(&env, &server, &["-p", "--no-tools", "other instruction"]);
+            assert_ne!(announced_id(&other), id);
+            let mut args = vec!["-p", "--no-tools", "--continue", &id, "new instruction"];
+            if extension_flag {
+                args.extend(["-e", extension.to_str().unwrap(), "--synthetic-flag"]);
+            }
+            let output = run(&env, &server, &args);
+            assert_eq!(
+                announced_id(&output),
+                id,
+                "project={project_setting}, reparse={extension_flag}"
+            );
+            let requests = server.requests();
+            assert_eq!(requests.len(), 3, "id must not become an extra prompt");
+            let messages = format!("{:?}", requests[2].messages);
+            assert!(messages.contains("first instruction") && messages.contains("new instruction"));
+            assert!(!messages.contains("other instruction") && !messages.contains(&id));
+            assert_eq!(
+                FsStore::new(env.work().join("custom-sessions")).list(None).len(),
+                2
+            );
+        }
+    }
+}

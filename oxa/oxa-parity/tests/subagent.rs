@@ -1001,7 +1001,7 @@ fn eng_019() {
                 .cloned()
                 .unwrap_or_else(|| panic!("a tool_execution_end: {:#?}", rpc.events));
             assert_eq!(end["isError"], true, "{end}");
-            assert_eq!(rpc.finish(), Some(0));
+            assert_eq!(rpc.finish(), Some(130), "the aborted run reports interrupted");
         }
     }
 }

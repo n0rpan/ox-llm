@@ -71,6 +71,33 @@ pub fn choose_mode(a: &Args, stdin_is_tty: bool, stdout_is_tty: bool) -> RunMode
 
 pub(crate) const USAGE_HINT: &str = "Run `oxa --help` for the list of options.";
 
+fn headless_argument_error(argv: &[String], stdin_tty: bool, stdout_tty: bool) -> bool {
+    let standalone = parse_args(&argv[..argv.len().min(1)], &[])
+        .ok()
+        .is_some_and(|args| args.subcommand.is_some());
+    let flags: Vec<&str> = argv
+        .iter()
+        .map(String::as_str)
+        .take_while(|arg| *arg != "--")
+        .collect();
+    let single_action = flags.iter().any(|arg| {
+        ["--export", "--list-models", "--help", "-h", "--version", "-v"]
+            .iter()
+            .any(|flag| *arg == *flag || arg.starts_with(&format!("{flag}=")))
+    });
+    if standalone || single_action {
+        return false;
+    }
+    !stdin_tty
+        || !stdout_tty
+        || flags
+            .iter()
+            .any(|arg| matches!(*arg, "-p" | "--print" | "--mode=rpc" | "--mode=json"))
+        || flags
+            .windows(2)
+            .any(|pair| pair[0] == "--mode" && matches!(pair[1], "rpc" | "json"))
+}
+
 /// The whole program. Returns the exit code; never panics on user error.
 ///
 /// Order: parse args (two passes for extension flags) -> `--help` / `--version` ->
@@ -93,11 +120,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     let a = match parse_args(argv, &[]) {
         Ok(a) => a,
         Err(e) => {
-            let headless = !stdin_is_tty
-                || !stdout_is_tty
-                || argv
-                    .iter()
-                    .any(|arg| matches!(arg.as_str(), "-p" | "--print" | "rpc" | "json"));
+            let headless = headless_argument_error(argv, stdin_is_tty, stdout_is_tty);
             return if headless {
                 finish_outcome(Err(e), &mut *stderr)
             } else {
@@ -231,6 +254,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     // CLI-019: pi's question when `--session <id>` names a session of another directory
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
     // stdin (read byte by byte, so piped prompt text after it stays unread).
+    let mut a = a;
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
             if mode == RunMode::Rpc {
@@ -244,7 +268,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             answer == "y" || answer == "yes"
         };
         prepare(
-            &a,
+            &mut a,
             env,
             &dirs,
             &cwd,
@@ -280,6 +304,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             let e = OxaError::new(codes::USAGE, format!("Unknown option: --{name}")).with_hint(USAGE_HINT);
             return report(&mut *stderr, &e);
         }
+        let again = resolve_continue_word(&again, &prep.built.dirs).unwrap_or(again);
         for (name, value) in &again.extension_flags {
             for h in &prep.built.hook_sets.hooks {
                 h.set_flag(name, value);
@@ -421,7 +446,7 @@ impl Built {
 /// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
 /// caller once the session is open, so a failed start prints only its one error line.
 fn prepare(
-    a: &Args,
+    a: &mut Args,
     env: &Env,
     dirs: &Dirs,
     cwd: &Path,
@@ -582,6 +607,10 @@ fn prepare(
         }
     }
     let dirs = &session_dirs;
+    // Spaced --continue is ambiguous until the effective store is known.
+    if let Some(resolved) = resolve_continue_word(a, dirs) {
+        *a = resolved;
+    }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
     let engine = child.wrap(engine_with_settings(&endpoint, &settings)?);
@@ -866,6 +895,27 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
             Vec::new()
         }
     }
+}
+
+/// `--continue <word>`: the word is the id of an existing session, or else the first words of
+/// the prompt (and the latest session continues). `None` when there is nothing to settle.
+fn resolve_continue_word(a: &Args, dirs: &Dirs) -> Option<Args> {
+    let store = FsStore::new(dirs.sessions_dir.clone());
+    let (word, at) = a.continue_word.as_ref()?;
+    let mut out = a.clone();
+    out.continue_word = None;
+    let is_id = !a.no_session
+        && a.session.is_none()
+        && a.fork.is_none()
+        && !a.resume
+        && crate::args::valid_session_id(word)
+        && store.resolve(word).is_ok_and(|session| session.id == *word);
+    if is_id {
+        out.continue_id = Some(word.clone());
+    } else {
+        out.messages.insert((*at).min(out.messages.len()), word.clone());
+    }
+    Some(out)
 }
 
 /// The open mode of the flags: `--no-session`, `--fork`, `--session`, `--session-id`,
