@@ -294,20 +294,186 @@ fn http_client() -> reqwest::Client {
         .expect("HTTP client")
 }
 async fn request(path: &str, body: Option<Value>) -> (u16, Value) {
+    request_timeout(path, body, 15).await
+}
+async fn request_timeout(path: &str, body: Option<Value>, seconds: u64) -> (u16, Value) {
     let url = format!("http://127.0.0.1:8092{path}");
     let client = http_client();
     let request = if let Some(body) = body {
         client.post(url).json(&body)
     } else {
         client.get(url)
-    };
+    }
+    .timeout(std::time::Duration::from_secs(seconds));
     match request.send().await {
-        Ok(reply) => (
-            reply.status().as_u16(),
-            reply.json().await.unwrap_or_else(|_| json!({})),
-        ),
+        Ok(mut reply) => {
+            let code = reply.status().as_u16();
+            let mut bytes = Vec::new();
+            loop {
+                match reply.chunk().await {
+                    Ok(Some(chunk)) => {
+                        bytes.extend_from_slice(&chunk[..chunk.len().min(65537 - bytes.len())]);
+                        if bytes.len() == 65537 {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => return (if code >= 400 { code } else { 0 }, json!({})),
+                }
+            }
+            if code < 400 && bytes.len() > 65536 {
+                return (0, json!({}));
+            }
+            bytes.truncate(65536);
+            let value = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .filter(Value::is_object);
+            (
+                if code < 400 && value.is_none() {
+                    0
+                } else {
+                    code
+                },
+                value.unwrap_or_else(|| json!({})),
+            )
+        }
         Err(_) => (0, json!({})),
     }
+}
+async fn launch(words: &[String]) -> i32 {
+    use tokio::io::AsyncReadExt;
+    let child = tokio::process::Command::new("/proc/self/exe")
+        .arg("__desktop_exec")
+        .args(words)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn();
+    if let Ok(mut child) = child {
+        let mut error = [0];
+        if matches!(
+            child
+                .stderr
+                .take()
+                .expect("desktop exec pipe")
+                .read(&mut error)
+                .await,
+            Ok(0)
+        ) {
+            return 0;
+        }
+        let _ = child.wait().await;
+    }
+    notify(&format!(
+        "This action needs the Omarchy desktop (`{}` was not found).",
+        words[0]
+    ))
+    .await;
+    1
+}
+async fn offered(alias: &str) -> bool {
+    let (code, value) = request_timeout("/v1/models", None, 1).await;
+    code == 200
+        && value["object"] == "list"
+        && value["data"].as_array().is_some_and(|rows| {
+            rows.len() <= 32
+                && rows.iter().all(Value::is_object)
+                && rows
+                    .iter()
+                    .filter(|row| row["id"] == alias && row["object"] == "model")
+                    .count()
+                    == 1
+        })
+}
+fn code_agent() -> Option<std::path::PathBuf> {
+    use nix::unistd::{access, AccessFlags};
+    let executable =
+        |path: &std::path::Path| path.is_file() && access(path, AccessFlags::X_OK).is_ok();
+    if let Some(path) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("oxa")))
+        .filter(|p| executable(p))
+    {
+        return Some(path);
+    }
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_else(|| "/bin:/usr/bin".into()))
+        .map(|p| p.join("oxa"))
+        .find(|p| executable(p))
+}
+async fn desktop_action(name: &str) -> i32 {
+    let service = if name == "images" {
+        "prompt-studio-app.service"
+    } else {
+        "local-ai-chat.service"
+    };
+    if command("systemctl", &["--user", "start", service]).await != Some(0) {
+        notify(if name == "images" { "The local image service could not start. Details: journalctl --user -u prompt-studio-app." }
+            else { "The local chat service could not start. Details: journalctl --user -u local-ai-chat." }).await;
+        return 1;
+    }
+    if name == "ornith" && !offered("ornith-35b-a3b-local").await {
+        notify("Ornith is not set up on this machine. Pick another model in Local AI.").await;
+        return 1;
+    }
+    if ["flash", "plan"].contains(&name) && !offered("qwen3.8-flash-next-local").await {
+        notify("Flash is not ready on this machine. Run `local-ai status` to see why.").await;
+        return 1;
+    }
+    if ["moe", "ornith", "flash"].contains(&name) {
+        let alias = match name {
+            "moe" => "qwen3.6-35b-a3b-local",
+            "ornith" => "ornith-35b-a3b-local",
+            _ => "qwen3.8-flash-next-local",
+        };
+        let (code, value) = request("/_local/select", Some(json!({"model":alias}))).await;
+        if code == 200 {
+            return 0;
+        }
+        notify(&reason(
+            &value,
+            "Model selection is unavailable while a request is running.",
+        ))
+        .await;
+        return 1;
+    }
+    if name == "plan" {
+        let Some(agent) = code_agent() else {
+            notify("The coding agent (oxa) is not installed. Reinstall ox-llm or run `local-ai doctor`.").await;
+            return 1;
+        };
+        let directory = std::env::var_os("LOCAL_AI_CODE_DIRECTORY")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| crate::paths::home().join("Work"));
+        return launch(&[
+            "omarchy".into(),
+            "launch".into(),
+            "terminal".into(),
+            "env".into(),
+            "-C".into(),
+            directory.to_string_lossy().into_owned(),
+            "OXA_ENGINE_URL=http://127.0.0.1:8092".into(),
+            agent.to_string_lossy().into_owned(),
+            "--model".into(),
+            "qwen3.8-flash-next-local".into(),
+            "--tools".into(),
+            "read,grep,find,ls".into(),
+        ])
+        .await;
+    }
+    if name == "images" && request("/_local/unload", Some(json!({}))).await.0 == 409 {
+        notify("Chat is still answering. Image generation can start when it finishes.").await;
+    }
+    launch(&[
+        "omarchy".into(),
+        "launch".into(),
+        "webapp".into(),
+        if name == "images" {
+            "http://127.0.0.1:8090".into()
+        } else {
+            "http://127.0.0.1:8092".into()
+        },
+    ])
+    .await
 }
 async fn command(name: &str, args: &[&str]) -> Option<i32> {
     tokio::process::Command::new(name)
@@ -349,6 +515,9 @@ fn plain_name(value: &str) -> bool {
 
 pub async fn run(args: Args) -> i32 {
     match args.action.as_str() {
+        "chat" | "images" | "moe" | "ornith" | "flash" | "plan" => {
+            desktop_action(&args.action).await
+        }
         "panel" => {
             use std::os::unix::process::ExitStatusExt;
             match tokio::process::Command::new("omarchy-shell")
@@ -390,10 +559,13 @@ pub async fn run(args: Args) -> i32 {
                 return 1;
             }
             i32::from(
-                request("/_local/harness/prepare", Some(json!({"harness":name})))
-                    .await
-                    .0
-                    != 200,
+                request_timeout(
+                    "/_local/harness/prepare",
+                    Some(json!({"harness":name})),
+                    300,
+                )
+                .await
+                .0 != 200,
             )
         }
         "flash-cache" => {
@@ -418,7 +590,12 @@ pub async fn run(args: Args) -> i32 {
                 notify("The local chat service could not start. Details: journalctl --user -u local-ai-chat.").await;
                 return 1;
             }
-            let (code, body) = request(&format!("/_local/{}", args.action), Some(json!({}))).await;
+            let (code, body) = request_timeout(
+                &format!("/_local/{}", args.action),
+                Some(json!({})),
+                if args.action == "load" { 200 } else { 15 },
+            )
+            .await;
             if code == 200 {
                 return 0;
             }
@@ -434,7 +611,11 @@ pub async fn run(args: Args) -> i32 {
             1
         }
         "clear-cache" => {
-            if request("/_local/cache/clear", Some(json!({}))).await.0 == 200 {
+            if request_timeout("/_local/cache/clear", Some(json!({})), 30)
+                .await
+                .0
+                == 200
+            {
                 return 0;
             }
             notify("Prefix cache is busy or unavailable. Try again when the request finishes.")
@@ -491,7 +672,7 @@ pub async fn run(args: Args) -> i32 {
             let Some(id) = args.value("--id").filter(|id| storage_id(id)) else {
                 return 2;
             };
-            if request("/_local/storage/delete", Some(json!({"id":id})))
+            if request_timeout("/_local/storage/delete", Some(json!({"id":id})), 120)
                 .await
                 .0
                 == 200
@@ -560,7 +741,7 @@ async fn cache(args: &Args) -> i32 {
                 return bad();
             };
             let (code, value) =
-                request("/_local/cache/budget", Some(json!({"bytes":budget}))).await;
+                request_timeout("/_local/cache/budget", Some(json!({"bytes":budget})), 30).await;
             if code == 200 {
                 if args.flag("--json") {
                     println!("{}", crate::paths::python_json(&value));
@@ -590,7 +771,7 @@ async fn cache(args: &Args) -> i32 {
             } else {
                 json!({"scope":"all"})
             };
-            let (code, value) = request("/_local/cache/clear", Some(payload)).await;
+            let (code, value) = request_timeout("/_local/cache/clear", Some(payload), 30).await;
             if code == 200 {
                 if args.flag("--json") {
                     println!("{}", crate::paths::python_json(&value));
@@ -632,7 +813,7 @@ fn valid_count(value: &Value) -> Value {
         .map_or(json!(0), |v| json!(v))
 }
 async fn cache_status() -> Value {
-    let (code, value) = request("/_local/cache", None).await;
+    let (code, value) = request_timeout("/_local/cache", None, 2).await;
     if code != 200 {
         return json!({"cache_available":false});
     }
@@ -689,7 +870,7 @@ fn storage_id(value: &str) -> bool {
     })
 }
 async fn storage_status() -> Value {
-    let (code, chat) = request("/_local/status", None).await;
+    let (code, chat) = request_timeout("/_local/status", None, 1).await;
     let unavailable = || json!({"storage_available":false,"entries":[]});
     if code != 200
         || !chat["capabilities"]
@@ -698,7 +879,7 @@ async fn storage_status() -> Value {
     {
         return unavailable();
     }
-    let (code, value) = request("/_local/storage", None).await;
+    let (code, value) = request_timeout("/_local/storage", None, 10).await;
     let Some(rows) = value["data"]
         .as_array()
         .filter(|v| v.len() <= 128 && code == 200)
@@ -756,7 +937,7 @@ async fn share(args: &Args) -> i32 {
         return bad();
     }
     if command == "status" && rest.is_empty() {
-        let (code, value) = request("/_local/share", None).await;
+        let (code, value) = request_timeout("/_local/share", None, 5).await;
         if code != 200 {
             eprintln!(
                 "local-ai: offline share status is not implemented by the Rust controller yet."

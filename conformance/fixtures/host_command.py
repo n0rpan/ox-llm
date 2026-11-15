@@ -6,7 +6,12 @@ from pathlib import Path
 import sys
 
 name = Path(sys.argv[0]).name
-row = json.dumps({'command': name, 'args': sys.argv[1:]}) + '\n'
+details = {}
+if name == 'omarchy' and os.environ.get('OXC_LAUNCH_METADATA') == '1':
+    previous = os.umask(0)
+    os.umask(previous)
+    details = {'session_leader': os.getsid(0) == os.getpid(), 'stdin_eof': os.read(0, 1) == b'', 'umask': previous}
+row = json.dumps({'command': name, 'args': sys.argv[1:], **details}) + '\n'
 fd = os.open(Path.home() / 'host-commands.jsonl', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
 os.write(fd, row.encode())
 os.close(fd)

@@ -1,0 +1,448 @@
+{
+  "chat": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "launch",
+          "webapp",
+          "http://127.0.0.1:8092"
+        ],
+        "command": "omarchy",
+        "session_leader": true,
+        "stdin_eof": true,
+        "umask": 23
+      }
+    ],
+    "requests": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "chat-no-desktop": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "This action needs the Omarchy desktop (`omarchy` was not found)."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "chat-start-fails": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "The local chat service could not start. Details: journalctl --user -u local-ai-chat."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "flash-duplicate": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Flash is not ready on this machine. Run `local-ai status` to see why."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "flash-malformed": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Flash is not ready on this machine. Run `local-ai status` to see why."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "flash-oversized": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Flash is not ready on this machine. Run `local-ai status` to see why."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "flash-select": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "body": {
+          "model": "qwen3.8-flash-next-local"
+        },
+        "method": "POST",
+        "path": "/_local/select"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "images-busy": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "prompt-studio-app.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Chat is still answering. Image generation can start when it finishes."
+        ],
+        "command": "notify-send"
+      },
+      {
+        "args": [
+          "launch",
+          "webapp",
+          "http://127.0.0.1:8090"
+        ],
+        "command": "omarchy",
+        "session_leader": true,
+        "stdin_eof": true,
+        "umask": 23
+      }
+    ],
+    "requests": [
+      {
+        "body": {},
+        "method": "POST",
+        "path": "/_local/unload"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "images-start-fails": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "prompt-studio-app.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "The local image service could not start. Details: journalctl --user -u prompt-studio-app."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [],
+    "stderr": "",
+    "stdout": ""
+  },
+  "ornith-unavailable": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Ornith is not set up on this machine. Pick another model in Local AI."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "plan-directory": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "launch",
+          "terminal",
+          "env",
+          "-C",
+          "<HOME>/synthetic project",
+          "OXA_ENGINE_URL=http://127.0.0.1:8092",
+          "<HOME>/bin/oxa",
+          "--model",
+          "qwen3.8-flash-next-local",
+          "--tools",
+          "read,grep,find,ls"
+        ],
+        "command": "omarchy",
+        "session_leader": true,
+        "stdin_eof": true,
+        "umask": 23
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "plan-no-agent": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "The coding agent (oxa) is not installed. Reinstall ox-llm or run `local-ai doctor`."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "plan-ready": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "launch",
+          "terminal",
+          "env",
+          "-C",
+          "<HOME>/Work",
+          "OXA_ENGINE_URL=http://127.0.0.1:8092",
+          "<HOME>/bin/oxa",
+          "--model",
+          "qwen3.8-flash-next-local",
+          "--tools",
+          "read,grep,find,ls"
+        ],
+        "command": "omarchy",
+        "session_leader": true,
+        "stdin_eof": true,
+        "umask": 23
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "select-error-bounded": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic synthetic "
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "body": {
+          "model": "qwen3.6-35b-a3b-local"
+        },
+        "method": "POST",
+        "path": "/_local/select"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "select-refused": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Synthetic request is running."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "body": {
+          "model": "qwen3.6-35b-a3b-local"
+        },
+        "method": "POST",
+        "path": "/_local/select"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  }
+}

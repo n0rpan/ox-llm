@@ -21,6 +21,30 @@ mod transport;
 
 fn main() {
     let words: Vec<String> = std::env::args().skip(1).collect();
+    if words.first().map(String::as_str) == Some("__desktop_exec") {
+        use nix::fcntl::{fcntl, FcntlArg, FdFlag};
+        use std::{io::Write, os::unix::process::CommandExt};
+        // A CLOEXEC error pipe preserves Popen's exec-success handshake while
+        // allowing setsid without an unsafe pre_exec closure. Desktop stdin
+        // and umask remain inherited from the CLI.
+        let descriptor = nix::unistd::dup(std::io::stderr()).and_then(|fd| {
+            fcntl(&fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
+            Ok(fd)
+        });
+        let Ok(descriptor) = descriptor else {
+            eprint!("E");
+            std::process::exit(1);
+        };
+        let mut errors = std::fs::File::from(descriptor);
+        if words.len() >= 2 && nix::unistd::setsid().is_ok() {
+            let _ = std::process::Command::new(&words[1])
+                .args(&words[2..])
+                .stderr(std::process::Stdio::null())
+                .exec();
+        }
+        let _ = errors.write_all(b"E");
+        std::process::exit(1);
+    }
     let ledger_exec = words.first().map(String::as_str) == Some("__engine_ledger_exec");
     if ledger_exec || words.first().map(String::as_str) == Some("__engine_exec") {
         use std::os::{fd::AsRawFd, unix::process::CommandExt};
