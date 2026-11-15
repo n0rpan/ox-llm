@@ -469,6 +469,26 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Run print mode and return its process exit code.
+pub fn run_print(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    run_print_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
+}
+
+/// Run JSON mode and return its process exit code.
+pub fn run_json(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    run_json_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,24 +546,4 @@ mod tests {
         assert!(out.is_empty(), "stdout is written by run_print, once");
         assert_eq!(String::from_utf8(err).unwrap(), "first draft\n");
     }
-}
-
-/// Run print mode and return its process exit code.
-pub fn run_print(
-    session: &mut Session,
-    prompts: Vec<(String, Vec<Part>)>,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<i32, OxaError> {
-    run_print_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
-}
-
-/// Run JSON mode and return its process exit code.
-pub fn run_json(
-    session: &mut Session,
-    prompts: Vec<(String, Vec<Part>)>,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<i32, OxaError> {
-    run_json_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
 }
