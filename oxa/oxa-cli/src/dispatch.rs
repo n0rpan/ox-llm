@@ -350,8 +350,9 @@ impl Built {
             // O-182: YOLO answers the policy's questions; the guard above it is untouched.
             policy: Box::new(
                 ModePolicy::new()
-                    .with_guard(oxa_perm::PathGuard::new(
+                    .with_guard(oxa_perm::PathGuard::with_real_home(
                         &self.dirs.home,
+                        oxa_sandbox::account_home().as_deref(),
                         &self.dirs.agent_dir,
                         &self.dirs.tmp_dir,
                     ))
