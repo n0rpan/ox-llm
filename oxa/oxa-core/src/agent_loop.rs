@@ -185,10 +185,13 @@ fn run_inner(
         };
 
         let usage: Usage = turn.usage;
-        note_cache(st, expected, &usage, first, sink);
-        if !usage.cached_missing {
-            crate::reload::after_reply(st, first, expected, usage.cached, sink);
-            // R2
+        if !st.info.caps.remote {
+            // Wave D D4: cache-miss accounting and the reload probe are local-engine features.
+            note_cache(st, expected, &usage, first, sink);
+            if !usage.cached_missing {
+                crate::reload::after_reply(st, first, expected, usage.cached, sink);
+                // R2
+            }
         }
 
         // W2: the reply is pushed exactly as streamed, then its usage (which sets the next
@@ -558,6 +561,9 @@ pub(crate) fn note_cache(
     first: bool,
     sink: &mut dyn EventSink,
 ) {
+    if st.info.caps.remote {
+        return;
+    }
     if usage.cached_missing {
         if !st.stats.cached_unreported {
             st.stats.cached_unreported = true;
