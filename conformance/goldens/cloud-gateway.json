@@ -182,7 +182,7 @@
         "openrouter": false
       },
       "rejected": {},
-      "spend_today_usd": 2.5e-05
+      "spend_today_usd": 2.23e-05
     },
     "public_ledger": {
       "answered": 1,
@@ -204,7 +204,7 @@
           "client": null,
           "completeness": "incomplete",
           "completion_tokens": 5,
-          "cost_usd": 2.5e-05,
+          "cost_usd": 2.23e-05,
           "ctl_prep_ms": "<measured:nonnegative-ms>",
           "error": null,
           "finish_reason": "stop",
@@ -276,7 +276,7 @@
         "client": null,
         "completeness": "incomplete",
         "completion_tokens": 5,
-        "cost_usd": 2.5e-05,
+        "cost_usd": 2.23e-05,
         "ctl_prep_ms": "<measured:nonnegative-ms>",
         "error": null,
         "finish_reason": "stop",
@@ -351,7 +351,7 @@
         "openrouter": false
       },
       "rejected": {},
-      "spend_today_usd": 2.5e-05
+      "spend_today_usd": 2.23e-05
     },
     "public_ledger": {
       "answered": 1,
@@ -373,7 +373,7 @@
           "client": null,
           "completeness": "incomplete",
           "completion_tokens": 5,
-          "cost_usd": 2.5e-05,
+          "cost_usd": 2.23e-05,
           "ctl_prep_ms": "<measured:nonnegative-ms>",
           "error": null,
           "finish_reason": "stop",
@@ -479,7 +479,7 @@
         "client": null,
         "completeness": "incomplete",
         "completion_tokens": 5,
-        "cost_usd": 2.5e-05,
+        "cost_usd": 2.23e-05,
         "ctl_prep_ms": "<measured:nonnegative-ms>",
         "error": null,
         "finish_reason": "stop",
@@ -555,7 +555,7 @@
         "openrouter": false
       },
       "rejected": {},
-      "spend_today_usd": 2.5e-05
+      "spend_today_usd": 2.23e-05
     },
     "public_ledger": {
       "answered": 1,
@@ -577,7 +577,7 @@
           "client": null,
           "completeness": "incomplete",
           "completion_tokens": 5,
-          "cost_usd": 2.5e-05,
+          "cost_usd": 2.23e-05,
           "ctl_prep_ms": "<measured:nonnegative-ms>",
           "error": null,
           "finish_reason": "stop",
@@ -649,7 +649,7 @@
         "client": null,
         "completeness": "incomplete",
         "completion_tokens": 5,
-        "cost_usd": 2.5e-05,
+        "cost_usd": 2.23e-05,
         "ctl_prep_ms": "<measured:nonnegative-ms>",
         "error": null,
         "finish_reason": "stop",
