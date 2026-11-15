@@ -517,7 +517,7 @@ class LedgerFailClosed(CloudCase):
         self.assertEqual(len(self.upstream.requests), 1)
 
     def test_client_write_failure_after_settlement_does_not_charge_twice(self):
-        from snapdragon_ai_lab.runtime import ctl_http
+        from oxc.runtime import ctl_http
         self.start()
         original = ctl_http.Handler.reply
 
