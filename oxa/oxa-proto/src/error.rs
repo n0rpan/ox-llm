@@ -51,6 +51,9 @@ impl fmt::Display for OxaError {
 
 impl std::error::Error for OxaError {}
 
+/// Process exit code for a spent daily cloud budget (`codes::BUDGET_EXHAUSTED`).
+pub const EXIT_BUDGET: i32 = 3;
+
 /// Stable error codes. A new code is added here by the architect; tasks pick from this list.
 pub mod codes {
     /// The engine endpoint refused the connection or is not reachable. Always carries a hint.
@@ -87,6 +90,9 @@ pub mod codes {
     /// The engine's queue is full or the slot is taken (503, also as an SSE `error` event):
     /// retried, after the `Retry-After` the message carries (`retry after <n> s`) when given.
     pub const ENGINE_BUSY: &str = "engine_busy";
+    /// The cloud gateway refused with 429 `budget_exceeded` (daily budget spent). Not retried;
+    /// `-p` / `--mode json` exit with [`EXIT_BUDGET`](super::EXIT_BUDGET).
+    pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
     /// A script (extension, codemode) threw, ran out of memory or passed its deadline.
     pub const SCRIPT: &str = "script";
     /// An MCP server failed or answered with a protocol error.

@@ -47,7 +47,11 @@ pub fn oxa_splash(
     if info.model_remote {
         second.push_str(&theme.fg(
             "accent",
-            &format!("cloud · {}", clean(info.model_provider.unwrap_or("remote"))),
+            &format!(
+                "cloud {} {}",
+                g.mid,
+                clean(info.model_provider.unwrap_or("remote"))
+            ),
         ));
         second.push_str(&theme.fg("muted", &format!(" {} ", g.mid)));
     } else if !model.is_empty() {

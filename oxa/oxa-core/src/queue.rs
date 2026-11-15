@@ -29,6 +29,13 @@ pub struct Shared {
     pub gate: Gate,
 }
 
+/// What an extension asked for: a new session, or another one (a path or an id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwapRequest {
+    New,
+    Switch(String),
+}
+
 /// The engine-use state of one instance (S1, F4, S4). `Default` = idle.
 ///
 /// * `in_flight`: a model request of this instance is running (`exec::request` holds it); a
@@ -59,6 +66,12 @@ pub struct Gate {
     pub override_warned: Mutex<Option<(String, [u8; 32])>>,
     pub abort_next: std::sync::atomic::AtomicBool,
     pub bg_abort: std::sync::atomic::AtomicBool,
+    /// A session swap an extension asked for (`ctx.newSession()` / `ctx.switchSession()`),
+    /// held for the front end, which opted in with `swap_enabled`.
+    pub swap: Mutex<Option<SwapRequest>>,
+    /// `true` once a front end polls `Session::take_swap_request`; without it the two
+    /// extension calls answer `unsupported_in_oxa`.
+    pub swap_enabled: std::sync::atomic::AtomicBool,
 }
 
 /// Holds [`Gate::in_flight`] for one request; dropping it opens the gate.
