@@ -177,7 +177,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
-        "oxa work <taskfile> [--rerun] [--publish] [--report-problems] | --status",
+        "oxa work <taskfile> [options] | --queue DIR --max N | --status",
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (

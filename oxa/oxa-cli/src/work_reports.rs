@@ -83,6 +83,18 @@ pub(crate) fn report(
     offline: bool,
     runner: Runner<'_>,
 ) -> Result<ReportRecord, String> {
+    // Queue workers share one per-user reporting lease across draft/search/read/write.
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::create_dir_all(&dirs.agent_dir).map_err(|e| e.to_string())?;
+    let gate = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dirs.agent_dir.join("work-report.lock"))
+        .map_err(|e| e.to_string())?;
+    gate.lock().map_err(|e| e.to_string())?;
     let (draft, title, body) =
         save_draft(&note.title, &note.notes, dirs, ctx, runner).map_err(|e| e.to_string())?;
     let mut result = ReportRecord {

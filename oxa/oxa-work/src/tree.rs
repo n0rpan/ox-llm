@@ -1,6 +1,7 @@
 //! Worktree continuation uses ordinary merges; no reset, stash or force checkout.
 use super::{checked, git, output, Result, Task};
 use std::path::{Path, PathBuf};
+use std::{fs::File, process::Command};
 
 pub(crate) struct Prepared {
     pub initial: String,
@@ -22,21 +23,25 @@ fn merge_prompt(tree: &Path, task: &Task, base: &str, output: &str) -> Result<St
     let pending = checked(git(tree, &["rev-parse", "MERGE_HEAD"]))?;
     Ok(format!("{}\n\nThere is a merge in progress from base {} at commit {pending}. The current base for this run is {base}. Resolve the conflicts, stage the resolutions, and finish the merge commit before completing the task. Then run `git merge --no-edit {base}` to integrate the captured current base as well, resolving and committing any further conflicts. Preserve the task's existing work.\nConflicted paths:\n{paths}\nMerge output:\n{output}", task.prompt, task.base))
 }
-pub(crate) fn prepare(repo: &Path, tree: &Path, task: &Task) -> Result<Prepared> {
+pub(crate) fn prepare(repo: &Path, tree: &Path, task: &Task, lock: &File) -> Result<Prepared> {
     let base = checked(git(
         repo,
         &["rev-parse", "--verify", &format!("{}^{{commit}}", task.base)],
     ))?;
+    let run = |mut command: Command| -> Result<String> {
+        command.stdin(lock.try_clone().map_err(|e| e.to_string())?);
+        super::checked_output(command.output().map_err(|e| e.to_string())?)
+    };
     if !tree.exists() {
         let branch = format!("refs/heads/{}", task.branch);
         let exists = output(git(repo, &["show-ref", "--verify", "--quiet", &branch]))?;
         let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
         match exists.status.code() {
             Some(0) => {
-                checked(git(repo, &["worktree", "add", tree_arg, &task.branch]))?;
+                run(git(repo, &["worktree", "add", tree_arg, &task.branch]))?;
             }
             Some(1) => {
-                checked(git(
+                run(git(
                     repo,
                     &["worktree", "add", "-b", &task.branch, tree_arg, &base],
                 ))?;
@@ -58,10 +63,12 @@ pub(crate) fn prepare(repo: &Path, tree: &Path, task: &Task) -> Result<Prepared>
             prompt: merge_prompt(tree, task, &base, "Resuming the retained merge.")?,
         });
     }
-    if !checked(git(tree, &["status", "--porcelain"]))?.is_empty() {
+    if !run(git(tree, &["status", "--porcelain"]))?.is_empty() {
         return Err("retained worktree has uncommitted changes; commit them before continuing".into());
     }
-    let merged = output(git(tree, &["merge", "--no-edit", &base]))?;
+    let mut merge = git(tree, &["merge", "--no-edit", &base]);
+    merge.stdin(lock.try_clone().map_err(|e| e.to_string())?);
+    let merged = merge.output().map_err(|e| e.to_string())?;
     if !merged.status.success() {
         if !merging(tree)? {
             return Err(format!(

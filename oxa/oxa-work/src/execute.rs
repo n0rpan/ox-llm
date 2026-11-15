@@ -29,7 +29,7 @@ pub(crate) fn execute(
     loop {
         match state.record.step {
             Step::Preparing => {
-                let prepared = tree::prepare(repo, &tree, task)?;
+                let prepared = tree::prepare(repo, &tree, task, lock)?;
                 let commands = tree::done_from_base(&tree, &prepared.base)?;
                 state.checkpoint = Some(Checkpoint {
                     initial: prepared.initial,

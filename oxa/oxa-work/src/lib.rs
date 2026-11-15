@@ -2,8 +2,10 @@
 mod execute;
 mod notes;
 mod publish;
+mod queue;
 pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{publish, report_notes};
+pub use queue::{run_queue, QueueEvent, QueueOptions, QueueStatus};
 mod state;
 mod tree;
 use serde::{Deserialize, Serialize};
@@ -201,6 +203,19 @@ struct AgentReply {
     notes: Vec<ProblemNote>,
     error: Option<String>,
 }
+pub(crate) fn worktree_root(common: &Path) -> Result<PathBuf> {
+    let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("git directory has no parent")?
+    } else {
+        common
+    };
+    let parent = repo_dir
+        .parent()
+        .ok_or("repository has no parent for worktrees")?;
+    let name = repo_dir.file_name().ok_or("repository has no directory name")?;
+    Ok(parent.join(".oxa-worktrees").join(name))
+}
+
 pub fn blocked_record(task: &Task, detail: String) -> Record {
     Record {
         id: task.id.clone(),
@@ -244,18 +259,7 @@ pub fn run_task_with_options(
     let lock_path = storage.join(format!("{}.lock", task.id));
     let lock = state::lock(&lock_path)?;
     let receipt = storage.join(format!("{}.json", task.id));
-    // The common git directory must not be an ancestor of the child cwd: the sandbox
-    // deliberately refuses writable git binds with that layout.
-    let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
-        common.parent().ok_or("git directory has no parent")?
-    } else {
-        &common
-    };
-    let parent = repo_dir
-        .parent()
-        .ok_or("repository has no parent for worktrees")?;
-    let name = repo_dir.file_name().ok_or("repository has no directory name")?;
-    let trees = parent.join(".oxa-worktrees").join(name);
+    let trees = worktree_root(&common)?;
     fs::create_dir_all(&trees).map_err(|e| e.to_string())?;
     let tree = trees.join(&task.id);
     let mut state = if receipt.exists() {

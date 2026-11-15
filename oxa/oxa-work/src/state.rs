@@ -68,6 +68,12 @@ pub(crate) fn read(path: &Path) -> Result<State> {
 pub(crate) fn save(path: &Path, state: &mut State, step: Step) -> Result<()> {
     state.record.step = step;
     state.record.progress_at = now();
+    atomic_write(
+        path,
+        &serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?,
+    )
+}
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let temporary = path.with_extension(format!(
         "tmp-{}-{}",
         std::process::id(),
@@ -83,8 +89,7 @@ pub(crate) fn save(path: &Path, state: &mut State, step: Step) -> Result<()> {
             .mode(0o600)
             .open(&temporary)
             .map_err(|e| e.to_string())?;
-        file.write_all(&serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         fs::rename(&temporary, path).map_err(|e| e.to_string())?;
         File::open(path.parent().ok_or("state has no parent")?)
