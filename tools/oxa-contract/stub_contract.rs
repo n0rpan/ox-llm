@@ -7,7 +7,7 @@
 //!
 //! Environment (set by run.sh):
 //! - `OXA_CONTRACT_ENGINE_URL` (required): the stub engine, `http://127.0.0.1:<port>`.
-//! - `OXA_CONTRACT_CTL_URL` (optional): the controller with `LOCAL_AI_QUEUE=1` in front of it.
+//! - `OXA_CONTRACT_CTL_URL` (optional): the controller with `OXC_QUEUE=1` in front of it.
 //! - `OXA_CONTRACT_MODE`: `engine` | `controller` | `both` (which servers the scenarios target).
 //! - `OXA_CONTRACT_N_CTX`: the engine's context size.
 //!

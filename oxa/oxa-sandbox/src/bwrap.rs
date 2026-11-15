@@ -885,7 +885,7 @@ mod tests {
         let env = TestEnv::new();
         let real = env.root().join("realhome");
         env.write("realhome/.ssh/id", "K");
-        env.write("realhome/.config/local-ai/llm/cloud-secrets.json", "{}");
+        env.write("realhome/.config/oxc/llm/cloud-secrets.json", "{}");
         let real_s = real.to_string_lossy().into_owned();
         for (writable, net) in [(true, true), (true, false), (false, true), (false, false)] {
             let mut sp = spec(&env.work(), net);

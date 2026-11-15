@@ -794,6 +794,51 @@ fn non_summary_failure_reports_the_error_and_leaves_the_wire_unchanged() {
 // ---------------------------------------------------------------------------------------------
 // Further tests
 
+/// #75: the `estimated_tokens_after` of a compaction includes the frozen prefix (system prompt
+/// and tool definitions), so the CTX meter and the "to N tokens" notice reflect what a fresh
+/// session starts with, not just the summary.
+#[test]
+fn estimated_tokens_after_includes_the_prefix() {
+    let env = TestEnv::new();
+    let (mut st, _eng) = state(
+        &env,
+        vec![ScriptTurn::text("reply"), ScriptTurn::text("SUM")],
+        tight(u32::MAX, u32::MAX),
+    );
+    say(&mut st, "hi");
+    assert_eq!(run(&mut st), RunEnd::Stopped);
+    let prefix_bytes = st.prefix.system_text().len() + st.prefix.tools_json.len();
+    let mut sink = VecSink::default();
+
+    compact_now(&mut st, None, CompactReason::Manual, &mut sink, &mut ui()).expect("compact");
+
+    let after = sink
+        .0
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::CompactionEnd { result: Some(r), .. } => {
+                Some((r.estimated_tokens_after, r.tokens_before))
+            }
+            _ => None,
+        })
+        .expect("a CompactionEnd with a result");
+    // The fake counts one token per byte: the estimate must be the prefix (system prompt and
+    // tools) plus the head (summary and kept tail), not the head alone.
+    let head_bytes: u32 = st
+        .transcript
+        .wire()
+        .iter()
+        .map(|m| m.content.as_deref().unwrap_or("").len() as u32)
+        .sum();
+    // main (#97) counts the whole request with the engine's own count when it has one, so
+    // the exact number is the engine's; the estimate still covers the prefix, not just the head.
+    let (after, _before) = after;
+    assert!(
+        after >= prefix_bytes as u32 && after > head_bytes,
+        "estimated_tokens_after must include the prefix: {after} (prefix {prefix_bytes}, head {head_bytes})"
+    );
+}
+
 /// The cache warming setting and the CacheWarmingDecision hook both skip the prefill.
 #[test]
 fn idle_prefill_can_be_switched_off() {

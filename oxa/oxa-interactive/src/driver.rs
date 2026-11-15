@@ -2421,6 +2421,8 @@ impl<'a> Loop<'a> {
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
             model: self.vm.status.model.clone(),
+            model_remote: self.vm.status.model_remote,
+            model_provider: self.vm.status.model_provider,
         };
         let header_only = self.opts.settings.get("quietStartup").and_then(Value::as_str) == Some("header");
         if self.view.skin.is_oxa() && self.vm.header_override.is_none() {

@@ -7,7 +7,7 @@ Optional. Runs only when `tools/gates/tiny_real.sh` is invoked with HOP_PROBE=1.
   request and streams the reply back unchanged. Per request it writes one metadata line to
   `requests.jsonl` (times, sizes, the engine's own `timings`, the speculative counters). Nothing from
   the content goes there. With `--transcript` it also appends `transcript.jsonl` (request body and
-  reply text) for lab/benchmarks/tokens/token_harness.py; that file holds gate-run content and is kept
+  reply text) for oxc/benchmarks/tokens/token_harness.py; that file holds gate-run content and is kept
   only in the temporary directory unless the gate is told to copy it.
 - `summarize`: joins the proxy records, the oxa RPC events (written by `oxa_rpc_tee.py`) and the
   server's own `oxe-server: ... in N ms` log lines into one receipt: per-hop medians of prefill
