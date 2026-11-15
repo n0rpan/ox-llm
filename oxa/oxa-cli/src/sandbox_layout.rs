@@ -67,7 +67,7 @@ pub(crate) fn layout(
     } else if home_root {
         notices.push((Level::Warning, home_root_warning(cwd, home_itself)));
     }
-    Layout::build(&LayoutInputs {
+    let mut layout = Layout::build(&LayoutInputs {
         home: dirs.home.clone(),
         agent_dir: Some(dirs.agent_dir.clone()),
         path_var: env.get("PATH").unwrap_or("").to_string(),
@@ -75,7 +75,9 @@ pub(crate) fn layout(
         read_extra: paths(SETTING_READ_PATHS),
         write_extra: paths(SETTING_WRITE_PATHS),
         allow_home_write,
-    })
+    });
+    layout.mask_runtime_ipc = true;
+    layout
 }
 
 #[cfg(test)]
