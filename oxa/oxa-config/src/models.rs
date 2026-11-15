@@ -574,7 +574,11 @@ fn suggest(pattern: &str, available: &[ModelRef]) -> Option<String> {
     }
     available
         .iter()
-        .map(|m| (edit_distance(&p, &m.model.to_lowercase()), m))
+        .map(|m| {
+            let id = m.model.to_lowercase();
+            let tail = id.rsplit('/').next().unwrap_or(&id);
+            (edit_distance(&p, &id).min(edit_distance(&p, tail)), m)
+        })
         .filter(|(d, _)| *d <= 3.max(p.len() / 4))
         .min_by_key(|(d, _)| *d)
         .map(|(_, m)| name(m))
