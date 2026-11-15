@@ -127,7 +127,7 @@ fn argv_golden_per_writable_net() {
     let base = |writable: bool, net: bool| {
         let mut s = spec("ls", cwd, writable, net);
         s.env.clear();
-        bwrap_args(&s, home)
+        oxa_sandbox::without_account_home(bwrap_args(&s, home))
     };
     // writable, no network
     assert_eq!(
@@ -152,6 +152,8 @@ fn argv_golden_per_writable_net() {
             "--bind",
             "/w",
             "/w",
+            "--remount-ro",
+            "/h",
             "--chdir",
             "/w",
             "--clearenv",
@@ -200,6 +202,8 @@ fn argv_golden_per_writable_net() {
             "--bind",
             "/w",
             "/w",
+            "--remount-ro",
+            "/h",
             "--chdir",
             "/w",
             "--clearenv",
@@ -247,6 +251,8 @@ fn argv_golden_per_writable_net() {
             "--ro-bind",
             "/w",
             "/w",
+            "--remount-ro",
+            "/h",
             "--chdir",
             "/w",
             "--clearenv",
@@ -295,6 +301,8 @@ fn argv_golden_per_writable_net() {
             "--ro-bind",
             "/w",
             "/w",
+            "--remount-ro",
+            "/h",
             "--chdir",
             "/w",
             "--clearenv",
@@ -415,6 +423,44 @@ fn home_ssh_absent() {
     );
     assert_ne!(cat.exit, Some(0));
     assert!(!String::from_utf8_lossy(&cat.output).contains("PRIVATE"));
+}
+
+/// #52: a secret env var (`GH_TOKEN`) reaches the command through `--args <fd>`, not argv.
+#[test]
+fn gh_token_reaches_the_command_but_not_the_bwrap_command_line() {
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let mut sp = spec("echo \"[$GH_TOKEN]\"", &env.work(), true, false);
+    sp.env.push(("GH_TOKEN".into(), "ghp_SECRET123".into()));
+    let res = sb.run(&sp, &CancelToken::new(), &mut |_| {});
+    let out = String::from_utf8_lossy(&res.output).into_owned();
+    assert!(out.contains("[ghp_SECRET123]"), "{out}");
+}
+
+/// #53: with another `$HOME` the account's real home is an empty directory inside the sandbox,
+/// in every mode (plan: read-only cwd; with and without network).
+#[test]
+fn a_different_home_hides_the_account_home() {
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let Some(real) = oxa_sandbox::account_home()
+        .filter(|r| std::fs::read_dir(r).is_ok_and(|mut d| d.next().is_some()) && !env.work().starts_with(r))
+    else {
+        return;
+    };
+    for (writable, net) in [(true, true), (true, false), (false, false)] {
+        let cmd = format!(
+            "ls -A '{}' | wc -l; test -e '{0}/.ssh' && echo SSH_VISIBLE",
+            real.display()
+        );
+        let res = sb.run(
+            &spec(&cmd, &env.work(), writable, net),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        let out = String::from_utf8_lossy(&res.output).into_owned();
+        assert_eq!(out.trim(), "0", "writable={writable} net={net}: {out}");
+    }
 }
 
 /// needs bwrap
@@ -605,6 +651,45 @@ fn bash_tool_exit_code_and_timeout_lines() {
     let out = run(serde_json::json!({ "command": "true" }));
     assert_eq!(out.text, "(no output)");
 
+    let notice = sb.persistence_notice().unwrap();
+    for command in ["echo TMPDIR", "echo /tmp"] {
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.ends_with(notice), "{}", out.text);
+    }
+    for error in [
+        "Read-only file system",
+        "Permission denied",
+        "Operation not permitted",
+    ] {
+        let command = format!("echo '{error}' >&2; exit 1");
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(out.is_error);
+        assert!(out.text.contains(notice), "{}", out.text);
+        let command = format!("echo '{error}'");
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(!out.text.contains(notice), "successful output is not an error");
+    }
+    let out = run(serde_json::json!({ "command": "echo tmpdir /TMP" }));
+    assert_eq!(out.text, "tmpdir /TMP\n");
+
+    // Scratch succeeds, but the model sees its lifetime; streaming process bytes stay raw.
+    let mut live = String::new();
+    let out = tool.run(
+        &serde_json::json!({ "command": "echo scratch > /tmp/oxa-98-tool; cat /tmp/oxa-98-tool" }),
+        &cx,
+        &mut |chunk| live.push_str(chunk),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(live, "scratch\n");
+    assert!(out.text.contains("discarded after each command"));
+    let out = run(serde_json::json!({ "command": "test ! -e /tmp/oxa-98-tool" }));
+    assert!(!out.is_error, "{}", out.text);
+    let out = run(serde_json::json!({ "command": "echo lost > ~/oxa-98-tool" }));
+    assert!(out.is_error, "{}", out.text);
+    assert!(out.text.contains("Read-only file system"));
+    assert!(out.text.contains(notice));
+
     // Two runs of a timeout give identical bytes: no timing text (W4).
     let a = run(serde_json::json!({ "command": "echo a; sleep 30", "timeout": 1 }));
     let b = run(serde_json::json!({ "command": "echo a; sleep 30", "timeout": 1 }));
@@ -647,4 +732,37 @@ fn user_bash_runs_in_cwd_without_sandbox() {
     let work = env.work().canonicalize().expect("work dir");
     assert!(text.contains(&*work.to_string_lossy()), "{text}");
     assert!(text.contains("marked"), "{text}");
+}
+
+/// Issue #98: the hidden home must not accept writes that silently disappear.
+#[test]
+fn hidden_home_writes_fail_but_tmp_is_scratch() {
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let home = sb.run(
+        &spec("touch ~/probe", &env.work(), true, false),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    assert_ne!(home.exit, Some(0), "hidden home writes must fail, not disappear");
+    assert!(String::from_utf8_lossy(&home.output).contains("Read-only file system"));
+    assert!(!env.home().join("probe").exists());
+
+    let scratch = sb.run(
+        &spec(
+            "touch /tmp/oxa-98-scratch; test -f /tmp/oxa-98-scratch",
+            &env.work(),
+            true,
+            false,
+        ),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    assert_eq!(scratch.exit, Some(0));
+    let next = sb.run(
+        &spec("test ! -e /tmp/oxa-98-scratch", &env.work(), true, false),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    assert_eq!(next.exit, Some(0), "scratch must not persist between calls");
 }

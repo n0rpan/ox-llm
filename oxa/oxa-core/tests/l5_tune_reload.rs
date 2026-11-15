@@ -1,15 +1,14 @@
 //! Item A of the tune-reload lane: the per-tool tuning (`st.tune`) follows the engine's context
 //! window and the settings at the next budget refresh (`/reload`, a model switch) and at a
-//! same-bytes reload, without a new prefix epoch. The `local` flag stays tied to the epoch in
-//! force, and profile `pi` never changes its tune or its prefix bytes.
+//! same-bytes reload, without a new prefix epoch.
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    AgentEvent, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, HeadlessUi, OxaError, Profile,
-    StreamEvent, ToolTune, VecSink,
+    AgentEvent, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, HeadlessUi, OxaError,
+    StreamEvent, VecSink,
 };
 use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_sandbox::NoSandbox;
@@ -141,7 +140,7 @@ fn big_file(env: &TestEnv) {
 fn a_smaller_window_on_reload_shrinks_the_read_page_without_an_epoch() {
     let env = TestEnv::new();
     big_file(&env);
-    write_settings(&env, r#"{"oxa": {"profile": "local"}}"#);
+    write_settings(&env, r#"{"oxa": {}}"#);
     let engine = Window::new(Vec::new(), 64_000);
     let mut s = open(&env, engine.clone());
     assert_eq!(s.inner().tune.read_page_lines, 400);
@@ -152,11 +151,6 @@ fn a_smaller_window_on_reload_shrinks_the_read_page_without_an_epoch() {
     assert_eq!(epoch_state(&s), before, "epoch count and prefix sha unchanged");
     assert_eq!(s.inner().tune.read_page_lines, 200);
     assert_eq!(s.inner().tune.read_page_bytes, 5760);
-    assert!(
-        s.inner().tune.local,
-        "the local flag stays with the epoch in force"
-    );
-
     let text = read_first_page(&mut s, &engine);
     assert!(text.contains("row 0200"), "first page ends at line 200: {text:?}");
     assert!(!text.contains("row 0201"), "no line past the small page");
@@ -167,7 +161,7 @@ fn a_smaller_window_on_reload_shrinks_the_read_page_without_an_epoch() {
 fn a_larger_window_on_reload_widens_the_read_page_without_an_epoch() {
     let env = TestEnv::new();
     big_file(&env);
-    write_settings(&env, r#"{"oxa": {"profile": "local"}}"#);
+    write_settings(&env, r#"{"oxa": {}}"#);
     let engine = Window::new(Vec::new(), 16_000);
     let mut s = open(&env, engine.clone());
     assert_eq!(s.inner().tune.read_page_lines, 200);
@@ -190,7 +184,7 @@ fn a_larger_window_on_reload_widens_the_read_page_without_an_epoch() {
 #[test]
 fn a_settings_reload_of_timeout_and_diet_applies_without_an_epoch() {
     let env = TestEnv::new();
-    write_settings(&env, r#"{"oxa": {"profile": "local"}}"#);
+    write_settings(&env, r#"{"oxa": {}}"#);
     let engine = Window::new(Vec::new(), 64_000);
     let mut s = open(&env, engine);
     assert!(s.inner().tune.diet);
@@ -199,7 +193,7 @@ fn a_settings_reload_of_timeout_and_diet_applies_without_an_epoch() {
 
     write_settings(
         &env,
-        r#"{"oxa": {"profile": "local", "diet": {"tools": false}, "bash": {"defaultTimeout": 30}}}"#,
+        r#"{"oxa": {"diet": {"tools": false}, "bash": {"defaultTimeout": 30}}}"#,
     );
     assert!(
         !reload(&mut s),
@@ -211,40 +205,5 @@ fn a_settings_reload_of_timeout_and_diet_applies_without_an_epoch() {
         s.inner().tune.bash_timeout_s,
         30,
         "the timeout setting is in force"
-    );
-    assert!(s.inner().tune.local);
-}
-
-#[test]
-fn profile_pi_keeps_the_default_tune_and_the_bytes_across_window_changes() {
-    let env = TestEnv::new();
-    big_file(&env);
-    write_settings(&env, r#"{"oxa": {"profile": "pi"}}"#);
-    let engine = Window::new(Vec::new(), 16_000);
-    let mut s = open(&env, engine.clone());
-    assert_eq!(s.inner().stats.profile, Profile::Pi);
-    assert_eq!(s.inner().tune, ToolTune::default());
-    let before = epoch_state(&s);
-
-    engine.set_n_ctx(64_000);
-    assert!(!reload(&mut s));
-    assert_eq!(
-        s.inner().tune,
-        ToolTune::default(),
-        "pi tune under a larger window"
-    );
-    engine.set_n_ctx(8_000);
-    assert!(!reload(&mut s));
-    assert_eq!(
-        s.inner().tune,
-        ToolTune::default(),
-        "pi tune under a smaller window"
-    );
-    assert_eq!(epoch_state(&s), before, "pi bytes do not change with the window");
-
-    let text = read_first_page(&mut s, &engine);
-    assert!(
-        text.contains("row 1000"),
-        "pi reads the whole file under the 2000-line page"
     );
 }

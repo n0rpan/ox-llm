@@ -309,7 +309,7 @@ fn shown_entry_view() {
     let text = joined(&aborted);
     assert!(text.contains("half a reply"), "{text}");
     assert!(
-        text.contains("aborted: not sent to the model; ask again"),
+        text.contains("aborted: cancelled; the prompt stays in the conversation"),
         "{text}"
     );
 

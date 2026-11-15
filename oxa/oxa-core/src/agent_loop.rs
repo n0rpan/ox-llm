@@ -94,6 +94,7 @@ fn run_inner(
     opening: &[EventMessage],
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
+    let mut done = crate::done::DoneState::default();
     loop {
         // E-INT 1: host requests that arrived since the last step (queries, appends) are
         // served between steps; session-shape actions wait for settlement.
@@ -133,10 +134,33 @@ fn run_inner(
             inner: &mut *sink,
             text: String::new(),
             got_data: false,
+            detector: crate::loopguard::LoopDetector::new(),
+            cancel: st.shared.cancel.clone(),
+            looped: false,
         };
         let res = chat_with_retry(st, &opts, &mut capture, ui);
         let partial = std::mem::take(&mut capture.text);
         let got_data = capture.got_data;
+        let looped = capture.looped;
+        // Our own stop (degenerate repetition, #141), not a user abort: clear the flag we set.
+        let res = match res {
+            // The request may also have run to a clean end (finish and `[DONE]` in the same
+            // read as the threshold-crossing delta): `looped` is authoritative either way.
+            r if looped
+                && match &r {
+                    Ok(_) => true,
+                    Err(e) => e.code == oxa_proto::codes::ABORTED,
+                } =>
+            {
+                st.shared.cancel.reset();
+                Err(OxaError::new(
+                    oxa_proto::codes::STREAM_BROKEN,
+                    "Response stopped: the model fell into a repetition loop (the same block of text repeated).",
+                )
+                .with_hint("Rephrase the request or try again; the partial reply is shown but not sent back."))
+            }
+            other => other,
+        };
 
         let turn = match res {
             Ok(t) => t,
@@ -145,6 +169,9 @@ fn run_inner(
                 // Partial text is shown, never sent (W2); the wire keeps the user message.
                 let text = if partial.is_empty() {
                     e.to_string()
+                } else if looped {
+                    // Our own stop: the notice must stay visible after the partial reply.
+                    format!("{partial}\n\n{e}")
                 } else {
                     partial
                 };
@@ -240,6 +267,7 @@ fn run_inner(
                 crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
                 tool_msgs.push(msg);
             }
+            done.note_edits(&results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
@@ -310,6 +338,10 @@ fn run_inner(
         if deliver_steering(st, sink, ui, run_msgs)? {
             continue;
         }
+        if let Some(text) = crate::done::check(st, &mut done, sink, ui) {
+            crate::done::inject(st, text, sink, ui, run_msgs)?;
+            continue;
+        }
         return Ok(RunEnd::Stopped);
     }
 }
@@ -362,30 +394,42 @@ fn deliver_steering(
         return Ok(false);
     }
     for text in taken {
-        let wire = WireMsg::user(text.clone());
-        let msg = EventMessage {
-            msg: wire.clone(),
-            ts_ms: now_ms(),
-            stop: None,
-            usage: None,
-            model: None,
-            tool_name: None,
-            is_error: false,
-            error_message: None,
-        };
-        run_msgs.push(msg.clone());
-        persist(
-            st,
-            EntryBody::Msg {
-                wire,
-                parts: vec![Part::Text(text)],
-            },
-            sink,
-        )?;
-        crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
-        crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
+        push_user(st, text, sink, ui, run_msgs)?;
     }
     Ok(true)
+}
+
+/// Append one user message to the transcript and announce it.
+pub(crate) fn push_user(
+    st: &mut SessionState,
+    text: String,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+) -> Result<(), OxaError> {
+    let wire = WireMsg::user(text.clone());
+    let msg = EventMessage {
+        msg: wire.clone(),
+        ts_ms: now_ms(),
+        stop: None,
+        usage: None,
+        model: None,
+        tool_name: None,
+        is_error: false,
+        error_message: None,
+    };
+    run_msgs.push(msg.clone());
+    persist(
+        st,
+        EntryBody::Msg {
+            wire,
+            parts: vec![Part::Text(text)],
+        },
+        sink,
+    )?;
+    crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
+    crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
+    Ok(())
 }
 
 /// Take steering messages from the shared queue (`Shared::take_steering` applies the mode)
@@ -586,6 +630,9 @@ struct Capture<'a> {
     inner: &'a mut dyn EventSink,
     text: String,
     got_data: bool,
+    detector: crate::loopguard::LoopDetector,
+    cancel: oxa_proto::CancelToken,
+    looped: bool,
 }
 
 impl EventSink for Capture<'_> {
@@ -593,11 +640,17 @@ impl EventSink for Capture<'_> {
         if let AgentEvent::MessageStart { .. } = e {
             self.text.clear();
             self.got_data = false;
+            self.detector.reset();
+            self.looped = false;
         }
         if let AgentEvent::MessageUpdate { delta, .. } = e {
             self.got_data = true;
             if let oxa_proto::MessageDelta::TextDelta { delta, .. } = delta {
                 self.text.push_str(delta);
+                if !self.looped && self.detector.push(delta) {
+                    self.looped = true;
+                    self.cancel.cancel();
+                }
             }
         }
         self.inner.emit(e);

@@ -10,18 +10,19 @@ use oxa_core::{
     append_entry, compact_now, idle_prefill, maybe_compact, run_loop, Queue, RunEnd, SessionState, Shared,
     Stats, Toolset,
 };
-use oxa_fake::{check_w1, check_w5, Fault, Recorded, ScriptTurn, ScriptedEngine, TestEnv};
+use oxa_fake::{check_w1, check_w5, Recorded, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    AgentEvent, CancelToken, CommandSpec, CompactReason, Engine, EntryBody, FrozenPrefix, HeadlessUi,
-    HookPoint, HookReply, Hooks, Mode, OxaError, Policy, Role, ThinkingLevel, Tool, ToolCall, Ui, Usage,
-    Value, VecSink, WireMsg,
+    codes, AgentEvent, CancelToken, CommandSpec, CompactReason, Engine, Entry, EntryBody, FrozenPrefix,
+    HeadlessUi, HookPoint, HookReply, Hooks, Mode, OxaError, Policy, Role, ThinkingLevel, Tool, ToolCall, Ui,
+    Usage, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
-use oxa_session::{MemStore, SessionStore, Transcript, Tree};
+use oxa_session::{MemStore, SessionHeader, SessionMeta, SessionRef, SessionStore, Transcript, Tree};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------------------------
@@ -46,8 +47,17 @@ fn build(
     compact: CompactPolicy,
     settings: Settings,
 ) -> SessionState {
-    let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
-    let profile = settings.profile();
+    build_with_store(env, Arc::new(MemStore::new()), engine, hooks, compact, settings)
+}
+
+fn build_with_store(
+    env: &TestEnv,
+    store: Arc<dyn SessionStore>,
+    engine: Arc<dyn Engine>,
+    hooks: Vec<Arc<dyn Hooks>>,
+    compact: CompactPolicy,
+    settings: Settings,
+) -> SessionState {
     let cwd = env.work();
     let sref = store.create(&cwd, None, None).expect("create session");
     let info = engine.info(None).expect("engine info");
@@ -98,10 +108,7 @@ fn build(
         shared,
         next_turn: Vec::new(),
         last_usage: None,
-        stats: Stats {
-            profile,
-            ..Stats::default()
-        },
+        stats: Stats::default(),
         spill_dir: env.tmp(),
         tool_env: Vec::new(),
         tune: Default::default(),
@@ -131,11 +138,6 @@ fn state_settings(
     let eng = Arc::new(ScriptedEngine::new(turns));
     let engine: Arc<dyn Engine> = eng.clone();
     (build(env, engine, Vec::new(), compact, settings), eng)
-}
-
-/// `local` falls back to a mechanical summary; these tests pin pi's failure policy.
-fn pi_settings() -> Settings {
-    Settings::from_values(json!({"oxa": {"profile": "pi"}}), json!({}))
 }
 
 /// Append a user message the way `Session::prompt` does.
@@ -221,6 +223,83 @@ impl Hooks for ReplyHook {
         } else {
             HookReply::Continue
         }
+    }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        Vec::new()
+    }
+    fn commands(&self) -> Vec<CommandSpec> {
+        Vec::new()
+    }
+    fn run_command(&self, _name: &str, _args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+}
+
+/// A store that fails the next append after [`FailOnceStore::fail_next`]; everything else
+/// delegates to [`MemStore`]. Models a disk error in a compaction step other than the summary.
+struct FailOnceStore {
+    inner: MemStore,
+    fail_next: AtomicBool,
+}
+
+impl FailOnceStore {
+    fn new() -> FailOnceStore {
+        FailOnceStore {
+            inner: MemStore::new(),
+            fail_next: AtomicBool::new(false),
+        }
+    }
+
+    fn fail_next(&self) {
+        self.fail_next.store(true, Ordering::SeqCst);
+    }
+}
+
+impl SessionStore for FailOnceStore {
+    fn create(
+        &self,
+        cwd: &std::path::Path,
+        id: Option<&str>,
+        parent: Option<&std::path::Path>,
+    ) -> Result<SessionRef, OxaError> {
+        self.inner.create(cwd, id, parent)
+    }
+    fn append(&self, s: &SessionRef, e: &Entry) -> Result<(), OxaError> {
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            return Err(OxaError::new(codes::IO, "disk full"));
+        }
+        self.inner.append(s, e)
+    }
+    fn load(&self, s: &SessionRef) -> Result<Vec<Entry>, OxaError> {
+        self.inner.load(s)
+    }
+    fn header(&self, s: &SessionRef) -> Result<SessionHeader, OxaError> {
+        self.inner.header(s)
+    }
+    fn list(&self, cwd: Option<&std::path::Path>) -> Vec<SessionMeta> {
+        self.inner.list(cwd)
+    }
+    fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {
+        self.inner.resolve(id_or_path)
+    }
+    fn delete(&self, s: &SessionRef) -> Result<(), OxaError> {
+        self.inner.delete(s)
+    }
+}
+
+/// Records the hook points that fire.
+#[derive(Default)]
+struct FiredHooks {
+    points: Mutex<Vec<HookPoint>>,
+}
+
+impl Hooks for FiredHooks {
+    fn fire(&self, p: HookPoint, _payload: &Value, _ui: &mut dyn Ui) -> HookReply {
+        self.points.lock().unwrap().push(p);
+        HookReply::Continue
     }
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         Vec::new()
@@ -390,7 +469,7 @@ fn manual_compact_instructions() {
         .expect("summary request");
     let instruction = summary.messages.last().expect("instruction");
     assert_eq!(instruction.role, Role::User);
-    let words = prompt::summary_target_words(st.settings.summary_target(st.stats.profile));
+    let words = prompt::summary_target_words(st.settings.summary_target());
     assert_eq!(
         instruction.content.as_deref(),
         Some(
@@ -548,49 +627,6 @@ fn summary_request_is_whole_wire_plus_one() {
     assert!(check_w1(&reqs, &rebases).is_empty(), "check_w1 green");
 }
 
-/// CompactionEnd error
-#[test]
-fn failure_leaves_wire_unchanged() {
-    let env = TestEnv::new();
-    let (mut st, eng) = state_settings(
-        &env,
-        vec![
-            ScriptTurn::text("reply"),
-            ScriptTurn::fault(Fault::Http {
-                status: 500,
-                body: "boom".into(),
-            }),
-        ],
-        tight(u32::MAX, u32::MAX),
-        pi_settings(),
-    );
-    say(&mut st, "hi");
-    assert_eq!(run(&mut st), RunEnd::Stopped);
-    let before = st.transcript.wire().to_vec();
-    let mut sink = VecSink::default();
-
-    let err = compact_now(&mut st, None, CompactReason::Manual, &mut sink, &mut ui());
-    assert!(err.is_err(), "a failed summary is an error");
-    assert_eq!(st.transcript.wire(), &before[..], "wire unchanged");
-    assert!(compaction_entries(&st).is_empty(), "no compaction entry");
-    // pi (agent-session.ts `_summarizationRetryCallbacks`, CMP-017): the 500 is retried; the
-    // script has no further turn, so the retry fails too and the compaction fails.
-    assert!(eng.requests().len() >= 3, "the failed summary was retried");
-    assert!(sink
-        .0
-        .iter()
-        .any(|e| matches!(e, AgentEvent::SummarizationRetryScheduled { attempt: 1, .. })));
-    assert!(sink
-        .0
-        .iter()
-        .any(|e| matches!(e, AgentEvent::SummarizationRetryFinished)));
-    assert!(sink.0.iter().any(|e| matches!(
-        e,
-        // The error of the last attempt.
-        AgentEvent::CompactionEnd { aborted: false, result: None, error_message: Some(m), .. } if !m.is_empty()
-    )));
-}
-
 /// readFiles / modifiedFiles
 #[test]
 fn compaction_entry_details_have_file_lists() {
@@ -699,6 +735,61 @@ fn events_sequence() {
     }
 }
 
+/// A compaction step other than the summary fails (the store's append): `CompactionEnd`
+/// reports the error, `session_compact_failed` fires, and the wire is unchanged.
+#[test]
+fn non_summary_failure_reports_the_error_and_leaves_the_wire_unchanged() {
+    let env = TestEnv::new();
+    let store = Arc::new(FailOnceStore::new());
+    let eng = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("reply"),
+        ScriptTurn::text("SUM"),
+    ]));
+    let engine: Arc<dyn Engine> = eng.clone();
+    let hooks = Arc::new(FiredHooks::default());
+    let mut st = build_with_store(
+        &env,
+        store.clone(),
+        engine,
+        vec![hooks.clone()],
+        tight(u32::MAX, u32::MAX),
+        Settings::default(),
+    );
+    say(&mut st, "hi");
+    assert_eq!(run(&mut st), RunEnd::Stopped);
+    let before = st.transcript.wire().to_vec();
+    store.fail_next();
+    let mut sink = VecSink::default();
+
+    let err = compact_now(&mut st, None, CompactReason::Manual, &mut sink, &mut ui())
+        .expect_err("the store failure fails the compaction");
+    assert_eq!(err.code, codes::IO);
+    assert_eq!(st.transcript.wire(), &before[..], "wire unchanged");
+    assert!(compaction_entries(&st).is_empty(), "no compaction entry");
+    assert!(
+        sink.0.iter().any(|e| matches!(
+            e,
+            AgentEvent::CompactionEnd {
+                aborted: false,
+                result: None,
+                will_retry: false,
+                error_message: Some(m),
+                ..
+            } if !m.is_empty()
+        )),
+        "the error is reported: {:?}",
+        sink.0
+    );
+    assert!(
+        hooks
+            .points
+            .lock()
+            .unwrap()
+            .contains(&HookPoint::SessionCompactFailed),
+        "session_compact_failed fired"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Further tests
 
@@ -724,7 +815,9 @@ fn estimated_tokens_after_includes_the_prefix() {
         .0
         .iter()
         .find_map(|e| match e {
-            AgentEvent::CompactionEnd { result: Some(r), .. } => Some(r.estimated_tokens_after),
+            AgentEvent::CompactionEnd { result: Some(r), .. } => {
+                Some((r.estimated_tokens_after, r.tokens_before))
+            }
             _ => None,
         })
         .expect("a CompactionEnd with a result");
@@ -736,10 +829,12 @@ fn estimated_tokens_after_includes_the_prefix() {
         .iter()
         .map(|m| m.content.as_deref().unwrap_or("").len() as u32)
         .sum();
-    assert_eq!(
-        after,
-        prefix_bytes as u32 + head_bytes,
-        "estimated_tokens_after must include the prefix"
+    // main (#97) counts the whole request with the engine's own count when it has one, so
+    // the exact number is the engine's; the estimate still covers the prefix, not just the head.
+    let (after, _before) = after;
+    assert!(
+        after >= prefix_bytes as u32 && after > head_bytes,
+        "estimated_tokens_after must include the prefix: {after} (prefix {prefix_bytes}, head {head_bytes})"
     );
 }
 
@@ -799,46 +894,6 @@ fn idle_prefill_only_when_the_engine_advertises_it() {
     idle_prefill(&mut st, &mut VecSink::default(), &mut ui());
     assert_eq!(eng.requests().len(), 1);
     assert_eq!(eng.requests()[0].max_tokens, 0);
-}
-
-/// A summary that fails after a mid-run overflow is returned (the next request would overflow),
-/// while the same failure after a reply is only reported.
-#[test]
-fn failure_policy_by_reason() {
-    let env = TestEnv::new();
-    let fail = || {
-        ScriptTurn::fault(Fault::Http {
-            status: 503,
-            body: "busy".into(),
-        })
-    };
-
-    let (mut st, _eng) = state_settings(&env, vec![fail()], tight(1, u32::MAX), pi_settings());
-    say(&mut st, "hi");
-    push(&mut st, WireMsg::assistant("partial"));
-    st.transcript.set_usage(&Usage {
-        prompt: 50,
-        completion: 0,
-        cached: 0,
-        cached_missing: false,
-    });
-    let ok = maybe_compact(&mut st, true, &mut VecSink::default(), &mut ui());
-    assert_eq!(ok, Ok(false), "after reply: reported, not returned");
-
-    let (mut st, _eng) = state_settings(&env, vec![fail()], tight(u32::MAX, 10), pi_settings());
-    say(&mut st, "hi");
-    push(&mut st, WireMsg::assistant("partial"));
-    say(&mut st, "current prompt");
-    st.transcript.set_usage(&Usage {
-        prompt: 50,
-        completion: 0,
-        cached: 0,
-        cached_missing: false,
-    });
-    assert!(
-        maybe_compact(&mut st, false, &mut VecSink::default(), &mut ui()).is_err(),
-        "mid run: returned"
-    );
 }
 
 /// Nothing to summarise (a lone user message is kept whole) is a no-op with no events.

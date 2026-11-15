@@ -1,4 +1,4 @@
-//! OXA-LOCAL-FIRST T3: the profile `local` declarations of the built-ins. Every schema is valid
+//! OXA-LOCAL-FIRST T3: the declarations of the built-ins. Every schema is valid
 //! JSON, has no `array` or `object` parameter, declares `integer` (never `number`) for numeric
 //! parameters, lists the required parameters first, and a real session runs one call per tool
 //! with integer arguments (no tool answers "Invalid arguments").
@@ -11,16 +11,16 @@ use oxa_proto::{Engine, HeadlessUi, Role, ToolCall, VecSink};
 use oxa_resources::{discover, DiscoverOpts};
 use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
-use oxa_tools::descriptions::local_specs;
+use oxa_tools::descriptions::builtin_specs;
 use serde_json::Value;
 use std::sync::Arc;
 
 const BUILTINS: [&str; 7] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 
 #[test]
-fn every_local_schema_is_flat_integer_json_with_required_first() {
+fn every_schema_is_flat_integer_json_with_required_first() {
     for name in BUILTINS {
-        let t = local_specs::by_name(name).unwrap_or_else(|| panic!("{name} has a local text"));
+        let t = builtin_specs::by_name(name).unwrap_or_else(|| panic!("{name} has a declared text"));
         let v: Value = serde_json::from_str(t.schema_json).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(v["type"], "object", "{name}");
         let props = v["properties"].as_object().expect("properties");
@@ -59,7 +59,7 @@ fn every_local_schema_is_flat_integer_json_with_required_first() {
         assert!(at("type") < at("properties"));
         assert!(at("properties") < at("required") || at("required") == usize::MAX);
     }
-    let edit: Value = serde_json::from_str(local_specs::by_name("edit").unwrap().schema_json).unwrap();
+    let edit: Value = serde_json::from_str(builtin_specs::by_name("edit").unwrap().schema_json).unwrap();
     assert_eq!(
         edit["required"],
         serde_json::json!(["path", "oldText", "newText"])
@@ -68,11 +68,7 @@ fn every_local_schema_is_flat_integer_json_with_required_first() {
 
 fn open(env: &TestEnv) -> (Session, Arc<ScriptedEngine>) {
     std::fs::create_dir_all(Dirs::under(env.root()).settings_file().parent().unwrap()).unwrap();
-    std::fs::write(
-        Dirs::under(env.root()).settings_file(),
-        r#"{"oxa": {"profile": "local"}}"#,
-    )
-    .unwrap();
+    std::fs::write(Dirs::under(env.root()).settings_file(), r#"{}"#).unwrap();
     let dirs = Dirs::under(env.root());
     let settings = Settings::load(&dirs, &env.work(), true);
     let resources = discover(
@@ -112,7 +108,7 @@ fn open(env: &TestEnv) -> (Session, Arc<ScriptedEngine>) {
 }
 
 #[test]
-fn each_local_tool_accepts_integer_arguments() {
+fn each_tool_accepts_integer_arguments() {
     let env = TestEnv::new();
     env.write("work/f.txt", "line 1\nline 2\nline 3\n");
     let (mut s, engine) = open(&env);

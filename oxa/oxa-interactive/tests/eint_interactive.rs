@@ -9,12 +9,12 @@ use oxa_core::{Deps, Open, Session, SwitchPlan, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_interactive::{
     activity_text, apply_event, over_cap_question, queued_text, run_loop, switch_step, worker_loop_with,
-    Activity, InteractiveOpts, OverCapChoice, Reopen, SessionCmd, SessionInfo, SwitchStep, UiRequest,
-    ViewModel, WorkerMsg, WorkerStop, OVER_CAP_CHOICES,
+    Activity, InteractiveOpts, OverCapChoice, Reopen, ReopenFn, SessionCmd, SessionInfo, SwitchStep,
+    UiRequest, ViewModel, WorkerMsg, WorkerStop, OVER_CAP_CHOICES,
 };
 use oxa_proto::{
     shown_why, AgentEvent, CommandSpec, Delivery, Entry, EntryBody, HookPoint, HookReply, Hooks, Host,
-    HostAction, KeyId, OxaError, ShortcutSpec, Tool, Ui, Value,
+    HostAction, KeyId, OxaError, ShortcutSpec, ThinkingLevel, Tool, Ui, Value,
 };
 use oxa_resources::Resources;
 use oxa_session::{MemStore, SessionStore};
@@ -189,14 +189,11 @@ struct Worker {
     stop: WorkerStop,
 }
 
-fn no_reopen() -> Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send> {
-    Box::new(|_| Err(OxaError::new("invalid", "no reopen in this test")))
+fn no_reopen() -> ReopenFn {
+    Box::new(|_, _| Err(OxaError::new("invalid", "no reopen in this test")))
 }
 
-fn spawn_worker(
-    session: Session,
-    reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send>,
-) -> Worker {
+fn spawn_worker(session: Session, reopen: ReopenFn) -> Worker {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (msg_tx, msg_rx) = mpsc::channel();
     let (ui_tx, ui_rx) = mpsc::channel();
@@ -446,7 +443,7 @@ fn stop_during_a_swap_aborts_the_session_entered_after_it() {
         let (gate_tx, gate_rx) = mpsc::channel::<()>();
         let env2 = TestEnv::new();
         let (e2, s2) = (engine2.clone(), store.clone());
-        let reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send> = Box::new(move |_| {
+        let reopen: ReopenFn = Box::new(move |_, _| {
             let _ = entered_tx.send(());
             let _ = gate_rx.recv();
             Session::open(deps(&env2, s2.clone(), e2.clone(), Vec::new()), Open::New)
@@ -738,6 +735,76 @@ fn status_after_compact_keeps_the_estimate() {
             "the post-compaction status must keep the estimate, got {}",
             status.context_tokens
         );
+        let _ = w.cmds.send(SessionCmd::Shutdown);
+        w.done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker ended");
+    });
+}
+
+/// A `/new` after a `/model` (and `/thinking`) switch must keep the switched model and
+/// thinking level, not fall back to the startup `--model` choice. The worker passes the model
+/// and thinking of the session it leaves to the reopen closure (which the dispatcher uses for
+/// `Open::New`); the status bar of the new session shows them.
+#[test]
+fn new_session_keeps_the_switched_model_and_thinking() {
+    bounded(30, || {
+        let env = TestEnv::new();
+        let engine = Arc::new(ScriptedEngine::new(Vec::new()));
+        let mut startup = deps(&env, Arc::new(MemStore::new()), engine.clone(), Vec::new());
+        startup.model = Some("startup-model".to_string());
+        startup.thinking = Some(ThinkingLevel::Off);
+        let session = Session::open(startup, Open::New).expect("open");
+        assert_eq!(session.state().model, "startup-model");
+
+        // Mirrors the dispatcher's reopen closure: `/new` carries the current model and
+        // thinking level over; the other modes restore the target session's own.
+        let env2 = TestEnv::new();
+        let engine2 = engine.clone();
+        let reopen: ReopenFn = Box::new(move |_, carry| {
+            let mut deps = deps(&env2, Arc::new(MemStore::new()), engine2.clone(), Vec::new());
+            deps.model = Some("startup-model".to_string());
+            deps.thinking = Some(ThinkingLevel::Off);
+            if let Some((model, thinking)) = carry {
+                deps.model = Some(model);
+                deps.thinking = Some(thinking);
+            }
+            Session::open(deps, Open::New)
+        });
+        let w = spawn_worker(session, reopen);
+
+        // `/model switched-model` then `/thinking high` on the running session.
+        w.cmds
+            .send(SessionCmd::SetModel("switched-model".to_string()))
+            .unwrap();
+        w.cmds.send(SessionCmd::SetThinking(ThinkingLevel::High)).unwrap();
+
+        // `/new`: the new session's status bar must show the switched model and level.
+        w.cmds.send(SessionCmd::Reopen(Reopen::New)).unwrap();
+        let end = Instant::now() + Duration::from_secs(10);
+        let mut model = String::new();
+        let mut thinking = None;
+        while Instant::now() < end {
+            match w.msgs.recv_timeout(Duration::from_millis(50)) {
+                Ok(WorkerMsg::Reopened { status, .. }) => {
+                    model = status.model.clone();
+                    thinking = status.thinking;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        assert_eq!(
+            model, "switched-model",
+            "the new session kept the `/model` switch"
+        );
+        assert_eq!(
+            thinking,
+            Some(ThinkingLevel::High),
+            "the new session kept the `/thinking` switch"
+        );
+
         let _ = w.cmds.send(SessionCmd::Shutdown);
         w.done
             .recv_timeout(Duration::from_secs(10))

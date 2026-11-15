@@ -4,10 +4,14 @@
 
 ### Fixed (first run)
 
+- The bash sandbox maps only the caller's uid, so root-owned system files show as uid 65534 (`nobody`) inside it; ownership checks that insist on "root or the caller" fail only there. Documented in [security.md](docs/pages/security.md#the-bash-sandbox), and the `exec_no_thp` wrapper test now skips (rather than fails) in such a user-namespace environment.
 - Started in your home directory and confirmed (or with `oxa.sandbox.allowHomeWrite`), bash now gets the home as its workspace: its folders and files are writable, the home folder itself, dotfiles, dot-folders and `~/bin` stay read-only, and keys stay masked. `/` and a parent of home are never writable, even with the setting; a symlink to home counts as home. The file tools ask before writing shell startup files and the agents' settings when started in home.
 
 ### Added
 
+- `oxa -p` now writes progress to stderr as the run goes (text before tool calls, `[tool]` start and end lines) and the final reply to stdout when the run ends (once, even when a `done` check or a steering message starts another turn after a first reply; that earlier reply goes to stderr), all flushed, so a killed run leaves a log. Stdout is unchanged.
+
+- `done` setting: a list of shell commands (for example `cargo fmt --check`) that oxa runs itself, in the sandbox, when a run that edited files is about to finish. A failure is fed back to the model for up to 2 automatic fix rounds, then reported; nothing changes while the list is empty. An entry `in <dir>: <command>` runs in a subfolder of the project (a missing folder or one outside the project is refused as `FAILED (not run)`). `-p` and `--mode json` exit 1 with one `done checks failed` line on standard error when the checks still fail at the end, and `-p` says so when a project's `done` was skipped because the project is not trusted.
 - First public release of oxa: a Rust reimplementation of the pi 1.5.2 coding agent for the oxe engine.
 - Session files have one writer: a second oxa opening a session that is open elsewhere stops with a clear message and `--fork` as the way out. Stale locks cannot occur (the lock dies with its process).
 - A compaction without a model summary (`local` profile) now says how many assistant/tool turns it dropped and shows `no summary` in the footer.

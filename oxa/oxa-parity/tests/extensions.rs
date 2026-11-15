@@ -580,42 +580,16 @@ fn ext_016() {
     assert!(r.has("compacted"), "session_compact fires: {}", r.log);
 }
 
-/// EXT-017 (P): `session_compact_failed` fires when the summary request fails. The summary request
-/// is the second request of the run; the fake answers it with a 500.
+/// EXT-017 (P): a failed summary request is replaced by the mechanical summary (R4), so the
+/// wire is compacted and `session_compact` fires; the extension learns that the model summary
+/// failed from `mechanical` and `summaryError`.
 #[test]
 fn ext_017() {
-    if oxa_parity::profile() == oxa_parity::Profile::Local {
-        // O-167 / R4: under `local` the failed summary is replaced by the mechanical one, so the
-        // wire is compacted and `session_compact` fires; the extension learns that the model
-        // summary failed from `mechanical` and `summaryError`.
-        let r = go(
-            &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}}"#.to_string()),
-                agent_ext(
-                "e",
-                "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact_failed', (e, ctx) => note(ctx, 'failed'));\noxa.on('session_compact', (e, ctx) => note(ctx, 'compacted mechanical=' + e.mechanical + ' error=' + (e.summaryError ? 'set' : 'none')));",
-            )],
-            vec![
-                ScriptTurn::text("ok"),
-                ScriptTurn::fault(Fault::Http {
-                    status: 500,
-                    body: "{\"error\":\"parity\"}".to_string(),
-                }),
-            ],
-            &["-p", "hi"],
-        );
-        assert!(
-            r.has("compacted mechanical=true error=set"),
-            "local: session_compact says the model summary failed: {}",
-            r.log
-        );
-        assert!(!r.has("failed"), "local: the wire was compacted: {}", r.log);
-        return;
-    }
     let r = go(
         &[("home/.oxa/agent/settings.json".to_string(), r#"{"compaction": {"keepRecentTokens": 1}}"#.to_string()),
             agent_ext(
             "e",
-            "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact_failed', (e, ctx) => note(ctx, 'failed'));",
+            "oxa.on('agent_end', (e, ctx) => { ctx.compact(); });\noxa.on('session_compact_failed', (e, ctx) => note(ctx, 'failed'));\noxa.on('session_compact', (e, ctx) => note(ctx, 'compacted mechanical=' + e.mechanical + ' error=' + (e.summaryError ? 'set' : 'none')));",
         )],
         vec![
             ScriptTurn::text("ok"),
@@ -626,7 +600,12 @@ fn ext_017() {
         ],
         &["-p", "hi"],
     );
-    assert!(r.has("failed"), "session_compact_failed fires: {}", r.log);
+    assert!(
+        r.has("compacted mechanical=true error=set"),
+        "session_compact says the model summary failed: {}",
+        r.log
+    );
+    assert!(!r.has("failed"), "the wire was compacted: {}", r.log);
 }
 
 /// EXT-018 (P): `session_before_tree` fires before a tree navigation. Navigation needs a front

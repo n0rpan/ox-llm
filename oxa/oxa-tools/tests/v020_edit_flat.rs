@@ -1,6 +1,6 @@
-//! T1 EDIT-FLAT (OXA-LOCAL-FIRST, profile `local`): the `edit` tool accepts pi's `edits[]` form
-//! and the flat `{path, oldText, newText}` form under every profile (the profile only changes
-//! which form is DECLARED; `oxa-core` tests the declaration). Both forms give pi's texts.
+//! T1 EDIT-FLAT (OXA-LOCAL-FIRST): the `edit` tool accepts the `edits[]` form and the flat
+//! `{path, oldText, newText}` form (the flat one is declared; `oxa-core` tests the declaration).
+//! Both forms give the same texts.
 //!
 //! Capability mapping (pi form -> flat form), each checked below:
 //! * one replacement: `edits: [{oldText, newText}]` -> one flat call; same result text, file,
@@ -22,7 +22,7 @@ use oxa_fake::TestEnv;
 use oxa_proto::{
     codes, CancelToken, ExecResult, ExecSpec, Mode, OxaError, Sandbox, Tool, ToolCtx, ToolOutput, Value,
 };
-use oxa_tools::descriptions::errors;
+use oxa_tools::descriptions::{default_edit, errors};
 use oxa_tools::EditTool;
 use serde_json::json;
 use std::path::Path;
@@ -111,7 +111,7 @@ fn result_text_and_file_are_identical_in_both_forms() {
 }
 
 #[test]
-fn error_texts_per_call_are_pis_single_edit_texts() {
+fn error_texts_per_call_match_in_both_forms() {
     let env = TestEnv::new();
     env.write("work/d.txt", "x\nx\ny\n");
     let cases = [
@@ -121,7 +121,7 @@ fn error_texts_per_call_are_pis_single_edit_texts() {
         ),
         (
             json!({"path": "d.txt", "oldText": "x", "newText": "q"}),
-            errors::edit_duplicate("d.txt", 0, 1, 2),
+            default_edit::not_unique("d.txt", &[1, 2]),
         ),
         (
             json!({"path": "d.txt", "oldText": "", "newText": "q"}),
@@ -136,7 +136,7 @@ fn error_texts_per_call_are_pis_single_edit_texts() {
         let out = run_tool(&env.work(), &flat);
         assert!(out.is_error);
         assert_eq!(out.text, want);
-        // The same edit in pi's form gives the same text.
+        // The same edit in the `edits[]` form gives the same text.
         let pi =
             json!({"path": "d.txt", "edits": [{"oldText": flat["oldText"], "newText": flat["newText"]}]});
         assert_eq!(run_tool(&env.work(), &pi), out);
