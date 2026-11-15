@@ -111,6 +111,9 @@ fn every_kept_command_has_handler() {
     assert!(fx.run("hello /model").is_none());
     // A path is not a command.
     assert!(fx.run("/tmp/file.txt what is this").is_none());
+    // Single-component absolute paths too (existing root entry, or a file name with a dot).
+    assert!(fx.run("/etc explain this directory").is_none());
+    assert!(fx.run("/README.md summarize this file").is_none());
 }
 
 /// #341: an unknown `/x` is rejected locally; `/help`, `/usage` and `/cost` answer locally.

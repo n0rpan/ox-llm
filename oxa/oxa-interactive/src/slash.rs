@@ -103,7 +103,11 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
     if !INTERACTIVE_COMMANDS.contains(&name) {
         // A template, skill or extension command goes to the core; a path (`/tmp/x`) is text.
         // Anything else is rejected here, without a model call.
-        if name.contains('/') || cx.commands.iter().any(|c| c.name == name) {
+        if name.contains('/')
+            || name.contains('.')
+            || std::path::Path::new(&format!("/{name}")).exists()
+            || cx.commands.iter().any(|c| c.name == name)
+        {
             return None;
         }
         return Some(notify(
