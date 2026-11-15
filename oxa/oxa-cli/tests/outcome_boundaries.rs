@@ -195,9 +195,9 @@ fn successful_builtins_are_done_in_every_headless_mode() {
                 .lines()
                 .filter_map(|line| serde_json::from_str(line).ok())
                 .collect();
-            assert!(records
-                .iter()
-                .any(|record| record["type"] == "agent_settled" && record["result"]["outcome"] == "done"));
+            assert!(records.iter().any(|record| record["type"] == "response"
+                && record["success"] == true
+                && record["data"]["disposition"] == "handled"));
         }
     }
 }
