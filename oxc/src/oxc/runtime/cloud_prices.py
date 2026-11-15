@@ -136,10 +136,10 @@ def overlay(configured, model):
         return configured
     if configured is None:
         return current
-    def floor(tier):
+    def floor(tier):  # name kept: applies live rates over the configured tier
         out = dict(tier)
         for field, rate in current.items():
-            out[field] = max(out.get(field, rate), rate)
+            out[field] = rate  # the live list price is the base; configured is only a fallback
         return out
     if 'tiers' in configured:
         return {'tiers': [floor(tier) for tier in configured['tiers']]}

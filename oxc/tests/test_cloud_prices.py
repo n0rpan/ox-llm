@@ -73,7 +73,7 @@ class PriceRefresh(unittest.TestCase):
         self.assertFalse(self.refresh())
         self.assertEqual(self.path.read_bytes(), before)
 
-    def test_fetched_prices_do_not_lower_configured_tiers(self):
+    def test_fetched_prices_replace_configured_rates(self):
         self.assertTrue(self.refresh())
         configured = {'tiers': [{'max_prompt_tokens': 100, 'input_per_million': 1,
                                  'output_per_million': 10},
@@ -82,8 +82,11 @@ class PriceRefresh(unittest.TestCase):
         with patch.object(cloud_prices, 'cache_path', return_value=self.path):
             value = cloud_prices.overlay(configured, UPSTREAM)
             self.assertEqual(value['tiers'][0]['input_per_million'], 3)
-            self.assertEqual(value['tiers'][0]['output_per_million'], 10)
-            self.assertEqual(value['tiers'][1]['input_per_million'], 7)
+            self.assertEqual(value['tiers'][0]['output_per_million'], 5)
+            self.assertEqual(value['tiers'][1]['input_per_million'], 3)
+            self.assertEqual(value['tiers'][1]['max_prompt_tokens'], None)
+            self.assertEqual(cloud_prices.overlay({'input_per_million': 99, 'output_per_million': 99},
+                                                  UPSTREAM)['input_per_million'], 3)
             self.assertIsNone(cloud_prices.overlay(None, 'unknown/model'))
             raw = profiles()[REMOTE]
             raw.pop('pricing')

@@ -1107,7 +1107,7 @@ class Meter:
             out['catalog_cost_usd'] = usd
         if item['provider'] == 'openrouter' and self.reported_cost is not None:
             out['reported_cost_usd'] = self.reported_cost
-            out['cost_usd'] = max(usd or 0, self.reported_cost)
+            out['cost_usd'] = self.reported_cost  # the bill; catalog_cost_usd keeps the estimate
         return out
 
 
