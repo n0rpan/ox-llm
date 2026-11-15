@@ -271,7 +271,7 @@ impl Goal {
     /// Callers must execute AbortTurn and still supervise owned cleanup.
     pub fn pause(&mut self, revision: u64) -> Result<Effect, Error> {
         self.check(revision)?;
-        if self.snapshot.state != State::Active {
+        if !matches!(self.snapshot.state, State::Active | State::Blocked) {
             return Err(Error::NotActive);
         }
         self.snapshot.state = if self.snapshot.turn_active {
@@ -467,6 +467,28 @@ mod tests {
         Decision::Continue {
             summary: "One useful step finished; more remains".into(),
         }
+    }
+    #[test]
+    fn a_waiting_goal_can_be_paused_without_starting_or_refunding_a_turn() {
+        let mut goal = goal(Some(100));
+        goal.begin_turn().unwrap();
+        goal.finish_turn(
+            Some(20),
+            Decision::Blocked {
+                reason: "waiting_background_tasks".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(goal.begin_turn(), Err(Error::NotActive));
+        let before = goal.snapshot();
+        assert_eq!(goal.pause(before.revision), Ok(Effect::None));
+        let paused = goal.snapshot();
+        assert_eq!(paused.state, State::Paused);
+        assert_eq!(paused.reported_tokens, Some(20));
+        assert_eq!(paused.turns_started, 1);
+        assert_eq!(paused.budget.tokens, Some(100));
+        goal.resume(paused.revision).unwrap();
+        goal.begin_turn().unwrap();
     }
     #[test]
     fn redirect_requires_settlement_and_preserves_cumulative_allowances() {

@@ -79,6 +79,15 @@ pub trait Sandbox: Send + Sync {
     }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
+    /// Opt-in owned runner: apply the SAME run-time refusal/preparation checks
+    /// before returning a sandbox command. Unsupported sandboxes fail closed.
+    #[cfg(feature = "owned-background")]
+    fn prepare_background(&self, _s: &ExecSpec) -> Result<(PathBuf, Vec<String>), OxaError> {
+        Err(OxaError::new(
+            crate::codes::NO_SANDBOX,
+            "sandbox does not support owned background execution",
+        ))
+    }
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult;
     /// [`Sandbox::run`] with `stdin` written to the command's standard input, which is then

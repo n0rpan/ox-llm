@@ -31,7 +31,7 @@ def request(path, value):
         with client.makefile("rb") as response:
             return json.load(response)
 
-path = "/absolute/private/run/session.sock"
+path = "/absolute/home/.oxa/agent/run/session.sock"
 status = request(path, {"id": "status-1", "method": "status"})
 revision = status["status"]["goal"]["revision"]
 print(json.dumps(request(path, {
@@ -115,15 +115,19 @@ Build the feature-enabled binary, then explicitly enable attachment for one TUI:
 
 ```sh
 cargo build --locked -p oxa-cli --features orchestrator --bin oxa
-OXA_SESSION_CONTROL_DIRECTORY=/absolute/private/new-control-directory \
+OXA_SESSION_CONTROL_DIRECTORY=/absolute/home/.oxa/agent/new-control-directory \
 OXA_ENGINE_URL=http://127.0.0.1:PORT \
 ./target/debug/oxa --offline --model MODEL
 ```
 
 Use only a verified local/nonbillable route for the brief's model-free workflow.
 This example is not permission to make a cloud request. The control directory must
-be absolute, new, and outside the agent workspace. Use an owner-controlled parent
-that already exists. The adapter rejects a workspace-exposed directory
+be absolute, new, outside the agent workspace, and under the session
+`agent_dir` (normally `$HOME/.oxa/agent`). This is the existing deny-list location
+for both file tools and sandbox mounts; a merely private directory elsewhere can
+remain reachable by a long-lived command. Use an owner-controlled parent that
+already exists. Symlink aliases of the agent directory are rejected; use its
+canonical path when overriding `OXA_AGENT_DIR`. The adapter rejects a workspace-exposed directory
 before creating it. A session swap that exposes the directory disables attachment.
 No setting file is changed. The feature and environment switch are both required;
 ordinary builds and unset environments keep the existing TUI behavior.
@@ -184,12 +188,12 @@ and socket implementation live in `oxa-orchestrator`. `oxa-cli`'s existing
 `orchestrator` feature opts into these hooks. No core/config/sandbox code changes.
 
 `shared_tui` runs the actual `run_session` with a scripted terminal and concurrent
-socket clients against owned loopback fakes. Its nine scenarios verify ordinary
+socket clients against owned loopback fakes. The shared-session scenarios verify ordinary
 TUI turn revisions and stale steering, private attachment placement, shared identity/context,
 TUI and external steering, multi-turn completion, live pause/resume and goal
 redirection without accounting resets, unknown interrupted usage, TUI Esc,
 `/new` rebinding/stale rejection, time/token stops, cancellation, and in-flight TUI
 exit cleanup. The normal feature-enabled TUI regression suite also runs without
-the environment switch to verify ordinary behavior stays inert. Background task
-wake-ups and worker-lane integration are the next priorities; full-evening cloud
+the environment switch to verify ordinary behavior stays inert. Opt-in [background commands and wake-ups](BACKGROUND_TASKS.md) now use that same
+owner. Worker-lane integration is the next priority; full-evening cloud
 acceptance and coordinator/independent review gates remain open.

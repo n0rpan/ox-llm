@@ -81,6 +81,15 @@ impl Sandbox for Bwrap {
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         bwrap_args_with(s, &self.home, &self.layout)
     }
+    #[cfg(feature = "owned-background")]
+    fn prepare_background(&self, s: &ExecSpec) -> Result<(PathBuf, Vec<String>), OxaError> {
+        self.check()?;
+        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+            return Err(OxaError::new(oxa_proto::codes::INVALID, why));
+        }
+        bwrap::create_missing_git_files(s, &self.home, &self.layout);
+        Ok((self.bwrap.clone(), bwrap_args_with(s, &self.home, &self.layout)))
+    }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
         if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
             return refused(why);

@@ -2,6 +2,10 @@
 //! The initial executable profile is local, tool-free oxa over bounded RPC.
 pub mod a2a_run;
 mod agent_cli;
+#[cfg(feature = "interactive-control")]
+pub mod background;
+#[cfg(feature = "interactive-control")]
+mod background_process;
 mod checkpoint;
 pub mod cli;
 pub mod control;

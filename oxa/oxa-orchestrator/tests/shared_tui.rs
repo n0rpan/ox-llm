@@ -16,7 +16,7 @@ use std::{
     os::unix::net::UnixStream,
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -43,13 +43,29 @@ impl Sandbox for NoCommands {
 }
 fn deps(url: &str, root: &Path, work: &Path, store: Arc<dyn SessionStore>) -> Deps {
     let engine: Arc<dyn Engine> = Arc::new(HttpEngine::new(url, None).unwrap());
-    Deps {
+    let sandbox: Arc<dyn Sandbox> = if std::env::var("OXA_BACKGROUND_TASKS").as_deref() == Ok("1") {
+        Arc::new(oxa_sandbox::NetSandbox::new(
+            Arc::new(oxa_sandbox::Bwrap {
+                bwrap: "/usr/bin/bwrap".into(),
+                home: std::env::var_os("HOME").unwrap().into(),
+                layout: oxa_sandbox::Layout {
+                    agent_dir: Some(Dirs::under(root).agent_dir),
+                    ..Default::default()
+                },
+            }),
+            true,
+            true,
+        ))
+    } else {
+        Arc::new(NoCommands)
+    };
+    let deps = Deps {
         engine,
         store,
         tools: vec![],
         hooks: vec![],
         policy: Box::new(Allow),
-        sandbox: Arc::new(NoCommands),
+        sandbox,
         settings: Settings::default(),
         dirs: Dirs::under(root),
         cwd: work.into(),
@@ -59,7 +75,8 @@ fn deps(url: &str, root: &Path, work: &Path, store: Arc<dyn SessionStore>) -> De
         thinking: None,
         mode: None,
         session_id: None,
-    }
+    };
+    oxa_orchestrator::background::augment(deps)
 }
 fn opts(env: &TestEnv, url: &str, store: Arc<dyn SessionStore>) -> InteractiveOpts {
     let root = env.root().to_path_buf();
@@ -225,7 +242,7 @@ fn shared_tui_and_external_steering() {
     .unwrap();
     let session_id = session.state().session_id;
     let handle = session.handle();
-    let directory = env.root().join("control");
+    let directory = Dirs::under(env.root()).agent_dir.join("control");
     let socket = directory.join("session.sock");
     std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
     let done = Arc::new(AtomicBool::new(false));
@@ -369,7 +386,7 @@ fn pause_resume_redirect_and_rebind(escape: bool) {
     let session_id = session.state().session_id;
     let expected = session_id.clone();
     let handle = session.handle();
-    let directory = env.root().join("control");
+    let directory = Dirs::under(env.root()).agent_dir.join("control");
     let socket = directory.join("session.sock");
     std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
     let done = Arc::new(AtomicBool::new(false));
@@ -551,7 +568,7 @@ fn bounded_goal_or_tui_exit(kind: &str) {
     )
     .unwrap();
     let handle = session.handle();
-    let directory = env.root().join("control");
+    let directory = Dirs::under(env.root()).agent_dir.join("control");
     let socket = directory.join("session.sock");
     std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
     let done = Arc::new(AtomicBool::new(false));
@@ -635,24 +652,42 @@ fn attachment_rejects_agent_workspace() {
     let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
     let session = Session::open(deps(&engine.url(), env.root(), &env.work(), store), Open::New).unwrap();
-    let directory = env.work().join("agent-readable-control");
+    for directory in [
+        env.work().join("agent-readable-control"),
+        env.root().join("outside-protected-agent-dir"),
+    ] {
+        std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+        let failed = Arc::new(AtomicBool::new(false));
+        let notified = failed.clone();
+        let attachment = oxa_orchestrator::tui::attach(&session, move |event| {
+            if let oxa_proto::AgentEvent::Notice {
+                level: oxa_proto::Level::Error,
+                ..
+            } = event
+            {
+                notified.store(true, Ordering::Release);
+            }
+        });
+        std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+        assert!(attachment.is_none());
+        assert!(failed.load(Ordering::Acquire));
+        assert!(!directory.exists());
+    }
+    assert!(!engine.requests().iter().any(|r| r.max_tokens > 0));
+    let real = env.root().join("real-agent");
+    std::fs::create_dir(&real).unwrap();
+    let alias = env.root().join("agent-alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let mut config = deps(&engine.url(), env.root(), &env.work(), store);
+    config.dirs.agent_dir = alias;
+    let alias_session = Session::open(config, Open::New).unwrap();
+    let directory = real.join("control");
     std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
-    let failed = Arc::new(AtomicBool::new(false));
-    let notified = failed.clone();
-    let attachment = oxa_orchestrator::tui::attach(&session, move |event| {
-        if let oxa_proto::AgentEvent::Notice {
-            level: oxa_proto::Level::Error,
-            ..
-        } = event
-        {
-            notified.store(true, Ordering::Release);
-        }
-    });
+    let attachment = oxa_orchestrator::tui::attach(&alias_session, |_| {});
     std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
     assert!(attachment.is_none());
-    assert!(failed.load(Ordering::Acquire));
     assert!(!directory.exists());
-    assert!(!engine.requests().iter().any(|r| r.max_tokens > 0));
 }
 
 fn ordinary_tui_turn_advances_attachment_revision() {
@@ -678,7 +713,7 @@ fn ordinary_tui_turn_advances_attachment_revision() {
     .unwrap();
     let expected = session.state().session_id;
     let handle = session.handle();
-    let directory = env.root().join("control");
+    let directory = Dirs::under(env.root()).agent_dir.join("control");
     let socket = directory.join("session.sock");
     std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
     let done = Arc::new(AtomicBool::new(false));
@@ -770,7 +805,436 @@ fn ordinary_tui_turn_advances_attachment_revision() {
         .is_some_and(|s| s.contains("must not reach a later TUI turn"))));
 }
 
+fn model_background_task_wakes_same_session(goal_mode: bool, live: bool) {
+    let env = TestEnv::new();
+    let directory = Dirs::under(env.root()).agent_dir.join("control");
+    let socket = directory.join("session.sock");
+    std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+    std::env::set_var("OXA_BACKGROUND_TASKS", "1");
+    let interim = if goal_mode {
+        r#"{"state":"done","summary":"other work finished before CI","evidence":["CI is still running"]}"#
+    } else {
+        "background launched; other useful work finished"
+    };
+    let final_text = if goal_mode {
+        r#"{"state":"done","summary":"background-final","evidence":["ci-command-finished checked"]}"#
+    } else {
+        "background-final"
+    };
+    let start_args=json!({"operation":"start","command":if live {"sleep 0.1; printf ci-command-finished"}else{"sleep 1; printf ci-command-finished"},"timeout_s":3}).to_string();
+    let mut script = vec![
+        ScriptTurn::tool("launch", "background_command", &start_args),
+        ScriptTurn::text(interim),
+    ];
+    if !goal_mode {
+        script.push(ScriptTurn::tool(
+            "collect",
+            "background_command",
+            r#"{"operation":"list"}"#,
+        ));
+    }
+    script.push(ScriptTurn::text(final_text));
+    let engine = Arc::new(
+        FakeServer::start(
+            script,
+            FakeOpts {
+                hold_headers_ms: if live { 200 } else { 0 },
+                ..FakeOpts::default()
+            },
+        )
+        .unwrap(),
+    );
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let session = Session::open(
+        deps(&engine.url(), env.root(), &env.work(), store.clone()),
+        Open::New,
+    )
+    .unwrap();
+    let expected = session.state().session_id;
+    let handle = session.handle();
+    let done = Arc::new(AtomicBool::new(false));
+    let peer_done = done.clone();
+    let peer_socket = socket.clone();
+    let peer_engine = engine.clone();
+    let expected_peer = expected.clone();
+    let peer = std::thread::spawn(move || {
+        let initial = wait_status(&peer_socket, |v| v["status"]["session"]["id"] == expected_peer);
+        if goal_mode {
+            assert_eq!(
+                request(
+                    &peer_socket,
+                    json!({"id":"goal","method":"set_goal","revision":revision(&initial),"text":"Run CI in background, finish other work, then verify its result","budget":{"wall_ms":8000,"tokens":200000,"turns":8}})
+                )["queued"],
+                true
+            );
+            let paused = wait_status(&peer_socket, |v| {
+                v["status"]["goal"]["goal"]
+                    == "Run CI in background, finish other work, then verify its result"
+            });
+            mutation(&peer_socket, "run", "resume", revision(&paused), None);
+        }
+        let working = wait_status(&peer_socket, |v| {
+            v["status"]["tasks"][0]["process_stopped"] == false
+                && peer_engine.requests().iter().filter(|r| r.max_tokens > 0).count() >= 2
+        });
+        assert_ne!(working["status"]["tasks"][0]["state"], "completed");
+        if goal_mode {
+            let waiting = wait_status(&peer_socket, |v| state(v) == "blocked");
+            assert_eq!(waiting["status"]["goal"]["reason"], "waiting_background_tasks");
+            assert_eq!(
+                waiting["status"]["goal"]["turns_started"], 1,
+                "pending commands prevent premature DONE"
+            );
+        }
+        let finished = wait_status(&peer_socket, |v| {
+            v["status"]["tasks"][0]["process_stopped"] == true
+                && v["status"]["session"]["busy"] == false
+                && peer_engine.requests().iter().filter(|r| r.max_tokens > 0).count()
+                    == if goal_mode { 3 } else { 4 }
+                && (!goal_mode || state(v) == "done")
+        });
+        assert_eq!(finished["status"]["tasks"][0]["state"], "completed");
+        assert_eq!(finished["status"]["tasks"][0]["exit"], 0);
+        let pid = finished["status"]["tasks"][0]["process_id"].as_u64().unwrap();
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        if goal_mode {
+            assert_eq!(finished["status"]["goal"]["turns_started"], 2);
+            assert!(finished["status"]["goal"]["reported_tokens"].as_u64().unwrap() > 0);
+        }
+        let mut after = 0;
+        let mut wake = false;
+        let mut wake_busy = false;
+        loop {
+            let page = request(
+                &peer_socket,
+                json!({"id":"wake-events","method":"events","after":after}),
+            );
+            assert_eq!(page["gap"], false);
+            for item in page["events"].as_array().unwrap() {
+                let item = &item["event"];
+                wake_busy |= item["kind"] == "background_completed" && item["session"]["busy"] == true;
+                wake |= item["kind"] == "background_completed"
+                    && item["reply"]["text"]
+                        .as_str()
+                        .is_some_and(|s| s.contains("ci-command-finished"));
+            }
+            after = page["next"].as_u64().unwrap();
+            if after == page["latest"].as_u64().unwrap() {
+                break;
+            }
+        }
+        assert!(wake, "completion must be an observable event");
+        if live {
+            assert!(wake_busy, "live completion must reach the running session");
+        }
+        peer_done.store(true, Ordering::Release);
+    });
+    let mut terminal = LiveTerm {
+        inner: TestTerminal::new(120, 30),
+        done,
+        typing: Arc::new(AtomicBool::new(false)),
+        typed: Arc::new(AtomicBool::new(false)),
+        deadline: Instant::now() + Duration::from_secs(12),
+        quit: false,
+        final_text: "background-final",
+        escape: false,
+        swap_when: None,
+        swapped: false,
+        rejected: Arc::new(AtomicBool::new(false)),
+    };
+    let mut options = opts(&env, &engine.url(), store);
+    if !goal_mode {
+        options.initial_prompt = Some("Start a background command and keep working".into());
+    }
+    let (code, last) = run_session(&mut terminal, session, &mut options);
+    peer.join().unwrap();
+    std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+    std::env::remove_var("OXA_BACKGROUND_TASKS");
+    assert_eq!(code, 0);
+    assert_eq!(last.unwrap().id, expected);
+    assert!(!handle.is_busy());
+    assert!(!socket.exists());
+    let screen = strip_ansi(&String::from_utf8_lossy(&terminal.inner.out));
+    assert!(
+        screen.contains("background-final")
+            && screen.contains("Background background-")
+            && screen.contains("completed; exit Some(0)")
+    );
+    let requests = engine.requests();
+    let chats: Vec<_> = requests.iter().filter(|r| r.max_tokens > 0).collect();
+    assert_eq!(chats.len(), if goal_mode { 3 } else { 4 });
+    assert!(chats.iter().all(|r| r.session == expected));
+    assert!(chats[2].messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("untrusted data") && s.contains("ci-command-finished"))));
+    assert!(chats.last().unwrap().messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("ci-command-finished"))));
+}
+
+struct DenyCommands;
+impl Policy for DenyCommands {
+    fn decide(&self, _: Mode, access: &Access, _: &Path) -> Decision {
+        if matches!(access, Access::Exec { .. }) {
+            Decision::Deny("fixture denies execution")
+        } else {
+            Decision::Allow
+        }
+    }
+    fn remember(&mut self, _: &Access) {}
+}
+fn background_permission_boundaries(kind: &str) {
+    let env = TestEnv::new();
+    let directory = Dirs::under(env.root()).agent_dir.join("control");
+    let socket = directory.join("session.sock");
+    std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+    std::env::set_var("OXA_BACKGROUND_TASKS", "1");
+    let args = if kind == "control_hidden" {
+        json!({"operation":"start","command":format!("test ! -S '{}' && printf control-hidden",socket.display()),"wake":false}).to_string()
+    } else if kind == "bad_args" {
+        r#"{"operation":"start","command":"printf forbidden > forbidden.txt","net":true,"wake":false}"#
+            .to_owned()
+    } else {
+        r#"{"operation":"start","command":"printf forbidden > forbidden.txt","wake":false}"#.to_owned()
+    };
+    let engine = Arc::new(
+        FakeServer::start(
+            vec![
+                ScriptTurn::tool("guarded", "background_command", &args),
+                ScriptTurn::text("policy-final"),
+            ],
+            FakeOpts::default(),
+        )
+        .unwrap(),
+    );
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let mut config = deps(&engine.url(), env.root(), &env.work(), store.clone());
+    if kind == "deny" {
+        config.policy = Box::new(DenyCommands);
+    }
+    if kind == "no_tools" {
+        config.selection.no_tools = true;
+    }
+    if kind == "plan" {
+        config.mode = Some(Mode::Plan);
+    }
+    let session = Session::open(config, Open::New).unwrap();
+    let handle = session.handle();
+    let done = Arc::new(AtomicBool::new(false));
+    let peer_done = done.clone();
+    let peer_socket = socket.clone();
+    let peer_engine = engine.clone();
+    let plan = kind == "plan";
+    let hidden = kind == "control_hidden";
+    let peer = std::thread::spawn(move || {
+        let status = wait_status(&peer_socket, |v| {
+            v["status"]["session"]["busy"] == false
+                && peer_engine.requests().iter().filter(|r| r.max_tokens > 0).count() == 2
+                && (!(plan || hidden) || v["status"]["tasks"][0]["process_stopped"] == true)
+        });
+        if plan {
+            assert_eq!(status["status"]["tasks"][0]["state"], "failed");
+            assert_ne!(status["status"]["tasks"][0]["exit"], 0);
+        } else if hidden {
+            assert_eq!(status["status"]["tasks"][0]["state"], "completed");
+            assert_eq!(status["status"]["tasks"][0]["exit"], 0);
+            assert!(
+                peer_socket.exists(),
+                "operator socket must stay live outside the sandbox"
+            );
+        } else {
+            assert!(status["status"]["tasks"].as_array().unwrap().is_empty());
+        }
+        peer_done.store(true, Ordering::Release);
+    });
+    let mut terminal = LiveTerm {
+        inner: TestTerminal::new(120, 30),
+        done,
+        typing: Arc::new(AtomicBool::new(false)),
+        typed: Arc::new(AtomicBool::new(false)),
+        deadline: Instant::now() + Duration::from_secs(8),
+        quit: false,
+        final_text: "policy-final",
+        escape: false,
+        swap_when: None,
+        swapped: false,
+        rejected: Arc::new(AtomicBool::new(false)),
+    };
+    let mut options = opts(&env, &engine.url(), store);
+    options.initial_prompt = Some("Verify command admission boundaries".into());
+    let (code, _) = run_session(&mut terminal, session, &mut options);
+    peer.join().unwrap();
+    std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+    std::env::remove_var("OXA_BACKGROUND_TASKS");
+    assert_eq!(code, 0);
+    assert!(!handle.is_busy());
+    assert!(!socket.exists());
+    assert!(!env.work().join("forbidden.txt").exists());
+    let requests = engine.requests();
+    let chats: Vec<_> = requests.iter().filter(|r| r.max_tokens > 0).collect();
+    assert_eq!(chats.len(), 2);
+    if !plan && !hidden {
+        assert!(chats[1].messages.iter().any(|m| m.role == oxa_proto::Role::Tool
+            && m.content
+                .as_deref()
+                .is_some_and(|s| s.contains("denied") || s.contains("not found") || s.contains("invalid"))));
+    }
+}
+fn background_owned_cleanup(kind: &str) {
+    let env = TestEnv::new();
+    let directory = Dirs::under(env.root()).agent_dir.join("control");
+    let socket = directory.join("session.sock");
+    std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+    std::env::set_var("OXA_BACKGROUND_TASKS", "1");
+    let goal_mode = kind == "cancel" || kind == "deadline" || kind == "pause";
+    let reply = if goal_mode {
+        r#"{"state":"blocked","reason":"waiting_background_tasks"}"#
+    } else {
+        "cleanup-ready"
+    };
+    let engine = Arc::new(
+        FakeServer::start(
+            vec![
+                ScriptTurn::tool(
+                    "long-task",
+                    "background_command",
+                    r#"{"operation":"start","command":"sleep 5; printf leaked > leaked.txt","timeout_s":10}"#,
+                ),
+                ScriptTurn::text(reply),
+            ],
+            FakeOpts::default(),
+        )
+        .unwrap(),
+    );
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let session = Session::open(
+        deps(&engine.url(), env.root(), &env.work(), store.clone()),
+        Open::New,
+    )
+    .unwrap();
+    let expected = session.state().session_id;
+    let handle = session.handle();
+    let done = Arc::new(AtomicBool::new(false));
+    let swap = Arc::new(AtomicBool::new(false));
+    let pid = Arc::new(AtomicU64::new(0));
+    let peer_done = done.clone();
+    let peer_swap = swap.clone();
+    let peer_pid = pid.clone();
+    let peer_socket = socket.clone();
+    let peer_engine = engine.clone();
+    let expected_peer = expected.clone();
+    let mode = kind.to_owned();
+    let peer = std::thread::spawn(move || {
+        if goal_mode {
+            let status = wait_status(&peer_socket, |v| v["status"]["session"]["id"] == expected_peer);
+            assert_eq!(
+                request(
+                    &peer_socket,
+                    json!({"id":"owned-goal","method":"set_goal","revision":revision(&status),"text":"Run and await background work","budget":{"wall_ms":if mode=="deadline"{1000}else{8000},"tokens":null,"turns":4}})
+                )["queued"],
+                true
+            );
+            let paused = wait_status(&peer_socket, |v| {
+                v["status"]["goal"]["goal"] == "Run and await background work"
+            });
+            mutation(&peer_socket, "run", "resume", revision(&paused), None);
+        }
+        let working = wait_status(&peer_socket, |v| {
+            v["status"]["tasks"][0]["state"] == "running"
+                && v["status"]["session"]["busy"] == false
+                && peer_engine.requests().iter().filter(|r| r.max_tokens > 0).count() == 2
+        });
+        let child = working["status"]["tasks"][0]["process_id"].as_u64().unwrap();
+        peer_pid.store(child, Ordering::Release);
+        if mode == "swap" {
+            peer_swap.store(true, Ordering::Release);
+            let new = wait_status(&peer_socket, |v| {
+                v["status"]["session"]["id"]
+                    .as_str()
+                    .is_some_and(|s| s != expected_peer)
+            });
+            assert!(new["status"]["tasks"].as_array().unwrap().is_empty());
+            assert!(!Path::new(&format!("/proc/{child}")).exists());
+        } else if goal_mode {
+            if mode != "deadline" {
+                mutation(
+                    &peer_socket,
+                    "stop",
+                    if mode == "pause" { "pause" } else { "cancel" },
+                    revision(&working),
+                    None,
+                );
+            }
+            let stopped = wait_status(&peer_socket, |v| {
+                state(v)
+                    == if mode == "deadline" {
+                        "budget_exhausted"
+                    } else if mode == "pause" {
+                        "paused"
+                    } else {
+                        "canceled"
+                    }
+                    && v["status"]["tasks"][0]["process_stopped"] == true
+            });
+            assert_eq!(stopped["status"]["tasks"][0]["state"], "canceled");
+            assert!(!Path::new(&format!("/proc/{child}")).exists());
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                peer_engine.requests().iter().filter(|r| r.max_tokens > 0).count(),
+                2,
+                "cancel/deadline must not trigger new inference"
+            );
+        }
+        peer_done.store(true, Ordering::Release);
+    });
+    let mut terminal = LiveTerm {
+        inner: TestTerminal::new(120, 30),
+        done,
+        typing: Arc::new(AtomicBool::new(false)),
+        typed: Arc::new(AtomicBool::new(false)),
+        deadline: Instant::now() + Duration::from_secs(8),
+        quit: false,
+        final_text: if goal_mode { "" } else { "cleanup-ready" },
+        escape: false,
+        swap_when: if kind == "swap" { Some(swap) } else { None },
+        swapped: false,
+        rejected: Arc::new(AtomicBool::new(false)),
+    };
+    let mut options = opts(&env, &engine.url(), store);
+    if !goal_mode {
+        options.initial_prompt = Some("Start owned background work".into());
+    }
+    let began = Instant::now();
+    let (code, _) = run_session(&mut terminal, session, &mut options);
+    peer.join().unwrap();
+    std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+    std::env::remove_var("OXA_BACKGROUND_TASKS");
+    assert_eq!(code, 0);
+    assert!(!handle.is_busy());
+    assert!(!socket.exists());
+    assert!(began.elapsed() < Duration::from_secs(2));
+    assert!(!Path::new(&format!("/proc/{}", pid.load(Ordering::Acquire))).exists());
+    assert!(!env.work().join("leaked.txt").exists());
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 2);
+}
+
 fn main() {
+    model_background_task_wakes_same_session(false, true);
+    println!("background completion reaches an already running TUI turn ... ok");
+    for kind in ["deny", "no_tools", "bad_args", "plan", "control_hidden"] {
+        background_permission_boundaries(kind);
+        println!("background tool preserves {kind} permissions ... ok");
+    }
+    for kind in ["exit", "swap", "cancel", "deadline", "pause"] {
+        background_owned_cleanup(kind);
+        println!("background task {kind} cancels and reaps owned work ... ok");
+    }
+    model_background_task_wakes_same_session(false, false);
+    println!("model background command returns immediately and wakes ordinary TUI session ... ok");
+    model_background_task_wakes_same_session(true, false);
+    println!("background completion wakes waiting goal without a reset or false DONE ... ok");
     ordinary_tui_turn_advances_attachment_revision();
     println!("ordinary TUI turns and external controls share revision history ... ok");
     attachment_rejects_agent_workspace();

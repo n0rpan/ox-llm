@@ -82,6 +82,7 @@ struct State {
     bytes: usize,
     terminal: bool,
     session: Option<Value>,
+    tasks: Value,
 }
 /// The session owner publishes without waiting for socket clients. No raw payload is persisted.
 #[derive(Clone)]
@@ -89,7 +90,8 @@ pub struct Publisher(Arc<Mutex<State>>);
 impl Publisher {
     pub fn publish(&self, event: &Event) {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        state.latest = Some(json!({"goal":event.goal,"kind":event.kind,"session":state.session}));
+        state.latest =
+            Some(json!({"goal":event.goal,"kind":event.kind,"session":state.session,"tasks":state.tasks}));
         if event.kind == "goal_status" {
             return;
         }
@@ -116,6 +118,9 @@ impl Publisher {
     pub fn bind_session(&self, id: &str, model: &str, mode: &str, busy: bool) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).session =
             Some(json!({"id":id,"model":model,"mode":mode,"busy":busy}));
+    }
+    pub fn tasks(&self, tasks: Value) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).tasks = tasks;
     }
 }
 /// Lifetime is owned by the foreground session; drop joins the bounded I/O loop.

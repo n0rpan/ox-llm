@@ -8,6 +8,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+owned-background = ["oxa-proto/owned-background"]
+
 [dependencies]
 oxa-proto.workspace = true
 libc.workspace = true
