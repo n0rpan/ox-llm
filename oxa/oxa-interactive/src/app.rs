@@ -1054,7 +1054,7 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                     shown_reply(vm, text, why);
                 }
             }
-            EntryBody::Msg { wire, parts } if wire.role == Role::User => {
+            EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => {
                 vm.blocks
                     .push(user_block(wire.content.as_deref().unwrap_or_default(), parts));
             }
@@ -1130,7 +1130,7 @@ pub fn blocks_from_entries(branch: &[Entry]) -> Vec<Block> {
     let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for e in branch {
         match &e.body {
-            EntryBody::Msg { wire, parts } => match wire.role {
+            EntryBody::Msg { wire, parts, tool } => match wire.role {
                 Role::User => out.push(user_block(wire.content.as_deref().unwrap_or_default(), parts)),
                 Role::Assistant => {
                     let stop = if wire.tool_calls.is_empty() {
@@ -1165,7 +1165,12 @@ pub fn blocks_from_entries(branch: &[Entry]) -> Vec<Block> {
                     if let Some(id) = &wire.tool_call_id {
                         if let Some(&i) = calls.get(id) {
                             if let Block::Tool(t) = &mut out[i] {
-                                t.result = Some(ToolOutput::ok(wire.content.clone().unwrap_or_default()));
+                                let mut out = ToolOutput::ok(wire.content.clone().unwrap_or_default());
+                                if let Some(meta) = tool {
+                                    out.is_error = meta.is_error;
+                                    out.ui = meta.ui.clone();
+                                }
+                                t.result = Some(out);
                             }
                         }
                     }

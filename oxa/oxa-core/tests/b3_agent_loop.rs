@@ -189,6 +189,7 @@ fn say(st: &mut SessionState, text: &str) {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user");
@@ -589,6 +590,26 @@ fn length_continue_once() {
         );
     }
     w1_holds(&eng.requests());
+}
+
+/// A refusal (`content_filter`) keeps the streamed text, shows a one-line notice and does not retry.
+#[test]
+fn content_filter_keeps_text_notices_and_does_not_retry() {
+    let env = TestEnv::new();
+    let mut first = ScriptTurn::text("I can't help with that");
+    first.finish = Finish::ContentFilter;
+    let turns = vec![first, ScriptTurn::text("never requested")];
+    let (mut st, eng) = scripted_state(&env, turns, Vec::new(), Mode::Workspace);
+    say(&mut st, "do the thing");
+    let (end, events) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    assert_eq!(eng.requests().len(), 1, "no retry");
+    let wire = st.transcript.wire();
+    assert_eq!(
+        wire.last().unwrap().content.as_deref(),
+        Some("I can't help with that")
+    );
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text == "The model declined to answer this request.")));
 }
 
 /// F9 (engine `chat::chat_inputs`): a generating request ending in an assistant message is
@@ -993,6 +1014,7 @@ fn append_entry_failure_leaves_state() {
         EntryBody::Msg {
             wire: WireMsg::user("lost"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect_err("the store refuses the append");
@@ -1018,6 +1040,7 @@ fn append_entry_persists_and_folds() {
         EntryBody::Msg {
             wire: WireMsg::user("one"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();
@@ -1026,6 +1049,7 @@ fn append_entry_persists_and_folds() {
         EntryBody::Msg {
             wire: WireMsg::assistant("two"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();

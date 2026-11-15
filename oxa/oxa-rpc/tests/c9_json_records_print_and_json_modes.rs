@@ -879,6 +879,7 @@ fn entry_json_is_the_stored_object() {
         body: EntryBody::Msg {
             wire: WireMsg::user("hello"),
             parts: Vec::new(),
+            tool: None,
         },
     };
     let mut line = Vec::new();
