@@ -1,13 +1,16 @@
 //! Opt-in, sequential unattended task execution. Worktrees are retained on every outcome.
+mod execute;
+mod state;
 mod tree;
 use serde::{Deserialize, Serialize};
+pub use state::Step;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 pub type Result<T> = std::result::Result<T, String>;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
     pub id: String,
@@ -24,6 +27,7 @@ fn default_base() -> String {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
+    Running,
     Done,
     NothingToDo,
     Red,
@@ -37,13 +41,17 @@ pub struct Record {
     pub worktree: PathBuf,
     pub outcome: Outcome,
     pub detail: String,
+    pub step: Step,
+    pub progress_at: u64,
 }
 
 fn output(mut command: Command) -> Result<Output> {
     command.stdin(Stdio::null()).output().map_err(|e| e.to_string())
 }
 fn checked(command: Command) -> Result<String> {
-    let out = output(command)?;
+    checked_output(output(command)?)
+}
+fn checked_output(out: Output) -> Result<String> {
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).into_owned());
     }
@@ -112,7 +120,7 @@ pub fn issue_task(repo: &Path, number: u64, model: String) -> Result<Task> {
     })
 }
 
-fn acceptance(root: &Path, commands: &[String]) -> Result<String> {
+fn acceptance(root: &Path, commands: &[String], lock: &fs::File, offline: bool) -> Result<String> {
     let mut failures = String::new();
     for entry in commands {
         let (dir, shell) = match entry.strip_prefix("in ").and_then(|s| s.split_once(':')) {
@@ -124,8 +132,13 @@ fn acceptance(root: &Path, commands: &[String]) -> Result<String> {
             return Err("done directory escapes worktree".into());
         }
         let mut c = Command::new("sh");
-        c.current_dir(dir).args(["-c", shell]);
-        let out = output(c)?;
+        c.current_dir(dir)
+            .args(["-c", shell])
+            .stdin(lock.try_clone().map_err(|e| e.to_string())?);
+        if offline {
+            c.env("OXA_OFFLINE", "1");
+        }
+        let out = c.output().map_err(|e| e.to_string())?;
         if !out.status.success() {
             failures.push_str(&format!(
                 "{entry}: {}\n{}\n{}\n",
@@ -137,15 +150,25 @@ fn acceptance(root: &Path, commands: &[String]) -> Result<String> {
     }
     Ok(failures)
 }
-fn agent(binary: &Path, root: &Path, task: &Task, prompt: &str, offline: bool) -> Result<()> {
+fn agent(
+    binary: &Path,
+    root: &Path,
+    task: &Task,
+    prompt: &str,
+    lock: &fs::File,
+    offline: bool,
+) -> Result<()> {
     let mut c = Command::new(binary);
     c.current_dir(root)
         .args(["-p", "--model", &task.model, "--no-session"]);
     if offline {
         c.arg("--offline");
     }
-    c.args(["--", prompt]);
-    checked(c).map(|_| ())
+    // Stdin was null for unattended runs. An empty locked file still supplies EOF,
+    // and fd 0 keeps the shared kernel lock alive if the runner dies before its child.
+    c.args(["--", prompt])
+        .stdin(lock.try_clone().map_err(|e| e.to_string())?);
+    checked_output(c.output().map_err(|e| e.to_string())?).map(|_| ())
 }
 
 pub fn blocked_record(task: &Task, detail: String) -> Record {
@@ -155,12 +178,23 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         worktree: PathBuf::new(),
         outcome: Outcome::Blocked,
         detail,
+        step: Step::Finished,
+        progress_at: state::now(),
     }
 }
-pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
-    run_task_with_policy(repo, binary, task, false)
-}
 pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bool) -> Result<Record> {
+    run_task_with_options(repo, binary, task, false, offline)
+}
+pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
+    run_task_with_options(repo, binary, task, false, false)
+}
+pub fn run_task_with_options(
+    repo: &Path,
+    binary: &Path,
+    task: &Task,
+    rerun: bool,
+    offline: bool,
+) -> Result<Record> {
     validate(task)?;
     let root = checked(git(repo, &["rev-parse", "--show-toplevel"]))?;
     let root = PathBuf::from(root);
@@ -173,17 +207,7 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bo
     let storage = common.join("oxa-work");
     fs::create_dir_all(&storage).map_err(|e| e.to_string())?;
     let lock_path = storage.join(format!("{}.lock", task.id));
-    let lock_file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
-    lock_file
-        .try_lock()
-        .map_err(|e| format!("task {} is already running: {e}", task.id))?;
-    // Keep the inode so a crashed runner leaves no stale ownership and concurrent
-    // runners cannot acquire locks on two different files with the same name.
+    let lock = state::lock(&lock_path)?;
     let receipt = storage.join(format!("{}.json", task.id));
     // The common git directory must not be an ancestor of the child cwd: the sandbox
     // deliberately refuses writable git binds with that layout.
@@ -199,59 +223,75 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bo
     let trees = parent.join(".oxa-worktrees").join(name);
     fs::create_dir_all(&trees).map_err(|e| e.to_string())?;
     let tree = trees.join(&task.id);
-    tree::check_receipt(&receipt, &tree, task)?;
-    let mut record = Record {
-        id: task.id.clone(),
-        branch: task.branch.clone(),
-        worktree: tree.clone(),
-        outcome: Outcome::Blocked,
-        detail: String::new(),
-    };
-    let result = (|| -> Result<Outcome> {
-        let prepared = tree::prepare(&root, &tree, task)?;
-        let tree = tree.canonicalize().map_err(|e| e.to_string())?;
-        let commands = tree::done_from_base(&tree, &prepared.base)?;
-        let first_agent = agent(binary, &tree, task, &prepared.prompt, offline);
-        tree::ensure_merged(&tree, &prepared.base, &task.branch)?;
-        let failures = acceptance(&tree, &commands)?;
-        if !failures.is_empty() {
-            let repair_agent = agent(
-                binary,
-                &tree,
-                task,
-                &format!(
-                    "{}\n\nExternal acceptance checks failed. Repair once:\n{failures}",
-                    prepared.prompt
-                ),
-                offline,
-            );
-            tree::ensure_merged(&tree, &prepared.base, &task.branch)?;
-            let failures = acceptance(&tree, &commands)?;
-            if !failures.is_empty() {
-                record.detail = failures;
-                return Ok(Outcome::Red);
-            }
-            repair_agent?;
-        } else {
-            first_agent?;
+    let mut state = if receipt.exists() {
+        let old = state::read(&receipt)?;
+        if old.task != *task
+            || old.record.worktree != tree
+            || old.record.id != task.id
+            || old.record.branch != task.branch
+        {
+            return Err("task specification changed; use a new task id".into());
         }
-        let head = checked(git(&tree, &["rev-parse", "HEAD"]))?;
-        let dirty = checked(git(&tree, &["status", "--porcelain"]))?;
-        Ok(if head == prepared.initial && dirty.is_empty() {
-            Outcome::NothingToDo
+        if old.record.step != Step::Finished {
+            old
+        } else if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
+            return Ok(old.record);
         } else {
-            Outcome::Done
-        })
-    })();
-    match result {
-        Ok(outcome) => record.outcome = outcome,
-        Err(e) => record.detail = e,
+            new_state(task, tree, offline || old.offline)
+        }
+    } else {
+        new_state(task, tree, offline)
+    };
+    state.offline |= offline;
+    let step = state.record.step;
+    state::save(&receipt, &mut state, step)?;
+    if let Err(error) = execute::execute(&root, binary, task, &receipt, &mut state, &lock) {
+        state.record.outcome = Outcome::Blocked;
+        state.record.detail = error;
     }
-    // Separate receipts avoid overwriting another task's result. Never remove its worktree.
-    fs::write(
-        receipt,
-        serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(record)
+    state::save(&receipt, &mut state, Step::Saving)?;
+    if let Err(error) = execute::save_work(&root, &state.record.worktree, task) {
+        state.record.outcome = Outcome::Blocked;
+        if !state.record.detail.is_empty() {
+            state.record.detail.push('\n');
+        }
+        state.record.detail.push_str(&format!("save: {error}"));
+    }
+    state::save(&receipt, &mut state, Step::Finished)?;
+    Ok(state.record)
+}
+fn new_state(task: &Task, worktree: PathBuf, offline: bool) -> state::State {
+    state::State {
+        record: Record {
+            id: task.id.clone(),
+            branch: task.branch.clone(),
+            worktree,
+            outcome: Outcome::Running,
+            detail: String::new(),
+            step: Step::Preparing,
+            progress_at: state::now(),
+        },
+        task: task.clone(),
+        checkpoint: None,
+        offline,
+    }
+}
+pub fn status(repo: &Path) -> Result<Vec<Record>> {
+    let common = checked(git(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ))?;
+    let directory = PathBuf::from(common).join("oxa-work");
+    if !directory.exists() {
+        return Ok(vec![]);
+    }
+    let mut records = vec![];
+    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().is_some_and(|s| s == "json") {
+            records.push(state::read(&path)?.record);
+        }
+    }
+    records.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(records)
 }

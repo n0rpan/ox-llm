@@ -1,6 +1,5 @@
 //! Worktree continuation uses ordinary merges; no reset, stash or force checkout.
 use super::{checked, git, output, Result, Task};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct Prepared {
@@ -15,7 +14,7 @@ fn git_path(tree: &Path, name: &str) -> Result<PathBuf> {
     ))
     .map(PathBuf::from)
 }
-fn merging(tree: &Path) -> Result<bool> {
+pub(crate) fn merging(tree: &Path) -> Result<bool> {
     Ok(git_path(tree, "MERGE_HEAD")?.exists())
 }
 fn merge_prompt(tree: &Path, task: &Task, base: &str, output: &str) -> Result<String> {
@@ -45,23 +44,7 @@ pub(crate) fn prepare(repo: &Path, tree: &Path, task: &Task) -> Result<Prepared>
             _ => return Err(String::from_utf8_lossy(&exists.stderr).into()),
         }
     }
-    let canonical = tree.canonicalize().map_err(|e| e.to_string())?;
-    let actual = PathBuf::from(checked(git(tree, &["rev-parse", "--show-toplevel"]))?);
-    let common = |p: &Path| -> Result<PathBuf> {
-        PathBuf::from(checked(git(
-            p,
-            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        ))?)
-        .canonicalize()
-        .map_err(|e| e.to_string())
-    };
-    if actual.canonicalize().map_err(|e| e.to_string())? != canonical || common(tree)? != common(repo)? {
-        return Err("retained directory is not this repository's task worktree".into());
-    }
-    let branch = checked(git(tree, &["symbolic-ref", "--quiet", "HEAD"]))?;
-    if branch != format!("refs/heads/{}", task.branch) {
-        return Err("retained worktree is on a different branch".into());
-    }
+    validate(repo, tree, task)?;
     for operation in ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
         if git_path(tree, operation)?.exists() {
             return Err(format!("retained worktree has {operation} in progress"));
@@ -109,6 +92,26 @@ pub(crate) fn prepare(repo: &Path, tree: &Path, task: &Task) -> Result<Prepared>
         prompt: task.prompt.clone(),
     })
 }
+pub(crate) fn validate(repo: &Path, tree: &Path, task: &Task) -> Result<()> {
+    let canonical = tree.canonicalize().map_err(|e| e.to_string())?;
+    let actual = PathBuf::from(checked(git(tree, &["rev-parse", "--show-toplevel"]))?);
+    let common = |p: &Path| -> Result<PathBuf> {
+        PathBuf::from(checked(git(
+            p,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ))?)
+        .canonicalize()
+        .map_err(|e| e.to_string())
+    };
+    if actual.canonicalize().map_err(|e| e.to_string())? != canonical || common(tree)? != common(repo)? {
+        return Err("retained directory is not this repository's task worktree".into());
+    }
+    let branch = checked(git(tree, &["symbolic-ref", "--quiet", "HEAD"]))?;
+    if branch != format!("refs/heads/{}", task.branch) {
+        return Err("retained worktree is on a different branch".into());
+    }
+    Ok(())
+}
 pub(crate) fn ensure_merged(tree: &Path, base: &str, branch: &str) -> Result<()> {
     if checked(git(tree, &["symbolic-ref", "--quiet", "HEAD"]))? != format!("refs/heads/{branch}") {
         return Err("agent left the worktree on a different branch".into());
@@ -136,14 +139,4 @@ pub(crate) fn done_from_base(repo: &Path, base: &str) -> Result<Vec<String>> {
         None => Ok(vec![]),
         Some(value) => serde_json::from_value(value.clone()).map_err(|e| format!("done commands: {e}")),
     }
-}
-pub(crate) fn check_receipt(receipt: &Path, tree: &Path, task: &Task) -> Result<()> {
-    if receipt.exists() {
-        let record: super::Record = serde_json::from_slice(&fs::read(receipt).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("retained receipt: {e}"))?;
-        if record.id != task.id || record.branch != task.branch || record.worktree != tree {
-            return Err("retained receipt belongs to a different task branch or worktree".into());
-        }
-    }
-    Ok(())
 }

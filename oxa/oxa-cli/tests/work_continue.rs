@@ -148,7 +148,7 @@ fn unresolved_merge_can_be_continued_without_resetting_it() {
     assert!(!merge_head(&env, tree(&second)).exists());
 }
 #[test]
-fn dirty_retained_worktree_is_blocked_without_dropping_edits() {
+fn completed_work_is_saved_and_not_replayed() {
     let env = TestEnv::new();
     setup(&env, "[]");
     trust(&env);
@@ -161,8 +161,9 @@ fn dirty_retained_worktree_is_blocked_without_dropping_edits() {
     );
     assert_eq!(first["outcome"], "done", "{first}");
     let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
-    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["outcome"], "done", "{record}");
     assert!(requests.is_empty());
+    assert!(git(&env, tree(&record), &["status", "--porcelain"]).is_empty());
     assert_eq!(
         std::fs::read_to_string(tree(&record).join("notes.txt")).unwrap(),
         "keep me"

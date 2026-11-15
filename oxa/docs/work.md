@@ -1,6 +1,7 @@
 # Unattended work
 
 `oxa work tasks.json` opts into sequential tasks in separate git worktrees.
+Completed tasks are skipped on restart; add `--rerun` to deliberately run them again.
 Run it inside the project repository. The JSON file is an array:
 
 ```json
@@ -16,8 +17,8 @@ authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refuse
 when the environment or user settings enable offline mode.
 
 Each task runs a child `oxa -p` with its model. The installed offline policy,
-including a parent `--offline` flag, is passed to every child. Normal agent permission, trust and
-sandbox rules apply. Configure project trust before unattended use. The runner
+including a parent `--offline` flag, is passed to every child. Normal agent
+permission, trust and sandbox rules apply. Configure project trust before unattended use. The runner
 executes the base version of `.oxa/settings.json`'s `done` commands outside the
 agent after it exits, even without edits. These are trusted project shell commands:
 invoking `work` authorizes their execution as your user. `in subdirectory: command`
@@ -34,20 +35,41 @@ and 2 for invalid input or output errors. A task setup failure produces a blocke
 JSON line and does not skip later tasks. If a task cannot be locked or already has
 a receipt, its existing state is preserved; a pre-worktree failure has an empty
 `worktree` in the result. Locks use kernel ownership, so an abandoned lock file
-after process death does not permanently block a task.
+after process death does not permanently block a task. A surviving child keeps the
+lock until it exits, preventing overlap with a restarted runner.
 
 Worktrees and uncommitted changes remain in `.oxa-worktrees/<repository>/<id>`
 beside the repository (or the separate git directory). Result receipts live inside
 the common git directory at `oxa-work/<id>.json`. Worktrees stay outside that git
-directory so the normal sandbox can bind git objects and refs for commits. No automatic
-cleanup, commit, push or PR creation is implemented yet.
+directory so the normal sandbox can bind git objects and refs for commits.
+Uncommitted task work, including red work, is saved as a commit with the repository's
+configured identity. Commit hooks run normally. A missing identity or rejected commit
+blocks the task and retains every file. Unresolved conflicts remain in progress for
+the agent; they are never staged as a fabricated resolution. There is no automatic
+cleanup, push or PR creation yet.
 
-To continue a task, run the same file again. The retained receipt must match its
-ID, branch and worktree. A clean worktree is reused; a branch checked out elsewhere
-is blocked. Uncommitted changes are retained and blocked until you commit them.
+To continue an interrupted, red or blocked task, run the same file again. Use
+`--rerun` to continue a completed task after its base changes. The retained receipt
+must match its ID, branch and worktree. A clean worktree is reused; a branch checked out elsewhere
+is blocked. Existing dirty work is saved when possible before a later retry.
 Merge conflicts are passed to the agent with the merge still in progress, the
 conflicted file list and merge output. An unfinished merge can be continued on a
 later run. The agent must finish the merge commit and keep the task branch selected;
 unresolved or aborted base merges remain blocked even when checks would pass. Inspect
 retained work before removing it with `git worktree remove`. Review task prompts
 and bases before running them.
+
+`oxa work --status` prints one line per recorded task, sorted by ID:
+
+```text
+docs-fix done 1800000000 finished
+```
+
+Columns are task ID, state, last step-progress time (Unix seconds), and current step.
+Running tasks report steps such as `agent`, `acceptance`, `repair` or `saving`.
+The state file is replaced atomically with owner-only permissions at each transition.
+It records the task specification, captured base/checks, repair output and current
+step. Reusing an ID with a different specification is refused; use a new ID.
+Restart continues the saved step. An agent or check interrupted within its step
+may run again; tasks and checks should tolerate that. Checkpoints after an agent
+step avoid replaying it when only acceptance or saving remains.
