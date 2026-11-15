@@ -1,0 +1,15 @@
+[package]
+name = "oxa-a2a"
+description = "Bounded A2A 0.3.0 wire profile for opt-in agent orchestration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

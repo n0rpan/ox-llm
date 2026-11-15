@@ -568,6 +568,32 @@ class Responses(CloudCase):
                 cloud_openai.responses_request({'messages': continuation}, item, 'synthetic-history-scope')
             self.assertEqual(caught.exception.code, 'cloud_continuation_unavailable')
 
+    def test_long_tool_loop_survives_eviction_of_closed_earlier_steps(self):
+        # #246: one user turn, many tool steps. Each step stores native output; the
+        # bounds evict early steps, which are closed and need no opaque reasoning.
+        item = cloud.entry(REMOTE, models('gpt-6.1-sol')[REMOTE])
+        key = 'synthetic-long-loop'
+        history = [{'role': 'user', 'content': 'a long synthetic task'}]
+        steps = cloud_openai._HISTORY_ENTRIES + 20
+        for step in range(steps):
+            call = 'call_%d' % step
+            native = [{'type': 'reasoning', 'id': 'rs_%d' % step, 'summary': [],
+                       'encrypted_content': 'synthetic-reasoning-%d' % step},
+                      {'type': 'function_call', 'call_id': call, 'name': 'bash',
+                       'arguments': '{"n":%d}' % step}]
+            body = cloud_openai.responses_request({'messages': history}, item, key)
+            if step:
+                self.assertIn(native_prev[0], body['input'])
+            assistant = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': call, 'type': 'function', 'function': {'name': 'bash', 'arguments': '{"n":%d}' % step}}]}
+            cloud_openai.remember(item, history, assistant, native, key)
+            history += [assistant, {'role': 'tool', 'tool_call_id': call, 'content': 'out %d' % step}]
+            native_prev = native
+        sent = cloud_openai.responses_request({'messages': history}, item, key)['input']
+        self.assertIn({'type': 'function_call', 'call_id': 'call_0', 'name': 'bash',
+                       'arguments': '{"n":0}', 'status': 'completed'}, sent)
+        self.assertNotIn('synthetic-reasoning-0"', json.dumps(sent))
+
     def test_all_gpt6_models_bind_responses_and_reasoning_contract(self):
         for upstream, none_supported in cloud_openai.RESPONSES_MODELS.items():
             item = cloud.entry(REMOTE, models(upstream)[REMOTE])

@@ -230,8 +230,10 @@ def _restore(item, history, key):
 
 
 def _closed_historical_calls(messages, index):
-    """Only a new user turn may replay closed public tool history without opaque state."""
-    if not any(message.get('role') == 'user' for message in messages[index + 1:]):
+    """Closed tool history followed by a later turn (a new user turn or a later assistant
+    step of the same tool loop) may be replayed without opaque state: only the latest
+    open continuation needs its reasoning. Long loops evict early steps (#246)."""
+    if not any(message.get('role') in ('user', 'assistant') for message in messages[index + 1:]):
         return False
     pending = {call['id'] for call in messages[index].get('tool_calls') or []}
     for message in messages[index + 1:]:

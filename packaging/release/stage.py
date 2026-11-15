@@ -27,8 +27,8 @@ for workspace in ('oxc', 'oxc-rs'):
                 if target.exists():
                     raise SystemExit('duplicate binary: ' + binary.name)
                 shutil.copy2(binary, target)
-oxc = dest / 'usr/share/ox-llm/oxc'
-shutil.copytree(root / 'oxc', oxc, ignore=shutil.ignore_patterns(
+controller = dest / 'usr/share/ox-llm/oxc'
+shutil.copytree(root / 'oxc', controller, ignore=shutil.ignore_patterns(
     '__pycache__', '*.pyc', '*.egg-info', '.venv', 'build', 'dist',
     'tests', 'tools', 'benchmarks', 'experiments'))
 # Preserve the runtime script and sibling Python modules exactly as the bootstrap
@@ -37,7 +37,7 @@ wrapper = dest / 'usr/bin/oxc'
 if not wrapper.exists():
     wrapper.write_text('#!/bin/sh\nexec /usr/bin/python3 -B /usr/share/ox-llm/oxc/src/oxc/runtime/oxc "$@"\n')
     wrapper.chmod(0o755)
-wrapper = dest / 'usr/bin/oxc'
+wrapper = dest / 'usr/bin/oxc-diagnostics'
 wrapper.write_text('#!/bin/sh\nPYTHONPATH=/usr/share/ox-llm/oxc/src exec /usr/bin/python3 -B -m oxc "$@"\n')
 wrapper.chmod(0o755)
 licenses = dest / 'usr/share/licenses/ox-llm'
