@@ -248,6 +248,21 @@ pub fn run_builtin(
     sink: &mut dyn oxa_proto::EventSink,
     ui: &mut dyn oxa_proto::Ui,
 ) -> Result<Vec<String>, oxa_proto::OxaError> {
+    let result = run_builtin_inner(session, name, args, sink, ui);
+    session.set_command_outcome(match &result {
+        Ok(_) => crate::RunOutcome::Done,
+        Err(error) => crate::RunOutcome::from_error(error),
+    });
+    result
+}
+
+fn run_builtin_inner(
+    session: &mut crate::Session,
+    name: &str,
+    args: &str,
+    sink: &mut dyn oxa_proto::EventSink,
+    ui: &mut dyn oxa_proto::Ui,
+) -> Result<Vec<String>, oxa_proto::OxaError> {
     use oxa_proto::{codes, Mode, OxaError, ThinkingLevel};
     let usage = |text: &str| OxaError::new(codes::USAGE, text.to_string());
     match name {
