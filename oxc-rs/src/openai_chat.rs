@@ -271,9 +271,14 @@ impl Stream {
     fn translate(&mut self, value: &Value) -> Result<Value, Error> {
         let choices = envelope(value, true)?;
         if choices.is_empty() {
-            self.usage = Usage::from_response(value);
-        } else if let Some(finish) = choices[0]["finish_reason"].as_str() {
-            self.finish = Some(finish.to_owned());
+            self.usage = self
+                .finish
+                .as_ref()
+                .and_then(|_| Usage::from_response(value));
+        } else {
+            // A later choice frame makes any earlier usage provisional again.
+            self.usage = None;
+            self.finish = choices[0]["finish_reason"].as_str().map(str::to_owned);
         }
         let mut out = value.clone();
         out["model"] = json!(self.model);

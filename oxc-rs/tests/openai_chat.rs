@@ -154,3 +154,23 @@ fn request_shape_errors_are_typed_before_any_transport() {
         assert_eq!((error.status, error.param), (400, param));
     }
 }
+
+#[test]
+fn usage_only_frames_before_finish_or_before_later_output_are_not_final() {
+    let usage = json!({"id":"synthetic", "object":"chat.completion.chunk", "model":"o3", "created":0,
+        "choices":[], "usage":{"prompt_tokens":1,"completion_tokens":1}});
+    let mut early = Stream::new("synthetic");
+    early.event(&usage).unwrap();
+    early.event(&chunk(json!({}), json!("stop"))).unwrap();
+    early.done().unwrap();
+    assert!(early.finish().unwrap().usage.is_none());
+    let mut stale = Stream::new("synthetic");
+    stale.event(&chunk(json!({}), json!("stop"))).unwrap();
+    stale.event(&usage).unwrap();
+    stale
+        .event(&chunk(json!({"content":"later output"}), Value::Null))
+        .unwrap();
+    stale.event(&chunk(json!({}), json!("stop"))).unwrap();
+    stale.done().unwrap();
+    assert!(stale.finish().unwrap().usage.is_none());
+}
