@@ -10,7 +10,10 @@ use crate::{
     secrets::{self, Key, KeyFile},
 };
 use serde_json::{json, Value};
-use std::{path::PathBuf, sync::OnceLock};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
 #[derive(Clone, Copy)]
 pub struct Options {
@@ -42,7 +45,7 @@ pub struct Runtime {
 pub struct Call {
     model: Value,
     payload: Value,
-    key: Key,
+    key: Arc<Key>,
     usage: Usage,
     hold: Option<Hold>,
     entry: Option<Entry>,
@@ -215,7 +218,7 @@ impl Runtime {
         Ok(Call {
             model: item,
             payload,
-            key,
+            key: Arc::new(key),
             usage: Usage::default(),
             hold: Some(hold),
             entry: Some(entry),
@@ -232,6 +235,12 @@ impl Call {
     }
     pub fn key(&self) -> &Key {
         &self.key
+    }
+    /// A fresh per-request key shared with provider I/O and redactors. This
+    /// clones only the handle, so a Sending/Chunk callback can mutate Call
+    /// while the client retains credentials, without copying secret bytes.
+    pub fn key_handle(&self) -> Arc<Key> {
+        Arc::clone(&self.key)
     }
     pub fn mark_forwarded(&mut self) {
         self.forwarded = true;
