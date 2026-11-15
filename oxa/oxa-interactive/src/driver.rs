@@ -691,13 +691,7 @@ impl<'a> Loop<'a> {
         let queued = old.dequeue();
         if !queued.is_empty() {
             let n = queued.len();
-            let mut text = queued.join("\n\n");
-            let current = self.editor.text();
-            if !current.is_empty() {
-                text.push_str("\n\n");
-                text.push_str(&current);
-            }
-            self.editor.set_text(&text);
+            self.editor.prepend_text(&queued.join("\n\n"));
             self.push_notice(
                 Level::Warning,
                 format!("{n} queued message(s) were not sent to the previous session; they are back in the editor."),
@@ -1566,13 +1560,7 @@ impl<'a> Loop<'a> {
         if queued.is_empty() {
             return;
         }
-        let mut text = queued.join("\n\n");
-        let current = self.editor.text();
-        if !current.is_empty() {
-            text.push_str("\n\n");
-            text.push_str(&current);
-        }
-        self.editor.set_text(&text);
+        self.editor.prepend_text(&queued.join("\n\n"));
     }
 
     // -----------------------------------------------------------------------------------------
