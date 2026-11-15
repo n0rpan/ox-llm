@@ -81,3 +81,7 @@ cancellation closes the in-flight inference connections as observed at the fake
 gateway and reaps the worker processes. An offline parent produces no worker
 runtime or gateway generation. These tests verify client connection closure,
 not actual provider cancellation or billing behavior.
+
+For worker accounting across chat, summary and prefill requests, see
+[NATIVE_USAGE.md](NATIVE_USAGE.md). This accounting step leaves automatic
+compaction disabled and does not change gateway monetary settlement.

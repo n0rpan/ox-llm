@@ -562,6 +562,7 @@ pub(crate) fn run_with_workspaces(
                         completed_tokens: 0,
                         pending_tokens: None,
                         usage_seen: false,
+                        meter: crate::usage::Ledger::default(),
                         canceled: false,
                         forced: queued.err().map(|_| Outcome::Failed),
                         steering: 0,
@@ -589,6 +590,15 @@ pub(crate) fn run_with_workspaces(
             };
             if let Some(outcome) = outcome {
                 let mut worker = active.remove(i);
+                // Fan-out workers have token-bounded reservations. A goal
+                // session may explicitly use time only, but ordinary fan-out
+                // cannot declare budget-verified success with missing usage.
+                let outcome =
+                    if outcome == Outcome::Completed && worker.meter.ready && !worker.meter.settled() {
+                        Outcome::Failed
+                    } else {
+                        outcome
+                    };
                 journal.record(Some(&worker.spec.id), "stopping", json!({"outcome":outcome}))?;
                 worker.process.stop(
                     worker
@@ -698,6 +708,7 @@ struct Worker {
     completed_tokens: u64,
     pending_tokens: Option<u64>,
     usage_seen: bool,
+    meter: crate::usage::Ledger,
     canceled: bool,
     forced: Option<Outcome>,
     steering: usize,
@@ -713,6 +724,10 @@ impl Worker {
             .is_some_and(|w| name.is_some_and(|name| w.tools().contains(&name)))
     }
     fn tokens(&self) -> Option<u64> {
+        if self.meter.ready {
+            return (self.meter.settled() && self.meter.seen)
+                .then(|| self.meter.total.saturating_add(self.pending_tokens.unwrap_or(0)));
+        }
         self.usage_seen.then(|| {
             self.completed_tokens
                 .saturating_add(self.pending_tokens.unwrap_or(0))
@@ -743,17 +758,26 @@ impl Worker {
                 Ok(None) => {}
                 Err(_) => return Ok(Some(Outcome::Failed)),
             }
-            if self
-                .tokens()
-                .is_some_and(|n| n > self.spec.budget.reported_tokens)
-            {
+            let minimum = if self.meter.ready {
+                Some(self.meter.total.saturating_add(self.pending_tokens.unwrap_or(0)))
+            } else {
+                self.tokens()
+            };
+            if minimum.is_some_and(|n| n > self.spec.budget.reported_tokens) {
                 return Ok(Some(Outcome::TokenBudget));
             }
         }
-        if self.settled.is_some() && self.prompt_acked && !self.pending_abort {
+        if self.settled.is_some()
+            && self.prompt_acked
+            && !self.pending_abort
+            && (!self.meter.ready || self.meter.drained())
+        {
             return Ok(Some(if self.settled == Some(true) {
                 Outcome::Canceled
-            } else if self.last_stop.as_deref() == Some("stop") && self.usage_seen {
+            } else if self.last_stop.as_deref() == Some("stop")
+                && self.usage_seen
+                && (!self.meter.ready || self.meter.seen)
+            {
                 Outcome::Completed
             } else {
                 Outcome::Failed
@@ -776,6 +800,21 @@ impl Worker {
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("worker record has no type"))?;
         match kind {
+            "compaction_start" if !self.meter.ready => return Ok(Some(Outcome::PolicyViolation)),
+            "oxa_owned_inference" => {
+                if record["phase"] == "ready" && (self.running || self.usage_seen) {
+                    return Ok(Some(Outcome::PolicyViolation));
+                }
+                let ended = record["phase"] == "end";
+                if let Err(error) = self.meter.consume(record) {
+                    self.meter.unknown = true;
+                    return Err(error);
+                }
+                if ended {
+                    self.pending_tokens = None;
+                    self.usage_seen = self.meter.seen;
+                }
+            }
             "response" => {
                 let id = record
                     .get("id")
@@ -818,7 +857,7 @@ impl Worker {
                     journal.record(
                         Some(&self.spec.id),
                         "policy_verified",
-                        json!({"mode":mode,"offline":self.spec.inference.local_only,"toolPolicy":"explicit-per-worker-grants"}),
+                        json!({"mode":mode,"offline":self.spec.inference.local_only,"usageMeter":self.meter.ready,"toolPolicy":"explicit-per-worker-grants"}),
                     )?;
                 } else if self.configuration.remove(id) {
                     if self.configuration.is_empty() && !self.defer_prompt {
@@ -846,10 +885,12 @@ impl Worker {
                 let message = &record["message"];
                 if message["role"] == "assistant" {
                     let total = tokens(&message["usage"])?;
-                    self.completed_tokens = self
-                        .completed_tokens
-                        .checked_add(total)
-                        .ok_or_else(|| invalid("usage overflow"))?;
+                    if !self.meter.ready {
+                        self.completed_tokens = self
+                            .completed_tokens
+                            .checked_add(total)
+                            .ok_or_else(|| invalid("usage overflow"))?;
+                    }
                     self.pending_tokens = None;
                     self.usage_seen = true;
                     self.last_stop = message["stopReason"].as_str().map(str::to_owned);
@@ -981,6 +1022,7 @@ impl SessionWorker {
                 completed_tokens: 0,
                 pending_tokens: None,
                 usage_seen: false,
+                meter: crate::usage::Ledger::default(),
                 canceled: false,
                 forced: None,
                 steering: 0,
@@ -1053,10 +1095,15 @@ impl SessionWorker {
         &self.inner.result
     }
     pub(crate) fn tokens(&self) -> u64 {
-        self.inner.completed_tokens
+        if self.inner.meter.ready {
+            self.inner.meter.total
+        } else {
+            self.inner.completed_tokens
+        }
     }
     pub(crate) fn final_usage_known(&self, outcome: &Outcome) -> bool {
-        *outcome == Outcome::Completed || (self.inner.defer_prompt && !self.inner.running)
+        (!self.inner.meter.ready || self.inner.meter.settled())
+            && (*outcome == Outcome::Completed || (self.inner.defer_prompt && !self.inner.running))
     }
     pub(crate) fn pid(&self) -> u32 {
         self.inner.process.pid()

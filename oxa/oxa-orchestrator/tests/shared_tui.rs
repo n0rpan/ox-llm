@@ -1512,6 +1512,26 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
         assert!(jobs.iter().any(|j| j["model"] == "author-model"));
         assert!(jobs.iter().any(|j| j["model"] == "reviewer-model"));
         for job in jobs {
+            if !canceling {
+                let source = if job["profile"] == "author" {
+                    &peer_author
+                } else {
+                    &peer_reviewer
+                };
+                let expected: u64 = source
+                    .requests()
+                    .iter()
+                    .map(|r| {
+                        let usage = r.usage.as_ref().unwrap();
+                        u64::from(usage.prompt) + u64::from(usage.completion)
+                    })
+                    .sum();
+                assert_eq!(
+                    job["goal"]["reported_tokens"].as_u64().unwrap(),
+                    expected,
+                    "all SDK calls, including zero-output prefill, belong to the ledger"
+                );
+            }
             assert_eq!(job["route"], if gateway { "cloud_gateway" } else { "local" });
             if recovering && job["profile"] == "author" {
                 let baseline = peer_driver.before_retarget.lock().unwrap();
@@ -1669,6 +1689,10 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
                 let record: Value = serde_json::from_str(line).unwrap();
                 if record["event"] == "policy_verified" {
                     verified += 1;
+                    assert_eq!(
+                        record["details"]["usageMeter"], true,
+                        "native CLI must install the engine-level source"
+                    );
                     assert_eq!(
                         record["details"]["offline"], !gateway,
                         "audit must match actual worker policy"
