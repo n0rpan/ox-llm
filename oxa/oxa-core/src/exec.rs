@@ -721,7 +721,7 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
         return mk(
             Value::Null,
             exec,
-            Plan::Done(ToolOutput::error(tool_errors::BAD_JSON)),
+            Plan::Done(ToolOutput::error(bad_args_text(call))),
         );
     };
 
@@ -1017,6 +1017,20 @@ fn tool_ctx(st: &SessionState) -> ToolCtx<'_> {
         cancel: &st.shared.cancel,
         env: &st.tool_env,
         tune: st.tune,
+    }
+}
+
+/// The error text for arguments that are not a JSON object; an empty string says so, so the
+/// model (and the progress line) can tell why and retry (#483).
+fn bad_args_text(call: &ToolCall) -> String {
+    if call.args_raw.trim().is_empty() {
+        format!(
+            "{} (empty arguments: call `{}` again with its arguments as a JSON object)",
+            tool_errors::BAD_JSON,
+            call.name
+        )
+    } else {
+        tool_errors::BAD_JSON.to_string()
     }
 }
 

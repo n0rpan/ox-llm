@@ -135,7 +135,14 @@ impl EventSink for PrintSink<'_> {
                 });
                 self.started.remove(tool_call_id);
                 let word = if result.is_error { "failed" } else { "ok" };
-                self.progress(&format!("[tool] {tool_name} {word} {secs:.1}s"));
+                let mut line = format!("[tool] {tool_name} {word} {secs:.1}s");
+                if result.is_error {
+                    if let Some(why) = result.text.lines().find(|l| !l.trim().is_empty()) {
+                        let why: String = why.trim().chars().take(160).collect();
+                        line.push_str(&format!(": {why}"));
+                    }
+                }
+                self.progress(&line);
             }
             AgentEvent::Notice { text, .. } => self.progress(text),
             AgentEvent::ExtensionError {
@@ -477,6 +484,34 @@ pub fn run_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #483: a failed call says why on the progress line.
+    #[test]
+    fn failed_tool_line_carries_the_reason() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut sink = PrintSink {
+            out: &mut out,
+            err: &mut err,
+            last: None,
+            is_last_prompt: true,
+            pending: None,
+            final_text: None,
+            notes: Vec::new(),
+            started: HashMap::new(),
+            io_error: None,
+        };
+        sink.emit(&AgentEvent::ToolExecutionEnd {
+            tool_call_id: "c1".into(),
+            tool_name: "read".into(),
+            result: oxa_proto::ToolOutput::error("Invalid tool arguments (empty arguments)"),
+            duration_ms: Some(0),
+        });
+        let e = String::from_utf8(err.clone()).unwrap();
+        assert!(
+            e.contains("[tool] read failed 0.0s: Invalid tool arguments (empty arguments)"),
+            "{e}"
+        );
+    }
 
     fn assistant(text: &str) -> EventMessage {
         EventMessage {
