@@ -1030,7 +1030,8 @@ fn main() {
                 "oxe-server: engine switches: {}",
                 model::engine::effective_switches()
             );
-            let eng = server::oxe_engine::OxeEngine::open_head(
+            #[allow(unused_mut)] // mutated only under feature "npu-prefill"
+            let mut eng = server::oxe_engine::OxeEngine::open_head(
                 std::path::Path::new(&model),
                 head.as_deref(),
                 &cpus,
