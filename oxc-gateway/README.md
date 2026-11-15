@@ -6,6 +6,7 @@ settlement are separate work. Python remains the behavior reference.
 
 - `cloud-only`: catalog contracts.
 - `policy`: policy contracts.
+- `secrets`: secrets contracts.
 
 Build all examples with `cargo build --locked --manifest-path
 oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
