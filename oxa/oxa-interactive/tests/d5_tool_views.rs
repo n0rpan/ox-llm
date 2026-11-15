@@ -427,3 +427,20 @@ fn tool_views_drop_control_characters_from_untrusted_text() {
         "diff",
     );
 }
+
+#[test]
+fn write_result_shows_summary_and_added_lines() {
+    let theme = Theme::plain();
+    let settings = ViewSettings::default();
+    let hooks: Vec<Arc<dyn Hooks>> = Vec::new();
+    let cx = cx(&theme, &settings, &hooks);
+    let lines = tool_result_lines(
+        "write",
+        &json!({"path": "a.txt", "content": "hello\n"}),
+        "Successfully wrote to a.txt",
+        false,
+        &json!({}),
+        &cx,
+    );
+    assert_eq!(lines, vec!["1 line, 6 bytes", "+hello"]);
+}
