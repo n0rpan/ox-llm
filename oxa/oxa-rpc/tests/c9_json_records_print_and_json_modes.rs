@@ -5,7 +5,7 @@
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
-use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
+use oxa_fake::{Fault, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_proto::{
     codes, Access, AgentEvent, CancelToken, CompactReason, CompactionResult, Decision, Engine, EventMessage,
     ExecResult, ExecSpec, Level, MessageDelta, Mode, OxaError, Part, Policy, Sandbox, StopReason,
@@ -70,6 +70,7 @@ fn open(env: &TestEnv, engine: &Arc<ScriptedEngine>) -> Session {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("the session opens over the scripted engine")
 }
@@ -608,6 +609,28 @@ fn print_final_text_only() {
     assert_eq!(String::from_utf8(out).unwrap(), "final answer\n");
 }
 
+/// No tools declared and the final text is tool-call markup: one stderr warning, exit code 0.
+#[test]
+fn print_warns_on_tool_markup_without_tools() {
+    const WARNING: &str = "warning: the model answered with tool-call markup but no tools are available (--no-tools); the answer may be unusable\n";
+    let env = TestEnv::new();
+    let markup = "<tool_calls><invoke name=\"exec_command\"></invoke></tool_calls>";
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text(markup)]));
+    let mut session = open(&env, &engine);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = run_print(&mut session, prompt("review"), &mut out, &mut err).unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(String::from_utf8(out).unwrap(), format!("{markup}\n"));
+    assert_eq!(String::from_utf8(err).unwrap(), WARNING);
+
+    // Plain text: no warning.
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("fine")]));
+    let mut session = open(&env, &engine);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    run_print(&mut session, prompt("review"), &mut out, &mut err).unwrap();
+    assert!(err.is_empty());
+}
+
 /// piped text + prompt
 #[test]
 fn stdin_prepend() {
@@ -764,6 +787,34 @@ fn exit_codes() {
     );
 }
 
+/// A spent daily cloud budget (gateway 429) is a failed run with its own exit code, in print
+/// and json mode, and the reason is on stderr.
+#[test]
+fn budget_exhausted_has_its_own_exit_code() {
+    let fault = || {
+        Arc::new(ScriptedEngine::new(vec![ScriptTurn::fault(Fault::Http {
+            status: 429,
+            body: "The daily cloud budget is exhausted.".to_string(),
+        })]))
+    };
+    let env = TestEnv::new();
+    let engine = fault();
+    let mut session = open(&env, &engine);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = run_print(&mut session, prompt("ok"), &mut out, &mut err).unwrap();
+    assert_eq!(code, 3);
+    assert!(String::from_utf8_lossy(&err).contains("budget"), "{err:?}");
+
+    let env = TestEnv::new();
+    let engine = fault();
+    let mut session = open(&env, &engine);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    assert_eq!(
+        run_json(&mut session, prompt("ok"), &mut out, &mut err).unwrap(),
+        3
+    );
+}
+
 /// prefill, cache_miss shapes
 #[test]
 fn own_events_additive() {
@@ -869,4 +920,74 @@ fn json_sink_writes_records_and_keeps_going() {
         text,
         "{\"type\":\"agent_start\"}\n{\"type\":\"agent_settled\",\"aborted\":true}\n"
     );
+}
+
+/// A writer that records every write and flush in one shared, ordered log.
+struct Logged {
+    tag: &'static str,
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl std::io::Write for Logged {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}", self.tag, String::from_utf8_lossy(b)));
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.log.lock().unwrap().push(format!("{}:<flush>", self.tag));
+        Ok(())
+    }
+}
+
+/// Progress goes to stderr in order, flushed per event, before the final text on stdout.
+#[test]
+fn print_streams_progress_to_stderr_and_final_text_to_stdout() {
+    let env = TestEnv::new();
+    let turns = vec![
+        ScriptTurn {
+            text: Some("let me look".to_string()),
+            ..ScriptTurn::tool("c1", "bash", r#"{"command":"ls\n -la"}"#)
+        },
+        ScriptTurn::text("done"),
+    ];
+    let engine = Arc::new(ScriptedEngine::new(turns));
+    let mut session = open(&env, &engine);
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut out = Logged {
+        tag: "out",
+        log: log.clone(),
+    };
+    let mut err = Logged {
+        tag: "err",
+        log: log.clone(),
+    };
+    let code = run_print(&mut session, prompt("go"), &mut out, &mut err).unwrap();
+    assert_eq!(code, 0);
+    let log = log.lock().unwrap().clone();
+    let pos = |needle: &str| {
+        log.iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} missing in {log:?}"))
+    };
+    let (text, start, end, fin) = (
+        pos("err:let me look"),
+        pos("err:[tool] bash\n"),
+        pos("err:[tool] bash failed"),
+        pos("out:done"),
+    );
+    assert!(text < start && start < end && end < fin, "{log:?}");
+    // Each progress write is flushed right after it, and so is the reply.
+    for i in [text, start, end] {
+        assert_eq!(log[i + 1], "err:<flush>", "{log:?}");
+    }
+    assert_eq!(log[fin + 2], "out:<flush>", "{log:?}");
+    let stdout: String = log
+        .iter()
+        .filter_map(|l| l.strip_prefix("out:"))
+        .filter(|l| *l != "<flush>")
+        .collect();
+    assert_eq!(stdout, "done\n");
 }

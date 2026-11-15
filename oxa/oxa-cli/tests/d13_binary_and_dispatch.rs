@@ -189,6 +189,63 @@ fn list_models() {
     assert_eq!(miss.out.trim(), "No models matching \"zzz\"");
 }
 
+/// When the controller publishes a thinking/vision field, `--list-models` shows the real
+/// `yes`/`no` (oxstack/ox-llm#67): a non-`none`/`off`/false thinking value is `yes`, vision bool
+/// is `no`/`yes`. When it publishes neither, the column is `?`.
+#[test]
+fn list_models_unknown_thinking_and_images() {
+    let env = TestEnv::new();
+    // A controller that publishes the real shape: `capabilities.thinking == "toggle"` and
+    // `capabilities.vision == false`, so both columns must be the real `yes`/`no`.
+    let server = FakeServer::start(
+        Vec::new(),
+        FakeOpts {
+            n_ctx: 32_000,
+            model: "real-model".to_string(),
+            omit_modality: false,
+            ..FakeOpts::default()
+        },
+    )
+    .expect("fake engine");
+    let all = go(&env, &server.url(), &["--list-models"]);
+    assert_eq!(all.code, 0, "stderr: {}", all.err);
+    let lines: Vec<&str> = all.out.lines().collect();
+    assert_eq!(lines.len(), 2, "header and one row, got {:?}", all.out);
+    let header = lines[0];
+    let thinking_col = header.split_whitespace().position(|c| c == "thinking").unwrap();
+    let images_col = header.split_whitespace().position(|c| c == "images").unwrap();
+    let cells: Vec<&str> = lines[1].split_whitespace().collect();
+    assert_eq!(cells[thinking_col], "yes", "thinking toggle is a confident yes");
+    assert_eq!(cells[images_col], "no", "vision false is a confident no");
+}
+
+/// When the controller publishes no `thinking`/`vision` field, `--list-models` shows `?` in both
+/// columns (oxstack/ox-llm#67), the same fallback as a degrading row.
+#[test]
+fn list_models_unknown_thinking_and_images_show_question_mark() {
+    let env = TestEnv::new();
+    let server = FakeServer::start(
+        Vec::new(),
+        FakeOpts {
+            n_ctx: 32_000,
+            model: "bare-model".to_string(),
+            omit_modality: true,
+            ..FakeOpts::default()
+        },
+    )
+    .expect("fake engine");
+    let all = go(&env, &server.url(), &["--list-models"]);
+    assert_eq!(all.code, 0, "stderr: {}", all.err);
+    let lines: Vec<&str> = all.out.lines().collect();
+    assert_eq!(lines.len(), 2, "header and one row, got {:?}", all.out);
+    let header = lines[0];
+    let thinking_col = header.split_whitespace().position(|c| c == "thinking").unwrap();
+    let images_col = header.split_whitespace().position(|c| c == "images").unwrap();
+    let cells: Vec<&str> = lines[1].split_whitespace().collect();
+    assert_eq!(cells[thinking_col], "?", "unpublished thinking is unknown");
+    assert_eq!(cells[images_col], "?", "unpublished vision is unknown");
+}
+
 /// --export input [output]
 #[test]
 fn export_flag() {
@@ -251,50 +308,6 @@ fn help_and_version() {
     let version = go(&env, &url, &["-v"]);
     assert_eq!(version.code, 0);
     assert_eq!(version.out, format!("oxa {}\n", env!("CARGO_PKG_VERSION")));
-}
-
-/// copies, never overwrites
-#[test]
-fn config_import_pi_once() {
-    let env = TestEnv::new();
-    env.write("home/.pi/agent/mcp.json", "{\"servers\":{}}");
-    env.write("home/.pi/agent/keybindings.json", "{\"from\":\"pi\"}");
-    env.write(
-        "home/.pi/agent/skills/demo/SKILL.md",
-        "---\nname: demo\n---\nbody\n",
-    );
-    env.write("home/.pi/agent/prompts/review.md", "review\n");
-    env.write("home/.oxa/agent/keybindings.json", "{\"from\":\"oxa\"}");
-    let url = closed_url();
-
-    let first = go(&env, &url, &["config", "--import-pi"]);
-    assert_eq!(first.code, 0, "stderr: {}", first.err);
-    assert!(first.out.contains("imported 3 file(s)"), "report: {}", first.out);
-    assert!(first.out.contains("kept 1 existing"), "report: {}", first.out);
-    let agent = env.agent_dir();
-    assert_eq!(
-        std::fs::read_to_string(agent.join("mcp.json")).unwrap(),
-        "{\"servers\":{}}"
-    );
-    assert!(agent.join("skills/demo/SKILL.md").is_file(), "skills copied");
-    assert!(agent.join("prompts/review.md").is_file(), "prompts copied");
-    assert_eq!(
-        std::fs::read_to_string(agent.join("keybindings.json")).unwrap(),
-        "{\"from\":\"oxa\"}",
-        "an existing file is never overwritten"
-    );
-
-    let second = go(&env, &url, &["config", "--import-pi"]);
-    assert_eq!(second.code, 0);
-    assert!(
-        second.out.contains("imported 0 file(s)"),
-        "second run copies nothing: {}",
-        second.out
-    );
-    assert_eq!(
-        std::fs::read_to_string(agent.join("keybindings.json")).unwrap(),
-        "{\"from\":\"oxa\"}"
-    );
 }
 
 /// `oxa -p` against oxa-fake

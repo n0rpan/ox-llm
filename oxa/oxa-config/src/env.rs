@@ -40,7 +40,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_ENGINE_URL",
         pi_name: None,
-        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8092 (the local-ai controller)",
+        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8092 (the oxc controller)",
         supported: true,
     },
     // Shell tool session environment, set per run (never on the wire, W3).
@@ -97,12 +97,6 @@ pub const ENV_TABLE: &[EnvVar] = &[
         name: "OXA_TEST_PANIC",
         pi_name: None,
         description: "test processes only, with OXA_TEST_ISOLATION=1: host_function = extensions get a host function that panics (panic isolation test)",
-        supported: true,
-    },
-    EnvVar {
-        name: "OXA_PROFILE",
-        pi_name: None,
-        description: "oxa.profile override: pi or local; wins over the settings files",
         supported: true,
     },
     EnvVar {

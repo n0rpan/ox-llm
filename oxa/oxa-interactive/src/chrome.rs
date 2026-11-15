@@ -38,7 +38,7 @@ fn mode_token(mode: Mode) -> &'static str {
 }
 
 /// The left half of line 2: tokens, cache, prefill, context, speed and mode.
-fn stats_left(st: &StatusModel, theme: &Theme) -> String {
+fn stats_left(st: &StatusModel, theme: &Theme, compact: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     if st.total_in > 0 {
         parts.push(theme.dim(&format!("↑{}", format_tokens(st.total_in))));
@@ -46,9 +46,11 @@ fn stats_left(st: &StatusModel, theme: &Theme) -> String {
     if st.total_out > 0 {
         parts.push(theme.dim(&format!("↓{}", format_tokens(st.total_out))));
     }
-    if let (Some(cached), Some(prompt)) = (st.last_cached, st.last_prompt) {
-        if prompt > 0 {
-            parts.push(theme.dim(&format!("cache {cached}/{prompt}")));
+    if !compact {
+        if let (Some(cached), Some(prompt)) = (st.last_cached, st.last_prompt) {
+            if prompt > 0 {
+                parts.push(theme.dim(&format!("cache {cached}/{prompt}")));
+            }
         }
     }
     if let Activity::Prefill { done, total, .. } = &st.activity {
@@ -70,7 +72,11 @@ fn stats_left(st: &StatusModel, theme: &Theme) -> String {
     } else {
         theme.dim(&format!("?/{}", format_tokens(0)))
     };
-    let auto = if st.auto_compact { " (auto)" } else { "" };
+    let auto = if st.auto_compact && !compact {
+        " (auto)"
+    } else {
+        ""
+    };
     parts.push(format!("{ctx}{}", theme.dim(auto)));
     if let Some(tps) = st.tok_per_s {
         parts.push(theme.dim(&format!("{tps:.1} tok/s")));
@@ -87,22 +93,44 @@ fn stats_left(st: &StatusModel, theme: &Theme) -> String {
     parts.join(" ")
 }
 
-/// The right half of line 2: model, thinking level and the thinking note.
-fn stats_right(st: &StatusModel) -> String {
-    let mut text = if st.model.is_empty() {
-        "no-model".to_string()
+/// Wave D D4b: the location segment of the status line. Local is theme green; a cloud model
+/// names its provider in the accent colour (a distinct segment, never a warning).
+fn model_location(st: &StatusModel, theme: &Theme) -> String {
+    if st.model_remote {
+        let provider = st.model_provider.unwrap_or("remote");
+        theme.fg("accent", &format!("cloud · {}", sanitize_status(provider)))
     } else {
-        st.model.clone()
-    };
-    if let Some(level) = st.thinking {
-        text.push_str(" • ");
-        text.push_str(level.as_str());
+        theme.fg("success", "local")
+    }
+}
+
+/// The right half of line 2: the model location, model name, thinking level and the thinking
+/// note. `max_width` (for a narrow terminal) shrinks the model name first, so the location and
+/// the thinking level stay readable instead of truncating the left-hand mode.
+fn stats_right(st: &StatusModel, theme: &Theme, max_width: Option<usize>) -> String {
+    let location = model_location(st, theme);
+    let mut suffix = String::new();
+    if let Some(level) = st.thinking_label() {
+        suffix.push_str(" • ");
+        suffix.push_str(&level);
     }
     if let Some(note) = &st.thinking_note {
-        text.push_str(" · ");
-        text.push_str(&sanitize_status(note));
+        suffix.push_str(" · ");
+        suffix.push_str(&sanitize_status(note));
     }
-    text
+    let model = if st.model.is_empty() {
+        "no-model"
+    } else {
+        &st.model
+    };
+    let model = match max_width {
+        Some(width) => {
+            let fixed = visible_width(&location) + " · ".len() + visible_width(&suffix);
+            truncate_to_width(model, width.saturating_sub(fixed), "...")
+        }
+        None => model.to_string(),
+    };
+    format!("{location} · {model}{suffix}")
 }
 
 /// Join left and right parts on one line of `width` columns; the left part is cut first.
@@ -153,8 +181,20 @@ pub fn render_footer(vm: &ViewModel, width: u16, theme: &Theme) -> Vec<String> {
     }
     out.push(truncate_to_width(&theme.dim(&pwd), w, &theme.dim("...")));
 
-    // Line 2: stats and model.
-    out.push(join_line(&stats_left(st, theme), &stats_right(st), w, theme));
+    // Line 2: stats and model. A narrow line drops the cache marker first, then shrinks the
+    // model name, so the context and the permission mode stay readable.
+    let mut left = stats_left(st, theme, false);
+    let mut right = stats_right(st, theme, None);
+    let mut excess = (visible_width(&left) + visible_width(&right) + 2).saturating_sub(w);
+    if excess > 0 {
+        left = stats_left(st, theme, true);
+        right = stats_right(st, theme, None);
+        excess = (visible_width(&left) + visible_width(&right) + 2).saturating_sub(w);
+    }
+    if excess > 0 {
+        right = stats_right(st, theme, Some(visible_width(&right).saturating_sub(excess)));
+    }
+    out.push(join_line(&left, &right, w, theme));
 
     // Extension statuses, one line, keys in sorted order (BTreeMap).
     let statuses: Vec<String> = st
@@ -177,8 +217,9 @@ pub struct HeaderInfo {
     pub resources: Vec<(String, Vec<String>)>,
     pub engine_url: String,
     pub model: String,
-    /// The profile word after the version (`local`); `None` under `pi`.
-    pub profile: Option<String>,
+    /// Wave D D4b: where the model runs; shown in the start banner.
+    pub model_remote: bool,
+    pub model_provider: Option<&'static str>,
 }
 
 /// The startup header: logo line, key hints from the keymap, loaded resources. With
@@ -200,14 +241,7 @@ pub fn render_header(
     }
     let mut out = Vec::new();
     out.push(truncate_to_width(
-        &match &info.profile {
-            Some(p) => format!(
-                "{} {}",
-                theme.bold(&format!("oxa v{}", info.version)),
-                theme.dim(p)
-            ),
-            None => theme.bold(&format!("oxa v{}", info.version)),
-        },
+        &theme.bold(&format!("oxa v{}", info.version)),
         w,
         "...",
     ));
@@ -232,7 +266,18 @@ pub fn render_header(
     let model = if info.model.is_empty() {
         String::new()
     } else {
-        format!(" · {}", info.model)
+        let location = if info.model_remote {
+            theme.fg(
+                "accent",
+                &format!(
+                    "cloud · {}",
+                    sanitize_status(info.model_provider.unwrap_or("remote"))
+                ),
+            )
+        } else {
+            theme.fg("success", "local")
+        };
+        format!(" · {location} · {}", info.model)
     };
     out.push(truncate_to_width(
         &theme.dim(&format!("{}{model}", info.engine_url)),

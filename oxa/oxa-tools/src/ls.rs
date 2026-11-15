@@ -14,7 +14,7 @@ pub struct LsTool {
 impl LsTool {
     pub fn new() -> LsTool {
         LsTool {
-            spec: crate::spec_of(&descriptions::LS),
+            spec: crate::spec_of(&descriptions::builtin_specs::LS_DEFAULT),
         }
     }
 }

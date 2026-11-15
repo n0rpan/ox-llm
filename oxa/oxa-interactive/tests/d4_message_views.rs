@@ -195,7 +195,7 @@ fn compaction_and_branch_summary_views() {
     let fx = Fixture::plain();
     let cx = fx.cx(80);
 
-    let collapsed = render_compaction("the summary body", 1234, false, &cx);
+    let collapsed = render_compaction("the summary body", 1234, None, false, &cx);
     let text = joined(&collapsed);
     assert!(text.contains("[compaction]"), "{text}");
     assert!(text.contains("Compacted from 1234 tokens"), "{text}");
@@ -206,7 +206,7 @@ fn compaction_and_branch_summary_views() {
     );
     assert_fits(&collapsed, 80);
 
-    let expanded = render_compaction("the summary body", 1234, true, &cx);
+    let expanded = render_compaction("the summary body", 1234, None, true, &cx);
     let text = joined(&expanded);
     assert!(text.contains("[compaction]"));
     assert!(text.contains("the summary body"), "{text}");
@@ -309,7 +309,7 @@ fn shown_entry_view() {
     let text = joined(&aborted);
     assert!(text.contains("half a reply"), "{text}");
     assert!(
-        text.contains("aborted: not sent to the model; ask again"),
+        text.contains("aborted: cancelled; the prompt stays in the conversation"),
         "{text}"
     );
 
@@ -353,7 +353,7 @@ fn views_fit_the_width() {
             &render_assistant(&long, &long, false, Some(StopReason::Error), Some(&long), &cx),
             width,
         );
-        assert_fits(&render_compaction(&long, 99, true, &cx), width);
+        assert_fits(&render_compaction(&long, 99, None, true, &cx), width);
         assert_fits(&render_bash(&long, &long, Some(1), true, false, true, &cx), width);
         assert_fits(&render_shown(&long, shown_why::FAILED, &cx), width);
         assert_fits(&render_notice(Level::Error, &long, &cx), width);

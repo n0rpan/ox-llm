@@ -4,7 +4,7 @@
 // Known gap: pi normalises with NFKC. Without a `unicode-normalization` dependency (architect
 // owns Cargo.toml) only the fullwidth ASCII block (U+FF01..U+FF5E) and U+3000 are folded, so
 // canonical composition (`e` + U+0301 against `é`) does not match.
-use crate::descriptions::{errors, local_edit};
+use crate::descriptions::{default_edit, errors};
 use similar::{ChangeTag, TextDiff};
 use std::borrow::Cow;
 
@@ -74,12 +74,12 @@ pub fn apply_edits(content: &str, edits: &[Edit], path: &str) -> Result<EditOutc
     })
 }
 
-/// Profile `local` (OXA-LOCAL-FIRST T7): [`apply_edits`], and where its matching cannot place an
+/// OXA-LOCAL-FIRST T7: [`apply_edits`], and where its matching cannot place an
 /// edit, the indentation-tolerant unique match (a), or the closest-text error (b), or the
 /// several-places error (c). Only reached when `apply_edits` fails, so every input that
 /// succeeds today gives the same bytes. Each edit is placed by its own position in the
 /// normalised text; the rest (overlap, no change, line endings, diff) is `apply_edits`' own.
-pub fn apply_edits_local(content: &str, edits: &[Edit], path: &str) -> Result<EditOutcome, String> {
+pub fn apply_edits_tolerant(content: &str, edits: &[Edit], path: &str) -> Result<EditOutcome, String> {
     let err = match apply_edits(content, edits, path) {
         Ok(outcome) => return Ok(outcome),
         Err(e) => e,
@@ -97,13 +97,13 @@ pub fn apply_edits_local(content: &str, edits: &[Edit], path: &str) -> Result<Ed
         let new = normalize_to_lf(&edit.new_text);
         let occurrences = count_occurrences(&normalized, &old);
         if occurrences > 1 {
-            // The text is in the file more than once: it stays a duplicate under `local`. The
-            // tolerant line match never picks one of the places (a text inside a longer line
-            // has no line region, and one whole-line region among several hits is a guess).
-            let regions = local_regions(&normalized, &old);
+            // The text is in the file more than once: it stays a duplicate. The tolerant
+            // line match never picks one of the places (a text inside a longer line has no
+            // line region, and one whole-line region among several hits is a guess).
+            let regions = tolerant_regions(&normalized, &old);
             return Err(if regions.len() > 1 {
                 let lines: Vec<usize> = regions.iter().map(|r| r.first + 1).collect();
-                local_edit::not_unique(path, &lines)
+                default_edit::not_unique(path, &lines)
             } else {
                 errors::edit_duplicate(path, i, total, occurrences)
             });
@@ -121,11 +121,13 @@ pub fn apply_edits_local(content: &str, edits: &[Edit], path: &str) -> Result<Ed
             });
             continue;
         }
-        let regions = local_regions(&normalized, &old);
+        let regions = tolerant_regions(&normalized, &old);
         match regions.as_slice() {
             [] => {
                 return Err(match closest_region(&normalized, &old) {
-                    Some(closest) => local_edit::not_found(path, closest.first, closest.last, &closest.text),
+                    Some(closest) => {
+                        default_edit::not_found(path, closest.first, closest.last, &closest.text)
+                    }
                     None => errors::edit_not_found(path, i, total),
                 });
             }
@@ -145,7 +147,7 @@ pub fn apply_edits_local(content: &str, edits: &[Edit], path: &str) -> Result<Ed
             }
             many => {
                 let lines: Vec<usize> = many.iter().map(|r| r.first + 1).collect();
-                return Err(local_edit::not_unique(path, &lines));
+                return Err(default_edit::not_unique(path, &lines));
             }
         }
     }
@@ -182,7 +184,7 @@ pub fn apply_edits_local(content: &str, edits: &[Edit], path: &str) -> Result<Ed
     })
 }
 
-/// One edit placed by `apply_edits_local`: byte range in the normalised text.
+/// One edit placed by `apply_edits_tolerant`: byte range in the normalised text.
 struct Placed {
     edit_index: usize,
     start: usize,
@@ -190,7 +192,7 @@ struct Placed {
     new_text: String,
 }
 
-/// A run of file lines matched by [`local_regions`]: 0-based first line, and the byte range
+/// A run of file lines matched by [`tolerant_regions`]: 0-based first line, and the byte range
 /// `[start, end)` of the normalised text it replaces.
 struct Region {
     first: usize,
@@ -220,7 +222,7 @@ fn old_lines(old: &str) -> Vec<&str> {
     old.strip_suffix('\n').unwrap_or(old).split('\n').collect()
 }
 
-/// What local matching compares: leading spaces and tabs and trailing whitespace ignored.
+/// What the tolerant match compares: leading spaces and tabs and trailing whitespace ignored.
 fn line_key(line: &str) -> &str {
     line.trim_start_matches([' ', '\t']).trim_end()
 }
@@ -237,7 +239,7 @@ fn first_content_line(text: &str) -> &str {
 }
 
 /// Every window of `old`'s lines in `normalized` whose lines match by [`line_key`].
-fn local_regions(normalized: &str, old: &str) -> Vec<Region> {
+fn tolerant_regions(normalized: &str, old: &str) -> Vec<Region> {
     let lines = line_ranges(normalized);
     let want = old_lines(old);
     let n = want.len();
@@ -266,7 +268,7 @@ fn local_regions(normalized: &str, old: &str) -> Vec<Region> {
 
 /// The window of `old`'s line count with the most lines equal (by [`line_key`]) at the same
 /// position, the first on a tie, if it has at least one: 1-based first and last line, and the
-/// text, cut to [`local_edit::CLOSEST_MAX_BYTES`] at a line boundary (inside a single long line,
+/// text, cut to [`default_edit::CLOSEST_MAX_BYTES`] at a line boundary (inside a single long line,
 /// at a character boundary).
 struct Closest {
     first: usize,
@@ -295,7 +297,7 @@ fn closest_region(normalized: &str, old: &str) -> Option<Closest> {
     }
     let i = best?;
 
-    let cap = local_edit::CLOSEST_MAX_BYTES;
+    let cap = default_edit::CLOSEST_MAX_BYTES;
     let mut text = String::new();
     let mut shown = 0;
     for k in 0..n {
@@ -717,8 +719,7 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
     let runs = change_runs(old, new);
     let num = |n: usize| format!("{n:>width$}");
     let skip_marker = format!(" {} ...", " ".repeat(width));
-    let context_line = |n: usize, line: &str| format!(" {} {}", num(n), line);
-
+    let context_line = |new_no: usize, line: &str| format!(" {} {}", num(new_no), line);
     let mut out: Vec<String> = Vec::new();
     let mut old_no = 1usize;
     let mut new_no = 1usize;
@@ -746,13 +747,13 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
                 if last_was_change && next_is_change {
                     if n <= context * 2 {
                         for line in raw {
-                            out.push(context_line(old_no, line));
+                            out.push(context_line(new_no, line));
                             old_no += 1;
                             new_no += 1;
                         }
                     } else {
                         for line in &raw[..context] {
-                            out.push(context_line(old_no, line));
+                            out.push(context_line(new_no, line));
                             old_no += 1;
                             new_no += 1;
                         }
@@ -761,7 +762,7 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
                         old_no += skipped;
                         new_no += skipped;
                         for line in &raw[n - context..] {
-                            out.push(context_line(old_no, line));
+                            out.push(context_line(new_no, line));
                             old_no += 1;
                             new_no += 1;
                         }
@@ -769,7 +770,7 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
                 } else if last_was_change {
                     let shown = n.min(context);
                     for line in &raw[..shown] {
-                        out.push(context_line(old_no, line));
+                        out.push(context_line(new_no, line));
                         old_no += 1;
                         new_no += 1;
                     }
@@ -787,7 +788,7 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
                         new_no += skipped;
                     }
                     for line in &raw[skipped..] {
-                        out.push(context_line(old_no, line));
+                        out.push(context_line(new_no, line));
                         old_no += 1;
                         new_no += 1;
                     }
@@ -846,5 +847,39 @@ mod tests {
             diff,
             "    ...\n  8 l8\n  9 l9\n-10 l10\n+10 L10\n 11 l11\n 12 l12\n    ..."
         );
+    }
+
+    #[test]
+    fn context_lines_use_new_line_numbers() {
+        // Insertion: two lines inserted after line 33, the unchanged line 34 must be shown
+        // with its new-file number 36 (33 + 2 inserted + the original 33 stays 33).
+        let old: String = (1..=40).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l33\n", "l33\nNEW1\nNEW2\n");
+        let (diff, _) = display_diff(&old, &new, 1);
+        let lines: Vec<&str> = diff.lines().collect();
+        assert!(lines.contains(&"+34 NEW1"));
+        assert!(lines.contains(&"+35 NEW2"));
+        assert!(lines.contains(&" 36 l34"), "diff:\n{diff}");
+
+        // Deletion: deleting line 5 shifts the context line below it from 6 to 5.
+        let old: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l5\n", "");
+        let (diff, _) = display_diff(&old, &new, 1);
+        let lines: Vec<&str> = diff.lines().collect();
+        // Context lines are rendered as ` {number:>width} `, so check the trimmed number.
+        let ctx = |lines: &[&str], n: usize| {
+            lines
+                .iter()
+                .any(|l| l.trim_start().starts_with(&format!("{n} l")))
+        };
+        assert!(ctx(&lines, 5), "diff:\n{diff}");
+        assert!(!ctx(&lines, 6), "diff:\n{diff}");
+
+        // Replacement: a one-to-one change keeps numbers in sync (no shift).
+        let old: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l5\n", "L5\n");
+        let (diff, _) = display_diff(&old, &new, 1);
+        let lines: Vec<&str> = diff.lines().collect();
+        assert!(ctx(&lines, 6), "diff:\n{diff}");
     }
 }
