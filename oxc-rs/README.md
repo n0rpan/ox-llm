@@ -9,7 +9,7 @@ proceed. Python product code remains unchanged; reference goldens follow merged 
 new tests still establish Python behavior before checking a ported path.
 
 Cloud-only mode (no local engine) is the first complete target. Main is merged
-normally through `d5d3581`; the discovery proof also includes #294's current
+normally through `dbe291b`; the discovery proof also includes #294's current
 snapshot API. Native discovery passes nine live HTTP cases, including an owned
 public-price cache, and eight public refusal cases. They hold a foreign inference
 lease throughout and install no engine/model. Positive forwarding, accounting,
@@ -17,11 +17,17 @@ explicit cancel and installer composition are still incomplete; metadata parity
 alone does not establish those paths. Hardware A/B waits for the full suite.
 
 The [reviewable merge plan](../conformance/MERGE_PLAN.md) keeps independent
-opt-in slices against main. #177, #297 and #327 are merged. The CLI/transport
+opt-in slices against main. #177, #297, #327 and #379 are merged. The CLI/transport
 lane owns #186, #197 and #271; rust-cloud owns #294/#320/#353/#367/#379 and
 wires the translators from rust-upstreams #334 after landing. This integration
 branch stays draft #28 and must never be merged as a monolith. Validation counts
 below describe earlier scoped baselines unless a current result is stated.
+
+The current #331 priority is one default-off, in-process Anthropic request from
+oxa through discovery, fresh key-file credentials, translation, budget settlement
+and one private ledger row. Shared runtime and ledger work is on separate small
+slice branches; the client, mock harness and setting are coordinated with their
+owners. Broader provider/HTTP/CLI work resumes after that path is proven.
 
 Build locally, keeping generated binaries outside the source checkout:
 
