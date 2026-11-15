@@ -347,7 +347,10 @@ fn prompt_or_command(
     sink: &mut dyn oxa_proto::EventSink,
     ui: &mut dyn oxa_proto::Ui,
 ) -> Result<Message, OxaError> {
-    match oxa_core::expand_input(session.inner(), &text) {
+    // Extension session switches are held until the message is over, whatever the message was
+    // (a command, or a prompt whose event handlers or tools asked for one).
+    session.enable_swap();
+    let message = match oxa_core::expand_input(session.inner(), &text) {
         oxa_core::Expanded::Hook { name, args } => session
             .run_command(&name, &args, sink, ui)
             .map(|_| Message::Extension),
@@ -355,7 +358,25 @@ fn prompt_or_command(
             oxa_core::run_builtin(session, &name, &args, sink, ui).map(Message::Command)
         }
         _ => session.prompt(text, parts, sink, ui).map(|_| Message::Prompt),
-    }
+    }?;
+    apply_swap(session, sink, ui)?;
+    Ok(message)
+}
+
+/// Apply the session swap an extension asked for, between two messages.
+fn apply_swap(
+    session: &mut Session,
+    sink: &mut dyn oxa_proto::EventSink,
+    ui: &mut dyn oxa_proto::Ui,
+) -> Result<(), OxaError> {
+    let how = match session.take_swap_request() {
+        None => return Ok(()),
+        Some(oxa_core::SwapRequest::New) => oxa_core::Open::New,
+        Some(oxa_core::SwapRequest::Switch(path)) => {
+            oxa_core::Open::Resume(session.inner().store.resolve(&path)?)
+        }
+    };
+    session.switch(how, sink, ui)
 }
 
 /// A failed message on stderr: the error code first for a coded refusal (`unsupported_in_oxa:
