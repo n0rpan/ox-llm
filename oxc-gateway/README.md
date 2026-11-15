@@ -39,7 +39,7 @@ cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --exa
 OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_PRICING_CONTRACT="$PWD/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
 ```
 
-Forty-six price/settlement cases are captured from unmodified Python in private
+Forty-seven price/settlement cases are captured from unmodified Python in private
 HOME/network namespaces using `/usr/bin/python3`; thirteen include remote row
 fields and cancellation. Ten native regressions cover concurrent admission,
 partial appends, rewrite/reset, permissions, cache pricing, reported cost and
