@@ -18,6 +18,8 @@ import shutil
 import subprocess
 import sys
 
+from . import legacy_config
+
 RUNTIME = Path(__file__).resolve().parent / 'runtime'
 UNIT_NAME = re.compile(r'[A-Za-z0-9_.@-]{1,64}')
 
@@ -112,6 +114,7 @@ def install(args, runner=subprocess.run):
     prefix, config = Path(args.prefix).absolute(), Path(args.config_dir).absolute()
     models = load_models(args.models_file)
     runtime_json = config / 'runtime.json'
+    migrated = []
     script = prefix / 'bin/oxc-controller'
     unit_file = None
     if not args.no_systemd:
@@ -126,13 +129,16 @@ def install(args, runner=subprocess.run):
     for path in destinations:
         if os.path.islink(path):
             raise InstallError(f'refusing to write through a symlink: {path}')
-    if os.path.lexists(runtime_json) and not args.force:
+    if config == legacy_config.default_dir().absolute():
+        migrated = legacy_config.migrate(config)
+    if os.path.lexists(runtime_json) and not args.force and 'runtime.json' not in migrated:
         raise InstallError('runtime.json already exists in the config directory; it was kept (use --force to replace).')
     value = {'cloud_only': True, 'cloud': {'enabled': True, 'daily_budget_usd': args.daily_budget,
                                            'secrets_file': str(config / 'cloud-secrets.json'), 'models': models}}
     config.mkdir(parents=True, exist_ok=True, mode=0o700)
-    runtime_json.write_text(json.dumps(value, indent=2) + '\n')
-    os.chmod(runtime_json, 0o600)
+    if 'runtime.json' not in migrated:
+        runtime_json.write_text(json.dumps(value, indent=2) + '\n')
+        os.chmod(runtime_json, 0o600)
     copy_runtime(prefix / 'share/oxc/runtime')
     (prefix / 'bin').mkdir(parents=True, exist_ok=True)
     script.write_text(launcher(prefix, config, args.port))
