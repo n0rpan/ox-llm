@@ -46,7 +46,7 @@ Uncommitted task work, including red work, is saved as a commit with the reposit
 configured identity. Commit hooks run normally. A missing identity or rejected commit
 blocks the task and retains every file. Unresolved conflicts remain in progress for
 the agent; they are never staged as a fabricated resolution. There is no automatic
-cleanup, push or PR creation yet.
+cleanup. Publication is explicitly opt-in as described below.
 
 To continue an interrupted, red or blocked task, run the same file again. Use
 `--rerun` to continue a completed task after its base changes. The retained receipt
@@ -76,3 +76,28 @@ step avoid replaying it when only acceptance or saving remains.
 
 Status probes the task lock. An interrupted phase with no surviving worker is shown
 as blocked; the checkpoint stays intact for the next task-file invocation.
+
+
+`oxa work tasks.json --publish` pushes the accepted, saved commit to `origin` and
+creates or updates its PR through `gh`. Red acceptance creates a draft; green
+acceptance makes the PR ready. Nothing-to-do and blocked tasks do not create PRs.
+The runner checks existing PR queue membership before every push and refuses a
+queued PR; use a new task branch for follow-up work. It refuses branch changes
+made after acceptance until `--rerun` checks them. PR bodies include task ID and
+acceptance state, without raw prompts, transcripts or failed-check output.
+A publication failure keeps a publication checkpoint; another `--publish` retries
+without replaying the agent. Offline mode refuses network publication.
+
+`--report-problems` independently authorizes filing the task's own structured
+problem notes using the `report-issue` workflow. This flag must be launched by the
+user outside an agent tool. Normal `oxa report-issue submit` still requires its
+terminal confirmation. Reports use the user setting `oxa.reportIssue.repo`;
+project settings cannot choose a destination. Notes, titles and queries pass
+through the existing report scrubber. The runner performs two or three symptom
+queries against open issues and PRs and reads the top matches before writing.
+It comments only new notes on a matching issue, links an existing fixing PR, or
+files a new report with related links. Search failure, offline mode or missing
+report configuration keeps a local scrubbed draft and records its path/detail.
+A later explicit `--report-problems` retries local reports without replaying the
+agent. No notes are filed unless this flag is present; model output and acceptance
+logs are never treated as report bodies.

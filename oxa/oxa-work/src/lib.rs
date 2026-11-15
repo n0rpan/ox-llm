@@ -1,5 +1,9 @@
 //! Opt-in, sequential unattended task execution. Worktrees are retained on every outcome.
 mod execute;
+mod notes;
+mod publish;
+pub use notes::{ProblemNote, ReportRecord};
+pub use publish::{publish, report_notes};
 mod state;
 mod tree;
 use serde::{Deserialize, Serialize};
@@ -43,6 +47,11 @@ pub struct Record {
     pub detail: String,
     pub step: Step,
     pub progress_at: u64,
+    pub head: Option<String>,
+    pub pull_request: Option<String>,
+    pub draft: bool,
+    pub problem_notes: Vec<ProblemNote>,
+    pub reports: Vec<ReportRecord>,
 }
 
 fn output(mut command: Command) -> Result<Output> {
@@ -157,7 +166,7 @@ fn agent(
     prompt: &str,
     lock: &fs::File,
     offline: bool,
-) -> Result<()> {
+) -> Result<AgentReply> {
     let mut c = Command::new(binary);
     c.current_dir(root)
         .args(["-p", "--model", &task.model, "--no-session"]);
@@ -168,9 +177,18 @@ fn agent(
     // and fd 0 keeps the shared kernel lock alive if the runner dies before its child.
     c.args(["--", prompt])
         .stdin(lock.try_clone().map_err(|e| e.to_string())?);
-    checked_output(c.output().map_err(|e| e.to_string())?).map(|_| ())
+    let output = c.output().map_err(|e| e.to_string())?;
+    let notes = notes::parse(&String::from_utf8_lossy(&output.stdout));
+    Ok(AgentReply {
+        notes,
+        error: checked_output(output).err(),
+    })
 }
 
+struct AgentReply {
+    notes: Vec<ProblemNote>,
+    error: Option<String>,
+}
 pub fn blocked_record(task: &Task, detail: String) -> Record {
     Record {
         id: task.id.clone(),
@@ -180,6 +198,11 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         detail,
         step: Step::Finished,
         progress_at: state::now(),
+        head: None,
+        pull_request: None,
+        draft: false,
+        problem_notes: vec![],
+        reports: vec![],
     }
 }
 pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bool) -> Result<Record> {
@@ -232,7 +255,10 @@ pub fn run_task_with_options(
         {
             return Err("task specification changed; use a new task id".into());
         }
-        if old.record.step != Step::Finished {
+        if matches!(old.record.step, Step::Publishing | Step::Reporting) && !rerun {
+            return Ok(old.record);
+        }
+        if old.record.step != Step::Finished && !rerun {
             old
         } else if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
             return Ok(old.record);
@@ -242,7 +268,7 @@ pub fn run_task_with_options(
     } else {
         new_state(task, tree, offline)
     };
-    state.offline |= offline;
+    state.offline = offline;
     let step = state.record.step;
     state::save(&receipt, &mut state, step)?;
     if let Err(error) = execute::execute(&root, binary, task, &receipt, &mut state, &lock) {
@@ -257,6 +283,9 @@ pub fn run_task_with_options(
         }
         state.record.detail.push_str(&format!("save: {error}"));
     }
+    if state.record.worktree.exists() && state.record.outcome != Outcome::Blocked {
+        state.record.head = Some(checked(git(&state.record.worktree, &["rev-parse", "HEAD"]))?);
+    }
     state::save(&receipt, &mut state, Step::Finished)?;
     Ok(state.record)
 }
@@ -270,10 +299,16 @@ fn new_state(task: &Task, worktree: PathBuf, offline: bool) -> state::State {
             detail: String::new(),
             step: Step::Preparing,
             progress_at: state::now(),
+            head: None,
+            pull_request: None,
+            draft: false,
+            problem_notes: vec![],
+            reports: vec![],
         },
         task: task.clone(),
         checkpoint: None,
         offline,
+        acceptance_outcome: None,
     }
 }
 pub fn status(repo: &Path) -> Result<Vec<Record>> {

@@ -32,6 +32,7 @@ mod sandbox_layout;
 mod themes;
 mod wipe_cmd;
 mod work_cmd;
+mod work_reports;
 
 pub use args::{parse_args, usage_text, ApiKey, Args, ModeArg, Subcommand};
 pub use config_cmd::run_config;

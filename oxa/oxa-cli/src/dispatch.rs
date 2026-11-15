@@ -125,7 +125,9 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
-            Subcommand::Work(words) => return crate::work_cmd::run(&words, &cwd, &mut *stdout, &mut *stderr),
+            Subcommand::Work(words) => {
+                return crate::work_cmd::run(&words, &cwd, &dirs, env, &mut *stdout, &mut *stderr)
+            }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),

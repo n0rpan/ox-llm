@@ -34,7 +34,7 @@ pub(crate) fn execute(
                 state.checkpoint = Some(Checkpoint {
                     initial: prepared.initial,
                     base: prepared.base,
-                    prompt: prepared.prompt,
+                    prompt: prepared.prompt + super::notes::INSTRUCTIONS,
                     commands,
                     agent_error: None,
                     failures: String::new(),
@@ -54,12 +54,25 @@ pub(crate) fn execute(
                     point.prompt.clone()
                 };
                 let result = agent(binary, &tree, task, &prompt, lock, state.offline);
+                let error = match result {
+                    Ok(reply) => {
+                        for note in reply.notes {
+                            if state.record.problem_notes.len() < 5
+                                && !state.record.problem_notes.contains(&note)
+                            {
+                                state.record.problem_notes.push(note);
+                            }
+                        }
+                        reply.error
+                    }
+                    Err(error) => Some(error),
+                };
                 tree::ensure_merged(&tree, &point.base, &task.branch)?;
                 state
                     .checkpoint
                     .as_mut()
                     .ok_or("missing task checkpoint")?
-                    .agent_error = result.err();
+                    .agent_error = error;
                 state::save(
                     path,
                     state,
@@ -96,7 +109,7 @@ pub(crate) fn execute(
                     state::save(path, state, Step::Saving)?;
                 }
             }
-            Step::Saving | Step::Finished => return Ok(()),
+            Step::Saving | Step::Finished | Step::Publishing | Step::Reporting => return Ok(()),
         }
     }
 }

@@ -17,6 +17,8 @@ pub enum Step {
     Recheck,
     Saving,
     Finished,
+    Publishing,
+    Reporting,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -35,6 +37,7 @@ pub(crate) struct State {
     pub task: Task,
     pub checkpoint: Option<Checkpoint>,
     pub offline: bool,
+    pub acceptance_outcome: Option<super::Outcome>,
 }
 pub(crate) fn now() -> u64 {
     SystemTime::now()
