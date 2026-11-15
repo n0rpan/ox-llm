@@ -623,6 +623,26 @@ fn length_continue_once() {
     w1_holds(&eng.requests());
 }
 
+/// A refusal (`content_filter`) keeps the streamed text, shows a one-line notice and does not retry.
+#[test]
+fn content_filter_keeps_text_notices_and_does_not_retry() {
+    let env = TestEnv::new();
+    let mut first = ScriptTurn::text("I can't help with that");
+    first.finish = Finish::ContentFilter;
+    let turns = vec![first, ScriptTurn::text("never requested")];
+    let (mut st, eng) = scripted_state(&env, turns, Vec::new(), Mode::Workspace);
+    say(&mut st, "do the thing");
+    let (end, events) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    assert_eq!(eng.requests().len(), 1, "no retry");
+    let wire = st.transcript.wire();
+    assert_eq!(
+        wire.last().unwrap().content.as_deref(),
+        Some("I can't help with that")
+    );
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text == "The model declined to answer this request.")));
+}
+
 /// F9 (engine `chat::chat_inputs`): a generating request ending in an assistant message is
 /// history plus a NEW assistant turn, on the stub engine as on the real one; the trailing
 /// message is held like any earlier turn (cached = prompt - 1, the `\n` after the trailing

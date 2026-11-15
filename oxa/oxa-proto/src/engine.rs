@@ -122,6 +122,37 @@ pub struct ChatRequest<'a> {
     pub hints: Hints<'a>,
 }
 
+impl Default for Hints<'_> {
+    /// No session, no idempotency key, an ordinary foreground chat turn.
+    fn default() -> Self {
+        Hints {
+            session: "",
+            idem_key: "",
+            kind: TurnKind::Chat,
+            background: false,
+            snapshot_keep: false,
+        }
+    }
+}
+
+impl<'a> ChatRequest<'a> {
+    /// A request with the required parts and defaults for everything else (1024 output tokens,
+    /// thinking off, greedy, default hints). Build with `ChatRequest { max_tokens: 64,
+    /// ..ChatRequest::new(..) }` so a field added later does not break the caller.
+    pub fn new(prefix: &'a FrozenPrefix, messages: &'a [WireMsg], model: &'a str) -> Self {
+        ChatRequest {
+            prefix,
+            messages,
+            model,
+            max_tokens: 1024,
+            thinking: false,
+            preserve_thinking: false,
+            sampling: None,
+            hints: Hints::default(),
+        }
+    }
+}
+
 /// Sampling parameters sent with a request (`oxa.sampling.mode = model`): the model card's
 /// recommended values. The engine reads `presence_penalty` per reply.
 #[derive(Debug, Clone, Copy, PartialEq)]
