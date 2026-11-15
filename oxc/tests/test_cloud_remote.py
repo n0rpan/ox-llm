@@ -583,7 +583,9 @@ class LedgerFailClosed(CloudCase):
             return original(handler, status, *args, **kwargs)
 
         with patch.object(ctl_http.Handler, 'reply', fail_success):
-            self.assertEqual(self.chat()[0], 503)
+            # a failed client write closes the connection without a second reply
+            with self.assertRaises(http.client.RemoteDisconnected):
+                self.chat()
         rows = self.ledger_rows()
         self.assertEqual(len(rows), 1, rows)
         self.assertEqual(rows[0]['settled'], 'usage')
