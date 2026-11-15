@@ -92,14 +92,20 @@ fn compaction_end_updates_ctx_and_notice_tokens() {
     // The cache is invalid after a rebase: the CACHE meter is cleared.
     assert_eq!(vm.status.last_cached, None);
     assert_eq!(vm.status.last_prompt, None);
-    // The notice block carries both the before and after counts.
+    // main's notice and the divider block both carry the before and after counts.
     assert_eq!(
         vm.blocks,
-        vec![Block::Compaction {
-            summary: "s".into(),
-            tokens_before: 120_000,
-            tokens_after: Some(12_000),
-            expanded: false,
-        }]
+        vec![
+            Block::Notice {
+                level: oxa_proto::Level::Info,
+                text: "Compacted from 120000 to about 12000 tokens".into(),
+            },
+            Block::Compaction {
+                summary: "s".into(),
+                tokens_before: 120_000,
+                tokens_after: Some(12_000),
+                expanded: false,
+            }
+        ]
     );
 }
