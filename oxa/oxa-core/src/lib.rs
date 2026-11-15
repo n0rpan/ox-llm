@@ -39,6 +39,7 @@ mod epoch;
 mod exec;
 mod fire;
 mod host;
+pub mod loopguard;
 mod navigate;
 mod prefix;
 mod profile;
