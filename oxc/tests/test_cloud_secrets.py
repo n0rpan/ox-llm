@@ -83,7 +83,8 @@ class ReadSecrets(unittest.TestCase):
         (self.tmp / '.git' / 'HEAD').write_text('ref: refs/heads/main\n')
         exc = self._refusal()
         self.assertEqual(exc.code, 'cloud_credentials_unavailable')
-        self.assertIn('inside a repository: %s' % self.tmp.resolve(), str(exc))
+        self.assertIn('inside a repository', str(exc))
+        self.assertNotIn(str(self.tmp.resolve()), str(exc))
 
 
 if __name__ == '__main__':

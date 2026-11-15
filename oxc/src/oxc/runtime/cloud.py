@@ -622,7 +622,7 @@ def secrets_file(value):
             git = parent / '.git'
             if (git.is_file() or (git / 'HEAD').exists() or ((parent / 'AGENTS.md').is_file()
                     and (parent / 'engine').is_dir())):
-                _secrets_refusal('the key file is inside a repository: %s' % parent)
+                _secrets_refusal('the key file is inside a repository')
     except (OSError, RuntimeError, ValueError):
         raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable') from None
     return path
