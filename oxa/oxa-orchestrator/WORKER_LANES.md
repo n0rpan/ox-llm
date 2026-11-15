@@ -165,3 +165,12 @@ both retain observed usage and confirm owned process cleanup. The real goal
 regression fails before the usage fix: settled truncation was incorrectly
 reported as unknown. The real CLI/tmux demo also checks the 2048 limit in status
 and the owned fake gateway's actual request records. No paid provider is used.
+
+Worker token allowances follow the observed-threshold contract in
+[session goals](SESSION_GOALS.md). The native child receives its immutable
+lifetime threshold from the owner and gates every SDK call locally, without
+waiting for the supervisor to poll. A settled overrun is retained in the outcome
+and exposed as `token_overrun`; further chat/summary/prefill admissions stop.
+The per-response output allowance remains separate. Strict pre-request ceilings
+are deferred to [issue 445](https://github.com/oxstack/ox-llm/issues/445), and the
+gateway's daily budget remains the hard monetary limit.

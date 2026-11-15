@@ -35,7 +35,7 @@ def output(body):
     return values[-1]
 
 
-def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer=False, truncate_reviewer=False):
+def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer=False, truncate_reviewer=False, overrun_reviewer=False):
     class AuthorAndParent(openai_base):
         def __init__(self):
             self.counts = {}
@@ -94,14 +94,21 @@ def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer
                     assert step == 7
                     report = output(body)["report"]
                     assert report["process_stopped"]
-                    assert "reviewer verified exact patch" in report["last_reply"]
-                    if truncate_reviewer:
+                    if overrun_reviewer:
+                        assert report["goal"]["state"] == "budget_exhausted"
+                        assert report["runtime_outcome"] == "token_budget"
+                        assert report["goal"]["reported_tokens"] == (532 if tiered_pricing else 527)
+                        assert report["goal"]["token_overrun"] == (32 if tiered_pricing else 27)
+                        value = {"state":"blocked", "reason":"reviewer_token_budget"}
+                    elif truncate_reviewer:
+                        assert "reviewer verified exact patch" in report["last_reply"]
                         assert report["goal"]["state"] == "blocked"
                         assert report["goal"]["reason"] == "native_response_truncated"
                         assert report["runtime_outcome"] == "truncated"
                         assert json.loads(report["last_reply"])["state"] == "done", "complete-looking text must not override length"
                         value = {"state": "blocked", "reason": "reviewer_response_truncated"}
                     else:
+                        assert "reviewer verified exact patch" in report["last_reply"]
                         assert report["goal"]["state"] == "done"
                         value = completed("mixed-provider-review-final")
             uid = lane + "-" + model.replace(".", "-") + "-" + str(step)
@@ -206,7 +213,7 @@ def run(args):
     live = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(live)
     demo = live.Demo(args.bin_dir)
-    author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic, args.pricing, args.cancel_reviewer, args.truncate_reviewer)
+    author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic, args.pricing, args.cancel_reviewer, args.truncate_reviewer, args.overrun_reviewer)
     tls_context = None
     if args.tls_reviewer:
         certificate, private_key = root / 'mock-cert.pem', root / 'mock-key.pem'
@@ -291,6 +298,8 @@ def run(args):
                 "turn_ms": 8000, "output_bytes": 1048576, "files": files, "edit": edit})
         if args.truncate_reviewer:
             next(p for p in profiles if p["name"] == "reviewer")["response_tokens"] = 512
+        if args.overrun_reviewer:
+            next(p for p in profiles if p["name"] == "reviewer")["budget"]["tokens"] = 500
         profile_file = demo.agent / "workers.json"
         profile_file.write_text(json.dumps({"version": 2, "verified_local_only": False,
             "allow_cloud_workers": True, "parallel": 2, "total_tokens": 200000,
@@ -325,8 +334,9 @@ def run(args):
             return
         reviewer.release.set()
         expected_state = "blocked" if args.truncate_reviewer else "done"
+        blocked_reason = "reviewer_token_budget" if args.overrun_reviewer else "reviewer_response_truncated"
         done = demo.wait(lambda v: demo.goal(v)["state"] == expected_state
-            and (not args.truncate_reviewer or demo.goal(v).get("reason") == "reviewer_response_truncated")
+            and (not args.truncate_reviewer or demo.goal(v).get("reason") == blocked_reason)
             and all(w["process_stopped"] for w in v["status"]["workers"]))
         assert done["status"]["session"]["id"] == sid and demo.goal(done)["budget"] == budget
         assert demo.goal(done)["reported_tokens"] == 140
@@ -342,7 +352,7 @@ def run(args):
         if args.truncate_reviewer:
             assert workers["reviewer"]["response_tokens"] == 512
             demo.save_screen("review-truncated-screen.txt", lambda s: (
-                "reviewer_response_truncated" in s and "Goal Blocked" in s
+                blocked_reason in s and "Goal Blocked" in s
                 and any("reviewer-sonnet (cloud) · failed" in line for line in s.splitlines()[-3:])))
         else:
             demo.save_screen("review-completed-screen.txt", lambda s: (
@@ -400,7 +410,10 @@ def run(args):
         else:
             raise AssertionError("TUI exit deadline")
         result = {"same_parent_session": True, "verified_author_proposal": True,
-            "reviewer_truncated": args.truncate_reviewer, "verified_review_completed": not args.truncate_reviewer,
+            "reviewer_truncated": args.truncate_reviewer and not args.overrun_reviewer,
+            "reviewer_budget_exhausted": args.overrun_reviewer,
+            "reviewer_token_overrun": workers["reviewer"]["goal"].get("token_overrun"),
+            "verified_review_completed": not args.truncate_reviewer,
             "parent_goal_state": expected_state,
             "native_anthropic_reviewer": True, "reviewer_tls": args.tls_reviewer, "source_unchanged": True, "workers_reaped": True,
             "parent_tokens": 140, "author_tokens": 40, "reviewer_tokens": reviewer_tokens,
@@ -489,9 +502,12 @@ def main():
     outcome = parser.add_mutually_exclusive_group()
     outcome.add_argument("--cancel-reviewer", action="store_true", help="verify Esc closes a native SDK request before headers")
     outcome.add_argument("--truncate-reviewer", action="store_true", help="verify native SDK length truncation preserves usage and blocks DONE")
+    outcome.add_argument("--overrun-reviewer", action="store_true", help="verify an admitted native SDK request reports observed excess above a 500-token threshold")
     parser.add_argument("--tls-reviewer", action="store_true", help="use an owned native TLS mock with a verified temporary CA")
     parser.add_argument("--isolated-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.overrun_reviewer:
+        args.truncate_reviewer = True
     if args.isolated_root is not None:
         run(args)
         return
@@ -511,7 +527,9 @@ def main():
         command.append("--shared-model")
     if args.cancel_reviewer:
         command.append("--cancel-reviewer")
-    if args.truncate_reviewer:
+    if args.overrun_reviewer:
+        command.append("--overrun-reviewer")
+    elif args.truncate_reviewer:
         command.append("--truncate-reviewer")
     if args.tls_reviewer:
         command.append("--tls-reviewer")

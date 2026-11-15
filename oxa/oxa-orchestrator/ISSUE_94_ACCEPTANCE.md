@@ -260,3 +260,41 @@ original deadlines and cancellation checks remain intact. The shared demo's
 formerly dotted boot-preload setting is corrected too. No product default is
 changed. These controls remove identified setup races; they do not establish the
 cause of every earlier timeout or prove real-provider reliability.
+
+## Coordinator token-budget decision and queue hold
+
+Token budgets remain observed thresholds: an admitted request may overrun, but
+no new inference is admitted once the running observed total is at or above the
+allowance. Actual settled usage and its excess remain in the outcome. The new
+`token_overrun` field distinguishes known excess from unknown usage; it does not
+clamp observations or claim a hard token ceiling. Native SDK admission now enforces
+that threshold locally across tool-loop calls, summaries and prefills instead of
+relying on delayed parent polling. Fully settled budget-exhausted usage is no
+longer discarded by the native goal wrapper. Regressions fail before these fixes
+and pass after them, including an actual native-worker overrun and process reap.
+
+Strict pre-request ceilings are deferred pending a trusted prompt bound in
+[issue 445](https://github.com/oxstack/ox-llm/issues/445); remote `count_prompt`
+returns unavailable. The gateway's configured daily budget remains the hard
+monetary limit. The original smoke's observed token overshoot remains recorded;
+this decision does not retroactively make it a successful acceptance run or
+authorize another one.
+
+The merge queue is closed pending CI change #444, as announced on #331. This
+lane continues local acceptance on its draft branch and neither expects merges
+nor requests queue operations. No hosted checks are polled and no review is
+requested during release mode.
+
+The real TUI/native SDK overrun mode (`--overrun-reviewer --pricing
+--shared-model`) also passes: one request admitted below a 500-token threshold
+settles at 532 synthetic tokens, records `token_overrun: 32`, and exhausts the
+worker budget. The parent remains blocked, source stays unchanged, both workers
+are reaped, and ten gateway rows settle with full usage. No retry, clamp or
+refund makes that request appear within budget. This is an owned-mock check of
+the approved threshold semantics, not another paid attempt.
+
+The ordinary priced/shared-model SDK review passes on the sequential recheck.
+Its preceding attempt failed before reviewer inference with the isolated gateway
+returning `cloud_credentials_unavailable`; the synthetic file remained present
+with mode 0600. The cause is not established. No deadline or assertion was
+relaxed, and this passing recheck does not resolve that intermittent failure.

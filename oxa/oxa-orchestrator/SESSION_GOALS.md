@@ -110,3 +110,32 @@ case repairs an ordinary reply then completes in the same process and saves its
 final report only under explicit consent. All inference is owned loopback fake
 traffic; no installed model, provider key, production service or other machine is
 used. Full-evening cloud orchestration acceptance is still outstanding.
+
+## Observed token thresholds (coordinator decision)
+
+Token budgets are observed thresholds. A request admitted below the threshold
+may finish above it; another inference request is refused once the running
+observed total is at or above the allowance. A valid final DONE at exactly the
+threshold remains possible, but that does not permit another request. Actual
+usage is retained without clamping it to the budget. This policy covers chat,
+compaction and zero-output prefill, whose input still consumes tokens.
+
+The TUI's in-process meter already gates each SDK admission. Native workers now
+also enforce their immutable observed threshold inside their SDK adapter, rather
+than depending on parent polling to notice an overrun before a tool loop starts
+another request. Settlement and admission share a short lock; inference runs
+outside it. Usage is published before a threshold refusal, so the parent can
+attribute the refusal as budget exhaustion with the settled observation.
+
+Goal snapshots and native worker reports expose `token_overrun`: zero for known
+usage within the token allowance, a positive excess after a settled overrun, and
+absent/null when cumulative usage is unknown or a goal has no token threshold.
+An unsettled request is not converted to known usage. Fully settled overrun
+usage remains known even when the runtime stops with `token_budget`.
+
+Strict pre-request token ceilings wait for a trusted prompt bound; cloud
+`count_prompt` is unavailable. Requested output alone cannot bound input plus
+output. That follow-up is [issue 445](https://github.com/oxstack/ox-llm/issues/445).
+The gateway's configured daily budget remains the hard monetary limit; token
+thresholds are not a substitute for it. This decision does not authorize another
+paid run or changes to the shared gateway.

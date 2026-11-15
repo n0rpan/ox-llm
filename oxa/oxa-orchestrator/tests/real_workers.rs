@@ -51,6 +51,57 @@ fn worker(server: &FakeServer, id: &str) -> WorkerSpec {
     }
 }
 
+fn native_sdk_observed_overrun_is_reported_without_clamping() {
+    let env = TestEnv::new();
+    let engine =
+        FakeServer::start(vec![ScriptTurn::text("overrun response"); 2], FakeOpts::default()).unwrap();
+    let mut spec = worker(&engine, "sdk-overrun");
+    spec.budget.reported_tokens = 1;
+    let (_, controls) = mpsc::channel();
+    let report = run(settings(&env, "sdk-overrun"), vec![spec], controls, |_| {}).unwrap();
+    assert_reaped(&report);
+    let worker = &report.workers[0];
+    assert_eq!(worker.outcome, Outcome::TokenBudget);
+    let observed = worker.reported_tokens.expect("completed SDK usage stays known");
+    assert!(observed > 1);
+    assert_eq!(worker.token_overrun, Some(observed - 1));
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 1);
+}
+
+fn native_settled_overrun_remains_known_in_the_goal_outcome() {
+    let env = TestEnv::new();
+    let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let mut spec = worker(&engine, "overrun");
+    spec.role = "fixed role\nfixture-observed-overrun".into();
+    spec.budget.reported_tokens = 1;
+    let mut config = settings(&env, "observed-overrun");
+    config.parallelism = 1;
+    config.wall_time = Duration::from_secs(5);
+    let (_, controls) = mpsc::channel();
+    let report = oxa_orchestrator::goal_session::pursue(
+        config,
+        spec,
+        oxa_orchestrator::goals::Budget {
+            wall_ms: 5000,
+            tokens: Some(1),
+            turns: 3,
+        },
+        controls,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.goal.state, oxa_orchestrator::goals::State::BudgetExhausted);
+    assert_eq!(
+        report.goal.reported_tokens,
+        Some(6),
+        "a settled overrun must not be discarded as unknown"
+    );
+    assert_eq!(report.goal.token_overrun, Some(5));
+    assert!(report.process_stopped && !Path::new(&format!("/proc/{}", report.process_id)).exists());
+    assert!(engine.requests().is_empty());
+}
+
 fn native_unknown_after_known_usage_never_completes() {
     let env = TestEnv::new();
     let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
@@ -1193,7 +1244,10 @@ fn hostile_workers_and_run_deadline() {
 /// oxa implementation. These branches are not part of any production binary.
 fn hostile_fixture(args: &[String]) {
     let role = args.last().unwrap();
-    if role.contains("\nfixture-unknown-after-known") || role.contains("\nfixture-recovered-after-failure") {
+    if role.contains("\nfixture-unknown-after-known")
+        || role.contains("\nfixture-recovered-after-failure")
+        || role.contains("\nfixture-observed-overrun")
+    {
         println!(
             "{}",
             serde_json::json!({"type":"oxa_owned_inference","phase":"ready","version":1})
@@ -1242,7 +1296,15 @@ fn hostile_fixture(args: &[String]) {
             serde_json::json!({"type":"response","command":kind,"id":request["id"],"success":true,"data":data})
         );
         if kind == "prompt" {
-            if role.ends_with("fixture-mode-change") {
+            if role.contains("\nfixture-observed-overrun") {
+                for record in [
+                    serde_json::json!({"type":"oxa_owned_inference","phase":"start","id":1}),
+                    serde_json::json!({"type":"oxa_owned_inference","phase":"end","id":1,"tokens":6}),
+                    serde_json::json!({"type":"agent_settled","aborted":false}),
+                ] {
+                    println!("{record}");
+                }
+            } else if role.ends_with("fixture-mode-change") {
                 println!(
                     "{}",
                     serde_json::json!({"type":"mode_changed","mode":"workspace"})
@@ -3391,6 +3453,12 @@ fn main() {
         std::process::exit(code);
     }
     std::env::set_var("OXA_PARENT_PRIVATE_MARKER", "synthetic-parent-value");
+    native_sdk_observed_overrun_is_reported_without_clamping();
+    native_settled_overrun_remains_known_in_the_goal_outcome();
+    println!("native settled overrun is retained in the goal outcome ... ok");
+    if args.first().map(String::as_str) == Some("--observed-threshold-only") {
+        return;
+    }
     native_unknown_after_known_usage_never_completes();
     println!("native unknown usage after a known reply never completes ... ok");
     if args.first().map(String::as_str) == Some("--unwind-accounting-only") {

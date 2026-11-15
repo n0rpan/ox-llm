@@ -132,3 +132,26 @@ native gateway path. It does not reproduce every aspect of the historical paid
 Sonnet/Haiku smoke, prove provider tokenization/prices or cancellation billing,
 or authorize another paid attempt. The mock parent/author use Responses while
 the reviewer uses Messages. Bootstrap frozen-input qualification remains separate.
+
+## Observed-threshold overrun
+
+`--overrun-reviewer --pricing --shared-model` uses the same owned native SDK
+stream with a 500-token reviewer threshold and a separate 512-token per-response
+output allowance. The first request is admitted at zero observed usage; its
+20 input/cache tokens plus 512 output tokens settle at 532. No speculative
+prompt bound or strict output-plus-input ceiling is applied.
+
+The worker records `budget_exhausted`, runtime `token_budget`, the full 532
+observed tokens and `token_overrun: 32`. Budget exhaustion takes precedence over
+length when both apply. The parent retrieves the verified report and remains
+blocked as `reviewer_token_budget`. Both workers are reaped, the source stays
+unchanged, all ten gateway rows settle with usage, and there is no retry or
+follow-on inference. The same synthetic tier/cache cost calculation is retained;
+no usage is clamped or refunded to make the outcome fit its threshold. No
+independent review is counted as completed.
+
+Cancellation, truncation and overrun modes are mutually exclusive. This is
+observed-threshold acceptance against owned loopback mocks, not a paid run or
+a strict pre-request token guarantee. The gateway's configured daily budget
+remains the monetary authority. Strict token admission awaits trusted prompt
+bounds in [issue 445](https://github.com/oxstack/ox-llm/issues/445).

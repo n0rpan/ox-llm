@@ -42,6 +42,9 @@ pub struct Snapshot {
     pub turns_started: u32,
     /// Unknown during a turn or after any turn with unavailable usage.
     pub reported_tokens: Option<u64>,
+    /// Known observed excess; None without a token threshold or settled usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_overrun: Option<u64>,
     pub turn_active: bool,
     pub elapsed_ms: u64,
     pub reason: Option<String>,
@@ -136,6 +139,7 @@ impl Goal {
                 budget,
                 turns_started: 0,
                 reported_tokens: Some(0),
+                token_overrun: None,
                 turn_active: false,
                 elapsed_ms: 0,
                 reason: None,
@@ -153,6 +157,10 @@ impl Goal {
     }
     pub fn snapshot(&self) -> Snapshot {
         let mut snapshot = self.snapshot.clone();
+        snapshot.token_overrun = snapshot
+            .reported_tokens
+            .zip(snapshot.budget.tokens)
+            .map(|(observed, threshold)| observed.saturating_sub(threshold));
         snapshot.elapsed_ms = self.elapsed().as_millis().min(u64::MAX as u128) as u64;
         snapshot
     }
@@ -616,6 +624,21 @@ mod tests {
         assert_eq!(goal.snapshot().state, State::Blocked);
         goal.resume(goal.snapshot().revision).unwrap();
         assert_eq!(goal.snapshot().reported_tokens, Some(12));
+    }
+    #[test]
+    fn observed_overrun_is_explicit_in_the_goal_outcome() {
+        let mut goal = goal(Some(100));
+        goal.begin_turn().unwrap();
+        goal.finish_turn(Some(125), more()).unwrap();
+        let snapshot = goal.snapshot();
+        assert_eq!(snapshot.state, State::BudgetExhausted);
+        assert_eq!(
+            snapshot.reported_tokens,
+            Some(125),
+            "actual observations must not be clamped"
+        );
+        assert_eq!(serde_json::to_value(&snapshot).unwrap()["token_overrun"], 25);
+        assert_eq!(goal.begin_turn(), Err(Error::NotActive));
     }
     #[test]
     fn missing_usage_and_budget_exhaustion_never_become_done_or_a_fresh_allowance() {

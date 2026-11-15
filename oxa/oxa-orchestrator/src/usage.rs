@@ -7,6 +7,7 @@ use std::{collections::BTreeSet, io};
 pub(crate) struct Ledger {
     pub ready: bool,
     pub response_tokens: Option<u32>,
+    pub refused_threshold: Option<u64>,
     last: u64,
     active: BTreeSet<u64>,
     pub unknown: bool,
@@ -20,6 +21,9 @@ enum Record {
         version: u32,
         #[serde(default)]
         response_tokens: Option<u32>,
+    },
+    Refused {
+        token_threshold: u64,
     },
     Start {
         id: u64,
@@ -47,6 +51,11 @@ impl Ledger {
             } if !self.ready && response_tokens != Some(0) => {
                 self.ready = true;
                 self.response_tokens = response_tokens;
+            }
+            Record::Refused { token_threshold }
+                if self.ready && token_threshold > 0 && self.total >= token_threshold =>
+            {
+                self.refused_threshold = Some(token_threshold);
             }
             Record::Start { id } if self.ready && id > self.last && self.active.len() < 8 => {
                 self.last = id;
@@ -85,14 +94,33 @@ mod native {
         sync::{Arc, Mutex},
     };
     type Emit = Arc<dyn Fn(Value) -> io::Result<()> + Send + Sync>;
+    struct Counter {
+        next: u64,
+        observed: Option<u64>,
+    }
+    impl Default for Counter {
+        fn default() -> Self {
+            Self {
+                next: 1,
+                observed: Some(0),
+            }
+        }
+    }
     /// Every admitted SDK call owns one accounting closure, even on unwind.
     struct Call<'a> {
         emit: &'a Emit,
+        counter: &'a Mutex<Counter>,
         id: Option<u64>,
     }
     impl Call<'_> {
         fn finish(mut self, tokens: Option<u64>) -> io::Result<()> {
             let id = self.id.take().expect("owned inference call");
+            let mut counter = self.counter.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(tokens) = tokens {
+                counter.observed = counter.observed.and_then(|n| n.checked_add(tokens));
+            }
+            // Publish settlement under the admission lock, so a refusal cannot
+            // overtake the usage record that crossed its threshold.
             (self.emit)(json!({"type":"oxa_owned_inference","phase":"end","id":id,"tokens":tokens}))
         }
     }
@@ -110,10 +138,11 @@ mod native {
     struct Meter {
         inner: Arc<dyn Engine>,
         emit: Emit,
-        next: Mutex<u64>,
+        counter: Mutex<Counter>,
         ready: bool,
         model: Option<String>,
         response_tokens: Option<u32>,
+        token_threshold: Option<u64>,
     }
     impl Engine for Meter {
         fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
@@ -149,15 +178,27 @@ mod native {
                 ));
             }
             let id = {
-                let mut next = self.next.lock().map_err(|_| failure())?;
-                let id = *next;
-                *next = next.checked_add(1).ok_or_else(failure)?;
+                let mut counter = self.counter.lock().map_err(|_| failure())?;
+                let observed = counter.observed.ok_or_else(failure)?;
+                if let Some(threshold) = self.token_threshold.filter(|cap| observed >= *cap) {
+                    (self.emit)(
+                        json!({"type":"oxa_owned_inference","phase":"refused","token_threshold":threshold}),
+                    )
+                    .map_err(|_| failure())?;
+                    return Err(OxaError::new(
+                        "token_budget",
+                        "owned worker observed token threshold reached",
+                    ));
+                }
+                let id = counter.next;
+                counter.next = id.checked_add(1).ok_or_else(failure)?;
                 (self.emit)(json!({"type":"oxa_owned_inference","phase":"start","id":id}))
                     .map_err(|_| failure())?;
                 id
             };
             let call = Call {
                 emit: &self.emit,
+                counter: &self.counter,
                 id: Some(id),
             };
             let mut bounded = *r;
@@ -189,14 +230,20 @@ mod native {
             Ok(_) | Err(std::env::VarError::NotPresent) => Some(None),
             Err(_) => None,
         };
-        let ready = response_tokens.is_some() && emit(json!({"type":"oxa_owned_inference","phase":"ready","version":1,"response_tokens":response_tokens.flatten()})).is_ok();
+        let token_threshold = match std::env::var("OXA_OWNED_WORKER_TOKEN_THRESHOLD") {
+            Ok(value) if !value.is_empty() => value.parse::<u64>().ok().filter(|n| *n != 0).map(Some),
+            Ok(_) | Err(std::env::VarError::NotPresent) => Some(None),
+            Err(_) => None,
+        };
+        let ready = token_threshold.is_some() && response_tokens.is_some() && emit(json!({"type":"oxa_owned_inference","phase":"ready","version":1,"response_tokens":response_tokens.flatten()})).is_ok();
         deps.engine = Arc::new(Meter {
             inner: deps.engine,
             emit,
-            next: Mutex::new(1),
+            counter: Mutex::new(Counter::default()),
             ready,
             model: deps.model.clone(),
             response_tokens: response_tokens.flatten(),
+            token_threshold: token_threshold.flatten(),
         });
         deps
     }
@@ -224,10 +271,11 @@ mod native {
                     output.lock().unwrap().push(value);
                     Ok(())
                 }),
-                next: Mutex::new(1),
+                counter: Mutex::new(Counter::default()),
                 ready: true,
                 model: Some("fake-model".into()),
                 response_tokens: None,
+                token_threshold: None,
             };
             let prefix = FrozenPrefix {
                 sections: vec![("append".into(), "private-source-marker".into())],
@@ -296,15 +344,99 @@ mod native {
             assert!(!wire.contains("private-source-marker") && !wire.contains("private-task-marker"));
         }
         #[test]
+        fn observed_threshold_refuses_the_next_sdk_call_without_parent_polling() {
+            for exact in [false, true] {
+                let mut turn = ScriptTurn::text("overrun");
+                turn.completion_tokens = Some(1);
+                let inner = Arc::new(ScriptedEngine::new(vec![turn; 2]));
+                let prefix = FrozenPrefix {
+                    sections: vec![],
+                    tools_json: "[]".into(),
+                    sha256: [0; 32],
+                };
+                let messages = vec![WireMsg::user("observed threshold")];
+                let mut request = ChatRequest {
+                    prefix: &prefix,
+                    messages: &messages,
+                    model: "fake-model",
+                    max_tokens: 128,
+                    thinking: false,
+                    preserve_thinking: false,
+                    sampling: None,
+                    hints: Hints {
+                        session: "owned",
+                        idem_key: "",
+                        kind: TurnKind::Chat,
+                        background: false,
+                        snapshot_keep: false,
+                    },
+                };
+                let threshold = if exact {
+                    inner.count_prompt(&request).unwrap().unwrap() + 1
+                } else {
+                    1
+                };
+                let records = Arc::new(Mutex::new(vec![
+                    json!({"type":"oxa_owned_inference","phase":"ready","version":1}),
+                ]));
+                let output = records.clone();
+                let meter = Meter {
+                    inner: inner.clone(),
+                    emit: Arc::new(move |record| {
+                        output.lock().unwrap().push(record);
+                        Ok(())
+                    }),
+                    counter: Mutex::new(Counter::default()),
+                    ready: true,
+                    model: Some("fake-model".into()),
+                    response_tokens: None,
+                    token_threshold: Some(threshold),
+                };
+                let reply = meter.chat(&request, &CancelToken::new(), &mut |_| {}).unwrap();
+                let observed = u64::from(reply.usage.prompt) + u64::from(reply.usage.completion);
+                assert!(observed >= threshold);
+                if exact {
+                    assert_eq!(observed, threshold);
+                }
+                for kind in [TurnKind::Chat, TurnKind::Compaction, TurnKind::Prefill] {
+                    request.hints.kind = kind;
+                    request.max_tokens = if kind == TurnKind::Prefill { 0 } else { 128 };
+                    assert_eq!(
+                        meter
+                            .chat(&request, &CancelToken::new(), &mut |_| {})
+                            .unwrap_err()
+                            .code,
+                        "token_budget"
+                    );
+                }
+                assert_eq!(
+                    inner.requests().len(),
+                    1,
+                    "no SDK dispatch after observation, without parent polling"
+                );
+                let mut ledger = super::super::Ledger::default();
+                for record in records.lock().unwrap().iter() {
+                    ledger.consume(record.clone()).unwrap();
+                }
+                assert_eq!(ledger.total, observed, "observed usage is never clamped");
+                assert_eq!(ledger.refused_threshold, Some(threshold));
+                assert!(
+                    ledger.settled(),
+                    "pre-dispatch refusals do not invent unknown usage"
+                );
+            }
+        }
+        #[test]
         fn response_allowance_clamps_each_kind_without_expanding_smaller_requests() {
             let inner = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("ok"); 4]));
             let meter = Meter {
                 inner: inner.clone(),
                 emit: Arc::new(|_| Ok(())),
-                next: Mutex::new(1),
+                counter: Mutex::new(Counter::default()),
                 ready: true,
                 model: Some("fake-model".into()),
                 response_tokens: Some(512),
+                token_threshold: None,
             };
             let prefix = FrozenPrefix {
                 sections: vec![],
@@ -352,10 +484,11 @@ mod native {
                     output.lock().unwrap().push(record);
                     Ok(())
                 }),
-                next: Mutex::new(1),
+                counter: Mutex::new(Counter::default()),
                 ready: true,
                 model: Some("fake-model".into()),
                 response_tokens: None,
+                token_threshold: None,
             };
             let prefix = FrozenPrefix {
                 sections: vec![],
@@ -403,10 +536,11 @@ mod native {
             let meter = Meter {
                 inner: engine.clone(),
                 emit: Arc::new(|_| Err(io::Error::other("closed sink"))),
-                next: Mutex::new(1),
+                counter: Mutex::new(Counter::default()),
                 ready: true,
                 model: Some("fake-model".into()),
                 response_tokens: None,
+                token_threshold: None,
             };
             let prefix = FrozenPrefix {
                 sections: vec![],
@@ -435,10 +569,11 @@ mod native {
             let fixed = Meter {
                 inner: engine.clone(),
                 emit: Arc::new(|_| Ok(())),
-                next: Mutex::new(1),
+                counter: Mutex::new(Counter::default()),
                 ready: true,
                 model: Some("different-model".into()),
                 response_tokens: None,
+                token_threshold: None,
             };
             assert_eq!(
                 fixed

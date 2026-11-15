@@ -135,6 +135,7 @@ impl Owner {
                 budget: default_budget(),
                 turns_started: 0,
                 reported_tokens: Some(0),
+                token_overrun: None,
                 turn_active: self.command_active || self.handle.is_busy(),
                 elapsed_ms: 0,
                 reason: Some("no_goal".into()),

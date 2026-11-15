@@ -205,6 +205,8 @@ pub struct WorkerReport {
     #[serde(with = "task_wire")]
     pub task: Task,
     pub reported_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_overrun: Option<u64>,
     pub output_bytes: usize,
     pub process_id: Option<u32>,
 }
@@ -565,6 +567,7 @@ pub(crate) fn run_with_workspaces(
                 workspace.as_ref(),
                 spec.inference.local_only,
                 spec.inference.response_tokens,
+                spec.budget.reported_tokens,
             ) {
                 Ok(mut process) => {
                     let queued = process.queue(&json!({"id":"check","type":"get_state"}));
@@ -842,6 +845,13 @@ impl Worker {
                 if self.meter.ready && self.meter.response_tokens != self.spec.inference.response_tokens {
                     return Ok(Some(Outcome::PolicyViolation));
                 }
+                if let Some(threshold) = self.meter.refused_threshold {
+                    return Ok(Some(if threshold == self.spec.budget.reported_tokens {
+                        Outcome::TokenBudget
+                    } else {
+                        Outcome::PolicyViolation
+                    }));
+                }
                 if ended {
                     // An earlier complete-looking assistant reply cannot hide
                     // a later SDK failure (including summary/prefill failure).
@@ -1009,6 +1019,9 @@ impl Worker {
             });
         }
         report.reported_tokens = self.tokens();
+        report.token_overrun = report
+            .reported_tokens
+            .map(|n| n.saturating_sub(self.spec.budget.reported_tokens));
         report.output_bytes = self.process.bytes;
         report.process_id = Some(self.process.pid());
         report
@@ -1047,6 +1060,7 @@ impl SessionWorker {
             workspace.as_ref(),
             spec.inference.local_only,
             spec.inference.response_tokens,
+            spec.budget.reported_tokens,
         )?;
         process.queue(&json!({"id":"check","type":"get_state"}))?;
         journal.record(Some(&spec.id), "spawned", json!({"processId":process.pid()}))?;
@@ -1151,6 +1165,7 @@ impl SessionWorker {
     pub(crate) fn final_usage_known(&self, outcome: &Outcome) -> bool {
         (!self.inner.meter.ready || self.inner.meter.settled())
             && (matches!(outcome, Outcome::Completed | Outcome::Truncated)
+                || (*outcome == Outcome::TokenBudget && self.inner.meter.ready && self.inner.meter.seen)
                 || (self.inner.defer_prompt && !self.inner.running))
     }
     pub(crate) fn pid(&self) -> u32 {
@@ -1279,6 +1294,7 @@ fn empty_report(run_id: &str, spec: &WorkerSpec, outcome: Outcome) -> WorkerRepo
         },
         outcome,
         reported_tokens: None,
+        token_overrun: None,
         output_bytes: 0,
         process_id: None,
     }

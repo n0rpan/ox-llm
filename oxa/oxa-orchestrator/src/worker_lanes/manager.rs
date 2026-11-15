@@ -28,7 +28,7 @@ use std::{
 static REGISTRY: OnceLock<Mutex<Vec<Weak<Manager>>>> = OnceLock::new();
 fn goal_preview(goal: &goals::Snapshot) -> Value {
     json!({"id":goal.id,"state":goal.state,"revision":goal.revision,"budget":goal.budget,
-        "turns_started":goal.turns_started,"reported_tokens":goal.reported_tokens,"elapsed_ms":goal.elapsed_ms,"reason":goal.reason})
+        "turns_started":goal.turns_started,"reported_tokens":goal.reported_tokens,"token_overrun":goal.token_overrun,"elapsed_ms":goal.elapsed_ms,"reason":goal.reason})
 }
 struct Job {
     snapshot: Snapshot,
