@@ -6,6 +6,7 @@ metadata and privacy layer: it reads the catalog, the owner-only secrets file at
 time, the per-day ledger spend and the upstream HTTP connection.  It never logs a key and
 never returns one to a caller that renders status.
 """
+import errno
 import http.client
 from decimal import Decimal
 import json
@@ -14,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import ssl
+import stat
 import threading
 import urllib.parse
 
@@ -496,23 +498,43 @@ def secrets_file(value):
     return path
 
 
+def _secrets_refusal(reason):
+    """A 503 the caller may show; it says *why* the file was refused without the key or content."""
+    raise CloudError(
+        'Cloud credentials are not configured: %s.' % reason, 503, 'cloud_credentials_unavailable')
+
+
 def _read_secrets(value):
     path = secrets_file(value)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError:
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            reason = 'the configured path is a symbolic link'
+            _secrets_refusal(reason)
+        if exc.errno in (errno.EACCES, errno.EPERM):
+            raise CloudError('Cloud credentials are not configured: the file cannot be read.',
+                              503, 'cloud_credentials_unavailable') from None
+        # Missing file, dangling symlink, or a non-final path component that is a link.
         raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable') from None
     try:
         info = os.fstat(fd)
-        import stat
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077 or info.st_size > MAX_SECRET_BYTES):
-            raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable')
+        mode = info.st_mode
+        if not stat.S_ISREG(mode):
+            _secrets_refusal('the configured path is not a regular file')
+        if info.st_uid != os.getuid():
+            _secrets_refusal('the file is owned by another user')
+        if mode & 0o077:
+            _secrets_refusal('the file is not mode 0600 (group/other permissions must be off)')
+        if info.st_size > MAX_SECRET_BYTES:
+            _secrets_refusal('the file is larger than %d bytes' % MAX_SECRET_BYTES)
         data = os.read(fd, MAX_SECRET_BYTES + 1)
     except OSError:
         raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable') from None
     finally:
         os.close(fd)
+    if len(data) > MAX_SECRET_BYTES:
+        _secrets_refusal('the file is larger than %d bytes' % MAX_SECRET_BYTES)
     try:
         parsed = json.loads(data)
     except (ValueError, UnicodeDecodeError):

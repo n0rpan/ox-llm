@@ -89,10 +89,13 @@ $ curl -s http://127.0.0.1:8092/v1/models
 Every row is a cloud model (`"remote": true`). The status at `/_local/status` reports
 `"engine_mode": "none"`.
 
-A request to a provider whose key is missing or whose file has the wrong mode fails cleanly
-with HTTP `503`, code `cloud_credentials_unavailable` and the message "Cloud credentials are
-not configured." Fix the file and retry; no restart is needed, the file is read per request. oxa shows the
-controller's message ("the cloud gateway refused the request (cloud_credentials_unavailable): ...").
+A request to a provider whose key is missing or whose file is refused fails cleanly with HTTP
+`503`, code `cloud_credentials_unavailable`, and a message like "Cloud credentials are not
+configured: the configured path is a symbolic link." The suffix states the reason (a symbolic
+link or non-regular file, the wrong owner, group/other permissions enabled, or a file too large)
+without ever showing the key. Fix the file and retry; no restart is needed, the file is read per
+request. oxa shows the controller's message ("the cloud gateway refused the request
+(cloud_credentials_unavailable): ...").
 
 ## 5. Build and run oxa
 
