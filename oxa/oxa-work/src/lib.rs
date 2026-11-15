@@ -270,7 +270,10 @@ pub fn run_task_with_options(
         if matches!(old.record.step, Step::Publishing | Step::Reporting) && !rerun {
             return Ok(old.record);
         }
-        if old.record.step != Step::Finished && !rerun {
+        if !matches!(
+            old.record.step,
+            Step::Finished | Step::Publishing | Step::Reporting
+        ) {
             old
         } else if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
             return Ok(old.record);

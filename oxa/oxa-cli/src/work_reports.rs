@@ -1,6 +1,6 @@
 //! The report-issue workflow for an explicit user-launched --report-problems run.
 //! Normal `report-issue submit` retains its controlling-terminal confirmation.
-use crate::report_cmd::{clean_notes, report_repo, save_draft, scrub, Runner, ScrubCtx};
+use crate::report_cmd::{clean_notes, report_repo, save_draft, scrub, Confirm, Runner, ScrubCtx};
 use oxa_config::{Dirs, Settings};
 use oxa_work::{ProblemNote, ReportRecord};
 use serde_json::Value;
@@ -81,6 +81,7 @@ pub(crate) fn report(
     settings: &Settings,
     ctx: &ScrubCtx,
     offline: bool,
+    confirm: Confirm<'_>,
     runner: Runner<'_>,
 ) -> Result<ReportRecord, String> {
     let (draft, title, body) =
@@ -192,6 +193,13 @@ pub(crate) fn report(
                         .any(|c| c["body"].as_str().unwrap_or_default().contains(&note.notes))
                 });
             if !already {
+                if confirm(&format!(
+                    "Comment on {repo}#{number}:\n\n{}\n\nType yes to post these notes: ",
+                    note.notes
+                )) != Some(true)
+                {
+                    return Err("problem report requires confirmation through the controlling terminal; draft retained locally".into());
+                }
                 oxa_resources::write_atomic(&body_path, note.notes.as_bytes()).map_err(|e| e.to_string())?;
                 call(
                     runner,
@@ -220,6 +228,13 @@ pub(crate) fn report(
                 format!("{body}\n\nRelated open reports (different symptoms):\n{links}\n")
             };
             let body = scrub(&body, ctx);
+            if confirm(&format!(
+                "Create issue in {repo}:\nTitle: {}\n\n{body}\n\nType yes to post this report: ",
+                note.title
+            )) != Some(true)
+            {
+                return Err("problem report requires confirmation through the controlling terminal; draft retained locally".into());
+            }
             oxa_resources::write_atomic(&body_path, body.as_bytes()).map_err(|e| e.to_string())?;
             let url = call(
                 runner,
@@ -287,6 +302,7 @@ mod tests {
             &settings(),
             &ScrubCtx::default(),
             false,
+            &mut |_| Some(true),
             &mut runner,
         )
         .unwrap();
@@ -314,6 +330,7 @@ mod tests {
                 &settings(),
                 &ScrubCtx::default(),
                 offline,
+                &mut |_| Some(true),
                 &mut runner,
             )
             .unwrap();
@@ -351,6 +368,7 @@ mod tests {
             &settings(),
             &ScrubCtx::default(),
             false,
+            &mut |_| Some(true),
             &mut runner,
         )
         .unwrap();
@@ -374,7 +392,16 @@ mod tests {
                 _ => panic!("unexpected command"),
             }
         };
-        let result = report(&n, &dirs, &settings(), &ScrubCtx::default(), false, &mut runner).unwrap();
+        let result = report(
+            &n,
+            &dirs,
+            &settings(),
+            &ScrubCtx::default(),
+            false,
+            &mut |_| Some(true),
+            &mut runner,
+        )
+        .unwrap();
         assert_eq!(result.disposition, "filed");
     }
 }

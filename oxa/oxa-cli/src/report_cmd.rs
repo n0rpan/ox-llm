@@ -404,11 +404,14 @@ pub fn submit(
 /// The real confirmation: the question and the answer go through `/dev/tty` (never stdin, so
 /// piped input cannot confirm). `None` without a controlling terminal, or when oxa's own tools
 /// run this (`OXA_CODING_AGENT` is set: the model must not confirm for the user).
-fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
+pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     move |question: &str| {
         if env.get("OXA_CODING_AGENT").is_some() {
             return None;
         }
+        // Keep concurrent workers' questions and answers together.
+        static TERMINAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _terminal = TERMINAL.lock().ok()?;
         let mut tty = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

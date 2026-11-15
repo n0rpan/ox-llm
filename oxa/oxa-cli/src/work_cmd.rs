@@ -67,8 +67,13 @@ pub(crate) fn run(
                 oxa_work::run_task_with_options(cwd, &binary, &task, rerun, oxa_proto::offline())
                     .unwrap_or_else(|detail| oxa_work::blocked_record(&task, detail));
             if publish && !record.worktree.as_os_str().is_empty() {
-                record = oxa_work::publish(cwd, &task, oxa_proto::offline())
-                    .unwrap_or_else(|detail| oxa_work::blocked_record(&task, detail));
+                record = oxa_work::publish(
+                    cwd,
+                    &task,
+                    oxa_proto::offline(),
+                    &mut crate::report_cmd::tty_confirm(env),
+                )
+                .unwrap_or_else(|detail| oxa_work::blocked_record(&task, detail));
             }
             if reports && !record.worktree.as_os_str().is_empty() {
                 let settings = oxa_config::Settings::load(dirs, cwd, false);
@@ -84,6 +89,7 @@ pub(crate) fn run(
                             &settings,
                             &ctx,
                             offline || oxa_proto::offline(),
+                            &mut crate::report_cmd::tty_confirm(env),
                             &mut runner,
                         )
                     })

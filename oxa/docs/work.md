@@ -49,7 +49,8 @@ the agent; they are never staged as a fabricated resolution. There is no automat
 cleanup. Publication is explicitly opt-in as described below.
 
 To continue an interrupted, red or blocked task, run the same file again. Use
-`--rerun` to continue a completed task after its base changes. The retained receipt
+`--rerun` to continue a completed task after its base changes. Interrupted execution
+always resumes its captured base, checks and progress, even with `--rerun`. The retained receipt
 must match its ID, branch and worktree. A clean worktree is reused; a branch checked out elsewhere
 is blocked. Existing dirty work is saved when possible before a later retry.
 Merge conflicts are passed to the agent with the merge still in progress, the
@@ -89,11 +90,14 @@ Execution preserves a saved offline restriction across restarts; later explicit
 publication uses the current network policy without changing that restriction.
 A publication failure keeps a publication checkpoint; another `--publish` retries
 without replaying the agent. Offline mode refuses network publication.
+Before each push, the runner asks through the controlling terminal for approval
+of the accepted commit, branch and PR destination. Piped input cannot approve it.
 
 `--report-problems` independently authorizes filing the task's own structured
 problem notes using the `report-issue` workflow. This flag must be launched by the
-user outside an agent tool. Normal `oxa report-issue submit` still requires its
-terminal confirmation. Reports use the user setting `oxa.reportIssue.repo`;
+user outside an agent tool. Each new report or comment shows its exact cleaned
+text and requires controlling-terminal confirmation, as `oxa report-issue submit`
+does. Without confirmation it stays a local draft. Reports use the user setting `oxa.reportIssue.repo`;
 project settings cannot choose a destination. Notes, titles and queries pass
 through the existing report scrubber. The runner performs two or three symptom
 queries against open issues and PRs and reads the top matches before writing.
