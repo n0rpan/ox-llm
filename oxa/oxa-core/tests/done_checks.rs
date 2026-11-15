@@ -670,6 +670,33 @@ fn fingerprint_does_not_run_repository_diff_helpers() {
 }
 
 #[test]
+fn fingerprint_does_not_run_repository_filters() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    git_in(&env, &["config", "user.email", "t@example.invalid"]);
+    git_in(&env, &["config", "user.name", "t"]);
+    std::fs::write(env.work().join(".gitattributes"), "*.txt filter=x\n").unwrap();
+    std::fs::write(env.work().join("t.txt"), "a\n").unwrap();
+    git_in(&env, &["add", "."]);
+    git_in(&env, &["commit", "-q", "-m", "x"]);
+    git_in(&env, &["config", "filter.x.clean", "touch filter-ran; cat"]);
+    let _ = std::fs::remove_file(env.work().join("filter-ran"));
+    std::fs::write(env.work().join("t.txt"), "bb\n").unwrap();
+    let _ = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool("b1", "bash", &json!({"command": "echo c >> t.txt"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert!(
+        !env.work().join("filter-ran").exists(),
+        "filter executed on the host"
+    );
+}
+
+#[test]
 fn tree_change_made_by_a_check_is_not_blamed_on_the_model() {
     let env = TestEnv::new();
     git_in(&env, &["init", "-q"]);

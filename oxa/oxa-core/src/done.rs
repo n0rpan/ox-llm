@@ -25,38 +25,67 @@ pub(crate) struct DoneState {
     tree: Option<u64>,
 }
 
-/// Hash of the git state in `cwd` (status, staged and unstaged diff, contents of untracked
-/// files); `None` outside a git repo or without git. The probes run on the host, so executable
-/// repository configuration (`diff.external`, textconv filters, `core.fsmonitor`) is switched off.
+/// Seconds a git probe may run before the fingerprint gives up (`None`: checks stay as they were).
+const PROBE_TIMEOUT_S: u64 = 20;
+
+/// Hash of the work folder's git file list (index entries and untracked files) with each file's
+/// size and modification time; `None` outside a git repo, without git, or on a timeout.
+/// The probes run on the host, so they only list files (`ls-files`): nothing that can start a
+/// repository-configured program (`status` and `diff` run clean filters, textconv, external
+/// diff). Files are stat-ed here instead of diffed by git.
 fn tree_fingerprint(cwd: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
-    let git = |args: &[&str]| {
-        let o = std::process::Command::new("git")
-            .args(["-c", "core.fsmonitor=false", "-c", "diff.external="])
+    use std::os::unix::ffi::OsStrExt;
+    let git = |args: &[&str]| -> Option<Vec<u8>> {
+        let mut child = std::process::Command::new("git")
+            .args(["-c", "core.fsmonitor=false"])
             .args(args)
             .current_dir(cwd)
-            .env("GIT_EXTERNAL_DIFF", "")
             .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .spawn()
             .ok()?;
-        o.status.success().then_some(o.stdout)
+        let mut out = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut out, &mut v);
+            v
+        });
+        let t0 = std::time::Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait().ok()? {
+                break s;
+            }
+            if t0.elapsed().as_secs() >= PROBE_TIMEOUT_S {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let v = reader.join().ok()?;
+        status.success().then_some(v)
     };
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    git(&["status", "--porcelain"])?.hash(&mut h);
-    git(&["diff", "--no-ext-diff", "--no-textconv"])?.hash(&mut h);
-    git(&["diff", "--cached", "--no-ext-diff", "--no-textconv"])?.hash(&mut h);
-    let untracked = git(&["ls-files", "-z", "--others", "--exclude-standard"])?;
-    for name in untracked.split(|b| *b == 0).filter(|n| !n.is_empty()) {
-        use std::os::unix::ffi::OsStrExt;
+    // `-s`: mode, object id and stage of every index entry (staging changes the hash).
+    git(&["ls-files", "-z", "-s"])?.hash(&mut h);
+    let files = git(&["ls-files", "-z", "--cached", "--others", "--exclude-standard"])?;
+    for name in files.split(|b| *b == 0).filter(|n| !n.is_empty()) {
         let path = cwd.join(std::ffi::OsStr::from_bytes(name));
         name.hash(&mut h);
-        if let Ok(m) = std::fs::symlink_metadata(&path) {
-            m.len().hash(&mut h);
-            if m.is_file() && m.len() <= (8 << 20) {
-                std::fs::read(&path).ok().hash(&mut h);
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) => {
+                m.len().hash(&mut h);
+                m.modified().ok().hash(&mut h);
+                // Small untracked-or-not files: contents too, so an edit that keeps size and
+                // time (coarse clocks) is still seen.
+                if m.is_file() && m.len() <= (1 << 20) {
+                    std::fs::read(&path).ok().hash(&mut h);
+                }
             }
+            Err(_) => 0u8.hash(&mut h),
         }
     }
     Some(h.finish())
