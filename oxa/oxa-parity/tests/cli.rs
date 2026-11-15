@@ -1763,7 +1763,7 @@ fn mod_002() {
 }
 
 // pi: models.md thinking levels off..max, clamped per model; oxa: boolean on the wire
-// invariant: W6 explicit sampling; thinkingBudgets are ignored with a warning
+// invariant: W6 explicit sampling; thinkingBudgets is an unknown setting (generic warning)
 #[test]
 fn mod_003() {
     let server = fake(&turns(&["a", "b"]));
