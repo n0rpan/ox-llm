@@ -918,15 +918,14 @@ fn eng_018() {
     assert_eq!(tool_result(reqs.last().unwrap()), "looked");
 }
 
-/// ENG-019: abort or shutdown kills the child's process group (TERM, then KILL after 2 s) and
-/// starts no further task; the closed connection cancels the child's engine request.
+/// ENG-019: abort or forced shutdown kills the child and starts no further task;
+/// the closed connection cancels the child's engine request.
 /// invariant: cancel propagation (one engine slot: a child left running would hold it).
-/// Shutdown here is the parent's orderly shutdown by SIGTERM (pi rpc.md: "SIGTERM and SIGHUP
-/// also start an orderly shutdown"); a stdin EOF waits for the run by design (rpc.md: "waits
-/// for pending work to finish"), so it is not a shutdown that kills.
+/// The first SIGTERM requests cooperative wrap-up; a second signal forces termination.
+/// Stdin EOF waits for pending work and does not cancel it.
 #[test]
 fn eng_019() {
-    for how in ["abort", "shutdown"] {
+    for how in ["abort", "forced shutdown"] {
         let env = env_with(None);
         let mut held = text("never sent");
         held.fault = Some(Fault::HoldHeaders { ms: 60_000 });
@@ -954,8 +953,15 @@ fn eng_019() {
             rpc.settle();
         } else {
             let pid = rpc.child.id().to_string();
+            let first = Command::new("kill").args(["-TERM", &pid]).status();
+            assert!(first.is_ok_and(|s| s.success()), "request cooperative wrap-up");
+            std::thread::sleep(Duration::from_millis(300));
+            assert!(
+                matches!(rpc.child.try_wait(), Ok(None)),
+                "the first SIGTERM leaves the active child running"
+            );
             let sent = Command::new("kill").args(["-TERM", &pid]).status();
-            assert!(sent.is_ok_and(|s| s.success()), "SIGTERM to the parent");
+            assert!(sent.is_ok_and(|s| s.success()), "force the parent to exit");
             wait_until("the parent to exit", || {
                 matches!(rpc.child.try_wait(), Ok(Some(_)))
             });
@@ -1004,6 +1010,64 @@ fn eng_019() {
             assert_eq!(rpc.finish(), Some(130), "the aborted run reports interrupted");
         }
     }
+}
+
+#[test]
+fn sigterm_finishes_the_active_subagent_before_wrap_up() {
+    let env = env_with(None);
+    let mut held = text("CHILD-FINISHED");
+    held.fault = Some(Fault::HoldHeaders { ms: 1_000 });
+    let server = fake(
+        vec![
+            call(json!({"agent": "scout", "task": "finish this task"})),
+            held,
+            text("WRAP-UP-SUMMARY"),
+        ],
+        FakeOpts::default(),
+    );
+    let mut rpc = Rpc::start(&env, &server.url());
+    rpc.ok(json!({"type": "prompt", "message": "delegate"}));
+    wait_until("the active child's request", || {
+        !any_child(&server.requests()).is_empty()
+    });
+    assert!(Command::new("kill")
+        .args(["-TERM", &rpc.child.id().to_string()])
+        .status()
+        .is_ok_and(|status| status.success()));
+    assert_eq!(
+        rpc.finish(),
+        Some(130),
+        "cooperative shutdown reports interrupted"
+    );
+
+    let requests = sorted(&server);
+    let p = parent_id(&requests);
+    let children = any_child(&requests);
+    assert_eq!(children.len(), 1, "the active child completes one request");
+    let child = &children[0];
+    let timing = server
+        .timings()
+        .into_iter()
+        .find(|timing| timing.seq == Some(child.seq))
+        .expect("the completed child's request timing");
+    assert!(
+        !timing.client_closed,
+        "the first SIGTERM does not cancel the child"
+    );
+    let parent_requests: Vec<_> = requests
+        .iter()
+        .filter(|request| request.session == p && request.max_tokens > 0)
+        .collect();
+    assert_eq!(parent_requests.len(), 2, "one final parent turn after the tool");
+    let summary = parent_requests[1];
+    assert!(tool_result(summary).contains("CHILD-FINISHED"));
+    assert!(summary.max_tokens <= 1024);
+    assert!(!summary.thinking);
+    assert!(server.clears().contains(&format!("{p}.s1")));
+    assert!(
+        live_children(&env).is_empty(),
+        "no child survives cooperative shutdown"
+    );
 }
 
 // ---------------------------------------------------------------- meta checks
