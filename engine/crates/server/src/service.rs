@@ -1168,15 +1168,30 @@ where
             }
             return r;
         }
-        let mut w = st.worker.lock().unwrap_or_else(|p| p.into_inner());
+        let mut w = st.worker.lock().unwrap_or_else(|p| {
+            // a panic in an earlier generation: engine and cache may disagree, start clean
+            let mut g = p.into_inner();
+            let w = &mut *g;
+            w.cache.reset(&mut w.engine);
+            g
+        });
         if gp.cancelled() {
             return Err(GenError::Cancelled); // the client left while queued for the worker
         }
         gp.queue_ms = crate::generate::ms_since(queued);
         // SIGTERM cancels the running generation (the bounded shutdown write needs the worker)
         *st.running.lock().unwrap() = gp.cancel.clone();
-        let r = w.generate(&st.tok, &prompt, &gp, &mut on_partial);
-        *st.running.lock().unwrap() = None;
+        /// Clears `running` on every exit, unwinding included.
+        struct ClearRunning<'a>(&'a Mutex<Option<Arc<AtomicBool>>>);
+        impl Drop for ClearRunning<'_> {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            }
+        }
+        let r = {
+            let _running = ClearRunning(&st.running);
+            w.generate(&st.tok, &prompt, &gp, &mut on_partial)
+        };
         if w.last_resume.0 != "cold" && r.as_ref().is_ok_and(|r| r.timings.preload_ms.is_some()) {
             *st.preload_status.lock().unwrap() = json!({"status": "used"});
         }
