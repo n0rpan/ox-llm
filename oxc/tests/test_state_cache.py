@@ -770,6 +770,33 @@ class PreloadTests(Base):
         time.sleep(0.2)
         self.assertEqual(self.preloads(), [{}])
 
+    def test_preload_follow_survives_a_busy_engine(self):
+        from oxc.runtime import ctl_cache
+        from oxc.runtime.ctl_cache import EngineBusy
+        stack = self.stack()
+        replies = [EngineBusy('busy'), {'preload': {'status': 'done', 'ms': 5}}]
+        seen = []
+
+        def scripted(method, path, payload=None):
+            seen.append(path)
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+        real_note = stack.manager.note_preload_engine
+        notes = []
+        stack.manager.note_preload_engine = lambda v, p: (notes.append(v), real_note(
+            {'status': 'running'} if not notes[1:] and len(notes) == 1 else v, p))
+        with patch.object(ctl_cache, 'PRELOAD_POLL_SECONDS', 0.01, create=True), \
+                patch.object(controller, 'PRELOAD_POLL_SECONDS', 0.01), \
+                patch.object(stack.manager, 'state_engine_json', scripted):
+            self.assertEqual(check.call(stack.base, 'POST', '/_local/load', {})[0], 200)
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and (stack.manager.preload_info or {}).get('state') != 'done':
+                time.sleep(0.02)
+        self.assertEqual(seen, ['/state-cache', '/state-cache'])
+        self.assertEqual((stack.manager.preload_info or {}).get('state'), 'done')
+
     def test_organic_request_auto_load_fires_none_and_its_hint_feeds_the_next_load(self):
         stack = self.stack()
         status = self.chat(stack, 'conv-1')[0]
