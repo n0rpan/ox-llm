@@ -939,7 +939,7 @@ fn controls_are_rebound_to_the_new_session() {
         // The aborted reply is a Shown block (never sent); the text is in the editor again.
         step(
             "aborted",
-            &["the prompt stays in the conversation", "steer me"],
+            &["partial reply dropped; your prompt stays", "steer me"],
             vec![key("ctrl+c")],
         ),
         step("cleared", &[], vec![key("ctrl+d")]),
@@ -1132,7 +1132,7 @@ fn aborted_stream_is_shown_not_a_reply() {
         step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
         step(
             "aborted",
-            &["aborted: cancelled; the prompt stays"],
+            &["aborted: partial reply dropped; your prompt stays"],
             typed("/session", &["enter"]),
         ),
         // The Shown block is not counted as an assistant message.
@@ -1163,6 +1163,38 @@ fn aborted_stream_is_shown_not_a_reply() {
         term.all_text().contains("PARTIAL words that arrived"),
         "the partial text stays on screen"
     );
+}
+
+/// After Escape, one Ctrl+C on the empty editor arms the exit and the hint bar says so; a second
+/// Ctrl+C exits. Drives the real loop, so the `armed` wiring into the hint bar is covered.
+#[test]
+fn ctrl_c_after_abort_shows_the_exit_hint() {
+    let world = World::with(
+        vec![ScriptTurn {
+            chunk: 6,
+            ..ScriptTurn::text("PARTIAL words that arrived")
+        }],
+        FakeOpts {
+            done_gap_ms: 20_000,
+            ..FakeOpts::default()
+        },
+    );
+    let steps = vec![
+        step("open", &[], typed("go", &["enter"])),
+        step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
+        step(
+            "aborted",
+            &["partial reply dropped; your prompt stays"],
+            vec![key("ctrl+c")],
+        ),
+        step("armed", &["ctrl+c exit"], vec![key("ctrl+c")]),
+    ];
+    // The hint bar belongs to the oxa skin; the other tests pin the plain one.
+    let mut opts = world.opts(false);
+    opts.env = vec![("OXA_SKIN".to_string(), "oxa".to_string())];
+    let session = Session::open(world.deps(), Open::New).expect("open the session");
+    let (code, _last, _term, _first) = run_with(&world, session, opts, (90, 30), steps);
+    assert_eq!(code, 0);
 }
 
 /// A stream cut by the engine mid-reply: `Shown { why: cut }`, shown with the warning, then
