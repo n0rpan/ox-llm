@@ -5,6 +5,7 @@ Parsed line by line (no YAML library) so it runs with a bare `python3 -I`.
 import importlib.util
 from pathlib import Path
 import re
+import tomllib
 import unittest
 
 WORKFLOWS = Path(__file__).resolve().parents[3] / '.github' / 'workflows'
@@ -48,19 +49,22 @@ class Gate(unittest.TestCase):
         for name in ('changes', 'scans'):
             self.assertNotRegex(job_block(self.checks, name), r'(?m)^    if:', name)
 
-    def test_gateway_commands_use_existing_manifests_and_conformance_directories(self):
+    def test_gateway_runs_isolated_native_tests_as_a_workspace_member(self):
         root = WORKFLOWS.parents[1]
-        manual = (WORKFLOWS / 'cloud-gateway.yml').read_text()
-        for name, block in [('gate', job_block(self.checks, 'gateway')),
-                            ('manual', job_block(manual, 'conformance'))]:
-            manifests = re.findall(r'--manifest-path (\S+)', block)
-            suites = re.findall(r'discover -s (\S+)', block)
-            self.assertTrue(manifests, name)
-            self.assertTrue(suites, name)
-            for path in manifests:
-                self.assertTrue((root / path).is_file(), (name, path))
-            for path in suites:
-                self.assertTrue((root / path).is_dir(), (name, path))
+        block = job_block(self.checks, 'gateway')
+        manifests = re.findall(r'--manifest-path (\S+)', block)
+        self.assertTrue(manifests)
+        self.assertEqual(set(manifests), {'oxa/Cargo.toml'})
+        self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features', block)
+        self.assertIn('bwrap --unshare-user --unshare-net --cap-drop ALL', block)
+        self.assertIn('env -i ', block)
+        self.assertNotIn('unittest discover', block)
+        self.assertNotIn('OXC_POLICY_CONTRACT', block)
+        workspace = tomllib.loads((root / 'oxa/Cargo.toml').read_text())['workspace']
+        self.assertIn('oxc-gateway', workspace['members'])
+        package = tomllib.loads((root / 'oxa/oxc-gateway/Cargo.toml').read_text())
+        self.assertNotIn('workspace', package)
+        self.assertFalse((root / 'oxa/oxc-gateway/Cargo.lock').exists())
 
     def test_caches_restore_only_and_save_only_on_main(self):
         for path in sorted(WORKFLOWS.glob('*.y*ml')):

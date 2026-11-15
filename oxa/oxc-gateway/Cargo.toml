@@ -1,9 +1,10 @@
 [package]
 name = "oxc-gateway"
-version = "0.2.0"
-edition = "2021"
-license = "MIT"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
 
 [features]
 default = []
@@ -18,15 +19,5 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
 futures-util = { version = "0.3", optional = true }
 
-[[example]]
-name = "policy_contract"
-required-features = ["policy"]
-
-[[example]]
-name = "secrets_contract"
-required-features = ["secrets"]
-
 [lints.rust]
 unsafe_code = "forbid"
-
-[workspace]

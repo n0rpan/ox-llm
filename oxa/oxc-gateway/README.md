@@ -1,32 +1,34 @@
-# Opt-in cloud gateway building blocks
+# In-process Rust gateway
 
-Default features are empty; no listener or installer is enabled. Enable only the
-needed modules. Policy stages consume trusted gateway facts; pricing and atomic
-settlement are separate work. Python remains the behavior reference.
+This library belongs to the oxa workspace and shares its lockfile and build
+profiles. Default features are empty. Workspace membership starts no listener,
+engine or runtime, and does not install another binary.
 
-- `policy`: policy contracts.
-- `secrets`: secrets contracts.
+The controller is built for small footprint, local use and large tasks. Its
+tests protect requests/streams, admission budgets, private accounting, secret
+handling and clean refusals. Python wording and CLI compatibility are not goals.
+The existing `policy` and `secrets` features are independently selectable.
 
-Build all examples with `cargo build --locked --manifest-path
-oxa/oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
-`/usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v`; native
-checks set each present `OXC_*_CONTRACT` to its absolute example executable.
+```sh
+cargo check --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --no-default-features
+cargo test --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features --profile ci
+```
 
-Source cases use private HOME/network namespaces and synthetic data. No real
-API, credential, SDK material or sign-in is used. Every opt-in module forbids
-unsafe code. Preserve all present feature/module/example entries when merging
-companion slices. Full cloud-only forwarding/accounting remains incomplete.
+Tests use synthetic credential files and run in the required CI job with private
+HOME, cleared environment and an isolated network. No real credentials or cloud
+calls are used. The shared workspace's gateway job also runs formatting and
+strict Clippy; its result is included in `gate`.
 
-The secrets loop contract explicitly supports Python 3.12's generic refusal and
-3.13's symbolic-link refusal: it validates one of those two complete messages
-before normalizing only that wording. Native uses the symbolic-link message.
-The secrets subset passes both Python versions and native; every other error is
-compared exactly. Credential values and paths must never appear in errors.
+The `oxa-cli` example `gateway_footprint` measures the actual oxa executable with
+the existing owned HTTP fixture in a separate process. Run it inside the test
+sandbox, passing an absolute binary path:
 
-This library lives inside oxa's product tree, so oxa can consume it in-process
-without a path dependency leaving that tree. It has its own workspace and lock,
-preserving independent gateway builds and feature checks. The native oxc
-controller can depend on the same source from its separate workspace. Both entry
-points retain the same policy, key and settlement implementation; transport
-adapters supply trusted caller metadata. Default features remain empty, and
-moving the library does not enable a listener or change the default engine.
+```sh
+cargo run --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli \
+  --example gateway_footprint --profile ci -- /absolute/path/to/oxa
+```
+
+It emits five samples of idle/streaming RSS and threads, startup/request time to
+the first text, and the overhead against a direct request with the same body.
+Results contain numbers only. This initial slice does not link the gateway into
+the production binary; consumer slices must measure their own footprint.
