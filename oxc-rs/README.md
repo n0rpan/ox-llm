@@ -13,7 +13,8 @@ gateway and installation contracts will follow #24 and the cloud-only stack
 after they land on main. Hardware A/B waits for that suite to be green. See the
 [reviewable merge plan](../conformance/MERGE_PLAN.md); draft
 [#177](https://github.com/oxstack/ox-llm/pull/177) extracts only the opt-in parser
-binary. This integration branch remains draft #28 and is not a merge slice.
+binary. Draft [#186](https://github.com/oxstack/ox-llm/pull/186) adds the independent
+bounded control client on top. This integration branch stays draft #28.
 
 Build locally, keeping generated binaries outside the source checkout:
 
@@ -34,7 +35,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-and native suites both pass 802 scenarios in 101 unittest methods.
+and native suites both pass 836 scenarios in 103 unittest methods.
 
 Twenty-one engine-free HTTP cases need no fake model/engine or host-memory
 namespace. They compare the real gates while another owner holds the inference
@@ -237,3 +238,9 @@ The current [paired synthetic measurement](../conformance/benchmarks/rust-f8c482
 Until v0.2.0 ships, keep all migration PRs draft. Test locally and keep following
 main without review requests or full-CI dispatches. After release, the
 orchestrator (Fable) and oxa handle reviews.
+
+The CLI parser, control HTTP client and seven-command dispatcher are now separate
+modules. Thirty-three new model-free control cases and a hosted-checkout namespace
+regression establish peer calls, bounded errors, service/notification failures,
+legacy JSON constants and per-stalled-read deadlines. The client slice includes
+no engine, daemon, status projection, desktop launcher, installer or Python fallback.

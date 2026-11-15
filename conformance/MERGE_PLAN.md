@@ -1,12 +1,13 @@
 # Reviewable Rust controller migration
 
-Ported up to main `ef6d54c8ff2882b3503e3b168c08345590ffe97c`.
+Ported up to main `c88064215170915f61f7ee87da1c616418b22431`.
 Last main review: 2026-11-15 UTC. The latest merge retires one-off stage entry points, retains their shared
 helpers and updates the retained v0.2.0 stager to use them. Controller runtime
 files are unchanged. The accompanying engine changes are formatting-only and
 add its hosted formatter gate, retained alongside oxa and oxc. Subsequent
 merges update oxa/UI/CI, declare done checks and add a design-only OAuth document;
-controller behavior is unchanged. OAuth remains pending project registration.
+controller behavior is unchanged. The latest c880642 merge adds an oxa notice
+only. OAuth remains pending project registration.
 
 ## Priority and source of truth
 
@@ -49,7 +50,8 @@ diff. A PR includes only its own conformance subset and direct dependencies.
 | --- | --- | --- |
 | 0. Contract tooling | Isolated process harness, slice inventory and reference provenance. No product behavior changes. | Inventory accounts for every captured method exactly once; reference subsets pass. |
 | 1. CLI grammar and config | Parser extraction is draft [#177](https://github.com/oxstack/ox-llm/pull/177); config follows separately. Binary scaffold; parser/help and path/config reader/writer, separated from command execution. T2. | `test_cli`; config preservation/mode/symlink contracts moved out of engine-dependent tests. |
-| 2. CLI execution | Bounded HTTP client, status projection and desktop exec handshake, depending on 1. T2. | `cli-config`; synthetic HTTP/system peers, no installed engine. |
+| 2a. CLI control requests | Draft [#186](https://github.com/oxstack/ox-llm/pull/186), stacked on #177. Independent 280-line client/control implementation; seven commands, 64 KiB replies, stalled-read timeouts and notifications. T3 for controls/CI. | 33 control scenarios, hosted-checkout regression, parser dependencies and 14 unsupported-command refusals; no engine. |
+| 2b. Remaining CLI execution | Status projection, desktop exec handshake and file readers, extracted separately after 2a. T2/T3. | Respective `cli-config`/`ledger` contracts with synthetic HTTP/system/file peers. |
 | 3. HTTP transport and gates | Framing, limits, Host/Origin/CORS/auth, request IDs and engine-free dispatch, depending on 1. T3. | `http-foundation`; gate subset of `http-admission` adapted to no-engine fixtures before extraction. |
 | 4. Request records | Private HMAC identity/files and bounded usage records, separated from local engine bookkeeping, depending on 3. T3. | File/privacy cases from `ledger`; remote settlement cases captured after #24. |
 | 5. Cloud-only catalog and policy | Main's remote catalog/capabilities, cloud-off/offline rules, status/health with no engine, depending on 3. T3. | New Python contracts after #24/#78; no fake engine or weight files; held foreign lease remains untouched. |

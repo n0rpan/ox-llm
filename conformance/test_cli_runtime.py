@@ -12,7 +12,7 @@ import unittest
 from harness import Daemon, ROOT, isolated_env
 
 GOLDENS = Path(__file__).with_name('goldens') / 'cli-runtime.json'
-CANONICAL_HOME = Path('/home/oxc-conformance')  # synthetic namespace mount, never a real account
+from cli_harness import CANONICAL_HOME, invoke_case
 CASES = {
     'panel': (['panel'], 0),
     'panel-output': (['panel'], 37),
@@ -106,26 +106,6 @@ def capture_case(name):
         return json.loads(json.dumps(value).replace(str(daemon.home), '<HOME>'))
 
 
-def invoke_case(name, script=None, network_admin=False, timeout=25):
-    # A new network namespace per case gives the CLI its hardcoded 8092 without
-    # ever reaching a service outside this synthetic installation.
-    with tempfile.TemporaryDirectory(prefix='oxc-cli-runtime-') as directory:
-        home = Path(directory)
-        env = isolated_env(home)
-        for key in ('OXC_COMMAND', 'OXC_DAEMON_COMMAND'):
-            if key in os.environ:
-                env[key] = os.environ[key]
-        command = ['bwrap', '--die-with-parent', '--unshare-net',
-                   *(['--unshare-user', '--cap-add', 'CAP_NET_ADMIN', '--cap-add', 'CAP_SETPCAP'] if network_admin else []), '--ro-bind', '/', '/',
-                   '--dev-bind', '/dev', '/dev', '--bind', '/proc', '/proc',
-                   '--tmpfs', '/home', '--tmpfs', '/tmp',
-                   '--bind', str(home), str(CANONICAL_HOME),
-                   '--setenv', 'HOME', str(CANONICAL_HOME), '--',
-                   sys.executable, str(Path(script or __file__).resolve()), '--case', name]
-        result = subprocess.run(command, env=env, capture_output=True, timeout=timeout)
-        if result.returncode:
-            raise AssertionError(name + ': ' + result.stderr.decode())
-        return json.loads(result.stdout)
 
 
 class RuntimeCliContract(unittest.TestCase):

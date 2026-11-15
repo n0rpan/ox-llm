@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `ef6d54c8ff2882b3503e3b168c08345590ffe97c`.
+Reference main: `c88064215170915f61f7ee87da1c616418b22431`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -50,6 +50,11 @@ The following gaps remain visible rather than being represented by skipped tests
   and activity. Full editing, pixel operations, controller image-slot IPC and
   Oxi/NPU adapters still need contracts without SDK, device or model content.
   Pause further image work behind cloud-only completion.
+- CLI control extraction now passes 33 independent engine-free scenarios plus
+  a hosted-checkout namespace regression. The safe Rust client and seven-command
+  dispatcher share no daemon/engine dependency. Stalled-read timeouts and
+  permissive legacy JSON constants follow Python. Status/desktop/file-reader
+  extraction remains separate.
 - CLI: 75 additional parser cases now cover help/ambiguity precedence, Unicode
   integers and exact quoted/control-character diagnostics; seven populated
   ledger-limit cases verify actual Unicode/large-number clamps. Extend malformed
@@ -114,7 +119,8 @@ blocking gh pr checks --watch; never poll CI status.
 
 Next implementation step: complete the cloud-only path after its main baseline
 lands, while extracting reviewable PRs using [the merge plan](MERGE_PLAN.md).
-The parser-only first slice is draft #177; #28 stays the integration branch.
+The parser-only first slice is draft #177, and the independent control client
+is draft #186. #28 stays the integration branch.
 Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
 filtering, stored days, private writes, trend/soak thresholds, stale status, dates,
 installed versions and file interoperability. Rust now passes all 62 configured API and all 18 HTTP gate cases.

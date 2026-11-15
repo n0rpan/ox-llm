@@ -1,14 +1,15 @@
 # oxc drop-in conformance
 
-Reference: main `ef6d54c8ff2882b3503e3b168c08345590ffe97c`.
-The current suite covers 802 scenarios in 101 unittest methods. This remains a
+Reference: main `c88064215170915f61f7ee87da1c616418b22431`.
+The current suite covers 836 scenarios in 103 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
 Cloud-only mode is the first complete runtime target. See the
 [merge plan](MERGE_PLAN.md) for separate review slices; the first parser slice is
 draft [#177](https://github.com/oxstack/ox-llm/pull/177). The integration branch
-remains in draft #28. Capture cloud gateway contracts after #24 lands on main,
+remains in draft #28. The next independent control-client slice is draft
+[#186](https://github.com/oxstack/ox-llm/pull/186), stacked on #177. Capture cloud gateway contracts after #24 lands on main,
 then port them and the cloud-only stack. Hardware A/B waits until cloud-only
 conformance is green.
 
@@ -141,6 +142,7 @@ python3 conformance/test_storage.py --record-python
 python3 conformance/test_harnesses.py --record-python
 python3 conformance/test_ledger.py --record-python
 python3 conformance/test_cli_runtime.py --record-python
+python3 conformance/test_cli_control.py --record-python
 python3 conformance/test_cli_actions.py --record-python
 python3 conformance/test_cli_status.py --record-python
 python3 conformance/test_cli_digest.py --record-python
@@ -163,6 +165,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | --- | --- | --- | --- |
 | CLI parsing | PASS, 65 original + 75 additional cases | PASS: help/ambiguity precedence, Unicode integers, bounds, quoted/control-character diagnostics | More option combinations and non-UTF-8 argv |
 | CLI ledger files | PASS, 5 original + 7 limit cases | PASS: private/bounded reads, Unicode integers and large-limit clamps | Additional historical ledger labels |
+| CLI controls | PASS, 33 model-free cases + one namespace regression | PASS: exact peer/system calls, failures, bounded replies/reasons, legacy JSON constants and stalled-read deadlines | More metadata/control combinations |
 | CLI runtime | PASS, 48 cases | PASS: all 48 cases against both Python and native daemons | More combined flags and filesystem failures |
 | CLI desktop/model dispatch | PASS, 15 cases | PASS: detached session and exec handshake, inherited stdin/umask, service failures, bounded model qualification/errors, selection and read-only planning | More malformed replies and command races |
 | CLI status/code/mode | PASS, 16 cases | PASS: filtered metadata, offline/stopping states, selected-model dispatch, Flash download phases and bounded trial queries | More malformed metadata and clock races |
@@ -260,3 +263,8 @@ Current synthetic comparison: [Python](benchmarks/python-f8c482e-a874eac.json) a
 During the v0.2.0 release hold, keep all migration PRs draft and continue local
 work/main follow-up without review requests or full-CI dispatches. Post-release
 review is through the orchestrator (Fable) and oxa.
+
+The standalone CLI harness keeps the unchanged credential/proxy-free environment
+allowlist and rebinds only the read-only checkout after hiding HOME/tmp roots. A
+synthetic checkout under /home verifies hosted-runner portability without exposing
+other home contents or requiring an engine fixture.

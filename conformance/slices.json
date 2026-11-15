@@ -3,6 +3,8 @@
   "slices": {
     "cli-config": [
       "test_cli",
+      "test_cli_control",
+      "test_cli_namespace",
       "test_cli_edges",
       "test_cli_files",
       "test_cli_limits",
