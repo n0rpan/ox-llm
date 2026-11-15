@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Gate T1.5 "tiny-real" (gate ladder: between T1 model-free and T2 one-depth numerics).
 # Real Qwen3.5-2B (Apache-2.0, unsloth/Qwen3.5-2B-MTP-GGUF Q4_K_M) rewritten as qwen35moe by
-# lab/tools/tiny_real/convert_dense_to_qwen35moe.py; see lab/docs/TINY-REAL.md. ~3-10 min.
+# oxc/tools/tiny_real/convert_dense_to_qwen35moe.py; see oxc/docs/TINY-REAL.md. ~3-10 min.
 #
 #   1. identity: both GGUFs match their pinned sha256 (no silent model drift)
 #   2. rewrite vs dense, both in llama.cpp: mean KLD on 3 prompts <= 2x llama.cpp's own
@@ -10,17 +10,17 @@
 #      bit-identical and the greedy continuation identical (3 prompts); MTP depths 1-3 identical
 #   4. oxe-server (temporary port + state dir): tool call, ECHO/C3 appends, SIGTERM, restart on
 #      the same state store, resume from disk with a C3 hit
-#   5. oxa loop (lab/tools/tiny_real/oxa_tiny_loop.py: read/edit/bash in a scratch repo, forced
+#   5. oxa loop (oxc/tools/tiny_real/oxa_tiny_loop.py: read/edit/bash in a scratch repo, forced
 #      compaction, post-compaction prefix reuse, a subagent, cancel mid-stream, C3 on every
 #      append, no prefix rebase): runs when OXA_BIN (or a custom OXA_TINY_LOOP) is set;
 #      otherwise SKIP with a message (not a PASS of that step)
 #
-# Never touches production: no port 8093, no inference lease, no ~/.config/local-ai; a private
+# Never touches production: no port 8093, no inference lease, no ~/.config/oxc; a private
 # HOME / XDG tree and weight cache under a temporary directory, removed at exit together with
 # every process it started. Run in a DEV/QUALITY window while the hardware is idle.
 #
 # Env: TINY_DIR       dir with the two GGUFs (default /var/lib/local-ai-models/tiny, else
-#                     ~/.local/share/local-ai-models/tiny)
+#                     ~/.local/share/oxc-models/tiny)
 #      OXE_BIN_DIR    dir with release `oxe` and `oxe-server` built from this tree
 #                     (default engine/target/release)
 #      DUMP_REF       llama.cpp oracle (engine/tools/oracle/build.sh; required)
@@ -37,7 +37,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TOOLS="$ROOT/lab/tools/tiny_real"
+TOOLS="$ROOT/oxc/tools/tiny_real"
 GATES="$ROOT/tools/gates"
 SRC_NAME=Qwen3.5-2B-Q4_K_M.gguf
 MOE_NAME=Qwen3.5-2B-Q4_K_M-qwen35moe-8of16.gguf
@@ -52,7 +52,7 @@ THREADS="${THREADS:-4}"
 OXE_BIN_DIR="${OXE_BIN_DIR:-$ROOT/engine/target/release}"
 if [ -z "${TINY_DIR:-}" ]; then
     TINY_DIR=/var/lib/local-ai-models/tiny
-    [ -f "$TINY_DIR/$MOE_NAME" ] || TINY_DIR="$HOME/.local/share/local-ai-models/tiny"
+    [ -f "$TINY_DIR/$MOE_NAME" ] || TINY_DIR="$HOME/.local/share/oxc-models/tiny"
 fi
 SRC="$TINY_DIR/src/$SRC_NAME"
 MOE="$TINY_DIR/$MOE_NAME"
@@ -64,7 +64,7 @@ for p in "$PORT" "$SRV_PORT"; do   # proxy and engine ports: never a production 
 done
 [ -x "${DUMP_REF:-}" ] || fail "DUMP_REF (llama.cpp oracle, engine/tools/oracle/build.sh) not set or not executable"
 [ -x "$OXE_BIN_DIR/oxe" ] && [ -x "$OXE_BIN_DIR/oxe-server" ] || fail "no oxe / oxe-server in $OXE_BIN_DIR (cargo build --release -p oxe-cli -p server)"
-[ -f "$SRC" ] && [ -f "$MOE" ] || fail "models missing in $TINY_DIR (see lab/docs/TINY-REAL.md: download + convert)"
+[ -f "$SRC" ] && [ -f "$MOE" ] || fail "models missing in $TINY_DIR (see oxc/docs/TINY-REAL.md: download + convert)"
 if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then fail "port $PORT is in use"; fi
 if [ "$HOP_PROBE" = 1 ] && (exec 3<>"/dev/tcp/127.0.0.1/$SRV_PORT") 2>/dev/null; then fail "port $SRV_PORT (hop probe server) is in use"; fi
 case "$HOP_PROBE" in 0|1) ;; *) fail "HOP_PROBE must be 0 or 1" ;; esac
@@ -86,7 +86,7 @@ mkdir -p "$W/home/state" "$W/home/.config" "$W/home/.local/state" "$W/home/run" 
 chmod 700 "$W/home/run"
 export HOME="$W/home" XDG_CONFIG_HOME="$W/home/.config" XDG_STATE_HOME="$W/home/.local/state" \
        XDG_RUNTIME_DIR="$W/home/run" XDG_CACHE_HOME="$W/cache"
-unset LOCAL_LLM_CONFIG LOCAL_AI_LEASE OXE_API_KEY_FILE BRAVE_SEARCH_API_KEY || true  # O170: never inherited, never read
+unset LOCAL_LLM_CONFIG OXC_LEASE OXE_API_KEY_FILE BRAVE_SEARCH_API_KEY || true  # O170: never inherited, never read
 t0=$(date +%s)
 
 # 1. identity
