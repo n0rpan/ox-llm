@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import shlex
 import statistics
 import subprocess
 import threading
@@ -33,7 +34,12 @@ def measure(requests, idle_seconds):
         pid = json.loads(daemon.child_info.read_text())['child-pid']
         payload = {'model': PRIMARY, 'messages': [{'role': 'user', 'content': 'Synthetic benchmark.'}],
                    'max_tokens': 3, 'stream': False}
-        if daemon.call('POST', '/v1/chat/completions', payload)['status'] != 200:
+        def valid_reply(reply):
+            return (reply['status'] == 200 and reply['body']['choices'][0]['message']['content'] == 'Synthetic engine reply.'
+                    and reply['body']['usage']['completion_tokens'] == 3
+                    and reply['body']['usage']['prompt_tokens'] == 8)
+
+        if not valid_reply(daemon.call('POST', '/v1/chat/completions', payload)):
             raise RuntimeError('Benchmark warmup failed')
         idle_rss = rss_kib(pid)
         before, start = cpu_seconds(pid), time.perf_counter()
@@ -57,24 +63,36 @@ def measure(requests, idle_seconds):
                 reply = daemon.call('POST', '/v1/chat/completions', payload,
                                     headers={'X-Local-AI-Origin': 'lab'})
                 latencies.append((time.perf_counter() - t0) * 1000)
-                if reply['status'] != 200:
+                if not valid_reply(reply):
                     raise RuntimeError('Benchmark request failed')
             load_wall = time.perf_counter() - start
             load_cpu = cpu_seconds(pid) - before
         finally:
             stop.set()
             sampler.join(timeout=2)
-        sha = subprocess.run(['git', 'rev-parse', 'origin/main'], cwd=ROOT,
+        upstream = [row['body'] for row in daemon.events() if row.get('event') == 'request'
+                    and row.get('method') == 'POST' and row.get('path') in ('/v1/chat/completions', '/chat/completions')]
+        if len(upstream) != requests + 1 or any(body != upstream[0] for body in upstream):
+            raise RuntimeError('Every benchmark request must reach the engine with the same payload')
+        sha = subprocess.run(['git', 'merge-base', 'HEAD', 'origin/main'], cwd=ROOT,
                              capture_output=True, text=True, check=True).stdout.strip()
+        revision = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT,
+                                  capture_output=True, text=True, check=True).stdout.strip()
         ordered = sorted(latencies)
         return {
             'schema': 'oxc-fake-engine-benchmark/1',
             'created_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
             'main_sha': sha,
+            'migration_sha': revision,
             'implementation': 'selected' if os.environ.get('OXC_DAEMON_COMMAND') else 'python',
             'architecture': platform.machine(), 'available_cpus': len(os.sched_getaffinity(0)),
             'cpu_tick_seconds': 1 / os.sysconf('SC_CLK_TCK'),
             'fixture_sha256': hashlib.sha256((ROOT / 'conformance/fixtures/fake_engine.py').read_bytes()).hexdigest(),
+            'benchmark_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'upstream_post_requests_including_warmup': len(upstream),
+            'upstream_request_body_sha256': hashlib.sha256(json.dumps(upstream[0], sort_keys=True).encode()).hexdigest(),
+            **({'command_executable_sha256': hashlib.sha256(Path(shlex.split(os.environ['OXC_DAEMON_COMMAND'])[0]).read_bytes()).hexdigest()}
+               if os.environ.get('OXC_DAEMON_COMMAND') else {}),
             'requests': requests, 'stream': False, 'output_tokens_per_request': 3,
             'idle': {'wall_seconds': round(idle_wall, 4), 'rss_kib': idle_rss,
                      'cpu_seconds': round(idle_cpu, 4), 'cpu_percent_one_core': round(100 * idle_cpu / idle_wall, 3)},
