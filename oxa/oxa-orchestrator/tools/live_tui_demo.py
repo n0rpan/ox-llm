@@ -39,7 +39,7 @@ class Demo:
             "OXA_SYSTEM_SKILLS_DIR": "",
         }
         (self.agent / "settings.json").write_text(json.dumps({
-            "defaultProjectTrust": "never", "oxa.bootPreload": False,
+            "defaultProjectTrust": "never", "oxa": {"bootPreload": False},
         }))
         self.processes = []
         self.request_number = 0

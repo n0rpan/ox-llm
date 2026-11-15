@@ -2127,12 +2127,12 @@ fn worker_goal_compacts_with_metered_usage(limit: u64, failure: bool, canceling:
 }
 
 fn main_goal_compacts_with_metered_usage(
+    env: &TestEnv,
     limit: u64,
     failure: bool,
     canceling: bool,
     exact: bool,
 ) -> (u64, u64) {
-    let env = TestEnv::new();
     let agent = Dirs::under(env.root()).agent_dir;
     std::fs::create_dir_all(&agent).unwrap();
     let directory = agent.join("control");
@@ -2165,7 +2165,15 @@ fn main_goal_compacts_with_metered_usage(
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
     let mut config = deps(&engine.url(), env.root(), &env.work(), store.clone());
     config.model = Some("compact-model".into());
-    let session = Session::open(config, Open::New).unwrap();
+    // This fixture reconciles every request with a funded goal. Startup warming
+    // belongs to the unscoped session and is covered separately.
+    config.settings = Settings::from_values(json!({"oxa":{"bootPreload":false}}), json!({}));
+    let mut session = Session::open(config, Open::New).unwrap();
+    assert!(
+        !session.preload_prefix(&mut oxa_proto::NullSink, &mut oxa_proto::HeadlessUi::default()),
+        "goal-only compaction fixture must exclude startup warming"
+    );
+    assert!(engine.requests().is_empty());
     let expected = session.state().session_id;
     let peer_id = expected.clone();
     let peer_engine = engine.clone();
@@ -2251,13 +2259,15 @@ fn main_goal_compacts_with_metered_usage(
         swapped: false,
         rejected: Arc::new(AtomicBool::new(false)),
     };
-    let mut options = opts(&env, &engine.url(), store);
+    let mut options = opts(env, &engine.url(), store);
     let (code, last) = run_session(&mut terminal, session, &mut options);
     peer.join().unwrap();
     std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
     std::env::remove_var("OXA_GOAL_AUTO_COMPACTION");
     assert_eq!(code, 0);
     assert_eq!(last.unwrap().id, expected);
+    assert!(!directory.join("session.sock").exists());
+    std::fs::remove_dir(&directory).unwrap();
     let requests = engine.requests();
     assert!(
         requests.iter().any(|r| r.kind == "compaction"),
@@ -2382,11 +2392,11 @@ fn main_goal_settles_pending_prefill(canceling: bool) {
         .unwrap(),
     );
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
-    let session = Session::open(
-        deps(&server.url(), env.root(), &env.work(), store.clone()),
-        Open::New,
-    )
-    .unwrap();
+    let mut config = deps(&server.url(), env.root(), &env.work(), store.clone());
+    // This case injects its own pending prefill after goal admission. Startup
+    // warming would be a third, unscoped request and invalidate its ownership sum.
+    config.settings = Settings::from_values(json!({"oxa":{"bootPreload":false}}), json!({}));
+    let session = Session::open(config, Open::New).unwrap();
     let expected = session.state().session_id;
     let peer_id = expected.clone();
     let metered_engine = session.inner().engine.clone();
@@ -2535,12 +2545,17 @@ fn main() {
     if args.first().map(String::as_str) == Some("--main-prefill-only") {
         return;
     }
-    let (main_cap, main_done_cap) = main_goal_compacts_with_metered_usage(0, false, false, false);
-    main_goal_compacts_with_metered_usage(main_done_cap, false, false, true);
-    main_goal_compacts_with_metered_usage(main_cap, false, false, false);
-    main_goal_compacts_with_metered_usage(0, true, false, false);
-    main_goal_compacts_with_metered_usage(u64::MAX, true, false, false);
-    main_goal_compacts_with_metered_usage(0, false, true, false);
+    {
+        // The byte-counting engine includes cwd in every prompt. Keep the exact
+        // cap comparison in one namespace; fresh random path lengths change usage.
+        let env = TestEnv::new();
+        let (main_cap, main_done_cap) = main_goal_compacts_with_metered_usage(&env, 0, false, false, false);
+        main_goal_compacts_with_metered_usage(&env, main_done_cap, false, false, true);
+        main_goal_compacts_with_metered_usage(&env, main_cap, false, false, false);
+        main_goal_compacts_with_metered_usage(&env, 0, true, false, false);
+        main_goal_compacts_with_metered_usage(&env, u64::MAX, true, false, false);
+        main_goal_compacts_with_metered_usage(&env, 0, false, true, false);
+    }
     println!(
         "main goal compaction meters summaries/prefill and honors caps, failure and cancellation ... ok"
     );

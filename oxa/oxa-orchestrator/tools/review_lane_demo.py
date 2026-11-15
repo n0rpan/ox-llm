@@ -35,7 +35,7 @@ def output(body):
     return values[-1]
 
 
-def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer=False):
+def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer=False, truncate_reviewer=False):
     class AuthorAndParent(openai_base):
         def __init__(self):
             self.counts = {}
@@ -93,9 +93,17 @@ def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer
                 else:
                     assert step == 7
                     report = output(body)["report"]
-                    assert report["process_stopped"] and report["goal"]["state"] == "done"
+                    assert report["process_stopped"]
                     assert "reviewer verified exact patch" in report["last_reply"]
-                    value = completed("mixed-provider-review-final")
+                    if truncate_reviewer:
+                        assert report["goal"]["state"] == "blocked"
+                        assert report["goal"]["reason"] == "native_response_truncated"
+                        assert report["runtime_outcome"] == "truncated"
+                        assert json.loads(report["last_reply"])["state"] == "done", "complete-looking text must not override length"
+                        value = {"state": "blocked", "reason": "reviewer_response_truncated"}
+                    else:
+                        assert report["goal"]["state"] == "done"
+                        value = completed("mixed-provider-review-final")
             uid = lane + "-" + model.replace(".", "-") + "-" + str(step)
             events = [{"type": "response.created", "response": {"id": uid}}]
             if name:
@@ -166,12 +174,17 @@ def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer
             assert self.release.wait(7), "reviewer barrier was not released"
             events = self.default_stream()
             reply = json.dumps(completed("reviewer verified exact patch"))
+            if truncate_reviewer:
+                assert body["max_tokens"] == 512, "operator response limit did not reach the native SDK"
+                reply = (reply + " " * 1024)[:512]
             deltas = [e for e in events if e[0] == "content_block_delta"]
             deltas[0][1]["delta"]["text"] = reply
             deltas[1][1]["delta"]["text"] = ""
             for kind, value in events:
                 if kind == "message_delta":
-                    value["usage"]["output_tokens"] = 8
+                    value["usage"]["output_tokens"] = 512 if truncate_reviewer else 8
+                    if truncate_reviewer:
+                        value["delta"]["stop_reason"] = "max_tokens"
                 if tiered_pricing and kind == "message_start":
                     value["message"]["usage"]["cache_creation_input_tokens"] = 5
             return self._sse(handler, events)
@@ -193,7 +206,7 @@ def run(args):
     live = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(live)
     demo = live.Demo(args.bin_dir)
-    author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic, args.pricing, args.cancel_reviewer)
+    author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic, args.pricing, args.cancel_reviewer, args.truncate_reviewer)
     tls_context = None
     if args.tls_reviewer:
         certificate, private_key = root / 'mock-cert.pem', root / 'mock-key.pem'
@@ -252,7 +265,7 @@ def run(args):
                 ]}
         ledger = root / "ledger"
         stack = Stack(author.port, cloud={"enabled": True, "daily_budget_usd": 10.0 if args.pricing else 1.0,
-            "orchestrator_disconnect_watch": args.cancel_reviewer,
+            "orchestrator_disconnect_watch": args.cancel_reviewer or args.truncate_reviewer,
             "secrets_file": str(secrets), "models": models}, environ={"LOCAL_AI_LEDGER_DIR": str(ledger)})
         if args.pricing:
             stack.enter_context(patch.object(cloud_prices, "_fetch", refuse_public_fetch))
@@ -276,6 +289,8 @@ def run(args):
                 "engine": stack.base.removeprefix("http://"), "model": model,
                 "budget": {"wall_ms": 15000, "tokens": 100000, "turns": 4},
                 "turn_ms": 8000, "output_bytes": 1048576, "files": files, "edit": edit})
+        if args.truncate_reviewer:
+            next(p for p in profiles if p["name"] == "reviewer")["response_tokens"] = 512
         profile_file = demo.agent / "workers.json"
         profile_file.write_text(json.dumps({"version": 2, "verified_local_only": False,
             "allow_cloud_workers": True, "parallel": 2, "total_tokens": 200000,
@@ -309,21 +324,31 @@ def run(args):
             check_reviewer_cancel(demo, author, reviewer, waiting, ledger, sid, root, args.tls_reviewer)
             return
         reviewer.release.set()
-        done = demo.wait(lambda v: demo.goal(v)["state"] == "done" and all(w["process_stopped"] for w in v["status"]["workers"]))
+        expected_state = "blocked" if args.truncate_reviewer else "done"
+        done = demo.wait(lambda v: demo.goal(v)["state"] == expected_state
+            and (not args.truncate_reviewer or demo.goal(v).get("reason") == "reviewer_response_truncated")
+            and all(w["process_stopped"] for w in v["status"]["workers"]))
         assert done["status"]["session"]["id"] == sid and demo.goal(done)["budget"] == budget
         assert demo.goal(done)["reported_tokens"] == 140
         workers = {w["profile"]: w for w in done["status"]["workers"]}
         assert workers["author"]["model"] == author_model
         assert workers["reviewer"]["model"] == "reviewer-sonnet"
         assert all(w["route"] == "cloud_gateway" for w in workers.values())
-        reviewer_tokens = 28 if args.pricing else 23
+        reviewer_tokens = (20 if args.pricing else 15) + (512 if args.truncate_reviewer else 8)
         assert {k: w["goal"]["reported_tokens"] for k, w in workers.items()} == {"author": 40, "reviewer": reviewer_tokens}
-        assert all(w["state"] == "completed" and not Path("/proc", str(w["process_id"])).exists() for w in workers.values())
+        assert all(w["state"] == ("failed" if name == "reviewer" and args.truncate_reviewer else "completed")
+                   and not Path("/proc", str(w["process_id"])).exists() for name, w in workers.items())
         assert (demo.work / "input.txt").read_text() == BEFORE
-        demo.save_screen("review-completed-screen.txt", lambda s: (
-            "mixed-provider-review-final" in s and "Goal Done" in s
-            and any("reviewer-sonnet (cloud) · completed" in line and f"{author_model} (cloud) · completed" in line
-                    for line in s.splitlines()[-3:])))
+        if args.truncate_reviewer:
+            assert workers["reviewer"]["response_tokens"] == 512
+            demo.save_screen("review-truncated-screen.txt", lambda s: (
+                "reviewer_response_truncated" in s and "Goal Blocked" in s
+                and any("reviewer-sonnet (cloud) · failed" in line for line in s.splitlines()[-3:])))
+        else:
+            demo.save_screen("review-completed-screen.txt", lambda s: (
+                "mixed-provider-review-final" in s and "Goal Done" in s
+                and any("reviewer-sonnet (cloud) · completed" in line and f"{author_model} (cloud) · completed" in line
+                        for line in s.splitlines()[-3:])))
         deadline = time.monotonic() + 2
         rows = []
         while time.monotonic() < deadline:
@@ -352,12 +377,18 @@ def run(args):
         if args.pricing:
             assert reviewer_row["cache_write_tokens"] == 5
             expected = {"parent": Decimal("0.000196"), "author": Decimal("0.000056"),
-                        "reviewer": Decimal("0.00017275")}
+                        "reviewer": Decimal("0.00521275" if args.truncate_reviewer else "0.00017275")}
             for lane, cost in expected.items():
                 actual = sum(Decimal(str(r["cost_usd"])) for r in rows if r["session"] == sessions[lane])
                 assert actual == cost, (lane, actual, cost)
                 costs[lane] = str(actual)
         assert KEY not in json.dumps(rows)
+        if args.truncate_reviewer:
+            time.sleep(0.1)
+            assert len(author.requests) == 9 and len(reviewer.requests) == 1, "truncation must not retry or wake more inference"
+            settled = [json.loads(line) for path in ledger.glob("requests-*.jsonl")
+                       for line in path.read_text().splitlines(keepends=True) if line.endswith("\n")]
+            assert len(settled) == 10 and all(row["settled"] == "usage" for row in settled)
         demo.mux("send-keys", "-t", "demo", "C-d")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -369,6 +400,8 @@ def run(args):
         else:
             raise AssertionError("TUI exit deadline")
         result = {"same_parent_session": True, "verified_author_proposal": True,
+            "reviewer_truncated": args.truncate_reviewer, "verified_review_completed": not args.truncate_reviewer,
+            "parent_goal_state": expected_state,
             "native_anthropic_reviewer": True, "reviewer_tls": args.tls_reviewer, "source_unchanged": True, "workers_reaped": True,
             "parent_tokens": 140, "author_tokens": 40, "reviewer_tokens": reviewer_tokens,
             "tiered_pricing": args.pricing, "shared_parent_author_model": args.shared_model,
@@ -453,7 +486,9 @@ def main():
     parser.add_argument("--bin-dir", type=Path, default=Path(__file__).resolve().parents[2] / "target" / "debug")
     parser.add_argument("--shared-model", action="store_true", help="author and parent use one gateway model alias")
     parser.add_argument("--pricing", action="store_true", help="require tier/cache pricing from gateway #162")
-    parser.add_argument("--cancel-reviewer", action="store_true", help="verify Esc closes a native SDK request before headers")
+    outcome = parser.add_mutually_exclusive_group()
+    outcome.add_argument("--cancel-reviewer", action="store_true", help="verify Esc closes a native SDK request before headers")
+    outcome.add_argument("--truncate-reviewer", action="store_true", help="verify native SDK length truncation preserves usage and blocks DONE")
     parser.add_argument("--tls-reviewer", action="store_true", help="use an owned native TLS mock with a verified temporary CA")
     parser.add_argument("--isolated-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -476,6 +511,8 @@ def main():
         command.append("--shared-model")
     if args.cancel_reviewer:
         command.append("--cancel-reviewer")
+    if args.truncate_reviewer:
+        command.append("--truncate-reviewer")
     if args.tls_reviewer:
         command.append("--tls-reviewer")
     result = subprocess.run(command, env=env)

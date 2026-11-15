@@ -304,6 +304,56 @@ mod tests {
         assert_eq!(inner.clears(), vec!["main"]);
     }
     #[test]
+    fn pre_goal_warming_is_not_charged_to_the_later_goal() {
+        let inner = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("goal reply")]));
+        let source = Arc::new(Source::default());
+        let meter = Meter {
+            inner: inner.clone(),
+            source: source.clone(),
+        };
+        let prefix = FrozenPrefix {
+            sections: vec![],
+            tools_json: "[]".into(),
+            sha256: [0; 32],
+        };
+        let messages = vec![];
+        let mut request = ChatRequest {
+            prefix: &prefix,
+            messages: &messages,
+            model: "fake-model",
+            max_tokens: 0,
+            thinking: false,
+            preserve_thinking: false,
+            sampling: None,
+            hints: Hints {
+                session: "same-session",
+                idem_key: "",
+                kind: TurnKind::Prefill,
+                background: true,
+                snapshot_keep: false,
+            },
+        };
+        meter.chat(&request, &CancelToken::new(), &mut |_| {}).unwrap();
+        assert!(source.snapshot().tokens().is_some_and(|n| n > 0));
+        assert!(source.scope());
+        assert!(source.begin(Some(100_000), 10_000));
+        let goal_messages = vec![WireMsg::user("new funded goal")];
+        request.messages = &goal_messages;
+        request.max_tokens = 128;
+        request.hints.kind = TurnKind::Chat;
+        request.hints.background = false;
+        let reply = meter.chat(&request, &CancelToken::new(), &mut |_| {}).unwrap();
+        assert_eq!(
+            source.freeze().tokens(),
+            Some(u64::from(reply.usage.prompt) + u64::from(reply.usage.completion))
+        );
+        assert_eq!(
+            inner.requests().len(),
+            2,
+            "both SDK calls really ran in the same session"
+        );
+    }
+    #[test]
     fn pending_failed_and_expired_inference_are_never_known_zero() {
         let source = Source::default();
         let cancel = CancelToken::new();

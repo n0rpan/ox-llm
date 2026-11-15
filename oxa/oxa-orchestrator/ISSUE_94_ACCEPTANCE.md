@@ -221,3 +221,42 @@ accounting uncertainty. See
 No Core, native JobRegistry, provider SDK, shared gateway or credential path is
 changed. No paid request is made. The historical smoke and remaining live-provider,
 strict total-token admission and working-evening gates remain unresolved.
+
+## Official native SDK truncation acceptance
+
+The mixed-provider real-TUI demo now has a `--truncate-reviewer` mode. It carries
+an operator-set 512 response-token cap through the actual worker and gateway to
+the pinned native Anthropic SDK's owned-loopback upstream. The synthetic Messages
+stream ends with `max_tokens`; its complete-looking DONE text cannot override
+that stop reason. The reviewer reports truncated/blocked with 532 settled
+synthetic tokens, and the parent stays blocked after reading its verified report.
+Both workers are reaped, the author proposal handoff verifies, and source is
+unchanged. No retry or follow-on inference is observed.
+
+Plain HTTP and verified private-CA TLS variants pass with shared parent/author
+model aliasing and tier/cache pricing. All ten rows settle with usage, and the
+SDK, worker and gateway totals reconcile. The existing successful review path
+also passes. These are fixture costs and tokens, not paid usage; the actual TUI
+exits cleanly in each case. See [native SDK truncation](REVIEW_LANE_DEMO.md).
+
+This is stronger offline coverage of the historical length/unknown-usage failure,
+not proof that its entire root cause is diagnosed. The mock parent/author use
+Responses and the native reviewer uses Messages; the historical paid models and
+full workflow are not rerun. No shared gateway, cloud credential or installed
+service was accessed. The consumed one-shot authorization and remaining real
+provider/working-evening gates are unchanged.
+
+Broad checks also exposed nondeterministic fixture setup, including a seven-token
+accounting disagreement. Startup warming was enabled despite the goal-only
+request sum; a deterministic startup check fails with that old setup, and a
+separate real engine/meter regression verifies that pre-goal warming is excluded
+from the later goal debit. The exact-cap comparison also reused a measured total
+in a fresh random cwd, whose byte length changes the fake engine's prompt usage.
+The comparison now uses fresh sessions in one namespace with identical cwd bytes.
+
+Compaction and manually injected pending-prefill fixtures disable startup warming
+with the existing nested setting. Exact equality, pending-call assertions,
+original deadlines and cancellation checks remain intact. The shared demo's
+formerly dotted boot-preload setting is corrected too. No product default is
+changed. These controls remove identified setup races; they do not establish the
+cause of every earlier timeout or prove real-provider reliability.

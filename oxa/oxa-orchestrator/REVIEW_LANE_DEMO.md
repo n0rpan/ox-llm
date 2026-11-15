@@ -91,3 +91,44 @@ worker still talks only to the plain loopback gateway. Cancellation over TLS and
 successful shared-model/tier-cache pricing both pass. The focused gateway tests
 also reject an untrusted certificate before a provider request is sent. No trust
 store or mock-only endpoint/key guard is disabled or installed globally.
+
+## Native SDK length truncation
+
+Use `--truncate-reviewer --pricing --shared-model`, optionally with
+`--tls-reviewer`, to exercise length handling through the actual TUI, private
+worker, gateway and pinned native Anthropic SDK. This remains an owned mock run,
+with cleared environments, synthetic capabilities, exact loopback-port guards
+and the existing verified temporary TLS CA. It never uses the shared gateway or
+a real provider key. The truncation and cancellation modes are mutually exclusive.
+
+```sh
+/tmp/oxa-review-sdk/bin/python -I oxa-orchestrator/tools/review_lane_demo.py \
+  --truncate-reviewer --pricing --shared-model --tls-reviewer
+```
+
+The operator fixes the reviewer's `response_tokens` at 512. The native upstream
+mock requires that exact `max_tokens` value, then emits a Messages stream ending
+with `stop_reason: max_tokens` and 512 synthetic output tokens. Its partial text
+is deliberately a complete-looking structured DONE reply followed by whitespace:
+parsing that text must not override protocol truncation.
+
+The worker stops as `truncated` / blocked `native_response_truncated`, retains
+532 observed synthetic tokens (12 uncached input, 3 cache reads, 5 cache writes,
+512 output), and is reaped. The parent retrieves that verified report and remains
+blocked as `reviewer_response_truncated`; no independent review is accepted as
+complete. The author proposal and its exact delegated bundle still verify, and
+the source remains unchanged. Neither the worker nor the parent retries or starts
+follow-on inference. All ten gateway rows settle with usage under three separate
+session identities, including shared parent/author model aliasing.
+
+Tiered synthetic ledger costs remain independently checked: parent 0.000196,
+author 0.000056 and reviewer 0.00521275 USD. These are fixture calculations, not
+paid spend. Both plain HTTP and verified TLS truncation runs pass; the original
+successful priced/shared-model review still passes with 28 reviewer tokens and
+reviewer cost 0.00017275. Every actual TUI exits zero.
+
+This extends local-engine truncation tests to the official SDK and owned async
+native gateway path. It does not reproduce every aspect of the historical paid
+Sonnet/Haiku smoke, prove provider tokenization/prices or cancellation billing,
+or authorize another paid attempt. The mock parent/author use Responses while
+the reviewer uses Messages. Bootstrap frozen-input qualification remains separate.
