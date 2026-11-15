@@ -174,6 +174,7 @@ pub fn run_print(
     };
     let mut ui = HeadlessUi::default();
     let mut failed = false;
+    let mut budget = false;
     let n = prompts.len();
     for (i, (text, parts)) in prompts.into_iter().enumerate() {
         sink.last = None;
@@ -204,7 +205,7 @@ pub fn run_print(
                     .map_err(|e| OxaError::io("cannot write the command output", &e))?;
             }
         }
-        failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err);
+        failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err, &mut budget);
         // A failed or aborted run prints no reply (only known after the run).
         if !failed {
             if let Some(t) = sink.final_text.clone() {
@@ -221,7 +222,7 @@ pub fn run_print(
         code = 1;
     }
     if failed {
-        code = 1;
+        code = if budget { oxa_proto::EXIT_BUDGET } else { 1 };
     } else if let Some(m) = sink.last.clone() {
         if let Some(text) = sink.final_text.take() {
             if session.inner().active.direct.is_empty() && has_tool_markup(&text) {
@@ -267,6 +268,7 @@ pub fn run_json(
         error: None,
     };
     let mut failed = false;
+    let mut budget = false;
     for (text, parts) in prompts {
         let before = session.inner().tree.leaf().to_string();
         match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
@@ -290,10 +292,13 @@ pub fn run_json(
             let _ = writeln!(err, "{e}");
             return Ok(1);
         }
-        failed = after_run(session, &before, &mut ui, &mut Vec::new(), err);
+        failed = after_run(session, &before, &mut ui, &mut Vec::new(), err, &mut budget);
     }
     let done = done_failed(session, err);
-    Ok(if failed || done { 1 } else { 0 })
+    Ok(match (failed, budget) {
+        (true, true) => oxa_proto::EXIT_BUDGET,
+        _ => i32::from(failed || done),
+    })
 }
 
 /// Whether the `done` checks still failed after the repair rounds; says so on `err` once.
@@ -378,6 +383,7 @@ fn after_run(
     ui: &mut HeadlessUi,
     notes: &mut Vec<String>,
     err: &mut dyn Write,
+    budget: &mut bool,
 ) -> bool {
     for t in notes.drain(..) {
         let _ = writeln!(err, "{t}");
@@ -395,6 +401,7 @@ fn after_run(
             if matches!(*why, shown_why::ABORTED | shown_why::FAILED | shown_why::CUT) =>
         {
             let _ = writeln!(err, "{text}");
+            *budget = text.contains("(budget_exceeded)");
             true
         }
         _ => false,

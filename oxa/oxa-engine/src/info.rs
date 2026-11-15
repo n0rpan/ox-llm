@@ -605,6 +605,15 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
         .and_then(|e| e.get("message").and_then(Value::as_str))
         .map(str::to_string)
         .unwrap_or_else(|| text.trim().chars().take(300).collect());
+    if status == 429 && err.and_then(|e| e.get("code").and_then(Value::as_str)) == Some("budget_exceeded") {
+        return OxaError::new(
+            codes::BUDGET_EXHAUSTED,
+            format!("the cloud gateway refused the request (budget_exceeded): {detail}"),
+        )
+        .with_hint(
+            "raise cloud.daily_budget_usd in oxc, or wait for the next spend day; this is not retried",
+        );
+    }
     if status == 503 {
         if let Some(code) = err
             .filter(|e| e.get("type").and_then(Value::as_str) == Some("cloud_error"))
@@ -698,6 +707,25 @@ mod cloud_refusal_tests {
     fn body(code: &str, message: &str) -> Vec<u8> {
         format!(r#"{{"error":{{"message":"{message}","type":"cloud_error","param":null,"code":"{code}"}}}}"#)
             .into_bytes()
+    }
+
+    /// The daily budget refusal (429 `budget_exceeded`) is its own code: it is not retried
+    /// (the core retries 429 `engine_http`) and the exit code can tell it apart.
+    #[test]
+    fn a_budget_429_is_budget_exhausted_and_not_retried() {
+        let e = http_error_with(
+            429,
+            &body("budget_exceeded", "The daily cloud budget is exhausted."),
+            None,
+        );
+        assert_eq!(e.code, codes::BUDGET_EXHAUSTED);
+        assert!(
+            e.message.contains("daily cloud budget is exhausted"),
+            "{}",
+            e.message
+        );
+        let plain = http_error_with(429, br#"{"error":{"message":"slow down"}}"#, None);
+        assert_eq!(plain.code, codes::ENGINE_HTTP, "other 429s stay retryable");
     }
 
     /// A cloud gateway refusal that retrying cannot fix (no key, no SDK) shows the gateway's own
