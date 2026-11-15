@@ -1006,6 +1006,8 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             );
         }
         AgentEvent::Prefill { done, total, secs } => {
+            // The prompt size is known: count it in the CTX meter before the reply ends.
+            vm.status.context_tokens = vm.status.context_tokens.max(*total);
             vm.status.activity = Activity::Prefill {
                 done: *done,
                 total: *total,
