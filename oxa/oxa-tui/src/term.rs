@@ -193,10 +193,8 @@ impl ProcessTerminal {
     fn wait(&mut self, timeout_ms: u64, out: &mut Vec<InputEvent>) -> bool {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            let paste_open = self.paste_scan.open(&self.pending);
-            if !self.pending.is_empty() && !paste_open {
-                let (events, used) = parse_input(&self.pending);
-                self.pending.drain(..used);
+            let (events, used, paste_open) = drain_ready(&mut self.pending, &mut self.paste_scan);
+            {
                 if used > 0 || self.pending.is_empty() {
                     self.pending_since = None;
                 }
@@ -636,11 +634,28 @@ fn term_size() -> (u16, u16) {
     (80, 24)
 }
 
+/// Parse what `pending` holds unless a paste is open. Returns the events, the bytes consumed
+/// and whether a paste is open in what is left (checked after the drain: a skipped sequence
+/// can leave a paste start at the front).
+fn drain_ready(pending: &mut Vec<u8>, scan: &mut PasteScan) -> (Vec<InputEvent>, usize, bool) {
+    let (events, used) = if !pending.is_empty() && !scan.open(pending) {
+        let r = parse_input(pending);
+        pending.drain(..r.1);
+        r
+    } else {
+        (Vec::new(), 0)
+    };
+    let open = scan.open(pending);
+    (events, used, open)
+}
+
 /// Remembers how much of an open paste was already searched for the end marker, so each new
 /// chunk costs only its own length (a large paste arrives in many small reads).
 #[derive(Default)]
 struct PasteScan {
     scanned: usize,
+    /// Bytes searched so far (lets tests check the scan stays linear).
+    work: usize,
     /// When the open paste last grew (None while no paste is open).
     grew: Option<Instant>,
 }
@@ -661,6 +676,7 @@ impl PasteScan {
             .saturating_sub(PASTE_END.len() - 1)
             .max(PASTE_START.len())
             .min(buf.len());
+        self.work += buf.len() - from;
         if buf[from..].windows(PASTE_END.len()).any(|w| w == PASTE_END) {
             self.scanned = 0;
             self.grew = None;
@@ -743,11 +759,25 @@ mod paste_scan_tests {
     fn large_paste_in_small_chunks_is_linear() {
         let mut s = PasteScan::default();
         let mut buf = PASTE_START.to_vec();
-        let t = std::time::Instant::now();
         for _ in 0..4096 {
             buf.extend_from_slice(&[b'x'; 4096]);
             assert!(s.open(&buf));
         }
-        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
+        assert!(
+            s.work <= buf.len() + 4096 * 8,
+            "scanned {} for {}",
+            s.work,
+            buf.len()
+        );
+    }
+
+    #[test]
+    fn paste_after_skipped_sequence_stays_open() {
+        let mut s = PasteScan::default();
+        // An ignored private sequence, then an unfinished paste.
+        let mut pending = b"\x1b[?1;2c\x1b[200~partial".to_vec();
+        let (_events, _, open) = drain_ready(&mut pending, &mut s);
+        assert!(pending.starts_with(PASTE_START), "{pending:?}");
+        assert!(open);
     }
 }
