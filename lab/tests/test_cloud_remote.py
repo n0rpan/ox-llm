@@ -208,6 +208,75 @@ class Routing(CloudCase):
         self.assertEqual(row['completion_tokens'], 4)
 
 
+class ReportedCost(CloudCase):
+    def test_reported_bill_is_persisted_and_blocks_the_next_request(self):
+        upstream = MockOpenRouter(usage={'prompt_tokens': 11, 'completion_tokens': 4,
+                                        'cost': 0.009})
+        self.addCleanup(upstream.close)
+        models = profiles()
+        models[REMOTE].update(context_window=100, max_output=100)
+        self.start(budget=0.0091, mock=upstream, models=models)
+        self.assertEqual(self.chat()[0], 200)
+        row = self.ledger_rows()[-1]
+        self.assertEqual(row['reported_cost_usd'], 0.009)
+        self.assertEqual(row['catalog_cost_usd'], 0.000015)
+        self.assertEqual(row['cost_usd'], 0.009)
+        self.assertEqual(cloud.spend_today(), 0.009)
+        self.assertEqual(self.chat()[0], 429)
+        self.assertEqual(len(upstream.requests), 1)
+
+    def test_streamed_bill_keeps_precision_and_never_lowers_catalog_cost(self):
+        for reported, expected in ((0.000021237, 0.000021237), (0.0, 0.000015)):
+            with self.subTest(reported=reported):
+                meter = cloud.Meter()
+                frame = {'usage': {'prompt_tokens': 11, 'completion_tokens': 4,
+                                   'cost': reported}}
+                wire = ('data: ' + json.dumps(frame) + '\n\n').encode()
+                for byte in wire:
+                    meter.feed(bytes([byte]), sse=True)
+                row = meter.row(dict(profiles()[REMOTE]))
+                self.assertEqual(row['reported_cost_usd'], reported)
+                self.assertEqual(row['cost_usd'], expected)
+
+    def test_invalid_or_non_openrouter_cost_cannot_lower_the_catalog_bill(self):
+        for reported in (None, -1, True, '0.1', float('nan'), float('inf'), 10 ** 1000):
+            with self.subTest(reported=reported):
+                meter = cloud.Meter()
+                meter._object({'usage': {'prompt_tokens': 11, 'completion_tokens': 4,
+                                         'cost': reported}})
+                row = meter.row(profiles()[REMOTE])
+                self.assertNotIn('reported_cost_usd', row)
+                self.assertEqual(row['cost_usd'], 0.000015)
+        item = dict(profiles()[REMOTE], provider='openai')
+        meter = cloud.Meter()
+        meter._object({'usage': {'prompt_tokens': 11, 'completion_tokens': 4, 'cost': 9}})
+        self.assertNotIn('reported_cost_usd', meter.row(item))
+
+    def test_repeated_usage_frames_and_client_fields_cannot_reduce_the_bill(self):
+        meter = cloud.Meter()
+        meter._object({'usage': {'prompt_tokens': 11, 'completion_tokens': 4, 'cost': 0.02}})
+        meter._object({'usage': {'cost': 0.01}})
+        self.assertEqual(meter.row(profiles()[REMOTE])['cost_usd'], 0.02)
+        self.start()
+        self.assertEqual(self.chat(usage={'cost': 0, 'prompt_tokens': 0})[0], 200)
+        row = self.ledger_rows()[-1]
+        self.assertEqual(row['cost_usd'], 0.000015)
+        self.assertNotIn('reported_cost_usd', row)
+
+    def test_openrouter_reserves_headroom_on_the_full_catalog_window(self):
+        item = profiles()[REMOTE]
+        request = {'max_tokens': 100}
+        catalog = cloud.cost(item, item['context_window'], 100)
+        self.assertAlmostEqual(cloud.worst_case_cost(item, request), catalog * 1.25)
+
+    def test_missing_usage_reservation_never_overwrites_a_larger_reported_bill(self):
+        meter = cloud.Meter()
+        meter._object({'usage': {'cost': 0.5}})
+        row = cloud.conservative_cost(meter.row(profiles()[REMOTE]), cloud.BudgetHold('unused', 0.1))
+        self.assertEqual(row['cost_usd'], 0.5)
+        self.assertTrue(row['usage_missing'])
+
+
 class Budget(CloudCase):
     def test_a_missing_cap_fails_closed(self):
         self.start(budget=0)

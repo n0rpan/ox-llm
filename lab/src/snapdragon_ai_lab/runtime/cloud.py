@@ -315,6 +315,10 @@ def worst_case_cost(item, payload):
     """Reserve the catalog input window; byte estimates cannot bound tokenization or images."""
     prompt = item['context_window']
     usd = cost(item, prompt, _max_tokens(payload, item))
+    # Routing prices may exceed the catalog. This headroom is additional to the
+    # full-window reservation; it is a cushion, not a universal provider-price bound.
+    if usd is not None and item['provider'] == 'openrouter':
+        usd *= 1.25
     return math.inf if usd is None else usd
 
 
@@ -390,7 +394,7 @@ def conservative_cost(row, hold, failed=False):
     missing = (failed or row.get('prompt_tokens') is None or row.get('completion_tokens') is None
                or row.get('cost_usd') is None)
     if missing:
-        row['cost_usd'] = hold.reserved
+        row['cost_usd'] = max(hold.reserved, row.get('cost_usd') or 0)
         row['usage_missing'] = True
         row['settled'] = 'reserved'
     else:
@@ -694,6 +698,7 @@ class Meter:
         self.prompt = None
         self.completion = None
         self.cached = None
+        self.reported_cost = None
         self.finish = None
         self._sse = SSEDecoder()
 
@@ -702,6 +707,10 @@ class Meter:
             return
         usage = value.get('usage')
         if isinstance(usage, dict):
+            reported = usage.get('cost')
+            if type(reported) in (int, float) and 0 <= reported <= 1e100:
+                # Usage frames may repeat. Never let a later partial frame reduce a bill.
+                self.reported_cost = max(self.reported_cost or 0, reported)
             for source, target in (('prompt_tokens', 'prompt'), ('input_tokens', 'prompt'),
                                    ('completion_tokens', 'completion'), ('output_tokens', 'completion')):
                 number = usage.get(source)
@@ -755,6 +764,10 @@ class Meter:
         usd = cost(item, prompt, completion)
         if usd is not None:
             out['cost_usd'] = usd
+            out['catalog_cost_usd'] = usd
+        if item['provider'] == 'openrouter' and self.reported_cost is not None:
+            out['reported_cost_usd'] = self.reported_cost
+            out['cost_usd'] = max(usd or 0, self.reported_cost)
         return out
 
 
