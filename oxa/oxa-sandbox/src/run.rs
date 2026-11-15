@@ -69,6 +69,37 @@ pub fn run_argv_stdin(
     execute(cmd, prog, Some(stdin), timeout_s, cancel, live, true)
 }
 
+/// Run `argv` (optionally feeding `stdin`) so that the child inherits `fd`, which is otherwise
+/// close-on-exec; only this child gets it.
+pub(crate) fn run_argv_fd(
+    argv: &[String],
+    stdin: Option<&[u8]>,
+    fd: Option<i32>,
+    timeout_s: Option<u32>,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
+    let Some((prog, args)) = argv.split_first() else {
+        return spawn_failed("no command to run".to_string());
+    };
+    let mut cmd = Command::new(prog);
+    cmd.args(args);
+    if let Some(fd) = fd {
+        // SAFETY: runs between fork and exec; fcntl is async-signal-safe and touches only
+        // our own descriptor in the child.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    execute(cmd, prog, stdin, timeout_s, cancel, live, capture)
+}
+
 /// Run `bash -c <command>` with the user's own rights in `s.cwd` (for `!cmd` / `!!cmd`, pi's
 /// behaviour). `s.writable` and `s.net` are ignored.
 pub fn run_unsandboxed(s: &ExecSpec, cancel: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
