@@ -47,6 +47,7 @@ class SharedAdmission(CloudCase):
         config = home / '.config/oxc/llm/runtime.json'
         repo = self.tmp / 'synthetic-repo'
         (repo / '.git').mkdir(parents=True)
+        (repo / '.git/HEAD').write_text('ref: refs/heads/main\n')
         layouts = [repo / 'oxc/src/oxc/runtime/cloud.py',
                    home / '.local/share/ai-stack/releases/synthetic/runtime/cloud.py',
                    home / '.local/share/ai-stack/runtime/cloud.py']
@@ -54,8 +55,10 @@ class SharedAdmission(CloudCase):
             with self.subTest(layout=module.relative_to(self.tmp)), patch.object(cloud, '__file__', str(module)), \
                     patch.object(cloud.ctl, 'CONFIG', config):
                 self.assertEqual(cloud.secrets_file({}), config.parent / 'cloud-secrets.json')
-                with self.assertRaises(cloud.CloudError):
+                with self.assertRaises(cloud.CloudError) as raised:
                     cloud.secrets_file({'cloud': {'secrets_file': str(repo / 'private.json')}})
+                self.assertIn('inside a repository', str(raised.exception))
+                self.assertNotIn(str(self.tmp), str(raised.exception))
 
     def test_anthropic_missing_sdk_and_invalid_effort_have_actual_error_status(self):
         self.start(models=anthropic_models())
