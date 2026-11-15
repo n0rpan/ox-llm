@@ -241,6 +241,11 @@ impl Layout {
         }
         read.extend(TOOLCHAIN_READ.iter().map(|r| i.home.join(r)));
         read.extend(i.read_extra.iter().cloned());
+        // `gh` creates its cache on first use, so make sure the bind target exists (#362).
+        let gh = i.home.join(".cache/gh");
+        if i.home.is_dir() && !gh.exists() {
+            let _ = std::fs::create_dir_all(&gh);
+        }
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
         let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);

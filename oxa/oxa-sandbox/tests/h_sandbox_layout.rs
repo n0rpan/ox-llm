@@ -167,7 +167,10 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
             home.join(".rustup")
         ]
     );
-    assert_eq!(l.write, vec![home.join(".cargo/registry")]);
+    assert_eq!(
+        l.write,
+        vec![home.join(".cache/gh"), home.join(".cargo/registry")]
+    );
     let names: Vec<&str> = l.env.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         names,
@@ -216,6 +219,9 @@ fn golden_project_cwd() {
         "--bind",
         "<root>/work",
         "<root>/work",
+        "--bind",
+        "<root>/home/.cache/gh",
+        "<root>/home/.cache/gh",
         "--ro-bind",
         "<root>/home/.cargo/bin",
         "<root>/home/.cargo/bin",
@@ -279,6 +285,9 @@ fn golden_home_cwd_is_read_only_and_masked() {
     want.extend(strs(&["--ro-bind", "<root>/home", "<root>/home"]));
     // Every toolchain bind is inside the cwd: none is left out (they hold their own mode).
     want.extend(strs(&[
+        "--bind",
+        "<root>/home/.cache/gh",
+        "<root>/home/.cache/gh",
         "--ro-bind",
         "<root>/home/.cargo/bin",
         "<root>/home/.cargo/bin",
@@ -929,4 +938,22 @@ fn gh_cache_writable_and_xdg_cache_not_redirected() {
     assert!(l.write.contains(&home.join(".cache/gh")), "{:?}", l.write);
     assert!(l.write.contains(&home.join(".cache/pip")), "{:?}", l.write);
     assert!(!l.env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"), "{:?}", l.env);
+}
+
+/// #362: `~/.cache/gh` is bound writable even when it does not exist yet.
+#[test]
+fn gh_cache_bound_when_missing() {
+    let env = TestEnv::new();
+    let home = env.home();
+    assert!(!home.join(".cache/gh").exists());
+    let l = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin".into(),
+        env: Vec::new(),
+        read_extra: Vec::new(),
+        write_extra: Vec::new(),
+        allow_home_write: false,
+    });
+    assert!(l.write.contains(&home.join(".cache/gh")), "{:?}", l.write);
 }
