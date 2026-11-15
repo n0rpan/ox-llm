@@ -8,6 +8,7 @@ from oxc.runtime import cloud, cloud_anthropic
 
 from mock_cloud import MockAnthropic
 from test_cloud_remote import CloudCase, KEY
+import test_cloud_remote as remote_controls
 
 
 ANTHROPIC_SDK = importlib.util.find_spec("anthropic") is not None
@@ -500,6 +501,38 @@ class TypedErrors(AnthropicBase):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)['error']['code'], 'invalid_value')
         self.assertEqual(self.upstream.requests, [])
+
+
+
+class NonstreamSettlement(AnthropicBase):
+    def start(self, **kwargs):
+        upstream = MockAnthropic()
+        self.addCleanup(upstream.close)
+        self.upstream = upstream
+        kwargs.setdefault("budget", 10.0)
+        return super().start(mock=upstream, **kwargs)
+
+    # Exercise the same real HTTP boundary for both provider adapters.
+    test_success_waits_for_ledger_settlement_before_client_completion = remote_controls.LedgerFailClosed.test_success_waits_for_ledger_settlement_before_client_completion
+    test_ledger_exception_is_not_retried_and_blocks_the_next_call = remote_controls.LedgerFailClosed.test_ledger_exception_is_not_retried_and_blocks_the_next_call
+    test_ledger_exception_after_append_does_not_duplicate_usage = remote_controls.LedgerFailClosed.test_ledger_exception_after_append_does_not_duplicate_usage
+
+    def test_client_disconnect_preserves_the_settled_success(self):
+        from unittest.mock import patch
+        from oxc.runtime import ctl_http
+        self.start()
+        original = ctl_http.Handler.reply
+        def fail_success(handler, status, *args, **kwargs):
+            if status == 200:
+                raise BrokenPipeError('synthetic client write failure')
+            return original(handler, status, *args, **kwargs)
+        with patch.object(ctl_http.Handler, 'reply', fail_success):
+            with self.assertRaises(http.client.RemoteDisconnected):
+                self.chat()
+        rows = self.ledger_rows()
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]['settled'], 'usage')
+        self.assertEqual(rows[0]['status'], 200)
 
 
 if __name__ == '__main__':

@@ -64,11 +64,12 @@ keep separate builds because their features and linked libraries differ; clippy 
 separate analysis rather than generating reusable runtime objects. Production ARM64 binaries
 cannot replace x86_64 CI test executables. The artifact reuse is between identical test builds.
 
-Drafts retain formatting and scans only. Ready PRs check changed Rust components with clippy
-and run the stub library suite for engine changes; all retain oxa/stub build-smoke and loopback
-contract checks. Unknown paths conservatively select all components. Queue/manual/nightly
-runs retain every gate, main retains the existing fast post-queue policy, and skipped required
-jobs still report. No workflow paths filters or additional cancellation are introduced.
+Drafts retain the classifier, scans and formatting only. Ready PRs and the merge queue run
+the same path-selected set (`tools/ci/paths.py`: `engine`, `oxa`, `lab`, `cli`, `gateway`, `md`);
+unknown paths select every component, and the scans run on every change. A push on main, the
+nightly run and manual runs select every component, so main runs the full set after each merge.
+Caches are restored everywhere and saved only on main, once per dependency-level key prefix. The
+`gate` job aggregates every job and fails on a failed, cancelled or flag-less classifier.
 
 ## Redundant-test proposal
 
