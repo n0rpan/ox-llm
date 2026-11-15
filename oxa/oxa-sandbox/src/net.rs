@@ -128,7 +128,10 @@ impl NetSandbox {
             .filter(|t| net && !t.is_empty() && !t.chars().any(char::is_whitespace))
     }
 
-    /// The token only for a networked command that mentions `gh` as a word (#210).
+    /// The token only for a networked command that mentions `gh` or `git` as a word (#210).
+    /// `git` is included because git over HTTPS authenticates through `gh auth git-credential`,
+    /// which needs the same token: without it push, fetch, pull and clone would lose their
+    /// credentials in the sandbox.
     fn token_for(&self, s: &ExecSpec) -> Option<&String> {
         if !s.net || !mentions_gh(&s.command) {
             return None;
@@ -163,7 +166,12 @@ impl NetSandbox {
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         let s = self.clamp_run(spec);
-        let Some(t) = self.token_for(&s) else {
+        // Injection is per command, but redaction covers every networked command once the
+        // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
+        let Some(t) = self
+            .token_for(&s)
+            .or_else(|| self.gh_token.get().and_then(|o| o.as_ref()).filter(|_| s.net))
+        else {
             return run(&s, live);
         };
         let mut sr = StreamRedactor::new(t);
@@ -218,13 +226,15 @@ impl Sandbox for NetSandbox {
     }
 }
 
-/// True when `gh` appears as a command word (not inside `ghost` or `a-gh`).
+/// True when `gh` or `git` appears as a command word (not inside `ghost` or `a-gh`).
 fn mentions_gh(cmd: &str) -> bool {
     let ok = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
-    cmd.match_indices("gh").any(|(i, _)| {
-        let before = cmd[..i].chars().next_back();
-        let after = cmd[i + 2..].chars().next();
-        before.is_none_or(|c| !ok(c)) && after.is_none_or(|c| !ok(c))
+    ["gh", "git"].iter().any(|w| {
+        cmd.match_indices(w).any(|(i, _)| {
+            let before = cmd[..i].chars().next_back();
+            let after = cmd[i + w.len()..].chars().next();
+            before.is_none_or(|c| !ok(c)) && after.is_none_or(|c| !ok(c))
+        })
     })
 }
 
@@ -249,6 +259,52 @@ mod tests {
             n.run(&spec(true), &CancelToken::new(), &mut |_| {});
         }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn git_gets_token_but_lookalikes_do_not_and_output_stays_redacted() {
+        let inner = Arc::new(Echo(Mutex::new(Vec::new())));
+        let sb = NetSandbox::new(inner.clone(), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        let go = |cmd: &str| {
+            let mut sp = spec(true);
+            sp.command = cmd.into();
+            let r = sb.run(&sp, &CancelToken::new(), &mut |_| {});
+            let env = inner.0.lock().unwrap().pop().unwrap();
+            (
+                env.iter().any(|(k, _)| k == "GH_TOKEN"),
+                String::from_utf8(r.output).unwrap(),
+            )
+        };
+        assert!(go("git push origin x").0);
+        assert!(!go("npm install gitignore-parser").0);
+        let (inj, out) = go("curl https://example.invalid");
+        assert!(!inj);
+        assert!(!out.contains("ghp_SECRET123"));
+        // Echo only prints a token it was given; check redaction directly on a leaked value.
+        struct Leak;
+        impl Sandbox for Leak {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                l(b"ghp_SECRET123");
+                ExecResult {
+                    output: b"ghp_SECRET123".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let sb = NetSandbox::new(Arc::new(Leak), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        let mut sp = spec(true);
+        sp.command = "cat token.txt".into();
+        let mut live = Vec::new();
+        let r = sb.run(&sp, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+        assert_eq!(String::from_utf8(r.output).unwrap(), "[redacted]");
+        assert_eq!(String::from_utf8(live).unwrap(), "[redacted]");
     }
 
     /// Records the env of each run and answers with the token echoed back.
