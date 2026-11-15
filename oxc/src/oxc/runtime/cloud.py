@@ -44,7 +44,6 @@ _TRUE = ('1', 'true', 'yes')
 # cost here before it is forwarded, so concurrent requests cannot all spend the same budget.
 _budget_lock = threading.Lock()
 _reserved = {}
-_reserved_lan = {}
 _ledger_failures = set()
 
 
@@ -75,17 +74,6 @@ def offline(environ=None):
 
 def enabled(value):
     return settings(value).get('enabled') is True
-
-
-def share_with_lan(value):
-    """True only when the owner opted in (`cloud.share_with_lan: true`) to cloud models for LAN-share guests."""
-    return settings(value).get('share_with_lan') is True
-
-
-def lan_cap(value):
-    """The optional per-day USD cap for all LAN guests together (None = only the daily budget)."""
-    cap = settings(value).get('lan_daily_budget_usd')
-    return float(cap) if type(cap) in (int, float) and math.isfinite(cap) and cap > 0 else None
 
 
 def provider_of(raw):
@@ -359,7 +347,7 @@ def _ledger_error():
                       503, 'cloud_ledger_unavailable')
 
 
-def _read_spend(path, lan=False):
+def _read_spend(path):
     total = 0.0
     try:
         stream = open(path, encoding='utf-8')
@@ -380,8 +368,6 @@ def _read_spend(path, lan=False):
                     raise _ledger_error() from None
                 if row.get('remote') is not True:
                     continue
-                if lan and row.get('origin') != 'remote':  # the LAN-share guests' own rows
-                    continue
                 usd = row.get('cost_usd')
                 if type(usd) not in (int, float) or not math.isfinite(usd) or usd < 0:
                     # A remote row without a settled cost under-counts the cap: fail closed.
@@ -394,7 +380,7 @@ def _read_spend(path, lan=False):
     return round(total, 8)
 
 
-def spend_today(value=None, day=None, lan=False):
+def spend_today(value=None, day=None):
     """Today's remote spend from the request ledger.
 
     Missing today's file is zero spend.  An unreadable file, a malformed row or a remote row
@@ -410,9 +396,9 @@ def spend_today(value=None, day=None, lan=False):
     # either absent or complete; never parse a half-appended line.
     lock = getattr(ctl.request_ledger, 'LEDGER_LOCK', None)
     if lock is None:
-        return _read_spend(path, lan)
+        return _read_spend(path)
     with lock:
-        return _read_spend(path, lan)
+        return _read_spend(path)
 
 
 def mark_ledger_failure(value=None):
@@ -535,8 +521,7 @@ def elapsed_since(hold):
 class BudgetHold:
     """One admission reservation.  ``settle`` is idempotent and must always run."""
 
-    def __init__(self, day, reserved, output_tokens=0, started=None, lan=False):
-        self.lan = lan
+    def __init__(self, day, reserved, output_tokens=0, started=None):
         self.day = day
         self.reserved = reserved
         self.output_tokens = output_tokens
@@ -547,12 +532,11 @@ class BudgetHold:
         with _budget_lock:
             if self.settled:
                 return
-            for table in (_reserved, _reserved_lan) if self.lan else (_reserved,):
-                remaining = table.get(self.day, 0.0) - self.reserved
-                if remaining > 0:
-                    table[self.day] = remaining
-                else:
-                    table.pop(self.day, None)
+            remaining = _reserved.get(self.day, 0.0) - self.reserved
+            if remaining > 0:
+                _reserved[self.day] = remaining
+            else:
+                _reserved.pop(self.day, None)
             self.settled = True
 
 
@@ -569,7 +553,7 @@ def validate_remote_request(payload, item):
                          400, 'cloud_pricing_unavailable', 'pricing')
 
 
-def reserve(value, item, payload, lan=False):
+def reserve(value, item, payload):
     """Atomically reserve the worst-case cost before forwarding, or raise a clear CloudError."""
     validate_remote_request(payload, item)
     cap = _cap(value)
@@ -587,14 +571,8 @@ def reserve(value, item, payload, lan=False):
         already = _reserved.get(day, 0.0)
         if spent + already + worst > cap + COST_EPSILON:
             raise CloudError('The daily cloud budget is exhausted.', 429, 'budget_exceeded')
-        lan_limit = lan_cap(value) if lan else None
-        if lan_limit is not None and (spend_today(value, day=day, lan=True) + _reserved_lan.get(day, 0.0)
-                                      + worst > lan_limit + COST_EPSILON):
-            raise CloudError('The daily cloud budget for LAN-share guests is exhausted.', 429, 'budget_exceeded')
         _reserved[day] = already + worst
-        if lan:
-            _reserved_lan[day] = _reserved_lan.get(day, 0.0) + worst
-    return BudgetHold(day, worst, _max_tokens(payload, item), lan=lan)
+    return BudgetHold(day, worst, _max_tokens(payload, item))
 
 
 def spend_day():

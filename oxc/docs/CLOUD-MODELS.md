@@ -73,16 +73,6 @@ echoes the key is redacted before it reaches the client.
   requests cannot all spend the same budget; the actual cost settles after the ledger row is
   written. A request that would exceed `spent + reserved` gets `429` with code
   `budget_exceeded`.
-- `cloud.share_with_lan` (boolean, default `false`) lets LAN-share guests use cloud models. While
-  false, a guest's chat for a cloud model gets `403` (`cloud_not_shared`) and cloud rows are hidden
-  from the guest's model lists. When true, guests see and use cloud models; their spend counts
-  against the same `cloud.daily_budget_usd`, every ledger row of such a request carries
-  `remote: true` and `origin: "remote"`, and `cloud_status` and `/_local/status` report
-  `share_with_lan: true`.
-- `cloud.lan_daily_budget_usd` (optional positive USD number, only used with `share_with_lan`)
-  caps what all LAN guests together may spend per local day. When reached, guests get `429`
-  `budget_exceeded`; the owner can still use the rest of the daily budget. Status shows the value
-  as `lan_daily_budget_usd`.
 - Missing usage charges the reserved worst case, never zero. An unreadable, corrupt or
   unwritable ledger refuses remote calls with `503` and code `cloud_ledger_unavailable` until
   it is repaired.
