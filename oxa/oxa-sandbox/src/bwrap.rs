@@ -706,6 +706,9 @@ can write; its hooks and config cannot be protected, so commands are not run her
     let paths = configured_hook_paths(&cwd, &home_c, layout);
     let mut mounts = hooks_mounts(&cwd, &home_c, layout, mode);
     for p in &paths {
+        if p.to_str().is_none() {
+            return Some("sandbox refused: the repository's core.hooksPath is not valid UTF-8 and cannot be represented in the sandbox argv; commands are not run here".into());
+        }
         if let Some(root) = under_any(p, &mounts.rw) {
             let symlink = std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
             if symlink || has_symlink_ancestor(p, root) {

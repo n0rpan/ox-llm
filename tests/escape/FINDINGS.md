@@ -226,3 +226,8 @@ Configured hook contents use the existing bounded alias walker, including hook d
 outside the project that point into a writable project. Safe read-only aliases remain allowed;
 multiply linked hooks or aliases reaching writable content refuse the command. Plan-mode cache
 and external worktree-common-dir controls cover the other writable mount sources.
+
+The same checks reject a configured hook path that cannot be represented by the sandbox's
+UTF-8 argv: a raw Git path must not protect its lossy lookalike instead. The raw-byte fixture
+fails before that guard; a valid Unicode hook directory remains supported. Online GH config
+also stays read-only after the new ancestor pins, with its benign read control preserved.

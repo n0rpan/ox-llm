@@ -792,3 +792,62 @@ fn custom_hook_pins_do_not_reopen_read_only_gh_config() {
     assert_ok(exit, &out, "benign GH config stays readable");
     assert!(out.contains("keep"));
 }
+
+/// Threat: raw Git config bytes name a hook directory that bwrap's string argv cannot encode.
+/// Attempt: create both the raw name and its lossy UTF-8 lookalike, then write the raw hook.
+/// Expected refusal: the unrepresentable path is rejected, never protected at another name.
+#[test]
+fn a_non_utf8_custom_hooks_path_is_not_lossily_reinterpreted() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let env = TestEnv::new();
+    let work = plain(&env);
+    let raw = b"hooks-\xff";
+    let hooks = work.join(OsString::from_vec(raw.to_vec()));
+    dir(&hooks);
+    dir(&work.join(String::from_utf8_lossy(raw).as_ref()));
+    write(&hooks.join("pre-commit"), "original");
+    let mut cfg = b"[core]\n\trepositoryformatversion = 0\n\thooksPath = ".to_vec();
+    cfg.extend_from_slice(raw);
+    cfg.push(b'\n');
+    std::fs::write(work.join(".git/config"), cfg).unwrap();
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        "printf replacement > $'hooks-\\377/pre-commit'",
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "unrepresentable hook path");
+    assert_eq!(
+        std::fs::read_to_string(hooks.join("pre-commit")).unwrap(),
+        "original"
+    );
+}
+
+/// Control: valid Unicode paths are preserved exactly in bwrap's argv.
+/// Attempt: write the hook and then an ordinary project file.
+/// Expected: the hook is protected without refusing ordinary project work.
+#[test]
+fn a_unicode_custom_hooks_path_preserves_ordinary_work() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let hooks = ".githooks-\u{2603}";
+    config(
+        &work,
+        &format!("[core]\n\trepositoryformatversion = 0\n\thooksPath = {hooks}\n"),
+    );
+    dir(&work.join(hooks));
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(
+        &sb,
+        &work,
+        &format!("printf replacement > '{hooks}/pre-commit'"),
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "Unicode hook path");
+    let (exit, out) = run(&sb, &work, "printf ordinary > generated.txt", true, false);
+    assert_ok(exit, &out, "ordinary work with a Unicode hook path");
+}
