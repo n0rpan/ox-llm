@@ -420,10 +420,15 @@ fn prepare(
         _ => DefaultTrust::Ask,
     };
     let gated = gated_resources(cwd);
+    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
+    // an explicit `-na` still wins.
+    let approve = a
+        .approve
+        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
     let mut trust_store = TrustStore::load(&dirs.trust_file());
     // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
     // saved decision and the default (pi's `resolveProjectTrusted`).
-    let extension = if a.approve.is_none() && !gated.is_empty() {
+    let extension = if approve.is_none() && !gated.is_empty() {
         extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, &mut notices)
     } else {
         None
@@ -431,7 +436,7 @@ fn prepare(
     let interactive = mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty;
     let saved = trust_store.lookup(cwd);
     let outcome = resolve_trust(&TrustInputs {
-        flag: a.approve,
+        flag: approve,
         extension,
         saved,
         default,
@@ -480,7 +485,7 @@ fn prepare(
             dirs,
             cwd,
             store: &mut trust_store,
-            via_flag: a.approve == Some(true),
+            via_flag: approve == Some(true),
             via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
             asked_now,
             interactive,

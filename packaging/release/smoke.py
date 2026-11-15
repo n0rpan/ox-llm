@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
         result = subprocess.run([binary, '--version'], env=env, text=True, capture_output=True, check=True)
         assert '0.2.0' in result.stdout, (binary, result.stdout)
         print(result.stdout.strip())
-    for binary in ('oxc', 'oxa', 'oxe-server', 'oxc'):
+    for binary in ('oxc', 'oxa', 'oxe-server', 'oxc-diagnostics'):
         subprocess.run([binary, '--help'], env=env, stdout=subprocess.DEVNULL, check=True)
     # This validates argument parsing without loading model weights.
     subprocess.run(['oxe', 'gen', '--model', 'absent.gguf', '--tokens', '1', '--check-args'],
