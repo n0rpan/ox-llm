@@ -150,6 +150,17 @@ class CloudOnlyInstall(unittest.TestCase):
         self.assertEqual(len(err.strip().splitlines()), 1)
         self.assertIn(command, err)
 
+    def test_anthropic_kind_without_provider_still_checks_the_sdk(self):
+        entry = {'anthropic/x': {'kind': 'remote/anthropic', 'base_url': 'https://api.anthropic.com',
+                                 'upstream_model': 'x', 'context_window': 64000, 'max_output': 4096,
+                                 'pricing': {'input_per_million': 1.0, 'output_per_million': 1.0}}}
+        self.assertNotIn('provider', entry['anthropic/x'])
+        self.models.write_text(json.dumps(entry))
+        result, err = self.install_output(self.models, importable=False)
+        self.assertIs(result['anthropic_sdk'], False)
+        self.assertIn('pip install anthropic==0.125.0', result['sdk_hint'])
+        self.assertIn('pip install anthropic==0.125.0', err)
+
     def test_present_sdk_or_no_anthropic_entry_prints_no_hint(self):
         result, err = self.install_output(None, importable=True)
         self.assertIs(result['anthropic_sdk'], True)

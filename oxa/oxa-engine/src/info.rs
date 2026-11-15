@@ -533,6 +533,15 @@ pub(crate) fn http_error(status: u16, body: &[u8]) -> OxaError {
     http_error_with(status, body, None)
 }
 
+/// The gateway's 503 `cloud_error` codes that are configuration problems (lab runtime/cloud.py
+/// and cloud_anthropic.py). The transient ones (`cloud_unavailable`, `cloud_upstream_error`,
+/// `cloud_stream_error`, `cloud_interrupted`) are deliberately absent.
+const PERMANENT_CLOUD_REFUSALS: &[&str] = &[
+    "cloud_credentials_unavailable",
+    "cloud_sdk_unavailable",
+    "cloud_ledger_unavailable",
+];
+
 /// [`http_error`] with the response's `Retry-After` (seconds). A 503 (the controller's queue-full
 /// reply, `local_backend_busy`, or the engine's own `unavailable_error`) is `engine_busy`; its
 /// message names `HTTP 503` and, with a `Retry-After`, `retry after <n> s`, which the core's
@@ -552,10 +561,11 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
         if let Some(code) = err
             .filter(|e| e.get("type").and_then(Value::as_str) == Some("cloud_error"))
             .and_then(|e| e.get("code").and_then(Value::as_str))
-            .filter(|c| c.starts_with("cloud_"))
+            .filter(|c| PERMANENT_CLOUD_REFUSALS.contains(c))
         {
-            // The cloud gateway refused (no key, no SDK, ledger unusable): not the engine's
-            // queue, and a retry will not fix it. Show its own message.
+            // A cloud gateway setup refusal (no key, no SDK, ledger unusable): not the engine's
+            // queue, and a retry will not fix it. Show its own message. Every other 503
+            // (transient or unknown `cloud_*` codes) keeps `HTTP 503` so the core retries it.
             return OxaError::new(
                 codes::ENGINE_HTTP,
                 format!("the cloud gateway refused the request ({code}): {detail}"),
@@ -662,6 +672,31 @@ mod cloud_refusal_tests {
                 e.hint
             );
         }
+    }
+
+    /// Transient and unknown `cloud_*` 503s keep the `HTTP 503` marker, which
+    /// oxa-core/src/retry.rs `http_status` reads (`engine_http` with status >= 500 is retryable).
+    #[test]
+    fn transient_or_unknown_cloud_503_keeps_the_http_marker_for_retry() {
+        for code in [
+            "cloud_upstream_error",
+            "cloud_unavailable",
+            "cloud_stream_error",
+            "cloud_interrupted",
+            "cloud_xyz",
+        ] {
+            let e = http_error_with(503, &body(code, "try later"), None);
+            assert_eq!(e.code, codes::ENGINE_BUSY, "{code}");
+            assert!(e.message.contains("HTTP 503"), "{code}: {}", e.message);
+        }
+        let e = http_error_with(503, br#"{"error":{"message":"x","type":"cloud_error"}}"#, None);
+        assert!(e.message.contains("HTTP 503"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_ledger_refusal_is_permanent() {
+        let e = http_error_with(503, &body("cloud_ledger_unavailable", "m"), None);
+        assert!(!e.message.contains("HTTP 503"), "{}", e.message);
     }
 
     #[test]

@@ -144,7 +144,8 @@ def install(args, runner=subprocess.run):
               'prefix': str(prefix), 'runtime_json': str(runtime_json), 'launcher': str(script),
               'models': len(models), 'api_base': f'http://127.0.0.1:{args.port}/v1',
               'secrets_file': str(config / 'cloud-secrets.json')}
-    if any(m.get('provider') == 'anthropic' for m in models.values()):
+    from .runtime import cloud
+    if any(cloud.provider_of(m) == 'anthropic' for m in models.values()):
         result['anthropic_sdk'] = anthropic_importable()
         if not result['anthropic_sdk']:
             result['sdk_hint'] = (f'the catalog has anthropic models but the Anthropic SDK is missing for '

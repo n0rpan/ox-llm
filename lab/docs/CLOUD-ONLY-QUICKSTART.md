@@ -55,10 +55,11 @@ SDK is missing, it prints one line with the exact command (it installs nothing i
 this, with the same python:
 
 ```console
-$ python3 -m pip install anthropic==0.125.0
+$ ~/oxc/venv/bin/python -m pip install anthropic==0.125.0
 ```
 
-(This is the `cloud` extra of `lab/pyproject.toml`. Use a virtual environment if your system
+(With the venv of step 1 this is already done; the hint names whichever python ran the installer.
+This is the `cloud` extra of `lab/pyproject.toml`. Use a virtual environment if your system
 python is externally managed.) Without it, a chat to an `anthropic/*` model gets HTTP `503`,
 code `cloud_sdk_unavailable`, "The Anthropic SDK is not installed on this host." OpenRouter and
 OpenAI models need no extra package. Restart the controller after installing.
