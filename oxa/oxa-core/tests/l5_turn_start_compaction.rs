@@ -6,7 +6,7 @@
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
-use oxa_fake::{golden::request_hashes, Recorded, ScriptTurn, ScriptedEngine, TestEnv};
+use oxa_fake::{Recorded, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
     tool_errors, AgentEvent, Engine, Exposure, HeadlessUi, Source, Tool, ToolCall, ToolClass, ToolCtx,
@@ -63,9 +63,9 @@ fn read_tool(bytes: usize, cancel: bool) -> Arc<dyn Tool> {
     })
 }
 
-/// The settings of a case: profile, `oxa.compaction.softTokens` and `oxa.compaction.turnStart`
-/// (each left out when `None`).
-fn cfg(profile: &str, soft: Option<u32>, turn_start: Option<bool>) -> Settings {
+/// The settings of a case: `oxa.compaction.softTokens` and `oxa.compaction.turnStart` (each
+/// left out when `None`).
+fn cfg(soft: Option<u32>, turn_start: Option<bool>) -> Settings {
     let mut compaction = json!({});
     if let Some(s) = soft {
         compaction["softTokens"] = json!(s);
@@ -74,10 +74,10 @@ fn cfg(profile: &str, soft: Option<u32>, turn_start: Option<bool>) -> Settings {
         compaction["turnStart"] = json!(t);
     }
     Settings::from_values(
-        // The explicit cap keeps the fake tool's big result whole: under `local` a small soft
-        // point would otherwise bound it to a quarter of that point (l4-budget), and these tests
-        // are about a context that is already too large.
-        json!({"oxa": {"profile": profile, "compaction": compaction, "toolOutputCap": 16384}}),
+        // The explicit cap keeps the fake tool's big result whole: a small soft point would
+        // otherwise bound it to a quarter of that point (l4-budget), and these tests are about a
+        // context that is already too large.
+        json!({"oxa": {"compaction": compaction, "toolOutputCap": 16384}}),
         json!({}),
     )
 }
@@ -133,35 +133,11 @@ fn wire_bytes(r: &Recorded) -> usize {
     r.messages.iter().map(|m| m.to_json().len()).sum()
 }
 
-/// The hashes of `reqs` with each request's own session id replaced: a spilled tool result names
-/// its session's spill directory (`tmp/<session id>/...`), so two sessions differ in those bytes
-/// only by the id.
-fn hashes_without_session_ids(reqs: &[Recorded]) -> Vec<String> {
-    let normalized: Vec<Recorded> = reqs
-        .iter()
-        .map(|r| {
-            let mut r = r.clone();
-            for m in &mut r.messages {
-                if let Some(c) = &mut m.content {
-                    *c = c.replace(&r.session, "SESSION");
-                }
-            }
-            r
-        })
-        .collect();
-    request_hashes(&normalized)
-}
-
 /// Context after the aborted turn of the incident: the usage of the reply that called `read`
-/// (the result itself is not counted). Measured with the same profile and no soft limit.
-fn measured_abort_context(env: &TestEnv, profile: &str, read_bytes: usize) -> u32 {
+/// (the result itself is not counted). Measured with no soft limit.
+fn measured_abort_context(env: &TestEnv, read_bytes: usize) -> u32 {
     let eng = Arc::new(ScriptedEngine::new(vec![read_turn("c1")]));
-    let mut s = open(
-        env,
-        eng,
-        vec![read_tool(read_bytes, true)],
-        cfg(profile, None, None),
-    );
+    let mut s = open(env, eng, vec![read_tool(read_bytes, true)], cfg(None, None));
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     s.prompt("look".into(), Vec::new(), &mut sink, &mut ui)
         .expect("prompt");
@@ -172,7 +148,6 @@ fn measured_abort_context(env: &TestEnv, profile: &str, read_bytes: usize) -> u3
 /// result still in the wire. Returns the session and the engine after the second prompt.
 fn incident(
     env: &TestEnv,
-    profile: &str,
     soft: u32,
     turn_start: Option<bool>,
     read_bytes: usize,
@@ -183,7 +158,7 @@ fn incident(
         env,
         eng.clone(),
         vec![read_tool(read_bytes, true)],
-        cfg(profile, Some(soft), turn_start),
+        cfg(Some(soft), turn_start),
     );
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     s.prompt("look".into(), Vec::new(), &mut sink, &mut ui)
@@ -205,13 +180,13 @@ const BIG: usize = 60_000;
 #[test]
 fn aborted_big_read_is_compacted_before_the_next_prompt() {
     let env = TestEnv::new();
-    let soft = measured_abort_context(&env, "local", BIG) + 1000;
+    let soft = measured_abort_context(&env, BIG) + 1000;
     let script = vec![
         read_turn("c1"),
         ScriptTurn::text("summary of the aborted read"),
         ScriptTurn::text("answer"),
     ];
-    let (_s, eng, sink) = incident(&env, "local", soft, None, BIG, script);
+    let (_s, eng, sink) = incident(&env, soft, None, BIG, script);
     let reqs = sent(&eng);
     assert_eq!(kinds(&eng), vec!["chat", "compaction", "chat"]);
     assert!(!reqs[1].background, "the summary of a turn start is foreground");
@@ -221,7 +196,7 @@ fn aborted_big_read_is_compacted_before_the_next_prompt() {
         "the answer sees the compacted head, not the {BIG}-byte read ({} bytes)",
         wire_bytes(answer)
     );
-    // Profile `local` appends the environment note to the prompt (`oxa_core::envnote`).
+    // The default appends the environment note to the prompt (`oxa_core::envnote`).
     assert_eq!(
         answer
             .messages
@@ -242,35 +217,15 @@ fn aborted_big_read_is_compacted_before_the_next_prompt() {
 fn below_soft_at_turn_start_sends_no_summary() {
     let env = TestEnv::new();
     let script = vec![read_turn("c1"), ScriptTurn::text("answer")];
-    let (_s, eng, _sink) = incident(&env, "local", 500_000, None, BIG, script);
+    let (_s, eng, _sink) = incident(&env, 500_000, None, BIG, script);
     assert_eq!(kinds(&eng), vec!["chat", "chat"]);
 }
 
-/// (c) Profile `pi`, setting unset: the same incident sends the same requests as with the
-/// setting explicitly off, byte for byte; no compaction at turn start.
+/// (d) The explicit setting decides: on compacts at turn start, off does not.
 #[test]
-fn pi_unset_is_unchanged() {
+fn explicit_setting_wins() {
     let env = TestEnv::new();
-    let soft = measured_abort_context(&env, "pi", BIG) + 1000;
-    let script = || vec![read_turn("c1"), ScriptTurn::text("answer")];
-    let (_a, unset, _) = incident(&env, "pi", soft, None, BIG, script());
-    let (_b, off, _) = incident(&env, "pi", soft, Some(false), BIG, script());
-    // The answer's own run ends above the limit: the after-reply compaction (today's) follows it.
-    assert_eq!(kinds(&unset), vec!["chat", "chat", "compaction"]);
-    assert_eq!(
-        hashes_without_session_ids(&sent(&unset)),
-        hashes_without_session_ids(&sent(&off))
-    );
-    // The read's output is shaped to `oxa.toolOutputCap` (16384 bytes by default) before it is
-    // recorded: the wire still holds it whole, far above the compacted head.
-    assert!(wire_bytes(&sent(&unset)[1]) > 10_000);
-}
-
-/// (d) `pi` with the setting on compacts; `local` with it off does not.
-#[test]
-fn explicit_setting_wins_in_both_profiles() {
-    let env = TestEnv::new();
-    let soft_pi = measured_abort_context(&env, "pi", BIG) + 1000;
+    let soft = measured_abort_context(&env, BIG) + 1000;
     let script = || {
         vec![
             read_turn("c1"),
@@ -278,26 +233,24 @@ fn explicit_setting_wins_in_both_profiles() {
             ScriptTurn::text("answer"),
         ]
     };
-    let (_s, pi_on, _) = incident(&env, "pi", soft_pi, Some(true), BIG, script());
-    assert_eq!(kinds(&pi_on), vec!["chat", "compaction", "chat"]);
+    let (_s, on, _) = incident(&env, soft, Some(true), BIG, script());
+    assert_eq!(kinds(&on), vec!["chat", "compaction", "chat"]);
 
-    let soft_local = measured_abort_context(&env, "local", BIG) + 1000;
-    let (_s, local_off, _) = incident(
+    let (_s, off, _) = incident(
         &env,
-        "local",
-        soft_local,
+        soft,
         Some(false),
         BIG,
         vec![read_turn("c1"), ScriptTurn::text("answer")],
     );
-    assert_eq!(kinds(&local_off), vec!["chat", "chat", "compaction"]);
+    assert_eq!(kinds(&off), vec!["chat", "chat", "compaction"]);
 }
 
 /// (e) Auto-compaction switched off at runtime: no compaction at turn start.
 #[test]
 fn runtime_auto_compaction_off_disables_it() {
     let env = TestEnv::new();
-    let soft = measured_abort_context(&env, "local", BIG) + 1000;
+    let soft = measured_abort_context(&env, BIG) + 1000;
     let eng = Arc::new(ScriptedEngine::new(vec![
         read_turn("c1"),
         ScriptTurn::text("answer"),
@@ -306,7 +259,7 @@ fn runtime_auto_compaction_off_disables_it() {
         &env,
         eng.clone(),
         vec![read_tool(BIG, true)],
-        cfg("local", Some(soft), None),
+        cfg(Some(soft), None),
     );
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     s.prompt("look".into(), Vec::new(), &mut sink, &mut ui)
@@ -324,12 +277,12 @@ fn runtime_auto_compaction_off_disables_it() {
 fn pending_idle_summary_is_applied_without_a_request() {
     let env = TestEnv::new();
     let stopped_reply = "y".repeat(4_100);
-    // The context after the stopped run (local: the idle summary is on by default). The soft
-    // limit sits just above it: the idle summary is made, and the aborted read's result (about
-    // 1200 tokens by the estimate) takes the context over the limit.
+    // The context after the stopped run (the idle summary is on by default). The soft limit
+    // sits just above it: the idle summary is made, and the aborted read's result (about 1200
+    // tokens by the estimate) takes the context over the limit.
     let soft = {
         let eng = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text(&stopped_reply)]));
-        let mut s = open(&env, eng, Vec::new(), cfg("local", None, None));
+        let mut s = open(&env, eng, Vec::new(), cfg(None, None));
         let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
         s.prompt("first".into(), Vec::new(), &mut sink, &mut ui)
             .expect("prompt");
@@ -346,7 +299,7 @@ fn pending_idle_summary_is_applied_without_a_request() {
         &env,
         eng.clone(),
         vec![read_tool(3_600, true)],
-        cfg("local", Some(soft), None),
+        cfg(Some(soft), None),
     );
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     s.prompt("first".into(), Vec::new(), &mut sink, &mut ui)

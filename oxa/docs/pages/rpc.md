@@ -102,7 +102,7 @@ Commands about the state:
 
 | Command | Result |
 |---|---|
-| `get_state` | model, thinking level, permission mode, profile, session id, name and file, whether a run or a compaction is going, and the queue sizes |
+| `get_state` | model, thinking level, permission mode, session id, name and file, whether a run or a compaction is going, and the queue sizes |
 | `get_messages` | the messages of the active branch |
 | `get_session_stats` | token totals, requests, cache counts, tool repairs |
 | `get_available_models` | the models the engine serves |
@@ -146,4 +146,4 @@ The `oxa-rpc` crate has a client for driving `oxa --mode rpc` from Rust. It star
 
 ## Compatibility
 
-The record shapes follow the earlier agent's JSON and RPC formats field for field. oxa adds events and commands (`set_mode`, `tool_repair`, `cache_miss`, `profile` in state), and clients should ignore fields and events they do not know.
+The record shapes follow the earlier agent's JSON and RPC formats field for field. oxa adds events and commands (`set_mode`, `tool_repair`, `cache_miss`), and clients should ignore fields and events they do not know.

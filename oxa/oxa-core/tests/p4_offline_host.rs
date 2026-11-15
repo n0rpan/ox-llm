@@ -1,4 +1,4 @@
-//! P4 (wave H lane `local`): offline, the session host refuses an extension / codemode
+//! P4 (wave H): offline, the session host refuses an extension / codemode
 //! `fetch` to a host that is not loopback and any `exec` with network access, before the user
 //! is asked (the error code proves the order: the policy would answer `denied`). One process,
 //! one policy.

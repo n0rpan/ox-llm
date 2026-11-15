@@ -1,4 +1,4 @@
-//! R1 (wave H lane `local`): resume after a crash mid-tool, and per-turn durability.
+//! R1 (wave H): resume after a crash mid-tool, and per-turn durability.
 //!
 //! **Interrupted calls.** A session file whose wire ends in an assistant message with tool
 //! calls followed only by results of some of those calls (oxa stopped while a tool ran) would

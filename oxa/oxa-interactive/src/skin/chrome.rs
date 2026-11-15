@@ -40,10 +40,7 @@ pub fn oxa_splash(
     let w = width as usize;
 
     // The three info lines (line 1 has a right part only inside the frame).
-    let mut head = theme.bold(&theme.fg("text", &format!("OXA v{}", clean(&info.version))));
-    if let Some(profile) = clean_opt(info.profile.as_deref()) {
-        head = format!("{head}  {}", theme.fg("muted", &profile));
-    }
+    let head = theme.bold(&theme.fg("text", &format!("OXA v{}", clean(&info.version))));
     let model = clean(&info.model);
     let engine = clean(&info.engine_url);
     let mut second = String::new();
@@ -111,12 +108,12 @@ pub fn oxa_splash(
     out
 }
 
-/// The HUD line (sec. 4.2): `OXA | model | CTX meter | CACHE meter | tok/s | state | mode |
-/// profile`, exactly one line that fits `width`; segments are dropped by priority when narrow.
-pub fn oxa_hud(st: &StatusModel, profile: Option<&str>, width: u16, theme: &Theme, skin: Skin) -> String {
+/// The HUD line (sec. 4.2): `OXA | model | CTX meter | CACHE meter | tok/s | state | mode`,
+/// exactly one line that fits `width`; segments are dropped by priority when narrow.
+pub fn oxa_hud(st: &StatusModel, width: u16, theme: &Theme, skin: Skin) -> String {
     let g = glyphs(skin);
     let w = width as usize;
-    let parts = HudParts::new(st, profile, g);
+    let parts = HudParts::new(st, g);
     for drops in 0..=HUD_DROPS {
         let line = hud_build(&parts, drops, &parts.model, g, theme);
         if visible_width(&line) <= w {
@@ -135,15 +132,17 @@ const HUD_DROPS: usize = 10;
 
 /// The HUD's data, cleaned and ready to lay out. Built once per call.
 struct HudParts {
-    profile: Option<String>,
     speed: Option<String>,
     /// Cache hit: percent and fraction; `None` when unknown.
     cache: Option<(u64, f64)>,
     /// Context: percent, fraction and `used/n_ctx`; `None` when the window is unknown.
     ctx: Option<(u64, f64, String)>,
     repairs: u32,
+    degraded: bool,
     model: String,
     level: Option<&'static str>,
+    /// What the level reads as (`adaptive • low` for Claude 5.5); the token colours it.
+    level_text: Option<String>,
     note: Option<String>,
     mode: Option<Mode>,
     /// Badge word and colour token of the activity; `None` when idle.
@@ -154,7 +153,7 @@ struct HudParts {
 }
 
 impl HudParts {
-    fn new(st: &StatusModel, profile: Option<&str>, g: &Glyphs) -> HudParts {
+    fn new(st: &StatusModel, g: &Glyphs) -> HudParts {
         let cache = match (st.last_cached, st.last_prompt) {
             (Some(cached), Some(prompt)) if prompt > 0 => {
                 let cached = cached.min(prompt);
@@ -174,7 +173,6 @@ impl HudParts {
         };
         let model = clean(&st.model);
         HudParts {
-            profile: clean_opt(profile),
             speed: st
                 .tok_per_s
                 .filter(|t| t.is_finite())
@@ -182,12 +180,14 @@ impl HudParts {
             cache,
             ctx,
             repairs: st.tool_repairs,
+            degraded: st.degraded_context,
             model: if model.is_empty() {
                 "no-model".to_string()
             } else {
                 model
             },
             level: st.thinking.map(|level| level.as_str()),
+            level_text: st.thinking_label_with(g.mid),
             note: clean_opt(st.thinking_note.as_deref()),
             mode: st.mode,
             state: activity_style(&st.activity),
@@ -220,8 +220,8 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     // 2: the model, with the thinking note (7th) and the level (9th).
     let mut model_seg = theme.fg("text", model);
     if shown(9) {
-        if let Some(level) = p.level {
-            let text = format!(" {} {level}", g.mid);
+        if let (Some(level), Some(label)) = (p.level, &p.level_text) {
+            let text = format!(" {} {label}", g.mid);
             model_seg.push_str(&theme.fg(Theme::thinking_token(level), &text));
         }
     }
@@ -282,17 +282,15 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
         segs.push(theme.fg("warning", &format!("repairs {}", p.repairs)));
     }
 
+    // 7b: the last compaction had no model summary.
+    if p.degraded && shown(5) {
+        segs.push(theme.fg("warning", "no summary"));
+    }
+
     // 8: permission mode.
     if shown(10) {
         if let Some(mode) = p.mode {
             segs.push(theme.fg(mode_token(mode), mode.as_str()));
-        }
-    }
-
-    // 9: profile.
-    if shown(1) {
-        if let Some(profile) = &p.profile {
-            segs.push(theme.fg("dim", profile));
         }
     }
 
@@ -643,7 +641,6 @@ fn elapsed_text(ms: u64) -> Option<String> {
 #[allow(clippy::too_many_arguments)]
 pub fn oxa_footer(
     vm: &ViewModel,
-    profile: Option<&str>,
     ctx: HintContext,
     keymap: &Keymap,
     fullscreen: bool,
@@ -656,7 +653,7 @@ pub fn oxa_footer(
     }
     let st = &vm.status;
     let mut out = vec![
-        oxa_hud(st, profile, width, theme, skin),
+        oxa_hud(st, width, theme, skin),
         oxa_hint_bar(ctx, st, keymap, fullscreen, width, theme, skin),
     ];
     let statuses: Vec<String> = st

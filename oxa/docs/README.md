@@ -31,7 +31,7 @@ User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only 
 | [usage.md](pages/usage.md) | the interface: editor, keys, slash commands, footer, selectors |
 | [cli.md](pages/cli.md) | every flag, subcommand and environment variable |
 | [settings.md](pages/settings.md) | every settings key, its type and default, and how files are merged |
-| [profile.md](pages/profile.md) | the `pi` and `local` profiles and what they change |
+| [tools-context.md](pages/tools-context.md) | the tool formats and the context defaults, and the settings that change them |
 | [sessions.md](pages/sessions.md) | session storage, resuming, forking, the tree, labels, export, what is stored and how to remove it |
 | [compaction.md](pages/compaction.md) | context limits, compaction, the kept tail, cache misses |
 | [tools.md](pages/tools.md) | the built-in tools, `subagent`, the repair turn, `web_search` |

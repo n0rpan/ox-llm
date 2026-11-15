@@ -17,7 +17,7 @@
 //! a row the product does not implement fails with a message that starts `RED <ID>:`.
 
 use oxa_fake::{FakeCaps, FakeModel, FakeOpts, FakeServer, Fault, Recorded, ScriptTurn, TestEnv};
-use oxa_parity::{oxa_bin, profile_env};
+use oxa_parity::oxa_bin;
 use oxa_proto::Role;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -82,7 +82,7 @@ impl Ran {
     }
 }
 
-/// `oxa <args>` in the work directory with `env.envs(url)` + the profile of the run + `extra`,
+/// `oxa <args>` in the work directory with `env.envs(url)` + `extra`,
 /// stdin closed; killed and failed after [`LIMIT`].
 fn oxa_with(env: &TestEnv, url: &str, args: &[&str], extra: &[(&str, &str)]) -> Ran {
     let mut child = Command::new(oxa_bin())
@@ -90,7 +90,7 @@ fn oxa_with(env: &TestEnv, url: &str, args: &[&str], extra: &[(&str, &str)]) -> 
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(url))
-        .envs(profile_env())
+        .envs(oxa_parity::note_off_env())
         .envs(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -247,7 +247,7 @@ impl Rpc {
             .current_dir(env.work())
             .env_clear()
             .envs(env.envs(url))
-            .envs(profile_env())
+            .envs(oxa_parity::note_off_env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

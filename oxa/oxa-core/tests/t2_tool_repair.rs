@@ -1,4 +1,4 @@
-//! T2 (wave H lane `local`): the append-only repair turn for malformed tool calls.
+//! T2 (wave H): the append-only repair turn for malformed tool calls.
 //! Content shapes follow the engine's lenient final parse (`chat/src/parser.rs`): a call it
 //! cannot parse comes back as content, glued to the prose before it.
 //! Goldens: `tests/golden/t2_*.txt` (request hashes; `OXA_UPDATE_GOLDEN=1` rewrites them).
@@ -248,7 +248,7 @@ fn wrong_type() {
         "wrong_type",
         WRONG_TYPE,
         repair_cause::WRONG_TYPE,
-        prompt::repair_wrong_type("read", "limit", "number"),
+        prompt::repair_wrong_type("read", "limit", "integer"),
     );
 }
 
