@@ -1200,7 +1200,10 @@ fn engine_error_is_shown_not_a_reply() {
         step("open", &["oxa v"], typed("go", &["enter"])),
         step(
             "failed",
-            &["failed: not sent to the model", "The reply did not finish"],
+            &[
+                "failed: not sent to the model",
+                "The request failed; no reply was received",
+            ],
             typed("/session", &["enter"]),
         ),
         step(
