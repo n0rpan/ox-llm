@@ -176,10 +176,10 @@ class ModelsMixin:
             return bigmoe_runtime.eligible(config)
         return bool(config.get('ready'))
 
-    def models(self):
+    def models(self, remote=False):
         value = json.loads(ctl.CONFIG.read_text())
         if value.get('cloud_only') is True:  # no local rows; only the remote catalog
-            return [cloud.row(item) for item in cloud.models(value)] if cloud.enabled(value) and not cloud.offline() else []
+            return [cloud.row(item) for item in cloud.models(value)] if cloud.enabled(value) and not cloud.offline() and not remote else []
         aliases = [value.get('model_alias', 'qwen-local'), *value.get('profiles', {})]
         if value.get('profiles'): aliases.insert(0, 'qwen-local')
         rows = [{'id': alias, 'object': 'model', 'created': 0, 'owned_by': 'local',
@@ -187,7 +187,7 @@ class ModelsMixin:
                 if self.eligible(self.config(alias))]
         models = openai_api.model_rows(value, rows, value.get('selected_model', value.get('model_alias', 'qwen-local')))
         self._publish_limits(models, value)
-        if cloud.enabled(value) and not cloud.offline():
+        if cloud.enabled(value) and not cloud.offline() and not remote:  # never to a LAN-share guest
             models.extend(cloud.row(item) for item in cloud.models(value))
         return models
 
@@ -218,7 +218,7 @@ class ModelsMixin:
                 if isinstance(limits[target].get('capabilities'), dict):
                     row.setdefault('context_window', limits[target]['capabilities'].get('context_window'))
 
-    def catalog(self):
+    def catalog(self, remote=False):
         """Chooser rows for eligible profiles; metadata only, never loads a model."""
         value = json.loads(ctl.CONFIG.read_text())
         if not isinstance(value, dict): raise ValueError('runtime_object_required')
@@ -238,7 +238,7 @@ class ModelsMixin:
                                           flash_cache=(getattr(self, 'flash_cache_status', None) if loaded and
                                               loaded.get('model_alias') == alias else None)))
         rows.sort(key=model_catalog.sort_key)
-        if cloud.enabled(value) and not cloud.offline():
+        if cloud.enabled(value) and not cloud.offline() and not remote:
             rows.extend(cloud.catalog_row(item) for item in cloud.models(value))
         return {'object': 'list', 'default_model': model_catalog.DEFAULT_ALIAS,
                 'selected_model': selected, 'data': rows}
@@ -261,7 +261,8 @@ class ModelsMixin:
         return {'enabled': cloud.enabled(value), 'offline': cloud.offline(),
                 'daily_budget_usd': cap, 'spend_today_usd': spend, 'ledger_ok': ledger_error is None,
                 'ledger_error': ledger_error,
-                'providers': cloud.configured(value), 'models': len(cloud.models(value))}
+                'providers': cloud.configured(value), 'models': len(cloud.models(value)),
+                'rejected': cloud.rejected(value)}
 
     def flash_qualification(self):
         """M3: Flash's derived status (model_catalog.qualification of the resolved installed

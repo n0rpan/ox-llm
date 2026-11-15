@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import ssl
+import sys
 import stat
 import threading
 import time
@@ -178,6 +179,53 @@ def entry(alias, raw):
             'pricing': price, 'display_name': raw.get('name') if isinstance(raw.get('name'), str) else alias}
 
 
+_PREFIXES = ('openai/', 'openai_compatible/', 'local/')
+
+
+def local_aliases(value):
+    """The local profile and base aliases of a runtime config (none on a cloud-only install)."""
+    if not isinstance(value, dict) or value.get('cloud_only') is True:
+        return set()
+    names = {'qwen-local'}
+    if isinstance(value.get('model_alias'), str):
+        names.add(value['model_alias'])
+    if isinstance(value.get('profiles'), dict):
+        names.update(name for name in value['profiles'] if isinstance(name, str))
+    return names
+
+
+def _collision_forms(alias):
+    forms = {alias}
+    for prefix in _PREFIXES:
+        if alias.startswith(prefix):
+            forms.add(alias[len(prefix):])
+        forms.add(prefix + alias)
+    return forms
+
+
+def collides(alias, value):
+    """The local alias a cloud alias would shadow (itself or by a provider prefix), else None."""
+    local = local_aliases(value)
+    hit = sorted(_collision_forms(alias) & local)
+    return hit[0] if hit else None
+
+
+_warned = set()
+
+
+def rejected(value):
+    """{alias: reason} for the cloud aliases skipped because they collide with a local model."""
+    models = settings(value).get('models')
+    out = {}
+    if isinstance(models, dict):
+        for alias, raw in models.items():
+            if isinstance(alias, str) and entry(alias, raw) is not None:
+                hit = collides(alias, value)
+                if hit is not None:
+                    out[alias] = 'collides with the local model %s' % hit
+    return out
+
+
 def entries(value, include_disabled=False):
     """{alias: entry} for the valid catalog rows; [] while cloud is off unless asked."""
     if not include_disabled and not enabled(value):
@@ -188,8 +236,15 @@ def entries(value, include_disabled=False):
     out = {}
     for alias, raw in models.items():
         item = entry(alias, raw)
-        if item is not None:
-            out[alias] = item
+        if item is None:
+            continue
+        if collides(alias, value) is not None:
+            if alias not in _warned:
+                _warned.add(alias)
+                print('local-ai: cloud model %s skipped: it collides with the local model %s'
+                      % (alias, collides(alias, value)), file=sys.stderr, flush=True)
+            continue
+        out[alias] = item
     return out
 
 
@@ -197,7 +252,7 @@ def _name_candidates(name):
     if not isinstance(name, str):
         return []
     candidates = [name]
-    for prefix in ('openai/', 'openai_compatible/', 'local/'):
+    for prefix in ('openai/', 'openai_compatible/'):  # never `local/`: that names a local model
         if name.startswith(prefix):
             candidates.append(name[len(prefix):])
     return candidates

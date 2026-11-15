@@ -89,6 +89,8 @@ def forward(self, st):
     value = st.api_value
     if st.led is not None:
         st.led.row.update({'remote': True, 'remote_provider': item['provider']})
+    if st.remote:
+        return _reply(self, st, 403, 'Cloud models are not available to LAN-share requests.', 'cloud_not_shared')
     if cloud.offline():
         return _reply(self, st, 403, 'Cloud models are unavailable in offline mode.', 'offline')
     try:
