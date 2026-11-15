@@ -27,3 +27,6 @@ pub mod supervisor;
 
 #[cfg(feature = "core")]
 pub mod recovery;
+
+#[cfg(feature = "core")]
+pub mod rpc_agent;

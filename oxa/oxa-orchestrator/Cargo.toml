@@ -9,9 +9,10 @@ publish.workspace = true
 
 [features]
 default = []
-core = ["dep:libc", "dep:serde_json", "dep:sha2", "dep:serde"]
+core = ["dep:libc", "dep:serde_json", "dep:sha2", "dep:serde", "dep:oxa-a2a"]
 
 [dependencies]
+oxa-a2a = { path = "../oxa-a2a", optional = true, features = ["agent-host"] }
 libc = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }

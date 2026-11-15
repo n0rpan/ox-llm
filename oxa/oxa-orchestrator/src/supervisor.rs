@@ -69,6 +69,7 @@ pub enum Cleanup {
     Stopped,
     Unconfirmed,
 }
+#[derive(Clone)]
 pub struct WorkerReport {
     pub worker: String,
     pub outcome: Outcome,
@@ -442,7 +443,7 @@ pub fn run(
     }
     Ok(report)
 }
-fn validate(settings: &Settings, plan: &[WorkerSpec]) -> io::Result<()> {
+pub(crate) fn validate(settings: &Settings, plan: &[WorkerSpec]) -> io::Result<()> {
     if !valid_id(&settings.id)
         || plan.is_empty()
         || plan.len() > 128

@@ -215,3 +215,39 @@ exclusion, inspect valid/truncated prefixes, reject lifecycle/format mutations
 and links/FIFOs/oversized files, and exercise the 100,000-record boundary. Startup
 failure tests reap a real owned child. Explicit original-agent reconciliation,
 checkpoint consent, resume and their CLI surfaces remain subsequent slices.
+
+## Owned native A2A backend
+
+With `core`, `rpc_agent::RpcAgent` implements the opt-in A2A host Backend using
+one bounded tool-free supervisor per accepted task. Operator configuration fixes
+executables, role, verified-local route/model, capacities and per-task budgets.
+Messages carry only bounded text/data task content or context-bound steering;
+agent cards and task fields cannot widen tools, grants or provider trust. The
+constructor creates a new private host directory through the validated parent
+inode; it does not start a listener or worker. Server construction and send are
+separate explicit operations. No CLI hook or installed host is added.
+
+New-task IDs use a random host prefix. Retained message IDs prevent duplicate
+submission and reject reused IDs with different content. Task/history/control
+capacity is bounded, with no silent task eviction or relaunch. Every enqueued
+steer reserves its message ID and content budget, including an unconfirmed
+acknowledgement. Retrying that ID cannot enqueue the steer again. Admission is
+not proof of model consumption, and rejected/uncertain attempts still occupy
+bounded receipt capacity.
+
+Terminal snapshots and artifacts are published together after supervisor return
+and confirmed cleanup. Truncated output remains an attributed failed task with
+partial text and observed usage; it is never completed. An infrastructure error
+or unconfirmed cleanup remains Unknown/nonterminal and retains live capacity.
+Cancellation cannot return a terminal acknowledgement without cleanup evidence.
+Shutdown revokes admission, requests cancellation and joins owned supervisors
+outside the snapshot lock. An unresolved cleanup state is not a billing-stop
+claim, and no native recorded PID is adopted.
+
+Tests exercise the authenticated loopback server with real-bwrap mock runtimes:
+idempotent submission, result/truncation attribution, immutable role/model policy,
+context-bound steering/history, cancellation, server shutdown, unknown-cleanup
+capacity retention and an acknowledgement-timeout retry that cannot enqueue twice.
+No paid/provider call is used. Optional workspace grants, durable independent
+registration, resume/reconciliation and the request-output allowance remain their
+owning subsequent integrations.

@@ -563,6 +563,7 @@ name = "oxa-orchestrator"
 version = "0.2.0"
 dependencies = [
  "libc",
+ "oxa-a2a",
  "oxa-fake",
  "oxa-orchestrator",
  "serde",
