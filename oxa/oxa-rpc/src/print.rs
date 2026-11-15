@@ -305,13 +305,15 @@ pub fn run_json_outcome(
                 return Ok(outcome);
             }
         }
+        // Event writes cannot interrupt the request: retain its completed result
+        // before classifying a concurrent output failure.
+        outcome.include(*session.outcome());
         if let Some(e) = sink.error.take() {
             let _ = writeln!(err, "{e}");
             outcome.include(RunOutcome::from_error(&e));
             return Ok(outcome);
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
-        outcome.include(*session.outcome());
     }
     if done_failed(session, err) {
         outcome.include(RunOutcome::Failed("done_checks_failed"));
