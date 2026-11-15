@@ -12,9 +12,13 @@ policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
 
 [dependencies]
-url = { version = "2", optional = true }
-serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
 nix = { version = "0.30", features = ["user"], optional = true }
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
+url = { version = "2", optional = true }
+
+[[example]]
+name = "catalog_contract"
+required-features = ["cloud-only"]
 
 [[example]]
 name = "policy_contract"
@@ -23,10 +27,6 @@ required-features = ["policy"]
 [[example]]
 name = "secrets_contract"
 required-features = ["secrets"]
-
-[[example]]
-name = "catalog_contract"
-required-features = ["cloud-only"]
 
 [lints.rust]
 unsafe_code = "forbid"

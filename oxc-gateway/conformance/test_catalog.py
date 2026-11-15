@@ -29,18 +29,31 @@ def config(name):
              'base_url': 'http://127.0.0.1:1/v1', 'context_window': 64000,
              'max_output': 512, 'name': 'Synthetic cloud model'}
     if name == 'router':
-        model.update(context_window=64000.5, max_output=512.9)
+        model.update(context_window=64000.5, max_output=512.9,
+                     pricing={'input': 1, 'output': 2})
     if name == 'anthropic':
         model.update(provider=0, upstream_model=0, upstream='synthetic/upstream')
+    if name == 'openai':
+        model['pricing'] = {'input': 1, 'output': 2, 'cache_read_per_million': .1,
+                            'cache_write_per_million': 1.25,
+                            'tiers': [{'max_prompt_tokens': 100}, {'max_prompt_tokens': None}]}
+    if name == 'invalid-entries':
+        model['pricing'] = {'input': 1, 'output': 2, 'cache_read_per_million': .1,
+                            'cache_write_per_million': 1.25,
+                            'tiers': [{'max_prompt_tokens': True}, {'max_prompt_tokens': None}]}
     value = {'cloud_only': True, 'cloud': {'enabled': name != 'disabled',
              'daily_budget_usd': 1, 'models': {'synthetic-cloud': model}}}
     if name == 'default-off':
         del value['cloud']['enabled']
+    if name == 'disabled':
+        value['selected_model'] = 'synthetic-cloud'
     if name == 'local-profile':
         value.update(selected_model='synthetic-local', profiles={
             'synthetic-local': {'backend_kind': 'oxe', 'ready': False,
                                 'model_path': '/synthetic/absent-model'}})
     if name == 'invalid-entries':
+        value.update(selected_model='synthetic-unknown',
+                     profiles={'synthetic-local': {'ready': False, 'backend_kind': 'oxe'}})
         models = value['cloud']['models']
         models.update({'bad id!': model, 'wrong-kind': {**model, 'kind': 'local'},
                        'wrong-provider': {**model, 'provider': 'synthetic'},
@@ -53,12 +66,26 @@ def config(name):
     return value
 
 
+def prices(name):
+    # Trusted normalized snapshot input, corresponding to the owned cache below.
+    return {'synthetic/upstream': {'input_per_million': 1, 'output_per_million': 2,
+        'cache_read_per_million': .1, 'cache_write_per_million': 1.25}} if name in (
+            'router', 'local-profile', 'invalid-entries') else {}
+
+
 def source(name, home):
     spec = importlib.util.spec_from_file_location('cloud_mock', ROOT / 'oxc/tests/mock_cloud.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     upstream = module.MockOpenRouter()
     value = config(name)
+    if prices(name):
+        cache = home / 'state/oxc/openrouter-prices.json'
+        cache.parent.mkdir(parents=True, mode=0o700)
+        cache.write_text(json.dumps({'data': [{'id': 'synthetic/upstream', 'pricing': {
+            'prompt': '0.000001', 'completion': '0.000002',
+            'input_cache_read': '0.0000001', 'input_cache_write': '0.00000125'}}]}))
+        cache.chmod(0o600)
     for model in value['cloud']['models'].values():
         if isinstance(model, dict) and model.get('base_url') == 'http://127.0.0.1:1/v1':
             model['base_url'] = upstream.base + '/v1'
@@ -111,6 +138,9 @@ def source(name, home):
             for label, route in (('models', '/v1/models'), ('chooser', '/_local/models'),
                                  ('status', '/_local/status'), ('health', '/health')):
                 status, body = get(route)
+                if label == 'chooser' and name == 'invalid-entries' and status == 503:
+                    result[label] = body
+                    continue
                 if status != 200:
                     raise AssertionError((route, status, body))
                 result[label] = body
@@ -183,7 +213,7 @@ class CatalogContract(unittest.TestCase):
                 if executable:
                     self.assertTrue(Path(executable).is_absolute())
                     done = subprocess.run([executable], input=json.dumps({'config': config(name),
-                                          'offline': name == 'offline'}), text=True, capture_output=True,
+                                          'offline': name == 'offline', 'prices': prices(name)}), text=True, capture_output=True,
                                           env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, timeout=5)
                     self.assertEqual(done.returncode, 0, done.stderr)
                     actual = json.loads(done.stdout)

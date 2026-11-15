@@ -10,9 +10,10 @@ fn main() {
         .expect("contract input");
     assert!(input.len() <= 65536, "contract input bound");
     let input: Value = serde_json::from_str(&input).expect("contract JSON");
-    let catalog = Catalog::from_config(&input["config"], input["offline"] == true);
+    let catalog =
+        Catalog::from_config(&input["config"], input["offline"] == true, &input["prices"]);
     let output = catalog.map(|catalog| {
-        json!({"models":catalog.models(),"chooser":catalog.chooser(),
+        json!({"models":catalog.models(),"chooser":catalog.chooser().unwrap_or_else(|_|json!({"error":"Model setup is not finished yet. Run `oxc status` to follow it."})),
         "status":catalog.status_fragment(),"health":catalog.health(),
         "model":catalog.model("synthetic-cloud"),"unknown":catalog.model("synthetic-unknown"),
         "startup":catalog.startup_line()})
