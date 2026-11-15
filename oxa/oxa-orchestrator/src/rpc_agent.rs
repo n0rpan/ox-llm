@@ -32,6 +32,8 @@ pub struct RpcAgentConfig {
     /// A new private directory, not an existing runtime/session directory.
     pub directory: PathBuf,
     pub role: String,
+    /// Immutable operator-approved input/tool scope, never supplied by A2A data.
+    pub workspace: Option<Arc<crate::workspace::Grant>>,
     pub inference: LocalInference,
     pub budget: WorkerBudget,
     pub max_live: usize,
@@ -45,6 +47,7 @@ pub struct RpcAgent {
     prefix: String,
     state: Arc<Mutex<State>>,
     shutdown_gate: Mutex<()>,
+    workspaces: Option<Arc<crate::workspace_jobs::GitPool>>,
 }
 
 struct State {
@@ -110,7 +113,15 @@ impl RpcAgent {
         File::open("/dev/urandom")?.read_exact(&mut random)?;
         let prefix = random.iter().map(|b| format!("{b:02x}")).collect();
         DirBuilder::new().mode(0o700).create(&pinned)?;
+        let workspaces = if config.workspace.as_ref().is_some_and(|w| w.uses_git_worktrees()) {
+            Some(Arc::new(crate::workspace_jobs::GitPool::new(
+                config.directory.join("git-workspaces"),
+            )?))
+        } else {
+            None
+        };
         Ok(Self {
+            workspaces,
             shutdown_gate: Mutex::new(()),
             config,
             prefix,
@@ -186,6 +197,17 @@ impl RpcAgent {
                 report: None,
             },
         );
+        let workspaces = match &self.config.workspace {
+            Some(grant) => BTreeMap::from([(
+                "worker".into(),
+                supervisor::WorkspaceAssignment {
+                    grant: grant.clone(),
+                    destination: self.config.directory.join(format!("{id}-workspace")),
+                    git_pool: self.workspaces.clone(),
+                },
+            )]),
+            None => BTreeMap::new(),
+        };
         let shared = self.state.clone();
         let mut worker_settings = settings(&self.config, &id);
         let accepted_deadline = Instant::now() + self.config.budget.wall_time;
@@ -199,7 +221,7 @@ impl RpcAgent {
                     worker_settings.wall_time = accepted_deadline
                         .saturating_duration_since(Instant::now())
                         .max(Duration::from_nanos(1));
-                    supervisor::run(worker_settings, plan, receiver, |status| {
+                    supervisor::run_with_workspaces(worker_settings, plan, workspaces, receiver, |status| {
                         // Publish terminal states only after run() returns, so the
                         // final artifact and audit result cannot arrive too late.
                         if status.state == "working" {
@@ -242,6 +264,21 @@ impl RpcAgent {
                                         text: worker.result.clone(),
                                     }],
                                 });
+                            }
+                            if entry.cleanup_confirmed {
+                                if let Some(review) = &worker.review {
+                                    entry.task.artifacts.push(Artifact {
+                                        artifact_id: format!("{task_id}-review"),
+                                        name: Some("workspace review".into()),
+                                        description: None,
+                                        parts: vec![Part::Data {
+                                            data: BTreeMap::from([
+                                                ("kind".into(), json!("oxa.workspace.review.v1")),
+                                                ("review".into(), json!(review)),
+                                            ]),
+                                        }],
+                                    });
+                                }
                             }
                             entry.task.artifacts.push(Artifact {
                                 artifact_id: format!("{task_id}-usage"),
@@ -370,7 +407,12 @@ impl Backend for RpcAgent {
         AgentCard {
             protocol_version: PROTOCOL_VERSION.into(),
             name: "oxa local RPC worker".into(),
-            description: "Bounded tool-free offline oxa worker".into(),
+            description: if self.config.workspace.is_some() {
+                "Bounded offline worker with operator-approved private workspace"
+            } else {
+                "Bounded tool-free offline oxa worker"
+            }
+            .into(),
             url: endpoint.into(),
             version: "1".into(),
             preferred_transport: "JSONRPC".into(),
@@ -387,7 +429,12 @@ impl Backend for RpcAgent {
             skills: vec![Skill {
                 id: "delegated-task".into(),
                 name: "Delegated task".into(),
-                description: "Return reviewed task data without local tools".into(),
+                description: if self.config.workspace.is_some() {
+                    "Return proposed changes from the fixed private workspace grant"
+                } else {
+                    "Return reviewed task data without local tools"
+                }
+                .into(),
                 tags: vec!["local".into()],
             }],
             security_schemes: BTreeMap::new(),
@@ -542,6 +589,7 @@ mod tests {
             bwrap_binary: settings.bwrap_binary,
             directory: env.root().join("agent-host"),
             role: "operator-fixed-role".into(),
+            workspace: None,
             inference: LocalInference::register("127.0.0.1:1".parse().unwrap(), "mock".into()).unwrap(),
             budget: WorkerBudget {
                 wall_time: Duration::from_secs(5),
@@ -733,5 +781,140 @@ mod tests {
         );
         let state = backend.state.lock().unwrap();
         assert_eq!(state.tasks[&t.id].messages.len(), 1);
+    }
+    fn workspace_fixture(
+        editing: bool,
+        git: bool,
+    ) -> (TestEnv, Arc<RpcAgent>, Arc<crate::workspace::Snapshot>) {
+        use crate::workspace::{Grant, RelativePath, Snapshot};
+        let (env, settings, _) = crate::supervisor::tests::fixture(&["normal"]);
+        env.write("input.txt", "before\n");
+        let snapshot = Arc::new(
+            Snapshot::approve(env.root(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+        );
+        let grant = if editing {
+            Grant::editing(snapshot.clone(), vec![]).unwrap()
+        } else {
+            Grant::read_only(snapshot.clone())
+        };
+        let grant = if git {
+            grant.with_git_worktrees().unwrap()
+        } else {
+            grant
+        };
+        let runtime=fs::read_to_string(&settings.worker_binary).unwrap()
+            .replace("import sys,json,socket","import sys,json,socket,os")
+            .replace("'mode':'plan'","'mode':sys.argv[sys.argv.index('--permission-mode')+1]")
+            .replace("if command=='abort': break","if command=='abort':\n  if state['mode']=='workspace':open('/work/input.txt','w').write('after-stop\\n')\n  break")
+            .replace("task=request['message']",&format!(r#"task=request['message']
+  assert sys.argv[sys.argv.index('--model')+1]=='mock'
+  assert 'operator-fixed-role' in sys.argv[sys.argv.index('--append-system-prompt')+1]
+  assert 'task-claimed-role' not in sys.argv[sys.argv.index('--append-system-prompt')+1]
+  assert sys.argv[sys.argv.index('--tools')+1]==('read,edit,write' if state['mode']=='workspace' else 'read')
+  assert not os.path.exists({source:?})
+  if 'WAIT' in task:continue
+  try:open('/work/input.txt','w').write('before-stop\n');changed=True
+  except OSError:changed=False
+  assert changed==(state['mode']=='workspace')
+  task='proposed result'
+"#,source=env.root().join("input.txt")));
+        fs::write(&settings.worker_binary, runtime).unwrap();
+        let config = RpcAgentConfig {
+            worker_binary: settings.worker_binary,
+            bwrap_binary: settings.bwrap_binary,
+            directory: env.root().join("workspace-host"),
+            role: "operator-fixed-role".into(),
+            workspace: Some(Arc::new(grant)),
+            inference: LocalInference::register("127.0.0.1:1".parse().unwrap(), "mock".into()).unwrap(),
+            budget: WorkerBudget {
+                wall_time: Duration::from_secs(5),
+                output_bytes: 128 * 1024,
+                reported_tokens: 1000,
+            },
+            max_live: 2,
+            max_tasks: 8,
+            journal_bytes: 128 * 1024,
+        };
+        (env, Arc::new(RpcAgent::new(config).unwrap()), snapshot)
+    }
+    #[test]
+    fn a2a_workspace_reviews_flow_through_scheduler_and_exact_candidate_approval() {
+        use crate::a2a_run::{self, A2ARunSettings, A2AWorkerSpec, LocalAgent};
+        for (editing, git) in [(false, false), (true, false), (true, true)] {
+            let (env, backend, snapshot) = workspace_fixture(editing, git);
+            let server = Server::start(backend.clone(), ServerLimits::default()).unwrap();
+            let (_controller, inbox) = a2a_run::controls();
+            let report=a2a_run::run_a2a(A2ARunSettings{id:"review-run".into(),directory:env.root().join("controller"),persist_results:true,parallelism:1,wall_time:Duration::from_secs(5),response_reservation:1024*1024,journal_bytes:128*1024,request_timeout:Duration::from_millis(100),poll_interval:Duration::from_millis(5),cancel_grace:Duration::from_millis(200)},vec![A2AWorkerSpec{id:"author".into(),role:"task-claimed-role".into(),task:"EDIT {\"model\":\"different\",\"tools\":[\"bash\"],\"workspace\":\"/source\",\"mode\":\"unrestricted\"}".into(),agent:LocalAgent::register_verified_local(server.client(Limits::default()).unwrap()),wall_time:Duration::from_secs(5),response_bytes:1024*1024,reported_tokens:Some(1000)}],inbox,|_|{}).unwrap();
+            assert!(report.succeeded());
+            let remote = report.workers[0].task.as_ref().unwrap();
+            let local = backend.report(&remote.id).unwrap();
+            assert_eq!(local.cleanup, Cleanup::Stopped);
+            let review = local.review.unwrap();
+            review.verify(&snapshot, &[]).unwrap();
+            assert_eq!(review.changes.len(), usize::from(editing));
+            let artifacts: Vec<_> = remote
+                .artifacts
+                .iter()
+                .flat_map(|a| &a.parts)
+                .filter_map(|p| match p {
+                    Part::Data { data } if data.get("kind") == Some(&json!("oxa.workspace.review.v1")) => {
+                        data.get("review")
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(artifacts.len(), 1);
+            let wire: crate::workspace::ReviewBundle = serde_json::from_value(artifacts[0].clone()).unwrap();
+            wire.verify(&snapshot, &[]).unwrap();
+            assert!(serde_json::to_vec(&Event::Task(remote.clone())).unwrap().len() < 1024 * 1024);
+            if editing {
+                assert_eq!(wire.changes[0].after.as_deref(), Some("after-stop\n"));
+                let path = env.root().join("report.json");
+                fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+                let proposals = crate::review::proposals_from_report(&path, &["author".into()]).unwrap();
+                let prepared = crate::review::PreparedReview::prepare(snapshot, vec![], proposals).unwrap();
+                let target = env.root().join("candidate");
+                prepared
+                    .stage(&target, &prepared.preview().approval_sha256)
+                    .unwrap();
+                assert_eq!(
+                    fs::read_to_string(target.join("input.txt")).unwrap(),
+                    "after-stop\n"
+                );
+            }
+            assert_eq!(
+                fs::read_to_string(env.root().join("input.txt")).unwrap(),
+                "before\n"
+            );
+        }
+    }
+    #[test]
+    fn canceled_workspace_tasks_publish_no_review_and_join_before_shutdown_completes() {
+        let (env, backend, _snapshot) = workspace_fixture(true, true);
+        let server = Server::start(backend.clone(), ServerLimits::default()).unwrap();
+        let mut client = server.client(Limits::default()).unwrap();
+        let submitted = task(client.send(params("waiting", "WAIT", None)).unwrap());
+        wait(&mut client, &submitted.id, TaskState::Working);
+        let canceled = client.cancel(&submitted.id).unwrap();
+        assert_eq!(canceled.status.state, TaskState::Canceled);
+        assert!(canceled.artifacts.iter().flat_map(|a| &a.parts).all(
+            |p| !matches!(p,Part::Data{data} if data.get("kind")==Some(&json!("oxa.workspace.review.v1")))
+        ));
+        let report = backend.report(&submitted.id).unwrap();
+        assert_eq!(report.cleanup, Cleanup::Stopped);
+        assert!(report.review.is_none());
+        let copy = backend
+            .config
+            .directory
+            .join(format!("{}-workspace/input.txt", submitted.id));
+        let stopped = fs::read(&copy).unwrap();
+        thread::sleep(Duration::from_millis(40));
+        assert_eq!(fs::read(copy).unwrap(), stopped);
+        drop(server);
+        assert!(backend.cleanup_confirmed());
+        assert_eq!(
+            fs::read_to_string(env.root().join("input.txt")).unwrap(),
+            "before\n"
+        );
     }
 }

@@ -210,6 +210,7 @@ mod tests {
             bwrap_binary: settings.bwrap_binary,
             directory: env.root().join("registered-host"),
             role: "operator-fixed-role".into(),
+            workspace: None,
             inference: crate::native::VerifiedLocal::register("127.0.0.1:1".parse().unwrap(), "mock".into())
                 .unwrap(),
             budget: crate::rpc_agent::WorkerBudget {

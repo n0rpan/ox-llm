@@ -44,3 +44,7 @@ the separate host, reconnect without a second spawn, drop/explicit shutdown with
 stopped-child journal evidence, unknown-cleanup refusal, and fresh-instance
 capability rejection. Native workers are isolated trusted mock RPC processes;
 no real model, provider, shared gateway or paid request is involved.
+
+Optional fixed workspace grants are described in
+[AGENT_WORKSPACE_POLICY.md](AGENT_WORKSPACE_POLICY.md). They are configured
+by the host operator and cannot be supplied or expanded by A2A messages.
