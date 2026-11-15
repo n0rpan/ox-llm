@@ -17,6 +17,14 @@ ACTIONS = (
     'digest', 'update', 'rollback', 'uninstall',
 )
 CASES = {'help': ['--help'], 'unknown-action': ['not-an-action'],
+         'version': ['--version'], 'version-abbreviation': ['--ver'],
+         'version-after-action': ['status', '--version'],
+         'version-before-unknown': ['--version', 'not-an-action'],
+         'version-after-unknown': ['not-an-action', '--version'],
+         'version-explicit-error': ['--version=value'],
+         'uninstall-version': ['uninstall', '--version'],
+         'retired-version': ['dense', '--version'],
+         'positional-version': ['--', '--version'],
          'unknown-option': ['--not-an-option'],
          'invalid-limit': ['ledger', '--limit', 'abc'],
          'invalid-mode': ['mode', '--mode', 'invalid'],
@@ -56,6 +64,8 @@ def invoke(args):
             env[key] = str(home / subdir)
         result = subprocess.run(command + args, env=env, cwd=home,
                                 capture_output=True, timeout=10)
+        if set(home.iterdir()) != {executable}:
+            raise AssertionError('Parser-only invocation wrote installation state')
         return {'exit': result.returncode, 'stdout': result.stdout.decode(),
                 'stderr': result.stderr.decode()}
 

@@ -1,7 +1,8 @@
-usage: local-ai [-h] [--rotate] [--json] [--id ID] [--pref {auto,20,18,16,14}]
-                [--harness HARNESS] [--mode {fast,deep,max}] [--limit LIMIT]
-                [--session SESSION] [--all] [--day DAY] [--write] [--status]
-                [--soak] [--check] [--no-chat]
+usage: local-ai [-h] [--version] [--rotate] [--json] [--id ID]
+                [--pref {auto,20,18,16,14}] [--harness HARNESS]
+                [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]
+                [--all] [--day DAY] [--write] [--status] [--soak] [--check]
+                [--no-chat]
                 [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]
                 [rest ...]
 
@@ -15,6 +16,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  --version             show program's version number and exit
   --rotate              share key: make a new key (the old one stops working)
   --json                Machine-readable output
   --id ID               Storage entry id for storage-delete

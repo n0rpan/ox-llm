@@ -14,7 +14,7 @@ Build locally, keeping generated binaries outside the source checkout:
 cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --target-dir ../oxc-target
 ```
 
-Local validation: 56 parser cases, five CLI ledger-file cases, seven empty-install
+Local validation: 65 parser cases, five CLI ledger-file cases, seven empty-install
 HTTP cases, all 18 HTTP gates, all 62 configured API cases, and API-key file
 rotation/fail-closed behavior pass in Rust. All 18 lifecycle tests and 13 harness registry cases pass. Read-only
 cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 29 runtime cases passes against the Python daemon.
@@ -22,7 +22,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 351 passing scenarios in 56
+suite has 360 passing scenarios in 56
 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,

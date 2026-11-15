@@ -44,6 +44,7 @@ const ACTIONS: &[&str] = &[
     "rollback",
 ];
 const FLAGS: &[&str] = &[
+    "--version",
     "--rotate",
     "--json",
     "--all",
@@ -200,6 +201,13 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                         format!("argument {name}: ignored explicit argument '{value}'"),
                         uninstall,
                     ));
+                }
+                if name == "--version" {
+                    return Err(Exit {
+                        code: 0,
+                        stdout: concat!("local-ai ", env!("CARGO_PKG_VERSION"), "\n").into(),
+                        stderr: String::new(),
+                    });
                 }
                 result.flags.insert(name.into());
                 continue;

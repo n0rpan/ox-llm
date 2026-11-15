@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
-Reference: main `291aee395e1810284a30c63ce66849d0cef46513`.
-The current suite passes 351 scenarios in 56 unittest methods. This remains a
+Reference: main `6e26fd4ff4a8d3fdcce2e9727907bff1a5b17234`.
+The current suite passes 360 scenarios in 56 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -95,7 +95,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 
 | Area | Python | Rust | Coverage still required |
 | --- | --- | --- | --- |
-| CLI parsing | PASS, 56 cases | PASS, captured grammar | More option combinations |
+| CLI parsing | PASS, 65 cases | PASS, captured grammar | More option combinations |
 | CLI ledger files | PASS, 5 cases | PASS | Additional historical ledger labels |
 | CLI runtime | PASS, 48 cases | Partial: 29/48 native CLI cases against Python daemon | More success/failure branches, qualified Flash/plan launch, populated digest/ledger |
 | HTTP empty install | PASS, 7 cases | PASS | Additional setup failures |
