@@ -242,7 +242,7 @@ fn a_child_started_with_auto_allows_a_write_and_still_asks_for_oxa() {
 /// every guard of the file tools: the table's questions, the deny-list, git's files and the
 /// protected configuration (`.oxa`, the home's startup files) are all allowed and counted.
 #[test]
-fn yolo_removes_every_guard() {
+fn yolo_keeps_the_hard_floor_and_asks_nothing() {
     let env = TestEnv::new();
     let switch = YoloSwitch::new(Autonomy::Yolo);
     let p = policy(&env, &switch);
@@ -256,26 +256,28 @@ fn yolo_removes_every_guard() {
             assert_eq!(p.decide(mode, a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
             assert_eq!(switch.approved(), before + 1, "{a:?} is counted once");
         }
-        let mut guarded = Vec::new();
-        for path in [
-            home.join(".ssh/id_ed25519"),
-            home.join(".aws/credentials"),
-            env.agent_dir().join("settings.json"),
+        // The hard floor stands (review of #314): credentials and git hooks/config are refused,
+        // not counted.
+        for a in [
+            Access::Read(home.join(".ssh/id_ed25519")),
+            Access::Write(home.join(".aws/credentials")),
+            Access::Write(cwd.join(".git/hooks/x")),
+            Access::Write(cwd.join(".git/config")),
         ] {
-            guarded.push(Access::Read(path.clone()));
-            guarded.push(Access::Write(path));
-        }
-        for path in [
-            cwd.join(".git/hooks/x"),
-            cwd.join(".git/config"),
-            cwd.join(".oxa/settings.json"),
-            home.join(".bashrc"),
-        ] {
-            guarded.push(Access::Write(path));
-        }
-        for a in &guarded {
             let before = switch.approved();
-            assert_eq!(p.decide(mode, a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
+            assert!(
+                matches!(p.decide(mode, &a, &cwd), Decision::Deny(_)),
+                "{a:?} in {mode:?}"
+            );
+            assert_eq!(switch.approved(), before, "{a:?} is not counted");
+        }
+        // What only asked (project config, the home's startup files) is allowed and counted.
+        for a in [
+            Access::Write(cwd.join(".oxa/settings.json")),
+            Access::Write(home.join(".bashrc")),
+        ] {
+            let before = switch.approved();
+            assert_eq!(p.decide(mode, &a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
             assert_eq!(switch.approved(), before + 1, "{a:?} is counted once");
         }
     }
@@ -374,6 +376,6 @@ fn yolo_description_says_every_guard_is_gone() {
     let text = PermissionMode::Yolo.describe();
     assert!(text.contains("without the sandbox"), "{text}");
     assert!(!text.contains("not limited"), "{text}");
-    assert!(!text.contains("keep the deny-list"), "{text}");
-    assert!(text.contains("no deny-list"), "{text}");
+    assert!(!text.contains("no deny-list"), "{text}");
+    assert!(text.contains("deny-list"), "{text}");
 }

@@ -348,10 +348,13 @@ impl ModePolicy {
 
 impl Policy for ModePolicy {
     fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
-        // #202: full access (yolo) outside plan mode removes every guard: no prompt and no
-        // refusal, the deny-list and the protected files included (bash in the same mode has no
-        // sandbox either). What would not have been allowed is counted as auto-approved.
+        // #202: full access (yolo) outside plan mode: no prompt, but the hard floor (B3
+        // deny-list, B4 git hooks/config) still refuses (AGENTS.md hard rule 1; review of #314).
+        // What would have asked is counted as auto-approved.
         if let Some(switch) = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan) {
+            if let Some(d @ Decision::Deny(_)) = self.mandatory(mode, a, cwd) {
+                return d;
+            }
             // The floor counts what its table asked (the `auto` answer); the rest is counted here.
             if self.decide_floor(mode, a, cwd) != Decision::Allow {
                 switch.count();

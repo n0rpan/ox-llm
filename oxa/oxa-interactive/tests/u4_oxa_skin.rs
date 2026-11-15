@@ -635,7 +635,7 @@ fn yolo_toggle_shows_the_flame_the_banner_and_goes_away() {
     );
     let text = term.all_text();
     assert!(
-        text.contains("bash runs without the sandbox, no deny-list for the file tools"),
+        text.contains("bash runs without the sandbox, the deny-list and git hooks/config stay refused"),
         "the banner says what stays"
     );
     assert!(

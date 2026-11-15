@@ -36,7 +36,7 @@ On top of the table, the permission mode decides who answers the questions:
 |---|---|---|---|
 | `standard` | the table above asks you | in the sandbox | none: no deny-list, no protected paths |
 | `auto` (default) | none: what would be asked is allowed and counted | in the sandbox | none: no deny-list, no protected paths |
-| `yolo` | none | **without the sandbox**, in your own environment | none: no deny-list, no protected paths |
+| `yolo` | none | **without the sandbox**, in your own environment | deny-list and git hooks/config refused |
 | `plan` | as in the table | read-only commands | no writes |
 
 - `auto` is the default of a fresh install. It removes the prompts and nothing else: the bash sandbox and its deny-list stay, the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks.

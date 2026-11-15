@@ -115,8 +115,8 @@ pub trait Sandbox: Send + Sync {
 /// How much the policy decides on its own (#202). `Standard` asks the user what the mode table
 /// asks; `Auto` answers those questions with "allow" while the sandbox, the deny-list and the
 /// protected paths stay on; `Yolo` is full access: no prompts, bash runs without the sandbox in
-/// the user's own environment, and the file tools keep no guard either (no deny-list, no
-/// protected paths, no question). Plan mode stays read-only under every level.
+/// the user's own environment; the file tools ask nothing, but the deny-list and the git hooks/config
+/// stay refused. Plan mode stays read-only under every level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Autonomy {
     #[default]
@@ -226,7 +226,7 @@ impl PermissionMode {
             }
             PermissionMode::Yolo => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \
-                 no deny-list and no protected paths for the file tools"
+                 the file tools still refuse the deny-list and git hooks/config"
             }
             PermissionMode::Plan => "read-only: plans, writes nothing",
         }
