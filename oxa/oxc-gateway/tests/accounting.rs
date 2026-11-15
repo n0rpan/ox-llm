@@ -340,3 +340,159 @@ fn cancellation_never_caps_a_known_charge_at_the_reservation() {
     assert_eq!(row["cost_usd"], 0.004);
     assert_eq!(budget.spend().unwrap(), 0.004);
 }
+
+fn settle_frames(frames: &[Value], outcome: Outcome) -> Value {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
+    hold.mark_forwarded();
+    let mut usage = Usage::default();
+    for frame in frames {
+        usage.observe(frame);
+    }
+    let mut writes = 0;
+    let row = hold
+        .finish(&usage, outcome, |row| {
+            writes += 1;
+            append(&path, row)
+        })
+        .unwrap();
+    assert_eq!(writes, 1);
+    assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
+    assert_eq!(budget.spend().unwrap(), row["cost_usd"].as_f64().unwrap());
+    row
+}
+
+#[test]
+fn usage_frames_settle_once_and_missing_or_invalid_usage_reserves() {
+    let full = json!({"usage": {"prompt_tokens": 11, "completion_tokens": 4},
+        "choices": [{"finish_reason": "stop"}]});
+    for (frames, outcome, expected, settled) in [
+        (vec![full.clone()], Outcome::Complete, 0.000019, "usage"),
+        (vec![], Outcome::Complete, 0.0016425, "reserved"),
+        (vec![full.clone()], Outcome::Failed, 0.0016425, "reserved"),
+        (
+            vec![json!({"usage": {"prompt_tokens": 0, "completion_tokens": 0}})],
+            Outcome::Complete,
+            0.0,
+            "usage",
+        ),
+        (
+            vec![json!({"usage": {"prompt_tokens": true, "completion_tokens": 4}})],
+            Outcome::Complete,
+            0.0016425,
+            "reserved",
+        ),
+        (
+            vec![json!({"usage": {"prompt_tokens": 11}})],
+            Outcome::Complete,
+            0.0016425,
+            "reserved",
+        ),
+    ] {
+        let row = settle_frames(&frames, outcome);
+        assert_eq!(row["cost_usd"].as_f64(), Some(expected));
+        assert_eq!(row["settled"], settled);
+        assert_eq!(row["usage_missing"] == true, settled == "reserved");
+    }
+    let row = settle_frames(
+        &[json!({"usage": {"prompt_tokens": 1000, "completion_tokens": 4,
+        "prompt_tokens_details": {"cached_tokens": 950, "cache_write_tokens": 40}}})],
+        Outcome::Complete,
+    );
+    assert_eq!(row["cost_usd"].as_f64(), Some(0.000163));
+    assert_eq!(row["cached_tokens"], 950);
+    assert_eq!(row["cache_write_tokens"], 40);
+    assert_eq!(row["settled"], "usage");
+    for details in [
+        json!({"cached_tokens": 999, "cache_write_tokens": 40}),
+        json!({"cached_tokens": true, "cache_write_tokens": 40}),
+        json!({"cached_tokens": null, "cache_write_tokens": null}),
+        json!({"cached_tokens": 950, "cache_write_tokens": -1}),
+        json!({"cached_tokens": 1.0, "cache_write_tokens": 40}),
+    ] {
+        let row = settle_frames(
+            &[json!({"usage": {"prompt_tokens": 1000, "completion_tokens": 4,
+            "prompt_tokens_details": details}})],
+            Outcome::Complete,
+        );
+        assert_eq!(row["settled"], "reserved");
+        assert_eq!(row["usage_missing"], true);
+        assert_eq!(row["cost_usd"].as_f64(), Some(0.0016425));
+    }
+}
+
+#[test]
+fn reported_router_cost_is_authoritative_and_repeated_frames_keep_the_maximum() {
+    let first = json!({"usage": {"prompt_tokens": 11, "completion_tokens": 4, "cost": 0.002},
+        "choices": [{"finish_reason": "stop"}]});
+    for frames in [
+        vec![first.clone()],
+        vec![first, json!({"usage": {"cost": 0.001}})],
+    ] {
+        let row = settle_frames(&frames, Outcome::Complete);
+        assert_eq!(row["catalog_cost_usd"].as_f64(), Some(0.000019));
+        assert_eq!(row["reported_cost_usd"].as_f64(), Some(0.002));
+        assert_eq!(row["cost_usd"].as_f64(), Some(0.002));
+        assert_eq!(row["settled"], "usage");
+    }
+}
+
+#[test]
+fn cancellation_uses_final_usage_or_a_bounded_estimate_including_hidden_output() {
+    use std::time::Duration;
+    let full = json!({"usage": {"prompt_tokens": 11, "completion_tokens": 4}});
+    let partial = json!({"usage": {"prompt_tokens": 11, "completion_tokens": 0}});
+    for (frames, request_bytes, streamed_bytes, usage_final, elapsed, expected, settled) in [
+        (
+            vec![full],
+            100,
+            4,
+            true,
+            Duration::from_secs(5),
+            0.000019,
+            "usage",
+        ),
+        (
+            vec![partial],
+            100,
+            4,
+            false,
+            Duration::from_millis(10),
+            0.00002175,
+            "estimated",
+        ),
+        (
+            vec![],
+            100,
+            4,
+            false,
+            Duration::from_millis(50),
+            0.000155,
+            "estimated",
+        ),
+        (
+            vec![],
+            100_000_001,
+            4,
+            false,
+            Duration::from_secs(1000),
+            0.0016425,
+            "estimated",
+        ),
+    ] {
+        let row = settle_frames(
+            &frames,
+            Outcome::Cancelled {
+                request_bytes,
+                streamed_bytes,
+                usage_final,
+                elapsed,
+            },
+        );
+        assert_eq!(row["cost_usd"].as_f64(), Some(expected));
+        assert_eq!(row["settled"], settled);
+        assert_eq!(row["usage_missing"] == true, settled == "estimated");
+    }
+}
