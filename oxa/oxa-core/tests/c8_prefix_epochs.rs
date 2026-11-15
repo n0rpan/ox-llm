@@ -321,6 +321,7 @@ fn w3_constant_within_epoch() {
         EntryBody::Msg {
             wire: WireMsg::user("hello"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("user");
@@ -336,6 +337,7 @@ fn w3_constant_within_epoch() {
         EntryBody::Msg {
             wire: WireMsg::user("again"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("user");
