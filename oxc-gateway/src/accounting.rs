@@ -1,5 +1,5 @@
 //! Per-process reservations and settlement fields. A hold remains reserved until
-//! its row is durably handed to the ledger writer; write failures stop spending.
+//! its row is written to the ledger; write failures stop spending.
 use crate::{
     policy::{self, Refusal},
     pricing::{Cache, Price},
@@ -10,7 +10,7 @@ use std::{
     io,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::Duration,
 };
 
 #[derive(Clone, Debug)]
@@ -37,7 +37,6 @@ pub struct Hold {
     model: Model,
     reserved: f64,
     output: u64,
-    started: Instant,
     forwarded: bool,
     settled: bool,
 }
@@ -59,6 +58,8 @@ pub enum Outcome {
         request_bytes: usize,
         streamed_bytes: usize,
         usage_final: bool,
+        /// Include time spent generating hidden reasoning, not just wire bytes.
+        elapsed: Duration,
     },
 }
 impl Usage {
@@ -127,6 +128,16 @@ impl Budget {
         model: &Model,
         output: u64,
     ) -> Result<Hold, Refusal> {
+        // The gateway has resolved the request's output-limit field and alias.
+        // A zero limit must never become an under-reserved forwarded request.
+        if output == 0 {
+            return Err(Refusal {
+                status: 400,
+                message: "The output token limit must be a positive integer.",
+                code: "invalid_value",
+                param: "max_tokens",
+            });
+        }
         policy::daily_budget(cap, ledger_enabled, Some(0.0), 0.0, 0.0)?;
         let output = output.min(model.max_output);
         let required = model
@@ -148,7 +159,6 @@ impl Budget {
             model: model.clone(),
             reserved: required,
             output,
-            started: Instant::now(),
             forwarded: false,
             settled: false,
         })
@@ -223,6 +233,7 @@ impl Hold {
                 request_bytes,
                 streamed_bytes,
                 usage_final,
+                elapsed,
             } if !usage_final
                 || usage.prompt.is_none()
                 || usage.output.is_none()
@@ -231,7 +242,7 @@ impl Hold {
                 let output = self.output.min(
                     (streamed_bytes as u64)
                         .max(usage.output.unwrap_or(0))
-                        .max((self.started.elapsed().as_secs_f64() * 300.0) as u64),
+                        .max((elapsed.as_secs_f64() * 300.0) as u64),
                 );
                 let estimate = model
                     .price

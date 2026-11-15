@@ -5,7 +5,7 @@ pub mod policy;
 #[cfg(feature = "pricing")]
 pub mod pricing;
 
-#[cfg(feature = "pricing")]
+#[cfg(feature = "accounting")]
 pub mod accounting;
-#[cfg(feature = "pricing")]
+#[cfg(feature = "accounting")]
 pub mod spend;

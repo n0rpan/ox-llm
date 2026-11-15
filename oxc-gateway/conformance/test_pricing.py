@@ -17,7 +17,11 @@ CASES = ('router', 'openai', 'anthropic', 'anthropic-upstream', 'router-explicit
          'free-bad-tier', 'aliases', 'bad-rate-type', 'negative-rate', 'large-rate',
          'tier-low', 'tier-boundary', 'tier-high', 'tier-missing-final', 'tier-unordered',
          'tier-bool-bound', 'prompt-bound', 'prompt-over', 'output-bound', 'output-over',
-         'invalid-prompt', 'decimal', 'tiny-rate', 'cache-rate-defaults')
+         'invalid-prompt', 'decimal', 'tiny-rate', 'cache-rate-defaults',
+         'settle-usage', 'settle-missing', 'settle-failed', 'settle-cache',
+         'settle-invalid-sum', 'settle-invalid-type', 'settle-cancel-final',
+         'settle-cancel-partial', 'settle-cancel-reasoning', 'settle-cancel-capped',
+         'settle-reported', 'settle-repeated', 'settle-zero')
 
 
 def inputs(name):
@@ -84,6 +88,37 @@ def inputs(name):
         price.update(input_per_million=1e-20, output_per_million=3e-20)
     elif name == 'cache-rate-defaults':
         value.update(provider='anthropic', prompt=1000, read=950, write=0)
+    elif name.startswith('settle-'):
+        price.update(cache_read_per_million=.1, cache_write_per_million=1.25)
+        usage = {'prompt_tokens': 11, 'completion_tokens': 4}
+        value.update(frames=[{'usage': usage, 'choices': [{'finish_reason': 'stop'}]}],
+                     outcome='complete', request_bytes=100, streamed_bytes=4, elapsed=.01,
+                     usage_final=False)
+        if name == 'settle-missing':
+            value['frames'] = []
+        elif name == 'settle-failed':
+            value['outcome'] = 'failed'
+        elif name in ('settle-cache', 'settle-invalid-sum', 'settle-invalid-type'):
+            usage.update(prompt_tokens=1000, prompt_tokens_details={
+                'cached_tokens': 999 if name == 'settle-invalid-sum' else
+                                 True if name == 'settle-invalid-type' else 950,
+                'cache_write_tokens': 40})
+        elif name.startswith('settle-cancel-'):
+            value['outcome'] = 'cancelled'
+            if name == 'settle-cancel-final':
+                value.update(usage_final=True, elapsed=5)
+            elif name == 'settle-cancel-partial':
+                usage['completion_tokens'] = 0
+            else:
+                value.update(frames=[], elapsed=.05 if name == 'settle-cancel-reasoning' else 1000)
+                if name == 'settle-cancel-capped':
+                    value['request_bytes'] = 100_000_001
+        elif name in ('settle-reported', 'settle-repeated'):
+            usage['cost'] = .002
+            if name == 'settle-repeated':
+                value['frames'].append({'usage': {'cost': .001}})
+        elif name == 'settle-zero':
+            usage.update(prompt_tokens=0, completion_tokens=0)
     return value
 
 
@@ -93,6 +128,18 @@ def reference(spec):
     price = cloud._pricing(spec['model'])
     item = {'provider': spec['provider'], 'upstream_model': spec['upstream_model'],
             'pricing': price, 'context_window': spec['context'], 'max_output': 512}
+    if 'frames' in spec:
+        meter = cloud.Meter()
+        for frame in spec['frames']:
+            meter._object(frame)
+        hold = cloud.BudgetHold('synthetic-day', cloud.worst_case_cost(
+            item, {'max_tokens': spec['output_limit']}), spec['output_limit'], started=0)
+        row = meter.row(item)
+        if spec['outcome'] == 'cancelled':
+            return cloud.cancelled_cost(row, hold, item, spec['request_bytes'],
+                                        spec['streamed_bytes'], elapsed=spec['elapsed'],
+                                        usage_final=spec['usage_final'])
+        return cloud.conservative_cost(row, hold, failed=spec['outcome'] == 'failed')
     actual = cloud.cost(item, spec['prompt'], spec['output'], cache_read=spec['read'], cache_write=spec['write'])
     reservation = cloud.worst_case_cost(item, {'max_tokens': spec['output_limit']})
     return {'pricing': price, 'actual': actual,
@@ -128,7 +175,9 @@ if __name__ == '__main__':
     if sys.argv[1:] == ['--record-python']:
         if 'OXC_PRICING_CONTRACT' in os.environ:
             raise SystemExit('Record only Python pricing')
-        GOLDENS.write_text(json.dumps({name: invoke(name) for name in CASES}, indent=2, sort_keys=True) + '\n')
+        rows = {name: invoke(name) for name in CASES}
+        GOLDENS.write_text('{\n' + ',\n'.join('  ' + json.dumps(name) + ': ' +
+                          json.dumps(rows[name], sort_keys=True) for name in sorted(rows)) + '\n}\n')
     elif sys.argv[1:2] == ['--case']:
         spec = inputs(sys.argv[2])
         native = os.environ.get('OXC_PRICING_CONTRACT')

@@ -3,7 +3,7 @@
 use serde_json::Value;
 use std::{
     fs::OpenOptions,
-    io::{self, BufRead, BufReader, Seek, SeekFrom},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
@@ -14,6 +14,7 @@ pub struct SpendReader {
     identity: Option<(u64, u64)>,
     offset: u64,
     total: f64,
+    tail: Vec<u8>,
     bytes_read: u64,
 }
 impl SpendReader {
@@ -21,7 +22,7 @@ impl SpendReader {
         self.bytes_read
     }
     pub fn read(&mut self, path: &Path) -> io::Result<f64> {
-        let file = match OpenOptions::new()
+        let mut file = match OpenOptions::new()
             .read(true)
             .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
             .open(path)
@@ -31,6 +32,7 @@ impl SpendReader {
                 self.identity = None;
                 self.offset = 0;
                 self.total = 0.0;
+                self.tail.clear();
                 self.path = path.into();
                 return Ok(0.0);
             }
@@ -46,11 +48,25 @@ impl SpendReader {
             self.identity = Some(identity);
             self.offset = 0;
             self.total = 0.0;
+            self.tail.clear();
+        } else if self.offset > 0 {
+            // A same-inode rewrite can be at least as long as the cached file.
+            // Verify a bounded tail, like the reference, before reusing totals.
+            file.seek(SeekFrom::Start(self.offset - self.tail.len() as u64))?;
+            let mut tail = vec![0; self.tail.len()];
+            file.read_exact(&mut tail)?;
+            self.bytes_read += tail.len() as u64;
+            if tail != self.tail {
+                self.offset = 0;
+                self.total = 0.0;
+                self.tail.clear();
+            }
         }
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::Start(self.offset))?;
         let mut offset = self.offset;
         let mut total = self.total;
+        let mut tail = self.tail.clone();
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -60,6 +76,10 @@ impl SpendReader {
                 break;
             }
             offset += count as u64;
+            tail.extend_from_slice(&line);
+            if tail.len() > 64 {
+                tail.drain(..tail.len() - 64);
+            }
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
@@ -83,7 +103,12 @@ impl SpendReader {
         // Commit the cursor/total together only after every complete row passed.
         self.offset = offset;
         self.total = total;
-        Ok((total * 1e8).round_ties_even() / 1e8)
+        self.tail = tail;
+        Ok(if total < f64::MAX / 1e8 {
+            (total * 1e8).round_ties_even() / 1e8
+        } else {
+            total
+        })
     }
 }
 

@@ -8,7 +8,8 @@ publish = false
 [features]
 default = []
 policy = ["dep:serde_json"]
-pricing = ["policy", "dep:serde_json", "dep:bigdecimal", "dep:num-traits", "dep:nix"]
+pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
+accounting = ["policy", "pricing", "dep:nix"]
 
 [dependencies]
 nix = { version = "0.30", features = ["user"], optional = true }
@@ -22,7 +23,7 @@ required-features = ["policy"]
 
 [[example]]
 name = "pricing_contract"
-required-features = ["pricing"]
+required-features = ["accounting"]
 
 [lints.rust]
 unsafe_code = "forbid"

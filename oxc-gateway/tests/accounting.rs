@@ -1,4 +1,4 @@
-#![cfg(feature = "pricing")]
+#![cfg(feature = "accounting")]
 use oxc_gateway::{
     accounting::{Budget, Model, Outcome, Usage},
     pricing::Price,
@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Barrier},
     thread,
     time::{SystemTime, UNIX_EPOCH},
@@ -36,7 +36,7 @@ impl Drop for Home {
         fs::remove_dir_all(&self.0).unwrap();
     }
 }
-fn append(path: &PathBuf, row: &Value) -> io::Result<()> {
+fn append(path: &Path, row: &Value) -> io::Result<()> {
     oxc_gateway::spend::append_private(path, row)
 }
 
@@ -63,7 +63,7 @@ fn unfinished_tail_is_not_a_corrupt_row_and_unchanged_reads_are_constant_work() 
     for _ in 0..100 {
         assert_eq!(reader.read(&path).unwrap(), 0.3);
     }
-    assert_eq!(reader.bytes_read(), read);
+    assert!(reader.bytes_read() - read <= 64 * 100);
     file.write_all(b"{\"remote\":true,\"cost_usd\":0.3}")
         .unwrap();
     assert_eq!(reader.read(&path).unwrap(), 0.3);
@@ -71,6 +71,22 @@ fn unfinished_tail_is_not_a_corrupt_row_and_unchanged_reads_are_constant_work() 
     assert_eq!(reader.read(&path).unwrap(), 0.6);
     file.write_all(b"[\"complete-invalid-row\"]\n").unwrap();
     assert!(reader.read(&path).is_err());
+}
+#[test]
+fn same_inode_rewrite_of_equal_or_larger_size_resets_the_running_total() {
+    let home = Home::new();
+    let path = home.ledger();
+    append(&path, &json!({"remote":true,"cost_usd":0.1})).unwrap();
+    let mut reader = SpendReader::default();
+    assert_eq!(reader.read(&path).unwrap(), 0.1);
+    fs::write(&path, b"{\"remote\":true,\"cost_usd\":0.9}\n").unwrap();
+    assert_eq!(reader.read(&path).unwrap(), 0.9);
+    fs::write(
+        &path,
+        b"{\"remote\":true,\"cost_usd\":0.8}\n{\"remote\":true,\"cost_usd\":0.1}\n",
+    )
+    .unwrap();
+    assert_eq!(reader.read(&path).unwrap(), 0.9);
 }
 #[test]
 fn replace_truncate_and_malformed_costs_fail_or_reset_correctly() {
@@ -135,6 +151,14 @@ fn reservations_are_atomic_and_abandoned_unforwarded_holds_release() {
     let home = Home::new();
     let budget = Budget::new(home.ledger());
     let mut model = model();
+    assert_eq!(
+        budget
+            .reserve(&json!(1), true, &model, 0)
+            .err()
+            .unwrap()
+            .code,
+        "invalid_value"
+    );
     model.price =
         Price::from_model(&json!({"pricing":{"input_per_million":1,"output_per_million":2}}))
             .unwrap();
