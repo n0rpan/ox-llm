@@ -899,7 +899,7 @@ fn resolve_continue_word(a: &Args, dirs: &Dirs) -> Option<Args> {
         && a.fork.is_none()
         && !a.resume
         && crate::args::valid_session_id(word)
-        && store.resolve(word).is_ok();
+        && store.resolve(word).is_ok_and(|session| session.id == *word);
     if is_id {
         out.continue_id = Some(word.clone());
     } else {

@@ -112,3 +112,57 @@ fn a_prompt_word_after_long_continue_still_continues_the_latest_session() {
     assert!(format!("{:?}", requests[1].messages).contains("fix"));
     assert!(format!("{:?}", requests[2].messages).contains("summarize the diff"));
 }
+
+#[test]
+fn a_prompt_word_matching_an_older_session_prefix_is_kept_as_prompt_text() {
+    let env = TestEnv::new();
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text("old"),
+            ScriptTurn::text("latest"),
+            ScriptTurn::text("continued"),
+            ScriptTurn::text("tests added"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let old = run(
+        &env,
+        &server,
+        &[
+            "-p",
+            "--no-tools",
+            "--session-id",
+            "add-older",
+            "older instruction",
+        ],
+    );
+    assert_eq!(announced_id(&old), "add-older");
+    let latest = run(
+        &env,
+        &server,
+        &[
+            "-p",
+            "--no-tools",
+            "--session-id",
+            "latest-session",
+            "latest instruction",
+        ],
+    );
+    assert_eq!(announced_id(&latest), "latest-session");
+    let continued = run(&env, &server, &["-p", "--no-tools", "--continue", "add", "tests"]);
+    assert_eq!(announced_id(&continued), "latest-session");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let messages = format!("{:?}", requests[2].messages);
+    assert!(
+        messages.contains("latest instruction")
+            && requests[2].messages.iter().any(|message| message
+                .content
+                .as_deref()
+                .is_some_and(|text| text == "add" || text.starts_with("add\n"))),
+        "{messages}"
+    );
+    assert!(!messages.contains("older instruction"));
+    assert!(format!("{:?}", requests[3].messages).contains("tests"));
+}
