@@ -879,7 +879,7 @@ fn choose_open(
         // pi passes `--session-id` on to `SessionManager.forkFrom` (the fork's new id).
         return Ok((Open::Fork(store.resolve(s)?), a.session_id.clone()));
     }
-    if let Some(s) = &a.session {
+    if let Some(s) = a.continue_id.as_ref().or(a.session.as_ref()) {
         let sref = store.resolve(s)?;
         // pi main.ts `resolveSessionPath`: a path opens as it is; an id found only in another
         // directory is offered as a fork into this one (declining exits 0 with "Aborted.").
@@ -956,7 +956,7 @@ fn run_headless(
         if st.session_file.is_some() {
             let _ = writeln!(
                 stderr,
-                "oxa: session {} (resume with --session {})",
+                "oxa: session {} (resume with --continue {})",
                 st.session_id, st.session_id
             );
         }

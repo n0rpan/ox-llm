@@ -65,8 +65,10 @@ pub struct Args {
     pub list_models: Option<Option<String>>,
     /// `--thinking <level>`.
     pub thinking: Option<ThinkingLevel>,
-    /// `-c`, `--continue`.
+    /// `-c`, `--continue [id]`.
     pub continue_: bool,
+    /// Explicit session id supplied to `--continue`.
+    pub continue_id: Option<String>,
     /// `-r`, `--resume`.
     pub resume: bool,
     /// `--session <path|id>`.
@@ -216,8 +218,8 @@ const OPTIONS: &[(&str, &str)] = &[
         "Export a session file to HTML and exit",
     ),
     (
-        "--continue, -c",
-        "Continue the most recent session for the current directory",
+        "--continue [id], -c",
+        "Continue the named session, or the most recent session when no id is given",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -521,9 +523,13 @@ fn parse_flag(
                 }
             });
         }
-        "-c" | "--continue" => {
+        "-c" => {
             no_value(inline, flag)?;
             a.continue_ = true;
+        }
+        "--continue" => {
+            a.continue_ = true;
+            a.continue_id = optional_value(argv, i, inline);
         }
         "-r" | "--resume" => {
             no_value(inline, flag)?;
@@ -697,6 +703,17 @@ fn parse_extension_or_unknown(
 fn check_conflicts(a: &Args) -> Result<(), OxaError> {
     if a.continue_ && a.resume {
         return Err(usage("--continue cannot be combined with --resume"));
+    }
+    if let Some(id) = &a.continue_id {
+        if !valid_session_id(id) {
+            return Err(usage(SESSION_ID_ERROR));
+        }
+        if a.no_session {
+            return Err(usage("--continue cannot be combined with --no-session"));
+        }
+        if a.session.is_some() {
+            return Err(usage("--continue cannot be combined with --session"));
+        }
     }
     if a.session.is_some() && a.no_session {
         return Err(usage("--session cannot be combined with --no-session"));

@@ -415,3 +415,23 @@ fn prompts_keep_order_and_default_is_empty() {
     assert_eq!(a.files, ["f"]);
     assert_eq!(parse(&[]), Args::default());
 }
+
+#[test]
+fn continue_consumes_an_explicit_id_and_leaves_the_new_instruction() {
+    for words in [
+        vec!["--continue", "session-123", "next instruction"],
+        vec!["--continue=session-123", "next instruction"],
+    ] {
+        let args = parse(&words);
+        assert!(args.continue_);
+        assert_eq!(args.continue_id.as_deref(), Some("session-123"));
+        assert_eq!(args.messages, vec!["next instruction"]);
+    }
+    for words in [
+        vec!["--continue", "session-123", "--no-session"],
+        vec!["--continue", "session-123", "--session", "other"],
+        vec!["--continue=../escape"],
+    ] {
+        assert_eq!(parse_err(&words).code, codes::USAGE);
+    }
+}
