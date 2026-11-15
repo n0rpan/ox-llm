@@ -30,6 +30,8 @@ Commands take the place of the message. They do not start a session.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
+`oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
+
 `oxa config` lists the settings as oxa resolves them. Its `--import-pi` option copies skills, prompts, themes, `keybindings.json` and `mcp.json` from the agent directory of an earlier installation under your home directory. It runs once and never overwrites an existing file.
 
 ### MCP commands
