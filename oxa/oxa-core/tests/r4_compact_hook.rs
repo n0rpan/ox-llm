@@ -132,6 +132,7 @@ fn push(st: &mut SessionState, wire: WireMsg) {
         EntryBody::Msg {
             wire,
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append");

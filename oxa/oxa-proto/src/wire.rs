@@ -262,6 +262,8 @@ pub enum Finish {
     Stop,
     ToolCalls,
     Length,
+    /// The model declined (a refusal); the streamed text is kept, no retry.
+    ContentFilter,
 }
 
 /// `timings.*` of the engine's final chunk.

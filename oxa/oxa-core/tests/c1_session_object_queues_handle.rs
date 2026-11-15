@@ -348,7 +348,7 @@ fn image_part_adds_placeholder_line() {
     let user = entries
         .iter()
         .find_map(|e| match &e.body {
-            EntryBody::Msg { wire, parts } if !parts.is_empty() => Some((wire.clone(), parts.clone())),
+            EntryBody::Msg { wire, parts, .. } if !parts.is_empty() => Some((wire.clone(), parts.clone())),
             _ => None,
         })
         .expect("the user message is stored");

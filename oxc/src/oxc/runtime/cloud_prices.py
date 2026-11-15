@@ -153,12 +153,22 @@ class Refresher:
         self.thread = threading.Thread(target=self._run, name='public-model-prices', daemon=True)
         self.thread.start()
 
+    RETRY_SECONDS = (60, 300, 1800, 3600)  # after a failure; hourly from then on
+
+    def step(self, now, state):
+        """One scheduling decision.  ``state`` = [next_refresh, failures]; returns nothing."""
+        if not self.allowed() or now < state[0]:
+            return
+        if refresh():
+            state[:] = [now + DAY_SECONDS, 0]
+        else:
+            delay = self.RETRY_SECONDS[min(state[1], len(self.RETRY_SECONDS) - 1)]
+            state[:] = [now + delay, state[1] + 1]
+
     def _run(self):
-        next_refresh = 0
+        state = [0, 0]
         while not self.stop.is_set():
-            if self.allowed() and time.monotonic() >= next_refresh:
-                refresh()
-                next_refresh = time.monotonic() + DAY_SECONDS
+            self.step(time.monotonic(), state)
             if self.stop.wait(min(POLL_SECONDS, DAY_SECONDS)):
                 break
 
