@@ -142,3 +142,199 @@ fn a_read_only_prompt_after_failed_done_checks_reports_its_own_success() {
     assert!(results[1]["error_class"].is_null());
     assert_eq!(server.requests().len(), 7);
 }
+
+#[test]
+fn successful_builtins_are_done_in_every_headless_mode() {
+    for mode in ["print", "json", "rpc"] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+        command
+            .current_dir(env.work())
+            .env_clear()
+            .envs(env.envs(&server.url()));
+        match mode {
+            "print" => {
+                command.args(["-p", "/session"]);
+            }
+            "json" => {
+                command.args(["--mode", "json", "/session"]);
+            }
+            _ => {
+                command.args(["--mode", "rpc"]);
+            }
+        }
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if mode == "rpc" {
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"{\"type\":\"prompt\",\"message\":\"/session\"}\n")
+                .unwrap();
+        }
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{mode}: {err}");
+        let results: Vec<Value> = err
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|value| value["type"] == "oxa_result")
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["outcome"], "done");
+        assert!(server.requests().is_empty());
+        if mode == "rpc" {
+            let records: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            assert!(records.iter().any(|record| record["type"] == "response"
+                && record["success"] == true
+                && record["data"]["disposition"] == "handled"));
+        }
+    }
+}
+
+#[test]
+fn reader_handled_rpc_controls_count_as_done_and_keep_earlier_failures() {
+    for control in [
+        serde_json::json!({"type":"clear_queue"}),
+        serde_json::json!({"type":"steer","message":"later"}),
+        serde_json::json!({"type":"follow_up","message":"later"}),
+        serde_json::json!({"type":"abort_retry"}),
+        serde_json::json!({"type":"abort_bash"}),
+        serde_json::json!({"type":"abort"}),
+    ] {
+        for invalid_first in [false, true] {
+            let env = TestEnv::new();
+            let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+            let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+                .current_dir(env.work())
+                .env_clear()
+                .envs(env.envs(&server.url()))
+                .args(["--mode", "rpc", "--no-session", "--no-tools"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut input = child.stdin.take().unwrap();
+            if invalid_first {
+                writeln!(input, "{{\"type\":\"prompt\"}}").unwrap();
+            }
+            writeln!(input, "{control}").unwrap();
+            drop(input);
+            let output = child.wait_with_output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.code(),
+                Some(if invalid_first { 1 } else { 0 }),
+                "{control}: {stderr}"
+            );
+            let results: Vec<Value> = stderr
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|record| record["type"] == "oxa_result")
+                .collect();
+            assert_eq!(results.len(), 1);
+            assert_eq!(
+                results[0]["outcome"],
+                if invalid_first { "failed" } else { "done" }
+            );
+            assert!(server.requests().is_empty());
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .any(|record| record["type"] == "response"
+                        && record["command"] == control["type"]
+                        && record["success"] == true),
+                "{stdout}"
+            );
+        }
+    }
+}
+
+#[test]
+fn json_output_errors_preserve_the_completed_prompt_failure() {
+    struct HeaderThenClosed(bool);
+    impl Write for HeaderThenClosed {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.0 {
+                self.0 = false;
+                Ok(bytes.len())
+            } else {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    for budget_refusal in [true, false] {
+        let env = TestEnv::new();
+        let turn = if budget_refusal {
+            ScriptTurn::fault(oxa_fake::Fault::Http {
+                status: 429,
+                body:
+                    serde_json::json!({"error":{"code":"budget_exceeded","message":"Daily budget exhausted"}})
+                        .to_string(),
+            })
+        } else {
+            ScriptTurn::text("finished")
+        };
+        let server = FakeServer::start(vec![turn], FakeOpts::default()).unwrap();
+        let owned = env.envs(&server.url());
+        let pairs: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let err = Capture::default();
+        let code = oxa_cli::run(
+            &[
+                "--mode",
+                "json",
+                "--no-session",
+                "--no-tools",
+                "first",
+                "unstarted",
+            ]
+            .map(String::from),
+            &oxa_config::Env::from_pairs(&pairs),
+            oxa_cli::Stdio {
+                stdin: Box::new(Cursor::new(Vec::new())),
+                stdout: Box::new(HeaderThenClosed(true)),
+                stderr: Box::new(err.clone()),
+                stdin_is_tty: false,
+                stdout_is_tty: false,
+                cwd: env.work(),
+            },
+        );
+        let stderr = String::from_utf8(err.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(code, if budget_refusal { 3 } else { 1 }, "{stderr}");
+        let results: Vec<Value> = stderr
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|record| record["type"] == "oxa_result")
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0]["error_class"],
+            if budget_refusal { "budget_exhausted" } else { "io" }
+        );
+        assert!(stderr.contains("cannot write a record"));
+        assert_eq!(
+            server.requests().len(),
+            1,
+            "do not start another prompt after output fails"
+        );
+    }
+}

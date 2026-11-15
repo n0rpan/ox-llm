@@ -316,13 +316,15 @@ pub fn run_json_outcome(
                 return Ok(outcome);
             }
         }
+        // Event writes cannot interrupt the request: retain its completed result
+        // before classifying a concurrent output failure.
+        outcome.include(*session.outcome());
         if let Some(e) = sink.error.take() {
             let _ = writeln!(err, "{e}");
             outcome.include(RunOutcome::from_error(&e));
             return Ok(outcome);
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
-        outcome.include(*session.outcome());
         if session.handle().wrap_up_requested() {
             outcome.include(RunOutcome::Interrupted);
             break;
@@ -467,6 +469,26 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Run print mode and return its process exit code.
+pub fn run_print(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    run_print_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
+}
+
+/// Run JSON mode and return its process exit code.
+pub fn run_json(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    run_json_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,24 +546,4 @@ mod tests {
         assert!(out.is_empty(), "stdout is written by run_print, once");
         assert_eq!(String::from_utf8(err).unwrap(), "first draft\n");
     }
-}
-
-/// Run print mode and return its process exit code.
-pub fn run_print(
-    session: &mut Session,
-    prompts: Vec<(String, Vec<Part>)>,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<i32, OxaError> {
-    run_print_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
-}
-
-/// Run JSON mode and return its process exit code.
-pub fn run_json(
-    session: &mut Session,
-    prompts: Vec<(String, Vec<Part>)>,
-    out: &mut dyn Write,
-    err: &mut dyn Write,
-) -> Result<i32, OxaError> {
-    run_json_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
 }

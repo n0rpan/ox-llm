@@ -169,6 +169,11 @@ impl Session {
         &self.st.stats.outcome
     }
 
+    /// Record a built-in command's result independently of the last agent turn.
+    pub(crate) fn set_command_outcome(&mut self, outcome: crate::RunOutcome) {
+        self.st.stats.outcome = outcome;
+    }
+
     /// Consume the last prompt outcome before dispatching a new headless message.
     pub fn take_outcome(&mut self) -> crate::RunOutcome {
         std::mem::take(&mut self.st.stats.outcome)

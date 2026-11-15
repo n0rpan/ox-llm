@@ -199,7 +199,7 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
 }
 
 #[test]
-fn a_failed_final_request_retains_the_session_and_interrupted_outcome() {
+fn a_failed_final_request_retains_the_session_and_typed_failure() {
     let env = fixture();
     let server = FakeServer::start(
         vec![
@@ -220,7 +220,7 @@ fn a_failed_final_request_retains_the_session_and_interrupted_outcome() {
     .unwrap();
     let output = start(&env, &server, "print", true).wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(130), "{stderr}");
+    assert_eq!(output.status.code(), Some(oxa_proto::EXIT_BUDGET), "{stderr}");
     assert!(stderr.contains("budget_exceeded"));
     assert_eq!(server.requests().len(), 2, "the final turn is not retried");
     assert_eq!(
