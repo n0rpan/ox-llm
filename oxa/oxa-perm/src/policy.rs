@@ -189,7 +189,8 @@ impl ModePolicy {
     /// `Decision::Allow` and is counted on the switch; the safety floor is unchanged: the
     /// deny-list (B3) and git's files (B4) stay `Deny`, plan mode's `Deny`s stand, and a write
     /// to the project's protected configuration (`.oxa`) still asks. At `Autonomy::Yolo` (full
-    /// access) everything is allowed outside plan mode, the floor included; in plan mode it
+    /// access) everything else is allowed outside plan mode, but the floor still applies first
+    /// (`mandatory()`: deny-list and git-protected paths deny, `.oxa` asks); in plan mode it
     /// answers as `Auto`.
     pub fn with_yolo(mut self, switch: YoloSwitch) -> ModePolicy {
         self.yolo = Some(switch);

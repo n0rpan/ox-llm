@@ -660,9 +660,10 @@ fn ext_025() {
     assert!(r.index_of("before_settle") < r.index_of("settled"), "{}", r.log);
 }
 
-/// EXT-026 (P): `ui_prompt_start` fires when a UI prompt opens. A permission prompt opens in the
-/// default mode for a read outside the working directory. (Not ask mode: there every write
-/// asks, the test's own `log.txt` write included, and print mode answers no.)
+/// EXT-026 (P): `ui_prompt_start` fires when a UI prompt opens. A permission prompt opens in
+/// standard mode for a read outside the working directory; the default `auto` mode (#202) never
+/// prompts, so the test selects `--standard`. (Not ask mode: there every write asks, the test's
+/// own `log.txt` write included, and print mode answers no.)
 /// invariant: fired around oxa's own permission prompt in every mode (pi has no permission prompt; its print mode has no UI)
 #[test]
 fn ext_026() {
