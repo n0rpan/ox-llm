@@ -369,3 +369,14 @@ fn slash_model_id_is_not_taken_as_a_provider() {
     let got = resolve_model("anthropic/claude-sonnet-5-5:high", None, &available).unwrap();
     assert_eq!(got.model, "anthropic/claude-sonnet-5-5");
 }
+
+/// #349: with a single endpoint the hint lists the bare ids the picker and `--model` use.
+#[test]
+fn not_found_hint_lists_bare_ids_for_a_single_endpoint() {
+    let models = vec![mr("oxe", "anthropic/claude-haiku-5-5"), mr("oxe", "flash-20b")];
+    let err = resolve_model("nope/zzz", Some("oxe"), &models).unwrap_err();
+    assert_eq!(
+        err.hint.unwrap(),
+        "available: anthropic/claude-haiku-5-5, flash-20b"
+    );
+}
