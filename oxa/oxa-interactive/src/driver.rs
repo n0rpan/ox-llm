@@ -1048,7 +1048,12 @@ impl<'a> Loop<'a> {
                 Overlay::Settings(s) => s.paste(text),
                 Overlay::Sessions(s) => s.paste(text),
                 Overlay::Tree(s) => s.paste(text),
-                Overlay::Thinking(_) | Overlay::Theme(_) | Overlay::Fork(_) | Overlay::Mcp(_) => {}
+                Overlay::Thinking(_) | Overlay::Theme(_) | Overlay::Fork(_) | Overlay::Mcp(_) => {
+                    self.push_notice(
+                        Level::Info,
+                        "Paste ignored: this selector has no text field.".to_string(),
+                    );
+                }
             }
             return;
         }

@@ -872,6 +872,20 @@ fn dropped_image_path_is_attached() {
     assert!(sent.contains("[image"), "a placeholder on the wire: {sent}");
 }
 
+/// A paste while a list selector (no text field) is open is not dropped silently: a notice says so.
+#[test]
+fn paste_into_thinking_selector_shows_a_notice() {
+    let world = World::new(vec![ScriptTurn::text("OK.")]);
+    let steps = vec![
+        step("selector", &[], typed("/thinking", &["enter"])),
+        step("paste", &["off"], vec![InputEvent::Paste("hello".to_string())]),
+        step("notice", &["Paste ignored"], vec![key("escape")]),
+        step("exit", &[], typed("/exit", &["enter"])),
+    ];
+    let (code, _l, _t, _f) = run_app(&world, false, (90, 30), steps);
+    assert_eq!(code, 0);
+}
+
 // ---------------------------------------------------------------------------------------------
 // X5: controls follow the session; quit is a stop signal
 // ---------------------------------------------------------------------------------------------
