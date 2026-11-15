@@ -8,11 +8,10 @@ autobins = false
 
 [features]
 default = []
-native-controller = ["dep:tokio", "dep:reqwest", "dep:serde_json", "dep:chrono", "dep:nix"]
+native-controller = ["dep:serde_json", "dep:chrono", "dep:nix"]
+upstream-anthropic-request = ["dep:serde_json"]
 
 [dependencies]
-tokio = { version = "1.54.1", features = ["rt", "net", "time", "process", "io-util"], optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream"], optional = true }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 nix = { version = "0.30", features = ["fs", "user"], optional = true }

@@ -1,8 +1,6 @@
 #![forbid(unsafe_code)]
 
 mod cli;
-mod cli_client;
-mod cli_control;
 mod ledger;
 mod paths;
 
@@ -33,15 +31,10 @@ fn main() {
             }
             0
         }
-        Ok(args) if cli_control::supports(&args.action) => {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("CLI runtime");
-            runtime.block_on(cli_control::run(&args))
-        }
         Ok(_) => {
-            eprintln!("oxc-native: this command is unavailable in this experimental CLI build.");
+            eprintln!(
+                "oxc-native: command execution is unavailable in this experimental parser build."
+            );
             2
         }
     };

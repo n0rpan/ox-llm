@@ -72,7 +72,7 @@ pub struct Args {
     pub rest: Vec<String>,
     pub(crate) flags: HashSet<String>,
     pub(crate) values: HashMap<String, String>,
-    pub(crate) records: Vec<String>,
+    records: Vec<String>,
 }
 
 impl Args {

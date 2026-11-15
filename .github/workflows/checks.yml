@@ -144,16 +144,8 @@ jobs:
   native-controller-cli:
     needs: changes
     if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.changes.outputs.full == 'true' || needs.changes.outputs.lab == 'true'))
-    name: experimental oxc CLI (${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            arch: x86_64
-          - os: ubuntu-24.04-arm
-            arch: aarch64
+    name: experimental oxc CLI (x86_64)
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -173,13 +165,7 @@ jobs:
           cargo check --locked --manifest-path oxc-rs/Cargo.toml --no-default-features
           cargo clippy --locked --manifest-path oxc-rs/Cargo.toml --features native-controller --all-targets -- -D warnings
           cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --features native-controller
-      - name: Private-network CLI peer sandbox
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          bwrap --unshare-all --ro-bind / / true
-      - name: Python and native CLI conformance
+      - name: Python and native parser conformance
         run: |
           python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
           OXC_COMMAND="$GITHUB_WORKSPACE/oxc-rs/target/release/oxc-native" python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
@@ -297,6 +283,23 @@ jobs:
           mkdir -p "$root/home"
           env -i PATH="$PATH" HOME="$root/home" PIP_CACHE_DIR="$HOME/.cache/pip" \
             tools/openai-contract/run.sh --mode both --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
+
+  fuzz-oxa:
+    # Task 61: the stable smoke of the oxa cargo-fuzz targets (seconds; no nightly/sanitizer).
+    name: oxa fuzz smoke (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rustup is preinstalled on the hosted image)
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Task 61 oxa targets, short smoke
+        run: cargo test --locked --manifest-path fuzz/oxa/Cargo.toml --test smoke
 
   fuzz-oxe:
     # Task 61: the stable smoke of the oxe cargo-fuzz targets (seconds; no model weights).

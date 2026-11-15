@@ -91,7 +91,7 @@ pi page(s): models.md, models-configuration.md, providers.md, llama-cpp.md. Test
 |---|---|---|---|---|
 | MOD-001 | Model selection: `/model`, Ctrl+L selector, Ctrl+P / Shift+Ctrl+P cycling over the scoped list | A | over the engine model list; a switch is a new epoch (W3) and prints its re-prefill cost | `cli.rs::mod_001` |
 | MOD-002 | `models.json` custom models | A | names engine endpoints (laptop, LAN) with an optional bearer key; other provider types are a clear error | `cli.rs::mod_002` |
-| MOD-003 | Thinking levels off..max with per-model clamping | A | W6: boolean on the wire; `thinkingBudgets` ignored with a warning | `cli.rs::mod_003` |
+| MOD-003 | Thinking levels off..max with per-model clamping | A | W6: boolean on the wire; `thinkingBudgets` is not a setting (generic unknown-key warning) | `cli.rs::mod_003` |
 | MOD-004 | Model without preserved thinking: thinking defaults to off, status line says why | A | W6 (oxa only) | `cli.rs::mod_004` |
 | MOD-010 | llama.cpp router management (`/llama`) | A | `/engine`: status and model load over `/_local/status` | `cli.rs::mod_010` |
 
