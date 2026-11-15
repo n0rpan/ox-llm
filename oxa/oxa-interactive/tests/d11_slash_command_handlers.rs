@@ -151,7 +151,7 @@ fn unknown_slash_is_local_error_and_help_usage_exist() {
         argument_hint: None,
         source: Source::Extension("x".to_string()),
     });
-    assert!(fx.run("/skill:demo go").is_none());
+    assert!(fx.run("/skill:demo").is_none());
     // An extension command named like a name that is not built in reaches the core.
     fx.commands.push(CommandSpec {
         name: "deploy".to_string(),
@@ -159,7 +159,7 @@ fn unknown_slash_is_local_error_and_help_usage_exist() {
         argument_hint: None,
         source: Source::Extension("x".to_string()),
     });
-    assert!(fx.run("/deploy now").is_none());
+    assert!(fx.run("/deploy").is_none());
     // A template or extension named `help` / `usage` overrides the built-in handler.
     for n in ["help", "usage"] {
         let mut fx = Fx::new();
