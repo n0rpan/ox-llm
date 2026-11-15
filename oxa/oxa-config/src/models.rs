@@ -547,6 +547,48 @@ fn list_hint(available: &[ModelRef]) -> String {
     }
 }
 
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+/// The available id closest to a mistyped pattern: a substring match, or a small edit distance.
+fn suggest(pattern: &str, available: &[ModelRef]) -> Option<String> {
+    let p = pattern.to_lowercase();
+    let single = available.windows(2).all(|w| w[0].endpoint == w[1].endpoint);
+    let name = |m: &ModelRef| if single { m.model.clone() } else { qualified(m) };
+    if p.len() >= 3 {
+        if let Some(m) = available.iter().find(|m| m.model.to_lowercase().contains(&p)) {
+            return Some(name(m));
+        }
+    }
+    available
+        .iter()
+        .map(|m| {
+            let id = m.model.to_lowercase();
+            let tail = id.rsplit('/').next().unwrap_or(&id);
+            (edit_distance(&p, &id).min(edit_distance(&p, tail)), m)
+        })
+        .filter(|(d, _)| *d <= 3.max(p.len() / 4))
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, m)| name(m))
+}
+
 fn not_found(pattern: &str, available: &[ModelRef]) -> OxaError {
-    OxaError::new(codes::NOT_FOUND, format!("model {pattern:?} not found")).with_hint(list_hint(available))
+    OxaError::new(codes::NOT_FOUND, format!("model {pattern:?} not found")).with_hint(
+        match suggest(pattern, available) {
+            Some(s) => format!("did you mean {s}?\n{}", list_hint(available)),
+            None => list_hint(available),
+        },
+    )
 }
