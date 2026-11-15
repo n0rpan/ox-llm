@@ -16,7 +16,7 @@ readme = "README.md"
 cloud = ["anthropic==0.125.0"]
 
 [project.scripts]
-oxc = "oxc.__main__:main"
+oxc-diagnostics = "oxc.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
