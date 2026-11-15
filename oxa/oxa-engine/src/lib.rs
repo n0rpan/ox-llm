@@ -19,6 +19,8 @@
 
 mod chat;
 mod embedded;
+#[cfg(feature = "in-process-gateway")]
+mod embedded_runtime;
 mod handshake;
 mod hints;
 mod http;
@@ -31,6 +33,8 @@ pub use handshake::{handshake_warning, NEEDED_CAPABILITIES, PROTOCOL_UNDERSTOOD}
 pub use hints::{build_headers, new_idem_key};
 pub use http::{http_request, HttpRequest, HttpResponse, Url};
 pub use info::{count_tokens, fetch_info, fetch_info_for, parse_info, parse_info_for, DEFAULT_MAX_OUTPUT};
+#[cfg(feature = "in-process-gateway")]
+pub use oxc_gateway::{runtime::Options as GatewayOptions, runtime::Runtime as GatewayRuntime, Gateway};
 pub use sse::{post_sse, Flow, SseEnd, SseEvent, SseParser, StreamOpts};
 
 pub use oxa_proto::{ChatRequest, Engine, EngineInfo, Hints};

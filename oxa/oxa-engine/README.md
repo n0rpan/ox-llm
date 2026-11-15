@@ -32,4 +32,14 @@ an assistant turn succeed. Offline and pre-cancelled requests stop before any
 gateway call. Mid-stream failures cannot produce a committed turn, and the
 adapter never retries. Exact cloud tokenization is unsupported and prompt counts
 remain client estimates. `tests/embedded_gateway.rs` exercises the socket-free
-interface; wiring the real shared gateway and CLI selection is the next slice.
+interface.
+
+The default-off Cargo feature `in-process-gateway` adds
+`EmbeddedEngine::from_gateway(Gateway) -> Result<EmbeddedEngine, OxaError>`.
+Construct `GatewayRuntime::new(config, key_path, ledger_dir, GatewayOptions)`
+from trusted user configuration, then pass it to `Gateway::new`. These types
+are re-exported from `oxa-engine` for the binary's composition. The bridge owns
+a private Tokio driver for the synchronous Engine API; callbacks run on the
+calling thread, and cancellation also interrupts a provider waiting for bytes.
+Async consumers use `Gateway::chat` directly. The default HTTP engine and
+runtime selection remain unchanged; the CLI owns the separate user opt-in.
