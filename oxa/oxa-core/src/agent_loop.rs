@@ -95,6 +95,7 @@ fn run_inner(
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
     let mut done = crate::done::DoneState::default();
+    done.begin(st);
     loop {
         // E-INT 1: host requests that arrived since the last step (queries, appends) are
         // served between steps; session-shape actions wait for settlement.
@@ -310,6 +311,7 @@ fn run_inner(
                 tool_msgs.push(msg);
             }
             done.note_edits(&results);
+            done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;

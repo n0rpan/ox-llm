@@ -1,5 +1,5 @@
 //! `done` setting (issue #104): shell commands oxa runs itself before it reports completion.
-//! A run that edited files (`edit` / `write` succeeded; `bash` changes are not tracked) and is
+//! A run that edited files (`edit` / `write` succeeded, or a `bash` call changed the git tree) and is
 //! about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
 //! of the session folder, instead of in the session folder itself.
@@ -21,6 +21,27 @@ pub(crate) struct DoneState {
     /// A file tool succeeded since the last check.
     dirty: bool,
     rounds: u32,
+    /// `git` fingerprint of the work folder at the last look (`None`: not a git repo).
+    tree: Option<u64>,
+}
+
+/// Hash of `git status` + `git diff` in `cwd`; `None` outside a git repo or without git.
+fn tree_fingerprint(cwd: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let git = |args: &[&str]| {
+        let o = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        o.status.success().then_some(o.stdout)
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    git(&["status", "--porcelain"])?.hash(&mut h);
+    git(&["diff"])?.hash(&mut h);
+    Some(h.finish())
 }
 
 impl DoneState {
@@ -30,6 +51,25 @@ impl DoneState {
             .any(|r| !r.is_error && (r.tool_name == "edit" || r.tool_name == "write"))
         {
             self.dirty = true;
+        }
+    }
+
+    /// Start of a run: remember the tree, so a later `bash` change can be told apart.
+    pub(crate) fn begin(&mut self, st: &SessionState) {
+        if !st.settings.done_commands().is_empty() {
+            self.tree = tree_fingerprint(&st.cwd);
+        }
+    }
+
+    /// After a batch with a `bash` call: a changed git tree counts as an edit.
+    pub(crate) fn note_bash(&mut self, st: &SessionState, results: &[CallResult]) {
+        if self.tree.is_none() || !results.iter().any(|r| r.tool_name == "bash") {
+            return;
+        }
+        let now = tree_fingerprint(&st.cwd);
+        if now != self.tree {
+            self.dirty = true;
+            self.tree = now;
         }
     }
 }

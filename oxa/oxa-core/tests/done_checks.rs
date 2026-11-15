@@ -563,3 +563,52 @@ fn swapped_subdir_symlink_cannot_move_the_bind_root() {
         s.command
     );
 }
+
+#[test]
+fn bash_made_change_in_a_git_repo_triggers_checks() {
+    let env = TestEnv::new();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(env.work())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    let (rec, _) = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool(
+                "b1",
+                "bash",
+                &json!({"command": "echo hi > made-by-bash.txt"}).to_string(),
+            ),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn bash_without_changes_runs_no_checks() {
+    let env = TestEnv::new();
+    let ok = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(env.work())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    let (rec, _) = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool("b1", "bash", &json!({"command": "ls"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert!(rec.checks().is_empty());
+}
