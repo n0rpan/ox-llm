@@ -240,7 +240,6 @@ const SCHEMA: &[KeyDef] = &[
     key("terminal.showImages", Kind::Bool, "true"),
     key("theme", Kind::String, "\"system\""),
     key("themes", Kind::StringList, "[]"),
-    verdict_o("thinkingBudgets", Kind::Object, "{}"),
     verdict_o(
         "transport",
         Kind::Enum(&["auto", "sse", "websocket", "websocket-cached"]),

@@ -19,6 +19,12 @@ pub struct HttpTransport {
     pub(crate) protocol_version: Option<String>,
     pub(crate) queue: VecDeque<Value>,
     pub(crate) closed: bool,
+    /// P4: the configured or ambient proxy, if any. Offline, a remote proxy is refused only
+    /// when it would actually carry the request: a target on the proxy's `NO_PROXY` list is
+    /// routed direct by ureq itself.
+    proxy: Option<ureq::Proxy>,
+    /// The proxy host, for the refusal text (`None` = direct).
+    proxy_host: Option<String>,
     /// Private: one agent per connection, so the connection pool is shared by all requests.
     agent: ureq::Agent,
 }
@@ -50,8 +56,22 @@ impl HttpTransport {
             .http_status_as_error(false)
             .timeout_global(Some(timeout));
         // SET-050: `httpProxy` applies to MCP HTTP (the engine connection is direct).
-        if let Some(proxy) = cfg.proxy.as_deref().and_then(|p| ureq::Proxy::new(p).ok()) {
-            builder = builder.proxy(Some(proxy));
+        //
+        // P4: offline, a proxy is used only when it is loopback too, unless the target is on
+        // the proxy's `NO_PROXY` list (ureq then connects direct). A proxy resolves the target
+        // and makes the connection, so a non-loopback proxy would be a connection to its host
+        // whatever the target URL is. The environment proxy (ureq's default) is subject to the
+        // same rule; the effective route is classified per request in `proxy_refusal`.
+        let configured = cfg.proxy.as_deref().and_then(|p| ureq::Proxy::new(p).ok());
+        let proxy = configured.or_else(ureq::Proxy::try_from_env);
+        let proxy_host = proxy.as_ref().map(|p| p.host().to_string());
+        // Always set the proxy explicitly: `None` disables ureq's own environment lookup. An
+        // excluded target still goes direct because the proxy carries ureq's `NO_PROXY` rules.
+        builder = builder.proxy(proxy.clone());
+        // P4: offline never follows a redirect: the redirect target is not checked by the
+        // offline gate, and a loopback endpoint could name a remote one.
+        if oxa_proto::offline() {
+            builder = builder.max_redirects(0);
         }
         let config = builder.build();
         HttpTransport {
@@ -62,8 +82,32 @@ impl HttpTransport {
             protocol_version: None,
             queue: VecDeque::new(),
             closed: false,
+            proxy,
+            proxy_host,
             agent: ureq::Agent::new_with_config(config),
         }
+    }
+
+    /// P4: offline, would the proxy carry this request? A loopback proxy is local; a target on
+    /// the proxy's `NO_PROXY` list is routed direct by ureq, so neither is blocked.
+    fn proxy_is_blocked(&self) -> bool {
+        let Some(proxy) = &self.proxy else {
+            return false;
+        };
+        if !oxa_proto::offline() || oxa_proto::is_loopback_host(proxy.host()) {
+            return false;
+        }
+        let target = self.url.parse::<ureq::http::Uri>();
+        !target.is_ok_and(|uri| proxy.is_no_proxy(&uri))
+    }
+
+    /// P4: the offline refusal for a proxy that would actually carry this request.
+    fn proxy_refusal(&self) -> Option<OxaError> {
+        if !self.proxy_is_blocked() {
+            return None;
+        }
+        let host = self.proxy_host.as_deref().unwrap_or("a proxy");
+        Some(oxa_proto::offline_error(&format!("the MCP proxy ({host})")))
     }
 
     /// The token source in use: none when a static `Authorization` header is configured.
@@ -105,6 +149,9 @@ impl HttpTransport {
     /// One POST of `body`, read in full.
     fn post(&self, body: &[u8], token: Option<&str>) -> Result<Reply, OxaError> {
         crate::offline::check(&self.url)?;
+        if let Some(e) = self.proxy_refusal() {
+            return Err(e);
+        }
         let mut req = self.agent.post(self.url.as_str());
         if !self.has_header("accept") {
             req = req.header("Accept", "application/json, text/event-stream");
@@ -115,6 +162,14 @@ impl HttpTransport {
         let req = self.decorate(req, token);
         let mut resp = req.send(body).map_err(|e| self.transport_error(e))?;
         let status = resp.status().as_u16();
+        // P4: offline, redirects are not followed (the agent has `max_redirects(0)`); a
+        // redirect is refused here without looking at its target.
+        if oxa_proto::offline() && (300..400).contains(&status) {
+            return Err(oxa_proto::offline_error(&format!(
+                "the MCP redirect from {}",
+                self.url
+            )));
+        }
         let session = resp
             .headers()
             .get("mcp-session-id")
@@ -374,7 +429,7 @@ impl Transport for HttpTransport {
             return;
         }
         self.closed = true;
-        if self.session_id.is_some() && crate::offline::check(&self.url).is_ok() {
+        if self.session_id.is_some() && !self.proxy_is_blocked() && crate::offline::check(&self.url).is_ok() {
             let source = self.token_source();
             let token = source.and_then(|src| src.token().ok().flatten());
             let req = self.decorate(self.agent.delete(self.url.as_str()), token.as_deref());

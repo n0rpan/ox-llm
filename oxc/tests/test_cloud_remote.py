@@ -453,6 +453,62 @@ class BudgetRace(CloudCase):
         self.assertTrue(row['usage_missing'])
 
 
+class SpendIncremental(CloudCase):
+    def test_spend_only_parses_rows_appended_since_the_last_read(self):
+        directory = self.tmp / 'ledger3'
+        directory.mkdir()
+        path = directory / 'requests-20260102.jsonl'
+        row = json.dumps({'remote': True, 'cost_usd': 0.5}) + '\n'
+        path.write_text(row * 50)
+        with patch.dict(os.environ, {'OXC_LEDGER_DIR': str(directory)}):
+            self.assertEqual(cloud.spend_today(day='20260102'), 25.0)
+            with open(path, 'a') as f:
+                f.write(row)
+            real = json.loads
+            with patch.object(cloud.json, 'loads', side_effect=real) as loads:
+                self.assertEqual(cloud.spend_today(day='20260102'), 25.5)
+            self.assertEqual(loads.call_count, 1)
+            path.write_text(json.dumps({'remote': True, 'cost_usd': 0.1}) * 1 + '\n')
+            self.assertEqual(cloud.spend_today(day='20260102'), 0.1)
+
+    def test_a_row_being_appended_is_neither_parsed_nor_counted(self):
+        directory = self.tmp / 'ledger4'
+        directory.mkdir()
+        path = directory / 'requests-20260103.jsonl'
+        row = json.dumps({'remote': True, 'cost_usd': 1.0})
+        stop = threading.Event()
+        errors = []
+
+        def writer():
+            with open(path, 'ab', buffering=0) as f:
+                for _ in range(150):
+                    f.write(row[:10].encode())
+                    f.write(row[10:].encode())
+                    time.sleep(0.001)
+                    f.write(b'\n')
+            stop.set()
+
+        def reader():
+            last = 0.0
+            while not stop.is_set():
+                try:
+                    value = cloud.spend_today(day='20260103')
+                    assert value >= last and value == int(value)
+                    last = value
+                except Exception as exc:
+                    errors.append(exc)
+                    return
+
+        with patch.dict(os.environ, {'OXC_LEDGER_DIR': str(directory)}):
+            threads = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(30)
+            self.assertEqual(errors, [])
+            self.assertEqual(cloud.spend_today(day='20260103'), 150.0)
+
+
 class LedgerFailClosed(CloudCase):
     def _today(self):
         return self.ledger / ('requests-%s.jsonl' % time.strftime('%Y%m%d'))
@@ -554,3 +610,24 @@ class ReviewBoundaries(CloudCase):
         self.assertEqual(self.upstream.requests, [])
         self.assertFalse(cloud._reserved)
         self.assertEqual(self.ledger_rows()[-1]['cost_usd'], 0)
+
+
+class CachePricingFlagTests(unittest.TestCase):
+    def test_flag_values(self):
+        from oxc.runtime import cloud
+        base = {'input_per_million': 3.0, 'output_per_million': 15.0}
+        self.assertEqual(cloud.cache_pricing({'provider': 'anthropic', 'pricing': base}), 'provider_default')
+        self.assertEqual(cloud.cache_pricing({'provider': 'openrouter', 'pricing': base}), 'conservative')
+        full = dict(base, cache_read_per_million=0.3, cache_write_per_million=3.75)
+        self.assertEqual(cloud.cache_pricing({'provider': 'openrouter', 'pricing': full}), 'explicit')
+
+    def test_tiered_flag_follows_tier_rates(self):
+        from oxc.runtime import cloud
+        cache = {'cache_read_per_million': 0.3, 'cache_write_per_million': 3.75}
+        tiers = [dict(input_per_million=3.0, output_per_million=15.0, max_prompt_tokens=200000, **cache),
+                 dict(input_per_million=6.0, output_per_million=22.0, **cache)]
+        item = {'provider': 'openrouter', 'pricing': {'tiers': tiers}}
+        self.assertEqual(cloud.cache_pricing(item), 'explicit')
+        self.assertEqual(cloud.capabilities(dict(item, context_window=1, max_output=1))['cache_pricing'], 'explicit')
+        del tiers[1]['cache_write_per_million']
+        self.assertEqual(cloud.cache_pricing(item), 'conservative')

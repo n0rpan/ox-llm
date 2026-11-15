@@ -21,7 +21,8 @@ pub fn sandbox_net_setting(value: Option<&str>) -> bool {
 pub struct NetSandbox {
     inner: Arc<dyn Sandbox>,
     net: bool,
-    gh_token: Option<String>,
+    gh_token: std::sync::OnceLock<Option<String>>,
+    gh_source: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
 }
 
 /// The replacement for a redacted token in tool output.
@@ -94,7 +95,8 @@ impl NetSandbox {
         NetSandbox {
             inner,
             net: setting_on && !offline,
-            gh_token: None,
+            gh_token: std::sync::OnceLock::new(),
+            gh_source: None,
         }
     }
 
@@ -104,16 +106,41 @@ impl NetSandbox {
     /// token is only in the child's environment; it is replaced in the output of the command
     /// and never shown in [`Sandbox::bwrap_args`].
     pub fn with_gh_token(mut self, token: Option<String>) -> NetSandbox {
-        self.gh_token = token
-            .map(|t| t.trim().to_string())
-            .filter(|t| self.net && !t.is_empty() && !t.chars().any(char::is_whitespace));
+        let net = self.net;
+        self.gh_token = std::sync::OnceLock::new();
+        let _ = self.gh_token.set(Self::clean(net, token));
         self
+    }
+
+    /// Like [`with_gh_token`](Self::with_gh_token), but `source` runs lazily, once, at the
+    /// first command that has the network, so startup never waits for it.
+    pub fn with_gh_token_lazy(
+        mut self,
+        source: impl Fn() -> Option<String> + Send + Sync + 'static,
+    ) -> NetSandbox {
+        self.gh_source = Some(Box::new(source));
+        self
+    }
+
+    fn clean(net: bool, token: Option<String>) -> Option<String> {
+        token
+            .map(|t| t.trim().to_string())
+            .filter(|t| net && !t.is_empty() && !t.chars().any(char::is_whitespace))
+    }
+
+    fn token(&self) -> Option<&String> {
+        self.gh_token
+            .get_or_init(|| {
+                let src = self.gh_source.as_ref()?;
+                Self::clean(self.net, src())
+            })
+            .as_ref()
     }
 
     /// The spec for a real run: the clamp plus the token, when the command has the network.
     fn clamp_run(&self, s: &ExecSpec) -> ExecSpec {
         let mut s = self.clamp(s);
-        if let (true, Some(t)) = (s.net, &self.gh_token) {
+        if let (true, Some(t)) = (s.net, s.net.then(|| self.token()).flatten()) {
             s.env.retain(|(k, _)| k != "GH_TOKEN" && k != "GH_HOST");
             s.env.push(("GH_TOKEN".into(), t.clone()));
             s.env.push(("GH_HOST".into(), "github.com".into()));
@@ -128,7 +155,7 @@ impl NetSandbox {
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         let s = self.clamp_run(spec);
-        let Some(t) = self.gh_token.as_ref().filter(|_| s.net) else {
+        let Some(t) = s.net.then(|| self.token()).flatten() else {
             return run(&s, live);
         };
         let mut sr = StreamRedactor::new(t);
@@ -187,6 +214,24 @@ impl Sandbox for NetSandbox {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn lazy_gh_token_is_not_read_until_a_networked_run() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        let inner: Arc<dyn Sandbox> = Arc::new(Echo(Mutex::new(vec![])));
+        let n = NetSandbox::new(inner, true, false).with_gh_token_lazy(move || {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some("SYNTH_LAZY_TOKEN".into())
+        });
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let _ = n.bwrap_args(&spec(true));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        for _ in 0..2 {
+            n.run(&spec(true), &CancelToken::new(), &mut |_| {});
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     /// Records the env of each run and answers with the token echoed back.
     struct Echo(Mutex<Vec<Vec<(String, String)>>>);
