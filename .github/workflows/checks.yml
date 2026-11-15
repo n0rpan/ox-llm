@@ -7,9 +7,10 @@ name: checks
 # run the same set. Outputs: engine/ and fuzz/oxe/ -> `engine` (clippy, x86_64 stub server tests,
 # ARM engine and Flash builds, oxe fuzz smoke); oxa/ and fuzz/oxa/ -> `oxa` (clippy, the oxa test
 # archive and shards, the ARM oxa build, oxa fuzz smoke); oxc/ -> `lab`, `cli` and `gateway`;
-# oxc-rs/ and conformance/ -> `cli`; oxa/oxc-gateway/ -> `gateway`. Anything else (.github/, tools/,
+# oxc-rs/ and conformance/ -> `cli`; oxa/oxc-gateway/ -> `gateway`.
 # The shared gateway also selects oxa and cli to check both library consumers.
-# packaging/, root files, a new directory) and an empty group diff count as "everything changed".
+# Anything else (.github/, tools/, packaging/, root files, a new directory) and an empty group
+# diff count as "everything changed".
 # A push on main, the nightly run and manual runs set every output, so main runs everything after
 # each merge (one run at a time; a newer push replaces a waiting one) and catches cross-component
 # breaks that a path-gated PR or queue entry skipped. Drafts run only the classifier, the scans
@@ -557,7 +558,7 @@ jobs:
             cargo test --locked --offline --manifest-path oxa/oxc-gateway/Cargo.toml --all-features
       - run: cargo build --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-features --examples
       - run: /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
-      - run: OXC_POLICY_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
+      - run: OXC_CATALOG_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/catalog_contract" OXC_POLICY_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/secrets_contract" OXC_PRICING_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
 
   gate:
     # The one aggregate check: every job in `needs` must succeed or be skipped; the classifier and

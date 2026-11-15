@@ -49,4 +49,4 @@ jobs:
             cargo test --locked --offline --manifest-path oxa/oxc-gateway/Cargo.toml --all-features
       - run: cargo build --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-features --examples
       - run: /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
-      - run: OXC_POLICY_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
+      - run: OXC_CATALOG_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/catalog_contract" OXC_POLICY_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/secrets_contract" OXC_PRICING_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
