@@ -463,14 +463,7 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
-        if !stop
-            && !a.print
-            && a.mode.is_none()
-            && !arg.starts_with('-')
-            && !arg.starts_with('@')
-            && a.messages.is_empty()
-            && a.files.is_empty()
-        {
+        if !stop && (i == 1 || (arg == "work" && argv[..i - 1].iter().all(|word| word == "--offline"))) {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
                 a.subcommand = Some(sub);
                 break;

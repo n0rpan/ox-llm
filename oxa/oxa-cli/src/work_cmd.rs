@@ -127,8 +127,13 @@ impl Context {
             oxa_work::run_task_with_options(&self.cwd, &self.binary, task, self.rerun, self.offline)
                 .unwrap_or_else(|detail| oxa_work::blocked_record(task, detail));
         if self.publish && !record.worktree.as_os_str().is_empty() {
-            record = oxa_work::publish(&self.cwd, task, self.offline)
-                .unwrap_or_else(|detail| oxa_work::blocked_record(task, detail));
+            record = oxa_work::publish(
+                &self.cwd,
+                task,
+                self.offline,
+                &mut crate::report_cmd::tty_confirm(&self.env),
+            )
+            .unwrap_or_else(|detail| oxa_work::blocked_record(task, detail));
         }
         if self.reports && !record.worktree.as_os_str().is_empty() {
             let settings = oxa_config::Settings::load(&self.dirs, &self.cwd, false);
@@ -143,6 +148,7 @@ impl Context {
                     &settings,
                     &ctx,
                     offline || self.offline,
+                    &mut crate::report_cmd::tty_confirm(&self.env),
                     &mut runner,
                 )
             })

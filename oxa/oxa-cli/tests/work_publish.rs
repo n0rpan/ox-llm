@@ -3,7 +3,7 @@
 mod work;
 use oxa_fake::{ScriptTurn, TestEnv};
 use std::{fs, path::PathBuf, process::Command};
-use work::{git, run, run_args, setup};
+use work::{git, run, run_args, run_observed, setup};
 fn configure(env: &TestEnv) -> String {
     use std::os::unix::fs::PermissionsExt;
     env.write(
@@ -368,4 +368,79 @@ fn failed_draft_creation_does_not_strand_reporting_checkpoint() {
     );
     assert_eq!(retry["reports"][0]["disposition"], "local");
     assert_eq!(retry["step"], "finished");
+}
+
+#[test]
+fn unsetting_the_agent_marker_and_piping_yes_cannot_authorize_public_writes() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut unauthorized = vec![];
+    for flag in ["--publish", "--report-problems"] {
+        let env = TestEnv::new();
+        setup(&env, "[]");
+        let path = configure(&env);
+        env.write("tmp/gh", r##"#!/bin/sh
+case "$1 $2" in
+  'repo view') printf '%s' '{"nameWithOwner":"example/project"}' ;;
+  'pr list'|'issue list') printf '[]' ;;
+  'pr create'|'issue create'|'issue comment') touch "$HOME/public-write"; printf '%s' 'https://github.com/example/project/issues/1' ;;
+  *) exit 7 ;;
+esac
+"##);
+        let text = "<oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
+        let mut turns = edits();
+        turns.pop();
+        turns.push(ScriptTurn::text(text));
+        assert_eq!(run(&env, turns)["outcome"], "done");
+        // A fresh session has no controlling terminal. Removing the marker and
+        // supplying yes on stdin must not stand in for a person's confirmation.
+        let mut child = Command::new("setsid")
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:1"))
+            .env("PATH", path)
+            .env_remove("OXA_CODING_AGENT")
+            .args(["--wait", env!("CARGO_BIN_EXE_oxa"), "work", "../tasks.json", flag])
+            .current_dir(env.work().join("project"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"yes\n").unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.code().is_some());
+        if env.home().join("public-write").exists() || env.home().join("push-calls").exists() {
+            unauthorized.push(flag);
+        }
+    }
+    assert!(
+        unauthorized.is_empty(),
+        "public writes without confirmation: {unauthorized:?}"
+    );
+}
+
+#[test]
+fn rerun_resumes_interrupted_execution_without_discarding_its_checkpoint() {
+    for step in ["acceptance", "recheck", "saving"] {
+        let env = TestEnv::new();
+        setup(&env, r#"["printf checked >> checkpoint-checks"]"#);
+        let first = run(&env, edits());
+        let state_path = env.work().join("project/.git/oxa-work/test.json");
+        let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        state["step"] = step.into();
+        state["outcome"] = if step == "saving" { "done" } else { "running" }.into();
+        state["pull_request"] = "https://github.com/example/project/pull/1".into();
+        state["problem_notes"] = serde_json::json!([{"title":"Synthetic problem","notes":"Keep these notes","keywords":["synthetic problem","keep notes"]}]);
+        state["reports"] = serde_json::json!([{"draft":"report.md","disposition":"existing_issue","url":"https://github.com/example/project/issues/1","detail":""}]);
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json", "--rerun"], None);
+        assert_eq!(record["outcome"], "done", "{step}: {record}");
+        assert!(requests.is_empty(), "{step}: agent was replayed");
+        for key in ["pull_request", "problem_notes", "reports"] {
+            assert_eq!(record[key], state[key], "{step}: {key}");
+        }
+        let after: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(after["checkpoint"], state["checkpoint"], "{step}");
+        assert_eq!(record["worktree"], first["worktree"]);
+    }
 }

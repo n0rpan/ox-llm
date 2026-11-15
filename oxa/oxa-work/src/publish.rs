@@ -38,7 +38,12 @@ fn pr_base(repo: &Path, task: &Task) -> Result<String> {
         .map(str::to_string)
         .ok_or_else(|| "publishing requires a named local or origin base branch".into())
 }
-pub fn publish(repo: &Path, task: &Task, offline: bool) -> Result<Record> {
+pub fn publish(
+    repo: &Path,
+    task: &Task,
+    offline: bool,
+    confirm: &mut dyn FnMut(&str) -> Option<bool>,
+) -> Result<Record> {
     let (path, lock, mut value) = context(repo, task)?;
     let accepted = value.acceptance_outcome.unwrap_or(value.record.outcome);
     if !matches!(accepted, Outcome::Done | Outcome::Red) {
@@ -111,6 +116,12 @@ pub fn publish(repo: &Path, task: &Task, offline: bool) -> Result<Record> {
             if !pull["mergeQueueEntry"].is_null() {
                 return Err("PR is in the merge queue; use a new task branch for follow-up work".into());
             }
+        }
+        if confirm(&format!(
+            "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
+            task.branch
+        )) != Some(true) {
+            return Err("publication requires confirmation through the controlling terminal".into());
         }
         let mut push = git(
             repo,

@@ -104,6 +104,9 @@ pub(crate) fn execute(
                         .failures = failures;
                     state::save(path, state, Step::Repair)?;
                 } else {
+                    if let Some(error) = &point.agent_error {
+                        return Err(format!("{error}\nAcceptance checks:\n{failures}"));
+                    }
                     state.record.outcome = Outcome::Red;
                     state.record.detail = failures;
                     state::save(path, state, Step::Saving)?;

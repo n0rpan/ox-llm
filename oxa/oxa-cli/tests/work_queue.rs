@@ -1,4 +1,6 @@
 //! Queue behavior against real worktrees and a fake engine, with no external network.
+#[path = "common/work_confirm.rs"]
+mod confirm;
 #[path = "common/work_repo.rs"]
 mod work;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
@@ -37,7 +39,7 @@ fn command(env: &TestEnv, url: &str, max: &str) -> Command {
 fn finish(mut c: Command) -> Output {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(c.output().unwrap());
+        let _ = tx.send(confirm::output(c));
     });
     rx.recv_timeout(Duration::from_secs(30)).expect("queue finished")
 }
@@ -251,20 +253,20 @@ fn queued_workers_keep_the_parent_command_line_offline_policy() {
     )
     .unwrap();
     let mut c = Command::new(env!("CARGO_BIN_EXE_oxa"));
-    c.args([
-        "--offline",
-        "work",
-        "--queue",
-        "../queue",
-        "--max",
-        "2",
-        "--once",
-        "--min-free-mib",
-        "0",
-    ])
-    .current_dir(env.work().join("project"))
-    .env_clear()
-    .envs(env.envs(&server.url()));
+    c.env_clear()
+        .args([
+            "--offline",
+            "work",
+            "--queue",
+            "../queue",
+            "--max",
+            "2",
+            "--once",
+            "--min-free-mib",
+            "0",
+        ])
+        .current_dir(env.work().join("project"))
+        .envs(env.envs(&server.url()));
     let out = finish(c);
     assert_eq!(out.status.code(), Some(1));
     assert!(server.requests().is_empty());

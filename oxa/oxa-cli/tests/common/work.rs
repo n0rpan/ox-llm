@@ -1,4 +1,6 @@
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+#[path = "work_confirm.rs"]
+mod confirm;
 use std::process::Command;
 #[path = "work_repo.rs"]
 mod repo;
@@ -32,7 +34,7 @@ pub fn run_observed(
     }
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        tx.send(command.output().unwrap()).unwrap();
+        tx.send(confirm::output(command)).unwrap();
     });
     let out = rx
         .recv_timeout(std::time::Duration::from_secs(90))
