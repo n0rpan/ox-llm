@@ -142,7 +142,8 @@ jobs:
         run: cargo fmt --all -- --check
 
   native-controller-cli:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: changes
+    if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.changes.outputs.full == 'true' || needs.changes.outputs.lab == 'true'))
     name: experimental oxc CLI (x86_64)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -150,6 +151,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The goldens record one argparse behaviour (quoted choices, negative-number rule), which
+      # changes between patch releases, so the reference interpreter is pinned exactly.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14.8"
       - name: Toolchain
         run: rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy --component rustfmt --no-self-update
       - name: Build opt-in parser and check defaults

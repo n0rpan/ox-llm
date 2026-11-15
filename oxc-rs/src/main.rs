@@ -3,7 +3,7 @@
 mod cli;
 
 fn main() {
-    let words: Vec<String> = std::env::args().skip(1).collect();
+    let words = cli::words(std::env::args_os().skip(1));
     let code = match cli::parse(&words) {
         Err(reply) => {
             print!("{}", reply.stdout);

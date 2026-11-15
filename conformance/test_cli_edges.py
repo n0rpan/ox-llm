@@ -79,6 +79,11 @@ CASES.update({
     'ambiguity-after-separator-is-positional': ['--version', '--', '--h'],
     'uninstall-help-before-later-ambiguity': ['uninstall', '--help', '--r'],
     'missing-value-before-later-ambiguity': ['--id', '--h'],
+    # Arguments that are not valid UTF-8 reach Python as lone surrogates; the native
+    # parser must not panic on them.
+    'invalid-utf8-limit': ['--limit', b'\x855', '--version'],
+    'invalid-utf8-mode': ['--mode', b'a\xffb', '--version'],
+    'invalid-utf8-action': [b'\xc3(', '--version'],
 })
 
 

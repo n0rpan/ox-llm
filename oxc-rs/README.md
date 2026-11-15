@@ -18,6 +18,7 @@ cargo build --locked --release --manifest-path oxc-rs/Cargo.toml \
 OXC_COMMAND=/tmp/oxc-native-target/release/oxc-native \
   python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
 python3 conformance/check_native_scaffold.py /tmp/oxc-native-target/release/oxc-native
+Reference goldens are recorded with Python 3.14.8 (CI pins it); other interpreters differ in argparse messages.
 cargo fmt --manifest-path oxc-rs/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path oxc-rs/Cargo.toml \
   --features native-controller --all-targets -- -D warnings
