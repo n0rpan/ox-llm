@@ -736,3 +736,24 @@ fn held_prefix_at_stream_end_reaches_the_callback() {
         }
     }
 }
+
+/// Once a think block has closed, the answer is literal: a second `<think>` block in the
+/// answer (an example of the syntax) is answer text, not more reasoning.
+#[test]
+fn second_think_block_after_close_is_text() {
+    for chunk in [1usize, 1000] {
+        let (events, turn) = run_reasoning_case(ScriptTurn {
+            text: Some("<think>reasoning</think><think>example</think>".to_string()),
+            chunk,
+            ..ScriptTurn::text("")
+        });
+        let (r, t) = joined(&events);
+        assert_eq!(r, "reasoning", "chunk {chunk}");
+        assert_eq!(t, "<think>example</think>", "chunk {chunk}");
+        assert_eq!(
+            turn.msg.content.as_deref(),
+            Some("<think>example</think>"),
+            "chunk {chunk}"
+        );
+    }
+}

@@ -86,6 +86,8 @@ pub struct ReplyAssembler {
     indices: Vec<usize>,
     /// Inside a `<think>` block that arrived as `content` text.
     in_think: bool,
+    /// A think block has closed: the rest of the answer is literal text.
+    think_done: bool,
     /// Held-back tail of `content` that may be the start of a think tag.
     held: String,
 }
@@ -192,6 +194,7 @@ impl ReplyAssembler {
                     self.emit_reasoning(&buf[..i], events);
                     buf = buf[i + CLOSE.len()..].to_string();
                     self.in_think = false;
+                    self.think_done = true;
                     continue;
                 }
                 let keep = tag_prefix_len(&buf, CLOSE);
@@ -200,7 +203,7 @@ impl ReplyAssembler {
                 self.held = buf[cut..].to_string();
                 return;
             }
-            let at_start = self.content.as_deref().is_none_or(|t| t.trim().is_empty());
+            let at_start = !self.think_done && self.content.as_deref().is_none_or(|t| t.trim().is_empty());
             if at_start {
                 let lead = buf.len() - buf.trim_start().len();
                 let rest = &buf[lead..];
