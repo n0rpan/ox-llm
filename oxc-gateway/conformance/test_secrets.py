@@ -168,7 +168,18 @@ def invoke(name):
                               env=env, capture_output=True, text=True, timeout=15)
         if done.returncode:
             raise AssertionError(done.stderr)
-        return json.loads(done.stdout)
+        result = json.loads(done.stdout)
+        if name == 'symlink-loop':
+            # Python 3.12 resolve() raises before open; 3.13's non-strict
+            # resolve lets O_NOFOLLOW refuse the loop. Both are real reference
+            # variants. Validate the full safe refusal, never mask success or
+            # an arbitrary error, before normalizing interpreter wording.
+            allowed = ('Cloud credentials are not configured.',
+                       'Cloud credentials are not configured: the configured path is a symbolic link.')
+            if result.get('error') not in allowed:
+                raise AssertionError('Unexpected symlink-loop result: ' + repr(result))
+            result = {'error': '<validated:interpreter-specific-loop-refusal>'}
+        return result
 
 
 class SecretsContract(unittest.TestCase):

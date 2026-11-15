@@ -31,3 +31,7 @@ path. Keep an independent stream redactor for each decoded SSE field; transport
 and provider-frame parsing are later slices. Catalog/policy companions #294 and
 #297 introduce other opt-in features in this crate; retain all modules when
 incorporating the companions. Budget/ledger and upstream routing remain separate.
+
+The symlink-loop case validates the two real Python 3.12/3.13 refusal messages
+before normalizing only that interpreter-specific wording; every other error
+is compared exactly. Both source interpreters and the native reader are tested.
