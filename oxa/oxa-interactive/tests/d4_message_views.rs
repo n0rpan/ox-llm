@@ -308,10 +308,7 @@ fn shown_entry_view() {
     let aborted = render_shown("half a reply", shown_why::ABORTED, &cx);
     let text = joined(&aborted);
     assert!(text.contains("half a reply"), "{text}");
-    assert!(
-        text.contains("aborted: cancelled; the prompt stays in the conversation"),
-        "{text}"
-    );
+    assert!(text.contains("aborted: already sent; ask again"), "{text}");
 
     let failed = render_shown("partial", shown_why::FAILED, &cx);
     assert!(joined(&failed).contains("failed: not sent to the model; ask again"));

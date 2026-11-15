@@ -93,14 +93,17 @@ fn all_contexts() -> Vec<HintContext> {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         HintContext::Idle {
             has_text: true,
             slash: false,
+            armed: false,
         },
         HintContext::Idle {
             has_text: true,
             slash: true,
+            armed: false,
         },
         HintContext::Running,
         HintContext::Dialog,
@@ -334,6 +337,7 @@ fn hint_idle_empty_editor_shows_default_keys() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         true,
     );
@@ -367,11 +371,36 @@ fn hint_idle_empty_editor_shows_default_keys() {
     assert!(text.contains("ctrl+d exit"), "{text:?}");
 }
 
+/// #346: a first Ctrl+C on an empty editor arms the quit; the hint bar must show the clear
+/// key as the exit (warning) so the no-op press is not left unexplained, and drop the plain
+/// exit key to avoid two "exit" hints.
+#[test]
+fn hint_idle_armed_shows_clear_key_as_exit() {
+    let armed = hints(
+        HintContext::Idle {
+            has_text: false,
+            slash: false,
+            armed: true,
+        },
+        true,
+    );
+    assert!(
+        armed.contains(&format!("{} exit", key("app.clear"))),
+        "the armed exit must show the clear key: {armed:?}"
+    );
+    assert!(armed.contains("ctrl+c exit"), "{armed:?}");
+    assert!(!armed.contains("ctrl+d exit"), "{armed:?}");
+    // The other idle hints stay visible.
+    assert!(armed.contains("/ commands"), "{armed:?}");
+    assert!(armed.contains("enter send"), "{armed:?}");
+}
+
 #[test]
 fn hint_search_only_in_fullscreen() {
     let idle = HintContext::Idle {
         has_text: false,
         slash: false,
+        armed: false,
     };
     assert!(!hints(idle, false).contains("search"));
     assert!(hints(idle, true).contains("search"));
@@ -383,6 +412,7 @@ fn hint_text_contexts() {
         HintContext::Idle {
             has_text: true,
             slash: false,
+            armed: false,
         },
         false,
     );
@@ -393,6 +423,7 @@ fn hint_text_contexts() {
         HintContext::Idle {
             has_text: true,
             slash: true,
+            armed: false,
         },
         false,
     );
@@ -441,6 +472,7 @@ fn hint_rebinding_changes_the_hint() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &StatusModel::default(),
         &km,
@@ -462,6 +494,7 @@ fn hint_unbound_action_is_left_out() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &StatusModel::default(),
         &km,
@@ -481,6 +514,7 @@ fn hint_place_shown_at_140_and_hidden_at_50() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &st,
         &keymap(),
@@ -496,6 +530,7 @@ fn hint_place_shown_at_140_and_hidden_at_50() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &st,
         &keymap(),
@@ -1007,6 +1042,7 @@ fn ascii_skin_is_pure_ascii() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &km,
         true,

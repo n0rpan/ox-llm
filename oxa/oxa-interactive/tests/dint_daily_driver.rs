@@ -925,7 +925,7 @@ fn controls_are_rebound_to_the_new_session() {
         // The aborted reply is a Shown block (never sent); the text is in the editor again.
         step(
             "aborted",
-            &["the prompt stays in the conversation", "steer me"],
+            &["already sent; ask again", "steer me"],
             vec![key("ctrl+c")],
         ),
         step("cleared", &[], vec![key("ctrl+d")]),
@@ -1118,7 +1118,7 @@ fn aborted_stream_is_shown_not_a_reply() {
         step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
         step(
             "aborted",
-            &["aborted: cancelled; the prompt stays"],
+            &["aborted: already sent; ask again"],
             typed("/session", &["enter"]),
         ),
         // The Shown block is not counted as an assistant message.

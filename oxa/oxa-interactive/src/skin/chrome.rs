@@ -10,8 +10,13 @@ use super::{badge, glyphs, left_right, meter, sprite_frame, Glyphs, Sprite};
 /// What the hint bar should teach right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintContext {
-    /// Nothing runs. `has_text`: the editor is not empty; `slash`: its text starts with `/`.
-    Idle { has_text: bool, slash: bool },
+    /// Nothing runs. `has_text`: the editor is not empty; `slash`: its text starts with `/`;
+    /// `armed`: a first Ctrl+C cleared an empty editor, so a second one exits (quit unconfirmed).
+    Idle {
+        has_text: bool,
+        slash: bool,
+        armed: bool,
+    },
     /// A run is in progress (thinking, streaming, tool, compaction, retry, queue).
     Running,
     /// A dialog waits for an answer.
@@ -365,7 +370,11 @@ pub fn oxa_hint_bar(
 fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme) -> Vec<String> {
     let act = |id: &str, label: &str| action_hint(keymap, id, label, "text", theme);
     let items: Vec<Option<String>> = match ctx {
-        HintContext::Idle { has_text: false, .. } => vec![
+        HintContext::Idle {
+            has_text: false,
+            armed,
+            ..
+        } => vec![
             act("tui.input.submit", "send"),
             Some(hint("/", "commands", "text", theme)),
             act("app.model.select", "models"),
@@ -377,11 +386,19 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
             } else {
                 None
             },
-            act("app.exit", "exit"),
+            if armed {
+                // A first Ctrl+C cleared the empty editor; a second one exits. Show the clear
+                // key as the exit (warning) so the first, no-op press is not left unexplained,
+                // and drop the plain exit key to avoid two "exit" hints.
+                action_hint(keymap, "app.clear", "exit", "warning", theme)
+            } else {
+                act("app.exit", "exit")
+            },
         ],
         HintContext::Idle {
             has_text: true,
             slash: false,
+            ..
         } => vec![
             act("tui.input.submit", "send"),
             act("tui.input.newLine", "newline"),
@@ -391,6 +408,7 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
         HintContext::Idle {
             has_text: true,
             slash: true,
+            ..
         } => vec![
             act("tui.input.tab", "complete"),
             act("tui.input.submit", "run"),
