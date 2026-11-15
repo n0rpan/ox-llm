@@ -113,6 +113,7 @@ fn a_panicking_command_is_its_error_and_the_worker_goes_on() {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

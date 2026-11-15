@@ -39,5 +39,4 @@ to. The text of the rows does not cite the internal work items.
 |---|---|---|
 | CMP-015 | `compaction.modelOverrides` per model | engine model ids. an override naming another model than the session's is ignored with a warning; the summary runs on the session model (one slot: a swap unloads the model and cold-prefills the whole wire on the other one) |
 | MCP-015 | Resource tools `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource` | text-only engine: image / audio / binary content blocks of any MCP result become the fixed placeholder line |
-| MCP-026 | MCP `sampling/createMessage` (a server asks the client's model) | the engine has one inference slot and a server may not take it; the capability is not advertised and the request gets JSON-RPC -32601; the manager never calls the engine |
 | EXT-093 | Example ports: plan-mode, permission-gate, custom-compaction, todo, status-line | each loads and passes a scripted session. pi's custom-compaction summarises with a second (cloud) model; the port sends no model request of its own (one model, one slot) and supplies custom instructions to the summary request |

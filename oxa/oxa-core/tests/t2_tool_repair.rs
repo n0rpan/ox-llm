@@ -94,6 +94,7 @@ fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionS
         host_rx: None,
         host_deferred: Vec::new(),
         compact_memo: Default::default(),
+        jobs: oxa_core::fresh_jobs(),
     };
     (st, eng)
 }
@@ -418,6 +419,24 @@ fn classify_edges() {
     );
     let block = "<tool_call>\n<function=t>\n<parameter=path>\nx\n";
     assert_eq!(c(block), Cause::Unclosed { tag: "</parameter>" });
+}
+
+#[test]
+fn bash_job_only_call_is_not_missing_required() {
+    // Issue #127 (b): `command` is no longer required in the bash schema (a `job` read has no
+    // command). The repair classifier reads the schema's `required` set, so a job-only call
+    // must not be flagged as `MissingRequired` before it reaches `BashTool::parse`.
+    let tools = [Declared {
+        name: "bash",
+        schema_json: oxa_tools::descriptions::BASH.schema_json,
+    }];
+    let block =
+        "<tool_call>\n<function=bash>\n<parameter=job>\njob-1\n</parameter>\n</function>\n</tool_call>";
+    assert_eq!(classify(block, &tools), Cause::Format);
+    // A call with neither `command` nor `job` is still a format problem here (the tool's own
+    // `parse` reports the exact-one error), not a schema-level missing-required.
+    let block = "<tool_call>\n<function=bash>\n</function>\n</tool_call>";
+    assert_eq!(classify(block, &tools), Cause::Format);
 }
 
 #[test]

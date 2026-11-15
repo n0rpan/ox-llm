@@ -19,7 +19,7 @@ use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLev
 use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_rpc::{run_json, run_print, serve, Out};
 use oxa_sandbox::{Bwrap, NoSandbox};
-use oxa_session::{decode_entry, decode_header, import_session, FsStore, MemStore, SessionStore};
+use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -341,14 +341,21 @@ struct Built {
 impl Built {
     /// Fresh `Deps` (the policy and built-in tools are not `Clone`).
     fn deps(&self, session_id: Option<String>) -> Deps {
+        // Issue #127 (b): one background-job registry per session, sharing the session's
+        // sandbox. The session kills its jobs on close/shutdown.
+        let jobs = Arc::new(oxa_tools::JobRegistry::new());
+        jobs.set_sandbox(self.sandbox.clone());
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
             // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_shell(oxa_tools::ShellConfig {
-                shell_path: self.settings.shell_path(&self.dirs.home),
-                command_prefix: self.settings.shell_command_prefix(),
-            }),
+            tools: oxa_tools::builtin_tools_with_shell_and_jobs(
+                oxa_tools::ShellConfig {
+                    shell_path: self.settings.shell_path(&self.dirs.home),
+                    command_prefix: self.settings.shell_command_prefix(),
+                },
+                jobs.clone(),
+            ),
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
@@ -374,6 +381,7 @@ impl Built {
             thinking: self.thinking,
             mode: self.mode,
             session_id,
+            jobs,
         }
     }
 }
@@ -1008,7 +1016,6 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             }
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
-            Reopen::Import(path) => Open::Resume(import_session(&path, base.store.as_ref(), &base.cwd)?),
         };
         Session::open(deps, how)
     });

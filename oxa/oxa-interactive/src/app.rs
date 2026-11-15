@@ -505,8 +505,8 @@ pub fn worker_loop_with(
         match cmd {
             SessionCmd::Shutdown => break,
             SessionCmd::Reopen(how) => {
-                // The session to return to when the new one cannot be opened (a bad import
-                // path, an unreadable file): the old one is already shut down by then.
+                // The session to return to when the new one cannot be opened (an unreadable
+                // file): the old one is already shut down by then.
                 let back = session.as_ref().map(|s| s.inner().sref.clone());
                 // `/new` keeps the model and thinking level of the session it leaves (the
                 // status bar shows them); the other modes restore the target's own.
@@ -515,14 +515,13 @@ pub fn worker_loop_with(
                         let st = s.state();
                         (st.model.clone(), st.thinking)
                     }),
-                    Reopen::Resume(_) | Reopen::Fork(_) | Reopen::Import(_) => None,
+                    Reopen::Resume(_) | Reopen::Fork(_) => None,
                 };
                 // pi's status line for the swap, shown at the top of the new transcript.
                 let status = match &how {
                     Reopen::New => "New session started".to_string(),
                     Reopen::Resume(_) => "Resumed session".to_string(),
                     Reopen::Fork(_) => "Forked to new session".to_string(),
-                    Reopen::Import(path) => format!("Session imported from: {}", path.display()),
                 };
                 let mut opened = false;
                 if let Some(mut old) = session.take() {

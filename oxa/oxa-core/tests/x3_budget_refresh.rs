@@ -152,6 +152,7 @@ fn open_with(env: &TestEnv, engine: Arc<TwoModels>, model: Option<&str>) -> Sess
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

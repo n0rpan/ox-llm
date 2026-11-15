@@ -49,6 +49,7 @@ fn open_in(env: &TestEnv, cwd: &Path, engine: Arc<dyn Engine>, session_id: &str)
             thinking: None,
             mode: None,
             session_id: Some(session_id.to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

@@ -147,7 +147,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     // Every P row's test body cites pi (a doc page, pi's source text, or a recorded fixture).
     let parity = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -191,26 +191,6 @@ fn a_rows_name_their_invariant() {
             "{} is A but its test does not name the invariant (a `// INVARIANT:` comment)",
             cols[1]
         );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    // TOOLS has no O rows; the check still asserts that none of them is silently untested.
-    let parity = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("PARITY.md"),
-    )
-    .expect("PARITY.md");
-    for line in parity.lines() {
-        let cols: Vec<&str> = line.split('|').map(str::trim).collect();
-        if cols.len() < 6 || !cols[1].starts_with("TOOLS-") || cols[3] != "O" {
-            continue;
-        }
-        let fn_name = cols[1].to_lowercase().replace('-', "_");
-        assert!(fn_body(&fn_name).contains("unsupported_in_oxa"), "{}", cols[1]);
     }
 }
 
@@ -594,12 +574,15 @@ fn tools_009() {
 fn tools_010() {
     let env = TestEnv::new();
     let s = schema_of(&drive(&env, vec![ScriptTurn::text("ok")], &[]), "bash");
-    assert_eq!(
-        s["required"],
-        serde_json::json!(["command"]),
-        "pi: bash requires command"
-    );
+    // Issue #127 (b): `command` is no longer required (a `job` read has no command); the
+    // schema declares `background` and `job` alongside `command` and `timeout`.
+    assert!(s["required"].is_null() || s["required"].as_array().is_some_and(|a| a.is_empty()));
     assert!(s["properties"].get("timeout").is_some(), "pi: bash has timeout");
+    assert!(
+        s["properties"].get("background").is_some(),
+        "pi: bash has background"
+    );
+    assert!(s["properties"].get("job").is_some(), "pi: bash has job");
     let r = run_one(
         &env,
         "bash",

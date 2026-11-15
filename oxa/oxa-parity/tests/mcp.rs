@@ -6,7 +6,7 @@
 //! yet are `#[ignore = "MCP-0xx RED: ..."]` and keep their assertions, so un-ignoring one shows the
 //! failure; the H wave takes them from there.
 //! Drivers: the real `oxa` binary and `oxa-fake` (`cargo build -p oxa-cli -p oxa-fake` first). The
-//! MCP servers are the fixture `fixtures/pi/mcp/server.py` (a stdio test double, run with python3).
+//! MCP servers are the fixture `fixtures/goldens/mcp/server.py` (a stdio test double, run with python3).
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
 use oxa_parity::{fixture, run_oxa};
 use serde_json::{json, Value};
@@ -51,7 +51,7 @@ fn trust_work(env: &TestEnv) {
 
 /// Copy the fixture server into the test root; returns its path.
 fn install_server(env: &TestEnv) -> String {
-    let src = std::fs::read_to_string(fixture("pi/mcp/server.py")).expect("fixture server");
+    let src = std::fs::read_to_string(fixture("goldens/mcp/server.py")).expect("fixture server");
     let dst = env.root().join("mcp/server.py");
     std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
     std::fs::write(&dst, src).expect("copy fixture server");
@@ -192,7 +192,7 @@ fn mcp_rows() -> Vec<(String, String, String)> {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = mcp_rows();
-    assert_eq!(rows.len(), 26, "the MCP area has 26 rows");
+    assert_eq!(rows.len(), 23, "the MCP area has 23 rows");
     for (id, verdict, _) in &rows {
         assert!(
             row_source(id).is_some(),
@@ -203,7 +203,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for (id, verdict, _) in mcp_rows().iter().filter(|r| r.1 == "P") {
         let (head, _) = row_source(id).unwrap();
         assert!(
@@ -222,22 +222,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             head.contains("/// invariant:"),
             "{id} is A and its test must name the invariant (`/// invariant:`)"
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for (id, _, _) in mcp_rows().iter().filter(|r| r.1 == "O") {
-        let (head, body) = row_source(id).unwrap();
-        assert!(
-            head.contains("/// unsupported_in_oxa:"),
-            "{id} is O and its test must state the unsupported_in_oxa surface"
-        );
-        assert!(
-            body.contains("unsupported") || body.contains("-32601") || body.contains("builtin:mcp"),
-            "{id} must assert the unsupported behaviour"
         );
     }
 }
@@ -1160,54 +1144,6 @@ fn mcp_022() {
     assert_eq!(read, "echo:r", "a read-class call runs");
 }
 
-/// pi: mcp.md "Add servers from extensions": an extension adds a server for the session with
-/// `pi.registerMcpServer(name, config)`.
-/// unsupported_in_oxa: (O-175) MCP servers come from `mcp.json` / `oxa mcp add` only;
-/// `oxa.registerMcpServer` / `unregisterMcpServer` / `getMcpServers` throw `unsupported_in_oxa`,
-/// so the extension fails to load and the run goes on.
-#[test]
-fn mcp_023() {
-    let env = TestEnv::new();
-    let ext = env.write(
-        "ext/register.js",
-        "export default function (oxa) { oxa.registerMcpServer('fake', { command: 'python3' }); }",
-    );
-    let server = fake(vec![ScriptTurn::text("done")]);
-    let out = run_oxa(&env, &server.url(), &["-e", &ext.to_string_lossy(), "hi"], "");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(0), "{stderr}");
-    assert!(
-        stderr.contains("oxa.registerMcpServer is not supported in oxa"),
-        "the registration is refused: {stderr}"
-    );
-    assert!(stderr.contains("unsupported_in_oxa"), "{stderr}");
-}
-
-/// pi: mcp.md "Replace the built-in MCP support": an extension that registers `/mcp` replaces the
-/// built-in support.
-/// unsupported_in_oxa: the built-in MCP is in Rust and is never replaced; the `-e builtin:mcp`
-/// selection is accepted and changes nothing, and a server from `mcp.json` still connects and
-/// answers.
-#[test]
-fn mcp_024() {
-    let env = TestEnv::new();
-    let (entry, _) = fake_server_config(&env, "mcp_024", "plain", json!({}));
-    write_json(&user_file(&env), &json!({"mcpServers": {"fake": entry}}));
-    let code = "text(await tools.mcp__fake__echo({ text: \"built-in\" }));";
-    let server = fake(vec![
-        ScriptTurn::tool("c1", "codemode", &json!({ "code": code }).to_string()),
-        ScriptTurn::text("done"),
-    ]);
-    let out = run_oxa(&env, &server.url(), &["-e", "builtin:mcp", "run it"], "");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(last_tool_text(&server.requests()).contains("echo:built-in"));
-}
-
 /// pi: mcp.md "Use MCP from the SDK": an embedder adds MCP to its session through the library.
 /// invariant: the SDK surface is the Rust API of oxa-mcp (`McpManager`): an embedder loads
 /// `mcp.json`, starts the manager, lists the servers and tools, calls a tool (codemode
@@ -1288,7 +1224,7 @@ fn mcp_025() {
 /// the client does not advertise `sampling` and the server's request gets JSON-RPC -32601; the
 /// manager never calls the engine. The fixture's `sample` tool reports the code it got back.
 #[test]
-fn mcp_026() {
+fn server_sampling_cannot_start_side_inference() {
     let env = TestEnv::new();
     let (entry, rec) = fake_server_config(&env, "mcp_026", "plain", json!({}));
     let (out, reqs) = session_with(

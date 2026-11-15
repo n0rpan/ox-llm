@@ -30,6 +30,13 @@ maintainer, who says in the PR when a hardware check is needed.
   the fast set only: the queue already ran the full set on exactly the tree that lands, and the nightly
   run re-checks main in full.
   Only PR events cancel superseded runs; main and merge-group runs are not cancelled in progress.
+  On ready PRs, clippy checks changed Rust components and the stub library suite runs for engine
+  changes; unknown paths conservatively select every component. The oxa build, stub smoke and
+  loopback OpenAI contract remain fast checks for the rest. Full gates build one x86_64 nextest
+  archive and run two partitions with mandatory bwrap. The required oxa check verifies every
+  inventoried test ran exactly once, rejects runtime skips, and permits only the three existing
+  opt-in measurement/dump ignores. CI tests use the `ci` Cargo profile without LTO; production
+  ARM64 builds retain the release profile and engine flags.
 - You can build and test x86_64 code locally: the Rust workspace `oxa/`, the Python controller `lab/`, and
   `oxe-server --engine stub` in `engine/`. The model engine is aarch64-only; rely on CI for those jobs.
 - **When a task is ambiguous,** open the PR as a draft with your question at the top instead of guessing.

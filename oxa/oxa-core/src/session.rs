@@ -35,6 +35,8 @@ pub struct Deps {
     pub mode: Option<Mode>,
     /// `--session-id`.
     pub session_id: Option<String>,
+    /// The background-job registry the `bash` tool shares with this session (issue #127 (b)).
+    pub jobs: Arc<oxa_tools::JobRegistry>,
 }
 
 /// How to open.
@@ -181,6 +183,7 @@ impl Session {
             thinking,
             mode,
             session_id,
+            jobs,
         } = d;
         // H: `defaultModel` (pi settings.md "Startup model ID") when no model was chosen and the
         // engine serves it; otherwise the engine's own model, as before.
@@ -262,6 +265,7 @@ impl Session {
             host_rx: None,
             host_deferred: Vec::new(),
             compact_memo: Default::default(),
+            jobs,
         };
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
@@ -398,14 +402,22 @@ impl Session {
     pub fn fork(&mut self, entry: &str) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
         let mut ui = HeadlessUi::default();
-        crate::fork_at(&mut self.st, entry, &mut ui)
+        let r = crate::fork_at(&mut self.st, entry, &mut ui);
+        if r.is_ok() {
+            self.st.jobs.reset();
+        }
+        r
     }
 
     /// `/clone`: copy the active branch into a new session and switch to it.
     pub fn clone_session(&mut self) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
         let mut ui = HeadlessUi::default();
-        crate::clone_current(&mut self.st, &mut ui)
+        let r = crate::clone_current(&mut self.st, &mut ui);
+        if r.is_ok() {
+            self.st.jobs.reset();
+        }
+        r
     }
 
     /// Switch this object to another session (`/resume`, `/new` with `Open::New`). Fires
@@ -421,6 +433,7 @@ impl Session {
         let target = payload["targetSessionFile"].as_str().map(str::to_string);
         let reason = payload["reason"].as_str().unwrap_or("new");
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
+        self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
         self.preloaded = false;
         Ok(())
@@ -646,6 +659,7 @@ impl Session {
         );
         self.st.host_rx = None;
         self.st.host_deferred.clear();
+        self.st.jobs.kill_all();
     }
 
     /// Fire `SessionShutdown`, shut hook sets down. Called once before exit.
@@ -1873,6 +1887,7 @@ mod tests {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: Arc::new(oxa_tools::JobRegistry::new()),
         }
     }
 
