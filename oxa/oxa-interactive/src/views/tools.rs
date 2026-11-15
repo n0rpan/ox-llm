@@ -1,4 +1,4 @@
-//! D5: tool call and result views. Owner: task D5. Signatures below are frozen; bodies are yours.
+//! D5: tool call and result views.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{tool-execution.ts,diff.ts,visual-truncate.ts} and the per-tool renderers in src/core/tools/*.ts
 use crate::{ToolBlock, ToolState, ViewCx};
 use oxa_proto::{RenderKind, Value};
@@ -109,11 +109,11 @@ pub(crate) fn tool_parts(t: &ToolBlock, cx: &ViewCx, inner: usize) -> ToolParts 
         None => match tool_header(&t.name, &args, &inner_cx) {
             Some(h) => header.push(h),
             None => {
-                header.push(theme.fg("toolTitle", &theme.bold(&t.name)));
+                header.push(theme.fg("toolTitle", &theme.bold(&sanitize_display(&t.name))));
                 let args_text = if t.args.is_null() {
-                    t.args_raw.clone()
+                    sanitize_display(&t.args_raw)
                 } else {
-                    serde_json::to_string_pretty(&t.args).unwrap_or_default()
+                    sanitize_display(&serde_json::to_string_pretty(&t.args).unwrap_or_default())
                 };
                 let args_lines: Vec<String> = args_text.lines().map(|l| theme.fg("muted", l)).collect();
                 let (args_lines, _) = if expanded {
@@ -198,7 +198,11 @@ pub(crate) fn tool_parts(t: &ToolBlock, cx: &ViewCx, inner: usize) -> ToolParts 
 /// home directory as `~`. `None` for a tool that is not built in.
 pub fn tool_header(name: &str, args: &Value, cx: &ViewCx) -> Option<String> {
     let theme = cx.theme;
-    let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
+    let s = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .map(|v| sanitize_display(v).replace(['\n', '\t'], " "))
+    };
     let n = |k: &str| {
         args.get(k)
             .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f.max(0.0) as u64)))
@@ -280,7 +284,7 @@ pub fn tool_result_lines(
     }
     let path = args.get("path").and_then(Value::as_str).unwrap_or("");
     match name {
-        "read" => highlight_code(text, language_from_path(path), theme),
+        "read" => highlight_code(&sanitize_display(text), language_from_path(path), theme),
         "write" => {
             let content = args.get("content").and_then(Value::as_str).unwrap_or(text);
             // A summary line, then the content as added (`+`) lines, so a write does not
@@ -291,13 +295,14 @@ pub fn tool_result_lines(
                 if n == 1 { "" } else { "s" },
                 content.len()
             );
-            let diff: String = content.lines().map(|l| format!("+{l}\n")).collect();
+            let clean = sanitize_display(content);
+            let diff: String = clean.lines().map(|l| format!("+{l}\n")).collect();
             let mut out = vec![theme.dim(&summary)];
             out.extend(render_diff(&diff, cx.width, cx));
             out
         }
         "edit" => match ui.get("diff").and_then(Value::as_str) {
-            Some(diff) => render_diff(diff, cx.width, cx),
+            Some(diff) => render_diff(&sanitize_display(diff), cx.width, cx),
             None => plain_lines(text, "toolOutput", theme),
         },
         "bash" => plain_lines(&strip_ansi(text), "toolOutput", theme),
@@ -446,9 +451,18 @@ fn display_path(p: &str, cx: &ViewCx) -> String {
     p.to_string()
 }
 
-/// Lines of `text` in one token, tabs as 3 spaces.
+/// `text` without control characters except newline and tab, so untrusted tool text (arguments
+/// from the model, live output, diffs) cannot write escape sequences to the terminal (#409).
+fn sanitize_display(text: &str) -> String {
+    text.chars()
+        .filter(|&c| !c.is_control() || c == '\n' || c == '\t')
+        .collect()
+}
+
+/// Lines of `text` in one token, tabs as 3 spaces; control characters are dropped.
 fn plain_lines(text: &str, token: &str, theme: &Theme) -> Vec<String> {
-    text.lines()
+    sanitize_display(text)
+        .lines()
         .map(|l| theme.fg(token, &l.replace('\t', "   ")))
         .collect()
 }

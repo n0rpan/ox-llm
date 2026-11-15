@@ -1,4 +1,4 @@
-//! A13: the Component trait and the line-diff renderer. Owner: task A13. Signatures below are frozen; bodies are yours.
+//! A13: the Component trait and the line-diff renderer.
 // ported from pi packages/tui/src/tui.ts, tui-main-screen.ts and tui-alt-screen.ts
 use crate::{truncate_to_width, CursorPos, Key, Mouse, TermMode, Terminal, Theme};
 

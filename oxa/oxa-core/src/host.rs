@@ -1,4 +1,4 @@
-//! E4: the `Host` implementation handed to hook sets. Owner: task E4. Signatures below are frozen; bodies are yours.
+//! E4: the `Host` implementation handed to hook sets.
 //!
 //! Timing (the rule on `HostAction`), as implemented here:
 //! * `IsIdle`, `Abort` and queue appends (`Steer` / `FollowUp`) are served from `Shared` at once.

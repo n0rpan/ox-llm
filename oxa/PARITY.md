@@ -143,7 +143,7 @@ pi page(s): settings.md. Tests: `oxa-parity/tests/keys_settings.rs`.
 | SET-048 | `markdown.mermaid` `off\|final\|streaming` | A | Mermaid shown as a highlighted code block; setting accepted | `keys_settings.rs::set_048` |
 | SET-050 | `httpProxy` | A | applies to MCP HTTP only; the engine connection is direct | `keys_settings.rs::set_050` |
 | SET-051 | `httpIdleTimeoutMs` | A | silence limit of the engine stream; SSE comments count as liveness; no wall-clock limit | `keys_settings.rs::set_051` |
-| SET-053 | `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs`, `retry.maxAgentDelayMs` | A | replay only before the first data byte until `Idempotency-Key` exists (H2) | `keys_settings.rs::set_053` |
+| SET-053 | `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs`, `retry.maxAgentDelayMs` | A | replay a cut stream (also after data) under the same `Idempotency-Key` while retries allow (#456) | `keys_settings.rs::set_053` |
 | SET-054 | `retry.provider.timeoutMs`, `retry.provider.maxRetries`, `retry.provider.maxRetryDelayMs` | A | same rule; one HTTP layer | `keys_settings.rs::set_054` |
 | SET-055 | `shellPath` | P |  | `keys_settings.rs::set_055` |
 | SET-056 | `shellCommandPrefix` | P | part of the sandboxed command | `keys_settings.rs::set_056` |

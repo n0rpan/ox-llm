@@ -1,4 +1,4 @@
-//! A11: the settings schema table, validation and merge rules. Owner: task A11. Signatures below are frozen; bodies are yours.
+//! A11: the settings schema table, validation and merge rules.
 // ported from pi packages/coding-agent/docs/settings.md and src/core/settings-manager.ts
 use crate::Diagnostic;
 use oxa_proto::{Level, Value};

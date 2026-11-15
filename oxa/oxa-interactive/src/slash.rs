@@ -1,4 +1,4 @@
-//! D11: handlers of the built-in slash commands. Owner: task D11. Signatures below are frozen; bodies are yours.
+//! D11: handlers of the built-in slash commands.
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts (slash command handling) and docs/slash-commands.md
 use crate::{AppAction, Block, Reopen, SelectorKind, SessionCmd, StatusModel, ViewModel};
 use oxa_config::{resolve_model, Dirs, Env, Keymap, ModelRef, ModelsConfig, Settings};

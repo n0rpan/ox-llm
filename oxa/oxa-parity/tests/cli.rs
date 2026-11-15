@@ -44,8 +44,11 @@ fn fake_opts(script: &str, opts: FakeOpts) -> FakeServer {
 /// listening refuses connections, and the kernel cannot hand the port to another test's fake
 /// engine (a dropped listener could be, which sent one test's requests to another's server).
 fn closed_url() -> String {
-    // SAFETY: plain socket/bind/getsockname calls on a local fd and zeroed C structs; the fd is
-    // deliberately kept open (close-on-exec) until the process exits.
+    // A socket that is bound but never listening refuses connections, and holding it for the
+    // life of the test process keeps the kernel from handing the port to another test's
+    // server (a freed port can be reused at once, and the run would then reach that server).
+    // SAFETY: plain socket/bind/getsockname calls on a local zeroed sockaddr_in; the fd is
+    // deliberately kept open.
     let port = unsafe {
         let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
         assert!(fd >= 0, "socket");
@@ -53,11 +56,10 @@ fn closed_url() -> String {
         addr.sin_family = libc::AF_INET as libc::sa_family_t;
         addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
         let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-        let p = &addr as *const libc::sockaddr_in as *const libc::sockaddr;
+        let p = &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr;
         assert_eq!(libc::bind(fd, p, len), 0, "bind");
         let mut got = len;
-        let q = &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr;
-        assert_eq!(libc::getsockname(fd, q, &mut got), 0, "getsockname");
+        assert_eq!(libc::getsockname(fd, p, &mut got), 0, "getsockname");
         u16::from_be(addr.sin_port)
     };
     format!("http://127.0.0.1:{port}")

@@ -1,4 +1,4 @@
-//! C13: fuzzy matching. Owner: task C13. Signatures below are frozen; bodies are yours.
+//! C13: fuzzy matching.
 // ported from pi packages/tui/src/fuzzy.ts
 
 /// Result of a fuzzy match. Lower `score` = better (pi's convention); `score` is meaningful

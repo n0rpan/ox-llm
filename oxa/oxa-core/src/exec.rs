@@ -1,4 +1,4 @@
-//! B3: one request and one tool batch. Owner: task B3. Signatures below are frozen; bodies are yours.
+//! B3: one request and one tool batch.
 // ported from pi packages/agent/src/agent-loop.ts (executeToolCalls) and stream-fn.ts
 use crate::agent_loop::persist;
 use crate::host::{fire_hook, pumped, serve_level, Serve};

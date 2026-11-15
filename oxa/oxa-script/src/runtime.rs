@@ -1,4 +1,4 @@
-//! A15: the QuickJS runtime wrapper (limits, eval, calls, value bridge). Owner: task A15. Signatures below are frozen; bodies are yours.
+//! A15: the QuickJS runtime wrapper (limits, eval, calls, value bridge).
 use crate::{CallCx, FnRef, HostFn, ModuleLoader};
 use oxa_proto::{codes, OxaError, Value};
 use rquickjs::function::{Args, Rest};

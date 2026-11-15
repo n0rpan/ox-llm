@@ -1,4 +1,4 @@
-//! E7: the stdio transport (child process, newline-delimited JSON). Owner: task E7. Signatures below are frozen; bodies are yours.
+//! E7: the stdio transport (child process, newline-delimited JSON).
 // ported from pi packages/mcp/src/transports/{stdio,lines,pipe}.ts
 use crate::{StdioConfig, Transport};
 use oxa_proto::{codes, OxaError, Value};

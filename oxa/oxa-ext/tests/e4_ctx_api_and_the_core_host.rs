@@ -1,4 +1,4 @@
-//! E4 acceptance tests: ctx API and the core Host. Owner: task E4.
+//! E4 acceptance tests: ctx API and the core Host.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.

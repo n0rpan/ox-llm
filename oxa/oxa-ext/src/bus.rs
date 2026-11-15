@@ -1,4 +1,4 @@
-//! E2: the extension bus, `ExtensionHost` behind `dyn Hooks`. Owner: task E2. Signatures below are frozen; bodies are yours.
+//! E2: the extension bus, `ExtensionHost` behind `dyn Hooks`.
 // ported from pi packages/coding-agent/src/core/extensions/runner.ts
 use crate::guard::{self, GuardVerdict};
 use crate::{ExtError, ExtId, ExtState, ExtTool, Handler, LoadOpts, LoadedExtension, Registry};
