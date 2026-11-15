@@ -52,8 +52,9 @@ Keys live once in a controller secrets file, outside the repository:
 ```
 
 The default path is `cloud-secrets.json` next to `runtime.json`
-(`~/.config/local-ai/llm/cloud-secrets.json`); `cloud.secrets_file` may name another absolute
-path outside the repository. The file must be a regular file owned by the user with mode
+(`~/.config/local-ai/llm/cloud-secrets.json` for a non-installer setup). The cloud-only installer
+writes its own path into `cloud.secrets_file`: `<config-dir>/cloud-secrets.json`. You can point
+`cloud.secrets_file` at another absolute path outside the repository. The file must be a regular file owned by the user with mode
 `0600` (no group or other bits). It is read at request time. The controller never writes the
 key to the request ledger, a status reply, an error or a log line; an upstream error that
 echoes the key is redacted before it reaches the client.
