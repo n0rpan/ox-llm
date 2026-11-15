@@ -11,6 +11,9 @@ providers retain conservative defaults unless the catalog supplies cache rates.
 Reservations cover the full input window and maximum tier/cache rates, with the
 reference's 25% OpenRouter headroom. Output must already be validated and bounded
 by the gateway; zero is refused here too.
+- `cloud-only`: catalog contracts.
+- `policy`: policy contracts.
+- `secrets`: secrets contracts.
 
 Share one `Budget` per daily ledger path across request tasks. `reserve` locks
 spend plus outstanding holds atomically. Mark the hold forwarded before sending
@@ -118,3 +121,7 @@ retained. Only typed accounting fields are copied from settlement. Seven new
 filesystem/concurrency tests cover metadata privacy, shared admission, write
 failure, midnight, salt initialization/validation and key redaction. Full history
 classification, pruning and HTTP/CLI presentation remain outside this slice.
+`Catalog::from_config` takes a trusted normalized public-price snapshot keyed
+by upstream ID. This keeps file IO outside metadata; valid/no configured router
+prices receive the overlay, while invalid configured prices stay invalid. Source
+contracts seed an owner-only public cache and make no public network calls.
