@@ -243,10 +243,6 @@ pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
     }
 }
 
-/// A common dir whose `info` (`exclude`, `attributes`) is a symlink: [`worktree_entries`] cannot
-/// protect a symlink, so the replaceable link would stay writable. Unsafe (fail closed). A
-/// real `info` must hold only plain files (no symlink, no hard link: an alias into the worktree
-/// would stay writable); a missing `info` is fine; a gitdir that is not a common dir has none.
 /// `dir` has a `commondir` that links to another directory. The "." the sandbox leaves behind
 /// as a mask (#201) names the directory itself and does not make it a worktree gitdir.
 fn has_commondir_link(dir: &Path) -> bool {
@@ -257,6 +253,10 @@ fn has_commondir_link(dir: &Path) -> bool {
     }
 }
 
+/// A common dir whose `info` (`exclude`, `attributes`) is a symlink: [`worktree_entries`] cannot
+/// protect a symlink, so the replaceable link would stay writable. Unsafe (fail closed). A
+/// real `info` must hold only plain files (no symlink, no hard link: an alias into the worktree
+/// would stay writable); a missing `info` is fine; a gitdir that is not a common dir has none.
 fn symlinked_info(dir: &Path) -> Option<String> {
     if has_commondir_link(dir) {
         return None;
