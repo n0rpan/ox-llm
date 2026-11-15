@@ -612,3 +612,76 @@ fn bash_without_changes_runs_no_checks() {
     );
     assert!(rec.checks().is_empty());
 }
+
+fn git_in(env: &TestEnv, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .args(args)
+        .current_dir(env.work())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(ok, "git {args:?}");
+}
+
+#[test]
+fn bash_edit_of_an_already_untracked_file_triggers_checks() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    std::fs::write(env.work().join("new.rs"), "a\n").unwrap();
+    let (rec, _) = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool("b1", "bash", &json!({"command": "echo b >> new.rs"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn fingerprint_does_not_run_repository_diff_helpers() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    git_in(&env, &["config", "user.email", "t@example.invalid"]);
+    git_in(&env, &["config", "user.name", "t"]);
+    std::fs::write(env.work().join("t.txt"), "a\n").unwrap();
+    git_in(&env, &["add", "t.txt"]);
+    git_in(&env, &["commit", "-q", "-m", "x"]);
+    std::fs::write(env.work().join("helper.sh"), "#!/bin/sh\ntouch helper-ran\n").unwrap();
+    let helper = env.work().join("helper.sh");
+    git_in(&env, &["config", "diff.external", helper.to_str().unwrap()]);
+    git_in(&env, &["config", "core.fsmonitor", "touch fsmonitor-ran; false"]);
+    std::fs::write(env.work().join(".gitattributes"), "*.txt diff=x\n").unwrap();
+    git_in(&env, &["config", "diff.x.textconv", "touch textconv-ran; cat"]);
+    std::fs::set_permissions(&helper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(env.work().join("t.txt"), "b\n").unwrap();
+    let _ = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool("b1", "bash", &json!({"command": "ls"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    for m in ["helper-ran", "fsmonitor-ran", "textconv-ran"] {
+        assert!(!env.work().join(m).exists(), "{m} executed on the host");
+    }
+}
+
+#[test]
+fn tree_change_made_by_a_check_is_not_blamed_on_the_model() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    let (rec, _) = run(
+        &env,
+        json!(["echo x >> gen.txt; false"]),
+        vec![
+            write("w1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::tool("b1", "bash", &json!({"command": "ls"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(rec.checks().len(), 1, "{:?}", rec.checks());
+}

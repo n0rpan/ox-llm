@@ -25,13 +25,18 @@ pub(crate) struct DoneState {
     tree: Option<u64>,
 }
 
-/// Hash of `git status` + `git diff` in `cwd`; `None` outside a git repo or without git.
+/// Hash of the git state in `cwd` (status, staged and unstaged diff, contents of untracked
+/// files); `None` outside a git repo or without git. The probes run on the host, so executable
+/// repository configuration (`diff.external`, textconv filters, `core.fsmonitor`) is switched off.
 fn tree_fingerprint(cwd: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     let git = |args: &[&str]| {
         let o = std::process::Command::new("git")
+            .args(["-c", "core.fsmonitor=false", "-c", "diff.external="])
             .args(args)
             .current_dir(cwd)
+            .env("GIT_EXTERNAL_DIFF", "")
+            .env("GIT_OPTIONAL_LOCKS", "0")
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .output()
@@ -40,7 +45,20 @@ fn tree_fingerprint(cwd: &Path) -> Option<u64> {
     };
     let mut h = std::collections::hash_map::DefaultHasher::new();
     git(&["status", "--porcelain"])?.hash(&mut h);
-    git(&["diff"])?.hash(&mut h);
+    git(&["diff", "--no-ext-diff", "--no-textconv"])?.hash(&mut h);
+    git(&["diff", "--cached", "--no-ext-diff", "--no-textconv"])?.hash(&mut h);
+    let untracked = git(&["ls-files", "-z", "--others", "--exclude-standard"])?;
+    for name in untracked.split(|b| *b == 0).filter(|n| !n.is_empty()) {
+        use std::os::unix::ffi::OsStrExt;
+        let path = cwd.join(std::ffi::OsStr::from_bytes(name));
+        name.hash(&mut h);
+        if let Ok(m) = std::fs::symlink_metadata(&path) {
+            m.len().hash(&mut h);
+            if m.is_file() && m.len() <= (8 << 20) {
+                std::fs::read(&path).ok().hash(&mut h);
+            }
+        }
+    }
     Some(h.finish())
 }
 
@@ -118,6 +136,10 @@ pub(crate) fn check(
             failed.push_str(&text);
             failed.push_str("\n\n");
         }
+    }
+    // A check may rewrite files (formatters, generators): that is not a model edit.
+    if state.tree.is_some() {
+        state.tree = tree_fingerprint(&st.cwd);
     }
     // What print mode reads at the end: the last check round failed and nothing fixed it.
     st.stats.done_failed = !failed.is_empty();
