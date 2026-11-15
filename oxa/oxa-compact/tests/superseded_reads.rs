@@ -40,7 +40,7 @@ fn older_read_of_a_reread_or_edited_file_is_dropped() {
     ];
     let got = tail_elisions(&tail, 4000, &count);
     let idx: Vec<usize> = got.iter().map(|(k, _)| *k).collect();
-    assert_eq!(idx, vec![2, 4], "{got:?}");
+    assert_eq!(idx, vec![2], "{got:?}");
     assert_eq!(got[0].1, prompt::superseded_read("src/a.rs"));
 }
 
@@ -70,7 +70,7 @@ fn failed_or_partial_later_calls_keep_the_older_read() {
 }
 
 #[test]
-fn successful_write_and_full_read_edit_drop_older_reads() {
+fn successful_write_drops_older_read_but_edit_does_not() {
     let tail = vec![
         WireMsg::user("go"),
         call("c1", "read", r#"{"path":"a.rs","offset":1}"#),
@@ -82,5 +82,24 @@ fn successful_write_and_full_read_edit_drop_older_reads() {
         call("c4", "edit", r#"{"path":"b.rs","edits":[]}"#),
         WireMsg::tool_result("c4", "Successfully replaced 1 block(s) in b.rs."),
     ];
-    assert_eq!(idx(&tail), vec![2, 6]);
+    assert_eq!(idx(&tail), vec![2]);
+}
+
+#[test]
+fn other_read_failures_do_not_supersede() {
+    for err in [
+        "Path not found: a.rs",
+        "Cannot read binary file: a.rs",
+        "Offset 9 is beyond end of file (3 lines total)",
+        "Operation aborted",
+    ] {
+        let tail = vec![
+            WireMsg::user("go"),
+            call("c1", "read", r#"{"path":"a.rs"}"#),
+            WireMsg::tool_result("c1", "body"),
+            call("c2", "read", r#"{"path":"a.rs"}"#),
+            WireMsg::tool_result("c2", err),
+        ];
+        assert_eq!(idx(&tail), Vec::<usize>::new(), "{err}");
+    }
 }

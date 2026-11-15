@@ -162,7 +162,6 @@ fn superseded_read(tail: &[WireMsg], k: usize) -> Option<String> {
     }
     let path = args.get("path")?.as_str()?;
     let page = (args.get("offset"), args.get("limit"));
-    let full = page == (None, None);
     for (j, m) in tail.iter().enumerate().skip(k + 1) {
         if m.role != Role::Tool {
             continue;
@@ -174,7 +173,6 @@ fn superseded_read(tail: &[WireMsg], k: usize) -> Option<String> {
         let text = m.content.as_deref().unwrap_or("");
         let hit = match n {
             "write" => text.starts_with("Successfully wrote"),
-            "edit" => full && text.starts_with("Successfully replaced"),
             "read" => (a.get("offset"), a.get("limit")) == page && read_succeeded(text),
             _ => false,
         };
@@ -194,6 +192,9 @@ fn read_succeeded(text: &str) -> bool {
             "Operation aborted",
             "Not a regular file",
             "Invalid arguments",
+            "Path not found",
+            "Cannot read binary file",
+            "Offset ",
         ]
         .iter()
         .any(|p| text.starts_with(p))
