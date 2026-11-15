@@ -23,10 +23,10 @@ cargo fmt --manifest-path oxc-rs/Cargo.toml --all -- --check
 ```
 
 Use Python 3.14.8 for the frozen parser contracts (CI pins it); other interpreters
-can differ in argparse messages. The 140 parser and 14 ledger cases compare exact
+can differ in argparse messages. The 140 parser and 17 ledger cases compare exact
 stdout, stderr and exit codes with Python under a private HOME and a cleared
 environment. Ledger cases cover private fields, corrupt rows, bounded tails,
-symlinks, directory override, number formatting and Unicode/large integer limits.
+symlinks, directory override, number formatting, non-finite numeric literals and Unicode/large integer limits.
 The FIFO regression uses a synthetic pipe and cleans up even when the reader fails.
 
 The pure upstream translator remains a separate default-off library feature;

@@ -134,6 +134,41 @@ fn row(value: &Value) -> Option<Value> {
     Some(Value::Object(out))
 }
 
+fn parse_line(line: &str) -> Option<Value> {
+    if let Ok(value) = serde_json::from_str(line) {
+        return Some(value);
+    }
+    // The current Python writer permits non-finite numeric literals. They are
+    // not public numbers; keep the rest of the row while projecting them as null.
+    let bytes = line.as_bytes();
+    let (mut quoted, mut escaped, mut index) = (false, false, 0);
+    let mut normalized = Vec::with_capacity(bytes.len());
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else if byte == b'"' {
+            quoted = true;
+        } else if let Some(token) = [b"-Infinity".as_slice(), b"Infinity", b"NaN"]
+            .into_iter()
+            .find(|token| bytes[index..].starts_with(token))
+        {
+            normalized.extend_from_slice(b"null");
+            index += token.len();
+            continue;
+        }
+        normalized.push(byte);
+        index += 1;
+    }
+    serde_json::from_slice(&normalized).ok()
+}
+
 fn read_day(path: std::path::PathBuf, limit: usize) -> Vec<Value> {
     let Ok(mut file) = OpenOptions::new()
         .read(true)
@@ -167,11 +202,7 @@ fn read_day(path: std::path::PathBuf, limit: usize) -> Vec<Value> {
     String::from_utf8_lossy(data)
         .lines()
         .rev()
-        .filter_map(|line| {
-            serde_json::from_str::<Value>(line)
-                .ok()
-                .and_then(|value| row(&value))
-        })
+        .filter_map(|line| parse_line(line).and_then(|value| row(&value)))
         .take(limit)
         .collect()
 }
