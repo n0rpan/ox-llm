@@ -15,12 +15,22 @@ budget.
 
 ## 1. Install the controller
 
-From `lab/` in a checkout of this repository:
+From `lab/` in a checkout of this repository. First create a venv outside the checkout and
+install the pinned Anthropic SDK (`anthropic==0.125.0`, the `cloud` extra in `pyproject.toml`) into it,
+then run the installer with that venv's Python, because the installer bakes the interpreter that runs
+it into the launcher and the unit:
 
 ```console
-$ PYTHONPATH=src python3 -m snapdragon_ai_lab.cloud_install --cloud-only \
+$ python3 -m venv ~/oxc/venv
+$ ~/oxc/venv/bin/python -m pip install 'anthropic==0.125.0'
+$ PYTHONPATH=src ~/oxc/venv/bin/python -m snapdragon_ai_lab.cloud_install --cloud-only \
     --prefix ~/oxc --config-dir ~/oxc/config --port 8092 --daily-budget 2
 ```
+
+Without the SDK in that interpreter, Anthropic models answer `503` `cloud_sdk_unavailable`;
+OpenRouter and OpenAI models do not need it, so you can skip the `pip` line if you use only those.
+If you ran the installer with another interpreter, re-run it with the venv's Python and `--force`
+to regenerate the launcher and unit.
 
 Add `--no-systemd` to write no service and run `~/oxc/bin/oxc-controller` in the foreground
 instead. Without it, the installer writes a user unit (`oxc.service`, change it with
@@ -67,7 +77,7 @@ not configured." Fix the file and retry; no restart is needed, the file is read 
 ## 4. Build and run oxa
 
 ```console
-$ cd oxa && cargo build --release --locked
+$ cd ../oxa && cargo build --release --locked
 $ export OXA_ENGINE_URL=http://127.0.0.1:8092
 $ cd ~/my-project && /path/to/oxa/target/release/oxa --model haiku
 ```
@@ -85,7 +95,7 @@ lists the models.
 ```console
 $ systemctl --user disable --now oxc.service    # skip with --no-systemd
 $ rm ~/.config/systemd/user/oxc.service && systemctl --user daemon-reload
-$ rm -r ~/oxc                                   # prefix, config and secrets
+$ rm -r ~/oxc                                   # prefix, venv, config and secrets
 ```
 
 Use your own `--unit-name`, `--unit-dir`, `--prefix` and `--config-dir` if you changed them.
