@@ -195,6 +195,9 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
 /// the entry itself, so symlink chains, `..` in a target and a symlinked `hooks` directory are
 /// all refused, whatever they point at.
 pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
+    if let Some(why) = symlinked_info(dir) {
+        return Some(why);
+    }
     for name in ["config", "config.worktree"] {
         let p = dir.join(name);
         let m = match fs::symlink_metadata(&p) {
@@ -220,6 +223,22 @@ pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
         Ok(m) if m.file_type().is_symlink() => Some(format!("{} is a symlink", hooks.display())),
         Ok(m) if !m.is_dir() => Some(format!("{} is not a directory", hooks.display())),
         Ok(_) => unsafe_hooks_entry(&hooks),
+    }
+}
+
+/// A common dir whose `info` (`exclude`, `attributes`) is a symlink: [`worktree_entries`] cannot
+/// protect a symlink, so the replaceable link would stay writable. Unsafe (fail closed). A
+/// missing or real-directory `info` is fine; a gitdir that is not a common dir has none.
+fn symlinked_info(dir: &Path) -> Option<String> {
+    if dir.join("commondir").exists() {
+        return None;
+    }
+    let info = dir.join("info");
+    match fs::symlink_metadata(&info) {
+        Ok(m) if m.file_type().is_symlink() => Some(format!("{} is a symlink", info.display())),
+        Ok(_) => None,
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => Some(format!("{} cannot be checked ({e})", info.display())),
     }
 }
 
@@ -1018,6 +1037,9 @@ fn walk_alias(start: &Path, m: &Mounts) -> Result<PathBuf, String> {
 pub(crate) fn alias_refusal(dirs: &[PathBuf], m: &Mounts, home: &Path) -> Option<String> {
     for d in dirs {
         let repo = common_of(d);
+        if let Some(why) = symlinked_info(d) {
+            return Some(why);
+        }
         for name in ["config", "config.worktree"] {
             let p = d.join(name);
             if fs::symlink_metadata(&p).is_err_and(|e| e.kind() == ErrorKind::NotFound) {

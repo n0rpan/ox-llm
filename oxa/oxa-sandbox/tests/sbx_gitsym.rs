@@ -233,6 +233,27 @@ fn worktree_symlinked_config_target_inside_common_is_read_only() {
 }
 
 #[test]
+fn worktree_symlinked_info_dir_in_common_is_read_only_and_refused() {
+    let env = TestEnv::new();
+    let (_main, wt, common) = linked_worktree(&env);
+    fs::remove_dir_all(common.join("info")).ok();
+    fs::create_dir(common.join("info-data")).expect("mkdir");
+    symlink("info-data", common.join("info")).expect("symlink");
+    let binds = resolve_git_binds(&wt, &env.home(), None);
+    assert!(
+        binds.notes.iter().any(|n| n.contains("info is a symlink")),
+        "resolution classifies it unsafe: {:?}",
+        binds.notes
+    );
+    let Some(sb) = sandbox(&env, &wt) else { return };
+    let ex = common.join("info-data/exclude");
+    let (exit, out) = run(&sb, &format!("printf 'x\\n' > {}", ex.display()), &wt);
+    assert_ne!(exit, Some(0), "{out}");
+    assert!(out.contains("sandbox refused"), "early refusal: {out}");
+    assert!(!ex.exists());
+}
+
+#[test]
 fn worktree_symlinked_hooks_dir_inside_common_is_read_only() {
     let env = TestEnv::new();
     let (_main, wt, common) = linked_worktree(&env);
