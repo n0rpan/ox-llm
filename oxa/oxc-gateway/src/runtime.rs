@@ -131,12 +131,10 @@ impl Runtime {
             .as_str()
             .ok_or_else(|| invalid("Choose a cloud model listed in /v1/models.", "model"))?
             .to_owned();
-        let public = self.catalog.model(&alias).ok_or_else(|| {
-            invalid(
-                "Unknown cloud model. Choose one listed in /v1/models.",
-                "model",
-            )
-        })?;
+        let public = self
+            .catalog
+            .model(&alias)
+            .ok_or_else(|| invalid("Unknown cloud model. Choose one listed in /v1/models.", "model"))?;
         if public["provider"] != "anthropic" {
             return Err(Refusal {
                 status: 503,

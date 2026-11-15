@@ -12,10 +12,7 @@ impl Home {
         let path = std::env::temp_dir().join(format!(
             "oxc-key-path-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
         ));
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -54,10 +51,7 @@ fn prepared_locations_cannot_be_redirected_into_a_repository() {
         secrets::read(&path, "openrouter").unwrap_err(),
         Error::InsideRepository
     );
-    assert_eq!(
-        prepared.read("openrouter").unwrap().expose(),
-        "synthetic-allowed"
-    );
+    assert_eq!(prepared.read("openrouter").unwrap().expose(), "synthetic-allowed");
     assert!(!format!("{prepared:?}").contains(&home.0.display().to_string()));
 }
 #[test]
@@ -65,25 +59,16 @@ fn preparation_caches_no_key_and_rechecks_each_opened_file() {
     let home = Home::new();
     let path = home.key("provider.json", "synthetic-first");
     let prepared = KeyFile::prepare(&path).unwrap();
-    assert_eq!(
-        prepared.read("openrouter").unwrap().expose(),
-        "synthetic-first"
-    );
+    assert_eq!(prepared.read("openrouter").unwrap().expose(), "synthetic-first");
     let replacement = home.key("replacement.json", "synthetic-second");
     fs::rename(replacement, &path).unwrap();
-    assert_eq!(
-        prepared.read("openrouter").unwrap().expose(),
-        "synthetic-second"
-    );
+    assert_eq!(prepared.read("openrouter").unwrap().expose(), "synthetic-second");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(prepared.read("openrouter").unwrap_err(), Error::Permissions);
     fs::remove_file(&path).unwrap();
     let other = home.key("other.json", "synthetic-other");
     symlink(other, path).unwrap();
-    assert_eq!(
-        prepared.read("openrouter").unwrap_err(),
-        Error::SymbolicLink
-    );
+    assert_eq!(prepared.read("openrouter").unwrap_err(), Error::SymbolicLink);
 }
 #[test]
 fn preparation_requires_a_real_parent_before_it_can_bind_the_location() {

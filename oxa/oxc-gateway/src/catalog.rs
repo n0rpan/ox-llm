@@ -74,9 +74,7 @@ fn price_fields(raw: &Value) -> Option<Vec<(bool, bool)>> {
                 }
             }
             fields.push((
-                merged
-                    .get("cache_read_per_million")
-                    .is_some_and(|v| !v.is_null()),
+                merged.get("cache_read_per_million").is_some_and(|v| !v.is_null()),
                 merged
                     .get("cache_write_per_million")
                     .is_some_and(|v| !v.is_null()),
@@ -283,9 +281,17 @@ impl Catalog {
     }
     /// Merge this fragment into the controller's status response after HTTP gates.
     pub fn status_fragment(&self) -> Value {
-        let limits: Map<_,_> = self.models.iter().map(|model|(model.alias.clone(),
-            json!({"mode":null,"modes":[],"cap":model.context,"context_window":model.context,
-                "max_output":model.output,"capabilities":model.capabilities()}))).collect();
+        let limits: Map<_, _> = self
+            .models
+            .iter()
+            .map(|model| {
+                (
+                    model.alias.clone(),
+                    json!({"mode":null,"modes":[],"cap":model.context,"context_window":model.context,
+                "max_output":model.output,"capabilities":model.capabilities()}),
+                )
+            })
+            .collect();
         json!({"engine_mode":"none","model_limits":limits})
     }
     pub fn health(&self) -> Value {

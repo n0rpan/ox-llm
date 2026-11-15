@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 PYTHON = '/usr/bin/python3'
 HOME = Path('/home/oxc-secret-contract')
 KEY = 'synthetic-private-key'

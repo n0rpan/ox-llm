@@ -19,17 +19,13 @@ fn main() {
     assert!(text.len() <= 65536);
     let input: Value = serde_json::from_str(&text).expect("contract JSON");
     let Some(price) = Price::from_model(&input["model"]) else {
-        println!(
-            "{}",
-            json!({"pricing":null,"actual":null,"reservation":null})
-        );
+        println!("{}", json!({"pricing":null,"actual":null,"reservation":null}));
         return;
     };
     let provider = input["provider"].as_str().unwrap();
     let upstream = input["upstream_model"].as_str().unwrap();
     if let Some(frames) = input["frames"].as_array() {
-        let path =
-            PathBuf::from(std::env::var("HOME").unwrap()).join("ledger/requests-synthetic.jsonl");
+        let path = PathBuf::from(std::env::var("HOME").unwrap()).join("ledger/requests-synthetic.jsonl");
         let budget = Budget::new(path.clone());
         let model = Model {
             provider: provider.into(),
@@ -39,12 +35,7 @@ fn main() {
             price,
         };
         let mut hold = budget
-            .reserve(
-                &json!(1),
-                true,
-                &model,
-                input["output_limit"].as_u64().unwrap(),
-            )
+            .reserve(&json!(1), true, &model, input["output_limit"].as_u64().unwrap())
             .unwrap();
         hold.mark_forwarded();
         let mut usage = Usage::default();

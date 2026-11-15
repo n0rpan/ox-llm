@@ -48,3 +48,5 @@ required-features = ["accounting"]
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[workspace]
