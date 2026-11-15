@@ -466,7 +466,11 @@ fn client_error_response_is_err() {
         .request(json!({"type": "get_state"}), 20_000)
         .expect("get_state answers");
     assert_eq!(ok["success"], true);
-    assert_eq!(client.close().expect("close"), 0);
+    assert_eq!(
+        client.close().expect("close"),
+        1,
+        "a rejected command remains a failed outcome"
+    );
 }
 
 /// notify, setStatus, setWidget, setTitle

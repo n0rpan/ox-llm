@@ -196,13 +196,24 @@ pub(crate) fn bwrap_args_homes(
     // sbx-gitsym: checked again for every command (the session may run long): a git directory
     // whose protected entries are not plain (`gitdirs::unsafe_reason`) is never read-write, and
     // then none of them is (no masks either: nothing can be created in a read-only bind).
-    let git_writable = writable && layout.git.rw.iter().all(|d| unsafe_reason(d).is_none());
+    // #322: a read-write git dir that vanished (pruned worktree) is not bound, and then its
+    // surviving ancestors are read-only too: it could otherwise be recreated with its own
+    // `commondir`, config or hooks.
+    let git_writable = writable
+        && layout
+            .git
+            .rw
+            .iter()
+            .all(|d| unsafe_reason(d).is_none() && std::fs::metadata(d).is_ok());
     let git_rw = if git_writable { "--bind" } else { "--ro-bind" };
     for p in layout
         .git
         .rw
         .iter()
         .filter(|p| !p.starts_with(cwd_path) && !cwd_path.starts_with(p))
+        // #322: a git dir removed since the session started (pruned worktree) would make
+        // bwrap fail for every command.
+        .filter(|p| std::fs::metadata(p).is_ok())
     {
         let p = p.to_string_lossy();
         push(&mut a, &[git_rw, &p, &p]);
@@ -565,7 +576,11 @@ pub(crate) fn create_missing_git_files_homes(
         return;
     }
     // sbx-gitsym: nothing is created for git directories that are bound read-only.
-    let git_writable = layout.git.rw.iter().all(|d| unsafe_reason(d).is_none());
+    let git_writable = layout
+        .git
+        .rw
+        .iter()
+        .all(|d| unsafe_reason(d).is_none() && std::fs::metadata(d).is_ok());
     let mut files: Vec<PathBuf> = layout
         .git
         .protect
@@ -1566,6 +1581,31 @@ mod git_files_tests {
         let cfg = work.join(".git/config").to_string_lossy().into_owned();
         assert!(a.windows(3).any(|w| w == ["--ro-bind", &cfg, &cfg]), "{a:?}");
         assert!(!a.iter().any(|x| x == "/dev/null"), "{a:?}");
+    }
+
+    #[test]
+    fn a_vanished_git_dir_is_not_bound() {
+        let env = TestEnv::new();
+        env.write("work/x", "");
+        let gone = env.home().join("main/.git/worktrees/w");
+        let mut layout = Layout::default();
+        layout.git.rw.push(gone.clone());
+        let a = bwrap_args_with(&spec(&env.work(), true), &env.home(), &layout);
+        let g = gone.to_string_lossy().into_owned();
+        assert!(!a.contains(&g), "{a:?}");
+    }
+
+    #[test]
+    fn a_dangling_symlink_git_dir_is_not_bound() {
+        let env = TestEnv::new();
+        env.write("work/x", "");
+        let link = env.home().join("dangling-git");
+        std::os::unix::fs::symlink(env.home().join("nowhere"), &link).expect("symlink");
+        let mut layout = Layout::default();
+        layout.git.rw.push(link.clone());
+        let a = bwrap_args_with(&spec(&env.work(), true), &env.home(), &layout);
+        let g = link.to_string_lossy().into_owned();
+        assert!(!a.contains(&g), "{a:?}");
     }
 
     #[test]

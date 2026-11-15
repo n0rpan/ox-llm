@@ -1772,7 +1772,7 @@ pub(crate) fn skin_of(opts: &InteractiveOpts) -> crate::Skin {
     let from_env = opts
         .env
         .iter()
-        .find(|(k, v)| k == "OXA_SKIN" && matches!(v.trim(), "pi" | "oxa"))
+        .find(|(k, v)| k == "OXA_SKIN" && matches!(v.trim(), "pi" | "oxa" | "ascii"))
         .map(|(_, v)| v.trim().to_string());
     crate::skin::resolve_skin(
         from_env.or_else(|| opts.settings.string("ui.skin")).as_deref(),
