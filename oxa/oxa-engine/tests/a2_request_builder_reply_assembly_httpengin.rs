@@ -150,6 +150,36 @@ fn args_raw_is_concatenated_deltas() {
     );
 }
 
+/// A gateway can hold a name suffix while redacting a key split across deltas.
+#[test]
+fn fragmented_tool_names_are_appended_and_progress_keeps_the_full_name() {
+    let mut assembler = ReplyAssembler::new();
+    assembler
+        .chunk(
+            &serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_directory", "type": "function",
+                "function": {"name": "l", "arguments": "{\"path\":\"oxa\"}"}
+            }]}}]})
+            .to_string(),
+        )
+        .unwrap();
+    let events = assembler
+        .chunk(
+            &serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+        "index": 0, "function": {"name": "s"}
+    }]}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 1,
+        "completion_tokens": 1, "total_tokens": 2}})
+            .to_string(),
+        )
+        .unwrap();
+    let turn = assembler.finish(ThinkingLevel::Off).unwrap();
+    assert_eq!(turn.msg.tool_calls[0].name, "ls");
+    assert_eq!(turn.msg.tool_calls[0].id, "call_directory");
+    assert_eq!(turn.msg.tool_calls[0].args_raw, "{\"path\":\"oxa\"}");
+    assert!(events.iter().any(|event| matches!(event,
+        StreamEvent::ToolArgs { name: Some(name), .. } if name == "ls")));
+}
+
 /// leading/trailing whitespace survives assembly
 #[test]
 fn content_and_reasoning_untrimmed() {
@@ -737,6 +767,24 @@ fn held_prefix_at_stream_end_reaches_the_callback() {
     }
 }
 
+/// Leading whitespace before a think block is routed the same however the stream is chunked.
+#[test]
+fn leading_whitespace_before_think_is_chunk_independent() {
+    let mut seen = Vec::new();
+    for chunk in [1usize, 2, 1000] {
+        let (events, turn) = run_reasoning_case(ScriptTurn {
+            text: Some(" \n<think>x</think>answer".to_string()),
+            chunk,
+            ..ScriptTurn::text("")
+        });
+        let (r, t) = joined(&events);
+        assert_eq!(r, "x", "chunk {chunk}");
+        seen.push((t, turn.msg.content.clone()));
+    }
+    assert!(seen.windows(2).all(|w| w[0] == w[1]), "{seen:?}");
+    assert_eq!(seen[0].0, "answer");
+}
+
 /// Once a think block has closed, the answer is literal: a second `<think>` block in the
 /// answer (an example of the syntax) is answer text, not more reasoning.
 #[test]
@@ -756,4 +804,20 @@ fn second_think_block_after_close_is_text() {
             "chunk {chunk}"
         );
     }
+}
+
+#[test]
+fn expired_cloud_continuation_is_reported_without_retry() {
+    let body =
+        r#"{"error":{"message":"OpenAI tool continuation expired","code":"tool_continuation_expired"}}"#;
+    let response = format!("HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+    let (url, handle) = raw_server(response.into_bytes());
+    let engine = HttpEngine::new(&url, None).unwrap();
+    let p = prefix("SYS", "[]");
+    let go = [WireMsg::user("go")];
+    let r = request(&p, &go, 64, hints("s1", KEY));
+    let err = engine.chat(&r, &CancelToken::new(), &mut |_| {}).unwrap_err();
+    assert!(err.message.contains("continuation expired"), "{}", err.message);
+    let received = handle.join().unwrap();
+    assert!(received.starts_with(b"POST "));
 }

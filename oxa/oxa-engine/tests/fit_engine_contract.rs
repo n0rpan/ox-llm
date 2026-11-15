@@ -484,7 +484,10 @@ fn f4_parse_capabilities_with_fallback() {
             snapshot_keep: 2,
             hint_clear: true,
             preserve_thinking: Some(false),
-            park_disk_only: true
+            park_disk_only: true,
+            cache_hints: true,
+            prefill: true,
+            ..EngineCaps::default()
         }
     );
     // The moe row has no block: the loaded engine's oxe_hints, preserve_thinking unknown.
@@ -497,7 +500,10 @@ fn f4_parse_capabilities_with_fallback() {
             snapshot_keep: 2,
             hint_clear: true,
             preserve_thinking: None,
-            park_disk_only: false
+            park_disk_only: false,
+            cache_hints: true,
+            prefill: true,
+            ..EngineCaps::default()
         }
     );
     // Neither: nothing advertised.

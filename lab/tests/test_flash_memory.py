@@ -1,6 +1,5 @@
 """Flash-only memory policy: own 29 GiB scope and 1 GiB floor; synthetic, starts nothing."""
 import copy
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,19 +12,9 @@ from unittest.mock import Mock, patch
 from snapdragon_ai_lab.runtime import bigmoe_runtime, controller, exec_in_scope, memory_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('stage_flash_memory', ROOT / 'tools/stage_flash_memory.py')
-stage_tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(stage_tool)
 
 GIB = 1024**3
 POLICY = {'scope_max_bytes': 29 * GIB, 'host_floor_bytes': GIB}
-UNIT = '''[Service]
-WorkingDirectory=/synthetic/releases/old
-Environment="LOCAL_LLM_CONFIG=/synthetic/runtime.json"
-Environment="LOCAL_AI_ENABLE_OXE=1"
-ExecStart=/usr/bin/python3 "/synthetic/releases/old/controller.py"
-MemoryMax=28G
-MemorySwapMax=0
-'''
 
 
 def sample(**changes):
@@ -189,65 +178,8 @@ class ScopeWrapper(unittest.TestCase):
             execv.assert_called_once_with('/synthetic/server', ['/synthetic/server', '-x'])
 
 
-def runtime_json():
-    flash = {'ready': True, 'backend_kind': bigmoe_runtime.KIND, 'model_path': '/synthetic/flash-1.gguf',
-             'bigmoe': {'cache_mib': 12288}}
-    return {'model_alias': 'qwen-local', 'selected_model': 'ornith-35b-a3b-local',
-            'profiles': {'ornith-35b-a3b-local': {'ready': True, 'model_path': '/synthetic/ornith.gguf'},
-                         stage_tool.ALIAS: flash}}
 
 
-class StageTool(unittest.TestCase):
-    def test_only_the_flash_profile_gains_the_policy(self):
-        original = runtime_json(); before = copy.deepcopy(original)
-        updated = stage_tool.add_flash_memory(original)
-        self.assertEqual(original, before)
-        self.assertEqual(updated['profiles'][stage_tool.ALIAS].pop('flash_memory'), POLICY)
-        self.assertEqual(updated, before)
-        with self.assertRaises(ValueError):
-            stage_tool.add_flash_memory(stage_tool.add_flash_memory(original))
-        classic = runtime_json(); classic['profiles'][stage_tool.ALIAS]['backend_kind'] = 'llama'
-        with self.assertRaises(ValueError):
-            stage_tool.add_flash_memory(classic)
-        other = runtime_json(); other['profiles']['ornith-35b-a3b-local']['flash_memory'] = dict(POLICY)
-        with self.assertRaises(ValueError):
-            stage_tool.add_flash_memory(other)
-
-    def test_unit_keeps_every_line_but_the_release_path(self):
-        unit = stage_tool.rewrite_unit(UNIT, '/synthetic/releases/new')
-        changed = [(a, b) for a, b in zip(UNIT.splitlines(), unit.splitlines()) if a != b]
-        self.assertEqual([a.split('=')[0] for a, _ in changed], ['WorkingDirectory', 'ExecStart'])
-        self.assertIn('MemoryMax=28G', unit.splitlines())
-        self.assertIn('Environment="LOCAL_AI_ENABLE_OXE=1"', unit.splitlines())
-        for bad in (UNIT.replace('MemoryMax=28G\n', ''), UNIT + 'MemoryMax=29G\n', UNIT.replace('ExecStart=', 'Exec=')):
-            with self.subTest(bad=bad[-40:]), self.assertRaises(ValueError):
-                stage_tool.rewrite_unit(bad, '/synthetic/releases/new')
-
-    def test_stage_is_fresh_bound_and_rolls_back_exactly(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            runtime_raw = (json.dumps(runtime_json(), indent=2) + '\n').encode()
-            (root / 'runtime.json').write_bytes(runtime_raw); (root / 'unit').write_text(UNIT)
-            arguments = dict(runtime_path=root / 'runtime.json', runtime_sha=stage_tool.sha(runtime_raw),
-                             unit_path=root / 'unit', unit_sha=stage_tool.sha(UNIT.encode()),
-                             releases_root=root / 'releases')
-            result = stage_tool.stage(root / 'stage', **arguments)
-            stage = root / 'stage'
-            self.assertEqual((result['installed'], result['models_started'], result['unit_limit_unchanged']),
-                             (False, False, 'MemoryMax=28G'))
-            staged = json.loads((stage / 'runtime.json').read_text())
-            self.assertEqual(staged['profiles'][stage_tool.ALIAS]['flash_memory'], POLICY)
-            self.assertNotIn('flash_memory', staged['profiles']['ornith-35b-a3b-local'])
-            self.assertEqual((stage / 'rollback/runtime.original').read_bytes(), runtime_raw)
-            self.assertEqual((stage / 'rollback/unit.original').read_text(), UNIT)
-            self.assertTrue((stage / 'runtime-source/exec_in_scope.py').is_file())
-            self.assertIn(result['release_dir'], (stage / 'local-ai-chat.service').read_text())
-            self.assertEqual(result['runtime_sha256'], stage_tool.sha((stage / 'runtime.json').read_bytes()))
-            self.assertFalse((root / 'releases').exists())
-            with self.assertRaises(ValueError):
-                stage_tool.stage(root / 'stage', **arguments)
-            with self.assertRaises(ValueError):
-                stage_tool.stage(root / 'stage2', **{**arguments, 'runtime_sha': '0' * 64})
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

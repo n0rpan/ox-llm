@@ -1,32 +1,14 @@
-//! W0-FROZEN (architect-owned, implemented).
-//!
 //! # oxa-parity (test-only)
-//! The PARITY suite: one test per `PARITY.md` row (or a recorded omission), written in wave G
-//! from pi's docs by agents that did not write the code under test.
 //!
-//! Rules for G tasks
-//! * Test name = the PARITY id lowercased with `_` (`CLI-012` -> `fn cli_012()`).
-//! * P rows compare with pi's documented output or a fixture recorded from pi 1.5.2
-//!   (`fixtures/pi/`); A rows test the adapted behaviour and name the invariant in a comment;
-//!   O rows assert the `unsupported_in_oxa` error.
-//! * Tests drive the real binaries ([`oxa_bin`], [`fake_bin`]) inside a `TestEnv`; nothing
-//!   touches the real home. Build them first: `cargo build -p oxa-cli -p oxa-fake`.
-//! * A test may be `#[ignore = "<PARITY id>: <reason>"]` only with the architect's
-//!   reclassification recorded in PARITY.md.
-//! * Wave FG checkpoint (architect): a row that is red or cannot be driven after wave G is
-//!   kept with its assertions, either failing with a message that starts `RED <id>:` or
-//!   `#[ignore]`d with a reason that says `RED`, `BLOCKED` or names the missing harness (pty).
-//!   These are the H wave's input, not reclassifications: H fixes the product or the harness
-//!   and removes the marker, or the architect records an omission in PARITY.md.
-//! * Wave H: the pty harness exists ([`pty`]: the real binary in a real pseudo-terminal, a
-//!   `vt100` screen model, both key encodings, terminal profiles that answer the binary's
-//!   queries). "Needs a pty" is no longer a reason to ignore a row or to check it by grepping
-//!   the source: a TUI/USE/keybinding/tree-navigator/session-picker row drives the screen. An
-//!   `#[ignore]` now needs a real reason (a product bug with `RED <id>:`, or an omission the
-//!   architect recorded in PARITY.md).
-//! * Rows may also call the crates directly (`oxa-rpc`'s `RpcClient`, `oxa-mcp`, `oxa-session`,
-//!   `oxa-tui`, `oxa-config`, `oxa-core`, `oxa-interactive`, `oxa-ext`, `oxa-tools`,
-//!   `oxa-codemode` are dev-dependencies) when the behaviour is a library contract.
+//! oxa's behavior regression suite, derived from pi. Supported contracts are indexed in
+//! `PARITY.md`; P rows retain inherited behavior and A rows describe oxa adaptations.
+//! Golden fixtures live in `fixtures/goldens/`. Retired IDs are never reused.
+//!
+//! Tests drive the real binaries inside an isolated `TestEnv`, or call crates directly
+//! for library contracts. Build binaries first: `cargo build -p oxa-cli -p oxa-fake`.
+//! Interactive tests use real pseudo-terminals and inspect the rendered screen. Sandbox,
+//! permission, trust, offline, MCP and extension-hook behavior remain required contracts.
+//! Run the whole workspace with oxa's defaults; no alternate profile is required.
 #[cfg(target_os = "linux")]
 pub mod pty;
 

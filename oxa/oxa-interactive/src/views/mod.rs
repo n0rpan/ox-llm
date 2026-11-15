@@ -65,8 +65,9 @@ pub fn render_block(block: &Block, cx: &ViewCx) -> Vec<String> {
         Block::Compaction {
             summary,
             tokens_before,
+            tokens_after,
             expanded,
-        } => render_compaction(summary, *tokens_before, *expanded, cx),
+        } => render_compaction(summary, *tokens_before, *tokens_after, *expanded, cx),
         Block::BranchSummary { summary, expanded } => render_branch_summary(summary, *expanded, cx),
         Block::Custom {
             custom_type,

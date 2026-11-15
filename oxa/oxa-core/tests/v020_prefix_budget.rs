@@ -114,6 +114,7 @@ fn open(env: &TestEnv, cwd: &std::path::Path, settings: &str, subagent: bool) ->
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
@@ -144,8 +145,11 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// session (the seven built-ins) and the same with a `subagent` tool. These are the default
 /// bytes: a prefix change is a PARITY event.
 /// 2026-11-14: the identity fallback text changed with the env note PR (#5).
-const DEFAULT_STABLE_SHA: &str = "523d7bd0e822e37a8c562df4216006b9b8717d14f995e6bd7231c54d577484d3";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "10c03ff62015aa2c7d87bcdcf047d48c8932da6808829215c0c14275e1af364f";
+/// 2026-11-15: issue #127 (b) added `background`/`job` to the `bash` schema and dropped its
+/// `required: ["command"]` (a `job` read has no command), so the tools JSON changed.
+/// 2026-11-15: the built-in `pull-request` skill (#181) joined the skills section.
+const DEFAULT_STABLE_SHA: &str = "2b111da47c3af0ffe5af7e30178369dd2fa75fa219077092d59e769a21e3099b";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "468c2144693e7c16b991b46d034276bdbc24419964c082b1f52c542d5605e940";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {

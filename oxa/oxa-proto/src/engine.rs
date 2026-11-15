@@ -50,6 +50,22 @@ pub struct EngineCaps {
     pub preserve_thinking: Option<bool>,
     /// `park == "disk"`: a parked session of this model is restored from disk only (Flash).
     pub park_disk_only: bool,
+    /// Wave D D4: this model runs at a cloud provider through the controller. Local-only
+    /// features (prefix hints, cache warming, engine-side state and the X-Oxe-* headers) are
+    /// not sent to it.
+    pub remote: bool,
+    /// The provider name of a remote model (`openrouter`, `anthropic`); `None` when local.
+    pub remote_provider: Option<&'static str>,
+    /// The engine echoes a previous reply (CACHE-PERFECT ECHO); local only.
+    pub echo: bool,
+    /// Prefix/cache hints are useful (snapshot, hint clear, cache warming); local only.
+    pub cache_hints: bool,
+    /// The client may cancel a running request (the controller/engine closes the socket).
+    pub cancel: bool,
+    /// Zero-token prefill (`max_tokens: 0`) is available; local Rust engines only.
+    pub prefill: bool,
+    /// The model's context window when the engine publishes it as a capability.
+    pub context_window: Option<u32>,
 }
 
 /// The capability string an engine puts in the `oxe_hints.hints` array of its `/props` when it

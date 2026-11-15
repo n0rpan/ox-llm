@@ -101,6 +101,7 @@ fn open(env: &TestEnv, engine: Arc<dyn Engine>, settings: Settings) -> Session {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("open")
 }
@@ -450,6 +451,7 @@ fn prompt_hooks_suppress_the_draft_prefill() {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         };
         let mut s = Session::open(deps, Open::New).expect("open");
         let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());

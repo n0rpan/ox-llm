@@ -20,6 +20,10 @@ pub const BUILTIN_SKILLS: &[(&str, &str)] = &[
         include_str!("../builtin-skills/oxa-extend/SKILL.md"),
     ),
     (
+        "pull-request",
+        include_str!("../builtin-skills/pull-request/SKILL.md"),
+    ),
+    (
         "report-issue",
         include_str!("../builtin-skills/report-issue/SKILL.md"),
     ),
