@@ -925,7 +925,7 @@ fn controls_are_rebound_to_the_new_session() {
         // The aborted reply is a Shown block (never sent); the text is in the editor again.
         step(
             "aborted",
-            &["the prompt stays in the conversation", "steer me"],
+            &["your prompt is kept", "steer me"],
             vec![key("ctrl+c")],
         ),
         step("cleared", &[], vec![key("ctrl+d")]),
@@ -1118,7 +1118,7 @@ fn aborted_stream_is_shown_not_a_reply() {
         step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
         step(
             "aborted",
-            &["aborted: cancelled; the prompt stays"],
+            &["ABORTED", "your prompt is kept"],
             typed("/session", &["enter"]),
         ),
         // The Shown block is not counted as an assistant message.
@@ -1409,4 +1409,17 @@ fn tree_open_ready_with_overlay() {
     // All three markers are present, including the overlay-only "Session Tree".
     let since = "second question\nBETA answer.\n  Session Tree\n";
     assert!(s.is_ready(since));
+}
+
+/// The first Ctrl+C on an empty editor says that a second one exits.
+#[test]
+fn first_ctrl_c_on_an_empty_editor_shows_an_exit_hint() {
+    let world = World::new(vec![ScriptTurn::text("ALPHA answer.")]);
+    let session = Session::open(world.deps(), Open::New).expect("open");
+    let steps = vec![
+        step("open", &["oxa v"], vec![key("ctrl+c")]),
+        step("hint", &["Press Ctrl+C again to exit"], vec![key("ctrl+d")]),
+    ];
+    let (code, ..) = run_with(&world, session, world.opts(false), (90, 30), steps);
+    assert_eq!(code, 0);
 }

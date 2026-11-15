@@ -278,7 +278,7 @@ pub fn render_shown(text: &str, why: &str, cx: &ViewCx) -> Vec<String> {
         other => (other, "dim"),
     };
     let reason = if why == shown_why::ABORTED {
-        format!("{label}: {}", "cancelled; the prompt stays in the conversation")
+        format!("{label}: {}", "cancelled; your prompt is kept, type to go on")
     } else {
         format!("{label}: not sent to the model; ask again")
     };
