@@ -26,7 +26,29 @@ fn sibling(name: &str, var: &str) -> PathBuf {
     if p.ends_with("deps") {
         p.pop();
     }
-    p.join(name)
+    let bin = p.join(name);
+    if !bin.exists() && std::env::var(var).is_err() {
+        ensure_built(&p);
+    }
+    bin
+}
+
+/// Build the `oxa` and `oxa-fake` binaries once when a test run (for example
+/// `cargo test -p oxa-parity` alone) did not build them. `profile_dir` is `target/<profile>`.
+fn ensure_built(profile_dir: &std::path::Path) {
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    BUILD.call_once(|| {
+        let dir = profile_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("debug");
+        let profile = if dir == "debug" { "dev" } else { dir };
+        let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+            .args(["build", "-p", "oxa-cli", "-p", "oxa-fake", "--profile", profile])
+            .status()
+            .expect("run cargo build for oxa and oxa-fake");
+        assert!(status.success(), "cargo build -p oxa-cli -p oxa-fake failed");
+    });
 }
 
 /// The `oxa` binary: `$OXA_BIN` or `target/<profile>/oxa`.
