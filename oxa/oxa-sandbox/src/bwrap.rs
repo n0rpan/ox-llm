@@ -897,6 +897,29 @@ mod tests {
         assert!(!binds_src(&off, &gh), "{off:?}");
     }
 
+    /// #122: starting in the home directory keeps the credential masks.
+    #[test]
+    fn credential_masks_hold_with_cwd_home() {
+        let env = TestEnv::new();
+        env.write("home/.config/gh/hosts.yml", "SYNTH-TOKEN");
+        env.write("home/.ssh/id_test", "SYNTH");
+        let home = env.home();
+        let on = bwrap_args_homes(&spec(&home, true), &home, &Layout::default(), None);
+        let hy = home.join(".config/gh/hosts.yml").to_string_lossy().into_owned();
+        assert!(
+            on.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1].ends_with("/empty") && w[2] == hy),
+            "{on:?}"
+        );
+        let ssh = home.join(".ssh").to_string_lossy().into_owned();
+        assert!(
+            !on.iter()
+                .any(|x| x == &home.join(".ssh/id_test").to_string_lossy()),
+            "{on:?}"
+        );
+        assert!(!on.windows(3).any(|w| w[0] == "--bind" && w[1] == ssh), "{on:?}");
+    }
+
     #[test]
     fn find_on_path_skips_relative_and_empty_entries() {
         assert_eq!(find_on_path("", "bwrap"), None);
