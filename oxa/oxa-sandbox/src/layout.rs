@@ -254,7 +254,14 @@ impl Layout {
         write.extend(i.write_extra.iter().cloned());
         // A user-chosen sccache directory is the same cache as `~/.cache/sccache`.
         if let Some((_, d)) = i.env.iter().find(|(k, _)| k == "SCCACHE_DIR") {
-            write.push(PathBuf::from(d));
+            let d = PathBuf::from(d);
+            // Only a cache-like directory: never the home, a parent of it, or a config tree.
+            let cache_like = d.starts_with(i.home.join(".cache"))
+                || d.file_name()
+                    .is_some_and(|n| n.to_string_lossy().to_lowercase().contains("sccache"));
+            if d.is_absolute() && !i.home.starts_with(&d) && cache_like {
+                write.push(d);
+            }
         }
         let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
         read.retain(keep);
@@ -423,6 +430,8 @@ mod tests {
             read_extra: vec![],
             write_extra: vec![],
             allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
         });
         let ok = l.write.contains(&dir);
         std::fs::remove_dir_all(&home).ok();
@@ -432,7 +441,7 @@ mod tests {
     #[test]
     fn custom_sccache_dir_is_bound_and_passed() {
         let home = std::env::temp_dir().join(format!("oxa-sccache2-{}", std::process::id()));
-        let dir = home.join("elsewhere/sc");
+        let dir = home.join("elsewhere/my-sccache");
         std::fs::create_dir_all(&dir).unwrap();
         let l = Layout::build(&LayoutInputs {
             home: home.clone(),
@@ -442,6 +451,8 @@ mod tests {
             read_extra: vec![],
             write_extra: vec![],
             allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
         });
         let bound = l.write.contains(&dir);
         let passed = l
@@ -451,6 +462,32 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
         assert!(bound, "SCCACHE_DIR must be bound read-write");
         assert!(passed, "SCCACHE_DIR must be passed through");
+    }
+
+    #[test]
+    fn wide_sccache_dir_is_not_bound() {
+        let home = std::env::temp_dir().join(format!("oxa-sccache3-{}/home/u", std::process::id()));
+        let root = home.parent().unwrap().parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        for bad in [
+            home.clone(),
+            home.parent().unwrap().to_path_buf(),
+            home.join(".config"),
+        ] {
+            let l = Layout::build(&LayoutInputs {
+                home: home.clone(),
+                agent_dir: None,
+                path_var: String::new(),
+                env: vec![("SCCACHE_DIR".into(), bad.display().to_string())],
+                read_extra: vec![],
+                write_extra: vec![],
+                allow_home_write: false,
+                exe: None,
+                exe_in_workspace: false,
+            });
+            assert!(!l.write.contains(&bad), "{} must not be writable", bad.display());
+        }
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
