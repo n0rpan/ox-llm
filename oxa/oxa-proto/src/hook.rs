@@ -330,10 +330,13 @@ pub enum HostAction {
     /// E11 / EG5: clear the engine state of a finished child session by its session hint
     /// (`<session id>.s<n>`; any other hint is refused). -> `{cleared: bool}`.
     ClearEngineHint(String),
-    /// -> `{sessionId, model, contextWindow, maxOutput, compactAt, softTokens, hintClear,
+    /// -> `{sessionId, model, remote, contextWindow, maxOutput, compactAt, softTokens, hintClear,
     /// prefillOnly}`: the limits of the session's model as the session uses them (E11 child
     /// limits).
     EngineLimits,
+    /// -> `{model, remote}`: whether a model id runs at a cloud provider through oxc (#458:
+    /// remote subagent children may run concurrently and on their agent's own model).
+    ModelInfo(String),
     /// Run a registered tool through the full loop path (policy, shape). -> `{text, isError}`.
     CallTool {
         name: String,

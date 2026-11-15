@@ -833,9 +833,21 @@ fn apply(
             Ok(Value::String(st.prefix.system_text()))
         }
         HostAction::GetCommands => Ok(Value::Array(commands_json(st))),
+        HostAction::ModelInfo(model) => {
+            let remote = if model == st.model {
+                st.info.caps.remote
+            } else {
+                st.engine
+                    .info(Some(&model))
+                    .map(|i| i.caps.remote)
+                    .unwrap_or(false)
+            };
+            Ok(serde_json::json!({ "model": model, "remote": remote }))
+        }
         HostAction::EngineLimits => Ok(serde_json::json!({
             "sessionId": st.sref.id,
             "model": st.model,
+            "remote": st.info.caps.remote,
             "contextWindow": st.info.n_ctx,
             "maxOutput": st.info.max_output,
             "compactAt": st.info.compact_at,
@@ -938,7 +950,8 @@ fn clear_engine_hint(st: &mut SessionState, hint: &str) -> Result<Value, OxaErro
             format!("{hint} is not a child session of this session"),
         ));
     }
-    if !st.info.caps.hint_clear {
+    // A remote parent may run a local child (#458), whose state the parent's caps don't describe.
+    if !st.info.caps.hint_clear && !st.info.caps.remote {
         return Ok(serde_json::json!({ "cleared": false }));
     }
     let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
