@@ -57,6 +57,10 @@ def preload_view(value):
     return 'unavailable', None, None
 
 
+class EngineBusy(ValueError):
+    """The engine answered 409: a generation or state write holds it; not off, not failed."""
+
+
 class CacheMixin:
     """Manager: saved state, prefixes and cache settings."""
 
@@ -216,6 +220,7 @@ class CacheMixin:
                                headers={'Content-Type': 'application/json', **oxe_runtime.backend_headers(self.backend_key())})
             response = connection.getresponse()
             data = response.read(1024**2 + 1)
+            if response.status == 409: raise EngineBusy('state cache engine busy')
             value = json.loads(data) if response.status == 200 and len(data) <= 1024**2 else None
             if not isinstance(value, dict): raise ValueError('state cache engine call failed')
             return value
@@ -262,6 +267,8 @@ class CacheMixin:
                     return
                 try:
                     usage = self.state_engine_json('GET', '/state-cache')
+                except EngineBusy:
+                    continue  # the engine is busy with a request: ask again, it is not a final answer
                 except (OSError, ValueError, http.client.HTTPException):
                     return self.note_preload('unavailable', process)
                 self.note_preload_engine(usage.get('preload'), process)
@@ -289,6 +296,8 @@ class CacheMixin:
             try:
                 engine = self.state_engine_json('GET', '/state-cache')
                 value['engine'] = {k: engine[k] for k in ('budget_bytes', 'used_bytes') if type(engine.get(k)) is int}
+            except EngineBusy:
+                value['engine'] = {'busy': True}
             except (OSError, ValueError, http.client.HTTPException):
                 value['engine'] = None
         return value
