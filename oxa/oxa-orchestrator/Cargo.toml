@@ -9,11 +9,13 @@ publish.workspace = true
 
 [features]
 default = []
-core = ["dep:libc", "dep:serde_json"]
+core = ["dep:libc", "dep:serde_json", "dep:serde", "dep:sha2"]
 
 [dependencies]
 libc = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 oxa-orchestrator = { path = ".", features = ["core"] }
