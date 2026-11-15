@@ -1,11 +1,12 @@
 //! A9: the `bash` tool. Owner: task A9. Signatures below are frozen; bodies are yours.
 // ported from pi packages/coding-agent/src/core/tools/bash.ts (execution replaced by the sandbox)
 use crate::descriptions::{self, errors};
-use crate::jobs::JobRegistry;
+use crate::jobs::{JobRegistry, JobStatus};
 use oxa_proto::{Access, ExecSpec, Mode, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// `bash {command, timeout?}`: runs through `ToolCtx::sandbox` (never directly). `writable` = mode is not Plan; `net` = [`net_for`] (O-167(b): the sandbox network by mode and `oxa.sandbox.net`; `access` keeps `net: false`). Output streams to `live`; the result text is the merged output plus pi's exit-code / timeout lines; no timing text (W4). If `sandbox.check()` fails the result is that error (`is_error`). `ToolOutput::ui` = `{"exit": n|null, "timedOut": bool}`. Environment: `ToolCtx::env`.
 #[derive(Debug, Clone)]
@@ -108,8 +109,31 @@ enum BashArgs {
         timeout_s: Option<u32>,
         background: bool,
     },
-    /// Read the status and output of a background job.
-    Job { id: String },
+    /// Read the status and output of a background job, after waiting up to `wait` (#150).
+    Job { id: String, wait: Option<Duration> },
+}
+
+/// #150 (2): the longest `wait_s` a job read blocks for; a larger value is cut to it.
+pub const WAIT_CAP_S: f64 = 60.0;
+const BAD_WAIT: &str = "\"wait_s\" must be a number of seconds, zero or more";
+const WAIT_NEEDS_JOB: &str = "\"wait_s\" applies to a job read; provide \"job\" with it";
+
+/// `wait_s` of a call: absent, null or zero is no wait; otherwise capped at [`WAIT_CAP_S`].
+/// Negative, non-finite or non-numeric values are refused.
+fn parse_wait(args: &Value) -> Result<Option<Duration>, String> {
+    match args.get("wait_s") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let w = v
+                .as_f64()
+                .filter(|w| w.is_finite() && *w >= 0.0)
+                .ok_or_else(|| BAD_WAIT.to_string())?;
+            if w == 0.0 {
+                return Ok(None);
+            }
+            Ok(Some(Duration::from_secs_f64(w.min(WAIT_CAP_S))))
+        }
+    }
 }
 
 /// pi's validation text for a missing required property (TypeBox's message, verbatim shape).
@@ -131,6 +155,9 @@ fn parse(args: &Value) -> Result<BashArgs, String> {
         (Some(_), Some(_)) => Err(COMMAND_OR_JOB.to_string()),
         (None, None) => Err(MISSING_COMMAND.to_string()),
         (Some(command), None) => {
+            if args.get("wait_s").is_some_and(|v| !v.is_null()) {
+                return Err(WAIT_NEEDS_JOB.to_string());
+            }
             let timeout_s = match args.get("timeout") {
                 None | Some(Value::Null) => None,
                 Some(v) => {
@@ -152,7 +179,10 @@ fn parse(args: &Value) -> Result<BashArgs, String> {
             if background {
                 return Err(BACKGROUND_NEEDS_COMMAND.to_string());
             }
-            Ok(BashArgs::Job { id: id.to_string() })
+            Ok(BashArgs::Job {
+                id: id.to_string(),
+                wait: parse_wait(args)?,
+            })
         }
     }
 }
@@ -239,7 +269,7 @@ impl Tool for BashTool {
             Err(e) => return ToolOutput::error(e),
         };
         match a {
-            BashArgs::Job { id } => self.read_job(&id),
+            BashArgs::Job { id, wait } => self.read_job(&id, wait, cx),
             BashArgs::Run {
                 command,
                 timeout_s,
@@ -256,18 +286,31 @@ impl Tool for BashTool {
 
 impl BashTool {
     /// Issue #127 (b): read a background job's status and the last 8 KiB of its output.
-    fn read_job(&self, id: &str) -> ToolOutput {
+    /// #150 (2): with `wait`, first block until the job exits, prints new output, or the wait
+    /// runs out. A still-running job's text says to wait again later rather than retry at once.
+    fn read_job(&self, id: &str, wait: Option<Duration>, cx: &ToolCtx) -> ToolOutput {
+        if let Some(max) = wait {
+            if let Err(e) = self.jobs.wait(id, max, cx.cancel) {
+                return ToolOutput::error(e);
+            }
+        }
         match self.jobs.read(id) {
             Ok(read) => {
-                let text = if read.output.is_empty() {
-                    format!("Job {id}: {}", read.status.text())
-                } else {
-                    format!("Job {id}: {}\n\n{}", read.status.text(), read.output)
-                };
+                let status = read.status.text();
+                let mut text = format!("Job {id}: {status} ({} bytes of output)", read.total);
+                if read.status == JobStatus::Running {
+                    text.push_str(&format!(
+                        "\nStill running. Wait with bash {{\"job\": \"{id}\", \"wait_s\": 30}} or poll again later; do not retry at once."
+                    ));
+                }
+                if !read.output.is_empty() {
+                    text.push_str("\n\n");
+                    text.push_str(&read.output);
+                }
                 ToolOutput {
                     text,
                     is_error: false,
-                    ui: json!({ "job": id, "status": read.status.text() }),
+                    ui: json!({ "job": id, "status": status }),
                 }
             }
             Err(e) => ToolOutput::error(e),
@@ -982,5 +1025,194 @@ echo '\''a'\'''"#
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+}
+
+#[cfg(test)]
+mod poll_tests {
+    use super::*;
+    use oxa_proto::{CancelToken, ExecResult, Mode, OxaError, Sandbox};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::Mutex;
+
+    /// A job whose output is sent by the test, one chunk at a time, and that ends when the
+    /// sender is dropped (exit 0) or the job is cancelled.
+    struct Chunks {
+        rx: Mutex<Receiver<Vec<u8>>>,
+    }
+
+    impl Sandbox for Chunks {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(&self, _s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+            let rx = self.rx.lock().unwrap();
+            loop {
+                if c.is_cancelled() {
+                    return ExecResult {
+                        output: Vec::new(),
+                        exit: None,
+                        timed_out: false,
+                    };
+                }
+                match rx.recv_timeout(std::time::Duration::from_millis(5)) {
+                    Ok(chunk) => live(&chunk),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(_) => {
+                        return ExecResult {
+                            output: Vec::new(),
+                            exit: Some(0),
+                            timed_out: false,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn call(tool: &BashTool, sb: &dyn Sandbox, args: Value) -> ToolOutput {
+        let cwd = std::path::Path::new("/work");
+        let env: Vec<(String, String)> = Vec::new();
+        let cancel = CancelToken::new();
+        let cx = ToolCtx {
+            cwd,
+            spill_dir: cwd,
+            sandbox: sb,
+            mode: Mode::Workspace,
+            cancel: &cancel,
+            env: &env,
+            tune: Default::default(),
+        };
+        tool.run(&args, &cx, &mut |_| {})
+    }
+
+    fn setup() -> (BashTool, Arc<JobRegistry>, Arc<Chunks>, Sender<Vec<u8>>) {
+        let (tx, rx) = channel();
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Chunks { rx: Mutex::new(rx) });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let started = call(&tool, &*sb, json!({"command": "tail -f log", "background": true}));
+        assert!(!started.is_error, "{}", started.text);
+        (tool, jobs, sb, tx)
+    }
+
+    /// #150 (1): a poll whose output grew is a different result even when the last
+    /// [`READ_CAP`] bytes read the same (a job printing a long run of one character). The
+    /// repeat guard compares result text, so the text must say how much output arrived.
+    #[test]
+    fn a_poll_reports_how_much_output_arrived() {
+        let (tool, jobs, sb, tx) = setup();
+        let n = crate::jobs::READ_CAP + 800;
+        tx.send(vec![b'x'; n]).unwrap();
+        while jobs.buffered_len("job-1") != Some(n) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let first = call(&tool, &*sb, json!({"job": "job-1"})).text;
+        tx.send(vec![b'x'; 800]).unwrap();
+        while jobs.buffered_len("job-1") != Some(n + 800) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let second = call(&tool, &*sb, json!({"job": "job-1"})).text;
+        assert_ne!(first, second);
+        jobs.kill_all();
+    }
+
+    /// #150 (2): `wait_s` returns as soon as the job prints new output, well before its cap.
+    #[test]
+    fn wait_returns_early_on_new_output() {
+        let (tool, jobs, sb, tx) = setup();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            tx.send(b"hello\n".to_vec()).unwrap();
+            tx
+        });
+        let started = std::time::Instant::now();
+        let out = call(&tool, &*sb, json!({"job": "job-1", "wait_s": 20}));
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(10), "{took:?}");
+        assert!(out.text.contains("hello\n"), "{:?}", out.text);
+        assert!(out.text.contains("Still running"), "{:?}", out.text);
+        drop(sender.join().unwrap());
+        jobs.kill_all();
+    }
+
+    /// #150 (2): `wait_s` returns as soon as the job exits, and then says so (no retry hint).
+    #[test]
+    fn wait_returns_early_on_exit() {
+        let (tool, _jobs, sb, tx) = setup();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(tx);
+        });
+        let started = std::time::Instant::now();
+        let out = call(&tool, &*sb, json!({"job": "job-1", "wait_s": 20}));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(out.text.starts_with("Job job-1: exited 0"), "{:?}", out.text);
+        assert!(!out.text.contains("Still running"), "{:?}", out.text);
+        sender.join().unwrap();
+    }
+
+    /// #150 (2): with no news the read waits about `wait_s`, then tells the model to wait or
+    /// poll again later.
+    #[test]
+    fn wait_without_news_runs_out_and_says_to_wait() {
+        let (tool, jobs, sb, _tx) = setup();
+        let started = std::time::Instant::now();
+        let out = call(&tool, &*sb, json!({"job": "job-1", "wait_s": 0.3}));
+        let took = started.elapsed();
+        assert!(took >= std::time::Duration::from_millis(280), "{took:?}");
+        assert!(out.text.contains("wait again later") || out.text.contains("poll again later"));
+        assert!(out.text.contains("do not retry at once"), "{:?}", out.text);
+        jobs.kill_all();
+    }
+
+    /// #150 (2): the cap, zero/absent, and the refused values.
+    #[test]
+    fn wait_cap_and_bad_values() {
+        let dur = |v: Value| parse_wait(&v);
+        assert_eq!(dur(json!({})), Ok(None));
+        assert_eq!(dur(json!({"wait_s": null})), Ok(None));
+        assert_eq!(dur(json!({"wait_s": 0})), Ok(None));
+        assert_eq!(
+            dur(json!({"wait_s": 5})),
+            Ok(Some(std::time::Duration::from_secs(5)))
+        );
+        assert_eq!(
+            dur(json!({"wait_s": 1000})),
+            Ok(Some(std::time::Duration::from_secs(60)))
+        );
+        assert_eq!(
+            dur(json!({"wait_s": WAIT_CAP_S})),
+            Ok(Some(std::time::Duration::from_secs(60)))
+        );
+        for bad in [json!(-1), json!("5"), json!(true), json!([1])] {
+            assert_eq!(
+                dur(json!({ "wait_s": bad.clone() })),
+                Err(BAD_WAIT.to_string()),
+                "{bad}"
+            );
+        }
+        // Only a job read may wait.
+        assert_eq!(
+            parse(&json!({"command": "ls", "wait_s": 3})),
+            Err(WAIT_NEEDS_JOB.to_string())
+        );
+        assert!(parse(&json!({"command": "ls", "wait_s": null})).is_ok());
+        // Through the tool: a bad value is an error result, not a wait.
+        let (tool, jobs, sb, _tx) = setup();
+        let out = call(&tool, &*sb, json!({"job": "job-1", "wait_s": -2}));
+        assert!(out.is_error && out.text == BAD_WAIT, "{:?}", out.text);
+        jobs.kill_all();
+    }
+
+    #[test]
+    fn schema_documents_wait_s() {
+        let tool = BashTool::new();
+        let schema = tool.spec().schema_json.clone();
+        assert!(schema.contains("wait_s") && schema.contains("max 60"), "{schema}");
     }
 }
