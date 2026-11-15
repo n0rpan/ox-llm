@@ -249,8 +249,12 @@ fn yolo_removes_every_guard() {
     let cwd = env.work();
     let home = env.home();
     for mode in [Mode::Workspace, Mode::Ask] {
+        // Review of #314: a table Ask turned into Allow is counted once, not by both the
+        // floor's `auto` answer and the yolo branch.
         for a in &asked_in_workspace(&env) {
+            let before = switch.approved();
             assert_eq!(p.decide(mode, a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
+            assert_eq!(switch.approved(), before + 1, "{a:?} is counted once");
         }
         let mut guarded = Vec::new();
         for path in [
