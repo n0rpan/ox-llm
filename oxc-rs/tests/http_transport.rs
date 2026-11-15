@@ -272,3 +272,53 @@ async fn http10_streams_are_close_delimited_without_chunk_bytes() {
     assert!(!headers.contains("content-length:"), "{headers}");
     assert!(headers.contains("connection: close"));
 }
+
+#[tokio::test]
+async fn expect_continue_unblocks_a_client_waiting_to_send_its_body() {
+    let app = Router::new().fallback(|request: Request| async move {
+        let body = to_bytes(request.into_body(), 100).await.unwrap();
+        assert_eq!(body, "test");
+        reply(Body::from("ok"))
+    });
+    let (mut client, server) = tokio::io::duplex(8192);
+    let serving = tokio::spawn(transport::serve_with_timeout(
+        server,
+        app,
+        Some(Duration::from_millis(200)),
+        true,
+    ));
+    client.write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut interim = [0; 25];
+    tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut interim))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&interim, b"HTTP/1.1 100 Continue\r\n\r\n");
+    client.write_all(b"test").await.unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with(b"\r\n\r\nok"));
+    serving.await.unwrap();
+}
+
+#[tokio::test]
+async fn rejected_expect_request_does_not_receive_permission_to_send_a_body() {
+    let app = Router::new().fallback(|| async {
+        Response::builder()
+            .status(401)
+            .header("content-length", "2")
+            .body(Body::from("no"))
+            .unwrap()
+    });
+    let response = exchange(
+        b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nExpect: 100-continue\r\n\r\n",
+        app,
+    )
+    .await;
+    assert!(response.starts_with(b"HTTP/1.1 401 Unauthorized\r\n"));
+    assert!(!String::from_utf8_lossy(&response).contains("100 Continue"));
+}

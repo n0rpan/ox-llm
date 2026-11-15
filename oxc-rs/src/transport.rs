@@ -133,6 +133,7 @@ struct Peer {
     reader: Reader,
     done: Arc<AtomicBool>,
     notify: Arc<Notify>,
+    reading: Arc<Notify>,
     monitor: bool,
     reusable: bool,
 }
@@ -276,6 +277,7 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
         reader: reader.clone(),
         done: Arc::new(AtomicBool::new(false)),
         notify: Arc::new(Notify::new()),
+        reading: Arc::new(Notify::new()),
         monitor,
         reusable: !chunked && length_fields <= 1 && length_valid,
     };
@@ -289,6 +291,7 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
                 if remaining == 0 {
                     return None;
                 }
+                peer.reading.notify_one();
                 let mut bytes = vec![0_u8; remaining.min(8192) as usize];
                 let result = {
                     let mut locked = reader.lock().await;
@@ -364,7 +367,28 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
                     .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"keep-alive")));
         let http10 = request.version() == Version::HTTP_10;
         let head_request = request.method() == axum::http::Method::HEAD;
-        let handled = tokio::select! {response=app.clone().oneshot(request)=>response,_=peer.disconnected()=>break};
+        let mut expect_continue = !http10
+            && request
+                .headers()
+                .get(header::EXPECT)
+                .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"100-continue"));
+        let handling = app.clone().oneshot(request);
+        tokio::pin!(handling);
+        let handled = loop {
+            tokio::select! {
+                response = &mut handling => break response,
+                _ = peer.reading.notified(), if expect_continue => {
+                    // Admission may reject without reading. Send permission only
+                    // once the handler actually asks for the request body.
+                    expect_continue = false;
+                    if write.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await.is_err()
+                        || write.flush().await.is_err() {
+                        return;
+                    }
+                }
+                _ = peer.disconnected() => return,
+            }
+        };
         let response = match handled {
             Ok(response) => response,
             Err(error) => match error {},
