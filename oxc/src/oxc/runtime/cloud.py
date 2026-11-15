@@ -801,8 +801,9 @@ class SSEDecoder:
 
 def cache_pricing(item):
     """How cache tokens are priced: explicit catalog rates, provider default or conservative."""
-    price = item.get('pricing') or {}
-    if 'cache_read_per_million' in price and 'cache_write_per_million' in price:
+    price = pricing(item) or {}
+    levels = price['tiers'] if 'tiers' in price else [price]
+    if all('cache_read_per_million' in level and 'cache_write_per_million' in level for level in levels):
         return 'explicit'
     return 'provider_default' if item['provider'] == 'anthropic' else 'conservative'
 

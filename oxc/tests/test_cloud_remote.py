@@ -550,3 +550,14 @@ class CachePricingFlagTests(unittest.TestCase):
         self.assertEqual(cloud.cache_pricing({'provider': 'openrouter', 'pricing': base}), 'conservative')
         full = dict(base, cache_read_per_million=0.3, cache_write_per_million=3.75)
         self.assertEqual(cloud.cache_pricing({'provider': 'openrouter', 'pricing': full}), 'explicit')
+
+    def test_tiered_flag_follows_tier_rates(self):
+        from oxc.runtime import cloud
+        cache = {'cache_read_per_million': 0.3, 'cache_write_per_million': 3.75}
+        tiers = [dict(input_per_million=3.0, output_per_million=15.0, max_prompt_tokens=200000, **cache),
+                 dict(input_per_million=6.0, output_per_million=22.0, **cache)]
+        item = {'provider': 'openrouter', 'pricing': {'tiers': tiers}}
+        self.assertEqual(cloud.cache_pricing(item), 'explicit')
+        self.assertEqual(cloud.capabilities(dict(item, context_window=1, max_output=1))['cache_pricing'], 'explicit')
+        del tiers[1]['cache_write_per_million']
+        self.assertEqual(cloud.cache_pricing(item), 'conservative')
