@@ -98,3 +98,18 @@ fn preparation_requires_a_real_parent_before_it_can_bind_the_location() {
     fs::create_dir(path.parent().unwrap()).unwrap();
     assert!(KeyFile::prepare(&path).is_ok());
 }
+#[test]
+fn replacing_the_canonical_parent_cannot_redirect_a_prepared_read() {
+    let home = Home::new();
+    let allowed = home.key("outside/provider.json", "synthetic-allowed");
+    let inside = home.key("repository/provider.json", "synthetic-repository");
+    fs::create_dir(inside.parent().unwrap().join(".git")).unwrap();
+    let prepared = KeyFile::prepare(&allowed).unwrap();
+    let original = home.0.join("original-location");
+    fs::rename(allowed.parent().unwrap(), &original).unwrap();
+    symlink(inside.parent().unwrap(), allowed.parent().unwrap()).unwrap();
+    assert_eq!(
+        prepared.read("openrouter").unwrap().expose(),
+        "synthetic-allowed"
+    );
+}
