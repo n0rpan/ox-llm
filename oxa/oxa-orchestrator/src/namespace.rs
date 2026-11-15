@@ -77,9 +77,30 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+/// Test-only: true (with a printed reason) when an ancestor of `path` is owned by the overflow
+/// uid. Inside the oxa sandbox `/` and `/home` are unmapped host directories, so the
+/// production check correctly refuses them; tests that need a protected path skip there
+/// instead of the check being relaxed.
+#[cfg(test)]
+pub(crate) fn skip_unmapped_ancestors(path: &Path) -> bool {
+    let mut current = Some(path);
+    while let Some(dir) = current {
+        if std::fs::metadata(dir).map(|m| m.uid() == 65534).unwrap_or(false) {
+            eprintln!(
+                "skipped: {} is owned by the unmapped overflow uid (sandbox user namespace)",
+                dir.display()
+            );
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn overflow_and_other_owners_stay_rejected() {
@@ -88,5 +109,26 @@ mod tests {
         assert!(trusted_owner(0, user));
         assert!(!trusted_owner(65534, user));
         assert!(!trusted_owner(1001, user));
+    }
+
+    #[test]
+    fn world_writable_directory_without_sticky_bit_is_rejected() {
+        let dir = std::env::temp_dir().join(format!("oxa-ns-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let file = File::open(&dir).unwrap();
+        let denied = check_namespace(&file).is_err();
+        std::fs::remove_dir(&dir).unwrap();
+        assert!(denied);
+    }
+
+    #[test]
+    fn private_own_directory_is_accepted() {
+        let dir = std::env::temp_dir().join(format!("oxa-ns-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let ok = check_namespace(&File::open(&dir).unwrap()).is_ok();
+        std::fs::remove_dir(&dir).unwrap();
+        assert!(ok);
     }
 }

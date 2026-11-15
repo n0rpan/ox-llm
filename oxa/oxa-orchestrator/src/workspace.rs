@@ -818,6 +818,9 @@ mod tests {
     }
     #[test]
     fn private_changes_are_verifiable_and_never_apply_to_source() {
+        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
+            return;
+        }
         let env = TestEnv::new();
         let snapshot = source(&env);
         let grant = Arc::new(Grant::editing(snapshot.clone(), vec![path("nested/new.txt")]).unwrap());
@@ -847,6 +850,9 @@ mod tests {
     }
     #[test]
     fn output_scope_read_only_and_size_limits_fail_closed() {
+        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
+            return;
+        }
         let env = TestEnv::new();
         let snapshot = source(&env);
         let read = Arc::new(Grant::read_only(snapshot.clone()))
@@ -875,6 +881,9 @@ mod tests {
     }
     #[test]
     fn grants_reject_scope_collisions_and_copy_refuses_replacement_or_public_parent() {
+        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
         let env = TestEnv::new();
         let snapshot = source(&env);
@@ -908,6 +917,9 @@ mod tests {
 
     #[test]
     fn collected_reviews_detect_forgery_deletion_and_stale_source() {
+        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
+            return;
+        }
         let env = TestEnv::new();
         let snapshot = source(&env);
         let new = path("new name.txt");
@@ -954,6 +966,9 @@ mod tests {
 
     #[test]
     fn outputs_refuse_executables_hardlinks_and_oversized_or_excessive_trees() {
+        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
         let env = TestEnv::new();
         let snapshot = source(&env);
