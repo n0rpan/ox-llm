@@ -65,8 +65,8 @@ pub const READ: ToolText = ToolText {
 /// ADAPTED: pi says "truncated to last 2000 lines or 50KB ... saved to a temp file".
 pub const BASH: ToolText = ToolText {
     name: "bash",
-    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part. If truncated, full output is saved to a file. Optionally provide a timeout in seconds. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\".",
-    schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"}}}"#,
+    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part. If truncated, full output is saved to a file. Optionally provide a timeout in seconds. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60).",
+    schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"number","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."}}}"#,
     class: ToolClass::Exec,
     prompt_snippet: "Execute bash commands (ls, grep, find, etc.)",
     guidelines: &[
@@ -573,8 +573,8 @@ pub mod builtin_specs {
 
     pub const BASH_DEFAULT: ToolText = ToolText {
         name: BASH.name,
-        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\".",
-        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"}}}"#,
+        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60).",
+        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"integer","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."}}}"#,
         class: BASH.class,
         prompt_snippet: BASH.prompt_snippet,
         guidelines: BASH.guidelines,
