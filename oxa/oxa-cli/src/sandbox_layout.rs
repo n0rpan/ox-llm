@@ -104,7 +104,18 @@ pub(crate) fn layout(
         ));
     }
     let (writable, rest): (Vec<&&std::path::PathBuf>, Vec<&&std::path::PathBuf>) =
-        mounted.iter().partition(|p| built.is_writable(p));
+        mounted.iter().partition(|p| {
+            // The innermost real mount decides: a read bind nested in a writable one stays
+            // read-only, and a writable bind holding the cwd is never mounted.
+            built
+                .read
+                .iter()
+                .map(|m| (m, false))
+                .chain(built.write.iter().map(|m| (m, true)))
+                .filter(|(m, _)| p.starts_with(m) && !holds_cwd(m))
+                .max_by_key(|(m, _)| m.components().count())
+                .is_some_and(|(_, rw)| rw)
+        });
     let (partly, readonly): (Vec<&&std::path::PathBuf>, Vec<&&std::path::PathBuf>) =
         rest.into_iter().partition(|p| built.has_writable_inside(p));
     if !partly.is_empty() {
@@ -234,6 +245,34 @@ mod tests {
             notices
                 .iter()
                 .any(|(_, t)| t.contains("except writable paths inside")),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn read_path_nested_in_a_writable_path_is_still_never_write() {
+        let env = TestEnv::new();
+        env.write("srv/ref/x", "x");
+        let r = |p: &str| env.root().join(p).display().to_string();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(
+                r#"{{"oxa":{{"sandbox":{{"readPaths":["{}"],"writePaths":["{}"]}}}}}}"#,
+                r("srv/ref"),
+                r("srv")
+            ),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert!(
+            notices
+                .iter()
+                .any(|(_, t)| t.contains("(never write)") && t.contains("srv/ref")),
+            "{notices:?}"
+        );
+        assert!(
+            !notices.iter().any(|(_, t)| t.contains("read and write")),
             "{notices:?}"
         );
     }
