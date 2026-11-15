@@ -17,16 +17,62 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc, Mutex, OnceLock, Weak,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 type Shared = Arc<Mutex<Owner>>;
+static ATTACHMENTS: OnceLock<Mutex<Vec<Weak<Mutex<Owner>>>>> = OnceLock::new();
 thread_local! { static OWNER: RefCell<Option<Shared>> = const { RefCell::new(None) }; }
 fn current() -> Option<Shared> {
     OWNER.with(|slot| slot.borrow().clone())
+}
+/// Handle a TUI interrupt while the main turn is idle. The UI thread cannot use
+/// the worker's thread-local attachment. Match its session and protected agent
+/// directory, and decline ambiguous owners rather than interrupt another TUI.
+pub fn interrupt_idle(session: &str, agent_dir: &Path) -> bool {
+    let Some(registry) = ATTACHMENTS.get() else {
+        return false;
+    };
+    let Ok(agent_dir) = agent_dir.canonicalize() else {
+        return false;
+    };
+    let owners = {
+        let mut entries = registry.lock().unwrap_or_else(|e| e.into_inner());
+        entries.retain(|entry| entry.strong_count() != 0);
+        entries.iter().filter_map(Weak::upgrade).collect::<Vec<_>>()
+    };
+    let mut matches = owners.iter().filter(|owner| {
+        let owner = owner.lock().unwrap_or_else(|e| e.into_inner());
+        owner.session == session && owner.agent_dir == agent_dir
+    });
+    let Some(shared) = matches.next() else {
+        return false;
+    };
+    if matches.next().is_some() {
+        return false;
+    }
+    let mut owner = shared.lock().unwrap_or_else(|e| e.into_inner());
+    if owner.session != session
+        || owner.agent_dir != agent_dir
+        || owner.socket_stop.load(Ordering::Acquire)
+        || owner.command_active
+        || owner.handle.is_busy()
+    {
+        return false;
+    }
+    let work = owner.workers.as_ref().is_some_and(|w| w.running() != 0)
+        || owner.background.as_ref().is_some_and(|t| t.running() != 0);
+    let paused = owner.goal.as_mut().is_some_and(|g| g.pause(g.revision()).is_ok());
+    if !work && !paused {
+        return false;
+    }
+    owner.idle_wakes_paused = true;
+    owner.interrupt();
+    owner.publish("tui_interrupt", None, None, true);
+    true
 }
 const CONTRACT: &str = r#"Continue the operator's long-running goal in this SAME session. A normal reply does not finish the goal. Return exactly one JSON object: {"state":"continue","summary":"work and next steps"}, {"state":"done","summary":"verified result","evidence":["concrete checks"]}, or {"state":"blocked","reason":"specific missing input"}. Do not declare done until the whole goal is verified. Budget/model/tools/permissions stay operator-owned."#;
 fn default_budget() -> goals::Budget {
@@ -55,6 +101,7 @@ struct Owner {
     workers: Option<Arc<crate::worker_lanes::Manager>>,
     wakes: VecDeque<crate::background::Snapshot>,
     directory: PathBuf,
+    agent_dir: PathBuf,
     socket_stop: Arc<AtomicBool>,
     session: String,
     model: String,
@@ -64,6 +111,7 @@ struct Owner {
     generation: u64,
     revision: u64,
     command_active: bool,
+    idle_wakes_paused: bool,
     observation: Observation,
     publisher: Publisher,
     notify: Box<dyn Fn(AgentEvent) + Send>,
@@ -640,6 +688,7 @@ fn start(
         workers: crate::worker_lanes::for_session(session),
         wakes: VecDeque::new(),
         directory,
+        agent_dir,
         socket_stop: server.stop_handle(),
         session: state.session_id,
         model: state.model,
@@ -649,6 +698,7 @@ fn start(
         generation: 0,
         revision: 1,
         command_active: false,
+        idle_wakes_paused: false,
         observation: Observation::default(),
         publisher,
         notify: Box::new(notify),
@@ -663,6 +713,14 @@ fn start(
     }
     owner.publish("session_attached", None, None, false);
     let shared = Arc::new(Mutex::new(owner));
+    {
+        let mut entries = ATTACHMENTS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        entries.retain(|entry| entry.strong_count() != 0);
+        entries.push(Arc::downgrade(&shared));
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let shutdown = stop.clone();
     let broker_owner = shared.clone();
@@ -735,9 +793,11 @@ pub fn bind(session: &mut Session) {
         }
         owner.wakes.clear();
         owner.goal = None;
+        owner.idle_wakes_paused = false;
         owner.restore = None;
         owner.command_active = false;
         owner.observation = Observation::default();
+        owner.agent_dir = session.inner().dirs.agent_dir.clone();
         owner.session = state.session_id.clone();
         owner.handle = session.handle();
         owner.model = state.model.clone();
@@ -782,6 +842,7 @@ pub fn admit(session: &mut Session) -> Result<(), OxaError> {
     bind(session);
     let Some(owner) = current() else { return Ok(()) };
     let mut owner = owner.lock().unwrap_or_else(|e| e.into_inner());
+    owner.idle_wakes_paused = false;
     if owner.socket_stop.load(Ordering::Acquire) {
         return Err(OxaError::new(codes::INVALID,"Session control directory is exposed to the workspace; reopen with a private directory outside it"));
     }
@@ -825,6 +886,9 @@ pub fn drive(session: &mut Session, sink: &mut dyn EventSink, ui: &mut dyn Ui) -
         owner.tick();
         match owner.goal.as_ref().map(Goal::state) {
             None => {
+                if owner.idle_wakes_paused {
+                    return true;
+                }
                 if let Some(wake) = owner.wakes.pop_front() {
                     if owner.start_turn().is_err() {
                         return true;
