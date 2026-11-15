@@ -14,8 +14,8 @@ ARM_IMAGE = 'ubuntu-24.04-arm'
 # The runner expression from checks.yml: the project's runners when the switch is on, otherwise
 # (or for fork pull requests) the hosted x86_64 image.
 RUNNER_CONDITION = (
-    "vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && "
-    "github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest'"
+    "vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && "
+    "github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04'"
 )
 RUNNER_EXPRESSION = '${{ ' + RUNNER_CONDITION + ' }}'
 
