@@ -34,17 +34,12 @@ fn read_salt(path: &Path) -> io::Result<[u8; 32]> {
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
         .open(path)?;
     let info = file.metadata()?;
-    if !info.is_file()
-        || info.uid() != nix::unistd::Uid::current().as_raw()
-        || info.mode() & 0o077 != 0
-    {
+    if !info.is_file() || info.uid() != nix::unistd::Uid::current().as_raw() || info.mode() & 0o077 != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let mut bytes = Vec::new();
     file.take(33).read_to_end(&mut bytes)?;
-    bytes
-        .try_into()
-        .map_err(|_| io::ErrorKind::InvalidData.into())
+    bytes.try_into().map_err(|_| io::ErrorKind::InvalidData.into())
 }
 fn install_salt(directory: &Path) -> io::Result<[u8; 32]> {
     let path = directory.join(".salt");
@@ -111,10 +106,7 @@ pub struct Entry {
 fn text(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
-        Value::Array(parts) => parts
-            .iter()
-            .filter_map(|part| part["text"].as_str())
-            .collect(),
+        Value::Array(parts) => parts.iter().filter_map(|part| part["text"].as_str()).collect(),
         _ => String::new(),
     }
 }
@@ -166,11 +158,7 @@ impl Ledger {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let path = self.0.directory.join(format!("requests-{day}.jsonl"));
-        let mut state = self
-            .0
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut state = self.0.state.lock().unwrap_or_else(|error| error.into_inner());
         let budget = state
             .budgets
             .entry(day.into())
@@ -196,10 +184,7 @@ impl Daily {
     pub fn entry(&self, model: &str, payload: &Value, context: Context<'_>) -> io::Result<Entry> {
         let started = Instant::now();
         let ledger = &self.ledger;
-        let messages = payload["messages"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
+        let messages = payload["messages"].as_array().map(Vec::as_slice).unwrap_or(&[]);
         let session = bounded_hint(context.session)
             .or_else(|| bounded_hint(payload["prompt_cache_key"].as_str()))
             .map(|hint| format!("h:{hint}"))
@@ -224,13 +209,7 @@ impl Daily {
         let agent = messages
             .iter()
             .find(|message| message["role"] == "system")
-            .map(|message| {
-                ledger.digest(
-                    b"ledger-agent-v1\0",
-                    text(&message["content"]).as_bytes(),
-                    12,
-                )
-            });
+            .map(|message| ledger.digest(b"ledger-agent-v1\0", text(&message["content"]).as_bytes(), 12));
         let tools: Vec<_> = messages
             .iter()
             .filter(|message| message["role"] == "tool")
@@ -238,17 +217,7 @@ impl Daily {
         let last_role = messages
             .last()
             .and_then(|message| message["role"].as_str())
-            .filter(|role| {
-                [
-                    "system",
-                    "developer",
-                    "user",
-                    "assistant",
-                    "tool",
-                    "function",
-                ]
-                .contains(role)
-            });
+            .filter(|role| ["system", "developer", "user", "assistant", "tool", "function"].contains(role));
         let origin = if context
             .origin
             .is_some_and(|value| value.trim().eq_ignore_ascii_case("lab"))
@@ -270,8 +239,7 @@ impl Daily {
             "temperature":number(&payload["temperature"])
         });
         if let Some(key) = context.idempotency_key.filter(|key| !key.is_empty()) {
-            row["idempotency"] =
-                json!(ledger.digest(b"ledger-idempotency-v1\0", key.as_bytes(), 12));
+            row["idempotency"] = json!(ledger.digest(b"ledger-idempotency-v1\0", key.as_bytes(), 12));
         }
         Ok(Entry {
             daily: self.clone(),

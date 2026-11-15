@@ -83,8 +83,8 @@ impl SpendReader {
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            let row: Value = serde_json::from_slice(&line)
-                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+            let row: Value =
+                serde_json::from_slice(&line).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
             if !row.is_object() {
                 return Err(io::ErrorKind::InvalidData.into());
             }

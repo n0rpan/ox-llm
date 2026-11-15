@@ -21,8 +21,8 @@ impl Home {
         let path = std::env::temp_dir().join(format!(
             "oxc-ledger-{:x}",
             u128::from_le_bytes([
-                id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10],
-                id[11], 0, 0, 0, 0
+                id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10], id[11], 0, 0,
+                0, 0
             ])
         ));
         fs::create_dir(&path).unwrap();
@@ -155,9 +155,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         session: Some("synthetic-session"),
         ..Context::default()
     };
-    let entry = first
-        .entry("synthetic-alias", &json!({}), context())
-        .unwrap();
+    let entry = first.entry("synthetic-alias", &json!({}), context()).unwrap();
     hold.mark_forwarded();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
@@ -168,9 +166,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         .budget()
         .reserve(&json!(0.005), true, &model(), 1000)
         .unwrap();
-    let entry = second
-        .entry("synthetic-alias", &json!({}), context())
-        .unwrap();
+    let entry = second.entry("synthetic-alias", &json!({}), context()).unwrap();
     hold.mark_forwarded();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
@@ -188,10 +184,7 @@ fn append_failure_stops_all_handles_and_is_not_retried() {
     let home = Home::new();
     let ledger = Ledger::open(&home.0).unwrap();
     let daily = ledger.day("20260102").unwrap();
-    let mut hold = daily
-        .budget()
-        .reserve(&json!(1), true, &model(), 1000)
-        .unwrap();
+    let mut hold = daily.budget().reserve(&json!(1), true, &model(), 1000).unwrap();
     let entry = daily
         .entry("synthetic-alias", &json!({}), Context::default())
         .unwrap();
@@ -282,10 +275,7 @@ fn salt_is_private_stable_and_published_atomically_during_concurrent_startup() {
             })
         })
         .collect();
-    let sessions: Vec<_> = handles
-        .into_iter()
-        .map(|handle| handle.join().unwrap())
-        .collect();
+    let sessions: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();
     assert!(sessions.iter().all(|value| value == &sessions[0]));
     assert_eq!(fs::read(home.0.join(".salt")).unwrap().len(), 32);
     assert_eq!(fs::read_dir(&home.0).unwrap().count(), 2);

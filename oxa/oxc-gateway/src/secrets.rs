@@ -212,8 +212,7 @@ impl KeyFile {
         }
         // A missing parent could later become a link into a repository. Bind
         // only an existing canonical directory for this config generation.
-        let parent =
-            fs::canonicalize(path.parent().unwrap_or(path)).map_err(|_| Error::Unavailable)?;
+        let parent = fs::canonicalize(path.parent().unwrap_or(path)).map_err(|_| Error::Unavailable)?;
         if !parent.is_dir() {
             return Err(Error::Unavailable);
         }

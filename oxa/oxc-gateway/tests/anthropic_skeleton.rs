@@ -149,9 +149,6 @@ fn real_runtime_discovers_the_fixture_without_provider_or_ledger_activity() {
         .to_string()
         .contains(fixture.key_path.to_str().unwrap()));
     assert!(mock.requests().is_empty());
-    assert!(std::fs::read_dir(&fixture.ledger_dir)
-        .unwrap()
-        .next()
-        .is_none());
+    assert!(std::fs::read_dir(&fixture.ledger_dir).unwrap().next().is_none());
     mock.assert_healthy();
 }

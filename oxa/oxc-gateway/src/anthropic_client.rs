@@ -135,7 +135,11 @@ impl Client {
             return Err(Error::Endpoint);
         }
         let path = endpoint.path().trim_end_matches('/');
-        let path = if path.ends_with("/v1") { format!("{path}/messages") } else { format!("{path}/v1/messages") };
+        let path = if path.ends_with("/v1") {
+            format!("{path}/messages")
+        } else {
+            format!("{path}/v1/messages")
+        };
         endpoint.set_path(&path);
         let mut body = anthropic_request::translate(chat.payload, chat.upstream_model, chat.max_output)
             .map_err(|e| Error::Request(e.param))?;
