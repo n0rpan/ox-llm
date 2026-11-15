@@ -1576,11 +1576,18 @@ fn run_prompt(
     let leaf = tree.leaf().to_string();
     if leaf != before {
         if let Some(EntryBody::Shown { why, .. }) = tree.get(&leaf).map(|e| &e.body) {
-            if *why == shown_why::FAILED || *why == shown_why::CUT {
+            // A refused request has no reply on screen: say so instead of "shown".
+            let text = if *why == shown_why::FAILED {
+                Some("The request failed; no reply was received; ask again to retry.")
+            } else if *why == shown_why::CUT {
+                Some("The reply did not finish. It is shown but was not sent; ask again to retry.")
+            } else {
+                None
+            };
+            if let Some(text) = text {
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Warning,
-                    text: "The reply did not finish. It is shown but was not sent; ask again to retry."
-                        .to_string(),
+                    text: text.to_string(),
                 });
             }
         }
@@ -1765,7 +1772,7 @@ pub(crate) fn skin_of(opts: &InteractiveOpts) -> crate::Skin {
     let from_env = opts
         .env
         .iter()
-        .find(|(k, v)| k == "OXA_SKIN" && matches!(v.trim(), "pi" | "oxa"))
+        .find(|(k, v)| k == "OXA_SKIN" && matches!(v.trim(), "pi" | "oxa" | "ascii"))
         .map(|(_, v)| v.trim().to_string());
     crate::skin::resolve_skin(
         from_env.or_else(|| opts.settings.string("ui.skin")).as_deref(),

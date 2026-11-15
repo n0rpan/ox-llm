@@ -10,10 +10,14 @@ default = []
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
 openrouter = ["policy", "secrets"]
+transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
 
 [dependencies]
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
 nix = { version = "0.30", features = ["user"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [[example]]
 name = "policy_contract"
