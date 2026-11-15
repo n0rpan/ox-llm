@@ -1,4 +1,4 @@
-//! D7: settings selector. Owner: task D7. Signatures below are frozen; bodies are yours.
+//! D7: settings selector.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{settings-selector.ts,settings-submenu.ts} and packages/tui/src/components/settings-list.ts
 use super::model::{key_label, printable_text};
 use crate::Outcome;

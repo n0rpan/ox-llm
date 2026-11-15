@@ -1,4 +1,4 @@
-//! B1: when to compact. Owner: task B1. Signatures below are frozen; bodies are yours.
+//! B1: when to compact.
 // adapted from pi packages/coding-agent/src/core/compaction/compaction.ts (shouldCompact)
 /// Limits in tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

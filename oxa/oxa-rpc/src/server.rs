@@ -1,4 +1,4 @@
-//! C10: the RPC server loop. Owner: task C10. Signatures below are frozen; bodies are yours.
+//! C10: the RPC server loop.
 // ported from pi packages/coding-agent/src/modes/rpc/rpc-mode.ts (docs: rpc.md)
 //
 // Threads: the calling thread reads stdin and answers the commands that must not wait for a

@@ -1,4 +1,4 @@
-//! D10: the `Ui` implementation of the TUI and its dialogs. Owner: task D10. Signatures below are frozen; bodies are yours.
+//! D10: the `Ui` implementation of the TUI and its dialogs.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{extension-selector.ts,extension-input.ts,extension-editor.ts,trust-selector.ts,countdown-timer.ts}
 use crate::{Block, UiRequest, ViewModel};
 use oxa_config::Keymap;

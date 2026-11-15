@@ -1,4 +1,4 @@
-//! C1: steering / follow-up queues and the cross-thread handle. Owner: task C1. Signatures below are frozen; bodies are yours.
+//! C1: steering / follow-up queues and the cross-thread handle.
 // ported from pi packages/agent/src/agent.ts (steer, followUp, queue modes)
 use oxa_config::QueueMode;
 use oxa_proto::CancelToken;

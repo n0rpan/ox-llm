@@ -1,8 +1,7 @@
-//! B3: the agent loop. Owner: task B3. Signatures below are frozen; bodies are yours.
+//! B3: the agent loop.
 // ported from pi packages/agent/src/agent-loop.ts
 use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
 use crate::host::observe_hooks;
-use crate::retry::chat_with_retry;
 use crate::SessionState;
 use oxa_proto::{
     miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
@@ -95,6 +94,7 @@ fn run_inner(
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
     let mut done = crate::done::DoneState::default();
+    done.begin(st);
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
     'turns: loop {
@@ -149,6 +149,7 @@ fn run_inner(
         };
         let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
+        let mut replays: u32 = 0;
         let turn = loop {
             let mut capture = Capture {
                 inner: &mut *sink,
@@ -158,10 +159,15 @@ fn run_inner(
                 cancel: st.shared.cancel.clone(),
                 looped: false,
             };
+            // #456: one key per logical request, so a replay after a cut stream is the same
+            // request to oxc (which can attach it to the still-running generation).
+            if opts.idem_key.is_empty() {
+                opts.idem_key = crate::retry::fresh_idem_key(st);
+            }
             let res = if wrapping_up {
                 crate::exec::request(st, &opts, &mut capture, ui)
             } else {
-                chat_with_retry(st, &opts, &mut capture, ui)
+                crate::retry::chat_with_retry_keyed(st, &mut opts, &mut capture, ui)
             };
             let partial = std::mem::take(&mut capture.text);
             let got_data = capture.got_data;
@@ -188,6 +194,33 @@ fn run_inner(
 
             let turn = match res {
                 Ok(t) => t,
+                Err(e) if replayable(st, &e, got_data, looped, replays) => {
+                    // #456: a transport cut mid-output. The partial reply stays visible as
+                    // `Shown { cut }` (never sent, W2) and the request is resent from the same
+                    // wire; a fresh `MessageStart` opens the replay's message.
+                    replays += 1;
+                    let text = if partial.is_empty() {
+                        e.to_string()
+                    } else {
+                        partial
+                    };
+                    persist(
+                        st,
+                        EntryBody::Shown {
+                            text,
+                            why: shown_why::CUT,
+                        },
+                        sink,
+                    )?;
+                    sink.emit(&AgentEvent::Notice {
+                        level: Level::Info,
+                        text: format!("the reply stream broke ({}); resending the request", e.message),
+                    });
+                    sink.emit(&AgentEvent::MessageStart {
+                        message: pending_message(),
+                    });
+                    continue;
+                }
                 Err(e) => {
                     let why = failure_why(&e, got_data);
                     // Partial text is shown, never sent (W2); the wire keeps the user message.
@@ -222,6 +255,7 @@ fn run_inner(
             if !retried && crate::think::reasoning_only_overrun(st, &turn, thinking_on) {
                 retried = true;
                 opts.thinking = Some(false);
+                opts.idem_key = String::new();
                 crate::think::record_overrun(st, ui);
                 account_discarded(st, &turn);
                 sink.emit(&AgentEvent::Notice {
@@ -353,6 +387,7 @@ fn run_inner(
                 tool_msgs.push(msg);
             }
             done.note_edits(&results);
+            done.note_bash(st, &results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
@@ -712,6 +747,20 @@ fn miss_cause_for(st: &SessionState, first: bool) -> &'static str {
 }
 
 /// Stored reason for a failed request (W2): cut when a data byte already arrived.
+/// #456: a stream that broke after output (not our own loop stop) is resent while the retry
+/// policy allows it. A refusal after output (budget, settlement) is never resent. A break before output is already retried inside `chat_with_retry`.
+fn replayable(st: &SessionState, e: &OxaError, got_data: bool, looped: bool, replays: u32) -> bool {
+    let r = st.settings.retry();
+    e.code == oxa_proto::codes::STREAM_BROKEN
+        && got_data
+        && !looped
+        && !e.message.starts_with(oxa_proto::CUT_BY_REFUSAL)
+        && st.auto_retry
+        && r.enabled
+        && replays < r.max_retries
+        && !st.shared.cancel.is_cancelled()
+}
+
 fn failure_why(e: &OxaError, got_data: bool) -> &'static str {
     match e.code {
         oxa_proto::codes::ABORTED => shown_why::ABORTED,

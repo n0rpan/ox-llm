@@ -1,4 +1,4 @@
-//! C9: print mode and JSON mode drivers. Owner: task C9. Signatures below are frozen; bodies are yours.
+//! C9: print mode and JSON mode drivers.
 // ported from pi packages/coding-agent/src/modes/print-mode.ts
 use crate::events::{session_header_record, write_record, JsonSink};
 use oxa_core::{RunOutcome, Session};

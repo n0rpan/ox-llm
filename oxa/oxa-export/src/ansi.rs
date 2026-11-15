@@ -1,4 +1,4 @@
-//! E12: ANSI (SGR) text to HTML. Owner: task E12. Signatures below are frozen; bodies are yours.
+//! E12: ANSI (SGR) text to HTML.
 // ported from pi packages/coding-agent/src/core/export-html/ansi-to-html.ts
 
 /// Standard ANSI palette, indices 0-15 (pi's `ANSI_COLORS`).

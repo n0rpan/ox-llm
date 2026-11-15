@@ -1,4 +1,4 @@
-//! D13: mode choice and wiring. Owner: task D13. Signatures below are frozen; bodies are yours.
+//! D13: mode choice and wiring.
 // ported from pi packages/coding-agent/src/main.ts
 use crate::hooks::{build_hooks, HookInputs, HookSets};
 use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, ModeArg, Subcommand};

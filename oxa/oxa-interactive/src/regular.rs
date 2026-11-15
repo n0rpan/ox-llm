@@ -1,4 +1,4 @@
-//! D1: the regular (main screen) layout. Owner: task D1. Signatures below are frozen; bodies are yours.
+//! D1: the regular (main screen) layout.
 // ported from pi packages/tui/src/tui-main-screen.ts and coding-agent interactive-mode.ts (regular mode)
 use crate::app::{transcript_lines_in, ViewEnv};
 use crate::{ViewModel, ViewSettings};

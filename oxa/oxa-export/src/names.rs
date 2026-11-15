@@ -1,4 +1,4 @@
-//! E12: derived export file names. Owner: task E12. Signatures below are frozen; bodies are yours.
+//! E12: derived export file names.
 // ported from pi packages/coding-agent/src/core/export-html/index.ts (output path derivation)
 use std::path::{Path, PathBuf};
 

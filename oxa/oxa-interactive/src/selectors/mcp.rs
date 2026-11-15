@@ -1,4 +1,4 @@
-//! F7: the `/mcp` selector. Owner: task F7. Signatures below are frozen; bodies are yours.
+//! F7: the `/mcp` selector.
 // ported from pi packages/coding-agent/src/modes/interactive/components/config-selector.ts (MCP section) and docs/mcp.md
 use crate::Outcome;
 use oxa_config::Keymap;

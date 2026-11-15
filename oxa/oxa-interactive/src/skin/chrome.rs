@@ -1,5 +1,5 @@
 //! U2: the chrome of the OXA skin: splash, HUD line, hint bar, activity line, window title.
-//! Owner: task U2. Signatures below are frozen; bodies are yours. Spec: OXA-UI-DESIGN.md sec. 4.
+//! Spec: OXA-UI-DESIGN.md sec. 4.
 use crate::{Activity, HeaderInfo, Skin, StatusModel, ViewModel};
 use oxa_config::Keymap;
 use oxa_proto::Mode;

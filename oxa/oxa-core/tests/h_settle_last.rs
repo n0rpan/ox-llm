@@ -314,6 +314,52 @@ fn wrap_up_requested_inside_before_settle_gets_a_final_turn() {
 }
 
 #[test]
+fn a_pending_wrap_up_stops_stream_replays_before_and_during_the_final_turn() {
+    use oxa_core::{RunOutcome, WrapUpReason};
+    for reason in [WrapUpReason::TimeLimit, WrapUpReason::Signal] {
+        for point in [HookPoint::BeforeProviderRequest, HookPoint::AgentBeforeSettle] {
+            let env = TestEnv::new();
+            let hook = Arc::new(Trigger::default());
+            let mut cut = ScriptTurn::text("PARTIAL_REPLY");
+            cut.chunk = 1;
+            cut.fault = Some(oxa_fake::Fault::DropAt { bytes: 5 });
+            let turns = if point == HookPoint::BeforeProviderRequest {
+                vec![
+                    cut,
+                    ScriptTurn::text("final summary"),
+                    ScriptTurn::text("unexpected replay"),
+                ]
+            } else {
+                vec![
+                    ScriptTurn::text("initial"),
+                    cut,
+                    ScriptTurn::text("unexpected replay"),
+                ]
+            };
+            let engine = Arc::new(ScriptedEngine::new(turns));
+            let mut d = deps(&env, engine.clone(), vec![hook.clone()]);
+            d.settings = Settings::from_values(
+                serde_json::json!({"retry":{"enabled":true}}),
+                serde_json::json!({}),
+            );
+            let mut s = Session::open(d, Open::New).unwrap();
+            *hook.wrap.lock().unwrap() = Some((s.handle(), reason, point));
+            let mut probe = Probe::new(s.handle());
+            s.prompt("go".into(), vec![], &mut probe, &mut HeadlessUi::default())
+                .unwrap();
+
+            let requests = engine.requests();
+            assert_eq!(requests.len(), 2, "{reason:?}/{point:?}: one final attempt");
+            assert_eq!(*s.outcome(), RunOutcome::Failed(oxa_proto::codes::STREAM_BROKEN));
+            assert!(requests[1].max_tokens <= 1024);
+            assert!(!requests[1].thinking);
+            assert_ne!(requests[0].idem_key, requests[1].idem_key);
+            probe.assert_settled_idle(1);
+        }
+    }
+}
+
+#[test]
 fn wrap_up_preserves_request_errors_before_and_during_the_final_turn() {
     use oxa_core::{RunOutcome, WrapUpReason};
     use oxa_fake::{FakeOpts, FakeServer, Fault};

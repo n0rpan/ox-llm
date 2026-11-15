@@ -1,4 +1,4 @@
-//! B8: skills (Agent Skills spec). Owner: task B8. Signatures below are frozen; bodies are yours.
+//! B8: skills (Agent Skills spec).
 // ported from pi packages/coding-agent/src/core/skills.ts
 use crate::frontmatter::{frontmatter_bool, frontmatter_get, parse_frontmatter};
 use crate::{Diagnostic, DiscoverOpts, ResourceSource, Skill};
