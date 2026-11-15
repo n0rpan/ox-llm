@@ -51,6 +51,16 @@ fn invoke(
     args: &[&str],
     factory: &dyn InProcessEngineFactory,
 ) -> (i32, String, String) {
+    invoke_input(env, url, args, &[], factory)
+}
+
+fn invoke_input(
+    env: &TestEnv,
+    url: &str,
+    args: &[&str],
+    input: &[u8],
+    factory: &dyn InProcessEngineFactory,
+) -> (i32, String, String) {
     let values = env.envs(url);
     let pairs: Vec<(&str, &str)> = values
         .iter()
@@ -62,7 +72,7 @@ fn invoke(
         &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
         &Env::from_pairs(&pairs),
         Stdio {
-            stdin: Box::new(Cursor::new(Vec::new())),
+            stdin: Box::new(Cursor::new(input.to_vec())),
             stdout: Box::new(out.clone()),
             stderr: Box::new(err.clone()),
             stdin_is_tty: false,
@@ -205,4 +215,28 @@ fn invalid_setting_type_falls_back_to_the_disabled_default() {
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("via-http"));
     assert_eq!(factory.opened.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn json_and_rpc_sessions_use_the_same_lazy_factory_without_http() {
+    let _policy = POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    for mode in ["json", "rpc"] {
+        let env = TestEnv::new();
+        settings(&env, Some(true), None);
+        let factory = Factory::new();
+        let mut args = vec!["--mode", mode, "--no-tools", "--no-session"];
+        if mode == "json" {
+            args.push("hello");
+        }
+        let input: &[u8] = if mode == "rpc" {
+            b"{\"type\":\"prompt\",\"message\":\"hello\"}\n"
+        } else {
+            b""
+        };
+        let (code, out, err) = invoke_input(&env, "http://127.0.0.1:9", &args, input, &factory);
+        assert_eq!(code, 0, "{mode}: {err}");
+        assert!(out.contains("via-embedded"), "{mode}: {out}");
+        assert_eq!(factory.opened.load(Ordering::SeqCst), 1);
+        assert_eq!(factory.engine.requests().len(), 1);
+    }
 }
