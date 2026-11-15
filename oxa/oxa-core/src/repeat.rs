@@ -76,7 +76,11 @@ pub(crate) fn judge(
     let mut found = Found::default();
     for (n, a, t) in in_batch.iter().rev() {
         if !same_call(n, a, name, &args) {
-            // A different call ends the run; the identical suffix found so far still counts.
+            // Another read-only call leaves the earlier copies in context (#463); any other
+            // call may change files and ends the run (the suffix found so far still counts).
+            if READ_ONLY.contains(n) && READ_ONLY.contains(&name) {
+                continue;
+            }
             return finish(found, name, args_raw);
         }
         match step(&mut found, t, text) {
