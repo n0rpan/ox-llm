@@ -1,7 +1,10 @@
 # Tools and context handling
 
-oxa uses one default set of tool formats and context-handling rules. No profile-selection
-step is needed. Explicit settings override the defaults below.
+The behavior below applies when `local` is selected, as in the [quickstart](quickstart.md).
+Use `OXA_PROFILE=local` for a shell or set `oxa.profile` to `local` in user settings.
+This version defaults to `pi` without explicit selection: bash has no implicit timeout,
+thinking uses `fixed`, and an unpaged read uses the ordinary 2000-line/16-KB cap.
+Explicit settings override the selected defaults.
 
 - The seven built-in tools are `read`, `bash`, `edit`, `write`, `grep`, `find` and `ls`.
   `edit` declares `path`, `oldText` and `newText`; several changes use several calls.

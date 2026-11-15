@@ -12,9 +12,15 @@ Build from the `oxa/` directory of the checkout:
 $ cargo build --release --locked -p oxa-cli
 $ export PATH="$PWD/target/release:$PATH"
 $ export OXA_ENGINE_URL=http://127.0.0.1:8092
+$ export OXA_PROFILE=local
 $ cd ~/project
 $ oxa
 ```
+
+The tools/context defaults described here require `OXA_PROFILE=local` in this version.
+For launches outside this shell, set `oxa.profile` to `local` in
+`~/.oxa/agent/settings.json`. Without explicit selection this version uses `pi`;
+see [tools and context handling](docs/pages/profile.md).
 
 `OXA_ENGINE_URL` defaults to the controller on `http://127.0.0.1:8092`. Without a running engine oxa stops with an error that names the address. For one answer from a script, use print mode:
 

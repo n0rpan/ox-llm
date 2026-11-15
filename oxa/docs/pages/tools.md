@@ -1,6 +1,11 @@
 # Tools
 
-The model acts through tools. oxa has seven built-in tools, which are on by default, and a few optional ones: `subagent`, `web_search`, `codemode`, `tool_search` and `call_tool`. Extensions and MCP servers add more. Every tool result is capped before it reaches the model.
+The model acts through tools. oxa has seven built-in tools, all on by default under `local`, and a few optional ones: `subagent`, `web_search`, `codemode`, `tool_search` and `call_tool`. Extensions and MCP servers add more. Every tool result is capped before it reaches the model.
+
+The defaults and formats below assume `local` is selected, as in the
+[quickstart](quickstart.md). Without that selection this version defaults to `pi`,
+including no implicit bash timeout, a longer first read and fixed thinking;
+see [tools and context handling](profile.md).
 
 ## The built-in tools
 

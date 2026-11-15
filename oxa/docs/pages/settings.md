@@ -76,8 +76,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `enabledModels` | list | `null` | model patterns for the Ctrl+P cycle and the start model of a new session |
 | `defaultThinkingLevel` | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `medium` | thinking level of a new session |
 | `modelThinkingLevels` | object | `{}` | thinking level per model id, for example `{"your-model-id": "low"}` |
-| `oxa.thinking.policy` | `fixed` / `auto` | unset | when thinking is on; unset uses `auto` ([profile.md](profile.md)) |
-| `oxa.profile` | compatibility string | `local` | legacy compatibility setting pending removal; new setups use the defaults ([tools and context handling](profile.md)) |
+| `oxa.thinking.policy` | `fixed` / `auto` | unset | when thinking is on; unset uses `fixed` under `pi` and `auto` under `local` ([profile.md](profile.md)) |
+| `oxa.profile` | `pi` / `local` | `pi` | selects tools/context formats and defaults; the quickstart explicitly selects `local` ([tools and context handling](profile.md)) |
 | `cacheWarming` | `off` / `streaming` / `idle` | `idle` | `off` disables warm-up; `streaming` is accepted and behaves as `idle` |
 | `oxa.bootPreload` | bool | `true` | prefill the frozen prefix when oxa starts, if the engine supports it |
 | `oxa.prefill.paste` | bool | unset | while you type a message of at least 2000 bytes and stop for 0.7 seconds, with oxa idle, the engine prefills it so Enter starts sooner; only sent to an engine on this machine, and it needs an engine that supports prefill-only requests. Unset is off under `pi` and on under `local` |
