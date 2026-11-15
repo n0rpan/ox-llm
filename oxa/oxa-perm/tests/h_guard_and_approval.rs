@@ -305,3 +305,97 @@ fn the_real_account_home_is_denied_as_well_as_a_changed_home() {
         }
     }
 }
+
+/// #201 (2): one approved write to a file in the home still covers ordinary files of that
+/// directory (usability first), but never the home's startup files, user units or
+/// `~/.local/bin`, wherever the cwd is.
+#[test]
+fn a_grant_in_the_home_never_covers_its_startup_files_or_units() {
+    let env = TestEnv::new();
+    env.write("home/notes.txt", "n\n");
+    env.write("home/.bashrc", "# rc\n");
+    env.write("home/.config/systemd/user/a.service", "");
+    env.write("home/.config/other.conf", "");
+    let home = env.home();
+    let cwd = env.work();
+    let mut p = guarded(&env);
+    let first = Access::Write(home.join("notes.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &first, &cwd), Decision::Ask);
+    p.remember(&first);
+    // Another ordinary file in the same directory: allowed without asking.
+    let other = Access::Write(home.join("todo.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &other, &cwd), Decision::Allow);
+    for rel in [
+        ".bashrc",
+        ".profile",
+        ".zshrc",
+        ".config/systemd/user/a.service",
+        ".config/systemd/user/evil.service",
+        ".local/bin/tool",
+    ] {
+        let a = Access::Write(home.join(rel));
+        assert_eq!(p.decide(Mode::Workspace, &a, &cwd), Decision::Ask, "{rel}");
+    }
+    // A grant on the unit directory itself does not cover it either.
+    let unit = Access::Write(home.join(".config/systemd/user/a.service"));
+    p.remember(&unit);
+    assert_eq!(p.decide(Mode::Workspace, &unit, &cwd), Decision::Ask);
+    // An ordinary file under ~/.config after a grant there: still allowed.
+    let cfg = Access::Write(home.join(".config/other.conf"));
+    p.remember(&cfg);
+    assert_eq!(
+        p.decide(
+            Mode::Workspace,
+            &Access::Write(home.join(".config/new.conf")),
+            &cwd
+        ),
+        Decision::Allow
+    );
+}
+
+/// #201 (1): `.git/commondir` and `.git/gitdir` point git at another directory's hooks and
+/// config, so the file tools never write them, like `.git/hooks` and `.git/config`.
+#[test]
+fn git_commondir_and_gitdir_are_refused_to_the_file_tools() {
+    let env = TestEnv::new();
+    let cwd = env.work();
+    let p = guarded(&env);
+    for rel in [".git/commondir", ".git/gitdir"] {
+        let a = Access::Write(cwd.join(rel));
+        for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+            assert_eq!(
+                p.decide(mode, &a, &cwd),
+                Decision::Deny(deny_reasons::GIT_PROTECTED),
+                "{rel} {mode:?}"
+            );
+        }
+    }
+    // Other files of `.git` are unchanged.
+    let a = Access::Write(cwd.join(".git/description"));
+    assert_eq!(p.decide(Mode::Workspace, &a, &cwd), Decision::Allow);
+}
+
+/// #201 (3): the baseline of a trusted project with no record yet, taken before tools run:
+/// `.oxa` and `.agents/skills` content created afterwards is new, not part of the first record.
+#[test]
+fn a_baseline_makes_later_project_config_new() {
+    let env = TestEnv::new();
+    let cwd = env.work();
+    let file = env.agent_dir().join("trust.json");
+    let mut store = TrustStore::load(&file);
+    store.save(&file, &cwd, true).unwrap();
+    assert_eq!(store.approval(&cwd), Approval::NoRecord);
+    assert!(store.record_baseline(&file, &cwd).unwrap(), "first record");
+    assert_eq!(TrustStore::load(&file).approval(&cwd), Approval::Matches);
+    // A second baseline never overwrites a record.
+    env.write("work/.oxa/settings.json", r#"{"done":["echo planted"]}"#);
+    env.write("work/.agents/skills/s/SKILL.md", "---\nname: s\n---\n");
+    let mut store = TrustStore::load(&file);
+    assert!(!store.record_baseline(&file, &cwd).unwrap());
+    let Approval::Changed(changed) = TrustStore::load(&file).approval(&cwd) else {
+        panic!("content created after the baseline needs the normal approval");
+    };
+    assert_eq!(changed.len(), 2, "{changed:?}");
+    assert!(changed.iter().all(|c| c.new));
+    assert!(!TrustStore::load(&file).trusted_as_approved(&cwd));
+}

@@ -24,7 +24,10 @@
 //!
 //! sbx-hooks: the entries that git runs or reads outside the sandbox later
 //! ([`protected_entries`]: `hooks` and `config` of the common dir, `config.worktree` of the
-//! common dir and of a worktree's gitdir when `extensions.worktreeConfig` may be on) stay as
+//! common dir and of a worktree's gitdir when `extensions.worktreeConfig` may be on, and (#201)
+//! `commondir` and `gitdir` of every git directory, which name where git takes hooks and
+//! config from; a missing `commondir` is created holding "." (the directory itself: git dies
+//! on an empty one), a missing `gitdir` empty) stay as
 //! they are in a writable sandbox, also when they do not exist yet. An existing entry is bound
 //! read-only; a missing `hooks` is masked with an empty read-only tmpfs, and a missing file is
 //! created empty on the host just before the command and bound read-only (a `/dev/null` mask
@@ -159,7 +162,7 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
     }
     let mut protect: Vec<PathBuf> = Vec::new();
     for d in &rw {
-        for rel in ["config", "config.worktree", "hooks"] {
+        for rel in ["commondir", "config", "config.worktree", "gitdir", "hooks"] {
             let p = d.join(rel);
             if fs::symlink_metadata(&p).is_ok_and(|m| !m.file_type().is_symlink()) {
                 protect.push(p);
@@ -207,6 +210,20 @@ pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
             }
             Ok(_) => {}
             Err(why) => return Some(why),
+        }
+    }
+    // #201: git follows `commondir` (and `git worktree` the `gitdir` back-pointer); a link
+    // there could be redirected through another name.
+    for name in ["commondir", "gitdir"] {
+        let p = dir.join(name);
+        match fs::symlink_metadata(&p) {
+            Ok(m) => {
+                if let Some(why) = not_plain_file(&p, &m) {
+                    return Some(why);
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Some(format!("{} cannot be checked ({e})", p.display())),
         }
     }
     let hooks = dir.join("hooks");
@@ -275,7 +292,8 @@ pub(crate) fn protected_entries(dir: &Path, common: &Path) -> Vec<PathBuf> {
     if !is_real_dir(dir) {
         return Vec::new();
     }
-    let mut names: Vec<&str> = Vec::new();
+    // #201: `commondir` and `gitdir` name the directory git takes hooks and config from.
+    let mut names: Vec<&str> = vec!["commondir", "gitdir"];
     if dir == common {
         names.extend(["config", "hooks"]);
     }

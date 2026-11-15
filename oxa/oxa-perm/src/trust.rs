@@ -95,6 +95,18 @@ impl TrustStore {
         }
     }
 
+    /// #201: when nothing was recorded for `cwd` yet, record its current executable project
+    /// files (possibly none) as the baseline, so what a session's tools create or change
+    /// afterwards is new or changed at the next start instead of becoming the first record.
+    /// Returns whether a record was written. Call it only for a project the user trusts.
+    pub fn record_baseline(&mut self, file: &Path, cwd: &Path) -> Result<bool, OxaError> {
+        if self.approval(cwd) != Approval::NoRecord {
+            return Ok(false);
+        }
+        self.approve(file, cwd)?;
+        Ok(true)
+    }
+
     /// B4: record the current content of the executable project files of `cwd` as approved
     /// (an explicit approval of the user, or the first record of a trusted project).
     pub fn approve(&mut self, file: &Path, cwd: &Path) -> Result<(), OxaError> {
