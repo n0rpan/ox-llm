@@ -692,7 +692,7 @@ pi page(s): extensions.md, sdk.md. Tests: `oxa-parity/tests/extensions.rs`.
 | EXT-058 | `ctx.getContextUsage()` | P | exact counts | `extensions.rs::ext_058` |
 | EXT-059 | `ctx.compact()` | A | W5 | `extensions.rs::ext_059` |
 | EXT-060 | `ctx.getSystemPrompt()` / `getSystemPromptOptions()` | A | returns the frozen prefix; read-only | `extensions.rs::ext_060` |
-| EXT-061 | `ctx.waitForIdle()`, `ctx.newSession()`, `ctx.fork()`, `ctx.navigateTree()`, `ctx.switchSession()`, `ctx.reload()` | A | session-shape actions requested mid-run apply when the run settles; `ctx.newSession()` / `ctx.switchSession()` answer `unsupported_in_oxa` (O-175; the user's `/new` and `/resume` do it) | `extensions.rs::ext_061` |
+| EXT-061 | `ctx.waitForIdle()`, `ctx.newSession()`, `ctx.fork()`, `ctx.navigateTree()`, `ctx.switchSession()`, `ctx.reload()` | A | session-shape actions requested mid-run apply when the run settles; `ctx.newSession()` / `ctx.switchSession()` are held as a swap request that the TUI and print mode apply between commands (RPC/SDK front ends that do not poll `Session::take_swap_request` get `unsupported_in_oxa`) | `extensions.rs::ext_061` |
 | EXT-062 | `pi.on(event, handler)` | P | `oxa.on` | `extensions.rs::ext_062` |
 | EXT-063 | `pi.registerTool(definition)` with parameter schema validation | A | JSON Schema objects (no TypeBox import); tools join the frozen list at the next epoch | `extensions.rs::ext_063` |
 | EXT-064 | `pi.sendMessage(message, {deliverAs, triggerTurn})` | P | always an append | `extensions.rs::ext_064` |

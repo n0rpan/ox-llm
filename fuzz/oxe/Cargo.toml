@@ -1,0 +1,13 @@
+[package]
+name = "oxe-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+# Its own workspace: engine/Cargo.toml and Cargo.lock are architect-owned and stay untouched.
+[workspace]
+
+[dependencies]
+chat = { path = "../../engine/crates/chat" }
+http = "1"
+serde_json = "1"
+server = { path = "../../engine/crates/server" }
