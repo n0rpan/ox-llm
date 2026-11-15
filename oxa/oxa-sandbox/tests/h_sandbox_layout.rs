@@ -176,41 +176,29 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
     );
 }
 
-/// #280: with `oxa.sandbox.allowProjectConfigWrite` git can update `.oxa` and `.agents/skills`
-/// (merge, pull, checkout); the git hooks and config stay read-only.
+/// #280 / review of #302: no bash command, git included, may write the project's `.oxa` or
+/// `.agents/skills`: git can be made to run programs or check out content the model wrote.
 #[test]
-fn project_config_write_setting_unprotects_oxa_and_skills_only() {
+fn git_commands_keep_oxa_and_skills_read_only() {
     let env = TestEnv::new();
-    let mut l = machine(&env);
-    env.write("work/.git/config", "[core]\n");
+    let l = machine(&env);
     env.write("work/.oxa/settings.json", "{}");
     env.write("work/.agents/skills/x/SKILL.md", "");
-    env.write("work/.git/hooks/pre-commit.sample", "");
-    let has_cmd = |l: &Layout, cmd: &str, p: &str| {
-        let a = bwrap_args_with(&spec(cmd, &env.work(), true), &env.home(), l);
-        let want = env.work().join(p).display().to_string();
-        a.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == want)
-    };
-    let has = |l: &Layout, p: &str| has_cmd(l, "git pull", p);
-    assert!(has(&l, ".oxa") && has(&l, ".agents/skills"));
-    l.allow_project_config_write = true;
-    assert!(!has(&l, ".oxa") && !has(&l, ".agents/skills"));
-    assert!(has(&l, ".git/config") && has(&l, ".git/hooks"));
-    // Any other command keeps the protection (review of #302: no blanket bypass).
     for cmd in [
-        "true",
-        "echo x > .oxa/extensions/x.js",
-        "git pull && echo x > .oxa/a",
-        "git rebase -x 'sh evil'",
+        "git pull",
+        "git pull --upload-pack=./p.sh .",
+        "git merge -s evil main",
+        "git checkout abc123 -- .oxa/extensions/x.js",
         "git rebase --exec evil main",
-        "git -c alias.pull='!sh' pull",
-        "git pull; sh evil",
-        "git status",
     ] {
-        assert!(
-            has_cmd(&l, cmd, ".oxa") && has_cmd(&l, cmd, ".agents/skills"),
-            "{cmd}"
-        );
+        let a = bwrap_args_with(&spec(cmd, &env.work(), true), &env.home(), &l);
+        for p in [".oxa", ".agents/skills"] {
+            let want = env.work().join(p).display().to_string();
+            assert!(
+                a.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == want),
+                "{cmd}: {p}"
+            );
+        }
     }
 }
 

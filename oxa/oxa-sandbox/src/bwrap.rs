@@ -54,27 +54,6 @@ pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String
 }
 
 /// [`bwrap_args_with`] with the real account home given explicitly (tests).
-/// #280: only a lone, plain `git merge|pull|checkout|switch|stash|rebase|reset|cherry-pick ...`
-/// may write the project config; any shell syntax, quoting, `git -c`, or a command-running
-/// option (`--exec`, `-x`) keeps the read-only protection.
-pub(crate) fn is_plain_git_update(command: &str) -> bool {
-    if command.chars().any(|c| {
-        !(c.is_ascii_alphanumeric()
-            || matches!(c, ' ' | '-' | '_' | '.' | '/' | '=' | ':' | '@' | '^' | '~' | ','))
-    }) {
-        return false;
-    }
-    let mut t = command.split_whitespace();
-    if t.next() != Some("git") {
-        return false;
-    }
-    let ok = matches!(
-        t.next(),
-        Some("merge" | "pull" | "checkout" | "switch" | "stash" | "rebase" | "reset" | "cherry-pick")
-    );
-    ok && !t.any(|a| a == "-x" || a.starts_with("--exec") || a.starts_with("--config") || a == "-c")
-}
-
 pub(crate) fn bwrap_args_homes(
     s: &ExecSpec,
     home: &Path,
@@ -270,10 +249,6 @@ pub(crate) fn bwrap_args_homes(
         let dotgit_writable = is_real_dir(&dotgit) && unsafe_reason(&dotgit).is_none();
         let protected = protected_paths(cwd_path);
         for p in &protected {
-            let config = p.ends_with(".oxa") || p.ends_with(".agents/skills");
-            if layout.allow_project_config_write && config && is_plain_git_update(&s.command) {
-                continue;
-            }
             if is_real(p) {
                 let p = p.to_string_lossy();
                 push(&mut a, &["--ro-bind", &p, &p]);

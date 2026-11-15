@@ -4,7 +4,7 @@ use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::Level;
 use oxa_sandbox::{
     expand_home, is_home_itself, is_home_or_above, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
-    SETTING_ALLOW_PROJECT_CONFIG_WRITE, SETTING_READ_PATHS, SETTING_WRITE_PATHS,
+    SETTING_READ_PATHS, SETTING_WRITE_PATHS,
 };
 use std::path::Path;
 
@@ -76,13 +76,6 @@ pub(crate) fn layout(
         write_extra: paths(SETTING_WRITE_PATHS),
         allow_home_write,
     });
-    layout.allow_project_config_write = user.bool(SETTING_ALLOW_PROJECT_CONFIG_WRITE, false);
-    if layout.allow_project_config_write {
-        notices.push((
-            Level::Warning,
-            "oxa.sandbox.allowProjectConfigWrite is on: plain git merge/pull/checkout/rebase may write the project's .oxa and .agents/skills".to_string(),
-        ));
-    }
     layout.mask_runtime_ipc = true;
     layout
 }
