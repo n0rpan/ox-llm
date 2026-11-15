@@ -17,6 +17,7 @@ mod prefix_store;
 mod proxy;
 mod request_ledger;
 mod responses;
+mod share_runtime;
 mod sharing;
 mod state_cache;
 mod storage;

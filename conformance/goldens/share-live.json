@@ -1,0 +1,2111 @@
+{
+  "attachments": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "Invalid model request.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "Invalid model request.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 3,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": null,
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        }
+      ],
+      "inference_requests": [
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 4,
+            "messages": [
+              {
+                "content": [
+                  {
+                    "text": "[image_url omitted: this local model reads text only]",
+                    "type": "text"
+                  }
+                ],
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        }
+      ]
+    }
+  ],
+  "authentication": [
+    {
+      "body": {
+        "error": {
+          "code": "invalid_api_key",
+          "message": "Missing or wrong share key. Send \"Authorization: Bearer <key>\" (local-ai share key on the host).",
+          "param": null,
+          "type": "authentication_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 401,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "invalid_api_key",
+          "message": "Missing or wrong share key. Send \"Authorization: Bearer <key>\" (local-ai share key on the host).",
+          "param": null,
+          "type": "authentication_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 401,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "data": [
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "local-default",
+            "max_output_tokens": 4,
+            "name": "Default: Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "ornith-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen3.6-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Qwen 3.6 35B MoE",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen-local",
+            "legacy": true,
+            "max_output_tokens": 4,
+            "name": "Selected local model (Local AI)",
+            "object": "model",
+            "owned_by": "local"
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "invalid_api_key",
+          "message": "Missing or wrong share key. Send \"Authorization: Bearer <key>\" (local-ai share key on the host).",
+          "param": null,
+          "type": "authentication_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 401,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 3,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "connections": [
+    {
+      "ninth_connection_closed": true
+    },
+    {
+      "mode": "unloaded"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 0,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "default-loaded": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "selected_model": "qwen3.6-35b-a3b-local",
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "model_busy",
+          "message": "No model is loaded on the host. Load one on the host, then try again.",
+          "param": null,
+          "type": "conflict_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": null,
+      "selected": "qwen3.6-35b-a3b-local"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "keepalive-off": [
+    {
+      "body": {
+        "data": [
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "local-default",
+            "max_output_tokens": 4,
+            "name": "Default: Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "ornith-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen3.6-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Qwen 3.6 35B MoE",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen-local",
+            "legacy": true,
+            "max_output_tokens": 4,
+            "name": "Selected local model (Local AI)",
+            "object": "model",
+            "owned_by": "local"
+          }
+        ],
+        "object": "list"
+      },
+      "status": 200
+    },
+    {
+      "body": {
+        "active": false,
+        "addresses": [],
+        "enabled": false,
+        "encryption": null,
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "off",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [],
+        "warning": null
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "connection_closed": true
+    },
+    {
+      "sharing": {
+        "active": false,
+        "addresses": [],
+        "enabled": false,
+        "encryption": null,
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "off",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "limits": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "request_too_large",
+          "message": "Request is too large for a shared request (limit 1 MiB).",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 413,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "length_required",
+          "message": "Use a content length for request bodies.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 411,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "length",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 2,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 2,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 10
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 1048576,
+          "max_tokens": 2,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 2,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": null,
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        }
+      ],
+      "inference_requests": [
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 2,
+            "messages": [
+              {
+                "content": "Synthetic prompt.",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        }
+      ]
+    }
+  ],
+  "payload": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "reasoning_content": "Synthetic reasoning.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 1
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "ledger": {
+        "client_addr": "<validated:keyed-client>",
+        "origin": "remote",
+        "session": "<validated:keyed-session>"
+      }
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": null,
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        }
+      ],
+      "inference_requests": [
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": true,
+              "preserve_thinking": false
+            },
+            "max_tokens": 16384,
+            "messages": [
+              {
+                "content": "Synthetic prompt.",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        }
+      ]
+    }
+  ],
+  "preempt": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "preempted_by_local_use",
+          "message": "Preempted by local use on the host; retry later.",
+          "param": null,
+          "type": "preempted"
+        }
+      },
+      "content-type": "application/json",
+      "retry-after": "5",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": null,
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        },
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": "<validated:keyed-session>",
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        }
+      ],
+      "inference_requests": [
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 4,
+            "messages": [
+              {
+                "content": "[hold]",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "stream": false,
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        },
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 4,
+            "messages": [
+              {
+                "content": "Synthetic prompt.",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        }
+      ]
+    }
+  ],
+  "preempt-stream": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "error": {
+            "code": "preempted_by_local_use",
+            "message": "Preempted by local use on the host; retry later.",
+            "type": "preempted"
+          }
+        }
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": null,
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        },
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": "<validated:keyed-session>",
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        }
+      ],
+      "inference_requests": [
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 4,
+            "messages": [
+              {
+                "content": "[hold-stream]",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "stream": true,
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        },
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 4,
+            "messages": [
+              {
+                "content": "Synthetic prompt.",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        }
+      ]
+    }
+  ],
+  "rate": [
+    {
+      "body": {
+        "error": {
+          "code": "invalid_api_key",
+          "message": "Missing or wrong share key. Send \"Authorization: Bearer <key>\" (local-ai share key on the host).",
+          "param": null,
+          "type": "authentication_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 401,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "rate_limit_exceeded",
+          "message": "Too many requests from this device; slow down.",
+          "param": null,
+          "type": "rate_limit_error"
+        }
+      },
+      "content-type": "application/json",
+      "retry-after": "5",
+      "status": 429,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 1,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 1
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 2,
+        "remote_requests": 0,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "refusal-closes": [
+    {
+      "body": {
+        "error": {
+          "code": "invalid_api_key",
+          "message": "Missing or wrong share key. Send \"Authorization: Bearer <key>\" (local-ai share key on the host).",
+          "param": null,
+          "type": "authentication_error"
+        }
+      },
+      "status": 401
+    },
+    {
+      "connection_closed": true
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 1,
+        "remote_requests": 0,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "responses": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Synthetic engine reply."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic"
+        },
+        {
+          "choices": [],
+          "created": 1,
+          "id": "chatcmpl-synthetic",
+          "model": "ornith-35b-a3b-local",
+          "object": "chat.completion.chunk",
+          "system_fingerprint": "synthetic",
+          "timings": {
+            "cache_n": 2,
+            "predicted_n": 3,
+            "prompt_n": 6
+          },
+          "usage": {
+            "completion_tokens": 3,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 8,
+            "prompt_tokens_details": {
+              "cached_tokens": 2
+            },
+            "total_tokens": 11
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "logprobs": null,
+            "text": "Synthetic engine reply."
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "<generated:cmpl_24hex>",
+        "model": "ornith-35b-a3b-local",
+        "object": "text_completion",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "model_busy",
+          "message": "The host has another model loaded. Use \"ornith-35b-a3b-local\" instead.",
+          "param": null,
+          "type": "conflict_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 4,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": null,
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        },
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": null,
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        },
+        {
+          "X-Oxe-Probe": null,
+          "X-Oxe-Session": null,
+          "X-Oxe-Snapshot": null,
+          "X-Oxe-Turn-Kind": null
+        }
+      ],
+      "inference_requests": [
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 4,
+            "messages": [
+              {
+                "content": "Synthetic prompt.",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        },
+        {
+          "body": {
+            "cache_prompt": true,
+            "chat_template_kwargs": {
+              "enable_thinking": false,
+              "preserve_thinking": true
+            },
+            "max_tokens": 4,
+            "messages": [
+              {
+                "content": "Synthetic prompt.",
+                "role": "user"
+              }
+            ],
+            "model": "ornith-35b-a3b-local",
+            "stream": true,
+            "stream_options": {
+              "include_usage": true
+            },
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/v1/chat/completions"
+        },
+        {
+          "body": {
+            "cache_prompt": true,
+            "model": "ornith-35b-a3b-local",
+            "n_predict": 4,
+            "prompt": "synthetic",
+            "temperature": 0
+          },
+          "event": "request",
+          "method": "POST",
+          "path": "/completion"
+        }
+      ]
+    }
+  ],
+  "rotation": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "data": [
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "local-default",
+            "max_output_tokens": 4,
+            "name": "Default: Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "ornith-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen3.6-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Qwen 3.6 35B MoE",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen-local",
+            "legacy": true,
+            "max_output_tokens": 4,
+            "name": "Selected local model (Local AI)",
+            "object": "model",
+            "owned_by": "local"
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "invalid_api_key",
+          "message": "Missing or wrong share key. Send \"Authorization: Bearer <key>\" (local-ai share key on the host).",
+          "param": null,
+          "type": "authentication_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 401,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "data": [
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "local-default",
+            "max_output_tokens": 4,
+            "name": "Default: Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "ornith-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen3.6-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Qwen 3.6 35B MoE",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen-local",
+            "legacy": true,
+            "max_output_tokens": 4,
+            "name": "Selected local model (Local AI)",
+            "object": "model",
+            "owned_by": "local"
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": true,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 1,
+        "remote_requests": 2,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "routes": [
+    {
+      "body": {
+        "error": {
+          "message": "Only the OpenAI inference routes are shared (POST /v1/chat/completions, POST /v1/completions, GET /v1/models).",
+          "type": "permission_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 403,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "message": "Only the OpenAI inference routes are shared (POST /v1/chat/completions, POST /v1/completions, GET /v1/models).",
+          "type": "permission_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 403,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "error": {
+          "code": "forbidden",
+          "message": "Only the OpenAI inference routes are shared (POST /v1/chat/completions, POST /v1/completions, GET /v1/models).",
+          "param": null,
+          "type": "permission_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 403,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": null,
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 3,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "toggle": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "data": [
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "local-default",
+            "max_output_tokens": 4,
+            "name": "Default: Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "ornith-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen3.6-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Qwen 3.6 35B MoE",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen-local",
+            "legacy": true,
+            "max_output_tokens": 4,
+            "name": "Selected local model (Local AI)",
+            "object": "model",
+            "owned_by": "local"
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "active": false,
+        "addresses": [],
+        "enabled": false,
+        "encryption": null,
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "off",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [],
+        "warning": null
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "off_listening": false
+    },
+    {
+      "body": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "data": [
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "local-default",
+            "max_output_tokens": 4,
+            "name": "Default: Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "ornith-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Ornith 1.5 35B A3B",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen3.6-35b-a3b-local",
+            "max_output_tokens": 4,
+            "name": "Qwen 3.6 35B MoE",
+            "object": "model",
+            "owned_by": "local"
+          },
+          {
+            "alias_of": "ornith-35b-a3b-local",
+            "context_length": 32768,
+            "created": 0,
+            "id": "qwen-local",
+            "legacy": true,
+            "max_output_tokens": 4,
+            "name": "Selected local model (Local AI)",
+            "object": "model",
+            "owned_by": "local"
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 2,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ],
+  "unloaded": [
+    {
+      "body": {
+        "error": {
+          "code": "model_busy",
+          "message": "No model is loaded on the host. Load one on the host, then try again.",
+          "param": null,
+          "type": "conflict_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 409,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "launches": 0,
+      "state": "unloaded"
+    },
+    {
+      "sharing": {
+        "active": true,
+        "addresses": [
+          "100.64.0.2"
+        ],
+        "enabled": true,
+        "encryption": "wireguard",
+        "error": null,
+        "key_fingerprint": "<validated:key-fingerprint>",
+        "key_present": true,
+        "key_shown": false,
+        "limits": {
+          "burst": 30,
+          "concurrency": 1,
+          "max_body_bytes": 8388608,
+          "max_tokens": 16384,
+          "rate_per_min": 120
+        },
+        "mode": "tailscale",
+        "paused": null,
+        "pinned_network": null,
+        "port": 8092,
+        "remote_active": 0,
+        "remote_refused": 0,
+        "remote_requests": 1,
+        "routes": [
+          "POST /v1/chat/completions",
+          "POST /v1/completions",
+          "GET /v1/models",
+          "GET /v1/models/{id}"
+        ],
+        "urls": [
+          "http://100.64.0.2:8092/v1"
+        ],
+        "warning": null
+      }
+    },
+    {
+      "hints": [],
+      "inference_requests": []
+    }
+  ]
+}

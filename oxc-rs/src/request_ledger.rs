@@ -19,7 +19,7 @@ use std::{
 const REPLY_MAX: usize = 1 << 20;
 const TAIL_BYTES: usize = 16384;
 type Hash = [u8; 16];
-type HistoryKey = (String, Value, Value, Value);
+type HistoryKey = (String, Value, Value, Value, Value);
 #[derive(Default)]
 struct State {
     salt: Option<[u8; 32]>,
@@ -332,6 +332,17 @@ pub struct Entry {
     previous: Option<Value>,
 }
 impl Ledger {
+    pub fn shared_client(&self, address: &str) -> Option<String> {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let salt = salt(&mut state)?;
+        Some(
+            hex(&mac(
+                &salt,
+                format!("lan-share-client-v1\0{address}").as_bytes(),
+            ))[..16]
+                .into(),
+        )
+    }
     pub fn session_hint(&self, hint: &str) -> Option<String> {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let salt = salt(&mut state)?;
@@ -343,6 +354,7 @@ impl Ledger {
         payload: &Value,
         headers: &HeaderMap,
         model: &Value,
+        remote_client: Option<&str>,
     ) -> Entry {
         let start = Instant::now();
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -362,7 +374,9 @@ impl Ledger {
             .as_ref()
             .and_then(|s| state.gaps.iter().find(|(key, _)| key == s))
             .map(|(_, time)| round(start.duration_since(*time).as_secs_f64() * 1000.0, 1));
-        let origin = if header(headers, "x-local-ai-origin")
+        let origin = if remote_client.is_some() {
+            "remote"
+        } else if header(headers, "x-local-ai-origin")
             .is_some_and(|s| s.trim().eq_ignore_ascii_case("lab"))
         {
             "lab"
@@ -394,6 +408,9 @@ impl Ledger {
             history: None,
             previous: None,
         };
+        if let Some(client) = remote_client {
+            entry.row["client_addr"] = json!(client);
+        }
         if let (Some(session), Some(salt)) = (session, salt) {
             if chat_path(path) && payload["messages"].is_array() {
                 let key = (
@@ -401,6 +418,7 @@ impl Ledger {
                     model.clone(),
                     entry.row["agent"].clone(),
                     json!(origin),
+                    remote_client.map(|v| json!(v)).unwrap_or(Value::Null),
                 );
                 if messages.len() > 4096 {
                     entry.row["history_change"] = json!("over_limit");

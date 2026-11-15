@@ -1,4 +1,4 @@
-//! Loopback sharing controls. Active shared listeners and their gates remain pending.
+//! Sharing metadata and private host-side key lifecycle.
 use crate::paths;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use nix::{libc, unistd::Uid};
@@ -13,7 +13,6 @@ use std::{
 };
 
 const PAUSED: &str = "paused: network changed, re-enable to share on this network";
-pub const UNIMPLEMENTED: &str = "Shared listeners are not implemented by the Rust controller yet.";
 fn mode(config: &Value) -> &str {
     config["lan_share"]
         .as_str()
@@ -266,6 +265,45 @@ fn setting(config: &Value, name: &str, default: u64, high: u64) -> u64 {
         .filter(|n| *n >= 1 && *n <= high)
         .unwrap_or(default)
 }
+pub(crate) fn option(config: &Value, name: &str, default: u64, high: u64) -> u64 {
+    setting(config, name, default, high)
+}
+pub(crate) fn auth_key() -> Option<String> {
+    read_key(&key_path()).ok().flatten().map(|r| r.key)
+}
+pub(crate) fn ensure_key() -> Result<(), String> {
+    let path = key_path();
+    if read_key(&path)?.is_some() {
+        return Ok(());
+    }
+    private_parent(&path)?;
+    let lock_path = parent(&path).join(format!(
+        ".{}.lock",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&lock_path)
+        .map_err(|e| os_error(e, &lock_path))?;
+    lock.lock().map_err(|e| os_error(e, &lock_path))?;
+    if read_key(&path)?.is_none() {
+        let record = KeyRecord {
+            key: format!("lai-{}", URL_SAFE_NO_PAD.encode(entropy::<32>()?)),
+            created: json!(SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()),
+            shown: false,
+        };
+        write_key(&path, &record)?;
+    }
+    Ok(())
+}
 pub fn status(config: &Value, port: u16) -> Value {
     let mode = mode(config);
     let key = key_metadata();
@@ -273,25 +311,10 @@ pub fn status(config: &Value, port: u16) -> Value {
         "key_present":key.is_some(),"key_fingerprint":key.as_ref().map(|k|&k.0),"key_shown":key.as_ref().is_some_and(|k|k.1),
         "encryption":match mode {"tailscale"=>Some("wireguard"),"lan"=>Some("none"),_=>None},
         "warning":if mode=="lan" {Some("LAN mode is unencrypted HTTP: anyone on this network can read prompts and replies in transit. Prefer tailscale, or set lan_share_options.tls_cert/tls_key.")} else {None},
-        "error":if mode!="off" {Some(UNIMPLEMENTED)} else {None},
+        "error":null,
         "paused":if mode=="off" && config["lan_share_paused"].is_object() {Some(PAUSED)} else {None},"pinned_network":null,
         "routes":["POST /v1/chat/completions","POST /v1/completions","GET /v1/models","GET /v1/models/{id}"],
         "limits":{"rate_per_min":setting(config,"rate_per_min",120,6000),"burst":setting(config,"burst",30,1000),
             "max_body_bytes":setting(config,"max_body_mb",8,16)*1024*1024,"max_tokens":setting(config,"max_tokens",16384,1_000_000),"concurrency":1},
         "remote_active":0,"remote_requests":0,"remote_refused":0})
-}
-pub fn disable(port: u16) -> std::io::Result<Value> {
-    let mut config = match fs::read(paths::config()) {
-        Ok(data) => serde_json::from_slice::<Value>(&data)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(error) => return Err(error),
-    };
-    let object = config
-        .as_object_mut()
-        .ok_or(std::io::ErrorKind::InvalidData)?;
-    object.insert("lan_share".into(), json!("off"));
-    object.remove("lan_share_paused");
-    object.remove("lan_share_pin");
-    paths::write_config(&config)?;
-    Ok(status(&config, port))
 }

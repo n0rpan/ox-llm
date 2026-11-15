@@ -17,13 +17,16 @@ struct App {
     port: u16,
     last_config: Mutex<Value>,
     engine: Arc<engine::Manager>,
+    sharing: Arc<crate::share_runtime::Manager>,
 }
+#[derive(Clone)]
 pub(crate) struct Context {
     path: String,
     head: bool,
     id: String,
     cors: Option<String>,
     pub started: std::time::Instant,
+    pub remote: Option<Arc<crate::share_runtime::Remote>>,
 }
 
 fn random_id() -> Result<String, getrandom::Error> {
@@ -36,6 +39,14 @@ fn random_id() -> Result<String, getrandom::Error> {
 }
 impl Context {
     pub(crate) fn reply(&self, code: u16, value: Value) -> Response {
+        let value = if code >= 400
+            && (self.path.starts_with("/v1/")
+                || ["/models", "/chat/completions"].contains(&self.path.as_str()))
+        {
+            crate::proxy::normalize_error(code, value)
+        } else {
+            value
+        };
         let raw = paths::python_json(&value);
         let length = raw.len();
         let mut response = (
@@ -164,7 +175,7 @@ fn api_key(config: &Value) -> Option<Vec<u8>> {
         .collect::<String>();
     Some(first.trim().as_bytes().to_vec())
 }
-fn presented_key(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn presented_key(headers: &HeaderMap) -> Option<&str> {
     if let Some(value) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
         if value
             .get(..7)
@@ -211,10 +222,9 @@ fn after_load(
     *response.body_mut() = axum::body::Body::from_stream(stream);
     response
 }
-async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
+async fn handle(State(app): State<Arc<App>>, mut request: Request) -> Response {
     let started = std::time::Instant::now();
     let method = request.method().clone();
-    let target = request.uri().to_string();
     let path = request.uri().path().trim_end_matches('/');
     let path = if path.is_empty() { "/" } else { path }.to_owned();
     let Ok(id) = random_id() else {
@@ -226,7 +236,35 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         id,
         cors: None,
         started,
+        remote: None,
     };
+    if let Some(connection) = request
+        .extensions()
+        .get::<crate::share_runtime::Connection>()
+        .cloned()
+    {
+        let remote = match app.sharing.gate(&connection, &mut request, &context).await {
+            Ok(remote) => remote,
+            Err(response) => return *response,
+        };
+        context.remote = Some(remote.clone());
+        context.path = request.uri().path().to_owned();
+        let mut response = dispatch(app, request, context).await;
+        use futures_util::StreamExt;
+        let body = std::mem::replace(response.body_mut(), axum::body::Body::empty());
+        let stream = futures_util::stream::unfold(
+            (body.into_data_stream(), remote),
+            |(mut body, remote)| async move { body.next().await.map(|chunk| (chunk, (body, remote))) },
+        );
+        *response.body_mut() = axum::body::Body::from_stream(stream);
+        return response;
+    }
+    dispatch(app, request, context).await
+}
+async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Response {
+    let method = request.method().clone();
+    let target = request.uri().to_string();
+    let path = context.path.clone();
     let headers = request.headers();
     let request_headers = headers.clone();
     let host = single_header(headers, "host").map(|s| s.trim().to_ascii_lowercase());
@@ -235,7 +273,11 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         format!("localhost:{}", app.port),
         format!("[::1]:{}", app.port),
     ];
-    if !host.is_some_and(|s| allowed.contains(&s)) {
+    if !(if context.remote.is_some() {
+        headers.get_all("host").iter().count() == 1
+    } else {
+        host.is_some_and(|s| allowed.contains(&s))
+    }) {
         return context.error(
             403,
             "Host not allowed: use 127.0.0.1, localhost or [::1] with this port.",
@@ -331,7 +373,9 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         }
         return reply;
     }
-    if let Some(key) = key.filter(|_| path != "/health" && !path.starts_with("/_local/")) {
+    if let Some(key) = key
+        .filter(|_| context.remote.is_none() && path != "/health" && !path.starts_with("/_local/"))
+    {
         let authorized = !key.is_empty()
             && presented_key(headers).is_some_and(|value| bool::from(value.as_bytes().ct_eq(&key)));
         if !authorized {
@@ -388,7 +432,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         return context.reply(200, app.engine.status(&config));
     }
     if path == "/_local/share" && [Method::GET, Method::HEAD].contains(&method) {
-        return context.reply(200, crate::sharing::status(&config, app.port));
+        return context.reply(200, app.sharing.status().await);
     }
     if path == "/_local/models" {
         return context.reply(
@@ -498,15 +542,16 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                     json!({"error":"Send {\"mode\": \"off\" | \"tailscale\" | \"lan\"}."}),
                 );
             }
-            if control["mode"] != "off" {
-                return context.reply(503, json!({"error":crate::sharing::UNIMPLEMENTED}));
-            }
-            return match app.engine.disable_share(app.port).await {
+            return match app
+                .engine
+                .set_sharing(
+                    app.sharing.clone(),
+                    control["mode"].as_str().expect("share mode").to_owned(),
+                )
+                .await
+            {
                 Ok(value) => context.reply(200, value),
-                Err(()) => context.reply(
-                    503,
-                    json!({"error":"The LAN share setting could not be saved."}),
-                ),
+                Err((code, value)) => context.reply(code, value),
             };
         }
         if path == "/_local/cache/clear" {
@@ -872,12 +917,21 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         ]
         .contains(&path.as_str())
     {
+        let payload = payload.unwrap_or(Value::Null);
+        let payload = if let Some(remote) = context.remote.as_ref() {
+            match crate::share_runtime::payload(payload, remote.max_tokens) {
+                Ok(payload) => payload,
+                Err(()) => return context.reply(400, json!({"error":"Invalid model request."})),
+            }
+        } else {
+            payload
+        };
         return crate::proxy::handle(
             &context,
             app.engine.clone(),
             &config,
             &path,
-            payload.unwrap_or(Value::Null),
+            payload,
             request_headers,
         )
         .await;
@@ -911,12 +965,31 @@ pub async fn run() -> i32 {
             return 1;
         }
     };
+    let sharing = match crate::share_runtime::Manager::new(port, engine.ledger.clone()) {
+        Ok(sharing) => sharing,
+        Err(error) => {
+            eprintln!("local-ai: {error}");
+            return 1;
+        }
+    };
     let app = Arc::new(App {
         port,
         last_config: Mutex::new(paths::read_config().unwrap_or_else(|| json!({}))),
         engine: engine.clone(),
+        sharing: sharing.clone(),
     });
-    let router = Router::new().fallback(handle).with_state(app);
+    let router = Router::new().fallback(handle).with_state(app.clone());
+    let weak = Arc::downgrade(&app);
+    sharing
+        .start(Arc::new(move |connection| {
+            weak.upgrade().map(|app| {
+                Router::new()
+                    .fallback(handle)
+                    .with_state(app)
+                    .layer(axum::Extension(connection))
+            })
+        }))
+        .await;
     let mut connections = tokio::task::JoinSet::new();
     let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
     else {
@@ -935,6 +1008,7 @@ pub async fn run() -> i32 {
     }
     connections.abort_all();
     while connections.join_next().await.is_some() {}
+    sharing.close().await;
     engine.shutdown().await;
     0
 }

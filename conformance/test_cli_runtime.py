@@ -106,7 +106,7 @@ def capture_case(name):
         return json.loads(json.dumps(value).replace(str(daemon.home), '<HOME>'))
 
 
-def invoke_case(name, script=None):
+def invoke_case(name, script=None, network_admin=False):
     # A new network namespace per case gives the CLI its hardcoded 8092 without
     # ever reaching a service outside this synthetic installation.
     with tempfile.TemporaryDirectory(prefix='oxc-cli-runtime-') as directory:
@@ -115,7 +115,8 @@ def invoke_case(name, script=None):
         for key in ('OXC_COMMAND', 'OXC_DAEMON_COMMAND'):
             if key in os.environ:
                 env[key] = os.environ[key]
-        command = ['bwrap', '--die-with-parent', '--unshare-net', '--ro-bind', '/', '/',
+        command = ['bwrap', '--die-with-parent', '--unshare-net',
+                   *(['--unshare-user', '--cap-add', 'CAP_NET_ADMIN', '--cap-add', 'CAP_SETPCAP'] if network_admin else []), '--ro-bind', '/', '/',
                    '--dev-bind', '/dev', '/dev', '--bind', '/proc', '/proc',
                    '--tmpfs', '/home', '--tmpfs', '/tmp',
                    '--bind', str(home), str(CANONICAL_HOME),

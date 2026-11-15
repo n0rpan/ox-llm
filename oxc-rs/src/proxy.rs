@@ -767,6 +767,7 @@ struct RequestRecord {
     admission: Option<engine::Admission>,
     status: u16,
     error: Option<&'static str>,
+    remote: Option<Arc<crate::share_runtime::Remote>>,
 }
 impl RequestRecord {
     fn observe(&mut self, bytes: &[u8]) {
@@ -791,12 +792,14 @@ impl Drop for RequestRecord {
             admission.begin_finalizing();
         }
         let entry = self.entry.take();
+        let remote = self.remote.take();
         let (status, error) = (self.status, self.error);
         tokio::task::spawn_blocking(move || {
             if let Some(entry) = entry {
                 entry.finish(status, error);
             }
             drop(admission);
+            drop(remote);
         });
     }
 }
@@ -897,7 +900,7 @@ impl StreamShim {
         }
     }
 }
-fn normalize_error(status: u16, mut value: Value) -> Value {
+pub(crate) fn normalize_error(status: u16, mut value: Value) -> Value {
     let Some(error) = value.get_mut("error") else {
         return value;
     };
@@ -954,7 +957,7 @@ fn normalize_error(status: u16, mut value: Value) -> Value {
     error["message"] = json!(message);
     error["type"] = json!(if kind.is_empty() {
         match status {
-            400 => "invalid_request_error",
+            400 | 411 | 413 => "invalid_request_error",
             401 => "authentication_error",
             403 => "permission_error",
             404 => "invalid_request_error",
@@ -969,6 +972,12 @@ fn normalize_error(status: u16, mut value: Value) -> Value {
     value
 }
 
+fn preempt_error() -> Value {
+    json!({"error":{"message":"Preempted by local use on the host; retry later.","type":"preempted","code":"preempted_by_local_use"}})
+}
+fn preempted(context: &Context) -> Response {
+    context.reply(503, preempt_error())
+}
 pub async fn handle(
     context: &Context,
     manager: Arc<engine::Manager>,
@@ -977,7 +986,14 @@ pub async fn handle(
     mut payload: Value,
     headers: HeaderMap,
 ) -> Response {
-    let profile = match models::resolve(config, payload["model"].as_str()) {
+    let profile = match (if context.remote.is_some() && payload.get("model").is_none() {
+        manager.loaded()
+    } else {
+        None
+    })
+    .map(Ok)
+    .unwrap_or_else(|| models::resolve(config, payload["model"].as_str()))
+    {
         Ok(profile) => profile,
         Err(message) => {
             return context.error(
@@ -1097,7 +1113,7 @@ pub async fn handle(
     let key = {
         let mut registry = manager.harness.lock().unwrap_or_else(|e| e.into_inner());
         registry.record_compat(&compat_notes);
-        if chat {
+        if chat && context.remote.is_none() {
             registry.observe(
                 &payload,
                 &profile,
@@ -1113,9 +1129,13 @@ pub async fn handle(
     } else {
         path
     };
-    let mut entry = manager
-        .ledger
-        .entry(ledger_path, &payload, &headers, &profile["model_alias"]);
+    let mut entry = manager.ledger.entry(
+        ledger_path,
+        &payload,
+        &headers,
+        &profile["model_alias"],
+        context.remote.as_ref().map(|r| r.client.as_str()),
+    );
     entry.label(&payload, &headers, config, key.as_deref());
     entry.prep(context.started.elapsed());
     let mut record = RequestRecord {
@@ -1123,6 +1143,7 @@ pub async fn handle(
         admission: None,
         status: 499,
         error: Some("client_gone_queued"),
+        remote: context.remote.clone(),
     };
     let mut observation = key.map(|key| Observation {
         manager: manager.clone(),
@@ -1131,29 +1152,31 @@ pub async fn handle(
         cache: Value::Null,
         prompt: Value::Null,
     });
-    let (admission, backend) = match manager.admit(profile).await {
+    let admitted = if let Some(remote) = context.remote.as_ref() {
+        manager.admit_shared(profile, remote.preempt.clone()).await
+    } else {
+        manager.admit(profile).await.map_err(|error|(503,json!({"error":{"message":error,"type":"local_backend_busy","code":"service_unavailable"}})))
+    };
+    let (admission, backend) = match admitted {
         Ok(value) => value,
-        Err(error) => {
+        Err((code, value)) => {
+            let error = value["error"]["message"].as_str().unwrap_or("");
             record.fail(
-                503,
-                if error.contains("running") {
+                code,
+                if code == 409 {
+                    "model_busy"
+                } else if error.contains("running") {
                     "busy"
                 } else {
                     "unavailable"
                 },
             );
-            return context.error(
-                503,
-                &error,
-                "local_backend_busy",
-                "service_unavailable",
-                None,
-            );
+            return context.reply(code, value);
         }
     };
     if let Some(entry) = record.entry.as_mut() {
         entry.admitted(admission.queue_seconds, admission.begin_seconds);
-        if chat {
+        if chat && context.remote.is_none() {
             if let (Some(model), Some(session)) =
                 (entry.row["model"].as_str(), entry.row["session"].as_str())
             {
@@ -1180,7 +1203,7 @@ pub async fn handle(
         ))
         .bearer_auth(&backend.key)
         .json(&payload);
-    if chat {
+    if chat && context.remote.is_none() {
         if let Some(session) = record
             .entry
             .as_ref()
@@ -1206,7 +1229,21 @@ pub async fn handle(
     if let Some(entry) = record.entry.as_mut() {
         entry.backend_prep(backend_prep.elapsed());
     }
-    let upstream = match request.send().await {
+    let upstream = if let Some(remote) = context.remote.as_ref() {
+        tokio::select! {reply=request.send()=>Some(reply),_=remote.preempt.wait()=>None}
+    } else {
+        Some(request.send().await)
+    };
+    if upstream.is_none()
+        || context
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.preempt.cancelled())
+    {
+        record.fail(503, "preempted_by_local_use");
+        return finalize(preempted(context), record, None);
+    }
+    let upstream = match upstream.expect("not preempted") {
         Ok(reply) => reply,
         Err(_) => {
             record.fail(503, "backend_died");
@@ -1248,7 +1285,25 @@ pub async fn handle(
                     return None;
                 }
                 loop {
-                    match upstream.next().await {
+                    let remote = record.as_ref().and_then(|r| r.remote.clone());
+                    let next = if let Some(remote) = remote.as_ref() {
+                        tokio::select! {chunk=upstream.next()=>Some(chunk),_=remote.preempt.wait()=>None}
+                    } else {
+                        Some(upstream.next().await)
+                    };
+                    if next.is_none() {
+                        if let Some(record) = record.as_mut() {
+                            record.fail(503, "preempted_by_local_use");
+                        }
+                        record.take();
+                        let bytes = format!(
+                            "data: {}\n\n",
+                            crate::paths::compact_ascii_json(&preempt_error())
+                        )
+                        .into_bytes();
+                        return Some((Ok(bytes), (upstream, shim, record, true)));
+                    }
+                    match next.expect("not preempted") {
                         Some(Ok(bytes)) => {
                             if let Some(record) = record.as_mut() {
                                 record.observe(&bytes);
@@ -1293,7 +1348,21 @@ pub async fn handle(
         meta.headers(&mut reply);
         return reply;
     }
-    let mut value = match upstream.bytes().await.ok().and_then(|bytes| {
+    let bytes = if let Some(remote) = context.remote.as_ref() {
+        tokio::select! {bytes=upstream.bytes()=>Some(bytes),_=remote.preempt.wait()=>None}
+    } else {
+        Some(upstream.bytes().await)
+    };
+    if bytes.is_none()
+        || context
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.preempt.cancelled())
+    {
+        record.fail(503, "preempted_by_local_use");
+        return finalize(preempted(context), record, None);
+    }
+    let mut value = match bytes.expect("not preempted").ok().and_then(|bytes| {
         record.observe(&bytes);
         serde_json::from_slice::<Value>(&bytes).ok()
     }) {

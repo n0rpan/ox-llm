@@ -82,7 +82,10 @@ class Handler(BaseHTTPRequestHandler):
     def wait_gate(self, body):
         if '[hold]' not in json.dumps(body):
             return True
-        event('held', path=self.path)
+        return self.gate('held')
+
+    def gate(self, kind):
+        event(kind, path=self.path)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if Path(os.environ['FAKE_ENGINE_GATE']).exists():
@@ -129,14 +132,17 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             event('cancelled', path=self.path)
 
-    def sse(self, frames, done=False):
+    def sse(self, frames, done=False, hold=False):
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Connection', 'close')
         self.end_headers()
-        for frame in frames:
+        for index, frame in enumerate(frames):
             self.wfile.write(('data: ' + json.dumps(frame) + '\n\n').encode())
             self.wfile.flush()
+            if hold and index == 0 and not self.gate('stream-held'):
+                self.close_connection = True
+                return
         if done:
             self.wfile.write(b'data: [DONE]\n\n')
             self.wfile.flush()
@@ -198,7 +204,8 @@ class Handler(BaseHTTPRequestHandler):
         if body.get('stream_options', {}).get('include_usage'):
             frames.append({**meta, 'object': 'chat.completion.chunk', 'choices': [], 'usage': usage})
         frames[-1]['timings'] = timings
-        self.sse(frames, done=True)
+        self.sse(frames, done=True, hold=os.environ.get('FAKE_ENGINE_STREAM_GATE') == '1'
+                 and '[hold-stream]' in json.dumps(body))
 
     def completion(self, body):
         self.ledger()

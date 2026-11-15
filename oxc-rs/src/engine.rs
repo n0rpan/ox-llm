@@ -281,6 +281,7 @@ pub struct Manager {
     session_hints: Mutex<std::collections::HashMap<String, String>>,
     launches: AtomicUsize,
     engine_ledger: RwLock<Option<crate::engine_ledger::Metadata>>,
+    remote_preempt: Mutex<Option<Arc<crate::share_runtime::Preempt>>>,
 }
 struct Waiting(Arc<Manager>);
 impl Drop for Waiting {
@@ -294,6 +295,7 @@ pub struct Admission {
     pub queue_seconds: f64,
     pub begin_seconds: f64,
     finalizing: bool,
+    remote: Option<Arc<crate::share_runtime::Preempt>>,
 }
 impl Admission {
     pub fn begin_finalizing(&mut self) {
@@ -316,6 +318,16 @@ impl Drop for Admission {
             self.manager.finalizing.fetch_sub(1, Ordering::SeqCst);
         }
         self.manager.finished.notify_waiters();
+        if let Some(remote) = self.remote.as_ref() {
+            let mut active = self
+                .manager
+                .remote_preempt
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if active.as_ref().is_some_and(|p| Arc::ptr_eq(p, remote)) {
+                *active = None;
+            }
+        }
     }
 }
 #[derive(Clone)]
@@ -360,6 +372,7 @@ impl Manager {
             session_hints: Mutex::new(std::collections::HashMap::new()),
             launches: AtomicUsize::new(0),
             engine_ledger: RwLock::new(None),
+            remote_preempt: Mutex::new(None),
             stop,
             port,
         });
@@ -653,7 +666,11 @@ impl Manager {
             .extend(harness.as_object().expect("harness facts").clone());
         status
     }
-    pub async fn disable_share(self: &Arc<Self>, port: u16) -> Result<Value, ()> {
+    pub async fn set_sharing(
+        self: &Arc<Self>,
+        sharing: Arc<crate::share_runtime::Manager>,
+        mode: String,
+    ) -> Result<Value, (u16, Value)> {
         let manager = self.clone();
         tokio::spawn(async move {
             // The off switch waits at most the reference's five seconds for
@@ -661,15 +678,17 @@ impl Manager {
             let held = tokio::time::timeout(Duration::from_secs(5), manager.state.lock())
                 .await
                 .ok();
-            let result = tokio::task::spawn_blocking(move || crate::sharing::disable(port))
-                .await
-                .map_err(|_| ())?
-                .map_err(|_| ());
+            let result = sharing.set_mode(mode).await;
             drop(held);
             result
         })
         .await
-        .map_err(|_| ())?
+        .map_err(|_| {
+            (
+                503,
+                json!({"error":"The LAN share setting could not be saved."}),
+            )
+        })?
     }
     pub async fn set_harness_learning(
         &self,
@@ -1047,6 +1066,15 @@ impl Manager {
     pub async fn admit(self: &Arc<Self>, profile: Value) -> Result<(Admission, Backend), String> {
         let queued_at = Instant::now();
         self.queued.fetch_add(1, Ordering::SeqCst);
+        if let Some(remote) = self
+            .remote_preempt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            remote.cancel();
+        }
+        self.finished.notify_waiters();
         let waiting = Waiting(self.clone());
         let permit = tokio::time::timeout(
             Duration::from_secs_f64(seconds("LOCAL_LLM_QUEUE_WAIT_SECONDS", 120.0)),
@@ -1076,6 +1104,97 @@ impl Manager {
                 queue_seconds,
                 begin_seconds: begin_at.elapsed().as_secs_f64(),
                 finalizing: false,
+                remote: None,
+            },
+            backend,
+        ))
+    }
+    pub async fn admit_shared(
+        self: &Arc<Self>,
+        profile: Value,
+        preempt: Arc<crate::share_runtime::Preempt>,
+    ) -> Result<(Admission, Backend), (u16, Value)> {
+        let error = |code, message: &str, kind, tag| {
+            (
+                code,
+                json!({"error":{"message":message,"type":kind,"code":tag}}),
+            )
+        };
+        let queued_at = Instant::now();
+        self.queued.fetch_add(1, Ordering::SeqCst);
+        let waiting = Waiting(self.clone());
+        let permit = self.slot.clone().acquire_owned();
+        tokio::pin!(permit);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let permit = loop {
+            let changed = self.finished.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.queued.load(Ordering::SeqCst) > 1 {
+                return Err(error(
+                    503,
+                    "The host is busy. Try again in a moment.",
+                    "local_backend_busy",
+                    "service_unavailable",
+                ));
+            }
+            tokio::select! {
+                result=&mut permit=>break result.map_err(|_|error(503,"The local model service is stopping.","local_backend_busy","service_unavailable"))?,
+                _=&mut changed=>{},
+                _=tokio::time::sleep_until(deadline)=>return Err(error(503,"Another chat request is still running after 2 s. Try again when it finishes.","local_backend_busy","service_unavailable")),
+            }
+        };
+        drop(waiting);
+        let queue_seconds = queued_at.elapsed().as_secs_f64();
+        let begin = Instant::now();
+        let mut state = self.state.lock().await;
+        if state.running.as_mut().is_some_and(|r| {
+            r.guard.failure().is_some() || r.process.poll().ok().flatten().is_some()
+        }) {
+            self.cleanup(&mut state)
+                .await
+                .map_err(|s| error(503, &s, "local_backend_busy", "service_unavailable"))?;
+        }
+        let Some(running) = state.running.as_ref() else {
+            return Err(error(
+                409,
+                "No model is loaded on the host. Load one on the host, then try again.",
+                "conflict_error",
+                "model_busy",
+            ));
+        };
+        let loaded = self.loaded().unwrap_or(Value::Null);
+        if profile["model_alias"] != loaded["model_alias"] {
+            return Err(error(
+                409,
+                &format!(
+                    "The host has another model loaded. Use \"{}\" instead.",
+                    loaded["model_alias"].as_str().unwrap_or("")
+                ),
+                "conflict_error",
+                "model_busy",
+            ));
+        }
+        let backend = Backend {
+            url: format!("http://127.0.0.1:{}", self.port),
+            key: running.token.value.clone(),
+        };
+        *self
+            .remote_preempt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(preempt.clone());
+        if self.queued.load(Ordering::SeqCst) > 0 {
+            preempt.cancel();
+        }
+        self.active.fetch_add(1, Ordering::SeqCst);
+        Ok((
+            Admission {
+                manager: self.clone(),
+                _permit: permit,
+                queue_seconds,
+                begin_seconds: begin.elapsed().as_secs_f64(),
+                finalizing: false,
+                remote: Some(preempt),
             },
             backend,
         ))
