@@ -1,5 +1,4 @@
-usage: local-ai uninstall [-h] [--apply] [--remove-models] [--record PATH]
-                          [--json]
+usage: oxc uninstall [-h] [--apply] [--remove-models] [--record PATH] [--json]
 
 Remove ox-llm from this user account (dry run unless --apply).
 

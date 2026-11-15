@@ -133,7 +133,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -155,7 +155,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -184,14 +184,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "The local chat service could not start. Details: journalctl --user -u local-ai-chat."
+          "The local chat service could not start. Details: journalctl --user -u oxc-chat."
         ],
         "command": "notify-send"
       }
@@ -207,7 +207,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -245,7 +245,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -269,7 +269,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -285,7 +285,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -309,7 +309,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -325,7 +325,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -356,14 +356,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "The local chat service could not start. Details: journalctl --user -u local-ai-chat."
+          "The local chat service could not start. Details: journalctl --user -u oxc-chat."
         ],
         "command": "notify-send"
       }
@@ -412,7 +412,7 @@
       {
         "args": [
           "Local AI",
-          "The local model service is not answering. Run `local-ai status` to see why."
+          "The local model service is not answering. Run `oxc status` to see why."
         ],
         "command": "notify-send"
       }
@@ -437,7 +437,7 @@
         "path": "/_local/unload"
       }
     ],
-    "stderr": "local-ai: Synthetic job is running.\n",
+    "stderr": "oxc: Synthetic job is running.\n",
     "stdout": ""
   },
   "unload-nonfinite-error-json": {
@@ -480,7 +480,7 @@
       {
         "args": [
           "Local AI",
-          "The local model service is not answering. Run `local-ai status` to see why."
+          "The local model service is not answering. Run `oxc status` to see why."
         ],
         "command": "notify-send"
       }
@@ -501,7 +501,7 @@
       {
         "args": [
           "Local AI",
-          "The local model service is not answering. Run `local-ai status` to see why."
+          "The local model service is not answering. Run `oxc status` to see why."
         ],
         "command": "notify-send"
       }

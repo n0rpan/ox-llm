@@ -17,7 +17,7 @@ pub fn directory() -> std::path::PathBuf {
                 &value
             })
         })
-        .unwrap_or_else(|| paths::home().join(".local/state/local-ai/ledger"))
+        .unwrap_or_else(|| paths::home().join(".local/state/oxc/ledger"))
 }
 fn number(value: &Value) -> Value {
     if value.as_f64().is_some_and(|v| (0.0..=1e18).contains(&v)) {

@@ -116,7 +116,7 @@ def capture(name):
     if name.endswith('start-fails'):
         (home / 'mock-fail-once').write_text('start')
     executable = home / 'oxc'
-    executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+    executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
     command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
     server = ThreadingHTTPServer(('127.0.0.1', 8092), Handler)
     server.daemon_threads = True

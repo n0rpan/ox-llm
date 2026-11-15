@@ -1,17 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 const HELP: &str = include_str!("help.txt");
-fn main_help() -> &'static str {
-    if std::env::args_os().next().is_some_and(|name| {
-        std::path::Path::new(&name)
-            .file_name()
-            .is_some_and(|name| name == "local-ai")
-    }) {
-        include_str!("legacy-help.txt")
-    } else {
-        HELP
-    }
-}
 const UNINSTALL_HELP: &str = include_str!("uninstall-help.txt");
 const ACTIONS: &[&str] = &[
     "panel",
@@ -85,18 +74,8 @@ fn usage(help: &str) -> &str {
     help.split("\n\n").next().unwrap_or(help)
 }
 fn error(message: String, uninstall: bool) -> Exit {
-    let help = if uninstall {
-        UNINSTALL_HELP
-    } else {
-        main_help()
-    };
-    let program = if uninstall {
-        "local-ai uninstall"
-    } else if main_help() == HELP {
-        "oxc"
-    } else {
-        "local-ai"
-    };
+    let help = if uninstall { UNINSTALL_HELP } else { HELP };
+    let program = if uninstall { "oxc uninstall" } else { "oxc" };
     Exit {
         code: 2,
         stdout: String::new(),
@@ -106,12 +85,7 @@ fn error(message: String, uninstall: bool) -> Exit {
 fn help(uninstall: bool) -> Exit {
     Exit {
         code: 0,
-        stdout: if uninstall {
-            UNINSTALL_HELP
-        } else {
-            main_help()
-        }
-        .to_owned(),
+        stdout: if uninstall { UNINSTALL_HELP } else { HELP }.to_owned(),
         stderr: String::new(),
     }
 }
@@ -257,7 +231,7 @@ fn option_like(word: &str, flags: &[&str], values: &[&str]) -> bool {
 
 pub fn parse(words: &[String]) -> Result<Args, Exit> {
     if words.first().map(String::as_str) == Some("dense") {
-        return Err(Exit {code:2, stdout:String::new(), stderr:"The dense Qwen3.8 27B model was retired in v0.1.2. Use `local-ai ornith` or `local-ai moe`.\n".into()});
+        return Err(Exit {code:2, stdout:String::new(), stderr:"The dense Qwen3.8 27B model was retired in v0.1.2. Use `oxc ornith` or `oxc moe`.\n".into()});
     }
     let uninstall = words.first().map(String::as_str) == Some("uninstall");
     let input = if uninstall { &words[1..] } else { words };
@@ -343,7 +317,7 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                 if name == "--version" {
                     return Err(Exit {
                         code: 0,
-                        stdout: concat!("local-ai ", env!("CARGO_PKG_VERSION"), "\n").into(),
+                        stdout: concat!("oxc ", env!("CARGO_PKG_VERSION"), "\n").into(),
                         stderr: String::new(),
                     });
                 }
