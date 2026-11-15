@@ -814,6 +814,7 @@ dependencies = [
  "httparse",
  "httpdate",
  "nix",
+ "oxc-gateway",
  "regex",
  "reqwest",
  "rustls",
@@ -824,6 +825,14 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower",
+]
+
+[[package]]
+name = "oxc-gateway"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "url",
 ]
 
 [[package]]

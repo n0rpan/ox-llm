@@ -17,6 +17,7 @@ use std::{
 };
 
 const REPLY_MAX: usize = 1 << 20;
+pub static IO_LOCK: Mutex<()> = Mutex::new(());
 const TAIL_BYTES: usize = 16384;
 type Hash = [u8; 16];
 type HistoryKey = (String, Value, Value, Value, Value);
@@ -972,6 +973,7 @@ fn thermal(row: &mut Value) {
         .collect::<Vec<_>>());
 }
 fn write(state: &mut State, row: &Value) -> io::Result<()> {
+    let _guard = IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if std::env::var("OXC_LEDGER").as_deref() == Ok("0") {
         return Ok(());
     }

@@ -73,6 +73,9 @@
     ],
     "cloud-installer": [
       "test_cloud_installer"
+    ],
+    "cloud-refusals": [
+      "test_cloud_refusals"
     ]
   },
   "profiles": {
@@ -84,6 +87,7 @@
       "cli-config",
       "http-foundation",
       "cloud-catalog",
+      "cloud-refusals",
       "cloud-gateway-wire",
       "cloud-installer",
       "http-admission",

@@ -8,7 +8,7 @@ autobins = false
 
 [features]
 default = []
-native-controller = []
+native-controller = ["dep:oxc-gateway"]
 
 [[bin]]
 name = "oxc-native"
@@ -21,6 +21,7 @@ path = "src/main.rs"
 required-features = ["native-controller"]
 
 [dependencies]
+oxc-gateway = { path = "../oxc-gateway", optional = true, features = ["cloud-only", "policy"] }
 axum = "0.8"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "fs", "sync", "time", "io-util"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }

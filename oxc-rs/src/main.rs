@@ -8,6 +8,8 @@ mod cli_args;
 mod cli_client;
 mod cli_control;
 mod cli_status;
+mod cloud_catalog;
+mod cloud_only;
 mod daemon;
 mod diagnostics;
 mod engine;
@@ -160,7 +162,14 @@ async fn run() {
     } else if words.first().map(String::as_str) == Some("studio") {
         studio::run().await
     } else if words.first().map(String::as_str) == Some("serve") {
-        daemon::run().await
+        if paths::read_config()
+            .as_ref()
+            .is_some_and(cloud_catalog::only)
+        {
+            cloud_only::run().await
+        } else {
+            daemon::run().await
+        }
     } else {
         match cli::parse(&words) {
             Ok(args) => cli::run(args).await,

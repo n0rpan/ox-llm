@@ -110,6 +110,8 @@ def capture(name):
         config = {'cloud_only': True, 'cloud': {'enabled': name != 'router-disabled',
                   'daily_budget_usd': 1e-9 if name == 'router-budget' else 1.0,
                   'secrets_file': str(secret), 'models': {'synthetic-cloud': item}}}
+        if name == 'router-no-budget':
+            del config['cloud']['daily_budget_usd']
         environment = {'OXC_LEDGER_DIR': str(ledger)}
         if name == 'router-offline':
             environment['OXC_OFFLINE'] = '1'

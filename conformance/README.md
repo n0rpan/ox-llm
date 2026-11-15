@@ -292,3 +292,8 @@ the reference's background public-price refresh cannot contact an external API.
 Current-main Python validation: all 108 methods PASS (375.649 s). The native
 integration is still incomplete for cloud; its latest 185 CLI/control/ledger
 scenarios passed under the same system-Python harness.
+
+The opt-in #28 runtime now passes nine cloud-only catalog cases and eight
+public-refusal cases without constructing a local engine. Positive remote
+forwarding, reservations/settlement and remote rows remain incomplete. The
+separate policy library (#297, `2dcbdd0`) passes eleven source/native cases.

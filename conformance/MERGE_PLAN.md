@@ -22,7 +22,7 @@ complete cloud-only suite is green. Do not change Python behavior to match Rust.
 | Slice | Scope | Required conformance |
 | --- | --- | --- |
 | a. Discovery metadata | [#294](https://github.com/oxstack/ox-llm/pull/294), head `82beba1`: opt-in `oxc-gateway` library, empty defaults; model/chooser rows, model limits, health and startup line. No installed binary or full HTTP adapter. | Eight Python HTTP/native library cases: three providers, cloud off/default/offline, ignored local profile, invalid entries; held foreign lease, no config mutation or inference request. PASS. |
-| b. Policy refusals | Cloud credentials unavailable, offline, budget exhausted/missing, unknown price and LAN guests refused before forwarding. | Exact public errors, zero provider requests and no local admission. |
+| b. Policy refusals | [#297](https://github.com/oxstack/ox-llm/pull/297), head `2dcbdd0`, 732 lines; cloud credentials unavailable, offline, budget exhausted/missing, unknown price and LAN guests refused before forwarding. | Exact public errors, zero provider requests and no local admission. |
 | c. Secrets and redaction | Private request-time files, ownership/mode/no-follow checks; JSON and split-stream redaction. Never expose keys or credential paths in errors/ledgers. | File rotation and malformed/symlink/permission cases, escaped and split secrets, metadata/tool deltas. |
 | d. Accounting | Daily cap, atomic reservations, conservative missing-usage/cancel settlement, private remote ledger and cache read/write pricing. | Concurrent cap, failures, ledger health/privacy, seeded spend and explicit 95% cache-hit prices (#283). |
 | e. OpenRouter | Privacy preferences, JSON/SSE/tools, no paid retry, bounded responses and cancellation. | Owned loopback upstream, exact request/reply frames and settlement. |
@@ -38,7 +38,7 @@ the cloud path. Existing transport extraction #271 remains a separate draft.
 
 ## Reference and test discipline
 
-The current integration inventory has 108 methods assigned exactly once. New
+The current integration inventory has 109 methods assigned exactly once. New
 Python contracts cover nine catalog, 24 gateway wire/accounting and 20 installer
 scenarios. Those are subsets, not complete native cloud parity. Full cloud-only
 and gateway gates must not pass as empty suites or silently fall back to Python.
@@ -69,3 +69,9 @@ Python contracts before porting changes. Keep this SHA and #28's first body line
 current. The immutable synthetic benchmarks remain historical evidence only;
 they do not demonstrate hardware or cloud parity. Local engine/Studio adapters
 and default installation remain deferred behind cloud-only completion.
+
+The draft integration runtime now composes the discovery/policy library in a
+separate cloud-only listener that never constructs `engine::Manager`. Nine
+catalog and eight public refusal cases pass natively; the latter checks errors
+and zero forwarding only. Remote ledger rows and positive forwarding remain
+unimplemented. This proof wiring is not a merge-sized PR.
