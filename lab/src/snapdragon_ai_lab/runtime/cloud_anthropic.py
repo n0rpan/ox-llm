@@ -84,6 +84,22 @@ def _text_parts(content):
     return out
 
 
+def _tool_result_blocks(content):
+    if isinstance(content, list):
+        out = []
+        for part in content:
+            if (isinstance(part, dict) and part.get('type') == 'text'
+                    and isinstance(part.get('text'), str)):
+                out.append({'type': 'text', 'text': part['text']})
+            else:
+                kind = part.get('type') if isinstance(part, dict) else type(part).__name__
+                raise cloud.CloudError(
+                    'Tool result content part type %r is not supported by this model; '
+                    'only text parts are.' % (kind,), 400, 'invalid_value', 'messages')
+        return out or [{'type': 'text', 'text': ''}]
+    return [{'type': 'text', 'text': str(content or '')}]
+
+
 def _tool_use(call):
     function = call.get('function') if isinstance(call, dict) else None
     if not isinstance(function, dict):
@@ -206,7 +222,7 @@ def messages_request(payload, item, key=None):
             continue
         if role == 'tool':
             block = {'type': 'tool_result', 'tool_use_id': message.get('tool_call_id') or '',
-                     'content': [{'type': 'text', 'text': str(message.get('content') or '')}]}
+                     'content': _tool_result_blocks(message.get('content'))}
             converted.append(('user', [block]))
             continue
         if role == 'assistant':

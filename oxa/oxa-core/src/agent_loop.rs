@@ -219,6 +219,12 @@ fn run_inner(
             message: reply.clone(),
         });
         crate::fire::message(st, HookPoint::MessageEnd, &reply, sink, ui);
+        if turn.finish == Finish::ContentFilter {
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: "The model declined to answer this request.".to_string(),
+            });
+        }
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
         st.last_usage = Some(usage);

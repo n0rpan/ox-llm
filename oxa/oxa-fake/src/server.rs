@@ -1122,6 +1122,7 @@ fn finish_value(f: Finish) -> &'static str {
         Finish::Stop => "stop",
         Finish::ToolCalls => "tool_calls",
         Finish::Length => "length",
+        Finish::ContentFilter => "content_filter",
     }
 }
 

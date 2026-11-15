@@ -63,6 +63,35 @@ class Catalog(AnthropicBase):
 
 
 class MessagesTranslation(AnthropicBase):
+    def _tool_content(self, content):
+        upstream = MockAnthropic()
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        body = {
+            'model': 'anthropic/claude-sonnet-5-5', 'max_tokens': 50,
+            'messages': [
+                {'role': 'user', 'content': 'read x'},
+                {'role': 'assistant', 'content': None,
+                 'tool_calls': [{'id': 'call_1', 'type': 'function',
+                                 'function': {'name': 'read', 'arguments': '{}'}}]},
+                {'role': 'tool', 'tool_call_id': 'call_1', 'content': content}]}
+        status, reply = self.call('POST', '/v1/chat/completions', body)
+        return status, reply, upstream
+
+    def test_array_tool_result_becomes_text_blocks(self):
+        status, reply, upstream = self._tool_content(
+            [{'type': 'text', 'text': 'one'}, {'type': 'text', 'text': 'two'}])
+        self.assertEqual(status, 200, reply)
+        blocks = upstream.requests[0]['body']['messages'][-1]['content'][0]['content']
+        self.assertEqual([(b['type'], b['text']) for b in blocks],
+                         [('text', 'one'), ('text', 'two')])
+
+    def test_unsupported_tool_result_part_is_a_clear_error(self):
+        status, reply, upstream = self._tool_content(
+            [{'type': 'text', 'text': 'one'}, {'type': 'audio', 'data': 'x'}])
+        self.assertEqual(status, 400, reply)
+        self.assertEqual(upstream.requests, [])
+
     def test_openai_request_becomes_a_native_messages_request(self):
         upstream = MockAnthropic()
         self.addCleanup(upstream.close)

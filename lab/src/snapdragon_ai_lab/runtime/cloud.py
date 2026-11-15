@@ -1198,10 +1198,12 @@ class CloudStream:
                     delta.pop('reasoning', None)
                     for call in delta.get('tool_calls') or []:
                         function = call.get('function') or {}
-                        for field in ('arguments', 'name'):
-                            if isinstance(function.get(field), str):
-                                function[field] = self._fragment(index, field, function[field],
-                                                                 call.get('index', 0))
+                        if isinstance(function.get('arguments'), str):
+                            function['arguments'] = self._fragment(
+                                index, 'arguments', function['arguments'], call.get('index', 0))
+                        if isinstance(function.get('name'), str):
+                            # Names are short and must reach the client whole in the first delta.
+                            function['name'] = redact(function['name'], self.key)
             _normalize_message(choice.get('message'))
         if isinstance(value.get('usage'), dict):
             try:
