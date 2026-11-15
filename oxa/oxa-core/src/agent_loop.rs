@@ -94,6 +94,7 @@ fn run_inner(
     opening: &[EventMessage],
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
+    let mut done = crate::done::DoneState::default();
     loop {
         // E-INT 1: host requests that arrived since the last step (queries, appends) are
         // served between steps; session-shape actions wait for settlement.
@@ -240,6 +241,7 @@ fn run_inner(
                 crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
                 tool_msgs.push(msg);
             }
+            done.note_edits(&results);
             // Adaptive thinking (`think.rs`): the batch decides the next follow-up.
             crate::think::observe(st, &calls, &results, sink, ui);
             st.stats.tool_calls += calls.len() as u32;
@@ -310,6 +312,10 @@ fn run_inner(
         if deliver_steering(st, sink, ui, run_msgs)? {
             continue;
         }
+        if let Some(text) = crate::done::check(st, &mut done, sink, ui) {
+            crate::done::inject(st, text, sink, ui, run_msgs)?;
+            continue;
+        }
         return Ok(RunEnd::Stopped);
     }
 }
@@ -362,30 +368,42 @@ fn deliver_steering(
         return Ok(false);
     }
     for text in taken {
-        let wire = WireMsg::user(text.clone());
-        let msg = EventMessage {
-            msg: wire.clone(),
-            ts_ms: now_ms(),
-            stop: None,
-            usage: None,
-            model: None,
-            tool_name: None,
-            is_error: false,
-            error_message: None,
-        };
-        run_msgs.push(msg.clone());
-        persist(
-            st,
-            EntryBody::Msg {
-                wire,
-                parts: vec![Part::Text(text)],
-            },
-            sink,
-        )?;
-        crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
-        crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
+        push_user(st, text, sink, ui, run_msgs)?;
     }
     Ok(true)
+}
+
+/// Append one user message to the transcript and announce it.
+pub(crate) fn push_user(
+    st: &mut SessionState,
+    text: String,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+) -> Result<(), OxaError> {
+    let wire = WireMsg::user(text.clone());
+    let msg = EventMessage {
+        msg: wire.clone(),
+        ts_ms: now_ms(),
+        stop: None,
+        usage: None,
+        model: None,
+        tool_name: None,
+        is_error: false,
+        error_message: None,
+    };
+    run_msgs.push(msg.clone());
+    persist(
+        st,
+        EntryBody::Msg {
+            wire,
+            parts: vec![Part::Text(text)],
+        },
+        sink,
+    )?;
+    crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
+    crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
+    Ok(())
 }
 
 /// Take steering messages from the shared queue (`Shared::take_steering` applies the mode)
