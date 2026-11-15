@@ -1,4 +1,11 @@
-# Experimental native controller: CLI control requests
+# Experimental native controller: read-only ledger CLI
+
+This slice adds `ledger` to the opt-in `oxc-native` binary. It reads the existing
+local JSONL ledger without modifying it, projects the reference's public numeric
+and allowlisted fields, and preserves CLI output and limit syntax. Reading is
+bounded to 512 KiB per daily file and 200 returned rows; file symlinks are refused.
+It adds no gateway, daemon, local engine or installation changes. Cloud ledger
+contracts will follow the merged #24 baseline before its gateway is ported.
 
 This slice adds seven commands to the opt-in `oxc-native` binary: `load`,
 `unload`, `clear-cache`, `flash-cache`, `harness-prepare`, `harness-forget` and
@@ -27,14 +34,20 @@ cargo clippy --locked --manifest-path oxc-rs/Cargo.toml \
   --features native-controller --all-targets -- -D warnings
 ```
 
-The 140 parser scenarios and 33 control scenarios compare with the unmodified
+The 140 parser scenarios, 33 control scenarios and 12 ledger scenarios compare with the unmodified
 Python reference. Every control scenario runs in its own network/HOME namespace
 against owned HTTP and system-command peers. No engine/model or real service,
 notification, credentials or cloud request is used. The trickled-response case
 observes the unchanged 15-second stalled-read limit. Unsupported commands have
 separate capability-refusal checks.
 
-Stacked on the parser slice #177; #28 remains the integration/proof branch.
+Ledger fixtures use an isolated HOME and cleared environment. Tests compare
+exact stdout/stderr/exit, private-field exclusion, the bounded tail, invalid rows,
+symlink refusal and Unicode/large integer limits through the public command.
+
+Stacked on the control slice #186, which follows parser slice #177; #28 remains
+the integration/proof branch. This diff adds only the ledger reader and the
+minimal home/JSON helpers it needs.
 Cloud-only is the first complete runtime target, following #24 and its stack on
 main. Keep all migration PRs draft until v0.2.0 ships; continue local work/main
 follow-up without waiting for reviews or requesting full CI. Post-release

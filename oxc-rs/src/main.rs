@@ -3,6 +3,8 @@
 mod cli_args;
 mod cli_client;
 mod cli_control;
+mod ledger;
+mod paths;
 
 fn main() {
     let words: Vec<String> = std::env::args().skip(1).collect();
@@ -11,6 +13,25 @@ fn main() {
             print!("{}", reply.stdout);
             eprint!("{}", reply.stderr);
             reply.code
+        }
+        Ok(args) if args.action == "ledger" => {
+            let limit = args
+                .value("--limit")
+                .and_then(cli_args::integer)
+                .unwrap_or(50)
+                .clamp(1, 200);
+            let value = ledger::recent(limit as usize);
+            if args.flags.contains("--json") {
+                println!("{}", paths::python_json(&value));
+            } else if value["ledger_available"] == true {
+                println!(
+                    "{} requests recorded",
+                    value["rows"].as_array().map_or(0, Vec::len)
+                );
+            } else {
+                println!("No request ledger");
+            }
+            0
         }
         Ok(args) if cli_control::supports(&args.action) => {
             let runtime = tokio::runtime::Builder::new_current_thread()

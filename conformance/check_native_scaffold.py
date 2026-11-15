@@ -12,7 +12,7 @@ def main():
     binary = Path(sys.argv[1])
     if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise SystemExit('expected an absolute path to the built native executable')
-    commands = ([], ['status'], ['chat'], ['code'], ['plan'], ['images'], ['ledger'],
+    commands = ([], ['status'], ['chat'], ['code'], ['plan'], ['images'],
                 ['storage'], ['cache', 'budget', 'off'], ['share', 'on', 'lan'],
                 ['digest', '--status'], ['update'], ['rollback'], ['uninstall', '--apply'])
     for words in commands:
