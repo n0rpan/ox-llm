@@ -1,0 +1,8 @@
+<think>think</think>
+<tool_call>
+<function=read>
+<parameter=path>
+src/main.rs
+</parameter>
+</function>
+</tool_call>
