@@ -18,8 +18,7 @@ Local validation: 65 parser cases, five CLI ledger-file cases, seven empty-insta
 HTTP cases, all 18 HTTP gates, all 62 configured API cases, and API-key file
 rotation/fail-closed behavior pass in Rust. All 18 lifecycle tests and 13 harness registry cases pass. Read-only
 cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 40 runtime cases passes against the Python daemon;
-37 of those also pass with the native daemon. The remaining three integration
-differences are sharing status/JSON/off.
+all 40 also pass with the native daemon.
 Fifteen loopback CLI cases cover desktop dispatch, detached sessions and exec
 failure reporting, inherited stdin/umask, service failures, model qualification,
 selection and read-only planning. CLI replies are bounded to 64 KiB and control
@@ -28,7 +27,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 404 passing scenarios in 60
+suite has 418 passing scenarios in 61
 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
@@ -45,6 +44,11 @@ prefix warmth for an exact model/engine pair, selected/loaded states, resident
 bytes, idle/unload availability and shared harness facts. Twelve chooser goldens
 and one additional status check cover metadata-only polling, receipt cache
 invalidation, symlink refusal and busy/idle controls.
+Fourteen sharing-control cases cover loopback status/off, bounded option parsing,
+owner-only key metadata, private fingerprints, unchanged key files, active local
+inference, validation and config symlink/permission preservation. Active shared
+listeners still refuse activation explicitly; listener gates, preemption,
+network discovery, rotation and offline CLI fallback are pending.
 The native `serve` entry point reads the existing config paths and implements
 model metadata, Host/Origin/CORS/authentication gates, API-key file refresh and
 fail-closed behavior, request IDs and the empty-install HTTP contracts.

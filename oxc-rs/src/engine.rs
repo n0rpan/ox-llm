@@ -653,6 +653,24 @@ impl Manager {
             .extend(harness.as_object().expect("harness facts").clone());
         status
     }
+    pub async fn disable_share(self: &Arc<Self>, port: u16) -> Result<Value, ()> {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            // The off switch waits at most the reference's five seconds for
+            // other config writers; inference itself need not finish first.
+            let held = tokio::time::timeout(Duration::from_secs(5), manager.state.lock())
+                .await
+                .ok();
+            let result = tokio::task::spawn_blocking(move || crate::sharing::disable(port))
+                .await
+                .map_err(|_| ())?
+                .map_err(|_| ());
+            drop(held);
+            result
+        })
+        .await
+        .map_err(|_| ())?
+    }
     pub async fn set_harness_learning(
         &self,
         enabled: Value,

@@ -387,6 +387,9 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     if path == "/_local/status" {
         return context.reply(200, app.engine.status(&config));
     }
+    if path == "/_local/share" && [Method::GET, Method::HEAD].contains(&method) {
+        return context.reply(200, crate::sharing::status(&config, app.port));
+    }
     if path == "/_local/models" {
         return context.reply(
             200,
@@ -457,6 +460,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         "/_local/cache/budget",
         "/_local/cache/clear",
         "/_local/mode",
+        "/_local/share",
     ]
     .contains(&path.as_str())
         && method == Method::POST
@@ -482,6 +486,29 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             },
             Err(_) => return context.error(400, "Invalid control request.", "", "", None),
         };
+        if path == "/_local/share" {
+            if !control.as_object().is_some_and(|m| {
+                m.len() == 1
+                    && control["mode"]
+                        .as_str()
+                        .is_some_and(|s| ["off", "tailscale", "lan"].contains(&s))
+            }) {
+                return context.reply(
+                    400,
+                    json!({"error":"Send {\"mode\": \"off\" | \"tailscale\" | \"lan\"}."}),
+                );
+            }
+            if control["mode"] != "off" {
+                return context.reply(503, json!({"error":crate::sharing::UNIMPLEMENTED}));
+            }
+            return match app.engine.disable_share(app.port).await {
+                Ok(value) => context.reply(200, value),
+                Err(()) => context.reply(
+                    503,
+                    json!({"error":"The LAN share setting could not be saved."}),
+                ),
+            };
+        }
         if path == "/_local/cache/clear" {
             if !crate::state_cache::valid_control(&control) {
                 return context.reply(400,json!({"error":"Send {\"scope\": \"all\"}, {\"scope\": \"model\", \"model\": key}, {\"scope\": \"session\", \"session\": id} or {\"scope\": \"hint\", \"hint\": <the X-Session-Id the requests sent>}."}));

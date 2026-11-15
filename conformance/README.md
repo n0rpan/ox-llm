@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `6e26fd4ff4a8d3fdcce2e9727907bff1a5b17234`.
-The current suite passes 404 scenarios in 60 unittest methods. This remains a
+The current suite passes 418 scenarios in 61 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -89,6 +89,7 @@ python3 conformance/test_cli_runtime.py --record-python
 python3 conformance/test_cli_actions.py --record-python
 python3 conformance/test_cli_status.py --record-python
 python3 conformance/test_catalog.py --record-python
+python3 conformance/test_share_control.py --record-python
 python3 conformance/test_scans.py --record-python
 python3 conformance/test_update.py --record-python
 ```
@@ -100,10 +101,11 @@ do not refresh goldens merely because an alternate implementation fails them.
 | --- | --- | --- | --- |
 | CLI parsing | PASS, 65 cases | PASS, captured grammar | More option combinations |
 | CLI ledger files | PASS, 5 cases | PASS | Additional historical ledger labels |
-| CLI runtime | PASS, 48 cases | Partial: 40/48 native CLI cases against Python daemon; 37/40 also pass with native daemon | Digest, update/rollback and uninstall commands; native sharing integration |
+| CLI runtime | PASS, 48 cases | Partial: 40/48 native CLI cases against both Python and native daemons | Digest, update/rollback and uninstall commands |
 | CLI desktop/model dispatch | PASS, 15 cases | PASS: detached session and exec handshake, inherited stdin/umask, service failures, bounded model qualification/errors, selection and read-only planning | More malformed replies and command races |
 | CLI status/code/mode | PASS, 16 cases | PASS: filtered metadata, offline/stopping states, selected-model dispatch, Flash download phases and bounded trial queries | More malformed metadata and clock races |
 | Chooser/status metadata | PASS, 12 goldens and one additional check | PASS: direct Oxe chooser facts, selected/loaded states, prefix identities, receipt qualification/invalidation, resident/idle/unload and shared harness facts | Detailed failure provenance, Flash/classic adapters and more status fields |
+| Sharing controls | PASS, 14 cases | PASS: loopback status/off, options, key metadata/privacy, busy inference, validation, config symlinks/permissions and absent setup | Active listeners, network discovery, authentication/preemption, rotation and offline CLI fallback |
 | HTTP empty install | PASS, 7 cases | PASS | Additional setup failures |
 | Configured HTTP | PASS, 62 cases | PASS: chat, completions and Responses JSON/SSE | More option combinations and engine error paths |
 | Cache usage | PASS, 9 cases | PASS | More malformed/advisory I/O cases |

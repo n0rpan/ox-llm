@@ -21,6 +21,9 @@ The following gaps remain visible rather than being represented by skipped tests
   coverage remain pending.
 - LAN sharing: actual listener configuration, key rotation and file permissions,
   origin/route/header restrictions, rates, shared/local priority and preemption.
+  Loopback status/off now passes fourteen cases, including key privacy and
+  unchanged files, bounded options, config symlink/permission preservation and
+  busy local inference. Active listeners refuse activation explicitly.
   All listeners/upstreams used in tests must remain synthetic and isolated.
 - Lifecycle: pressure-based keep-warm, crashed engine/reaper recovery, host
   admission/memory guard variants, queue/replay flags, background preemption,
@@ -33,8 +36,7 @@ The following gaps remain visible rather than being represented by skipped tests
   inherited stdin/umask, exec/service failures, qualification and read-only planning.
   Sixteen status/code/mode cases cover filtered metadata, offline/stopping states,
   selected models, download phases and bounded trial queries. Forty runtime CLI
-  cases pass against the Python daemon. An integrated native run passes 37/40;
-  sharing status/JSON/off remain different.
+  cases pass against both the Python and native daemons.
   Direct Oxe chooser/status facts now cover receipt-derived qualification,
   prefix identities, selection/load state, resident bytes, idle/unload availability
   and shared harness facts. Detailed failure provenance and additional status
