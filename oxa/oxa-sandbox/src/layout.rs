@@ -262,6 +262,10 @@ impl Layout {
         if !i.exe_in_workspace {
             read.extend(i.exe.iter().cloned());
         }
+        // sccache creates its own directory, which a sandbox without the bind cannot do.
+        if i.home.join(".cache").is_dir() {
+            let _ = std::fs::create_dir_all(i.home.join(".cache/sccache"));
+        }
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
         // A user-chosen sccache directory is the same cache as `~/.cache/sccache`.
@@ -454,6 +458,27 @@ mod tests {
         let ok = l.write.contains(&dir);
         std::fs::remove_dir_all(&home).ok();
         assert!(ok, "~/.cache/sccache must be bound read-write");
+    }
+
+    #[test]
+    fn sccache_dir_is_created_and_bound_when_missing() {
+        let home = std::env::temp_dir().join(format!("oxa-sccache3-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".cache")).unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            agent_dir: None,
+            path_var: String::new(),
+            env: vec![],
+            read_extra: vec![],
+            write_extra: vec![],
+            allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
+        });
+        let dir = home.join(".cache/sccache");
+        let ok = l.write.contains(&dir);
+        std::fs::remove_dir_all(&home).ok();
+        assert!(ok, "missing ~/.cache/sccache must be created and bound");
     }
 
     #[test]
