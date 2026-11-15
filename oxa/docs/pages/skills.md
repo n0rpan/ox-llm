@@ -23,7 +23,7 @@ Where skills are found, in order. The first skill with a name wins; a later one 
 
 1. `--skill <path>` (repeatable);
 2. `~/.oxa/agent/skills/`;
-3. `~/.agents/skills/`;
+3. `~/.agents/skills/`, except skills another product synced there (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s): they are written for that product's own tools, so oxa skips them unless `oxa.skills.includeSynced` is `true`;
 4. the project's `.oxa/skills/` (trusted projects only);
 5. the project's `.agents/skills/`, in the project directory and each parent up to the repository root (trusted projects only);
 6. the paths in the `skills` setting;
@@ -79,7 +79,7 @@ Context files are read in an untrusted project as well, because they are text. T
 
 ### The identity
 
-The system prompt starts with a short identity text that describes this machine and the engine. It is read from `~/.oxa/agent/identity.md`. `oxa identity --refresh` writes the file from this machine and the engine; run it after an install or an update. Without the file, oxa uses a generic line. `oxa identity` without `--refresh` prints the current text.
+The system prompt starts with a short identity text that describes this machine and the engine. It is read from `~/.oxa/agent/identity.md`, which oxa refreshes by itself at every start from this machine (model, chip, memory, OS, oxa version) and the engine's model list; the file is rewritten only when a fact changed, so the system prompt and its cache stay the same otherwise, and a running session keeps its text until its next prefix epoch. When the engine does not answer, the model list in the file is kept. `oxa identity --refresh` does the same by hand (with `--offline`, without asking the engine). Without the file, oxa uses a generic line. `oxa identity` without `--refresh` prints the current text.
 
 ## Themes
 

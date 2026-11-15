@@ -383,6 +383,8 @@ pub struct HttpEngine {
     /// Wave D D4: model ids the controller advertised as `remote` in the last info call. Their
     /// requests skip the local X-Oxe-* hints and local-only body fields.
     remote_models: Arc<Mutex<HashSet<String>>>,
+    /// The handshake warning of the last [`Engine::info`] (see `handshake.rs`).
+    handshake: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl HttpEngine {
@@ -397,6 +399,7 @@ impl HttpEngine {
             connect_retries: 2,
             cancel_ok: Arc::new(AtomicBool::new(false)),
             remote_models: Arc::new(Mutex::new(HashSet::new())),
+            handshake: Arc::default(),
         })
     }
     pub fn with_opts(mut self, opts: StreamOpts, connect_retries: u32) -> HttpEngine {
@@ -431,7 +434,7 @@ impl HttpEngine {
 
 impl Engine for HttpEngine {
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
-        let (info, cancel) = fetch_info_full(&self.url, self.api_key.as_deref(), target)?;
+        let (info, cancel, handshake) = fetch_info_full(&self.url, self.api_key.as_deref(), target)?;
         self.cancel_ok.store(cancel, Ordering::SeqCst);
         let key = target.filter(|t| !t.is_empty()).unwrap_or(&info.model);
         let mut remote = self.remote_models.lock().unwrap_or_else(|p| p.into_inner());
@@ -441,7 +444,11 @@ impl Engine for HttpEngine {
         } else {
             remote.remove(key);
         }
+        *self.handshake.lock().unwrap_or_else(|p| p.into_inner()) = handshake;
         Ok(info)
+    }
+    fn handshake_warning(&self) -> Option<String> {
+        self.handshake.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
     fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
         count_tokens(&self.url, self.api_key.as_deref(), text)

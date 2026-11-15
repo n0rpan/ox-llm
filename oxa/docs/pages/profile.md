@@ -59,7 +59,7 @@ One limit applies in both forms, because of the engine's parameter syntax: a lin
 | Policy | Behaviour |
 |---|---|
 | `fixed` | every request carries the session's thinking level |
-| `auto` | thinking is on for the first reply after each user prompt; it is off for tool follow-ups, for turns after an appended instruction, for summaries and for background requests |
+| `auto` | thinking is on for the first reply after each user prompt; tool follow-ups follow `oxa.thinking.toolFollowups` (default `auto`: off for routine steps, on after a failed call, a repeat note or several calls without progress; see [tools.md](tools.md#thinking-on-tool-follow-ups)); it is off for turns after an appended instruction, for summaries and for background requests |
 
 The default is `fixed` under `pi` and `auto` under `local`. An explicit `oxa.thinking.policy` wins in both profiles. The thinking level `off` always wins: with `off` no request thinks, whatever the policy.
 
@@ -82,6 +82,7 @@ On an engine model that does not keep reasoning in its history, `auto` behaves a
 - **Idle summary.** Under `local` the summary of the next compaction is written in idle time when the context is between 80 % and 100 % of the soft limit, and reused when nothing it covers has changed (`oxa.compaction.idleSummary`).
 - **Compaction during a run.** Under `local` a run whose context passes the soft limit is compacted between two tool steps, before its next request, keeping the unanswered tool calls and results verbatim (`oxa.compaction.midRun`).
 - **Mechanical record.** Under `local`, when a compaction cannot get its summary, because the request fails or is cancelled twice in a row, oxa writes a record built without the model: the user's messages in order and the files touched. A warning says so, and the session goes on. Under `pi` the failure is an error. See [compaction.md](compaction.md#if-no-summary-can-be-made).
+- **Date and environment.** Under `local` each prompt you send ends with a short environment note (`oxa.envNote`): the first one in a session carries the date, time zone, model, context size and permission mode, later ones only the local time. The note is appended to your message, never put in the system prompt, so earlier requests stay byte-identical and the cache is reused.
 - **Prefill.** Under `local` oxa prefills a long draft while you type it (`oxa.prefill.paste`), and the results of the calls before a slow tool call while that call runs (`oxa.prefill.tools`). Both need an engine that supports prefill-only requests; without one they do nothing.
 
 These defaults are the only ones that differ. A setting that is set explicitly always wins over the profile's default.

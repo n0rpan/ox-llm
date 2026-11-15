@@ -91,6 +91,7 @@ const SCHEMA: &[KeyDef] = &[
         Kind::StringList,
         "[\"read\",\"bash\",\"edit\",\"write\",\"grep\",\"find\",\"ls\"]",
     ),
+    key("done", Kind::StringList, "[]"),
     key(
         "doubleEscapeAction",
         Kind::Enum(&["tree", "fork", "none"]),
@@ -153,6 +154,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    // The per-prompt environment note (date, time, runtime facts): unset = off under `pi`, on
+    // under `local`.
+    key("oxa.envNote", Kind::Bool, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
@@ -180,13 +184,24 @@ const SCHEMA: &[KeyDef] = &[
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
+    // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
+    key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
+    // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
+    // before thinking turns on; 0 = never on that ground.
+    key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
     // T5: unset = `fixed` under profile `pi`, `auto` under `local`.
     key("oxa.thinking.policy", Kind::Enum(&["fixed", "auto"]), "null"),
+    // Thinking on tool follow-ups under policy `auto` (oxa-core `think.rs`).
+    key(
+        "oxa.thinking.toolFollowups",
+        Kind::Enum(&["auto", "on", "off"]),
+        "\"auto\"",
+    ),
     key("oxa.toolOutputCap", Kind::Number, "16384"),
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).

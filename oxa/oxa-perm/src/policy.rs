@@ -34,10 +34,28 @@ pub struct PathGuard {
 }
 
 impl PathGuard {
-    /// The deny-list of `home` and `agent_dir`, with `tmp_dir` (the spill files) excepted.
+    /// The deny-list of `home` and `agent_dir` only (use [`PathGuard::with_real_home`] to add the
+    /// account's real home), with `tmp_dir` (the spill files) excepted.
     pub fn new(home: &Path, agent_dir: &Path, tmp_dir: &Path) -> PathGuard {
+        PathGuard::with_real_home(home, None, agent_dir, tmp_dir)
+    }
+
+    /// Like [`PathGuard::new`], plus the deny-list of the account's real home.
+    pub fn with_real_home(
+        home: &Path,
+        real_home: Option<&Path>,
+        agent_dir: &Path,
+        tmp_dir: &Path,
+    ) -> PathGuard {
+        // The same dual-home deny-list as the bash sandbox: a changed `$HOME` never widens access.
+        let mut deny = sensitive_paths(home, Some(agent_dir));
+        if let Some(r) = real_home.filter(|r| *r != home) {
+            deny.extend(sensitive_paths(r, None));
+        }
+        deny.sort();
+        deny.dedup();
         PathGuard {
-            deny: sensitive_paths(home, Some(agent_dir)),
+            deny,
             allow: vec![tmp_dir.to_path_buf()],
             home: home.to_path_buf(),
             home_protected: home_protected_paths(home),

@@ -260,6 +260,9 @@ pub mod errors {
     pub const BASH_NO_OUTPUT: &str = "(no output)";
     pub const BASH_ABORTED: &str = "Command aborted";
     pub const BASH_NO_EXIT_CODE: &str = "Command terminated without an exit code";
+    /// Appended to a result when the command looked backgrounded (a line ending in `&`, or `nohup`).
+    pub const BASH_BACKGROUND_STOPPED: &str =
+        "If this command started background processes (nohup or a trailing &), they were stopped when the call ended. Run long jobs in the foreground within the timeout.";
     pub const BASH_BAD_TIMEOUT: &str = "Invalid timeout: must be a finite number of seconds";
     pub fn bash_exit(code: i32) -> String {
         format!("Command exited with code {code}")
@@ -443,7 +446,7 @@ pub mod web_search {
     pub const NAME: &str = "web_search";
     pub const DESCRIPTION: &str = "Search the web (Brave Search). Returns numbered sources, each with its title, URL and text snippets from the page. Use it for current information or facts that are not in the workspace, and cite the sources you use by URL. The query is sent to Brave Search.";
     /// Strings and integers only (the same schema under both profiles).
-    pub const SCHEMA: &str = r#"{"type":"object","properties":{"query":{"type":"string","description":"The search query (at most 600 characters)"},"count":{"type":"integer","description":"Maximum number of sources, 1 to 20 (optional)"},"freshness":{"type":"string","description":"Only pages from: pd (past day), pw (past week), pm (past month), py (past year), or a range YYYY-MM-DDtoYYYY-MM-DD (optional)"},"country":{"type":"string","description":"Two-letter country code for the results, e.g. us (optional)"},"search_lang":{"type":"string","description":"Language code for the results, e.g. en (optional)"}},"required":["query"]}"#;
+    pub const SCHEMA: &str = r#"{"type":"object","properties":{"query":{"type":"string","description":"The search query (at most 600 characters)"},"count":{"type":"integer","description":"Maximum number of sources, 1 to 20 (optional)"},"freshness":{"type":"string","description":"Only pages from: pd (past day), pw (past week), pm (past month), py (past year), or a date range like 2026-01-01to2026-01-31 (optional)","anyOf":[{"enum":["pd","pw","pm","py"]},{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}to[0-9]{4}-[0-9]{2}-[0-9]{2}$"}]},"country":{"type":"string","description":"Two-letter country code for the results, e.g. us (optional)"},"search_lang":{"type":"string","description":"Language code for the results, e.g. en (optional)"}},"required":["query"]}"#;
     /// The longest query in characters (the provider's limit).
     pub const MAX_QUERY_CHARS: usize = 600;
     /// The largest `count`.
@@ -471,7 +474,7 @@ pub mod web_search {
     pub const QUERY_TOO_LONG: &str =
         "Invalid query: it has {n} characters, the limit is 600\nFix: shorten the query to 600 characters or fewer";
     pub const BAD_COUNT: &str = "Invalid count: it must be a whole number from 1 to 20\nFix: pass count between 1 and 20, or leave it out";
-    pub const BAD_FRESHNESS: &str = "Invalid freshness: it must be pd, pw, pm, py or YYYY-MM-DDtoYYYY-MM-DD\nFix: pass one of these values, or leave freshness out";
+    pub const BAD_FRESHNESS: &str = "Invalid freshness: it must be pd (past day), pw (past week), pm (past month), py (past year) or a range YYYY-MM-DDtoYYYY-MM-DD\nFix: pass one of these values, or leave freshness out";
     pub const BAD_COUNTRY: &str = "Invalid country: it must be a two-letter country code such as us\nFix: pass a two-letter code, or leave country out";
     pub const BAD_LANG: &str = "Invalid search_lang: it must be a language code such as en or pt-br\nFix: pass a language code, or leave search_lang out";
     /// `{name}` = an argument the tool does not know.

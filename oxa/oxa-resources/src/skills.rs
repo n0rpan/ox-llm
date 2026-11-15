@@ -11,6 +11,18 @@ use std::path::{Path, PathBuf};
 pub const SKILL_FILE: &str = "SKILL.md";
 pub const MAX_SKILL_NAME: usize = 64;
 pub const MAX_SKILL_DESCRIPTION: usize = 1024;
+/// The setting that lists skills synced from another product (see [`is_synced_dir`]).
+pub const SETTING_INCLUDE_SYNCED: &str = "oxa.skills.includeSynced";
+
+/// A directory under `~/.agents/skills` that another product synced in: one named `synced`,
+/// or one whose `manifest.json` lists skills by `skillId` (a sync manifest, not an Agent
+/// Skills file).
+pub fn is_synced_dir(dir: &Path) -> bool {
+    if dir.file_name() == Some(OsStr::new("synced")) {
+        return true;
+    }
+    std::fs::read_to_string(dir.join("manifest.json")).is_ok_and(|t| t.contains("\"skillId\""))
+}
 
 /// Discover skills. Order (first wins on a name clash, the loser is a warning):
 /// `opts.extra_skills`, then (unless `opts.no_skills`) `<agent dir>/skills`, `~/.agents/skills`,
@@ -33,11 +45,17 @@ pub fn discover_skills(
     }
     if !opts.no_skills {
         loader.scan_dir(&dirs.agent_dir.join("skills"), &ResourceSource::User, true);
+        // Skills another product syncs into `~/.agents/skills` (e.g. a `synced/<id>/` tree of
+        // skills written for that product's own tools) are skipped unless
+        // `oxa.skills.includeSynced` is true: they cost prefix tokens and invite calls to tools
+        // oxa does not have.
+        loader.skip_synced = !settings.bool(SETTING_INCLUDE_SYNCED, false);
         loader.scan_dir(
             &dirs.home.join(".agents").join("skills"),
             &ResourceSource::Agents,
             true,
         );
+        loader.skip_synced = false;
         if opts.trusted {
             loader.scan_dir(
                 &dirs.project_dir(cwd).join("skills"),
@@ -240,6 +258,8 @@ struct SkillLoader {
     diags: Vec<Diagnostic>,
     /// Canonical paths of files and directories already visited (symlink aliases, cycles).
     seen: HashSet<PathBuf>,
+    /// Skip [`is_synced_dir`] subtrees (set while `~/.agents/skills` is scanned).
+    skip_synced: bool,
 }
 
 impl SkillLoader {
@@ -288,6 +308,9 @@ impl SkillLoader {
                 continue;
             }
             if entry.is_dir() {
+                if self.skip_synced && is_synced_dir(&entry) {
+                    continue;
+                }
                 self.scan_dir(&entry, source, false);
             } else if include_root_files && entry.is_file() && name.ends_with(".md") {
                 self.load_file(&entry, source);

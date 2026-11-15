@@ -164,6 +164,102 @@ pub enum Activity {
     },
 }
 
+impl StatusModel {
+    /// The thinking text for the status line. The request path only sends a boolean
+    /// `enable_thinking` and oxc maps it to the effort: `true` -> `high`, `false` -> `none`
+    /// (adaptive `low`). Claude 5.5 cannot disable thinking, so `off` shows as `adaptive • low`
+    /// and every other level as `adaptive • high`. Other models show the level name.
+    pub fn thinking_label(&self) -> Option<String> {
+        self.thinking_label_with("•")
+    }
+
+    /// [`Self::thinking_label`] with the separator between `adaptive` and the effort supplied by
+    /// the caller (the ASCII skin passes its `mid` glyph so the HUD stays ASCII).
+    pub fn thinking_label_with(&self, sep: &str) -> Option<String> {
+        let level = self.thinking?;
+        if !is_claude_55(&self.model) {
+            return Some(level.as_str().to_string());
+        }
+        let eff = if level == ThinkingLevel::Off {
+            "low"
+        } else {
+            "high"
+        };
+        Some(format!("adaptive {sep} {eff}"))
+    }
+}
+
+/// True for the Claude 5.5 families (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`),
+/// optionally behind `anthropic/` and with a `-`-separated suffix such as a date. Other names
+/// that merely contain `-5-5` (`claude-haiku-5-50`, `claude-5-5-x`) do not match.
+pub(crate) fn is_claude_55(model: &str) -> bool {
+    let m = model.strip_prefix("anthropic/").unwrap_or(model);
+    ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+        .iter()
+        .any(|family| {
+            m.strip_prefix(family)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+        })
+}
+
+#[cfg(test)]
+mod thinking_tests {
+    use super::*;
+
+    #[test]
+    fn claude_55_matcher_edges() {
+        for yes in [
+            "anthropic/claude-opus-5-5",
+            "anthropic/claude-sonnet-5-5",
+            "anthropic/claude-haiku-5-5",
+            "claude-haiku-5-5",
+            "anthropic/claude-haiku-5-5-20261001",
+            "anthropic/claude-sonnet-5-5-v2",
+        ] {
+            assert!(is_claude_55(yes), "{yes} should match");
+        }
+        for no in [
+            "anthropic/claude-haiku-5-50",
+            "anthropic/claude-5-5-x",
+            "anthropic/claude-haiku-5-5x",
+            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-opus-5-55",
+            "openrouter/claude-haiku-5-5",
+            "qwen-local",
+            "",
+        ] {
+            assert!(!is_claude_55(no), "{no} should not match");
+        }
+    }
+
+    #[test]
+    fn thinking_label_table() {
+        let levels = [
+            (ThinkingLevel::Off, "adaptive • low"),
+            (ThinkingLevel::Minimal, "adaptive • high"),
+            (ThinkingLevel::Low, "adaptive • high"),
+            (ThinkingLevel::Medium, "adaptive • high"),
+            (ThinkingLevel::High, "adaptive • high"),
+            (ThinkingLevel::Xhigh, "adaptive • high"),
+            (ThinkingLevel::Max, "adaptive • high"),
+        ];
+        for (level, want) in levels {
+            let st = StatusModel {
+                model: "anthropic/claude-haiku-5-5".to_string(),
+                thinking: Some(level),
+                ..StatusModel::default()
+            };
+            assert_eq!(st.thinking_label().as_deref(), Some(want), "5.5 level {level:?}");
+            let plain = StatusModel {
+                model: "qwen-local".to_string(),
+                thinking: Some(level),
+                ..StatusModel::default()
+            };
+            assert_eq!(plain.thinking_label().as_deref(), Some(level.as_str()));
+        }
+    }
+}
+
 /// Everything the chrome (D6) draws. Updated by [`crate::apply_event`] and by the app from
 /// `Session::state()` / `Session::stats()` after each settle.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -208,6 +304,9 @@ pub struct StatusModel {
     pub unknown_misses: u32,
     /// T2: malformed-call repairs of the session (`Stats::tool_repairs`); shown when not 0.
     pub tool_repairs: u32,
+    /// The last compaction had no model summary (`details.mechanical`); shown in the footer
+    /// until a compaction with a model summary, or a new session.
+    pub degraded_context: bool,
     /// O-182: YOLO is on (prompts are auto-approved) and how many were approved. Display only;
     /// set by the UI loop from the process's `YoloSwitch`.
     pub yolo: bool,
@@ -313,6 +412,12 @@ pub enum Reopen {
     /// Import a pi session file (migrated, cache cold) and open it.
     Import(PathBuf),
 }
+
+/// Builds the next session for [`Reopen`]. The second argument carries the model and thinking
+/// level of the session being left (`Some` only for [`Reopen::New`], which keeps them; the
+/// other modes restore the target session's own, so the caller passes `None`).
+pub type ReopenFn =
+    Box<dyn FnMut(Reopen, Option<(String, ThinkingLevel)>) -> Result<Session, OxaError> + Send>;
 
 /// One request to the worker thread that owns the `Session`. Each maps to one
 /// `oxa_core::Session` call; the results come back as `AgentEvent`s and [`WorkerMsg`]s.
@@ -604,8 +709,10 @@ pub struct InteractiveOpts {
     /// Capability overrides resolved by the CLI; `None` = detect from `env`.
     pub caps: Option<TermCaps>,
     /// Builds the next session for `/new`, `/resume`, fork, clone and import. Runs on the
-    /// worker thread after the previous session was dropped.
-    pub reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send>,
+    /// worker thread after the previous session was dropped. The second argument is the model
+    /// and thinking level of the session being left (only for [`Reopen::New`], which carries
+    /// them over; `None` for the other modes, which restore the target session's own).
+    pub reopen: ReopenFn,
     /// `-r` / `--resume`: open the session picker right after start (D-INT).
     pub open_picker: bool,
     /// Saves a `/trust` decision for the session's directory (D-INT; the CLI owns the trust

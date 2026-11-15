@@ -24,6 +24,7 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".config/gh",
     ".config/hub",
     ".config/oxc",
+    ".config/local-ai/llm/cloud-secrets.json",
     ".local/state/oxc",
     ".oxa/agent",
     ".pi/agent",

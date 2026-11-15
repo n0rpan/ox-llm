@@ -80,6 +80,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `defaultThinkingLevel` | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `medium` | thinking level of a new session |
 | `modelThinkingLevels` | object | `{}` | thinking level per model id, for example `{"your-model-id": "low"}` |
 | `oxa.thinking.policy` | `fixed` / `auto` | unset | when thinking is on; unset is `fixed` under `pi` and `auto` under `local` ([profile.md](profile.md)) |
+| `oxa.thinking.toolFollowups` | `auto` / `on` / `off` | `auto` | thinking on the replies after tool results, when `oxa.thinking.policy` is `auto`. `off`: never. `on`: always. `auto`: off for routine steps, on while the run needs reasoning: after a failed call (non-zero exit, an edit that did not apply, a failing test or build), after a repeat notice, or after `oxa.thinking.escalation.fruitlessCalls` calls without progress. It goes back off after a successful edit or write or a passing test or build ([tools.md](tools.md#thinking-on-tool-follow-ups)). The level `off` always wins |
+| `oxa.thinking.escalation.fruitlessCalls` | number | `6` | under `oxa.thinking.toolFollowups: auto`, the calls without an edit or write since the prompt that turn thinking on (re-reads, repeated calls, commands; reading a new file or range is progress and not counted); `0` = never on this ground |
 | `oxa.profile` | `pi` / `local` | `pi` | format and default profile ([profile.md](profile.md)) |
 | `cacheWarming` | `off` / `streaming` / `idle` | `idle` | `off` disables warm-up; `streaming` is accepted and behaves as `idle` |
 | `oxa.bootPreload` | bool | `true` | prefill the frozen prefix when oxa starts, if the engine supports it |
@@ -110,6 +112,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `codemode.mode` | `on` / `only` | `on` | `only` hides every other tool while codemode is on |
 | `codemode.toolSearch` | bool | `false` | the `tool_search` and `call_tool` tools |
 | `codemode.maxWorkers` | number | `0` | script workers alive at once; `0` is 2 |
+| `done` | string list | `[]` | shell commands oxa runs itself when a run that edited files (`edit`/`write` tools) is about to finish, in the project folder, in the sandbox (10 min limit, 4 KB of output each). A failure is sent back to the model as a message so it can fix it; after 2 automatic rounds the run stops and the failure stays in the transcript. Not re-run unless files were edited again; changes made through `bash` are not tracked. Project value wins and needs project trust |
 | `shellPath` | string | `null` | shell for bash and `!cmd`; it must be visible in the sandbox |
 | `shellCommandPrefix` | string | `null` | text placed before each bash command, on its own line |
 | `httpProxy` | string | `null` | proxy for MCP HTTP requests; user settings only |
@@ -160,6 +163,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
+| `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is off under `pi` and on under `local`; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.sandbox.readPaths` | list | `[]` | extra read-only paths for bash; `~/` is expanded; user settings only |
@@ -172,6 +176,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `externalEditor` | string | `null` | editor for Ctrl+G; wins over `VISUAL` and `EDITOR` |
 | `oxa.reportIssue.repo` | string | `null` | repository for `oxa report-issue submit`, as `OWNER/NAME` |
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
+| `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
 
 ## Example
 

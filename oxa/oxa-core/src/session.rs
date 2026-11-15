@@ -105,6 +105,8 @@ pub struct Stats {
     pub profile: oxa_proto::Profile,
     /// B6: the engine sent a reply without `cached_tokens` (the notice was shown).
     pub cached_unreported: bool,
+    /// Adaptive thinking on tool follow-ups (`think.rs`) of the current run. Never persisted.
+    pub escalation: crate::think::Escalation,
 }
 
 /// A running session.
@@ -873,7 +875,10 @@ impl Session {
             )?;
         }
         let images = crate::fire::images_json(&parts);
-        let wire = user_message(&text, &parts);
+        let (wire, note) = crate::envnote::add_note(st, user_message(&text, &parts));
+        // The note's provenance is stored with the entry (refill and display strip exactly it).
+        let mut parts = parts;
+        parts.extend(note.map(Part::EnvNote));
         st.stats.user_messages += 1;
         persist(st, EntryBody::Msg { wire, parts }, sink)?;
 
@@ -1156,9 +1161,12 @@ fn start_new(
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
     let sref = st.store.create(&st.cwd, session_id, None)?;
+    st.store.acquire(&sref)?;
+    st.store.commit_lock();
     st.sref = sref;
     st.tree = Tree::new(Vec::new());
     st.transcript = Transcript::default();
+    st.stats.last_tok_s = 0.0;
     st.stats.user_messages = 0;
     st.stats.assistant_messages = 0;
     st.stats.tool_calls = 0;
@@ -1191,6 +1199,27 @@ fn restore(
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
     let header = st.store.header(&sref)?;
+    // One writer per session file: a session open in another oxa is refused before anything
+    // of this one is read. The lock is staged; `restore_locked` commits it at the moment the
+    // state adopts the target (after validation and load). A failure before that keeps the
+    // session we are in locked; a failure after it leaves the target current AND locked.
+    st.store.acquire(&sref)?;
+    let r = restore_locked(st, sref, header, cli, start, sink, ui);
+    if r.is_err() {
+        st.store.abort_lock(); // a no-op once committed
+    }
+    r
+}
+
+fn restore_locked(
+    st: &mut SessionState,
+    sref: SessionRef,
+    header: oxa_session::SessionHeader,
+    cli: Option<&Cli>,
+    start: &crate::fire::SessionStart,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<(), OxaError> {
     if !header.cwd.is_dir() {
         return Err(OxaError::new(
             codes::NOT_FOUND,
@@ -1204,6 +1233,10 @@ fn restore(
         let refs: Vec<&Entry> = branch.iter().collect();
         crate::replay_prefix(&refs)
     };
+    // The state adopts the target here, so the target's lock becomes the held one now: every
+    // later step (open_epoch, close_interrupted) may fail, and the state must not then point
+    // at a session this process does not hold.
+    st.store.commit_lock();
     st.transcript = Transcript::project(&branch);
     st.tree = tree;
     st.sref = sref;
@@ -1420,7 +1453,8 @@ fn draft_message(st: &mut SessionState, text: &str, parts: &[Part]) -> Option<Wi
     let text = prompt_text(st, text.to_string()).ok()?;
     let msg = user_message(&text, parts);
     let len = msg.content.as_deref().map_or(0, str::len);
-    (len >= Session::DRAFT_PREFILL_MIN_BYTES).then_some(msg)
+    // The draft carries the note the prompt would get, so the prefilled bytes match the send.
+    (len >= Session::DRAFT_PREFILL_MIN_BYTES).then(|| crate::envnote::with_note(st, msg))
 }
 
 /// V020-OPTIMIZE #13, privacy: a draft the user never submitted is sent only to an engine on
@@ -1443,6 +1477,8 @@ fn wire_text(text: &str, parts: &[Part]) -> String {
     for part in parts {
         match part {
             Part::Text(t) => lines.push(t.clone()),
+            // Provenance of a stored message; never among a prompt's parts.
+            Part::EnvNote(_) => {}
             Part::Image { path, w, h, .. } => {
                 let name = path
                     .file_name()
@@ -1633,6 +1669,8 @@ pub(crate) fn switch_model(
     }
     persist(st, EntryBody::ModelChange(m.to_string()), sink)?;
     let previous = std::mem::replace(&mut st.model, m.to_string());
+    // The speed belongs to the model that produced it.
+    st.stats.last_tok_s = 0.0;
     sink.emit(&AgentEvent::ModelSelect {
         model: m.to_string(),
         previous: Some(previous.clone()),
@@ -1766,6 +1804,8 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             };
             st.info = EngineInfo {
                 prefill_only,
+                thinking: fresh.thinking,
+                images: fresh.images,
                 ..fresh
             };
         }
@@ -1785,6 +1825,8 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
                     hint_clear: old.caps.hint_clear && fresh.caps.hint_clear,
                     ..fresh.caps
                 },
+                thinking: fresh.thinking,
+                images: fresh.images,
                 ..fresh
             };
             if merged != st.info {
@@ -1856,6 +1898,24 @@ mod tests {
         }
     }
 
+    /// The speed belongs to the model that produced it: a switch drops it for every later status.
+    #[test]
+    fn model_switch_resets_last_tok_s() {
+        let env = oxa_fake::TestEnv::new();
+        let mut s = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).expect("open");
+        s.st.stats.last_tok_s = 54.4;
+        let other = if s.st.model == "other-model" {
+            "x-model"
+        } else {
+            "other-model"
+        };
+        let mut sink = VecSink::default();
+        let _ = s.set_model(other, &mut sink);
+        assert_eq!(s.st.model, other, "the switch must have happened");
+        assert_eq!(s.stats().last_tok_s, 0.0);
+        assert_eq!(s.stats().last_tok_s, 0.0, "and it stays cleared");
+    }
+
     /// Messages queued for the next turn are appended, in order, before the prompt's own message.
     #[test]
     fn next_turn_is_appended_before_the_prompt() {
@@ -1872,7 +1932,20 @@ mod tests {
             .iter()
             .filter_map(|m| m.content.clone())
             .collect();
-        assert_eq!(texts[..2], ["queued earlier".to_string(), "now".to_string()]);
+        assert_eq!(texts[0], "queued earlier");
+        // The prompt may carry the default environment note. Compare its typed text using
+        // the persisted provenance, while still checking the wire ordering above.
+        let parts = s
+            .inner()
+            .tree
+            .entries()
+            .iter()
+            .find_map(|entry| match &entry.body {
+                EntryBody::Msg { wire, parts } if wire.content.as_deref() == Some(&texts[1]) => Some(parts),
+                _ => None,
+            })
+            .expect("stored prompt");
+        assert_eq!(crate::envnote::strip_note(&texts[1], parts), "now");
         assert!(s.st.next_turn.is_empty());
     }
 }

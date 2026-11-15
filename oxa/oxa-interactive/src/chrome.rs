@@ -84,6 +84,9 @@ fn stats_left(st: &StatusModel, theme: &Theme, compact: bool) -> String {
     if st.tool_repairs > 0 {
         parts.push(theme.fg("warning", &format!("repairs {}", st.tool_repairs)));
     }
+    if st.degraded_context {
+        parts.push(theme.fg("warning", "no summary"));
+    }
     if let Some(mode) = st.mode {
         parts.push(theme.fg(mode_token(mode), mode.as_str()));
     }
@@ -107,9 +110,9 @@ fn model_location(st: &StatusModel, theme: &Theme) -> String {
 fn stats_right(st: &StatusModel, theme: &Theme, max_width: Option<usize>) -> String {
     let location = model_location(st, theme);
     let mut suffix = String::new();
-    if let Some(level) = st.thinking {
+    if let Some(level) = st.thinking_label() {
         suffix.push_str(" • ");
-        suffix.push_str(level.as_str());
+        suffix.push_str(&level);
     }
     if let Some(note) = &st.thinking_note {
         suffix.push_str(" · ");

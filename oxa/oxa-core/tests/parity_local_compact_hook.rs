@@ -8,12 +8,15 @@
 
 use oxa_compact::CompactPolicy;
 use oxa_config::{Dirs, QueueMode, Settings};
-use oxa_core::{append_entry, maybe_compact, run_loop, Queue, RunEnd, SessionState, Shared, Stats, Toolset};
+use oxa_core::{
+    append_entry, compact_now, maybe_compact, run_loop, Queue, RunEnd, SessionState, Shared, Stats, Toolset,
+};
 use oxa_fake::{Fault, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    CancelToken, CommandSpec, Engine, EntryBody, FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode,
-    OxaError, Policy, Profile, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
+    AgentEvent, AssistantTurn, CancelToken, CommandSpec, CompactReason, Engine, EngineInfo, EntryBody,
+    FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode, OxaError, Policy, Profile, StreamEvent,
+    ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -137,8 +140,8 @@ fn push(st: &mut SessionState, wire: WireMsg) {
 }
 
 /// A threshold compaction whose summary request is answered by `summary`; returns the hooks
-/// seen and whether it compacted.
-fn compact_with(summary: ScriptTurn, profile: Profile) -> (Arc<Recorder>, bool) {
+/// seen, whether it compacted, and the reported `estimated_tokens_after` (when it compacted).
+fn compact_with(summary: ScriptTurn, profile: Profile) -> (Arc<Recorder>, bool, Option<u32>) {
     let env = TestEnv::new();
     let rec = Arc::new(Recorder::default());
     let engine: Arc<dyn Engine> = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("done two"), summary]));
@@ -153,7 +156,17 @@ fn compact_with(summary: ScriptTurn, profile: Profile) -> (Arc<Recorder>, bool) 
     );
     st.compact.soft = st.transcript.context() - 1;
     let done = maybe_compact(&mut st, true, &mut sink, &mut HeadlessUi::default()).expect("maybe_compact");
-    (rec, done)
+    let after = sink.0.iter().find_map(|event| match event {
+        AgentEvent::CompactionEnd {
+            result: Some(result), ..
+        } => Some(result.estimated_tokens_after),
+        _ => None,
+    });
+    if let Some(after) = after {
+        assert!(after > 0, "rebased context still contains the prefix and summary");
+        assert_eq!(st.stats.context_tokens, after);
+    }
+    (rec, done, after)
 }
 
 fn fault() -> ScriptTurn {
@@ -165,8 +178,9 @@ fn fault() -> ScriptTurn {
 
 #[test]
 fn local_mechanical_fallback_fires_session_compact_with_the_failure() {
-    let (rec, done) = compact_with(fault(), Profile::Local);
+    let (rec, done, after) = compact_with(fault(), Profile::Local);
     assert!(done, "the session compacts without the model");
+    assert!(after.is_some(), "a compaction reports its estimated tokens after");
     assert!(
         rec.of(HookPoint::SessionCompactFailed).is_empty(),
         "the wire was compacted: session_compact_failed must not fire"
@@ -183,8 +197,9 @@ fn local_mechanical_fallback_fires_session_compact_with_the_failure() {
 
 #[test]
 fn pi_failure_still_fires_session_compact_failed() {
-    let (rec, done) = compact_with(fault(), Profile::Pi);
+    let (rec, done, after) = compact_with(fault(), Profile::Pi);
     assert!(!done);
+    assert!(after.is_none(), "a failed pi compaction reports no result");
     assert!(rec.of(HookPoint::SessionCompact).is_empty());
     assert_eq!(rec.of(HookPoint::SessionCompactFailed).len(), 1);
 }
@@ -192,11 +207,129 @@ fn pi_failure_still_fires_session_compact_failed() {
 #[test]
 fn a_model_summary_adds_no_key_under_either_profile() {
     for profile in [Profile::Pi, Profile::Local] {
-        let (rec, done) = compact_with(ScriptTurn::text("## Goal\nsummary"), profile);
+        let (rec, done, after) = compact_with(ScriptTurn::text("## Goal\nsummary"), profile);
         assert!(done, "{profile:?}");
+        assert!(after.is_some(), "{profile:?}");
         let compact = rec.of(HookPoint::SessionCompact);
         assert_eq!(compact.len(), 1, "{profile:?}");
         assert!(compact[0].get("mechanical").is_none(), "{profile:?}");
         assert!(compact[0].get("summaryError").is_none(), "{profile:?}");
     }
+}
+
+/// An engine that cannot count a prompt exactly (`count_prompt` -> `Ok(None)`), so the
+/// post-compaction estimate falls back to the local tokenizer.
+struct NoCount(Arc<dyn Engine>);
+
+impl Engine for NoCount {
+    fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+        self.0.info(target)
+    }
+    fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+        self.0.count_tokens(text)
+    }
+    fn chat(
+        &self,
+        r: &oxa_proto::ChatRequest,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(StreamEvent),
+    ) -> Result<AssistantTurn, OxaError> {
+        self.0.chat(r, cancel, on)
+    }
+    fn count_prompt(&self, _r: &oxa_proto::ChatRequest) -> Result<Option<u64>, OxaError> {
+        Ok(None)
+    }
+}
+
+/// A manual compaction after a branch rebase (which zeroes the transcript usage, so
+/// `tokens_before` is 0) with `count_prompt` unavailable must still report a nonzero
+/// `estimated_tokens_after`: the clamp to `tokens_before` must not force it to 0.
+#[test]
+fn manual_compaction_after_a_rebase_without_usage_reports_a_nonzero_after() {
+    let env = TestEnv::new();
+    let rec = Arc::new(Recorder::default());
+    let inner: Arc<dyn Engine> = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("done one"),
+        ScriptTurn::text("## Goal\nsummary"),
+    ]));
+    let engine: Arc<dyn Engine> = Arc::new(NoCount(inner));
+    let mut st = build(&env, engine, rec.clone(), Profile::Local);
+    push(&mut st, WireMsg::user("task one: fix the parser"));
+    push(&mut st, WireMsg::assistant("done one"));
+    push(&mut st, WireMsg::user("task two"));
+    let mut sink = VecSink::default();
+    assert_eq!(
+        run_loop(&mut st, &mut sink, &mut HeadlessUi::default()).expect("run_loop"),
+        RunEnd::Stopped
+    );
+    // A branch rebase drops the usage: the context is unknown (0) until the next reply.
+    let head = st.transcript.wire().to_vec();
+    st.transcript.rebase(head, oxa_proto::rebase_why::LEAF_MOVE);
+    assert_eq!(st.transcript.context(), 0, "a rebase zeroes the usage");
+
+    compact_now(
+        &mut st,
+        None,
+        CompactReason::Manual,
+        &mut sink,
+        &mut HeadlessUi::default(),
+    )
+    .expect("compact_now");
+    let after = sink
+        .0
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::CompactionEnd {
+                result: Some(result), ..
+            } => Some(result.estimated_tokens_after),
+            _ => None,
+        })
+        .expect("compaction result");
+    assert!(
+        after > 0,
+        "the estimate is not clamped to the zeroed tokens_before"
+    );
+    assert_eq!(st.stats.context_tokens, after);
+}
+
+/// With `count_prompt` unavailable the post-compaction count is the local estimate (message
+/// content only, no template framing), which under-counts the engine's own usage. On a
+/// threshold compaction the estimate must still be smaller than the context before compaction:
+/// the summary replaces the early turns.
+#[test]
+fn an_estimated_after_is_smaller_than_the_context_before_compaction() {
+    let env = TestEnv::new();
+    let rec = Arc::new(Recorder::default());
+    let inner: Arc<dyn Engine> = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("done one"),
+        ScriptTurn::text("## Goal\nsummary"),
+    ]));
+    let engine: Arc<dyn Engine> = Arc::new(NoCount(inner));
+    let mut st = build(&env, engine, rec.clone(), Profile::Local);
+    push(&mut st, WireMsg::user("task one: fix the parser"));
+    push(&mut st, WireMsg::assistant("done one"));
+    push(&mut st, WireMsg::user("task two"));
+    let mut sink = VecSink::default();
+    assert_eq!(
+        run_loop(&mut st, &mut sink, &mut HeadlessUi::default()).expect("run_loop"),
+        RunEnd::Stopped
+    );
+    let tokens_before = st.transcript.context();
+    assert!(tokens_before > 0, "the usage is known before compaction");
+    st.compact.soft = tokens_before - 1;
+    let done = maybe_compact(&mut st, true, &mut sink, &mut HeadlessUi::default()).expect("maybe_compact");
+    assert!(done, "the session compacts at the threshold");
+    let after = sink
+        .0
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::CompactionEnd {
+                result: Some(result), ..
+            } => Some(result.estimated_tokens_after),
+            _ => None,
+        })
+        .expect("compaction result");
+    assert!(after > 0, "the estimate is nonzero");
+    assert!(after < tokens_before, "compaction shrinks the context");
+    assert_eq!(st.stats.context_tokens, after);
 }
