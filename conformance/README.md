@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
-Reference: main `c88064215170915f61f7ee87da1c616418b22431`.
-The current suite covers 836 scenarios in 103 unittest methods. This remains a
+Reference: main `194487ef05167c6932a63103f1d5ff0044b13e33`.
+The current suite covers 842 scenarios in 104 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -127,6 +127,7 @@ python3 conformance/test_cli_files.py --record-python
 python3 conformance/test_cli_edges.py --record-python
 python3 conformance/test_cli_limits.py --record-python
 python3 conformance/test_http.py --record-python
+python3 conformance/test_config_files.py --record-python
 python3 conformance/test_api.py --record-python
 python3 conformance/test_http_gates.py --record-python
 python3 conformance/test_gzip.py --record-python
@@ -192,6 +193,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Lifecycle | PASS, 18 tests | PASS | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
 | Harness registry | PASS, 13 cases | PASS: learning/privacy, controls, prepare, streaming, limits and Python/Rust file reads | More malformed/advisory-I/O cases |
 | Request ledger | PASS, 12 goldens and 8 additional checks | PASS: private HMACs, JSON/SSE records, history/reply tracking, errors/cancel, retention, limits, engine hints, advisory I/O and unload finalization | Optional turn diagnostics, queue/replay modes and more malformed backend timings |
+| Model-free config files | PASS, 6 cases | PASS: exact JSON bytes, Unicode/control/astral escaping, unknown fields, mode bits, atomic replacement and stable symlink chains | Additional numeric encodings and filesystem races |
 | Files | PASS, 3 tests | PASS: config and ledger Python/Rust/Python, API-key refresh/fail-closed | Additional state stores and sharing secrets |
 | Cloud gateway / cloud-only | Main baseline pending #24 and the cloud-only stack | Deferred until reference contracts land; first complete runtime priority | All three providers, loopback mocks, continuation, reservations/settlement, budgets, ledger, redaction, off/offline, engine-free installation |
 | Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |

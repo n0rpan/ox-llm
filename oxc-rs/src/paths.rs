@@ -121,7 +121,7 @@ pub fn write_config(value: &serde_json::Value) -> std::io::Result<()> {
             .mode(0o600)
             .custom_flags(nix::libc::O_NOFOLLOW)
             .open(&temporary)?;
-        file.write_all(serde_json::to_string_pretty(value)?.as_bytes())?;
+        file.write_all(ascii_json(&serde_json::to_string_pretty(value)?).as_bytes())?;
         file.write_all(b"\n")?;
         file.sync_all()?;
         if mode != 0o600 {
@@ -147,6 +147,20 @@ pub fn unicode_json(value: &serde_json::Value) -> String {
 }
 pub fn compact_ascii_json(value: &serde_json::Value) -> String {
     format_json(value, true, false)
+}
+fn ascii_json(raw: &str) -> String {
+    let mut result = String::new();
+    for ch in raw.chars() {
+        if (ch as u32) < 0x7f {
+            result.push(ch);
+        } else {
+            let mut units = [0_u16; 2];
+            for unit in ch.encode_utf16(&mut units) {
+                result.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    result
 }
 fn format_json(value: &serde_json::Value, ascii: bool, spaced: bool) -> String {
     use serde_json::Value;
@@ -174,18 +188,11 @@ fn format_json(value: &serde_json::Value, ascii: bool, spaced: bool) -> String {
         ),
         Value::String(_) => {
             let raw = value.to_string();
-            let mut result = String::new();
-            for ch in raw.chars() {
-                if !ascii || (ch as u32) < 0x7f {
-                    result.push(ch);
-                } else {
-                    let mut units = [0_u16; 2];
-                    for unit in ch.encode_utf16(&mut units) {
-                        result.push_str(&format!("\\u{unit:04x}"));
-                    }
-                }
+            if ascii {
+                ascii_json(&raw)
+            } else {
+                raw
             }
-            result
         }
         _ => value.to_string(),
     }

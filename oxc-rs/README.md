@@ -35,7 +35,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-and native suites both pass 836 scenarios in 103 unittest methods.
+and native suites both pass 842 scenarios in 104 unittest methods.
 
 Twenty-one engine-free HTTP cases need no fake model/engine or host-memory
 namespace. They compare the real gates while another owner holds the inference
@@ -244,3 +244,8 @@ modules. Thirty-three new model-free control cases and a hosted-checkout namespa
 regression establish peer calls, bounded errors, service/notification failures,
 legacy JSON constants and per-stalled-read deadlines. The client slice includes
 no engine, daemon, status projection, desktop launcher, installer or Python fallback.
+
+Six model-free configuration contracts compare exact file bytes and identity.
+Native config rewrites now use Python ASCII escaping, preserve unknown fields
+and mode bits, atomically replace the target and leave symlink chains intact.
+Both Unicode regressions were reproduced before the fix.

@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `c88064215170915f61f7ee87da1c616418b22431`.
+Reference main: `194487ef05167c6932a63103f1d5ff0044b13e33`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -15,6 +15,11 @@ The following gaps remain visible rather than being represented by skipped tests
   port the previous gateway. Twenty-one engine-free HTTP foundation cases pass
   with no model/engine fixtures and an untouched foreign inference lease.
   The review runner refuses a cloud-only parity claim until real contracts exist.
+- Model-free config files: six contracts now compare exact Python JSON bytes,
+  Unicode/control/astral escaping, unrelated fields, preserved permission bits,
+  atomic replacement and stable symlink chains. A native UTF-8-versus-escaped
+  JSON difference failed in two cases before fixing; more numeric encodings and
+  filesystem races remain.
 - Disk state/prefix/session caches: extend actual on-disk formats,
   scopes, preload, concurrent mutation and additional cross-implementation reads.
   Usage tests now read populated state formats, pending-write ages, overrides and

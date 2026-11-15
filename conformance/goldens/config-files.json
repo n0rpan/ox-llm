@@ -1,0 +1,92 @@
+{
+  "group-mode": {
+    "contents": "{\n  \"synthetic_extension\": {\n    \"items\": [\n      \"synthetic\",\n      7,\n      null,\n      {},\n      []\n    ]\n  },\n  \"harness_learning\": {\n    \"enabled\": true,\n    \"unknown\": \"retained\",\n    \"min_requests\": 3\n  }\n}\n",
+    "mode": 416,
+    "reply": {
+      "body": {
+        "enabled": true,
+        "min_prefix_chars": 3000,
+        "min_requests": 3
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "symlink": false
+  },
+  "plain": {
+    "contents": "{\n  \"synthetic_extension\": {\n    \"items\": [\n      \"synthetic\",\n      7,\n      null,\n      {},\n      []\n    ]\n  },\n  \"harness_learning\": {\n    \"enabled\": true,\n    \"unknown\": \"retained\",\n    \"min_requests\": 3\n  }\n}\n",
+    "mode": 384,
+    "reply": {
+      "body": {
+        "enabled": true,
+        "min_prefix_chars": 3000,
+        "min_requests": 3
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "symlink": false
+  },
+  "symlink": {
+    "contents": "{\n  \"synthetic_extension\": {\n    \"items\": [\n      \"synthetic\",\n      7,\n      null,\n      {},\n      []\n    ]\n  },\n  \"harness_learning\": {\n    \"enabled\": true,\n    \"unknown\": \"retained\",\n    \"min_requests\": 3\n  }\n}\n",
+    "mode": 416,
+    "reply": {
+      "body": {
+        "enabled": true,
+        "min_prefix_chars": 3000,
+        "min_requests": 3
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "symlink": true
+  },
+  "symlink-chain": {
+    "contents": "{\n  \"synthetic_extension\": {\n    \"items\": [\n      \"synthetic\",\n      7,\n      null,\n      {},\n      []\n    ]\n  },\n  \"harness_learning\": {\n    \"enabled\": true,\n    \"unknown\": \"retained\",\n    \"min_requests\": 3\n  }\n}\n",
+    "mode": 416,
+    "reply": {
+      "body": {
+        "enabled": true,
+        "min_prefix_chars": 3000,
+        "min_requests": 3
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "symlink": true
+  },
+  "symlink-unicode": {
+    "contents": "{\n  \"synthetic_extension\": {\n    \"items\": [\n      \"synthetic\",\n      7,\n      null,\n      {},\n      []\n    ],\n    \"\\u00e9\": \"\\u03bb \\ud83d\\udc7e \\u007f literal \\\\u00e9\"\n  },\n  \"harness_learning\": {\n    \"enabled\": true,\n    \"unknown\": \"retained\",\n    \"min_requests\": 3\n  }\n}\n",
+    "mode": 416,
+    "reply": {
+      "body": {
+        "enabled": true,
+        "min_prefix_chars": 3000,
+        "min_requests": 3
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "symlink": true
+  },
+  "unicode": {
+    "contents": "{\n  \"synthetic_extension\": {\n    \"items\": [\n      \"synthetic\",\n      7,\n      null,\n      {},\n      []\n    ],\n    \"\\u00e9\": \"\\u03bb \\ud83d\\udc7e \\u007f literal \\\\u00e9\"\n  },\n  \"harness_learning\": {\n    \"enabled\": true,\n    \"unknown\": \"retained\",\n    \"min_requests\": 3\n  }\n}\n",
+    "mode": 384,
+    "reply": {
+      "body": {
+        "enabled": true,
+        "min_prefix_chars": 3000,
+        "min_requests": 3
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "symlink": false
+  }
+}

@@ -13,7 +13,8 @@
     ],
     "http-foundation": [
       "test_http",
-      "test_engine_free"
+      "test_engine_free",
+      "test_config_files"
     ],
     "http-admission": [
       "test_http_gates",

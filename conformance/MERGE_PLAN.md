@@ -1,13 +1,15 @@
 # Reviewable Rust controller migration
 
-Ported up to main `c88064215170915f61f7ee87da1c616418b22431`.
+Ported up to main `194487ef05167c6932a63103f1d5ff0044b13e33`.
 Last main review: 2026-11-15 UTC. The latest merge retires one-off stage entry points, retains their shared
 helpers and updates the retained v0.2.0 stager to use them. Controller runtime
 files are unchanged. The accompanying engine changes are formatting-only and
 add its hosted formatter gate, retained alongside oxa and oxc. Subsequent
 merges update oxa/UI/CI, declare done checks and add a design-only OAuth document;
 controller behavior is unchanged. The latest c880642 merge adds an oxa notice
-only. OAuth remains pending project registration.
+only. The subsequent release-qualification guidance and ARM64 nightly stress
+gate change docs/CI only; no new controller behavior is present. OAuth remains
+pending project registration.
 
 ## Priority and source of truth
 
