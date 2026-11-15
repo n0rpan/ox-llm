@@ -36,7 +36,7 @@ pub struct SlashCx<'a> {
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
 /// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
 /// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 29] = [
+pub const INTERACTIVE_COMMANDS: [&str; 31] = [
     "settings",
     "model",
     "scoped-models",
@@ -66,11 +66,16 @@ pub const INTERACTIVE_COMMANDS: [&str; 29] = [
     "login",
     "logout",
     "share",
+    "help",
+    "usage",
 ];
 
 /// pi commands oxa omits (verdict O). A hook command, template or skill with the same name
 /// still runs first, as in `oxa_core::expand_input`.
 const OMITTED: [&str; 3] = ["login", "logout", "share"];
+
+/// Names added after pi: a template, skill or extension command with the same name wins.
+const OVERRIDABLE: [&str; 2] = ["help", "usage"];
 
 /// Dispatch one submitted editor line.
 ///
@@ -94,7 +99,33 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
     let name_len = body.find(char::is_whitespace).unwrap_or(body.len());
     let name = &body[..name_len];
     let args = body[name_len..].trim();
-    if name.is_empty() || !INTERACTIVE_COMMANDS.contains(&name) {
+    if name.is_empty() {
+        return None;
+    }
+    if !INTERACTIVE_COMMANDS.contains(&name) {
+        // A template, skill or extension command goes to the core; a path (`/tmp/x`) is text.
+        // A bare unknown name (`/bogus`) is a typo and is rejected here, without a model call.
+        // A name followed by text (`/src explain this`) is a prompt and reaches the model,
+        // so the outcome never depends on the host filesystem.
+        if name.contains('/')
+            || name.contains('.')
+            || !args.is_empty()
+            || cx.commands.iter().any(|c| c.name == name)
+        {
+            return None;
+        }
+        return Some(notify(
+            Level::Error,
+            format!("Unknown command /{name}. Type /help for the list of commands; add text after a name to send the line as a prompt."),
+        ));
+    }
+
+    if OVERRIDABLE.contains(&name)
+        && cx
+            .commands
+            .iter()
+            .any(|c| c.name == name && c.source != Source::Builtin)
+    {
         return None;
     }
 
@@ -171,7 +202,8 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
                 AppAction::Session(SessionCmd::SetName(args.to_string()))
             }
         }
-        "session" => AppAction::ShowLines(session_info_lines(cx)),
+        "session" | "usage" => AppAction::ShowLines(session_info_lines(cx)),
+        "help" => AppAction::ShowLines(help_lines(cx)),
         "hotkeys" => AppAction::ShowLines(hotkeys_lines(cx.keymap)),
         "fork" => AppAction::Open(SelectorKind::ForkPoint),
         // O-182: `/yolo` toggles, `/yolo on` / `/yolo off` set.
@@ -214,6 +246,35 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
         _ => return None,
     };
     Some(action)
+}
+
+/// The `/help` listing: every command of the session with its description, then the keys hint.
+pub fn help_lines(cx: &SlashCx) -> Vec<String> {
+    let mut out = vec!["Commands:".to_string()];
+    let mut names: Vec<(String, String)> = INTERACTIVE_COMMANDS
+        .iter()
+        .filter(|n| !OMITTED.contains(n) && **n != "exit")
+        .map(|n| {
+            let d = cx.commands.iter().find(|c| c.name == *n);
+            (
+                n.to_string(),
+                d.map(|c| c.description.clone()).unwrap_or_default(),
+            )
+        })
+        .collect();
+    for c in cx
+        .commands
+        .iter()
+        .filter(|c| !INTERACTIVE_COMMANDS.contains(&c.name.as_str()))
+    {
+        names.push((c.name.clone(), c.description.clone()));
+    }
+    for (n, d) in names {
+        out.push(format!("  /{n:<18} {d}"));
+    }
+    out.push(String::new());
+    out.push("Keys: /hotkeys lists every key binding.".to_string());
+    out
 }
 
 /// The `/hotkeys` listing built from the live keymap (user overrides included): grouped as in
