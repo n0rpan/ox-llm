@@ -80,7 +80,7 @@ class OpenAI(CloudCase):
 
             def close(self):
                 pass
-        self.start(budget=0.205)
+        self.start(budget=0.01)
         with patch.object(cloud, 'connection', return_value=(BrokenConnection(), '/mock', {})):
             status, body = self.chat()
             self.assertEqual(status, 503, body)
@@ -109,7 +109,8 @@ class OpenAI(CloudCase):
                 self.chat()
         self.assertTrue(connection.closed)
         self.assertFalse(cloud._reserved)
-        self.assertEqual(self.chat()[0], 503)
+        with patch.object(request_ledger, 'write', return_value=False):
+            self.assertEqual(self.chat()[0], 503)
         self.assertEqual(self.upstream.requests, [])
 
     def test_truncated_nonstream_body_returns_failure_and_charges(self):
@@ -295,7 +296,7 @@ class OpenAI(CloudCase):
         self.start()
         with patch.object(request_ledger, 'write', return_value=False):
             self.assertEqual(self.chat()[0], 200)
-        self.assertEqual(self.chat()[0], 503)
+            self.assertEqual(self.chat()[0], 503)
         self.assertEqual(len(self.upstream.requests), 1)
 
     def test_error_and_success_redaction(self):
@@ -588,4 +589,4 @@ class Responses(CloudCase):
         self.assertEqual(self.chat()[0], 200)
         row = self.ledger_rows()[-1]
         self.assertEqual(row['settled'], 'reserved')
-        self.assertGreaterEqual(row['cost_usd'], 0.204096)
+        self.assertGreaterEqual(row['cost_usd'], 0.004096)  # at least the full output limit

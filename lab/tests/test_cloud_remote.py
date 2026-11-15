@@ -265,9 +265,12 @@ class ReportedCost(CloudCase):
 
     def test_openrouter_reserves_headroom_on_the_full_catalog_window(self):
         item = profiles()[REMOTE]
-        request = {'max_tokens': 100}
+        image = {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA'}}
+        request = {'max_tokens': 100, 'messages': [{'role': 'user', 'content': [image]}]}
         catalog = cloud.cost(item, item['context_window'], 100)
         self.assertAlmostEqual(cloud.worst_case_cost(item, request), catalog * 1.25)
+        text = {'max_tokens': 100, 'messages': [{'role': 'user', 'content': 'hi'}]}
+        self.assertLess(cloud.worst_case_cost(item, text), catalog * 1.25)
 
     def test_missing_usage_reservation_never_overwrites_a_larger_reported_bill(self):
         meter = cloud.Meter()
@@ -489,8 +492,8 @@ class LedgerFailClosed(CloudCase):
         self.start()
         with patch.object(request_ledger, 'write', return_value=False):
             status, _ = self.chat()
-        self.assertEqual(status, 200)
-        status, body = self.chat()
+            self.assertEqual(status, 200)
+            status, body = self.chat()
         self.assertEqual(status, 503)
         self.assertEqual(json.loads(body)['error']['code'], 'cloud_ledger_unavailable')
         self.assertEqual(len(self.upstream.requests), 1)

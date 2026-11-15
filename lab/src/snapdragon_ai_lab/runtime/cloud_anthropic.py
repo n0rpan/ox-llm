@@ -563,7 +563,8 @@ def _close(st, status, error=None):
         cloud.mark_ledger_failure()
 
 
-def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_final=False):
+def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_final=False,
+            refused=False):
     row = _row(item)
     if isinstance(usage, dict):
         _usage_row(row, usage, item)
@@ -573,7 +574,7 @@ def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_
     elif cancelled is not None:
         cloud.cancelled_cost(row, hold, item, *cancelled, usage_final=usage_final)
     else:
-        cloud.conservative_cost(row, hold, failed=failed)
+        cloud.conservative_cost(row, hold, failed=failed, refused=refused)
     if st.led is not None:
         st.led.row.update(row)
     _close(st, status, error)
@@ -582,8 +583,8 @@ def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_
 
 
 def _error(self, st, item, status, message, key, code='cloud_upstream_error', hold=None,
-           failed=False, usage=None):
-    _record(st, item, hold, usage, failed, status, code)
+           failed=False, usage=None, refused=False):
+    _record(st, item, hold, usage, failed, status, code, refused=refused)
     body = {'error': {'message': cloud.redact(message, key), 'type': 'cloud_error',
                       'param': 'model', 'code': code}}
     return self.json_reply(status, body)
@@ -694,7 +695,8 @@ def forward(self, st, item, key):
         message = cloud.redact(str(error), key)
         if not started:
             _error(self, st, item, status, message or 'The Anthropic provider is unavailable.',
-                   key, hold=hold, failed=True)
+                   key, hold=hold, failed=True,
+                   refused=isinstance(getattr(error, 'status_code', None), int))
         else:
             _record(st, item, hold, translator.usage if translator else None, True,
                     status, 'cloud_stream_error')

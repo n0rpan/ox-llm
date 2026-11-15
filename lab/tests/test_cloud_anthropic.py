@@ -469,9 +469,8 @@ class FailedStreams(AnthropicBase):
             connection.close()
         row = self.ledger_rows()[-1]
         payload = {'max_tokens': 1000, 'messages': [{'role': 'user', 'content': 'hello'}]}
-        expected = cloud.worst_case_cost(
-            cloud.entry('anthropic/claude-sonnet-5-5', anthropic_models()['anthropic/claude-sonnet-5-5']),
-            payload)
+        entry = cloud.entry('anthropic/claude-sonnet-5-5', anthropic_models()['anthropic/claude-sonnet-5-5'])
+        expected = cloud.worst_case_cost(entry, cloud_anthropic.messages_request(payload, entry))
         self.assertEqual(row['prompt_tokens'], 100)
         self.assertEqual(row['cost_usd'], expected)
         self.assertTrue(row['usage_missing'])

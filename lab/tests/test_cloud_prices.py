@@ -132,6 +132,7 @@ class PriceRefresh(unittest.TestCase):
             calls.append(True)
             if len(calls) >= 2:
                 twice.set()
+            return True
         with patch.object(cloud_prices, 'DAY_SECONDS', 0.01), patch.object(
                 cloud_prices, 'refresh', side_effect=refresh):
             worker = cloud_prices.Refresher(lambda: True)

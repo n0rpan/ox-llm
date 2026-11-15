@@ -258,8 +258,12 @@ class ModelsMixin:
             # Status must stay alive: report the accounting fault instead of a 500, and cloud
             # admission will refuse anyway until the ledger is repaired.
             cap, spend, ledger_error = None, None, error.code
+        latched = cloud.ledger_latched()
+        if latched and ledger_error is None:
+            ledger_error = 'cloud_ledger_unavailable'
         return {'enabled': cloud.enabled(value), 'offline': cloud.offline(),
                 'daily_budget_usd': cap, 'spend_today_usd': spend, 'ledger_ok': ledger_error is None,
+                'ledger_latched': latched,
                 'ledger_error': ledger_error,
                 'providers': cloud.configured(value), 'models': len(cloud.models(value)),
                 'rejected': cloud.rejected(value)}

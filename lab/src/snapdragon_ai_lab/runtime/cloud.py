@@ -408,10 +408,34 @@ def mark_ledger_failure(value=None):
         _ledger_failures.add(str(directory))
 
 
-def _check_ledger_health():
+def ledger_latched():
+    """True while a failed ledger append blocks cloud admission for the current directory."""
     directory = _ledger_dir()
-    if directory is not None and str(directory) in _ledger_failures:
-        raise _ledger_error()
+    return directory is not None and str(directory) in _ledger_failures
+
+
+def _latch_error():
+    return CloudError('A cloud request could not be written to the request ledger, so cloud calls are '
+                      'blocked. Repair the ledger directory (free disk space, fix its permissions); '
+                      'the block clears by itself on the next request once the ledger can be '
+                      'written and read again.', 503, 'cloud_ledger_unavailable')
+
+
+def _check_ledger_health():
+    """Fail closed while latched; one cheap append+read probe per request can clear the latch."""
+    directory = _ledger_dir()
+    if directory is None or str(directory) not in _ledger_failures:
+        return
+    try:
+        written = ctl.request_ledger.write({'remote': True, 'remote_provider': 'ledger_probe',
+                                            'cost_usd': 0.0, 'settled': 'probe'})
+        if written is True:
+            spend_today()
+            _ledger_failures.discard(str(directory))
+            return
+    except CloudError:
+        pass
+    raise _latch_error()
 
 
 def _max_tokens(payload, item):
@@ -430,25 +454,56 @@ def _max_tokens(payload, item):
     return maximum
 
 
+_TEXT_PART_TYPES = frozenset(('text', 'input_text', 'output_text', 'tool_use', 'tool_result', 'thinking',
+                              'redacted_thinking', 'function', 'function_call', 'function_call_output',
+                              'message', 'reasoning', 'refusal'))
+PROMPT_OVERHEAD_TOKENS = 2048  # provider-added framing (tool preambles, role markers)
+
+
+def _text_only(value):
+    """False when a message carries a non-text part (image, file, audio, ...) of unknown token cost."""
+    if isinstance(value, dict):
+        kind = value.get('type')
+        if kind is not None and not isinstance(kind, str):
+            return False
+        if isinstance(kind, str) and kind not in _TEXT_PART_TYPES:
+            return False
+        if any(key in value for key in ('image_url', 'image', 'file', 'input_audio', 'source')):
+            return False
+        return all(_text_only(item) for key, item in value.items() if key != 'cache_control')
+    if isinstance(value, list):
+        return all(_text_only(item) for item in value)
+    return True
+
+
 def estimate_prompt_tokens(payload):
-    """A deterministic upper-ish estimate for admission: UTF-8 bytes of the prompt / 4."""
+    """An upper bound on prompt tokens for text-only requests: one token per UTF-8 byte of the
+    serialized messages, tools and system prompt, plus a fixed framing allowance.  Returns None
+    when the request carries non-text content (the caller then reserves the full window)."""
     if not isinstance(payload, dict):
-        return 1
-    material = {'messages': payload.get('messages', payload.get('input')), 'tools': payload.get('tools'),
-                'system': payload.get('system')}
+        return None
+    conversation = {'messages': payload.get('messages', payload.get('input')),
+                    'system': payload.get('system')}
+    if not _text_only(conversation):
+        return None
+    material = {**conversation, 'tools': payload.get('tools'), 'tool_choice': payload.get('tool_choice'),
+                'response_format': payload.get('response_format')}
     try:
         text = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     except (TypeError, ValueError):
-        text = str(material)
-    return max(1, (len(text.encode('utf-8', 'replace')) + 3) // 4)
+        return None
+    return len(text.encode('utf-8', 'replace')) + PROMPT_OVERHEAD_TOKENS
 
 
 def worst_case_cost(item, payload):
-    """Reserve the catalog input window; byte estimates cannot bound tokenization or images."""
+    """Reserve a request-derived prompt bound (the full window for non-text content), capped at
+    the catalog window, plus the full output limit."""
     prompt = item['context_window']
+    estimate = estimate_prompt_tokens(payload)
+    if estimate is not None:
+        prompt = min(prompt, estimate)
     usd = _reservation_cost(item, prompt, _max_tokens(payload, item))
-    # Routing prices may exceed the catalog. This headroom is additional to the
-    # full-window reservation; it is a cushion, not a universal provider-price bound.
+    # Routing prices may exceed the catalog. This headroom is a cushion, not a universal bound.
     if usd is not None and item['provider'] == 'openrouter':
         usd *= 1.25
     return math.inf if usd is None else usd
@@ -525,14 +580,19 @@ def spend_day():
     return time.strftime('%Y%m%d')
 
 
-def conservative_cost(row, hold, failed=False):
+def conservative_cost(row, hold, failed=False, refused=False):
     """Fill a ledger row from a reservation when usage or cost is missing.
 
     A failed request (or a reply that never reported usage) is charged the reserved
-    worst case, never zero.  The reservation is released only by the caller after the row has
+    worst case, never zero, unless ``refused``: a clean upstream refusal with no usage settles at 0.  The reservation is released only by the caller after the row has
     been written, so a crash cannot make spend disappear.
     """
     if hold is None:
+        return row
+    if refused and row.get('prompt_tokens') is None and row.get('completion_tokens') is None:
+        # A clean upstream refusal (HTTP error status, nothing streamed, no usage) cost nothing.
+        row['cost_usd'] = row.get('cost_usd') or 0.0
+        row['settled'] = 'refused'
         return row
     missing = (failed or row.get('usage_missing') is True or row.get('prompt_tokens') is None or row.get('completion_tokens') is None
                or row.get('cost_usd') is None)
