@@ -234,6 +234,12 @@ def authorized(headers, key):
 
 
 # ------------------------------------------------------------------ CORS
+# Visible ASCII and space only: a folded request header carries CR/LF into its value.
+_HEADER_SAFE = re.compile(r'[\x20-\x7e]+')
+# A preflight's requested header names: tokens separated by commas and spaces.
+_HEADER_NAME_LIST = re.compile(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+(?:[ ,]+[A-Za-z0-9!#$%&'*+.^_`|~-]+)*")
+
+
 def cors_origin(origins, value, key_set):
     """The origin to allow for this request, or None. `origins`: the request's Origin
     header values."""
@@ -243,6 +249,8 @@ def cors_origin(origins, value, key_set):
     if not isinstance(allowed, list):
         return None
     origin = origins[0]
+    if not isinstance(origin, str) or not _HEADER_SAFE.fullmatch(origin):
+        return None  # echoed into a response header: no CR/LF or control characters
     if origin in allowed and origin != '*' and origin != 'null':
         return origin
     if '*' in allowed and key_set:  # any site may call, but only with the key
@@ -253,6 +261,8 @@ def cors_origin(origins, value, key_set):
 def cors_headers(origin, preflight=False, request_headers=None, private_network=False):
     headers = [('Access-Control-Allow-Origin', origin), ('Vary', 'Origin')]
     if preflight:
+        if not (isinstance(request_headers, str) and _HEADER_NAME_LIST.fullmatch(request_headers)):
+            request_headers = None
         headers += [('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'),
                     ('Access-Control-Allow-Headers', request_headers or 'authorization, content-type'),
                     ('Access-Control-Max-Age', '600')]
