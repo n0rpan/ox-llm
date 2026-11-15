@@ -15,6 +15,7 @@ const MAX_LINE: usize = 64 * 1024;
 const MAX_RECORDS: usize = 100_000;
 const PROFILE_V1: &str = "tool-free-rpc-v1";
 const PROFILE_V2: &str = "tool-free-rpc-v2";
+const PROFILE_WORKSPACE: &str = "workspace-rpc-v1";
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -146,7 +147,11 @@ impl InspectedRun {
                 }
                 profile = match record.details.get("profile") {
                     None => None,
-                    Some(Value::String(v)) if v == PROFILE_V1 || v == PROFILE_V2 => Some(v.clone()),
+                    Some(Value::String(v))
+                        if v == PROFILE_V1 || v == PROFILE_V2 || v == PROFILE_WORKSPACE =>
+                    {
+                        Some(v.clone())
+                    }
                     _ => return Err(invalid("unsupported native journal profile")),
                 };
                 exclusive = match record.details.get("ownership") {
@@ -229,7 +234,7 @@ impl InspectedRun {
                         return Err(invalid("unstarted worker has impossible outcome"));
                     }
                     let cleanup = match record.details.get("cleanup") {
-                        None if profile.as_deref() != Some(PROFILE_V2) => {
+                        None if !matches!(profile.as_deref(), Some(PROFILE_V2 | PROFILE_WORKSPACE)) => {
                             if profile.as_deref() == Some(PROFILE_V1)
                                 && record.details["processStopped"] == true
                             {
@@ -271,7 +276,7 @@ impl InspectedRun {
                             || worker.recorded_process_id.is_none()
                             || record.details["outcome"] != "lost"
                             || (record.details["cleanup"] != "unconfirmed"
-                                && (profile.as_deref() == Some(PROFILE_V2)
+                                && (matches!(profile.as_deref(), Some(PROFILE_V2 | PROFILE_WORKSPACE))
                                     || record.details.get("cleanup").is_some()))
                             || record.details["processStopped"] != false
                         {

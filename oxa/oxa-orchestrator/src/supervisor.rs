@@ -1,7 +1,9 @@
-//! Explicit tool-free fan-out/fan-in. No CLI hook, replay or ambient provider.
+//! Explicit bounded fan-out/fan-in with optional private workspace grants.
 use crate::journal::Journal;
 use crate::native::{checked_program, Launch, NativeWorker, VerifiedLocal};
 use crate::rpc::{Outcome as RpcOutcome, RpcSession};
+use crate::workspace::{Grant, ReviewBundle, WorkingCopy};
+use crate::workspace_jobs::{Collection, Preparation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -21,6 +23,11 @@ pub struct WorkerSpec {
     pub wall_time: Duration,
     pub output_bytes: usize,
     pub tokens: u64,
+}
+/// Operator-owned grant and new destination; never supplied by worker data.
+pub struct WorkspaceAssignment {
+    pub grant: Arc<Grant>,
+    pub destination: PathBuf,
 }
 pub struct Settings {
     pub id: String,
@@ -78,6 +85,8 @@ pub struct WorkerReport {
     pub observed_tokens: Option<u64>,
     pub output_bytes: usize,
     pub result: String,
+    /// Local proposal only; no source apply or publication authority.
+    pub review: Option<ReviewBundle>,
 }
 pub struct RunReport {
     pub run: String,
@@ -169,6 +178,20 @@ struct Active {
     process: NativeWorker,
     rpc: RpcSession,
     forced: Option<Outcome>,
+    copy: Option<Arc<WorkingCopy>>,
+    deadline: Instant,
+}
+struct Preparing {
+    spec: WorkerSpec,
+    job: Preparation,
+    deadline: Instant,
+    forced: Option<Outcome>,
+}
+struct Collecting {
+    report: WorkerReport,
+    job: Collection,
+    deadline: Instant,
+    forced: Option<Outcome>,
 }
 
 /// Run one explicit bounded plan. Dropping the controller does not cancel a
@@ -178,9 +201,26 @@ pub fn run(
     settings: Settings,
     plan: Vec<WorkerSpec>,
     inbox: Inbox,
+    observe: impl FnMut(Status),
+) -> io::Result<RunReport> {
+    run_with_workspaces(settings, plan, BTreeMap::new(), inbox, observe)
+}
+/// Each preparation, process, and post-reap collection occupies one lane.
+/// Cancellation joins owned filesystem work before returning a terminal report.
+/// An OS filesystem operation may delay that join; no hard I/O timeout is claimed.
+/// Partial private copies are retained for explicit operator cleanup.
+pub fn run_with_workspaces(
+    settings: Settings,
+    plan: Vec<WorkerSpec>,
+    mut workspaces: BTreeMap<String, WorkspaceAssignment>,
+    inbox: Inbox,
     mut observe: impl FnMut(Status),
 ) -> io::Result<RunReport> {
     validate(&settings, &plan)?;
+    if workspaces.keys().any(|id| !plan.iter().any(|w| &w.id == id)) {
+        return Err(invalid("workspace assignment names an unknown worker"));
+    }
+    let workspace_profile = !workspaces.is_empty();
     let binary = checked_program(&settings.worker_binary)?;
     let bwrap = checked_program(&settings.bwrap_binary)?;
     let deadline = Instant::now()
@@ -188,16 +228,24 @@ pub fn run(
         .ok_or_else(|| invalid("invalid run deadline"))?;
     let order: BTreeMap<_, _> = plan.iter().enumerate().map(|(i, w)| (w.id.clone(), i)).collect();
     let mut journal = Journal::create(&settings.journal, settings.journal_bytes)?;
-    journal.record(None,"run_started",json!({"run":settings.id,"workers":plan.len(),"parallelism":settings.parallelism,"mode":"plan","offline":true,"toolPolicy":"none","profile":"tool-free-rpc-v2"}))?;
+    journal.record(None,"run_started",json!({"run":settings.id,"workers":plan.len(),"parallelism":settings.parallelism,"mode":if workspace_profile {"per-worker-grant"} else {"plan"},"offline":true,"toolPolicy":if workspace_profile {"per-worker-grant"} else {"none"},"profile":if workspace_profile {"workspace-rpc-v1"} else {"tool-free-rpc-v2"}}))?;
     for spec in &plan {
-        journal.record(Some(&spec.id),"queued",json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"route":"verified-local","reservedTokens":spec.tokens,"reservedBytes":spec.output_bytes,"tools":[]}))?;
+        journal.record(Some(&spec.id),"queued",json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"route":"verified-local","reservedTokens":spec.tokens,"reservedBytes":spec.output_bytes,"tools":match workspaces.get(&spec.id) { Some(w) if w.grant.is_editing() => &["read","edit","write"][..], Some(_) => &["read"][..], None => &[][..] }}))?;
         observe(status(spec, "queued", None, 0));
     }
     let mut pending = VecDeque::from(plan);
     let mut active: Vec<Active> = Vec::new();
+    let mut preparing: Vec<Preparing> = Vec::new();
+    let mut collecting: Vec<Collecting> = Vec::new();
+    let mut ready = VecDeque::new();
     let mut reports = Vec::new();
     let mut forced = None;
-    while !pending.is_empty() || !active.is_empty() {
+    while !pending.is_empty()
+        || !active.is_empty()
+        || !preparing.is_empty()
+        || !collecting.is_empty()
+        || !ready.is_empty()
+    {
         if inbox.cancel_all.load(Ordering::Acquire) {
             forced.get_or_insert(Outcome::Canceled);
         }
@@ -216,6 +264,10 @@ pub fn run(
                             &mut reports,
                         )?;
                     } else if let Some(worker) = active.iter_mut().find(|w| w.spec.id == id) {
+                        worker.forced = Some(Outcome::Canceled);
+                    } else if let Some(worker) = preparing.iter_mut().find(|w| w.spec.id == id) {
+                        worker.forced = Some(Outcome::Canceled);
+                    } else if let Some(worker) = collecting.iter_mut().find(|w| w.report.worker == id) {
                         worker.forced = Some(Outcome::Canceled);
                     } else {
                         journal.record(None, "control_rejected", json!({"reason":"worker_not_live"}))?;
@@ -264,60 +316,150 @@ pub fn run(
                 )?;
             }
         }
-        while forced.is_none() && active.len() < settings.parallelism {
+        // Poll filesystem jobs without blocking process polling. A terminal
+        // preparation error has joined its thread before publication.
+        let mut i = 0;
+        while i < preparing.len() {
+            let lane = &mut preparing[i];
+            if Instant::now() >= lane.deadline {
+                lane.forced.get_or_insert(Outcome::Deadline);
+            }
+            if let Some(reason) = forced {
+                lane.forced.get_or_insert(reason);
+            }
+            if lane.forced.is_some() {
+                lane.job.cancel();
+            }
+            match lane.job.poll() {
+                Ok(None) => {
+                    i += 1;
+                }
+                result => {
+                    let lane = preparing.swap_remove(i);
+                    match (lane.forced, result) {
+                        (None, Ok(Some(copy))) => {
+                            ready.push_back((lane.spec, Some(Arc::new(copy)), lane.deadline))
+                        }
+                        (reason, _) => publish(
+                            &mut journal,
+                            &mut observe,
+                            not_started(lane.spec, reason.unwrap_or(Outcome::Failed)),
+                            &mut reports,
+                        )?,
+                    }
+                }
+            }
+        }
+        let mut i = 0;
+        while i < collecting.len() {
+            let lane = &mut collecting[i];
+            if Instant::now() >= lane.deadline {
+                lane.forced.get_or_insert(Outcome::Deadline);
+            }
+            if let Some(reason) = forced {
+                lane.forced.get_or_insert(reason);
+            }
+            if lane.forced.is_some() {
+                lane.job.cancel();
+            }
+            match lane.job.poll() {
+                Ok(None) => {
+                    i += 1;
+                }
+                result => {
+                    let mut lane = collecting.swap_remove(i);
+                    match (lane.forced, result) {
+                        (None, Ok(Some(review))) => {
+                            journal.record(Some(&lane.report.worker), "workspace_review", json!({"manifestSha256":review.manifest_sha256,"changes":review.changes.len()}))?;
+                            lane.report.review = Some(review);
+                        }
+                        (reason, _) => lane.report.outcome = reason.unwrap_or(Outcome::PolicyViolation),
+                    }
+                    publish(&mut journal, &mut observe, lane.report, &mut reports)?;
+                }
+            }
+        }
+        // A ready copy has already occupied a preparation lane; retain that
+        // reservation until spawn or canceled publication.
+        while let Some((spec, copy, lane_deadline)) = ready.pop_front() {
+            if inbox.cancel_all.load(Ordering::Acquire) {
+                forced.get_or_insert(Outcome::Canceled);
+            }
+            if Instant::now() >= deadline {
+                forced.get_or_insert(Outcome::Deadline);
+            }
+            if let Some(reason) =
+                forced.or_else(|| (Instant::now() >= lane_deadline).then_some(Outcome::Deadline))
+            {
+                publish(
+                    &mut journal,
+                    &mut observe,
+                    not_started(spec, reason),
+                    &mut reports,
+                )?;
+                continue;
+            }
+            launch_worker(
+                &binary,
+                &bwrap,
+                spec,
+                copy,
+                lane_deadline,
+                &mut journal,
+                &mut observe,
+                &mut active,
+                &mut reports,
+            )?;
+        }
+        while forced.is_none() && active.len() + preparing.len() + collecting.len() < settings.parallelism {
             if inbox.cancel_all.load(Ordering::Acquire) || Instant::now() >= deadline {
                 break;
             }
             let Some(spec) = pending.pop_front() else {
                 break;
             };
+            let lane_deadline = (Instant::now() + spec.wall_time).min(deadline);
             journal.record(Some(&spec.id), "starting", json!({}))?;
-            let rpc = RpcSession::new(spec.inference.model().into(), spec.task.clone(), spec.tokens)?;
-            let launch = Launch {
-                worker_binary: binary.clone(),
-                bwrap_binary: bwrap.clone(),
-                inference: spec.inference.clone(),
-                role: spec.role.clone(),
-                wall_time: spec
-                    .wall_time
-                    .min(deadline.saturating_duration_since(Instant::now())),
-                output_bytes: spec.output_bytes,
-            };
-            match NativeWorker::spawn(launch) {
-                Ok(mut process) => {
-                    journal.record(Some(&spec.id), "spawned", json!({"processId":process.pid()}))?;
-                    let forced = process
-                        .queue(&rpc.initial_command())
-                        .err()
-                        .map(|_| Outcome::Failed);
-                    observe(status(&spec, "started", None, 0));
-                    active.push(Active {
-                        spec,
-                        process,
-                        rpc,
-                        forced,
-                    });
-                }
-                Err(error) => {
-                    let mut report = not_started(spec, Outcome::Failed);
-                    if let Some((pid, stopped)) = crate::native::startup_evidence(&error) {
-                        journal.record(Some(&report.worker), "spawned", json!({"processId":pid}))?;
-                        report.cleanup = if stopped {
-                            Cleanup::Stopped
-                        } else {
-                            Cleanup::Unconfirmed
-                        };
-                        if !stopped {
-                            report.outcome = Outcome::Lost;
-                        }
+            if let Some(assignment) = workspaces.remove(&spec.id) {
+                journal.record(
+                    Some(&spec.id),
+                    "workspace",
+                    json!({"editing":assignment.grant.is_editing()}),
+                )?;
+                match Preparation::start(assignment.grant, assignment.destination) {
+                    Ok(job) => {
+                        observe(status(&spec, "preparing", None, 0));
+                        preparing.push(Preparing {
+                            spec,
+                            job,
+                            deadline: lane_deadline,
+                            forced: None,
+                        });
                     }
-                    publish(&mut journal, &mut observe, report, &mut reports)?;
+                    Err(_) => publish(
+                        &mut journal,
+                        &mut observe,
+                        not_started(spec, Outcome::Failed),
+                        &mut reports,
+                    )?,
                 }
+            } else {
+                launch_worker(
+                    &binary,
+                    &bwrap,
+                    spec,
+                    None,
+                    lane_deadline,
+                    &mut journal,
+                    &mut observe,
+                    &mut active,
+                    &mut reports,
+                )?;
             }
         }
         let mut index = 0;
         while index < active.len() {
-            if let Some(reason) = aggregate_limit(&reports, &active, &settings) {
+            if let Some(reason) = aggregate_with_collections(&reports, &active, &collecting, &settings) {
                 forced.get_or_insert(reason);
             }
             if inbox.cancel_all.load(Ordering::Acquire) {
@@ -327,7 +469,9 @@ pub fn run(
                 forced.get_or_insert(Outcome::Deadline);
             }
             let worker = &mut active[index];
-            let mut outcome = forced.or(worker.forced);
+            let mut outcome = forced
+                .or(worker.forced)
+                .or_else(|| (Instant::now() >= worker.deadline).then_some(Outcome::Deadline));
             if outcome.is_none() {
                 match worker.process.poll() {
                     Ok(records) => {
@@ -339,7 +483,7 @@ pub fn run(
                                             journal.record(
                                                 Some(&worker.spec.id),
                                                 "policy_verified",
-                                                json!({"mode":"plan","toolPolicy":"none"}),
+                                                json!({"mode":worker.copy.as_ref().map_or("plan", |c| c.mode()),"tools":worker.copy.as_ref().map_or(&[][..], |c| c.tools())}),
                                             )?;
                                             observe(status(
                                                 &worker.spec,
@@ -418,16 +562,44 @@ pub fn run(
                     observed_tokens: worker.rpc.observed_tokens(),
                     output_bytes: worker.process.output_bytes(),
                     result: worker.rpc.result().into(),
+                    review: None,
                 };
+                if cleanup == Cleanup::Stopped && !matches!(outcome, Outcome::Canceled | Outcome::Deadline) {
+                    if let Some(copy) = worker.copy {
+                        match Collection::start(copy, report.worker.clone()) {
+                            Ok(job) => {
+                                observe(Status {
+                                    worker: report.worker.clone(),
+                                    state: "collecting",
+                                    observed_tokens: report.observed_tokens,
+                                    output_bytes: report.output_bytes,
+                                });
+                                collecting.push(Collecting {
+                                    report,
+                                    job,
+                                    deadline: worker.deadline,
+                                    forced: None,
+                                });
+                                continue;
+                            }
+                            Err(_) => {
+                                let mut report = report;
+                                report.outcome = Outcome::Failed;
+                                publish(&mut journal, &mut observe, report, &mut reports)?;
+                                continue;
+                            }
+                        }
+                    }
+                }
                 publish(&mut journal, &mut observe, report, &mut reports)?;
             } else {
                 index += 1;
             }
         }
-        if let Some(reason) = aggregate_limit(&reports, &active, &settings) {
+        if let Some(reason) = aggregate_with_collections(&reports, &active, &collecting, &settings) {
             forced.get_or_insert(reason);
         }
-        if !pending.is_empty() || !active.is_empty() {
+        if !pending.is_empty() || !active.is_empty() || !preparing.is_empty() || !collecting.is_empty() {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -442,6 +614,77 @@ pub fn run(
         journal.record(None, "cleanup_unconfirmed", json!({}))?;
     }
     Ok(report)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_worker(
+    binary: &std::path::Path,
+    bwrap: &std::path::Path,
+    spec: WorkerSpec,
+    copy: Option<Arc<WorkingCopy>>,
+    deadline: Instant,
+    journal: &mut Journal,
+    observe: &mut impl FnMut(Status),
+    active: &mut Vec<Active>,
+    reports: &mut Vec<WorkerReport>,
+) -> io::Result<()> {
+    let rpc = if let Some(copy) = &copy {
+        RpcSession::with_workspace(
+            spec.inference.model().into(),
+            spec.task.clone(),
+            spec.tokens,
+            copy,
+        )?
+    } else {
+        RpcSession::new(spec.inference.model().into(), spec.task.clone(), spec.tokens)?
+    };
+    let launch = Launch {
+        worker_binary: binary.to_path_buf(),
+        bwrap_binary: bwrap.to_path_buf(),
+        inference: spec.inference.clone(),
+        role: spec.role.clone(),
+        wall_time: deadline.saturating_duration_since(Instant::now()),
+        output_bytes: spec.output_bytes,
+    };
+    let spawned = if let Some(copy) = &copy {
+        NativeWorker::spawn_with_workspace(launch, copy.clone())
+    } else {
+        NativeWorker::spawn(launch)
+    };
+    match spawned {
+        Ok(mut process) => {
+            journal.record(Some(&spec.id), "spawned", json!({"processId":process.pid()}))?;
+            let forced = process
+                .queue(&rpc.initial_command())
+                .err()
+                .map(|_| Outcome::Failed);
+            observe(status(&spec, "started", None, 0));
+            active.push(Active {
+                spec,
+                process,
+                rpc,
+                forced,
+                copy,
+                deadline,
+            });
+        }
+        Err(error) => {
+            let mut report = not_started(spec, Outcome::Failed);
+            if let Some((pid, stopped)) = crate::native::startup_evidence(&error) {
+                journal.record(Some(&report.worker), "spawned", json!({"processId":pid}))?;
+                report.cleanup = if stopped {
+                    Cleanup::Stopped
+                } else {
+                    Cleanup::Unconfirmed
+                };
+                if !stopped {
+                    report.outcome = Outcome::Lost;
+                }
+            }
+            publish(journal, observe, report, reports)?;
+        }
+    }
+    Ok(())
 }
 pub(crate) fn validate(settings: &Settings, plan: &[WorkerSpec]) -> io::Result<()> {
     if !valid_id(&settings.id)
@@ -516,6 +759,7 @@ fn not_started(spec: WorkerSpec, outcome: Outcome) -> WorkerReport {
         observed_tokens: None,
         output_bytes: 0,
         result: String::new(),
+        review: None,
     }
 }
 fn status(
@@ -554,15 +798,26 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+#[cfg(test)]
 fn aggregate_limit(reports: &[WorkerReport], active: &[Active], settings: &Settings) -> Option<Outcome> {
+    aggregate_with_collections(reports, active, &[], settings)
+}
+fn aggregate_with_collections(
+    reports: &[WorkerReport],
+    active: &[Active],
+    collecting: &[Collecting],
+    settings: &Settings,
+) -> Option<Outcome> {
     let output = reports
         .iter()
         .map(|r| r.output_bytes)
+        .chain(collecting.iter().map(|w| w.report.output_bytes))
         .chain(active.iter().map(|w| w.process.output_bytes()))
         .try_fold(0usize, usize::checked_add);
     let tokens = reports
         .iter()
         .filter_map(|r| r.observed_tokens)
+        .chain(collecting.iter().filter_map(|w| w.report.observed_tokens))
         .chain(active.iter().filter_map(|w| w.rpc.observed_tokens()))
         .try_fold(0u64, u64::checked_add);
     if output.is_none_or(|n| n > settings.output_reservation) {
@@ -896,6 +1151,7 @@ for line in sys.stdin:
                 observed_tokens: Some(u64::MAX),
                 output_bytes: 0,
                 result: String::new(),
+                review: None,
             },
             WorkerReport {
                 worker: "second".into(),
@@ -904,11 +1160,284 @@ for line in sys.stdin:
                 observed_tokens: Some(1),
                 output_bytes: 0,
                 result: String::new(),
+                review: None,
             },
         ];
         assert_eq!(
             aggregate_limit(&reports, &[], &settings),
             Some(Outcome::TokenBudget)
         );
+    }
+    fn assigned(
+        env: &TestEnv,
+        count: usize,
+        editing: bool,
+    ) -> (
+        Arc<crate::workspace::Snapshot>,
+        BTreeMap<String, WorkspaceAssignment>,
+    ) {
+        use crate::workspace::{RelativePath, Snapshot};
+        env.write("input.txt", "before\n");
+        let snapshot = Arc::new(
+            Snapshot::approve(env.root(), vec![RelativePath::new("input.txt".into()).unwrap()]).unwrap(),
+        );
+        let grant = Arc::new(if editing {
+            Grant::editing(snapshot.clone(), vec![]).unwrap()
+        } else {
+            Grant::read_only(snapshot.clone())
+        });
+        let assignments = (0..count)
+            .map(|i| {
+                (
+                    format!("worker-{i}"),
+                    WorkspaceAssignment {
+                        grant: grant.clone(),
+                        destination: env.root().join("private").join(format!("copy-{i}")),
+                    },
+                )
+            })
+            .collect();
+        (snapshot, assignments)
+    }
+    fn workspace_runtime(settings: &Settings) {
+        let runtime = RUNTIME
+            .replace("'mode':'plan'", "'mode':sys.argv[sys.argv.index('--permission-mode')+1]")
+            .replace("if command=='abort': break", "if command=='abort':\n  if globals().get('task')=='edit':open('/work/input.txt','w').write('after-stop\\n')\n  break")
+            .replace("if task=='wait-for-steer':continue", "if task=='wait-for-steer':continue\n  if task=='edit':open('/work/input.txt','w').write('before-stop\\n')\n  if task=='unapproved':open('/work/unapproved.txt','w').write('rejected')\n  if task=='try-write':\n   try:open('/work/input.txt','w').write('forbidden')\n   except OSError:pass");
+        fs::write(&settings.worker_binary, runtime).unwrap();
+    }
+    #[test]
+    fn workspace_lanes_collect_only_after_stop_keep_source_private_and_bound_fanout() {
+        let (env, mut settings, plan) = fixture(&["edit", "edit", "edit"]);
+        workspace_runtime(&settings);
+        settings.parallelism = 2;
+        let (snapshot, assignments) = assigned(&env, 3, true);
+        let path = settings.journal.clone();
+        let mut live = BTreeSet::new();
+        let mut maximum = 0;
+        let mut transitions: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+        let (_controller, inbox) = controls();
+        let report = run_with_workspaces(settings, plan, assignments, inbox, |s| {
+            transitions.entry(s.worker.clone()).or_default().push(s.state);
+            if s.state == "preparing" {
+                assert!(live.insert(s.worker.clone()));
+            }
+            if s.state == "started" {
+                assert!(live.contains(&s.worker));
+            }
+            maximum = maximum.max(live.len());
+            if s.state == "completed" {
+                assert!(live.remove(&s.worker));
+            }
+        })
+        .unwrap();
+        assert!(report.succeeded());
+        assert!(live.is_empty());
+        assert!(maximum <= 2);
+        for worker in &report.workers {
+            assert_eq!(worker.cleanup, Cleanup::Stopped);
+            let review = worker.review.as_ref().unwrap();
+            review.verify(&snapshot, &[]).unwrap();
+            assert_eq!(review.changes[0].after.as_deref(), Some("after-stop\n"));
+            assert_eq!(
+                transitions[&worker.worker],
+                [
+                    "queued",
+                    "preparing",
+                    "started",
+                    "ready",
+                    "working",
+                    "collecting",
+                    "completed"
+                ]
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(env.root().join("input.txt")).unwrap(),
+            "before\n"
+        );
+        let journal = fs::read_to_string(&path).unwrap();
+        for raw in ["before-stop", "after-stop", "input.txt", "synthetic-private"] {
+            assert!(!journal.contains(raw));
+        }
+        assert!(journal.contains("workspace-rpc-v1"));
+        assert!(crate::recovery::InspectedRun::inspect(&path).is_ok());
+    }
+    #[test]
+    fn readonly_and_scope_violations_remain_explicit_review_outcomes() {
+        for (editing, task, outcome) in [
+            (false, "try-write", Outcome::Completed),
+            (true, "unapproved", Outcome::PolicyViolation),
+        ] {
+            let (env, settings, plan) = fixture(&[task]);
+            workspace_runtime(&settings);
+            let (_snapshot, assignments) = assigned(&env, 1, editing);
+            let (_controller, inbox) = controls();
+            let report = run_with_workspaces(settings, plan, assignments, inbox, |_| {}).unwrap();
+            assert_eq!(report.workers[0].outcome, outcome);
+            assert_eq!(report.workers[0].cleanup, Cleanup::Stopped);
+            if editing {
+                assert!(report.workers[0].review.is_none());
+            } else {
+                assert!(report.workers[0].review.as_ref().unwrap().changes.is_empty());
+            }
+            assert_eq!(
+                fs::read_to_string(env.root().join("input.txt")).unwrap(),
+                "before\n"
+            );
+        }
+    }
+    #[test]
+    fn cancellation_during_preparation_or_collection_withdraws_results_and_joins() {
+        for cancel_state in ["preparing", "collecting"] {
+            let (env, mut settings, plan) = fixture(&["edit", "edit"]);
+            workspace_runtime(&settings);
+            settings.parallelism = 1;
+            let (_snapshot, assignments) = assigned(&env, 2, true);
+            let destination = assignments["worker-0"].destination.clone();
+            let journal = settings.journal.clone();
+            let (controller, inbox) = controls();
+            let mut seen = false;
+            let report = run_with_workspaces(settings, plan, assignments, inbox, |s| {
+                if s.state == cancel_state {
+                    seen = true;
+                    controller.cancel_all();
+                }
+            })
+            .unwrap();
+            assert!(seen);
+            assert!(report.cleanup_confirmed());
+            assert!(report
+                .workers
+                .iter()
+                .all(|w| w.outcome == Outcome::Canceled && w.review.is_none()));
+            assert_eq!(
+                report.workers[0].cleanup,
+                if cancel_state == "preparing" {
+                    Cleanup::NotStarted
+                } else {
+                    Cleanup::Stopped
+                }
+            );
+            assert_eq!(report.workers[1].cleanup, Cleanup::NotStarted);
+            let before = fs::read(destination.join("input.txt")).ok();
+            std::thread::sleep(Duration::from_millis(40));
+            assert_eq!(fs::read(destination.join("input.txt")).ok(), before);
+            assert!(crate::recovery::InspectedRun::inspect(&journal).is_ok());
+        }
+    }
+    #[test]
+    fn bad_assignments_and_copy_failures_never_launch_or_replace_existing_paths() {
+        let (env, settings, plan) = fixture(&["edit"]);
+        let (_snapshot, mut assignments) = assigned(&env, 1, true);
+        let journal = settings.journal.clone();
+        let assignment = assignments.remove("worker-0").unwrap();
+        assignments.insert("unknown".into(), assignment);
+        let (_controller, inbox) = controls();
+        assert!(run_with_workspaces(settings, plan, assignments, inbox, |_| {}).is_err());
+        assert!(!journal.exists());
+        let (env, settings, plan) = fixture(&["edit"]);
+        let (_snapshot, assignments) = assigned(&env, 1, true);
+        let destination = &assignments["worker-0"].destination;
+        fs::create_dir(destination).unwrap();
+        fs::write(destination.join("retained"), "operator-owned").unwrap();
+        let (_controller, inbox) = controls();
+        let report = run_with_workspaces(settings, plan, assignments, inbox, |s| {
+            assert_ne!(s.state, "started")
+        })
+        .unwrap();
+        assert_eq!(report.workers[0].outcome, Outcome::Failed);
+        assert_eq!(report.workers[0].cleanup, Cleanup::NotStarted);
+        assert_eq!(
+            fs::read_to_string(env.root().join("private/copy-0/retained")).unwrap(),
+            "operator-owned"
+        );
+    }
+    #[test]
+    fn canceled_writing_process_is_reaped_before_return_and_has_no_late_writes() {
+        let (env, settings, plan) = fixture(&["writer"]);
+        let (_snapshot, assignments) = assigned(&env, 1, true);
+        let destination = assignments["worker-0"].destination.clone();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let script = RUNTIME
+            .replace("import sys,json,socket", "import sys,json,socket,time")
+            .replace("'mode':'plan'", "'mode':sys.argv[sys.argv.index('--permission-mode')+1]")
+            .replace("if task=='wait-for-steer':continue", &format!("if task=='writer':\n   with open('/work/input.txt','a') as f:f.write('started\\n')\n   signal=socket.create_connection(('127.0.0.1',{port}));signal.close()\n   while True:\n    with open('/work/input.txt','a') as f:f.write('tick\\n')\n    time.sleep(0.01)\n  if task=='wait-for-steer':continue"));
+        fs::write(&settings.worker_binary, script).unwrap();
+        let (controller, inbox) = controls();
+        let run = std::thread::spawn(move || run_with_workspaces(settings, plan, assignments, inbox, |_| {}));
+        let end = Instant::now() + Duration::from_secs(3);
+        let mut signaled = false;
+        while Instant::now() < end && !run.is_finished() {
+            match listener.accept() {
+                Ok(_) => {
+                    signaled = true;
+                    break;
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(2))
+                }
+                Err(_) => break,
+            }
+        }
+        controller.cancel_all();
+        let report = run.join().unwrap().unwrap();
+        assert!(signaled, "the actual sandboxed writer must have started");
+        assert_eq!(report.workers[0].outcome, Outcome::Canceled);
+        assert_eq!(report.workers[0].cleanup, Cleanup::Stopped);
+        assert!(report.workers[0].review.is_none());
+        let text = fs::read(destination.join("input.txt")).unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(fs::read(destination.join("input.txt")).unwrap(), text);
+        assert_eq!(
+            fs::read_to_string(env.root().join("input.txt")).unwrap(),
+            "before\n"
+        );
+    }
+    #[test]
+    fn preparation_cancel_targets_one_lane_and_deadline_covers_filesystem_stages() {
+        let (env, settings, plan) = fixture(&["edit", "edit"]);
+        workspace_runtime(&settings);
+        let (_snapshot, assignments) = assigned(&env, 2, true);
+        let (controller, inbox) = controls();
+        let report = run_with_workspaces(settings, plan, assignments, inbox, |s| {
+            if s.worker == "worker-0" && s.state == "preparing" {
+                controller.cancel(s.worker).unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(report.workers[0].outcome, Outcome::Canceled);
+        assert_eq!(report.workers[0].cleanup, Cleanup::NotStarted);
+        assert_eq!(report.workers[1].outcome, Outcome::Completed);
+        assert!(report.workers[1].review.is_some());
+        for stage in ["preparing", "collecting"] {
+            let (env, settings, mut plan) = fixture(&["edit"]);
+            workspace_runtime(&settings);
+            plan[0].wall_time = Duration::from_millis(500);
+            let (_snapshot, assignments) = assigned(&env, 1, true);
+            let (_controller, inbox) = controls();
+            let mut reached = false;
+            let report = run_with_workspaces(settings, plan, assignments, inbox, |s| {
+                if s.state == stage {
+                    reached = true;
+                    // A trusted observer may consume the time allowance too.
+                    std::thread::sleep(Duration::from_millis(550));
+                }
+            })
+            .unwrap();
+            assert!(reached);
+            assert_eq!(report.workers[0].outcome, Outcome::Deadline);
+            assert_eq!(
+                report.workers[0].cleanup,
+                if stage == "preparing" {
+                    Cleanup::NotStarted
+                } else {
+                    Cleanup::Stopped
+                }
+            );
+            assert!(report.workers[0].review.is_none());
+        }
     }
 }
