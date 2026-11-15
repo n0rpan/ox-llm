@@ -580,7 +580,7 @@ def _close(st, status, error=None):
     try:
         st.led.finish(status, error)
     except Exception:
-        cloud.mark_ledger_failure()
+        cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
         return  # Do not retry a potentially completed append.
     if getattr(st.led, 'written', True) is False:
         cloud.mark_ledger_failure(st.led.row.get('cost_usd'))

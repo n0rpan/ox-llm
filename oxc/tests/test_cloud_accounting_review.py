@@ -168,6 +168,35 @@ class LedgerRecoveryRace(CloudCase):
         cloud._ledger_failures.discard(directory)
 
 
+class RaisingAppendKeepsCost(unittest.TestCase):
+    def _check(self, close):
+        class Led:
+            row = {'cost_usd': 0.75}
+
+            def finish(self, status, error=None):
+                raise OSError('disk full')
+
+        class St:
+            led = Led()
+
+        directory = str(cloud._ledger_dir())
+        cloud._unrecorded.pop(directory, None)
+        try:
+            close(St(), 200)
+            self.assertAlmostEqual(cloud._unrecorded.get(directory, 0.0), 0.75)
+        finally:
+            cloud._unrecorded.pop(directory, None)
+            cloud._ledger_failures.discard(directory)
+
+    def test_openai_path(self):
+        from oxc.runtime import ctl_cloud
+        self._check(ctl_cloud._close_row)
+
+    def test_anthropic_path(self):
+        from oxc.runtime import cloud_anthropic
+        self._check(cloud_anthropic._close)
+
+
 class PriceRetry(unittest.TestCase):
     def test_failed_refresh_backs_off_then_goes_daily(self):
         refresher = cloud_prices.Refresher.__new__(cloud_prices.Refresher)

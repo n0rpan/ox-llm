@@ -30,7 +30,7 @@ def _close_row(st, status, error=None):
         st.led.finish(status, error)
     except Exception:
         # An append may have happened before an exception; never retry an ambiguous write.
-        cloud.mark_ledger_failure()
+        cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
         return
     if getattr(st.led, 'written', True) is False:
         cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
