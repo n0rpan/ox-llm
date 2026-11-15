@@ -17,6 +17,9 @@ pub struct VerifiedLocal {
     model: String,
 }
 impl VerifiedLocal {
+    pub fn model(&self) -> &str {
+        &self.model
+    }
     pub fn register(address: SocketAddr, model: String) -> io::Result<Self> {
         if !address.ip().is_loopback()
             || address.port() == 0
@@ -209,6 +212,10 @@ impl NativeWorker {
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
+    /// Pipe state only; callers must separately confirm process stop.
+    pub fn output_eof(&self) -> bool {
+        self.pipes.output_eof()
+    }
     pub fn output_bytes(&self) -> usize {
         self.pipes.output_bytes()
     }
@@ -296,7 +303,7 @@ impl Drop for NativeWorker {
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
-fn checked_program(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn checked_program(path: &Path) -> io::Result<PathBuf> {
     let path = path.canonicalize()?;
     let metadata = File::open(&path)?.metadata()?;
     if !metadata.is_file() || metadata.mode() & 0o111 == 0 {

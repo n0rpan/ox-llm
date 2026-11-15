@@ -132,3 +132,49 @@ This makes truncation explicit, but does not fix the live smoke's configured
 still expose and enforce a per-response allowance. No external driver ceiling
 is raised here. The integrated test uses an owned mock runtime in real bwrap;
 it proves policy/accounting/cleanup wiring, not production inference or billing.
+
+## Explicit tool-free fan-out/fan-in
+
+With `core`, `supervisor::run` validates one complete plan before journal creation
+or worker launch. It accepts up to 128 workers and 32 concurrent lanes, bounds
+wall times to one day and reserves every worker's lifetime output/token allowance
+against run totals. Task/role contents must already be approved for delegation;
+all routes carry the operator's VerifiedLocal assertion. There are no tools,
+workspace mounts, automatic retries, remote routes or CLI hooks in this slice.
+
+`controls()` creates a 32-entry nonblocking queue. Individual cancellation covers
+queued/live workers; sticky cancel_all remains available when the queue is full.
+Steer responses acknowledge RPC queue admission, not model consumption. Controls
+and each pipe poll get bounded work per loop. Trusted observer callbacks must
+return promptly. Ready means policy verified; working means prompt admitted to
+the pipe queue. Cancellation/deadline is checked again at that admission boundary.
+No model work is admitted after an observed global terminal condition.
+
+Every required lane produces an attributed report, sorted in plan order, with a
+result, last valid observed usage and explicit NotStarted/Stopped/Unconfirmed
+cleanup. Success requires every lane to be Completed with confirmed process stop.
+Truncation, partial failure, timeout, cancellation and budget exhaustion remain
+separate outcomes. Unconfirmed cleanup cannot publish a completed worker or
+run_finished. Final pipe data is drained within its bounds after child exit,
+rather than treating reaping alone as loss of the remaining final response.
+
+The journal holds its exclusive lease throughout ownership and records metadata,
+content hashes and process history, never raw task/role/result text. run_finished
+retains workers/completed counts. The tool-free profile's new truncation and
+unconfirmed-cleanup cases require matching recovery-reader support; no automatic
+reconciliation or recorded-PID signalling is introduced here. An infrastructure
+or journal error fails the call and triggers owned-process Drop cleanup; it is
+not a successful report or proof of billing termination.
+
+Reported usage can overrun an observed token threshold before a response settles.
+The loop also checks aggregate observations, but these are not hard pre-request
+or monetary caps. Output counts include the single overflow detection byte.
+The configurable per-response token allowance still belongs to its request-budget
+integration slice. There is no paid run in this implementation or its tests.
+
+Real-bwrap mock tests cover parallel/serial lanes, complete and truncated fan-in,
+a large final reply followed by process exit, full control-queue cancellation,
+steer admission, targeted queued/live cancellation, per-worker/run deadlines,
+output/token overruns and pre-launch validation. Removing the final cancellation
+guard makes the mock-side-effect regression fail; restoring it passes. This is
+local protocol/process acceptance, not a production-model evening-run claim.

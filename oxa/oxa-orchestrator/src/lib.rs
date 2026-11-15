@@ -21,3 +21,6 @@ pub mod native;
 
 #[cfg(feature = "core")]
 pub mod rpc;
+
+#[cfg(feature = "core")]
+pub mod supervisor;
