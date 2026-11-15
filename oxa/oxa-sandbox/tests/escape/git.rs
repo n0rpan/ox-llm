@@ -756,3 +756,39 @@ fn a_write_bind_below_custom_hooks_does_not_refuse_unrelated_work() {
     let (exit, out) = run(&sb, &work, "printf ordinary > generated.txt", true, false);
     assert_ok(exit, &out, "ordinary work outside configured hook tree");
 }
+
+/// Control: online GH configuration stays read-only even when a user write bind covers it.
+/// Attempt: write benign config beside nested custom hooks after their ancestors are pinned.
+/// Expected refusal: the GH directory's read-only mount wins; ordinary config reads work.
+#[test]
+fn custom_hook_pins_do_not_reopen_read_only_gh_config() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let gh = env.home().join(".config/gh");
+    let hooks = gh.join("helpers/hooks");
+    dir(&hooks);
+    write(&gh.join("hosts.yml"), "synthetic-token-store");
+    write(&gh.join("helpers/config.yml"), "keep");
+    config(
+        &work,
+        &format!(
+            "[core]\n\trepositoryformatversion = 0\n\thooksPath = {}\n",
+            hooks.display()
+        ),
+    );
+    let Some(mut sb) = sandbox(&env) else { return };
+    sb.layout.write.push(gh.clone());
+    let target = gh.join("helpers/config.yml");
+    let (exit, out) = run(
+        &sb,
+        &work,
+        &format!("printf replacement > {}", target.display()),
+        true,
+        true,
+    );
+    assert_refused(exit, &out, "GH config remains read-only");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+    let (exit, out) = run(&sb, &work, &format!("cat {}", target.display()), true, true);
+    assert_ok(exit, &out, "benign GH config stays readable");
+    assert!(out.contains("keep"));
+}

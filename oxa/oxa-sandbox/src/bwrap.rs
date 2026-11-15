@@ -145,10 +145,6 @@ pub(crate) fn bwrap_args_homes(
         && gh_source_is_safe(&gh_src, &[home, &home_c], real_home, real_c.as_deref(), layout)
         && !std::fs::symlink_metadata(gh_src.join(GH_HOSTS)).is_ok_and(|m| m.file_type().is_symlink());
     if gh_open {
-        push(
-            &mut a,
-            &["--ro-bind", &gh_src.to_string_lossy(), &gh.to_string_lossy()],
-        );
         // An empty, readable regular file (gh fails on `/dev/null` here: permission denied).
         if let (true, Some(_)) = (gh_src.join(GH_HOSTS).exists(), &gh_empty) {
             // The empty-file masks are emitted late (after every bind that could cover them,
@@ -223,6 +219,13 @@ pub(crate) fn bwrap_args_homes(
     for p in hook_parent_pins(&hooks, &mounts) {
         let p = p.to_string_lossy();
         push(&mut a, &["--bind", &p, &p]);
+    }
+    // This read-only configuration bind must also win over every writable ancestor pin.
+    if gh_open {
+        push(
+            &mut a,
+            &["--ro-bind", &gh_src.to_string_lossy(), &gh.to_string_lossy()],
+        );
     }
     for p in layout
         .git
@@ -955,6 +958,11 @@ fn hooks_mounts(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) -> Moun
             .ro
             .extend(protected_paths(cwd).into_iter().filter(|p| is_real(p)));
     }
+    // GH config is read-only online and masked offline. Its late mount hides earlier
+    // writable binds below it; source aliases elsewhere keep their own mount permissions.
+    let gh = home.join(GH_CONFIG);
+    mounts.rw.retain(|p| !p.starts_with(&gh));
+    mounts.ro.push(gh);
     mounts
 }
 
