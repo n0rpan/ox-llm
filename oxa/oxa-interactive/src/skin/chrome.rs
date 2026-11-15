@@ -10,11 +10,11 @@ use super::{badge, glyphs, left_right, meter, sprite_frame, Glyphs, Sprite};
 /// What the hint bar should teach right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintContext {
-    /// Nothing runs. `has_text`: the editor is not empty; `slash`: its text starts with `/`;
-    /// `armed`: a first Ctrl+C cleared an empty editor, so a second one exits (quit unconfirmed).
+    /// Nothing runs. `has_text`: the editor is not empty; `slash`: its text starts with `/`.
     Idle {
         has_text: bool,
         slash: bool,
+        /// A Ctrl+C was just pressed on an empty editor: the next one quits.
         armed: bool,
     },
     /// A run is in progress (thinking, streaming, tool, compaction, retry, queue).
@@ -398,6 +398,11 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
             armed,
             ..
         } => vec![
+            if armed {
+                action_hint(keymap, "app.clear", "exit", "warning", theme)
+            } else {
+                None
+            },
             act("tui.input.submit", "send"),
             Some(hint("/", "commands", "text", theme)),
             act("app.model.select", "models"),
@@ -409,14 +414,7 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
             } else {
                 None
             },
-            if armed {
-                // A first Ctrl+C cleared the empty editor; a second one exits. Show the clear
-                // key as the exit (warning) so the first, no-op press is not left unexplained,
-                // and drop the plain exit key to avoid two "exit" hints.
-                action_hint(keymap, "app.clear", "exit", "warning", theme)
-            } else {
-                act("app.exit", "exit")
-            },
+            if armed { None } else { act("app.exit", "exit") },
         ],
         HintContext::Idle {
             has_text: true,

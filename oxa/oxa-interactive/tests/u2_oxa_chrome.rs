@@ -1201,3 +1201,17 @@ fn hud_keeps_location_at_60_columns() {
         assert!(line.contains("READY"), "state at {width}: {line:?}");
     }
 }
+
+#[test]
+fn hint_armed_shows_clear_key_as_exit() {
+    let idle = |armed| HintContext::Idle {
+        has_text: false,
+        slash: false,
+        armed,
+    };
+    let plain = hints(idle(false), false);
+    let armed = hints(idle(true), false);
+    assert!(plain.contains("ctrl+d exit"), "{plain:?}");
+    assert!(armed.contains("ctrl+c exit"), "{armed:?}");
+    assert!(!armed.contains("ctrl+d exit"), "{armed:?}");
+}
