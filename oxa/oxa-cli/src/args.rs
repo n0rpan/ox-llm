@@ -646,9 +646,12 @@ fn parse_flag(
             )?;
             if let Some(m) = Mode::parse(&v) {
                 a.permission_mode = Some(m);
-                if m == Mode::Plan {
-                    a.level = Some(PermissionMode::Plan);
-                }
+                // The last flag given wins: `workspace` and `ask` prompt, so they end an
+                // earlier `--yolo` / `--auto`.
+                a.level = Some(match m {
+                    Mode::Plan => PermissionMode::Plan,
+                    _ => PermissionMode::Standard,
+                });
             } else if let Some(level) = PermissionMode::parse(&v) {
                 a.level = Some(level);
             } else {

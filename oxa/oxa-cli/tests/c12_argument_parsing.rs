@@ -415,3 +415,15 @@ fn prompts_keep_order_and_default_is_empty() {
     assert_eq!(a.files, ["f"]);
     assert_eq!(parse(&[]), Args::default());
 }
+
+/// Review of #314: the last permission flag wins, also when it is `workspace` or `ask`.
+#[test]
+fn last_permission_flag_wins_over_an_earlier_yolo() {
+    use oxa_proto::PermissionMode;
+    for m in ["ask", "workspace"] {
+        let a = parse(&["--yolo", "--permission-mode", m]);
+        assert_eq!(a.level, Some(PermissionMode::Standard), "{m}");
+    }
+    let a = parse(&["--permission-mode", "ask", "--yolo"]);
+    assert_eq!(a.level, Some(PermissionMode::Yolo));
+}
