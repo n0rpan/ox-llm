@@ -204,8 +204,8 @@ impl ReplyAssembler {
             if at_start {
                 let lead = buf.len() - buf.trim_start().len();
                 let rest = &buf[lead..];
-                if rest.starts_with(OPEN) {
-                    buf = rest[OPEN.len()..].to_string();
+                if let Some(after) = rest.strip_prefix(OPEN) {
+                    buf = after.to_string();
                     self.in_think = true;
                     continue;
                 }
