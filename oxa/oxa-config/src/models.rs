@@ -6,7 +6,7 @@ use oxa_proto::{codes, Level, OxaError, ThinkingLevel};
 
 /// The endpoint name oxa gives the local engine (`OXA_PROVIDER` is always this).
 pub(crate) const ENGINE_ENDPOINT: &str = "oxe";
-/// Used when neither models.json nor `OXA_ENGINE_URL` names an endpoint: the local-ai
+/// Used when neither models.json nor `OXA_ENGINE_URL` names an endpoint: the oxc
 /// controller on loopback (its OpenAI-compatible API, `/_local/status` with the per-model
 /// limits and capabilities, the queue). A bare engine (`oxe-server`, default port 8080) is
 /// reached by naming it in models.json or `OXA_ENGINE_URL`.
@@ -345,7 +345,9 @@ pub fn resolve_model(
             None => return Err(not_found(pattern, available)),
         }
     } else if let Some((head, _)) = text.split_once('/') {
-        if is_non_engine(head) && find_endpoint(available, head).is_none() {
+        let base = split_thinking(text).map_or(text, |(b, _)| b);
+        let is_id = |t: &str| available.iter().any(|m| m.model.eq_ignore_ascii_case(t));
+        if is_non_engine(head) && find_endpoint(available, head).is_none() && !is_id(text) && !is_id(base) {
             return Err(unsupported_provider(head));
         }
     }
@@ -484,7 +486,11 @@ fn match_in<'a>(text: &str, pool: &[&'a ModelRef]) -> Option<&'a ModelRef> {
 }
 
 fn qualified(m: &ModelRef) -> String {
-    format!("{}/{}", m.endpoint, m.model)
+    if m.endpoint.is_empty() {
+        m.model.clone()
+    } else {
+        format!("{}/{}", m.endpoint, m.model)
+    }
 }
 
 fn glob_matches(pattern: &str, m: &ModelRef) -> bool {

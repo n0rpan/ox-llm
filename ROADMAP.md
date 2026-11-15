@@ -23,4 +23,4 @@ with one tag and one release page. See [DECISIONS.md](DECISIONS.md) for the reas
 
 - Maintenance mode: no always-on agents. Issues come from use and from the health digest.
 - Research is driven by the data, with pre-registered thresholds. Parked: NPU prefill/decode, int8/fp8
-  KV, 256K contexts. Rejected paths are kept in [lab/docs/FAILED-PATHS.md](lab/docs/FAILED-PATHS.md).
+  KV, 256K contexts. Rejected paths are kept in [oxc/docs/FAILED-PATHS.md](oxc/docs/FAILED-PATHS.md).

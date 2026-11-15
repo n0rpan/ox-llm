@@ -180,11 +180,13 @@ fn all_blocks() -> Vec<Block> {
         Block::Compaction {
             summary: "Earlier work: the range helpers were reviewed.".to_string(),
             tokens_before: 15260,
+            tokens_after: None,
             expanded: false,
         },
         Block::Compaction {
             summary: "Earlier work: the range helpers were reviewed.".to_string(),
             tokens_before: 15260,
+            tokens_after: None,
             expanded: true,
         },
         Block::BranchSummary {
@@ -635,6 +637,7 @@ fn compaction_collapsed_divider() {
     let block = Block::Compaction {
         summary: "Earlier work.".to_string(),
         tokens_before: 15260,
+        tokens_after: None,
         expanded: false,
     };
     let lines = plain_lines(&render_block(&block, &fx.cx(80)));
@@ -653,6 +656,7 @@ fn compaction_expanded_has_no_hint_and_a_rail() {
     let block = Block::Compaction {
         summary: "Earlier work.".to_string(),
         tokens_before: 15260,
+        tokens_after: None,
         expanded: true,
     };
     let lines = plain_lines(&render_block(&block, &fx.cx(60)));
@@ -848,6 +852,7 @@ fn ascii_skin_with_ascii_input_is_pure_ascii() {
         Block::Compaction {
             summary: "Summary text.".to_string(),
             tokens_before: 99,
+            tokens_after: None,
             expanded: false,
         },
         Block::Notice {
@@ -964,3 +969,17 @@ const PI_DARK_READ_DONE: &[&str] = &["\u{1b}[48;2;41;64;50m \u{1b}[38;2;223;224;
 const PI_DARK_BASH_FAILED: &[&str] = &["\u{1b}[48;2;91;40;42m \u{1b}[38;2;223;224;225m\u{1b}[1m$\u{1b}[22m\u{1b}[39m cargo test\u{1b}[0m\u{1b}[48;2;91;40;42m                                               \u{1b}[49m", "\u{1b}[48;2;91;40;42m \u{1b}[38;2;232;128;130merror[E0308]: mismatched\u{1b}[39m\u{1b}[0m\u{1b}[48;2;91;40;42m                                   \u{1b}[49m", "\u{1b}[48;2;91;40;42m \u{1b}[2mtook 3.0s\u{1b}[22m\u{1b}[0m\u{1b}[48;2;91;40;42m                                                  \u{1b}[49m", "\u{1b}[48;2;91;40;42m \u{1b}[38;2;232;128;130mexit 101\u{1b}[39m\u{1b}[0m\u{1b}[48;2;91;40;42m                                                   \u{1b}[49m"];
 const PI_DARK_BASH_RUNNING: &[&str] = &["\u{1b}[48;2;54;56;57m \u{1b}[38;2;223;224;225m\u{1b}[1m$\u{1b}[22m\u{1b}[39m ./run.sh\u{1b}[0m\u{1b}[48;2;54;56;57m                                                 \u{1b}[49m", "\u{1b}[48;2;54;56;57m \u{1b}[38;2;158;164;168mCompiling x\u{1b}[39m\u{1b}[0m\u{1b}[48;2;54;56;57m                                                \u{1b}[49m"];
 const PI_DARK_USER: &[&str] = &["\u{1b}[48;2;41;58;68m                                                            \u{1b}[0m", "\u{1b}[48;2;41;58;68m \u{1b}[38;2;223;224;225mFix it\u{1b}[39m\u{1b}[0m\u{1b}[48;2;41;58;68m                                                     \u{1b}[0m", "\u{1b}[48;2;41;58;68m                                                            \u{1b}[0m"];
+
+#[test]
+fn ascii_skin_expanded_compaction_has_only_ascii() {
+    let fx = Fx::plain(Skin::OxaAscii);
+    let block = Block::Compaction {
+        summary: "Earlier work.".to_string(),
+        tokens_before: 15260,
+        tokens_after: Some(4000),
+        expanded: true,
+    };
+    let lines = plain_lines(&render_block(&block, &fx.cx(60)));
+    assert!(lines.iter().any(|l| l.contains("15260 -> 4000")), "{lines:?}");
+    assert!(lines.iter().all(|l| l.is_ascii()), "{lines:?}");
+}

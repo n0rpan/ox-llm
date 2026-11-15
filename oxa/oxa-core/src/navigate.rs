@@ -384,13 +384,25 @@ fn branch_of_leaf(st: &SessionState) -> Vec<Entry> {
 /// rebuilt from that branch; a changed wire is one `leaf_move` rebase, an identical one keeps
 /// the transcript (and its cache expectation) as it is.
 fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<(), OxaError> {
-    let entries = st.store.load(dst)?;
-    let mut tree = Tree::new(entries);
-    if !tree.set_leaf(leaf) {
-        return Err(not_found(leaf));
-    }
-    let branch: Vec<Entry> = tree.branch(leaf).into_iter().cloned().collect();
-    let head = Transcript::project(&branch).wire().to_vec();
+    st.store.acquire(dst)?;
+    let loaded = (|| {
+        let entries = st.store.load(dst)?;
+        let mut tree = Tree::new(entries);
+        if !tree.set_leaf(leaf) {
+            return Err(not_found(leaf));
+        }
+        let branch: Vec<Entry> = tree.branch(leaf).into_iter().cloned().collect();
+        Ok((tree, Transcript::project(&branch).wire().to_vec()))
+    })();
+    let (tree, head) = match loaded {
+        Ok(value) => value,
+        Err(error) => {
+            st.store.abort_lock();
+            return Err(error);
+        }
+    };
+    // Adopt the destination and its writer lock together, releasing the old session.
+    st.store.commit_lock();
     if head.as_slice() != st.transcript.wire() {
         st.transcript.rebase(head, rebase_why::LEAF_MOVE);
     }

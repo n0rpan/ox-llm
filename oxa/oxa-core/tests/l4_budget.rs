@@ -1,9 +1,9 @@
-//! L4 (budget), end to end: a session under profile `local` with `oxa.compaction.softTokens: 8000`
-//! never hands the model a tool result longer than the budget of that working size (25% of 8000
-//! tokens at 3 bytes, 6000 bytes), for every built-in: `read`, `bash`, `grep`, `find` and `ls`.
-//! The output shaper (`exec`) applies the cap; `bash` keeps the tail and names a spill file that
-//! holds the full output. Profile `pi` with the same setting keeps pi's 16 KiB. Offline: `bash`
-//! runs `sh -c` in the test's own directory through a test sandbox, nothing else leaves the test.
+//! L4 (budget), end to end: a session with `oxa.compaction.softTokens: 8000` never hands the
+//! model a tool result longer than the budget of that working size (25% of 8000 tokens at
+//! 3 bytes, 6000 bytes), for every built-in: `read`, `bash`, `grep`, `find` and `ls`. The output
+//! shaper (`exec`) applies the cap; `bash` keeps the tail and names a spill file that holds the
+//! full output. Offline: `bash` runs `sh -c` in the test's own directory through a test
+//! sandbox, nothing else leaves the test.
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
@@ -145,6 +145,7 @@ fn tool_results(
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
@@ -176,23 +177,23 @@ fn tool_results(
 }
 
 #[test]
-fn local_with_a_soft_point_of_8000_caps_every_builtin_result_at_6000_bytes() {
+fn with_a_soft_point_of_8000_caps_every_builtin_result_at_6000_bytes() {
     let env = TestEnv::new();
     write_tree(&env);
     let cwd = env.work();
     let results = tool_results(
         &env,
         &cwd,
-        // The five results are compared in one request: the mid-run compaction (L5, on under
-        // `local`) would fold the earlier ones between steps, so it is off here.
-        r#"{"oxa": {"profile": "local", "compaction": {"softTokens": 8000, "midRun": false}}}"#,
+        // The five results are compared in one request: the mid-run compaction (L5, on by
+        // default) would fold the earlier ones between steps, so it is off here.
+        r#"{"oxa": {"compaction": {"softTokens": 8000, "midRun": false}}}"#,
         script(),
         None,
     );
     assert_eq!(results.len(), 5, "one result per call");
     let names = ["read", "bash", "grep", "find", "ls"];
     for (name, out) in names.iter().zip(&results) {
-        eprintln!("local soft 8000, {name}: returned {} bytes", out.len());
+        eprintln!("soft 8000, {name}: returned {} bytes", out.len());
         assert!(out.len() <= 6_000, "{name}: {} bytes", out.len());
     }
     // read: the first page is cut by bytes and the notice names the next offset.
@@ -237,14 +238,14 @@ fn local_with_a_soft_point_of_8000_caps_every_builtin_result_at_6000_bytes() {
 }
 
 #[test]
-fn local_on_a_large_window_cuts_grep_find_ls_and_an_explicit_read_at_16_kib_not_8() {
+fn on_a_large_window_cuts_grep_find_ls_and_an_explicit_read_at_16_kib_not_8() {
     let env = TestEnv::new();
     write_tree(&env);
     let cwd = env.work();
     let results = tool_results(
         &env,
         &cwd,
-        r#"{"oxa": {"profile": "local"}}"#,
+        r#"{"oxa": {}}"#,
         vec![
             ScriptTurn::tool("c1", "read", r#"{"path":"project/src/large.rs"}"#),
             ScriptTurn::tool("c2", "read", r#"{"path":"project/src/large.rs","offset":1}"#),
@@ -262,7 +263,7 @@ fn local_on_a_large_window_cuts_grep_find_ls_and_an_explicit_read_at_16_kib_not_
     assert_eq!(results.len(), 5, "one result per call");
     let names = ["first read", "explicit read", "grep", "find", "ls"];
     for (name, out) in names.iter().zip(&results) {
-        eprintln!("local large window, {name}: returned {} bytes", out.len());
+        eprintln!("large window, {name}: returned {} bytes", out.len());
         assert!(out.len() <= 16_384, "{name}: {} bytes", out.len());
         assert!(!out.contains("[output truncated"), "{name}: a shaper cut: {out}");
     }
@@ -292,31 +293,6 @@ fn local_on_a_large_window_cuts_grep_find_ls_and_an_explicit_read_at_16_kib_not_
     assert!(!results[4].contains("limit reached"), "ls: no cut");
 }
 
-#[test]
-fn pi_with_the_same_setting_keeps_pis_16_kib_read() {
-    let env = TestEnv::new();
-    write_tree(&env);
-    let cwd = env.work();
-    let results = tool_results(
-        &env,
-        &cwd,
-        r#"{"oxa": {"profile": "pi", "compaction": {"softTokens": 8000}}}"#,
-        vec![
-            ScriptTurn::tool("c1", "read", r#"{"path":"project/src/large.rs"}"#),
-            ScriptTurn::text("done"),
-        ],
-        None,
-    );
-    let read = &results[0];
-    eprintln!("pi soft 8000, read: returned {} bytes", read.len());
-    assert!(
-        read.len() > 8_000 && read.len() <= 16_384 + 200,
-        "got {}",
-        read.len()
-    );
-    assert!(!read.contains("Or use grep"), "pi has no local hint");
-}
-
 /// The first `read` of the 67,000-byte file (no offset or limit) under `settings` and an engine
 /// that publishes `compact_at`: the result's length, a 131,072-token window.
 fn first_read_len(settings: &str, compact_at: Option<u32>) -> usize {
@@ -340,34 +316,28 @@ fn first_read_len(settings: &str, compact_at: Option<u32>) -> usize {
 fn a_soft_point_only_derived_from_the_window_does_not_size_the_budget() {
     // The default reserve (16384) derives a soft point of about 85000 tokens on this window.
     // The budget ignores a derived point: the cap is pi's 16 KiB and the first page 8 KiB.
-    let len = first_read_len(r#"{"oxa": {"profile": "local"}}"#, None);
-    eprintln!("local, derived soft only, first read: {len} bytes");
+    let len = first_read_len(r#"{"oxa": {}}"#, None);
+    eprintln!("derived soft only, first read: {len} bytes");
     assert!(len > 7_000 && len <= 8_192, "got {len}");
 }
 
 #[test]
 fn an_explicit_soft_point_of_8000_caps_the_first_read_at_6000() {
-    let len = first_read_len(
-        r#"{"oxa": {"profile": "local", "compaction": {"softTokens": 8000}}}"#,
-        None,
-    );
-    eprintln!("local, softTokens 8000, first read: {len} bytes");
+    let len = first_read_len(r#"{"oxa": {"compaction": {"softTokens": 8000}}}"#, None);
+    eprintln!("softTokens 8000, first read: {len} bytes");
     assert!(len > 5_000 && len <= 6_000, "got {len}");
 }
 
 #[test]
 fn an_engine_compact_at_of_8000_caps_the_first_read_at_6000() {
-    let len = first_read_len(r#"{"oxa": {"profile": "local"}}"#, Some(8_000));
-    eprintln!("local, engine compact_at 8000, first read: {len} bytes");
+    let len = first_read_len(r#"{"oxa": {}}"#, Some(8_000));
+    eprintln!("engine compact_at 8000, first read: {len} bytes");
     assert!(len > 5_000 && len <= 6_000, "got {len}");
 }
 
 #[test]
 fn an_explicit_soft_point_of_100000_gives_the_16_kib_cap_and_the_8_kib_page() {
-    let len = first_read_len(
-        r#"{"oxa": {"profile": "local", "compaction": {"softTokens": 100000}}}"#,
-        None,
-    );
-    eprintln!("local, softTokens 100000, first read: {len} bytes");
+    let len = first_read_len(r#"{"oxa": {"compaction": {"softTokens": 100000}}}"#, None);
+    eprintln!("softTokens 100000, first read: {len} bytes");
     assert!(len > 7_000 && len <= 8_192, "got {len}");
 }

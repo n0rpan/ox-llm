@@ -9,7 +9,7 @@ use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_engine::HttpEngine;
 use oxa_export::{default_output_name, export_html, write_export, ExportOpts, ExportTheme};
 use oxa_interactive::{
-    ask_trust_interactive, image_part, run as run_interactive, ClipImage, InteractiveOpts, Reopen,
+    ask_trust_interactive, image_part, run as run_interactive, ClipImage, InteractiveOpts, Reopen, ReopenFn,
     TrustChoice,
 };
 use oxa_perm::{
@@ -19,7 +19,7 @@ use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLev
 use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_rpc::{run_json, run_print, serve, Out};
 use oxa_sandbox::{Bwrap, NoSandbox};
-use oxa_session::{decode_entry, decode_header, import_session, FsStore, MemStore, SessionStore};
+use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -178,7 +178,13 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
-        let result = list_models(engine.as_ref(), &endpoint.name, search.as_deref(), &mut *stdout);
+        let result = list_models(
+            engine.as_ref(),
+            &endpoint.name,
+            search.as_deref(),
+            &mut *stdout,
+            &mut *stderr,
+        );
         return finish(result, &mut *stderr);
     }
 
@@ -291,6 +297,12 @@ struct Prep {
     name: Option<String>,
 }
 
+/// The one-line handshake warning of the engine (read by the `info` call of the session open;
+/// no request of its own).
+fn handshake_notice(built: &Built) -> Option<(Level, String)> {
+    built.engine.handshake_warning().map(|w| (Level::Warning, w))
+}
+
 /// `Session::open`, then pi's `--name` (`appendSessionInfo`).
 fn open_named(
     built: &Built,
@@ -329,14 +341,21 @@ struct Built {
 impl Built {
     /// Fresh `Deps` (the policy and built-in tools are not `Clone`).
     fn deps(&self, session_id: Option<String>) -> Deps {
+        // Issue #127 (b): one background-job registry per session, sharing the session's
+        // sandbox. The session kills its jobs on close/shutdown.
+        let jobs = Arc::new(oxa_tools::JobRegistry::new());
+        jobs.set_sandbox(self.sandbox.clone());
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
             // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_shell(oxa_tools::ShellConfig {
-                shell_path: self.settings.shell_path(&self.dirs.home),
-                command_prefix: self.settings.shell_command_prefix(),
-            }),
+            tools: oxa_tools::builtin_tools_with_shell_and_jobs(
+                oxa_tools::ShellConfig {
+                    shell_path: self.settings.shell_path(&self.dirs.home),
+                    command_prefix: self.settings.shell_command_prefix(),
+                },
+                jobs.clone(),
+            ),
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
@@ -344,8 +363,9 @@ impl Built {
             // O-182: YOLO answers the policy's questions; the guard above it is untouched.
             policy: Box::new(
                 ModePolicy::new()
-                    .with_guard(oxa_perm::PathGuard::new(
+                    .with_guard(oxa_perm::PathGuard::with_real_home(
                         &self.dirs.home,
+                        oxa_sandbox::account_home().as_deref(),
                         &self.dirs.agent_dir,
                         &self.dirs.tmp_dir,
                     ))
@@ -361,6 +381,7 @@ impl Built {
             thinking: self.thinking,
             mode: self.mode,
             session_id,
+            jobs,
         }
     }
 }
@@ -379,13 +400,6 @@ fn prepare(
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<Prep, OxaError> {
     let mut notices: Vec<(Level, String)> = Vec::new();
-    // `OXA_PROFILE` over every settings layer, for every `Settings::load` of this process.
-    notices.extend(
-        oxa_config::set_env_overrides(env)
-            .into_iter()
-            .map(|d| (d.level, format!("{}: {}", d.source, d.message))),
-    );
-
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -406,10 +420,15 @@ fn prepare(
         _ => DefaultTrust::Ask,
     };
     let gated = gated_resources(cwd);
+    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
+    // an explicit `-na` still wins.
+    let approve = a
+        .approve
+        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
     let mut trust_store = TrustStore::load(&dirs.trust_file());
     // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
     // saved decision and the default (pi's `resolveProjectTrusted`).
-    let extension = if a.approve.is_none() && !gated.is_empty() {
+    let extension = if approve.is_none() && !gated.is_empty() {
         extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, &mut notices)
     } else {
         None
@@ -417,7 +436,7 @@ fn prepare(
     let interactive = mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty;
     let saved = trust_store.lookup(cwd);
     let outcome = resolve_trust(&TrustInputs {
-        flag: a.approve,
+        flag: approve,
         extension,
         saved,
         default,
@@ -466,7 +485,7 @@ fn prepare(
             dirs,
             cwd,
             store: &mut trust_store,
-            via_flag: a.approve == Some(true),
+            via_flag: approve == Some(true),
             via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
             asked_now,
             interactive,
@@ -482,6 +501,14 @@ fn prepare(
                 "project resources were skipped (not trusted): {}",
                 gated.join(", ")
             ),
+        ));
+    }
+    // `done` is a project-only key in practice: an untrusted project's list is never merged,
+    // so say that its checks will not run.
+    if !trusted && Settings::project_declares_done(dirs, cwd) {
+        notices.push((
+            Level::Warning,
+            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
         ));
     }
     let mut settings = child.apply(Settings::load(dirs, cwd, trusted));
@@ -881,7 +908,7 @@ fn run_headless(
         built,
         open,
         session_id,
-        notices,
+        mut notices,
         name,
         ..
     } = prep;
@@ -889,6 +916,7 @@ fn run_headless(
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
+    notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
     let result = match mode {
         RunMode::Json => run_json(&mut session, prompts, stdout, stderr),
@@ -913,7 +941,7 @@ fn run_rpc(
         built,
         open,
         session_id,
-        notices,
+        mut notices,
         name,
         ..
     } = prep;
@@ -921,6 +949,7 @@ fn run_rpc(
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
+    notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
@@ -945,7 +974,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         built,
         open,
         session_id,
-        notices,
+        mut notices,
         gated,
         name,
     } = prep;
@@ -953,6 +982,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
+    notices.extend(handshake_notice(&built));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
@@ -975,14 +1005,24 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
     let settings = built.settings.clone();
     let store = built.store.clone();
     let base = built.clone();
-    let reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send> = Box::new(move |request| {
+    let reopen: ReopenFn = Box::new(move |request, carry| {
+        let mut deps = base.deps(None);
+        // `/new` keeps the model and thinking level of the session it leaves (a `/model`
+        // switch is present in the status bar but only as a `ModelChange` entry of the old
+        // session); `/resume`, fork and import restore the target session's own, and any
+        // startup `--model` choice in `base` is left untouched for them.
         let how = match request {
-            Reopen::New => Open::New,
+            Reopen::New => {
+                if let Some((model, thinking)) = carry {
+                    deps.model = Some(model);
+                    deps.thinking = Some(thinking);
+                }
+                Open::New
+            }
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
-            Reopen::Import(path) => Open::Resume(import_session(&path, base.store.as_ref(), &base.cwd)?),
         };
-        Session::open(base.deps(None), how)
+        Session::open(deps, how)
     });
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
@@ -1064,12 +1104,23 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     Ok(Arc::new(engine))
 }
 
+/// The provider column: the controller's `remote_provider` (else `cloud`) for a cloud model,
+/// the endpoint name for a local one.
+fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
+    match (info.caps.remote, info.caps.remote_provider) {
+        (_, Some(p)) => p.to_string(),
+        (true, None) => "cloud".to_string(),
+        _ => endpoint.to_string(),
+    }
+}
+
 /// `--list-models [search]`: a table of the engine's models (pi's columns), sorted by id.
 fn list_models(
     engine: &dyn Engine,
     provider: &str,
     search: Option<&str>,
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<i32, OxaError> {
     let info = engine.info(None)?;
     let mut ids = info.models.clone();
@@ -1081,19 +1132,41 @@ fn list_models(
     let needle = search.map(|s| s.to_lowercase());
     let rows: Vec<[String; 6]> = ids
         .into_iter()
-        .filter(|id| match &needle {
-            Some(n) => format!("{provider} {id}").to_lowercase().contains(n.as_str()),
-            None => true,
-        })
         .map(|id| {
-            [
-                provider.to_string(),
-                id,
-                format_tokens(info.n_ctx as u64),
-                format_tokens(info.max_output as u64),
-                "yes".to_string(),
-                "no".to_string(),
-            ]
+            let model_info = if id == info.limits_for {
+                Ok(info.clone())
+            } else {
+                engine.info(Some(&id))
+            };
+            match model_info {
+                Ok(model_info) => [
+                    row_provider(provider, &model_info),
+                    id,
+                    format_tokens(model_info.n_ctx as u64),
+                    format_tokens(model_info.max_output as u64),
+                    model_info.thinking.map_or_else(|| "?".to_string(), bool_word),
+                    model_info.images.map_or_else(|| "?".to_string(), bool_word),
+                ],
+                // A failing per-model info call degrades only this row: '?' in the limits
+                // columns (never another model's limits), and the listing continues.
+                Err(e) => {
+                    let _ = writeln!(err, "warning: cannot list {id}: {}", e.message);
+                    [
+                        provider.to_string(),
+                        id,
+                        "?".to_string(),
+                        "?".to_string(),
+                        "?".to_string(),
+                        "?".to_string(),
+                    ]
+                }
+            }
+        })
+        .filter(|row| match &needle {
+            Some(n) => format!("{} {}", row[0], row[1])
+                .to_lowercase()
+                .contains(n.as_str()),
+            None => true,
         })
         .collect();
     let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
@@ -1129,6 +1202,15 @@ fn list_models(
         writeln!(out, "{}", line(&cells)).map_err(write_err)?;
     }
     Ok(0)
+}
+
+/// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`.
+fn bool_word(b: bool) -> String {
+    if b {
+        "yes".to_string()
+    } else {
+        "no".to_string()
+    }
 }
 
 /// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
@@ -1358,6 +1440,7 @@ fn finish(result: Result<i32, OxaError>, err: &mut dyn Write) -> i32 {
 fn exit_code(e: &OxaError) -> i32 {
     match e.code {
         codes::USAGE | codes::ENGINE_DOWN | codes::UNSUPPORTED_IN_OXA => 2,
+        codes::BUDGET_EXHAUSTED => oxa_proto::EXIT_BUDGET,
         _ => 1,
     }
 }
@@ -1463,5 +1546,133 @@ impl oxa_proto::Host for TrustHost {
                 "only file access is available while project trust is being resolved",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod model_limits_tests {
+    use super::*;
+    use oxa_proto::{AssistantTurn, CancelToken, ChatRequest, EngineInfo, StreamEvent};
+
+    struct CatalogEngine;
+
+    impl Engine for CatalogEngine {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            let models =
+                serde_json::from_str(include_str!("../../oxa-engine/tests/fixtures/remote-models.json"))
+                    .unwrap();
+            let status = serde_json::json!({
+                "model": "local", "context_size": 131072, "max_output": 16384,
+                "model_limits": {"anthropic/claude-sonnet-5-5": {"capabilities":
+                    {"remote": true, "remote_provider": "anthropic"}}}
+            });
+            oxa_engine::parse_info_for("http://localhost:1234", &models, &status, target)
+        }
+
+        fn count_tokens(&self, _: &str) -> Result<u32, OxaError> {
+            panic!("listing models must not tokenize")
+        }
+
+        fn chat(
+            &self,
+            _: &ChatRequest,
+            _: &CancelToken,
+            _: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            panic!("listing models must not generate")
+        }
+    }
+
+    #[test]
+    fn list_models_uses_each_models_limits() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        list_models(&CatalogEngine, "oxe", Some("sonnet"), &mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
+        assert_eq!(&row[1..4], &["anthropic/claude-sonnet-5-5", "200K", "32K"]);
+
+        let mut out = Vec::new();
+        list_models(&CatalogEngine, "oxe", Some("local"), &mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
+        assert_eq!(&row[1..4], &["local", "131.1K", "16.4K"]);
+    }
+
+    #[test]
+    fn list_models_shows_the_cloud_provider() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        list_models(&CatalogEngine, "oxe", None, &mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let col0 = |id: &str| {
+            let l = text.lines().find(|l| l.split_whitespace().nth(1) == Some(id));
+            l.unwrap().split_whitespace().next().unwrap().to_string()
+        };
+        assert_eq!(col0("anthropic/claude-sonnet-5-5"), "anthropic");
+        assert_eq!(col0("local"), "oxe");
+    }
+
+    /// A failing per-model `info(Some(id))` degrades only that row: '?' in the context,
+    /// max-out, thinking and images columns, while every other model still lists.
+    struct FailingInfoEngine {
+        fail_id: String,
+    }
+
+    impl Engine for FailingInfoEngine {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            if target == Some(self.fail_id.as_str()) {
+                return Err(OxaError::new(codes::ENGINE_HTTP, "boom"));
+            }
+            CatalogEngine.info(target)
+        }
+
+        fn count_tokens(&self, _: &str) -> Result<u32, OxaError> {
+            panic!("listing models must not tokenize")
+        }
+
+        fn chat(
+            &self,
+            _: &ChatRequest,
+            _: &CancelToken,
+            _: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            panic!("listing models must not generate")
+        }
+    }
+
+    #[test]
+    fn list_models_degrades_a_failing_info_row() {
+        let engine = FailingInfoEngine {
+            fail_id: "anthropic/claude-sonnet-5-5".to_string(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        list_models(&engine, "oxe", None, &mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        // The listing succeeds and still contains every model id.
+        for id in ["local", "anthropic/claude-sonnet-5-5"] {
+            assert!(
+                text.lines().any(|l| l.split_whitespace().nth(1) == Some(id)),
+                "missing {id}"
+            );
+        }
+
+        // A one-line warning on stderr names the degrading row and its error.
+        let err = String::from_utf8(err).unwrap();
+        assert!(
+            err.contains("anthropic/claude-sonnet-5-5") && err.contains("boom"),
+            "stderr names the row and error: {err:?}"
+        );
+
+        // The failing row shows '?' in the context, max-out, thinking and images columns.
+        let row: Vec<_> = text
+            .lines()
+            .find(|l| l.split_whitespace().nth(1) == Some("anthropic/claude-sonnet-5-5"))
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        assert_eq!(&row[2..], &["?", "?", "?", "?"]);
     }
 }

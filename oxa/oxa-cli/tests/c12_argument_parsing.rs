@@ -377,8 +377,8 @@ fn subcommands_split() {
     let a = parse(&["list"]);
     assert_eq!(a.subcommand, Some(Subcommand::Pkg("list".into(), vec![])));
 
-    let a = parse(&["config", "--import-pi"]);
-    assert_eq!(a.subcommand, Some(Subcommand::Config(argv(&["--import-pi"]))));
+    let a = parse(&["config", "-l"]);
+    assert_eq!(a.subcommand, Some(Subcommand::Config(argv(&["-l"]))));
 
     // Only the first word is a subcommand; later words are prompts.
     let a = parse(&["-p", "mcp"]);

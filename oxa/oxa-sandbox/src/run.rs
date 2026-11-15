@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(20);
 /// After the child exited, how long a still-open pipe (a background process) may hold the call.
 const DRAIN: Duration = Duration::from_millis(200);
+/// Most captured output kept per command (head and tail halves); the middle is dropped.
+const CAPTURE_CAP: usize = 16 * 1024 * 1024;
 /// SIGTERM to the group, then SIGKILL after this long.
 const KILL_GRACE: Duration = Duration::from_secs(2);
 
@@ -26,13 +28,26 @@ pub fn run_argv(
     cancel: &CancelToken,
     live: &mut dyn FnMut(&[u8]),
 ) -> ExecResult {
+    run_argv_capture(argv, env, timeout_s, cancel, live, true)
+}
+
+/// [`run_argv`] with a choice: `capture = false` streams to `live` only and leaves
+/// `ExecResult.output` empty, so a long-lived process never grows the heap.
+pub fn run_argv_capture(
+    argv: &[String],
+    env: &[(String, String)],
+    timeout_s: Option<u32>,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
     let Some((prog, args)) = argv.split_first() else {
         return spawn_failed("no command to run".to_string());
     };
     let mut cmd = Command::new(prog);
     cmd.args(args)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, prog, None, timeout_s, cancel, live)
+    execute(cmd, prog, None, timeout_s, cancel, live, capture)
 }
 
 /// [`run_argv`] with `stdin` written to the child's standard input and then closed. A child
@@ -51,18 +66,103 @@ pub fn run_argv_stdin(
     let mut cmd = Command::new(prog);
     cmd.args(args)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, prog, Some(stdin), timeout_s, cancel, live)
+    execute(cmd, prog, Some(stdin), timeout_s, cancel, live, true)
+}
+
+/// Run `argv` (optionally feeding `stdin`) so that the child inherits `fd`, which is otherwise
+/// close-on-exec; only this child gets it.
+pub(crate) fn run_argv_fd(
+    argv: &[String],
+    stdin: Option<&[u8]>,
+    fd: Option<i32>,
+    timeout_s: Option<u32>,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
+    let Some((prog, args)) = argv.split_first() else {
+        return spawn_failed("no command to run".to_string());
+    };
+    let mut cmd = Command::new(prog);
+    cmd.args(args);
+    if let Some(fd) = fd {
+        // SAFETY: runs between fork and exec; fcntl is async-signal-safe and touches only
+        // our own descriptor in the child.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    execute(cmd, prog, stdin, timeout_s, cancel, live, capture)
 }
 
 /// Run `bash -c <command>` with the user's own rights in `s.cwd` (for `!cmd` / `!!cmd`, pi's
 /// behaviour). `s.writable` and `s.net` are ignored.
 pub fn run_unsandboxed(s: &ExecSpec, cancel: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+    run_unsandboxed_capture(s, cancel, live, true)
+}
+
+/// [`run_unsandboxed`] with `capture = false`: chunks go only to `live`, `output` stays empty.
+pub fn run_unsandboxed_capture(
+    s: &ExecSpec,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(&s.command)
         .current_dir(&s.cwd)
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, "bash", None, s.timeout_s, cancel, live)
+    execute(cmd, "bash", None, s.timeout_s, cancel, live, capture)
+}
+
+/// Bounded capture: the first and last `cap / 2` bytes, with a count of what was dropped.
+struct Capture {
+    half: usize,
+    head: Vec<u8>,
+    tail: std::collections::VecDeque<u8>,
+    dropped: u64,
+}
+
+impl Capture {
+    fn new(cap: usize) -> Self {
+        Capture {
+            half: cap / 2,
+            head: Vec::new(),
+            tail: std::collections::VecDeque::new(),
+            dropped: 0,
+        }
+    }
+
+    fn push(&mut self, mut chunk: &[u8]) {
+        if self.head.len() < self.half {
+            let n = (self.half - self.head.len()).min(chunk.len());
+            self.head.extend_from_slice(&chunk[..n]);
+            chunk = &chunk[n..];
+        }
+        self.tail.extend(chunk);
+        while self.tail.len() > self.half {
+            let over = self.tail.len() - self.half;
+            self.tail.drain(..over);
+            self.dropped += over as u64;
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        let mut out = self.head;
+        if self.dropped > 0 {
+            out.extend_from_slice(
+                format!("\n[... {} bytes of output dropped ...]\n", self.dropped).as_bytes(),
+            );
+        }
+        out.extend(self.tail);
+        out
+    }
 }
 
 fn spawn_failed(text: String) -> ExecResult {
@@ -92,6 +192,7 @@ fn execute(
     timeout_s: Option<u32>,
     cancel: &CancelToken,
     live: &mut dyn FnMut(&[u8]),
+    capture: bool,
 ) -> ExecResult {
     let (reader, writer) = match std::io::pipe() {
         Ok(p) => p,
@@ -146,7 +247,7 @@ fn execute(
     });
 
     let start = Instant::now();
-    let mut out: Vec<u8> = Vec::new();
+    let mut out = Capture::new(CAPTURE_CAP);
     let mut status: Option<ExitStatus> = None;
     let mut exited_at: Option<Instant> = None;
     let mut eof = false;
@@ -158,7 +259,9 @@ fn execute(
         match rx.recv_timeout(POLL) {
             Ok(chunk) => {
                 live(&chunk);
-                out.extend_from_slice(&chunk);
+                if capture {
+                    out.push(&chunk);
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => eof = true,
@@ -205,7 +308,7 @@ fn execute(
         status.and_then(|s| s.code())
     };
     ExecResult {
-        output: out,
+        output: out.finish(),
         exit,
         timed_out,
     }
@@ -233,6 +336,31 @@ pub fn die_with_parent(cmd: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_output_is_capped_keeping_head_and_tail() {
+        let argv: Vec<String> = ["sh", "-c", "printf HEAD; head -c 40000000 /dev/zero; printf TAIL"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let r = run_argv(&argv, &[], None, &CancelToken::default(), &mut |_| {});
+        assert!(
+            r.output.len() < CAPTURE_CAP + 1024,
+            "captured {} bytes",
+            r.output.len()
+        );
+        assert!(r.output.starts_with(b"HEAD"));
+        assert!(r.output.ends_with(b"TAIL"));
+        let text = String::from_utf8_lossy(&r.output);
+        assert!(text.contains("bytes of output dropped"), "no drop notice");
+    }
+
+    #[test]
+    fn small_output_is_untouched() {
+        let mut c = Capture::new(10);
+        c.push(b"hello");
+        assert_eq!(c.finish(), b"hello");
+    }
 
     #[test]
     fn die_with_parent_command_runs_normally() {

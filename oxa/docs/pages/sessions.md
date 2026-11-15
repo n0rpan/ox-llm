@@ -14,7 +14,7 @@ Each session is one file named after the time it started and its id:
 2026-11-13T14-00-00-000Z_<session-id>.jsonl
 ```
 
-The directories are `0700` and the files `0600`. oxa opens files without following symbolic links, appends each entry, and syncs the file at the end of every turn. A last line cut off by a crash is dropped when the file is read again. Two oxa processes should not write one session at the same time; oxa does not lock files.
+The directories are `0700` and the files `0600`. oxa opens files without following symbolic links, appends each entry, and syncs the file at the end of every turn. A last line cut off by a crash is dropped when the file is read again. One oxa writes a session at a time: it holds a lock (`<session>.jsonl.lock` next to the file) while the session is open. A second oxa that opens the same session stops with `session is open in another oxa (pid N); use --fork to continue separately`; nothing is written. `--fork <id>` (or `/fork`) copies the session into a new file you can continue. The lock belongs to the process, so a crash or `kill` never leaves a stale lock; a leftover `.lock` file is harmless.
 
 With `--no-session` nothing is written. The session lives only for that run, and `OXA_SESSION_FILE` is unset for the bash tool.
 
@@ -86,11 +86,10 @@ Moving the leaf does not change what was sent before. The next request follows a
 - Shift+L on a tree entry sets or clears its label. Labels are stored as `label` entries and appear in the tree; the labelled-only filter lists them. Shift+T shows the time of each label.
 - `/name <text>` sets the session's display name, and `--name` sets it at start. The name appears in the footer and in the sessions picker.
 
-## Export and import
+## Export
 
 - `/export [path]` writes the session as one HTML file. The file contains the whole tree, so every branch can be browsed in a browser, and it works without a network connection. A `.jsonl` path copies the session file instead. Without a path oxa chooses a file name in the current directory.
 - `oxa --export <session file> [output]` does the same from the command line and exits. The output is HTML unless the output name ends in `.jsonl`.
-- `/import <path>` loads a JSONL session. The session keeps its id and its working directory.
 
 Nothing is uploaded. An export is a local file, and you decide where it goes.
 

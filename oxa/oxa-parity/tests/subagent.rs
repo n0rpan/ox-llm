@@ -17,7 +17,7 @@
 //! a row the product does not implement fails with a message that starts `RED <ID>:`.
 
 use oxa_fake::{FakeCaps, FakeModel, FakeOpts, FakeServer, Fault, Recorded, ScriptTurn, TestEnv};
-use oxa_parity::{oxa_bin, profile_env};
+use oxa_parity::oxa_bin;
 use oxa_proto::Role;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -82,7 +82,7 @@ impl Ran {
     }
 }
 
-/// `oxa <args>` in the work directory with `env.envs(url)` + the profile of the run + `extra`,
+/// `oxa <args>` in the work directory with `env.envs(url)` + `extra`,
 /// stdin closed; killed and failed after [`LIMIT`].
 fn oxa_with(env: &TestEnv, url: &str, args: &[&str], extra: &[(&str, &str)]) -> Ran {
     let mut child = Command::new(oxa_bin())
@@ -90,7 +90,7 @@ fn oxa_with(env: &TestEnv, url: &str, args: &[&str], extra: &[(&str, &str)]) -> 
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(url))
-        .envs(profile_env())
+        .envs(oxa_parity::note_off_env())
         .envs(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -247,7 +247,7 @@ impl Rpc {
             .current_dir(env.work())
             .env_clear()
             .envs(env.envs(url))
-            .envs(profile_env())
+            .envs(oxa_parity::note_off_env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1068,7 +1068,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for (id, verdict, _) in subagent_rows() {
         if verdict != "P" {
             continue;
@@ -1096,20 +1096,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             body.contains("assert") || body.contains("red("),
             "{id} (A) asserts its adapted behaviour"
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for (id, verdict, _) in subagent_rows() {
-        if verdict != "O" {
-            continue;
-        }
-        assert!(
-            fn_body(&id).contains("unsupported_in_oxa"),
-            "{id} (O) asserts the unsupported_in_oxa error"
         );
     }
 }

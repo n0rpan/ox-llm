@@ -30,7 +30,11 @@ fn deps(
         hooks,
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
-        settings: Settings::default(),
+        // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+        settings: Settings::from_values(
+            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({}),
+        ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),
@@ -39,6 +43,7 @@ fn deps(
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     }
 }
 

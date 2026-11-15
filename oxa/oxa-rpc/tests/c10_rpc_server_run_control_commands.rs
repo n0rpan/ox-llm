@@ -99,7 +99,11 @@ fn open_session(env: &TestEnv, engine: Arc<dyn Engine>) -> Session {
         hooks: Vec::new(),
         policy: Box::new(DenyAll),
         sandbox: Arc::new(NoBwrap),
-        settings: Settings::default(),
+        // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+        settings: Settings::from_values(
+            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({}),
+        ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),
@@ -108,6 +112,7 @@ fn open_session(env: &TestEnv, engine: Arc<dyn Engine>) -> Session {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("the session opens over the engine")
 }
@@ -439,6 +444,78 @@ fn new_session_fixture() {
     );
     assert_eq!(after["data"]["messageCount"], 0);
 
+    let (code, _) = rpc.finish();
+    assert_eq!(code, 0);
+}
+
+/// RPC `new_session` ends running background jobs: the cancel fires, the id is forgotten.
+#[test]
+fn new_session_ends_background_jobs() {
+    struct Block(Arc<AtomicBool>);
+    impl Sandbox for Block {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(&self, _s: &ExecSpec, c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
+            while !c.is_cancelled() {
+                thread::sleep(Duration::from_millis(5));
+            }
+            self.0.store(true, Ordering::SeqCst);
+            ExecResult::default()
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(Vec::new()));
+    let jobs = oxa_core::fresh_jobs();
+    let ended = Arc::new(AtomicBool::new(false));
+    jobs.set_sandbox(Arc::new(Block(ended.clone())));
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.agent_dir().join("sessions")));
+    let deps = Deps {
+        engine,
+        store,
+        tools: Vec::new(),
+        hooks: Vec::new(),
+        policy: Box::new(DenyAll),
+        sandbox: Arc::new(NoBwrap),
+        settings: Settings::from_values(
+            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({}),
+        ),
+        dirs: Dirs::under(env.root()),
+        cwd: env.work(),
+        selection: ToolSelection::default(),
+        resources: Default::default(),
+        model: None,
+        thinking: None,
+        mode: None,
+        session_id: None,
+        jobs: jobs.clone(),
+    };
+    let session = Session::open(deps, Open::New).expect("open");
+    let id = jobs
+        .spawn(ExecSpec {
+            command: "block".into(),
+            cwd: env.work(),
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(jobs.running(), 1);
+    let mut rpc = Rpc::start(session, &env);
+    let resp = rpc.call("n", json!({"type": "new_session"}));
+    assert_eq!(resp["success"], true);
+    assert_eq!(jobs.running(), 0);
+    assert_eq!(jobs.read(&id).unwrap_err(), format!("Unknown job: {id}"));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ended.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the job's cancel never fired");
+        thread::sleep(Duration::from_millis(5));
+    }
     let (code, _) = rpc.finish();
     assert_eq!(code, 0);
 }
