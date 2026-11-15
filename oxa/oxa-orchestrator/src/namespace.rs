@@ -91,24 +91,34 @@ mod tests {
         assert!(!trusted_owner(1001, user));
     }
 
+    // Fresh directory per test; removed on drop, even when an assert fails.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str, mode: u32) -> Self {
+            let path = std::env::temp_dir().join(format!("oxa-ns-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn world_writable_directory_without_sticky_bit_is_rejected() {
-        let dir = std::env::temp_dir().join(format!("oxa-ns-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
-        let file = File::open(&dir).unwrap();
-        let denied = check_namespace(&file).is_err();
-        std::fs::remove_dir(&dir).unwrap();
-        assert!(denied);
+        let dir = TempDir::new("open", 0o777);
+        assert!(check_namespace(&File::open(&dir.0).unwrap()).is_err());
     }
 
     #[test]
     fn private_own_directory_is_accepted() {
-        let dir = std::env::temp_dir().join(format!("oxa-ns-ok-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let ok = check_namespace(&File::open(&dir).unwrap()).is_ok();
-        std::fs::remove_dir(&dir).unwrap();
-        assert!(ok);
+        let dir = TempDir::new("ok", 0o700);
+        assert!(check_namespace(&File::open(&dir.0).unwrap()).is_ok());
     }
 }
