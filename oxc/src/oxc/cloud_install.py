@@ -18,6 +18,8 @@ import shutil
 import subprocess
 import sys
 
+from . import legacy_config
+
 RUNTIME = Path(__file__).resolve().parent / 'runtime'
 UNIT_NAME = re.compile(r'[A-Za-z0-9_.@-]{1,64}')
 
@@ -102,16 +104,29 @@ def unit(name, script, prefix):
             '[Install]\nWantedBy=default.target\n') % (name, script, prefix)
 
 
+def migrated_is_cloud_only(path):
+    try:
+        value = json.loads(Path(path).read_text())
+        cloud = value['cloud']
+        return value.get('cloud_only') is True and cloud.get('enabled') is True and bool(cloud.get('models'))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def install(args, runner=subprocess.run):
     if not UNIT_NAME.fullmatch(args.unit_name):
         raise InstallError('Invalid unit name.')
     if not 1 <= args.port <= 65535:
         raise InstallError('Invalid port.')
+    args.daily_budget_explicit = args.daily_budget is not None
+    if args.daily_budget is None:
+        args.daily_budget = 1.0
     if not args.daily_budget > 0:
         raise InstallError('The daily budget must be a positive USD amount.')
     prefix, config = Path(args.prefix).absolute(), Path(args.config_dir).absolute()
     models = load_models(args.models_file)
     runtime_json = config / 'runtime.json'
+    migrated = []
     script = prefix / 'bin/oxc-controller'
     unit_file = None
     if not args.no_systemd:
@@ -126,12 +141,21 @@ def install(args, runner=subprocess.run):
     for path in destinations:
         if os.path.islink(path):
             raise InstallError(f'refusing to write through a symlink: {path}')
-    if os.path.lexists(runtime_json) and not args.force:
+    if config == legacy_config.default_dir().absolute():
+        migrated = legacy_config.migrate(config)
+    keep = 'runtime.json' in migrated and not args.force and migrated_is_cloud_only(runtime_json)
+    if os.path.lexists(runtime_json) and not args.force and not keep and 'runtime.json' not in migrated:
         raise InstallError('runtime.json already exists in the config directory; it was kept (use --force to replace).')
     value = {'cloud_only': True, 'cloud': {'enabled': True, 'daily_budget_usd': args.daily_budget,
                                            'secrets_file': str(config / 'cloud-secrets.json'), 'models': models}}
     config.mkdir(parents=True, exist_ok=True, mode=0o700)
-    runtime_json.write_text(json.dumps(value, indent=2) + '\n')
+    if keep:
+        if args.daily_budget_explicit:
+            kept = json.loads(runtime_json.read_text())
+            kept['cloud']['daily_budget_usd'] = args.daily_budget
+            runtime_json.write_text(json.dumps(kept, indent=2) + '\n')
+    else:
+        runtime_json.write_text(json.dumps(value, indent=2) + '\n')
     os.chmod(runtime_json, 0o600)
     copy_runtime(prefix / 'share/oxc/runtime')
     (prefix / 'bin').mkdir(parents=True, exist_ok=True)
@@ -173,7 +197,7 @@ def main(argv=None, runner=subprocess.run):
     parser.add_argument('--unit-dir', help='default: ~/.config/systemd/user')
     parser.add_argument('--no-systemd', action='store_true', help='write no unit; run bin/oxc-controller in the foreground')
     parser.add_argument('--models-file', help='JSON object of remote catalog entries (docs/CLOUD-MODELS.md); default: docs/cloud-models.json')
-    parser.add_argument('--daily-budget', type=float, default=1.0, help='USD per day (default 1.0)')
+    parser.add_argument('--daily-budget', type=float, default=None, help='USD per day (default 1.0)')
     parser.add_argument('--oxa-binary', help='copy this built oxa binary to <prefix>/bin/oxa')
     parser.add_argument('--force', action='store_true', help='replace an existing runtime.json')
     args = parser.parse_args(argv)
