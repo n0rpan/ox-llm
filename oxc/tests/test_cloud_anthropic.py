@@ -7,7 +7,8 @@ import unittest
 from oxc.runtime import cloud, cloud_anthropic
 
 from mock_cloud import MockAnthropic
-from test_cloud_remote import CloudCase, KEY, LedgerFailClosed
+from test_cloud_remote import CloudCase, KEY
+import test_cloud_remote as remote_controls
 
 
 ANTHROPIC_SDK = importlib.util.find_spec("anthropic") is not None
@@ -512,9 +513,9 @@ class NonstreamSettlement(AnthropicBase):
         return super().start(mock=upstream, **kwargs)
 
     # Exercise the same real HTTP boundary for both provider adapters.
-    test_success_waits_for_ledger_settlement_before_client_completion = LedgerFailClosed.test_success_waits_for_ledger_settlement_before_client_completion
-    test_ledger_exception_is_not_retried_and_blocks_the_next_call = LedgerFailClosed.test_ledger_exception_is_not_retried_and_blocks_the_next_call
-    test_ledger_exception_after_append_does_not_duplicate_usage = LedgerFailClosed.test_ledger_exception_after_append_does_not_duplicate_usage
+    test_success_waits_for_ledger_settlement_before_client_completion = remote_controls.LedgerFailClosed.test_success_waits_for_ledger_settlement_before_client_completion
+    test_ledger_exception_is_not_retried_and_blocks_the_next_call = remote_controls.LedgerFailClosed.test_ledger_exception_is_not_retried_and_blocks_the_next_call
+    test_ledger_exception_after_append_does_not_duplicate_usage = remote_controls.LedgerFailClosed.test_ledger_exception_after_append_does_not_duplicate_usage
 
     def test_client_disconnect_preserves_the_settled_success(self):
         from unittest.mock import patch
