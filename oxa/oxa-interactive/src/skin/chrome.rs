@@ -145,6 +145,8 @@ const HUD_DROPS: usize = 10;
 
 /// The HUD's data, cleaned and ready to lay out. Built once per call.
 struct HudParts {
+    #[cfg(feature = "session-control")]
+    location: Option<String>,
     profile: Option<String>,
     speed: Option<String>,
     /// Cache hit: percent and fraction; `None` when unknown.
@@ -187,6 +189,10 @@ impl HudParts {
         };
         let model = clean(&st.model);
         HudParts {
+            #[cfg(feature = "session-control")]
+            location: st
+                .model_remote
+                .then(|| format!("cloud · {}", clean(st.model_provider.unwrap_or("remote")))),
             profile: clean_opt(profile),
             speed: st
                 .tok_per_s
@@ -309,8 +315,15 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
         }
     }
 
-    // 9: profile.
-    if shown(1) {
+    #[cfg(feature = "session-control")]
+    if let Some(location) = &p.location {
+        segs.push(theme.fg("accent", location));
+    }
+    // 9: profile. A cloud location remains visible when optional segments drop.
+    let show_profile = shown(1);
+    #[cfg(feature = "session-control")]
+    let show_profile = show_profile && p.location.is_none();
+    if show_profile {
         if let Some(profile) = &p.profile {
             segs.push(theme.fg("dim", profile));
         }

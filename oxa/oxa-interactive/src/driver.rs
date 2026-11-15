@@ -1203,6 +1203,11 @@ impl<'a> Loop<'a> {
         }
         if has("app.interrupt") && !self.editor.autocomplete_open() {
             let idle = !self.running() && !matches!(self.vm.status.activity, Activity::Retrying { .. });
+            #[cfg(feature = "session-control")]
+            if idle && oxa_orchestrator::tui::interrupt_idle(&self.session.id, &self.opts.dirs.agent_dir) {
+                self.restore_queue();
+                return;
+            }
             let (steering, follow_up) = self.handle.queued();
             let nothing_queued = steering.is_empty() && follow_up.is_empty();
             if idle && self.editor.text().trim().is_empty() && nothing_queued {

@@ -163,6 +163,15 @@ impl Sandbox for NetSandbox {
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         self.inner.bwrap_args(&self.clamp(s))
     }
+    #[cfg(feature = "owned-background")]
+    fn prepare_background(&self, s: &ExecSpec) -> Result<oxa_proto::PreparedBackground, OxaError> {
+        let spec = self.clamp_run(s);
+        let mut prepared = self.inner.prepare_background(&spec)?;
+        if let Some(token) = self.gh_token.as_ref().filter(|_| spec.net) {
+            prepared.redact(token);
+        }
+        Ok(prepared)
+    }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
         self.redacted_run(s, live, |s, live| self.inner.run(s, c, live))
     }

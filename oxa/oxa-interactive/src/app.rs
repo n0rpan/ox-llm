@@ -486,6 +486,13 @@ pub fn worker_loop_with(
     stop: WorkerStop,
 ) -> Option<SessionInfo> {
     let mut ui_proxy = UiProxy::new(ui.clone());
+    #[cfg(feature = "session-control")]
+    let _control = oxa_orchestrator::tui::attach(&session, {
+        let out = out.clone();
+        move |event| {
+            let _ = out.send(WorkerMsg::Event(event));
+        }
+    });
     let mut last = StatusModel::default();
     stop.enter(session.handle());
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
@@ -500,6 +507,10 @@ pub fn worker_loop_with(
         }
         if stop.is_stopped() || backlog.iter().any(|c| matches!(c, SessionCmd::Shutdown)) {
             break;
+        }
+        #[cfg(feature = "session-control")]
+        if let Some(s) = session.as_mut() {
+            oxa_orchestrator::tui::bind(s);
         }
         let cmd = match backlog.pop_front() {
             Some(cmd) => cmd,
@@ -596,6 +607,10 @@ pub fn worker_loop_with(
             // the request or cancels it (`Handle::cancel_background` in `Loop::send`,
             // `Loop::input`).
             SessionCmd::PrefillDraft { text, parts, gen } => {
+                #[cfg(feature = "session-control")]
+                if oxa_orchestrator::tui::owns_goal() {
+                    continue;
+                }
                 let Some(s) = session.as_mut() else { break };
                 if stop.draft_gen() == gen {
                     stop.set_drafting(true);
@@ -620,13 +635,19 @@ pub fn worker_loop_with(
                 let mut sink = ChanSink(out.clone());
                 // A1/A2: a panic in a command is reported like its error; the worker and the
                 // session go on (a run's busy flag is released by its guard).
-                let (mut result, swapped) =
-                    oxa_proto::panic::contain(|| execute(s, other, &mut sink, &mut ui_proxy, &ui, &out))
-                        .unwrap_or_else(|error| {
-                            let e =
-                                OxaError::new(codes::INTERNAL, format!("internal error (panic): {error}"));
-                            (Err(e), false)
-                        });
+                let (mut result, swapped) = oxa_proto::panic::contain(|| {
+                    #[cfg(feature = "session-control")]
+                    if let Err(error) = oxa_orchestrator::tui::admit(s) {
+                        return (Err(error), false);
+                    }
+                    execute(s, other, &mut sink, &mut ui_proxy, &ui, &out)
+                })
+                .unwrap_or_else(|error| {
+                    let e = OxaError::new(codes::INTERNAL, format!("internal error (panic): {error}"));
+                    (Err(e), false)
+                });
+                #[cfg(feature = "session-control")]
+                oxa_orchestrator::tui::settled(result.is_ok());
                 // pi: a navigation an extension cancelled (`session_before_tree` -> cancel) or
                 // whose summary the user aborted is a status, not an error.
                 if is_nav && result.as_ref().is_err_and(|e| e.code == codes::ABORTED) {
@@ -666,6 +687,12 @@ fn idle_tick(
     last: &mut StatusModel,
     stop: &WorkerStop,
 ) {
+    #[cfg(feature = "session-control")]
+    if oxa_orchestrator::tui::drive(s, &mut ChanSink(out.clone()), ui) {
+        let fresh = fresh_status(s, last);
+        let _ = out.send(WorkerMsg::Status(fresh));
+        return;
+    }
     // O-152: the first idle tick of a session with an empty wire prefills its frozen prefix
     // (H6, background), so the first prompt starts warm. Once per entered session. The preload
     // is invisible: its progress events are not shown (they would set the foreground activity
@@ -1405,6 +1432,8 @@ struct ChanSink(Sender<WorkerMsg>);
 
 impl EventSink for ChanSink {
     fn emit(&mut self, e: &AgentEvent) {
+        #[cfg(feature = "session-control")]
+        oxa_orchestrator::tui::observe(e);
         let _ = self.0.send(WorkerMsg::Event(e.clone()));
     }
 }
@@ -1661,6 +1690,13 @@ fn fresh_status(s: &Session, last: &mut StatusModel) -> StatusModel {
     let state = s.state();
     let stats = s.stats();
     let next = status_from(&state, &stats, last);
+    #[cfg(feature = "session-control")]
+    let next = {
+        let mut next = next;
+        next.ext_status.retain(|key, _| !key.starts_with("oxa.worker."));
+        next.ext_status.extend(oxa_orchestrator::tui::worker_rows());
+        next
+    };
     *last = next.clone();
     next
 }
@@ -1683,6 +1719,18 @@ pub(crate) fn refresh_status(dst: &mut StatusModel, fresh: StatusModel) {
     if dst.model != fresh.model || fresh.context_tokens == 0 {
         dst.last_cached = None;
         dst.last_prompt = None;
+    }
+    #[cfg(feature = "session-control")]
+    {
+        dst.model_remote = fresh.model_remote;
+        dst.model_provider = fresh.model_provider;
+        dst.ext_status.retain(|key, _| !key.starts_with("oxa.worker."));
+        dst.ext_status.extend(
+            fresh
+                .ext_status
+                .into_iter()
+                .filter(|(key, _)| key.starts_with("oxa.worker.")),
+        );
     }
     dst.model = fresh.model;
     dst.thinking = fresh.thinking;

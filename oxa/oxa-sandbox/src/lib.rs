@@ -81,6 +81,27 @@ impl Sandbox for Bwrap {
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         bwrap_args_with(s, &self.home, &self.layout)
     }
+    #[cfg(feature = "owned-background")]
+    fn prepare_background(&self, s: &ExecSpec) -> Result<oxa_proto::PreparedBackground, OxaError> {
+        self.check()?;
+        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+            return Err(OxaError::new(oxa_proto::codes::INVALID, why));
+        }
+        bwrap::create_missing_git_files(s, &self.home, &self.layout);
+        let (public, secret) = split_secrets(s);
+        let mut prepared = oxa_proto::PreparedBackground::new(
+            self.bwrap.clone(),
+            bwrap_args_with(&public, &self.home, &self.layout),
+        );
+        let at = prepared.args().len().saturating_sub(4);
+        prepared.private_env(&secret, at).map_err(|_| {
+            OxaError::new(
+                oxa_proto::codes::INVALID,
+                "cannot prepare private sandbox environment",
+            )
+        })?;
+        Ok(prepared)
+    }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
         if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
             return refused(why);

@@ -341,7 +341,7 @@ struct Built {
 impl Built {
     /// Fresh `Deps` (the policy and built-in tools are not `Clone`).
     fn deps(&self, session_id: Option<String>) -> Deps {
-        Deps {
+        let deps = Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
             // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
@@ -374,7 +374,10 @@ impl Built {
             thinking: self.thinking,
             mode: self.mode,
             session_id,
-        }
+        };
+        #[cfg(feature = "orchestrator")]
+        let deps = oxa_orchestrator::background::augment(deps);
+        deps
     }
 }
 

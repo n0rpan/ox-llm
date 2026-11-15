@@ -4,6 +4,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "oxa-a2a",
+    "oxa-orchestrator",
+    "oxa-owned-command",
     "oxa-proto",
     "oxa-engine", "oxa-session", "oxa-tools", "oxa-sandbox", "oxa-perm",
     "oxa-compact", "oxa-config", "oxa-resources", "oxa-script",
@@ -24,6 +27,7 @@ publish = false
 
 [workspace.dependencies]
 # internal
+oxa-owned-command = { path = "oxa-owned-command" }
 oxa-proto = { path = "oxa-proto" }
 oxa-engine = { path = "oxa-engine" }
 oxa-session = { path = "oxa-session" }

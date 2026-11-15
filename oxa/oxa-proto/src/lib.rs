@@ -90,3 +90,6 @@ pub mod names {
     /// Session file format version (pi v3 envelope).
     pub const SESSION_VERSION: u32 = 3;
 }
+
+#[cfg(feature = "owned-background")]
+pub use oxa_owned_command::Prepared as PreparedBackground;

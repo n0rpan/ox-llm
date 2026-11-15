@@ -400,6 +400,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "oxa-a2a"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oxa-cli"
 version = "0.2.0"
 dependencies = [
@@ -413,6 +421,7 @@ dependencies = [
  "oxa-fake",
  "oxa-interactive",
  "oxa-mcp",
+ "oxa-orchestrator",
  "oxa-perm",
  "oxa-proto",
  "oxa-resources",
@@ -526,6 +535,7 @@ dependencies = [
  "oxa-export",
  "oxa-fake",
  "oxa-mcp",
+ "oxa-orchestrator",
  "oxa-proto",
  "oxa-resources",
  "oxa-session",
@@ -547,6 +557,36 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+]
+
+[[package]]
+name = "oxa-orchestrator"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "oxa-a2a",
+ "oxa-cli",
+ "oxa-config",
+ "oxa-core",
+ "oxa-engine",
+ "oxa-fake",
+ "oxa-interactive",
+ "oxa-proto",
+ "oxa-resources",
+ "oxa-sandbox",
+ "oxa-session",
+ "oxa-tools",
+ "oxa-tui",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "oxa-owned-command"
+version = "0.2.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -584,6 +624,7 @@ dependencies = [
 name = "oxa-proto"
 version = "0.2.0"
 dependencies = [
+ "oxa-owned-command",
  "serde_json",
 ]
 

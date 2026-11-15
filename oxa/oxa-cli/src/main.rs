@@ -6,6 +6,10 @@ fn main() {
     let env = oxa_config::Env::from_process();
     // O-169: the Brave key stays in `env` only; no child process inherits it.
     oxa_web::remove_key_from_process_env();
+    #[cfg(feature = "orchestrator")]
+    if let Some(code) = oxa_orchestrator::cli::maybe_run(&args) {
+        std::process::exit(code);
+    }
     let code = oxa_cli::run(&args, &env, oxa_cli::Stdio::real());
     std::process::exit(code);
 }
