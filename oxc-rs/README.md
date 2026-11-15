@@ -22,7 +22,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 339 passing scenarios in 55
+suite has 351 passing scenarios in 56
 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
@@ -95,8 +95,10 @@ new context reaches its launch arguments. This is fixture validation only.
 Complete status/control state, optional turn diagnostics, PrefixStore lookup/save,
 qualified Flash/classic and execution-override profiles, installers,
 update/rollback, sharing/cloud secrets and remaining CLI commands are pending.
-Automatic native engine-ledger capture explicitly refuses launch until its adapter
-is implemented. Flash/classic
+Automatic native engine-ledger capture passes twelve reference cases: profile
+opt-in, a dedicated inherited pipe, numeric/enum filtering, bounded lines,
+stdout isolation, private rotation, advisory storage failures and unload/reload
+drain. Engine stdin remains `/dev/null`, and no unsafe Rust is used. Flash/classic
 profiles remain ineligible while their qualification adapters are missing. Full
 Rust conformance fails; no installation switch or hardware readiness is claimed.
 

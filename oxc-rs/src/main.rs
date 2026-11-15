@@ -5,6 +5,7 @@ mod daemon;
 mod diagnostics;
 mod engine;
 mod engine_cache;
+mod engine_ledger;
 mod guard;
 mod harness;
 mod ledger;
@@ -20,8 +21,9 @@ mod transport;
 
 fn main() {
     let words: Vec<String> = std::env::args().skip(1).collect();
-    if words.first().map(String::as_str) == Some("__engine_exec") {
-        use std::os::unix::process::CommandExt;
+    let ledger_exec = words.first().map(String::as_str) == Some("__engine_ledger_exec");
+    if ledger_exec || words.first().map(String::as_str) == Some("__engine_exec") {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
         if words.len() < 2 {
             std::process::exit(2);
         }
@@ -29,9 +31,30 @@ fn main() {
             std::process::exit(1);
         }
         nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
-        let error = std::process::Command::new(&words[1])
-            .args(&words[2..])
-            .exec();
+        let mut args = words[2..].to_vec();
+        let mut command = std::process::Command::new(&words[1]);
+        // This helper runs before Tokio starts, with all three standard
+        // descriptors installed by Command. dup leaves CLOEXEC clear only in
+        // this single-threaded child, never in the controller's descriptor table.
+        let _ledger_fd = if ledger_exec {
+            if args.len() < 2
+                || args[args.len() - 2] != "--ledger"
+                || args.last().map(String::as_str) != Some(engine_ledger::PIPE_ARGUMENT)
+            {
+                std::process::exit(2);
+            }
+            let descriptor = match nix::unistd::dup(std::io::stdin()) {
+                Ok(descriptor) => descriptor,
+                Err(_) => std::process::exit(1),
+            };
+            *args.last_mut().expect("ledger argument") =
+                format!("/proc/self/fd/{}", descriptor.as_raw_fd());
+            command.stdin(std::process::Stdio::null());
+            Some(descriptor)
+        } else {
+            None
+        };
+        let error = command.args(args).exec();
         eprintln!("local-ai: engine exec failed: {error}");
         std::process::exit(1);
     }

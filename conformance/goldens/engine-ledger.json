@@ -1,0 +1,843 @@
+{
+  "chunked": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "after": {
+        "dropped": 2,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 1
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": 384,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [
+        {
+          "cache_n": 2,
+          "cache_src": "preload",
+          "engine_sha256": "<validated:engine-sha256>",
+          "event": "generation",
+          "model_alias": "ornith-35b-a3b-local",
+          "n_prompt": 8,
+          "predicted_ms": 1.25,
+          "predicted_n": 3,
+          "prefix_reason": "hit",
+          "preload_src": "disk",
+          "prompt_ms": 12.5,
+          "resume_src": "disk",
+          "session_reason": "empty-index",
+          "stop": "eos"
+        }
+      ],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "directory-symlink": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "enabled": false
+      }
+    },
+    {
+      "after": {
+        "enabled": false
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": null,
+      "launches": [
+        {
+          "argument": false,
+          "pipe": false,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "enabled": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "after": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 1
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": 384,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [
+        {
+          "cache_n": 2,
+          "cache_src": "preload",
+          "engine_sha256": "<validated:engine-sha256>",
+          "event": "generation",
+          "model_alias": "ornith-35b-a3b-local",
+          "n_prompt": 8,
+          "predicted_ms": 1.25,
+          "predicted_n": 3,
+          "prefix_reason": "hit",
+          "preload_src": "disk",
+          "prompt_ms": 12.5,
+          "resume_src": "disk",
+          "session_reason": "empty-index",
+          "stop": "eos"
+        }
+      ],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "explicit": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "enabled": false
+      }
+    },
+    {
+      "after": {
+        "enabled": false
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": null,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": false,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "explicit-equals": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "enabled": false
+      }
+    },
+    {
+      "after": {
+        "enabled": false
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": null,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": false,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "inherited": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "enabled": false
+      }
+    },
+    {
+      "after": {
+        "enabled": false
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": null,
+      "launches": [
+        {
+          "argument": false,
+          "pipe": false,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "invalid": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "after": {
+        "dropped": 5,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 1
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": 384,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [
+        {
+          "cache_src": "preload",
+          "engine_sha256": "<validated:engine-sha256>",
+          "event": "generation",
+          "model_alias": "ornith-35b-a3b-local",
+          "n_prompt": 8,
+          "predicted_n": 3,
+          "preload_src": "disk",
+          "prompt_ms": 12.5,
+          "resume_src": "disk",
+          "stop": "eos"
+        }
+      ],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "log-hardlink": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "after": {
+        "dropped": 0,
+        "enabled": true,
+        "error": "PermissionError",
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 1
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": 384,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "log-symlink": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "after": {
+        "dropped": 0,
+        "enabled": true,
+        "error": "OSError",
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 1
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": 384,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "reload": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "after": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 1
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "after": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 1
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": 384,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        },
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [
+        {
+          "cache_n": 2,
+          "cache_src": "preload",
+          "engine_sha256": "<validated:engine-sha256>",
+          "event": "generation",
+          "model_alias": "ornith-35b-a3b-local",
+          "n_prompt": 8,
+          "predicted_ms": 1.25,
+          "predicted_n": 3,
+          "prefix_reason": "hit",
+          "preload_src": "disk",
+          "prompt_ms": 12.5,
+          "resume_src": "disk",
+          "session_reason": "empty-index",
+          "stop": "eos"
+        },
+        {
+          "cache_n": 2,
+          "cache_src": "preload",
+          "engine_sha256": "<validated:engine-sha256>",
+          "event": "generation",
+          "model_alias": "ornith-35b-a3b-local",
+          "n_prompt": 8,
+          "predicted_ms": 1.25,
+          "predicted_n": 3,
+          "prefix_reason": "hit",
+          "preload_src": "disk",
+          "prompt_ms": 12.5,
+          "resume_src": "disk",
+          "session_reason": "empty-index",
+          "stop": "eos"
+        }
+      ],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "rotation": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "after": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 1
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "backup_bytes": 1048560,
+      "backup_mode": 384
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": 384,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [
+        {
+          "cache_n": 2,
+          "cache_src": "preload",
+          "engine_sha256": "<validated:engine-sha256>",
+          "event": "generation",
+          "model_alias": "ornith-35b-a3b-local",
+          "n_prompt": 8,
+          "predicted_ms": 1.25,
+          "predicted_n": 3,
+          "prefix_reason": "hit",
+          "preload_src": "disk",
+          "prompt_ms": 12.5,
+          "resume_src": "disk",
+          "session_reason": "empty-index",
+          "stop": "eos"
+        }
+      ],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ],
+  "tail": [
+    {
+      "before": {
+        "enabled": false
+      },
+      "exists": false
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "loaded": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "after": {
+        "dropped": 0,
+        "enabled": true,
+        "error": null,
+        "path": "<home>/state/local-ai/engine-ledger.jsonl",
+        "records": 0
+      }
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "unloaded": {
+        "enabled": false
+      }
+    },
+    {
+      "directory_mode": 448,
+      "file_mode": 384,
+      "launches": [
+        {
+          "argument": true,
+          "pipe": true,
+          "stdin_eof": true
+        }
+      ],
+      "rows": [
+        {
+          "cache_n": 2,
+          "cache_src": "preload",
+          "engine_sha256": "<validated:engine-sha256>",
+          "event": "generation",
+          "model_alias": "ornith-35b-a3b-local",
+          "n_prompt": 8,
+          "predicted_ms": 1.25,
+          "predicted_n": 3,
+          "prefix_reason": "hit",
+          "preload_src": "disk",
+          "prompt_ms": 12.5,
+          "resume_src": "disk",
+          "session_reason": "empty-index",
+          "stop": "eos"
+        }
+      ],
+      "target": "SYNTHETIC UNTOUCHED\n"
+    }
+  ]
+}

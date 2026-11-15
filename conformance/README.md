@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `291aee395e1810284a30c63ce66849d0cef46513`.
-The current suite passes 339 scenarios in 55 unittest methods. This remains a
+The current suite passes 351 scenarios in 56 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -80,6 +80,7 @@ python3 conformance/test_cache_budget.py --record-python
 python3 conformance/test_cache_clear.py --record-python
 python3 conformance/test_context_modes.py --record-python
 python3 conformance/test_engine_cache.py --record-python
+python3 conformance/test_engine_ledger.py --record-python
 python3 conformance/test_conversation_stores.py --record-python
 python3 conformance/test_storage.py --record-python
 python3 conformance/test_harnesses.py --record-python
@@ -103,6 +104,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Cache budgets | PASS, 12 cases | PASS: persistence, value/TTL eviction, pins/recent sessions, shared blocks, orphan echo, opaque models, lease refusal and symlink safety | More mutation races |
 | Cache clear | PASS, 18 cases | PASS: all/model/session/hint scopes, shared/anonymous owners, opaque manifests, private durable rewrites, busy/lease refusal, classic/Rust prefixes and retained primers | More mutation races |
 | Engine-owned cache | PASS, 9 cases | PASS: launch flags, disk off, private override, authenticated usage/budget/clear, bounded replies, explicit/async preload, saved/in-memory hints and crashed-owner recovery | More preload states/races |
+| Numeric engine ledger | PASS, 12 cases | PASS: dedicated pipe, profile opt-in, numeric/enum filtering, bounded lines, stdout isolation, private rotation, advisory failures and unload/reload drain | More malformed numeric and stop races |
 | Legacy conversation stores | PASS, 7 cases | PASS: separate/equal flag forms, private config/environment overrides, disk-off stripping and invalid-root refusal | More combined forms and engine-side persistence |
 | Context modes | PASS, 8 cases | PASS: limits/capabilities, fast/deep/max, RSS-proof gates, active/cap-changing controls and private config writes | Execution override adapters and more malformed profiles |
 | Storage inventory | PASS, 5 cases | PASS | Deletion, races and additional identity variants |

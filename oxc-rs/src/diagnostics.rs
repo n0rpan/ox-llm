@@ -9,6 +9,19 @@ use std::{
 fn unsafe_path() -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, "unsafe diagnostic path")
 }
+fn unsafe_file() -> io::Error {
+    io::Error::other("unsafe diagnostic file type")
+}
+pub fn error_name(error: &io::Error) -> &'static str {
+    match error.kind() {
+        io::ErrorKind::PermissionDenied => "PermissionError",
+        io::ErrorKind::NotFound => "FileNotFoundError",
+        io::ErrorKind::AlreadyExists => "FileExistsError",
+        io::ErrorKind::NotADirectory => "NotADirectoryError",
+        io::ErrorKind::IsADirectory => "IsADirectoryError",
+        _ => "OSError",
+    }
+}
 fn prepare_parent(path: &Path) -> io::Result<()> {
     if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(unsafe_path());
@@ -35,7 +48,7 @@ fn prepare_parent(path: &Path) -> io::Result<()> {
             Err(error) => return Err(error),
         };
         if !info.is_dir() || info.file_type().is_symlink() {
-            return Err(unsafe_path());
+            return Err(unsafe_file());
         }
         let uid = Uid::effective().as_raw();
         if current == parent {
@@ -53,6 +66,7 @@ fn prepare_parent(path: &Path) -> io::Result<()> {
 }
 fn regular_owned(path: &Path) -> io::Result<Option<fs::Metadata>> {
     match fs::symlink_metadata(path) {
+        Ok(info) if !info.is_file() || info.file_type().is_symlink() => Err(unsafe_file()),
         Ok(info)
             if info.is_file()
                 && !info.file_type().is_symlink()
@@ -99,16 +113,28 @@ fn safe_text(bytes: &[u8]) -> Vec<u8> {
 }
 pub struct Writer {
     path: PathBuf,
-    failed: bool,
+    error: Option<&'static str>,
     line: Vec<u8>,
 }
 impl Writer {
     pub fn new(path: PathBuf) -> Self {
-        let failed = prepare_parent(&path).is_err();
+        let error = prepare_parent(&path).err().as_ref().map(error_name);
         Self {
             path,
-            failed,
+            error,
             line: Vec::new(),
+        }
+    }
+    pub fn error(&self) -> Option<&'static str> {
+        self.error
+    }
+    pub fn write(&mut self, bytes: &[u8]) {
+        if self.error.is_none() {
+            self.error = self
+                .write_inner(&safe_text(bytes))
+                .err()
+                .as_ref()
+                .map(error_name);
         }
     }
     fn backup(&self, index: usize) -> PathBuf {
@@ -137,6 +163,22 @@ impl Writer {
     fn write_inner(&self, data: &[u8]) -> io::Result<()> {
         prepare_parent(&self.path)?;
         let info = regular_owned(&self.path)?;
+        if let Some(info) = info.as_ref().filter(|info| info.mode() & 0o777 != 0o600) {
+            let file = OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+                .open(&self.path)?;
+            let opened = file.metadata()?;
+            if !opened.is_file()
+                || opened.uid() != Uid::effective().as_raw()
+                || opened.nlink() != 1
+                || opened.dev() != info.dev()
+                || opened.ino() != info.ino()
+            {
+                return Err(unsafe_path());
+            }
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         if info
             .as_ref()
             .is_some_and(|m| m.len() + data.len() as u64 > 1024 * 1024)
@@ -163,9 +205,7 @@ impl Writer {
             line.extend(b"...[line truncated]");
         }
         line.push(b'\n');
-        if !self.failed && self.write_inner(&safe_text(&line)).is_err() {
-            self.failed = true;
-        }
+        self.write(&line);
     }
     pub fn feed(&mut self, bytes: &[u8]) {
         for byte in bytes {

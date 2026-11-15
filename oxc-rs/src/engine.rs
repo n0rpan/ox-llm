@@ -237,6 +237,7 @@ struct Running {
     token: Token,
     guard: guard::Guard,
     stderr: Option<JoinHandle<()>>,
+    engine_ledger: Option<crate::engine_ledger::Reader>,
     props: Value,
 }
 struct State {
@@ -279,6 +280,7 @@ pub struct Manager {
     cache_preload: Mutex<Option<PreloadNote>>,
     session_hints: Mutex<std::collections::HashMap<String, String>>,
     launches: AtomicUsize,
+    engine_ledger: RwLock<Option<crate::engine_ledger::Metadata>>,
 }
 struct Waiting(Arc<Manager>);
 impl Drop for Waiting {
@@ -357,6 +359,7 @@ impl Manager {
             cache_preload: Mutex::new(None),
             session_hints: Mutex::new(std::collections::HashMap::new()),
             launches: AtomicUsize::new(0),
+            engine_ledger: RwLock::new(None),
             stop,
             port,
         });
@@ -603,7 +606,8 @@ impl Manager {
         json!({"state":self.phase(),"model":profile["model_alias"],"selected_model":models::resolve(config,None).ok().map(|p|p["model_alias"].clone()),
             "validated":models::eligible(&profile),"active_requests":self.active.load(Ordering::SeqCst),"queued_requests":self.queued.load(Ordering::SeqCst),
             "capabilities":["models","active"],"context_size":profile["context_size"],"context":models::context(&profile,config),"model_limits":limits,"memory_policy":memory,
-            "last_error":self.last_failure.lock().unwrap_or_else(|e|e.into_inner()).clone(),"model_preload":self.preload.lock().unwrap_or_else(|e|e.into_inner()).clone(),"preload":self.preload_status()})
+            "last_error":self.last_failure.lock().unwrap_or_else(|e|e.into_inner()).clone(),"model_preload":self.preload.lock().unwrap_or_else(|e|e.into_inner()).clone(),"preload":self.preload_status(),
+            "engine_ledger":self.engine_ledger.read().unwrap_or_else(|e|e.into_inner()).as_ref().map(|m|m.value()).unwrap_or_else(||json!({"enabled":false}))})
     }
     pub async fn set_harness_learning(
         &self,
@@ -1229,19 +1233,34 @@ impl Manager {
                 }
             }
         }
-        if profile["environment"]["LOCAL_AI_ENGINE_LEDGER"] == "1"
-            && !args
-                .iter()
-                .any(|arg| arg == "--ledger" || arg.starts_with("--ledger="))
-        {
-            return Err(
-                "The native engine-ledger bridge is not implemented by the Rust controller yet."
-                    .into(),
-            );
-        }
+        let ledger = if crate::engine_ledger::enabled(&profile, &args) {
+            match crate::engine_ledger::Prepared::new(&profile) {
+                Ok(ledger) => {
+                    args.extend([
+                        "--ledger".into(),
+                        crate::engine_ledger::PIPE_ARGUMENT.into(),
+                    ]);
+                    Some(ledger)
+                }
+                Err(_) => {
+                    crate::diagnostics::Writer::new(
+                        paths::xdg("XDG_STATE_HOME", ".local/state")
+                            .join("local-ai/engine-stderr.log"),
+                    )
+                    .write(b"{\"event\":\"ledger_disabled\",\"reason\":\"log_unavailable\"}\n");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let mut command = Command::new("/proc/self/exe");
         command
-            .arg("__engine_exec")
+            .arg(if ledger.is_some() {
+                "__engine_ledger_exec"
+            } else {
+                "__engine_exec"
+            })
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -1260,9 +1279,19 @@ impl Manager {
             }
         }
         command.env("OXE_API_KEY_FILE", &token.path);
+        let (ledger_reader, ledger_metadata) = if let Some(ledger) = ledger {
+            let (reader, metadata) = ledger.start(&mut command);
+            (Some(reader), Some(metadata))
+        } else {
+            (None, None)
+        };
         self.phase.store(1, Ordering::SeqCst);
         *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Some(profile);
-        let child = match command.spawn() {
+        let child = command.spawn();
+        // Command retains its configured stdin endpoint after spawning.
+        // Close the parent's write copy so child exit gives the reader EOF.
+        drop(command);
+        let child = match child {
             Ok(child) => child,
             Err(_) => {
                 self.phase.store(0, Ordering::SeqCst);
@@ -1273,6 +1302,10 @@ impl Manager {
                 );
             }
         };
+        *self
+            .engine_ledger
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = ledger_metadata;
         let mut process = Process {
             child,
             owned: Arc::new(Mutex::new(true)),
@@ -1307,6 +1340,7 @@ impl Manager {
             token,
             guard,
             stderr,
+            engine_ledger: ledger_reader,
             props: Value::Null,
         });
         let deadline =
@@ -1416,8 +1450,15 @@ impl Manager {
                     let _ = task.await;
                 }
             }
+            if let Some(reader) = running.engine_ledger.take() {
+                reader.stop().await;
+            }
         }
         state.running = None;
+        *self
+            .engine_ledger
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         *self
             .cache_backend
             .write()

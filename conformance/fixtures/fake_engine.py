@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import select
 import socket
+import stat
 import sys
 import threading
 import time
@@ -142,6 +143,7 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def chat(self, body):
+        self.ledger()
         limit = body.get('max_tokens', body.get('max_completion_tokens', 99))
         words = REPLY[:limit]
         finish = 'length' if len(words) < len(REPLY) else 'stop'
@@ -199,6 +201,7 @@ class Handler(BaseHTTPRequestHandler):
         self.sse(frames, done=True)
 
     def completion(self, body):
+        self.ledger()
         words = REPLY[:body.get('n_predict', 99)]
         pieces = [(' ' if i else '') + word for i, word in enumerate(words)]
         final = {'index': 0, 'content': '', 'tokens': [], 'id_slot': 0, 'stop': True,
@@ -218,6 +221,35 @@ class Handler(BaseHTTPRequestHandler):
             final['completion_probabilities'] = [probability(piece) for piece in pieces]
         self.json_reply(200, final)
 
+    def ledger(self):
+        if self.server.ledger is None:
+            return
+        row = {'n_prompt': 8, 'predicted_n': 3, 'prompt_ms': 12.5,
+               'cache_n': 2, 'predicted_ms': 1.25, 'prefix_reason': 'hit',
+               'session_reason': 'empty-index', 'cache_src': 'preload',
+               'resume_src': 'disk', 'preload_src': 'disk', 'stop': 'eos',
+               'prompt': 'SYNTHETIC-PRIVATE-LEDGER-TEXT',
+               'credential': Path(os.environ['OXE_API_KEY_FILE']).read_text().strip(),
+               'unknown': {'text': 'SYNTHETIC-PRIVATE-LEDGER-TEXT'}}
+        mode = os.environ.get('FAKE_ENGINE_LEDGER_CASE', 'enabled')
+        lines = [json.dumps(row).encode()]
+        if mode == 'invalid':
+            lines = [b'not json', b'[]', b'{}',
+                     b'{"n_prompt":true,"predicted_n":3,"prompt_ms":1}',
+                     b'{"n_prompt":8,"predicted_n":3,"prompt_ms":Infinity}',
+                     json.dumps({**row, 'cache_n': False, 'prefix_reason': 'PRIVATE',
+                                 'session_reason': ['hit'], 'predicted_ms': float('nan'),
+                                 'park_ms': float('inf'), 'resume_ms': '2'}).encode()]
+        elif mode == 'chunked':
+            lines = [b'x' * 9000, *lines]
+        raw = b'\n'.join(lines) + (b'' if mode == 'tail' else b'\n')
+        with EVENT_LOCK:
+            if mode == 'chunked':
+                for offset in range(0, len(raw), 31):
+                    self.server.ledger.write(raw[offset:offset + 31])
+            else:
+                self.server.ledger.write(raw)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -234,6 +266,7 @@ def main():
     parser.add_argument('--prefix-cache-max-bytes', type=int)
     parser.add_argument('--prefix-cache-min-tokens', type=int)
     parser.add_argument('--prefix-cache-ttl-h', type=float)
+    parser.add_argument('--ledger')
     args = parser.parse_args()
     if diagnostic := os.environ.get('FAKE_ENGINE_STDERR'):
         os.write(2, diagnostic.encode())
@@ -247,6 +280,14 @@ def main():
     server.alias = args.alias
     server.state_root, server.state_budget = args.state_cache, args.state_budget_bytes
     server.preload_status = {'status': 'idle'}
+    server.ledger = open(args.ledger, 'ab', buffering=0) if args.ledger else None
+    ledger = None
+    if os.environ.get('FAKE_ENGINE_LEDGER_CASE'):
+        ledger = {'argument': bool(args.ledger),
+                  'pipe': stat.S_ISFIFO(os.fstat(server.ledger.fileno()).st_mode) if server.ledger else False,
+                  'stdin_eof': os.read(0, 1) == b''}
+        # A separate stream must never be mistaken for the numeric ledger pipe.
+        print('{"n_prompt":999,"predicted_n":999,"prompt_ms":999}', flush=True)
     state_args = None
     if args.state_cache:
         directory = Path(args.state_cache)
@@ -267,6 +308,8 @@ def main():
           **({'context_size': args.ctx_size} if args.ctx_size is not None else {}),
           **({'state_cache': state_args} if os.environ.get('FAKE_ENGINE_STATE_CACHE') == '1' else {}),
           **({'legacy': legacy} if legacy is not None else {}))
+    if ledger is not None:
+        event('ledger-started', **ledger)
     server.serve_forever()
 
 

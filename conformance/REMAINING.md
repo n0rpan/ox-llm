@@ -63,7 +63,7 @@ run/review, mark ready deliberately or dispatch checks.yml once for the branch.
 The merge queue runs full integration CI again. If waiting is needed, use one
 blocking gh pr checks --watch; never poll CI status.
 
-Next implementation step: engine-ledger capture and remaining CLI
+Next implementation step: remaining CLI
 commands. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
 opt-in learning, memory-only operation, streaming, bounded candidates/prefixes,
@@ -87,6 +87,8 @@ private overrides, budget zero, explicit/async preload, saved/in-memory session
 hints, and immediate ownership release after engine death.
 Seven legacy conversation-store cases cover separate/equal flags, private root
 overrides from config/environment, and dropping stores/options when disk is off.
-The automatic engine-ledger bridge still refuses launch explicitly until its
-adapter is ported. Full Rust conformance
+Twelve automatic engine-ledger cases now cover per-profile opt-in, an inherited
+pipe separate from stdout, numeric/enum filtering, bounded lines, private rotation,
+advisory filesystem failures, explicit ledger arguments and unload/reload drain.
+More malformed numeric inputs and stop races remain uncovered. Full Rust conformance
 remains FAIL, and no native deployment or readiness claim is made.
