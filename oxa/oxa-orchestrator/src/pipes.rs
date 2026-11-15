@@ -220,7 +220,7 @@ impl JsonPipes {
         Ok(())
     }
 }
-fn nonblocking(fd: RawFd) -> io::Result<()> {
+pub(crate) fn nonblocking(fd: RawFd) -> io::Result<()> {
     // SAFETY: live owned pipe descriptor; fcntl only changes its status flags.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags == -1 {

@@ -37,7 +37,9 @@ Raw preview/proposal data may be sensitive and must not enter metadata logs.
 Staging never modifies the source. It creates content against the immutable
 approved base and does not re-read a changing source checkout. A later apply or
 publication operation must separately check source freshness and authorization.
-Git worktrees, repository publication and CLI/TUI hooks remain subsequent slices.
+Private snapshot worktrees are described in
+[PRIVATE_GIT_WORKTREES.md](PRIVATE_GIT_WORKTREES.md). Repository publication and
+CLI/TUI hooks remain subsequent slices.
 
 Local acceptance: 126 ordinary crate tests pass, including eight review tests.
 They cover deterministic disjoint selection, exact approval, overlap refusal,

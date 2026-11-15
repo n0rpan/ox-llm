@@ -104,6 +104,9 @@ impl NativeWorker {
                 })
                 .arg(copy.path())
                 .arg("/work");
+            if let Some(mask) = copy.git_mask() {
+                command.arg("--ro-bind").arg(mask).arg("/work/.git");
+            }
         } else {
             command.args(["--tmpfs", "/work"]);
         }

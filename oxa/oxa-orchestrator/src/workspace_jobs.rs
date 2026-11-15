@@ -73,6 +73,18 @@ fn check(cancel: &AtomicBool) -> io::Result<()> {
     }
 }
 
+/// One private controller pool, capped at 128 preparation attempts. Partial
+/// copies/repos are retained for explicit operator cleanup, never auto-deleted.
+pub struct GitPool {
+    pool: std::sync::Mutex<crate::git_worktrees::Pool>,
+}
+impl GitPool {
+    pub fn new(root: PathBuf) -> io::Result<Self> {
+        Ok(Self {
+            pool: std::sync::Mutex::new(crate::git_worktrees::Pool::new(root)?),
+        })
+    }
+}
 /// One explicitly owned private-copy job. The caller must count it against its
 /// lane limit and keep polling other workers while it runs. A cancellation/error
 /// can leave a partial copy; there is no automatic deletion or source apply.
@@ -84,6 +96,30 @@ impl Preparation {
     pub fn start(grant: Arc<Grant>, destination: PathBuf) -> io::Result<Self> {
         Ok(Self {
             job: Job::start(move |cancel| grant.materialize_cancellable(&destination, &cancel))?,
+        })
+    }
+    /// Prepare an explicitly opted-in Git copy on an owned filesystem thread.
+    /// The allowance covers waiting for the shared pool and Git operations.
+    pub fn start_git(
+        pool: Arc<GitPool>,
+        grant: Arc<Grant>,
+        destination: PathBuf,
+        wall_time: std::time::Duration,
+    ) -> io::Result<Self> {
+        if !grant.uses_git_worktrees()
+            || wall_time.is_zero()
+            || wall_time > std::time::Duration::from_secs(86400)
+        {
+            return Err(io::Error::other("invalid Git preparation policy"));
+        }
+        crate::native::checked_program(std::path::Path::new("/usr/bin/git"))?;
+        let deadline = std::time::Instant::now()
+            .checked_add(wall_time)
+            .ok_or_else(|| io::Error::other("invalid Git preparation deadline"))?;
+        Ok(Self {
+            job: Job::start(move |cancel| {
+                crate::git_worktrees::prepare(&pool.pool, &grant, &destination, deadline, &cancel)
+            })?,
         })
     }
     /// Requests cancellation, not proof that writes already stopped.

@@ -57,3 +57,6 @@ pub mod lineage;
 
 #[cfg(feature = "core")]
 pub mod review;
+
+#[cfg(feature = "core")]
+mod git_worktrees;

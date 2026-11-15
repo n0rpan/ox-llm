@@ -28,6 +28,8 @@ pub struct WorkerSpec {
 pub struct WorkspaceAssignment {
     pub grant: Arc<Grant>,
     pub destination: PathBuf,
+    /// Explicit shared controller pool; requires an opted-in editing Git grant.
+    pub git_pool: Option<Arc<crate::workspace_jobs::GitPool>>,
 }
 pub struct Settings {
     pub id: String,
@@ -426,7 +428,16 @@ pub fn run_with_workspaces(
                     "workspace",
                     json!({"editing":assignment.grant.is_editing()}),
                 )?;
-                match Preparation::start(assignment.grant, assignment.destination) {
+                let preparation = match assignment.git_pool {
+                    Some(pool) => Preparation::start_git(
+                        pool,
+                        assignment.grant,
+                        assignment.destination,
+                        lane_deadline.saturating_duration_since(Instant::now()),
+                    ),
+                    None => Preparation::start(assignment.grant, assignment.destination),
+                };
+                match preparation {
                     Ok(job) => {
                         observe(status(&spec, "preparing", None, 0));
                         preparing.push(Preparing {
@@ -1193,6 +1204,7 @@ for line in sys.stdin:
                     WorkspaceAssignment {
                         grant: grant.clone(),
                         destination: env.root().join("private").join(format!("copy-{i}")),
+                        git_pool: None,
                     },
                 )
             })
@@ -1439,5 +1451,39 @@ for line in sys.stdin:
             );
             assert!(report.workers[0].review.is_none());
         }
+    }
+    #[test]
+    fn git_lanes_share_approved_objects_but_workers_cannot_read_or_write_metadata() {
+        let (env, settings, plan) = fixture(&["edit", "edit"]);
+        workspace_runtime(&settings);
+        let runtime = fs::read_to_string(&settings.worker_binary).unwrap().replace(
+            "if task=='edit':open('/work/input.txt','w').write('before-stop\\n')",
+            r#"if task=='edit':
+   assert open('/work/.git').read()==''
+   try:open('/work/.git','w').write('forbidden');raise RuntimeError('metadata write allowed')
+   except OSError:pass
+   open('/work/input.txt','w').write('before-stop\n')"#,
+        );
+        assert!(runtime.contains("metadata write allowed"));
+        fs::write(&settings.worker_binary, runtime).unwrap();
+        let (snapshot, mut assignments) = assigned(&env, 2, true);
+        let pool =
+            Arc::new(crate::workspace_jobs::GitPool::new(env.root().join("private/controller")).unwrap());
+        for assignment in assignments.values_mut() {
+            assignment.grant = Arc::new(assignment.grant.as_ref().clone().with_git_worktrees().unwrap());
+            assignment.git_pool = Some(pool.clone());
+        }
+        let (_controller, inbox) = controls();
+        let report = run_with_workspaces(settings, plan, assignments, inbox, |_| {}).unwrap();
+        assert!(report.succeeded());
+        for worker in report.workers {
+            let review = worker.review.unwrap();
+            review.verify(&snapshot, &[]).unwrap();
+            assert_eq!(review.changes[0].after.as_deref(), Some("after-stop\n"));
+        }
+        assert_eq!(
+            fs::read_to_string(env.root().join("input.txt")).unwrap(),
+            "before\n"
+        );
     }
 }

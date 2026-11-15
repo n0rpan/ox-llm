@@ -54,3 +54,7 @@ existing-destination preservation, and a real writing worker with confirmed
 cleanup and no delayed writes. Strict all-target Clippy and formatting pass.
 Fixtures use synthetic data, cleared environments, and owned local processes;
 there are no paid/provider calls or TUI behavior claims.
+
+Explicit Git-backed assignments are described in
+[PRIVATE_GIT_WORKTREES.md](PRIVATE_GIT_WORKTREES.md). Plain assignments keep
+`git_pool: None`; an editing Git grant requires its controller-owned pool.

@@ -203,6 +203,9 @@ impl Snapshot {
     pub fn text(&self, path: &RelativePath) -> Option<&str> {
         self.files.get(path).map(String::as_str)
     }
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&RelativePath, &String)> {
+        self.files.iter()
+    }
     pub fn manifest_sha256(&self) -> &str {
         &self.manifest
     }
@@ -216,6 +219,7 @@ pub struct Grant {
     snapshot: Arc<Snapshot>,
     editing: bool,
     new_files: BTreeSet<RelativePath>,
+    git_worktrees: bool,
 }
 impl Grant {
     pub fn read_only(snapshot: Arc<Snapshot>) -> Self {
@@ -223,6 +227,7 @@ impl Grant {
             snapshot,
             editing: false,
             new_files: BTreeSet::new(),
+            git_worktrees: false,
         }
     }
     /// Edits affect the entire private copy, never the source checkout. New
@@ -253,7 +258,23 @@ impl Grant {
             snapshot,
             editing: true,
             new_files,
+            git_worktrees: false,
         })
+    }
+    /// Opt into controller-owned Git metadata seeded only with approved bytes.
+    /// Workers still receive only read/edit/write and masked metadata.
+    pub fn with_git_worktrees(mut self) -> io::Result<Self> {
+        if !self.editing {
+            return Err(denied("Git worktrees require an editing grant"));
+        }
+        self.git_worktrees = true;
+        Ok(self)
+    }
+    pub fn uses_git_worktrees(&self) -> bool {
+        self.git_worktrees
+    }
+    pub(crate) fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
     }
     pub fn is_editing(&self) -> bool {
         self.editing
@@ -268,6 +289,9 @@ impl Grant {
         directory: &Path,
         cancel: &AtomicBool,
     ) -> io::Result<WorkingCopy> {
+        if self.git_worktrees {
+            return Err(denied("Git grants need an explicit controller pool"));
+        }
         check_cancel(cancel)?;
         let parent = directory.parent().ok_or_else(|| denied("copy needs a parent"))?;
         let parent = crate::namespace::protected_directory(parent)?;
@@ -286,6 +310,7 @@ impl Grant {
         Ok(WorkingCopy {
             directory: directory.to_path_buf(),
             grant: self.clone(),
+            git: None,
         })
     }
 }
@@ -293,8 +318,27 @@ impl Grant {
 pub struct WorkingCopy {
     directory: PathBuf,
     grant: Arc<Grant>,
+    git: Option<crate::git_worktrees::Worktree>,
 }
 impl WorkingCopy {
+    pub(crate) fn from_git(
+        directory: PathBuf,
+        grant: Arc<Grant>,
+        git: crate::git_worktrees::Worktree,
+    ) -> Self {
+        Self {
+            directory,
+            grant,
+            git: Some(git),
+        }
+    }
+    pub(crate) fn git_mask(&self) -> Option<PathBuf> {
+        self.git.as_ref().map(|g| g.mask())
+    }
+    pub fn base_commit(&self) -> Option<&str> {
+        self.git.as_ref().map(|g| g.commit())
+    }
+
     pub(crate) fn mode(&self) -> &'static str {
         if self.grant.editing {
             "workspace"
@@ -320,9 +364,19 @@ impl WorkingCopy {
     /// library does not launch workers or prove that lifecycle precondition.
     pub fn collect(&self, worker: &str) -> io::Result<ReviewBundle> {
         let root = open_directory(&self.directory)?;
+        if let Some(git) = &self.git {
+            git.verify(&self.directory)?;
+        }
         let mut found = BTreeSet::new();
         let mut count = 0usize;
-        scan(&self.directory, &self.directory, &mut found, &mut count, 0)?;
+        scan(
+            &self.directory,
+            &self.directory,
+            &mut found,
+            &mut count,
+            0,
+            self.git.is_some(),
+        )?;
         for path in &found {
             if !self.grant.snapshot.files.contains_key(path) && !self.grant.new_files.contains(path) {
                 return Err(denied("worker created an unapproved path"));
@@ -548,12 +602,16 @@ fn scan(
     found: &mut BTreeSet<RelativePath>,
     count: &mut usize,
     depth: usize,
+    skip_git: bool,
 ) -> io::Result<()> {
     if depth > MAX_DEPTH {
         return Err(limit("workspace nesting limit exceeded"));
     }
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
+        if skip_git && depth == 0 && entry.file_name() == ".git" {
+            continue;
+        }
         *count += 1;
         if *count > MAX_ENTRIES {
             return Err(limit("workspace entry limit exceeded"));
@@ -568,7 +626,7 @@ fn scan(
             .to_owned();
         let path = RelativePath::new(relative)?;
         if ty.is_dir() {
-            scan(root, &entry.path(), found, count, depth + 1)?;
+            scan(root, &entry.path(), found, count, depth + 1, skip_git)?;
         } else if ty.is_file() {
             if entry.metadata()?.mode() & 0o111 != 0 {
                 return Err(denied("executable workspace output is unsupported"));
