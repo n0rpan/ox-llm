@@ -439,6 +439,24 @@ impl Session {
         Ok(())
     }
 
+    /// Opt in to extension session swaps: a front end that calls this polls
+    /// [`Session::take_swap_request`] and applies the request (`switch`, or its own reopen).
+    /// Without it an extension's `newSession` / `switchSession` answer `unsupported_in_oxa`.
+    pub fn enable_swap(&self) {
+        self.st.shared.gate.swap_enabled.store(true, Ordering::SeqCst);
+    }
+
+    /// The session swap an extension asked for since the last call, if any.
+    pub fn take_swap_request(&mut self) -> Option<crate::SwapRequest> {
+        self.st
+            .shared
+            .gate
+            .swap
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
     /// Model switch = a new epoch (W3), applied now when idle. Appends `ModelChange`, then
     /// re-reads the engine's metadata for the target and recomputes the compaction policy (X3,
     /// see [`refresh_budget`]) before the epoch opens.

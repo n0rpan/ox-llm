@@ -30,5 +30,5 @@
 ### Not in oxa (removed before the release)
 
 - `npm:` package sources and `npmCommand` (git URLs and local paths stay).
-- `newSession` / `switchSession` and `registerMcpServer` from extensions (they answer `unsupported_in_oxa`).
+- `registerMcpServer` from extensions (it answers `unsupported_in_oxa`). `newSession` / `switchSession` work in the TUI and print mode; RPC still answers `unsupported_in_oxa`.
 - The tmux modifyOtherKeys fallback, OSC 9;4 progress and OSC 7501 program status, the terminal capability overrides, the SSH ESC-timeout rule, the hardware-cursor option, the changelog display and `/changelog`, `codemode.inlineBudget`.

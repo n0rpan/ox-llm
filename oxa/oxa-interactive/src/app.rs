@@ -479,6 +479,21 @@ pub fn worker_loop_with(
     // must not begin after it).
     let mut backlog: VecDeque<SessionCmd> = VecDeque::new();
     loop {
+        // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
+        // before the next command (the commands queued behind it run in the new session).
+        if let Some(s) = session.as_mut() {
+            s.enable_swap();
+            match s.take_swap_request() {
+                None => {}
+                Some(oxa_core::SwapRequest::New) => backlog.push_front(SessionCmd::Reopen(Reopen::New)),
+                Some(oxa_core::SwapRequest::Switch(path)) => match s.inner().store.resolve(&path) {
+                    Ok(sref) => backlog.push_front(SessionCmd::Reopen(Reopen::Resume(sref))),
+                    Err(e) => {
+                        let _ = out.send(WorkerMsg::Done(Err(e)));
+                    }
+                },
+            }
+        }
         while let Ok(more) = cmds.try_recv() {
             backlog.push_back(more);
         }

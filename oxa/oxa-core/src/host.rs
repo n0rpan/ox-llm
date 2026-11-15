@@ -755,11 +755,21 @@ fn apply(
             crate::compact_now(st, instructions.as_deref(), CompactReason::Manual, sink, ui)?;
             Ok(Value::Null)
         }
-        HostAction::NewSession | HostAction::SwitchSession { .. } => Err(OxaError::new(
-            codes::UNSUPPORTED_IN_OXA,
-            "newSession and switchSession from an extension are not supported in oxa",
-        )
-        .with_hint("use /new or /resume")),
+        action @ (HostAction::NewSession | HostAction::SwitchSession { .. }) => {
+            if !st.shared.gate.swap_enabled.load(Ordering::SeqCst) {
+                return Err(OxaError::new(
+                    codes::UNSUPPORTED_IN_OXA,
+                    "newSession and switchSession from an extension are not supported in oxa",
+                )
+                .with_hint("use /new or /resume"));
+            }
+            let req = match action {
+                HostAction::SwitchSession { path } => crate::SwapRequest::Switch(path),
+                _ => crate::SwapRequest::New,
+            };
+            *st.shared.gate.swap.lock().unwrap_or_else(|p| p.into_inner()) = Some(req);
+            Ok(Value::Null)
+        }
         HostAction::Fork { entry } => {
             let r = crate::fork_at(st, &entry, ui)?;
             Ok(json!({ "id": r.id }))
