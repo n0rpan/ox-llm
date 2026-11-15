@@ -183,6 +183,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         Ok(d) => d,
         Err(e) => return report(&mut *stderr, &e),
     };
+    let a = resolve_continue_word(&a, &dirs).unwrap_or(a);
 
     if let Some(search) = &a.list_models {
         let (models, diags) = ModelsConfig::load(&dirs, env);
@@ -274,6 +275,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             let e = OxaError::new(codes::USAGE, format!("Unknown option: --{name}")).with_hint(USAGE_HINT);
             return report(&mut *stderr, &e);
         }
+        let again = resolve_continue_word(&again, &dirs).unwrap_or(again);
         for (name, value) in &again.extension_flags {
             for h in &prep.built.hook_sets.hooks {
                 h.set_flag(name, value);
@@ -860,6 +862,27 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
             Vec::new()
         }
     }
+}
+
+/// `--continue <word>`: the word is the id of an existing session, or else the first words of
+/// the prompt (and the latest session continues). `None` when there is nothing to settle.
+fn resolve_continue_word(a: &Args, dirs: &Dirs) -> Option<Args> {
+    let store = FsStore::new(dirs.sessions_dir.clone());
+    let (word, at) = a.continue_word.as_ref()?;
+    let mut out = a.clone();
+    out.continue_word = None;
+    let is_id = !a.no_session
+        && a.session.is_none()
+        && a.fork.is_none()
+        && !a.resume
+        && crate::args::valid_session_id(word)
+        && store.resolve(word).is_ok();
+    if is_id {
+        out.continue_id = Some(word.clone());
+    } else {
+        out.messages.insert((*at).min(out.messages.len()), word.clone());
+    }
+    Some(out)
 }
 
 /// The open mode of the flags: `--no-session`, `--fork`, `--session`, `--session-id`,
