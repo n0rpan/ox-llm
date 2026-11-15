@@ -125,3 +125,26 @@ classification, pruning and HTTP/CLI presentation remain outside this slice.
 by upstream ID. This keeps file IO outside metadata; valid/no configured router
 prices receive the overlay, while invalid configured prices stay invalid. Source
 contracts seed an owner-only public cache and make no public network calls.
+
+`runtime` is the Anthropic-only in-process admission/settlement layer for #331.
+`Runtime::new(config, key_path, ledger_dir, Options)` uses trusted, already-resolved
+paths; Options supplies offline and ledger-enabled policy. Keep one Runtime for
+all sessions. Construction/discovery reads no credential bytes and opens no
+ledger or network connection. Discovery advertises only implemented Anthropic
+models. The native client's async entrypoint composes these methods:
+
+1. Validate the pure provider request, then call `begin(payload, Context)`.
+2. Use the guard's immutable `model()`, `payload()` and `key()`; its max_tokens
+   is bounded by the same catalog limit used for reservation.
+3. Call `mark_forwarded()` immediately before potentially paid I/O. The client
+   translates/redacts streaming fields and passes canonical usage to `observe`.
+4. Call `finish(Outcome, status, static_error)` and await successful settlement
+   before reporting success to oxa. A dropped forwarded guard records the
+   conservative interrupted charge; an unforwarded guard records zero cost.
+
+Nine new native integration tests exercise this orchestration without network
+or an engine. This is not yet the complete async client: the rust-upstreams lane
+provides Anthropic HTTP/stream I/O and the Engine bridge, and the runner lane
+drives that actual async entrypoint against its shared owned mock. Refusal-row
+recording before admission, replay/history, retention and other providers remain
+incomplete; the existing policy contracts still run. No Python feature changes.
