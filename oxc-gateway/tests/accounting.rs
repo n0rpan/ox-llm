@@ -282,3 +282,66 @@ fn dropping_a_potentially_paid_hold_without_recording_fails_closed() {
         "cloud_ledger_unavailable"
     );
 }
+#[test]
+fn cancelled_cache_writes_include_hidden_output_and_final_usage_stays_exact() {
+    use std::time::Duration;
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let mut model = model();
+    model.upstream = "anthropic/synthetic".into();
+    model.context = 100_000;
+    model.price = Price::from_model(&json!({"pricing":{"input":1,"output":2}})).unwrap();
+    let usage = Usage {
+        prompt: Some(100_000),
+        output: Some(0),
+        cache_write: Some(100_000),
+        ..Usage::default()
+    };
+    let mut hold = budget.reserve(&json!(1), true, &model, 32).unwrap();
+    hold.mark_forwarded();
+    let cancel = Outcome::Cancelled {
+        request_bytes: 100_000,
+        streamed_bytes: 0,
+        usage_final: false,
+        elapsed: Duration::from_millis(100),
+    };
+    let row = hold
+        .finish(&usage, cancel, |row| append(&path, row))
+        .unwrap();
+    assert_eq!(row["cost_usd"], 0.20006);
+    assert_eq!(row["settled"], "estimated");
+    let mut hold = budget.reserve(&json!(1), true, &model, 32).unwrap();
+    hold.mark_forwarded();
+    let row = hold
+        .finish(
+            &usage,
+            Outcome::Cancelled {
+                request_bytes: 100_000,
+                streamed_bytes: 0,
+                usage_final: true,
+                elapsed: Duration::from_millis(100),
+            },
+            |row| append(&path, row),
+        )
+        .unwrap();
+    assert_eq!(row["cost_usd"], 0.2);
+    assert_eq!(row["settled"], "usage");
+    let mut hold = budget.reserve(&json!(1), true, &model, 32).unwrap();
+    let reserved = hold.reserved();
+    hold.mark_forwarded();
+    let row = hold
+        .finish(
+            &Usage::default(),
+            Outcome::Cancelled {
+                request_bytes: usize::MAX,
+                streamed_bytes: 0,
+                usage_final: false,
+                elapsed: Duration::from_secs(1000),
+            },
+            |row| append(&path, row),
+        )
+        .unwrap();
+    assert_eq!(row["cost_usd"], reserved);
+    assert_eq!(row["settled"], "estimated");
+}

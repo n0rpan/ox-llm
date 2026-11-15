@@ -251,7 +251,9 @@ impl Hold {
                         &model.upstream,
                         usage.prompt.unwrap_or(request_bytes as u64),
                         output,
-                        Cache::Tokens { read: 0, write: 0 },
+                        // Final cache composition is unknown. Include cache-write
+                        // premiums together with hidden output in the estimate.
+                        Cache::Invalid,
                     )
                     .unwrap_or(self.reserved);
                 row["cost_usd"] = json!(self.reserved.min(estimate.max(actual.unwrap_or(0.0))));

@@ -22,6 +22,7 @@ CASES = ('router', 'openai', 'anthropic', 'anthropic-upstream', 'router-explicit
          'settle-invalid-sum', 'settle-invalid-type', 'settle-cancel-final',
          'settle-cancel-partial', 'settle-cancel-reasoning', 'settle-cancel-capped',
          'settle-reported', 'settle-repeated', 'settle-zero')
+CANCEL_ESTIMATES = ('settle-cancel-partial', 'settle-cancel-reasoning', 'settle-cancel-capped')
 
 
 def inputs(name):
@@ -122,7 +123,7 @@ def inputs(name):
     return value
 
 
-def reference(spec):
+def reference(spec, corrected=False):
     sys.path.insert(0, str(ROOT / 'oxc/src'))
     from oxc.runtime import cloud
     price = cloud._pricing(spec['model'])
@@ -136,9 +137,20 @@ def reference(spec):
             item, {'max_tokens': spec['output_limit']}), spec['output_limit'], started=0)
         row = meter.row(item)
         if spec['outcome'] == 'cancelled':
-            return cloud.cancelled_cost(row, hold, item, spec['request_bytes'],
-                                        spec['streamed_bytes'], elapsed=spec['elapsed'],
-                                        usage_final=spec['usage_final'])
+            row = cloud.cancelled_cost(row, hold, item, spec['request_bytes'],
+                                       spec['streamed_bytes'], elapsed=spec['elapsed'],
+                                       usage_final=spec['usage_final'])
+            if corrected and row['settled'] == 'estimated':
+                # Explicit #283 correction: Python's cancellation path assumes
+                # zero cache writes before final usage. Use its existing cost
+                # oracle's conservative cache bound, without changing Python.
+                output = min(hold.output_tokens, max(spec['streamed_bytes'], meter.completion or 0,
+                                                     int(spec['elapsed'] * 300)))
+                estimate = cloud.cost(item, meter.prompt if meter.prompt is not None else
+                                      spec['request_bytes'], output, cache_read=-1)
+                row['cost_usd'] = min(hold.reserved, max(hold.reserved if estimate is None else
+                                                       estimate, row.get('cost_usd') or 0))
+            return row
         return cloud.conservative_cost(row, hold, failed=spec['outcome'] == 'failed')
     actual = cloud.cost(item, spec['prompt'], spec['output'], cache_read=spec['read'], cache_write=spec['write'])
     reservation = cloud.worst_case_cost(item, {'max_tokens': spec['output_limit']})
@@ -146,7 +158,7 @@ def reference(spec):
             'reservation': reservation if math.isfinite(reservation) else None}
 
 
-def invoke(name):
+def invoke(name, corrected=False):
     with tempfile.TemporaryDirectory(prefix='oxc-price-contract-') as directory:
         home = '/home/oxc-price-contract'
         env = {'HOME': home, 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'}
@@ -155,7 +167,8 @@ def invoke(name):
         done = subprocess.run(['bwrap', '--die-with-parent', '--unshare-net', '--ro-bind', '/', '/',
                                '--dev-bind', '/dev', '/dev', '--tmpfs', '/home', '--tmpfs', '/tmp',
                                '--ro-bind', str(ROOT), str(ROOT), '--bind', directory, home,
-                               '--chdir', home, '--', PYTHON, str(Path(__file__).resolve()), '--case', name],
+                               '--chdir', home, '--', PYTHON, str(Path(__file__).resolve()),
+                               '--case-corrected' if corrected else '--case', name],
                               env=env, text=True, capture_output=True, timeout=10)
         if done.returncode:
             raise AssertionError(done.stderr)
@@ -168,17 +181,21 @@ class PricingContract(unittest.TestCase):
         self.assertEqual(set(expected), set(CASES))
         for name in CASES:
             with self.subTest(case=name):
-                self.assertEqual(invoke(name), expected[name])
+                target = expected[name]
+                if name in CANCEL_ESTIMATES:
+                    target = target['native' if 'OXC_PRICING_CONTRACT' in os.environ else 'python']
+                self.assertEqual(invoke(name), target)
 
 
 if __name__ == '__main__':
     if sys.argv[1:] == ['--record-python']:
         if 'OXC_PRICING_CONTRACT' in os.environ:
             raise SystemExit('Record only Python pricing')
-        rows = {name: invoke(name) for name in CASES}
+        rows = {name: {'python': invoke(name), 'native': invoke(name, corrected=True)}
+                if name in CANCEL_ESTIMATES else invoke(name) for name in CASES}
         GOLDENS.write_text('{\n' + ',\n'.join('  ' + json.dumps(name) + ': ' +
                           json.dumps(rows[name], sort_keys=True) for name in sorted(rows)) + '\n}\n')
-    elif sys.argv[1:2] == ['--case']:
+    elif sys.argv[1:2] in (['--case'], ['--case-corrected']):
         spec = inputs(sys.argv[2])
         native = os.environ.get('OXC_PRICING_CONTRACT')
         if native:
@@ -188,6 +205,6 @@ if __name__ == '__main__':
                 raise SystemExit(done.stderr)
             print(done.stdout)
         else:
-            print(json.dumps(reference(spec)))
+            print(json.dumps(reference(spec, corrected=sys.argv[1] == '--case-corrected')))
     else:
         unittest.main()

@@ -41,7 +41,7 @@ OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC
 
 Forty-six price/settlement cases are captured from unmodified Python in private
 HOME/network namespaces using `/usr/bin/python3`; thirteen include remote row
-fields and cancellation. Eight native regressions cover concurrent admission,
+fields and cancellation. Nine native regressions cover concurrent admission,
 partial appends, rewrite/reset, permissions, cache pricing, reported cost and
 write-failure handling. Source goldens use one case per line for review. These
 contracts use synthetic data only; no real keys or API calls. Existing policy
@@ -57,3 +57,9 @@ Main’s `secrets` module and its explicit native contracts are preserved. The
 symlink-loop case validates the two complete interpreter-specific safe refusals
 from Python 3.12/3.13; all other secret errors remain exact. Credentials are read
 from owner-only files and are never logged or included in errors.
+
+Cancellation without final usage uses the maximum applicable cache rate, fixing
+the reference’s remaining plain-input estimate for cache writes. The three
+estimate fixtures retain both the unchanged Python row and an explicit native
+contract derived with Python’s existing conservative cost oracle; final usage
+stays exact. Two costs differ; the reservation-capped case agrees.
