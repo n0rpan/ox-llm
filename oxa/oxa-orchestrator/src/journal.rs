@@ -11,7 +11,9 @@ use std::time::Instant;
 /// Only explicitly supplied metadata is written. The trusted caller must pass
 /// hashes/counts and bounded labels, not raw prompts, outputs or credentials.
 /// A failed append permanently closes admission but retains the ownership lease
-/// until the writer is dropped. This is audit storage, not a replay protocol.
+/// until the writer is dropped. Storage errors can leave an incomplete trailing
+/// record; readers must not treat it as committed or replayable. This is audit
+/// storage, not a replay protocol.
 pub struct Journal {
     file: crate::ownership::Lease,
     sequence: u64,
@@ -259,5 +261,58 @@ mod tests {
         );
         drop(journal);
         let _exclusive = crate::ownership::Lease::acquire(std::fs::File::open(&path).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn partial_storage_failure_poisoning_retains_lease_and_committed_prefix() {
+        const CHILD: &str = "OXA_AUDIT_PARTIAL_IO_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "journal::tests::partial_storage_failure_poisoning_retains_lease_and_committed_prefix",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "child output: {output:?}");
+            return;
+        }
+        // A separate owned test process keeps RLIMIT_FSIZE and SIGXFSZ changes
+        // away from concurrent tests. Exercise a real short write then EFBIG.
+        let env = TestEnv::new();
+        let path = private(&env).join("partial.jsonl");
+        let mut journal = Journal::create(&path, 4096).unwrap();
+        journal.record(None, "committed", json!({})).unwrap();
+        let prefix = std::fs::read(&path).unwrap();
+        let bound = prefix.len() as libc::rlim_t + 8;
+        let limits = libc::rlimit {
+            rlim_cur: bound,
+            rlim_max: bound,
+        };
+        // SAFETY: changes are confined to this disposable child test process.
+        unsafe {
+            assert_ne!(libc::signal(libc::SIGXFSZ, libc::SIG_IGN), libc::SIG_ERR);
+            assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limits), 0);
+        }
+        assert!(journal.record(None, "incomplete", json!({"count":12})).is_err());
+        let partial = std::fs::read(&path).unwrap();
+        assert_eq!(partial.len(), prefix.len() + 8);
+        assert!(partial.starts_with(&prefix));
+        assert_ne!(partial.last(), Some(&b'\n'));
+        assert_eq!(journal.sequence, 1);
+        assert_eq!(journal.bytes, prefix.len());
+        assert!(journal.record(None, "must_not_retry", json!({})).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), partial);
+        assert_eq!(
+            crate::ownership::Lease::acquire(std::fs::File::open(&path).unwrap())
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(journal);
+        assert!(crate::ownership::Lease::acquire(std::fs::File::open(&path).unwrap()).is_ok());
     }
 }

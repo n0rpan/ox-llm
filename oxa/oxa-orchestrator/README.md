@@ -20,7 +20,10 @@ those values implicitly, and this is not a replay format or an authorization to
 signal a recorded PID.
 
 A nonblocking inode lease rejects another controller. An append failure closes
-further admission and retains ownership until the writer is dropped. Normal
+further admission and retains ownership until the writer is dropped. Validation
+and size rejection happen before writing; an actual storage error can leave a
+partial trailing record, which is uncommitted and must never be replayed. The
+writer does not promise rollback after a failed write or sync. Normal
 release explicitly unlocks even if an unrelated pre-exec fork temporarily holds
 the open-file description; CLOEXEC prevents inheritance across exec. Fatal death
 still follows the kernel's last-description-close rule. The writer is not cloneable.
@@ -34,7 +37,7 @@ cargo clippy -p oxa-orchestrator --all-targets -- -D warnings
 
 Normal builds leave `core` off. The test-only self dependency enables it for the
 ordinary workspace test command too, so CI's default test inventory includes the
-eleven actual filesystem/fork/snapshot regressions. Existing binaries do not depend on this
+twelve actual filesystem/fork/snapshot regressions. Existing binaries do not depend on this
 crate. No workflow or scanner change is needed. See [slice plan](SLICES.md) for
 the remaining dependency order and preserved rollup sources.
 
