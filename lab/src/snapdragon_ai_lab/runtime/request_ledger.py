@@ -287,8 +287,11 @@ def origin_of(value):
 
 
 def _install_salt():
-    """32 random bytes in an owner-only file under the ledger dir; created once."""
+    """32 random bytes in an owner-only file under the ledger dir; created once. With the ledger
+    off nothing may be written, so the salt is then random per process and kept in memory only."""
     with _lock:
+        if _salt[0] is None and not enabled():
+            _salt[0] = secrets.token_bytes(32)
         if _salt[0] is None:
             d = ledger_dir()
             d.mkdir(parents=True, exist_ok=True)
