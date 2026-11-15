@@ -50,6 +50,10 @@ required-features = ["secrets"]
 name = "pricing_contract"
 required-features = ["accounting"]
 
+[[example]]
+name = "refusal_rows_contract"
+required-features = ["runtime"]
+
 [lints.rust]
 unsafe_code = "forbid"
 

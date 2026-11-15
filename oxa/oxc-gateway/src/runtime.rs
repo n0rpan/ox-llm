@@ -3,7 +3,7 @@
 use crate::{
     accounting::{Hold, Model, Outcome, Usage},
     catalog::Catalog,
-    ledger::{Context, Entry, Ledger},
+    ledger::{Context, Daily, Entry, Ledger},
     policy::{self, Refusal},
     pricing::Price,
     redaction,
@@ -121,7 +121,59 @@ impl Runtime {
     /// Call after the client has validated its pure provider translation, and
     /// before any network access. The payload's bounded max_tokens is the
     /// authoritative limit the client must use when translating/sending.
-    pub fn begin(&self, mut payload: Value, context: Context<'_>) -> Result<Call, Refusal> {
+    pub fn begin(&self, payload: Value, context: Context<'_>) -> Result<Call, Refusal> {
+        let alias = payload["model"].as_str().unwrap_or("").to_owned();
+        let known = self.config["cloud"]["enabled"] == true
+            && self
+                .catalog
+                .model(&alias)
+                .is_some_and(|model| model["provider"] == "anthropic");
+        let mut audit = if known && self.options.ledger_enabled {
+            self.ledger
+                .get_or_init(|| Ledger::open(&self.ledger_dir).map_err(|_| Refusal::ledger()))
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|ledger| ledger.today().map_err(|_| Refusal::ledger()))
+                .and_then(|daily| {
+                    daily
+                        .entry(&alias, &payload, context)
+                        .map(|entry| (daily, entry))
+                        .map_err(|_| Refusal::ledger())
+                })
+        } else {
+            Err(Refusal::ledger())
+        };
+        let mut key = None;
+        let result = self.admit(payload, &mut audit, &mut key);
+        if let Err(error) = &result {
+            if let Ok((daily, entry)) = audit {
+                let raw = &self.config["cloud"]["models"][&alias];
+                let upstream = raw
+                    .get("upstream_model")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| raw["upstream"].as_str())
+                    .unwrap_or("")
+                    .trim();
+                let fields = json!({"remote":true,"remote_provider":"anthropic","remote_model":upstream,
+                    "cost_usd":0.0,"settled":"not_forwarded"});
+                // Preserve the original refusal even if its audit fails. The
+                // shared budget/failed lazy initializer blocks later spending.
+                let _ = daily.budget().write_unpaid(|| {
+                    entry
+                        .append(&fields, error.status, Some(error.code), key.as_ref())
+                        .map(|_| ())
+                });
+            }
+        }
+        result
+    }
+    fn admit(
+        &self,
+        mut payload: Value,
+        audit: &mut Result<(Daily, Entry), Refusal>,
+        key: &mut Option<Key>,
+    ) -> Result<Call, Refusal> {
         if self.config["cloud"]["enabled"] != true {
             return Err(Refusal {
                 status: 403,
@@ -149,12 +201,13 @@ impl Runtime {
         let raw = &self.config["cloud"]["models"][&alias];
         let price = Price::from_model(raw);
         policy::before_credentials(&payload, false, self.options.offline, price.is_some())?;
-        let key = self
-            .key_file
-            .as_ref()
-            .map_err(|error| credentials(*error))?
-            .read("anthropic")
-            .map_err(credentials)?;
+        *key = Some(
+            self.key_file
+                .as_ref()
+                .map_err(|error| credentials(*error))?
+                .read("anthropic")
+                .map_err(credentials)?,
+        );
         let maximum = public["max_output_tokens"]
             .as_u64()
             .filter(|n| *n > 0)
@@ -199,16 +252,9 @@ impl Runtime {
         };
         let cap = &self.config["cloud"]["daily_budget_usd"];
         policy::daily_budget(cap, self.options.ledger_enabled, Some(0.0), 0.0, 0.0)?;
-        let ledger = self
-            .ledger
-            .get_or_init(|| Ledger::open(&self.ledger_dir).map_err(|_| Refusal::ledger()))
-            .as_ref()
-            .map_err(Clone::clone)?;
-        let daily = ledger.today().map_err(|_| Refusal::ledger())?;
-        let mut entry = daily
-            .entry(&alias, &payload, context)
-            .map_err(|_| Refusal::ledger())?;
+        let (daily, _) = audit.as_ref().map_err(Clone::clone)?;
         let hold = daily.budget().reserve(cap, true, &model, output)?;
+        let (_, mut entry) = std::mem::replace(audit, Err(Refusal::ledger()))?;
         entry.admitted();
         let item = json!({"id":alias,"provider":"anthropic","base_url":raw["base_url"],
             "upstream_model":upstream,"context_window":model.context,"max_output":output,
@@ -216,7 +262,7 @@ impl Runtime {
         Ok(Call {
             model: item,
             payload,
-            key: Arc::new(key),
+            key: Arc::new(key.take().expect("fresh credential read")),
             usage: Usage::default(),
             hold: Some(hold),
             entry: Some(entry),
