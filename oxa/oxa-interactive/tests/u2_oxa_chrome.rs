@@ -56,7 +56,6 @@ fn info() -> HeaderInfo {
         model: "qwen3-coder-30b".to_string(),
         model_remote: false,
         model_provider: None,
-
     }
 }
 
@@ -1039,7 +1038,6 @@ fn never_panics_on_odd_content_and_fits_every_width() {
         model: String::new(),
         model_remote: false,
         model_provider: None,
-
     };
     for width in 1..=300u16 {
         for skin in [Skin::Oxa, Skin::OxaAscii] {

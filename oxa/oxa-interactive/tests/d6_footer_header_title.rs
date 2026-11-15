@@ -158,7 +158,6 @@ fn quiet_startup() {
         model: "qwen".to_string(),
         model_remote: false,
         model_provider: None,
-
     };
     let keymap = Keymap::defaults();
     let vm = ViewModel::default();
@@ -397,7 +396,6 @@ fn footer_and_header_show_the_model_location() {
         model: "qwen".to_string(),
         model_remote: false,
         model_provider: None,
-
     };
     let local_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
     assert!(local_header.contains("local"), "{local_header}");
