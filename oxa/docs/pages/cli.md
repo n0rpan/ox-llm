@@ -8,7 +8,30 @@ With no message, `oxa` opens the interface ([usage.md](usage.md)). With a messag
 
 In `-p` mode, standard output holds only the final reply and a newline. Progress goes to standard error as the run goes, flushed per event: the text of each message that is followed by tool calls, and one line per tool call (`[tool] bash: <first 100 characters of the command>`, then `[tool] bash ok 1.2s` or `failed`). A reply that is followed by another turn (a failed `done` check, a steering message) is progress too. The final reply is written once, when the run ends, and not at all when the run failed or was aborted. `--mode json` prints no progress lines; it writes one flushed record per event.
 
-Exit codes: 0 on success, 1 when a command finished with a reported failure (for example `oxa mcp list` with an invalid server entry, or `-p` when the `done` checks still fail at the end), 2 for a usage error or an engine that cannot be reached.
+Print, JSON and RPC runs write exactly one terminal JSON result on standard error, after diagnostics. For example:
+
+```json
+{"type":"oxa_result","outcome":"blocked","error_class":"budget_exhausted","exit_code":3}
+```
+
+The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. `error_class` is a stable error code (for example `engine_http`, `stream_broken`, `done_checks_failed` or `output_limit`), or `null` for successful and no-op runs. Diagnostics remain human-readable; callers should use the result and exit code instead of matching their wording.
+
+| Exit code | Outcome | Meaning |
+|---|---|---|
+| 0 | `done` | The requested run completed |
+| 1 | `failed` | Runtime failure, failed done checks or truncated output |
+| 2 | `failed` | Usage error, unsupported option or engine unavailable |
+| 3 | `blocked` | Daily cloud budget exhausted (`budget_exhausted`) |
+| 4 | `nothing_to_do` | No agent run occurred, for example input handled by a hook, or RPC EOF without work |
+| 5 | `blocked` | Cloud credentials unavailable (`cloud_credentials_unavailable`) |
+| 6 | `blocked` | Cloud ledger unavailable (`cloud_ledger_unavailable`) |
+| 7 | `blocked` | Offline policy refused the request (`offline`) |
+| 8 | `blocked` | Other setup refusal, such as `cloud_sdk_unavailable` |
+| 130 | `interrupted` | The run was cooperatively cancelled, for example by RPC `abort` |
+
+For multiple prompts, the first unsuccessful outcome is retained even if a later prompt succeeds. RPC continues accepting commands after a run fails; the process reports its aggregate outcome when stdin closes. Reader-side rejections and malformed commands count as failures, and a later valid command does not clear them. Each RPC `agent_settled` record also gains an additive `result` field with that prompt's result. A handled RPC command that starts no agent turn counts as completed work; a handled prompt that starts no turn counts as `nothing_to_do`.
+
+These results cover orderly returns, including startup refusals. A process killed before it can return cannot emit a terminal result. Help, version, export, model listing and standalone subcommands keep their existing output and status conventions (0 success, 1 runtime failure, 2 usage error).
 
 Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. Once output has streamed, a failure is returned without replaying the request. Print mode immediately flushes a one-line `retrying request in ... ms` notice to stderr; JSON and RPC modes emit it as a flushed `notice` record. Provider-level retries (`retry.provider.maxRetries`) are visible too. All attempts for a logical request reuse its idempotency key. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
 

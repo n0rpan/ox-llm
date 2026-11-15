@@ -639,6 +639,30 @@ fn resolved_once_a_later_rewrite_of_dotgit_changes_nothing() {
     assert!(resolve_git_binds(&w.wt, &env.home(), Some(&env.agent_dir())).is_empty());
 }
 
+#[test]
+fn a_git_dir_that_vanishes_mid_session_is_not_bound() {
+    let env = TestEnv::new();
+    let w = build_worktree(&env);
+    let b = bwrap_value(&env).with_git_dirs(&w.wt);
+    let gitdir = canon(&w.gitdir);
+    let gd = gitdir.to_string_lossy().into_owned();
+    assert!(sandbox_args(&b, &w.wt, true).contains(&gd));
+    // `git worktree prune` (or a removed checkout) deletes it; bwrap would die on the source.
+    fs::remove_dir_all(&w.gitdir).expect("remove gitdir");
+    for writable in [true, false] {
+        let args = sandbox_args(&b, &w.wt, writable);
+        assert!(!args.contains(&gd), "missing source bound: {args:?}");
+        // The common dir must not stay writable: the gitdir could be recreated with a hostile
+        // config and hooks that run on the host later.
+        let cd = canon(&w.main_git).to_string_lossy().into_owned();
+        let i = args
+            .windows(3)
+            .position(|x| x[1] == cd && x[2] == cd && x[0].ends_with("bind"))
+            .expect("common dir bound");
+        assert_eq!(args[i], "--ro-bind", "common dir writable: {args:?}");
+    }
+}
+
 // ------------------------------------------------------------------- real bwrap
 
 fn shared_clone(env: &TestEnv) -> (PathBuf, PathBuf) {

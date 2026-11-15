@@ -194,6 +194,8 @@ fn builtins_list() {
         "compact",
         "resume",
         "reload",
+        "help",
+        "usage",
         "quit",
     ]
     .iter()
