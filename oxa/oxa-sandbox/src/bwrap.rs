@@ -1580,7 +1580,7 @@ mod git_files_tests {
         layout.git.rw.push(gone.clone());
         let a = bwrap_args_with(&spec(&env.work(), true), &env.home(), &layout);
         let g = gone.to_string_lossy().into_owned();
-        assert!(!a.iter().any(|x| *x == g), "{a:?}");
+        assert!(!a.contains(&g), "{a:?}");
     }
 
     #[test]
