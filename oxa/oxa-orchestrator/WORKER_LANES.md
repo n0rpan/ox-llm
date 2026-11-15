@@ -121,6 +121,12 @@ retarget and resume controls. It checks unchanged worker identity, conversation
 and budget, exact cumulative tokens across both requests, elapsed time including
 the wait, the clarification in the next inference, and reaping before completion.
 
+The [mixed-provider review demo](REVIEW_LANE_DEMO.md) additionally drives the
+actual TUI and gateway with native Responses/Messages mocks: an editing GPT author
+returns its collected patch, the parent passes the exact bundle to a tool-free
+Sonnet reviewer, and both verified results return to that same parent. The source
+stays unchanged and all three usage ledgers reconcile with gateway rows.
+
 The only additional existing-crate hooks in this milestone are feature-gated
 footer population and copying of the reserved `oxa.worker.` status rows in
 `oxa-interactive/src/app.rs`. Worker registration uses the existing optional
