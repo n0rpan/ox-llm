@@ -558,6 +558,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxa-orchestrator"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "oxa-fake",
+ "oxa-orchestrator",
+ "serde_json",
+]
+
+[[package]]
 name = "oxa-parity"
 version = "0.2.0"
 dependencies = [
