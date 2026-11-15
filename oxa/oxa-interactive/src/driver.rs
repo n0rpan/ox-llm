@@ -970,6 +970,7 @@ impl<'a> Loop<'a> {
             HintContext::Idle {
                 has_text: !text.trim().is_empty(),
                 slash: text.starts_with('/'),
+                armed: self.armed,
             }
         }
     }

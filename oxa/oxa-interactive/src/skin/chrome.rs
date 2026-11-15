@@ -11,7 +11,12 @@ use super::{badge, glyphs, left_right, meter, sprite_frame, Glyphs, Sprite};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintContext {
     /// Nothing runs. `has_text`: the editor is not empty; `slash`: its text starts with `/`.
-    Idle { has_text: bool, slash: bool },
+    Idle {
+        has_text: bool,
+        slash: bool,
+        /// A Ctrl+C was just pressed on an empty editor: the next one quits.
+        armed: bool,
+    },
     /// A run is in progress (thinking, streaming, tool, compaction, retry, queue).
     Running,
     /// A dialog waits for an answer.
@@ -388,7 +393,16 @@ pub fn oxa_hint_bar(
 fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme) -> Vec<String> {
     let act = |id: &str, label: &str| action_hint(keymap, id, label, "text", theme);
     let items: Vec<Option<String>> = match ctx {
-        HintContext::Idle { has_text: false, .. } => vec![
+        HintContext::Idle {
+            has_text: false,
+            armed,
+            ..
+        } => vec![
+            if armed {
+                action_hint(keymap, "app.clear", "exit", "warning", theme)
+            } else {
+                None
+            },
             act("tui.input.submit", "send"),
             Some(hint("/", "commands", "text", theme)),
             act("app.model.select", "models"),
@@ -400,11 +414,12 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
             } else {
                 None
             },
-            act("app.exit", "exit"),
+            if armed { None } else { act("app.exit", "exit") },
         ],
         HintContext::Idle {
             has_text: true,
             slash: false,
+            ..
         } => vec![
             act("tui.input.submit", "send"),
             act("tui.input.newLine", "newline"),
@@ -414,6 +429,7 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
         HintContext::Idle {
             has_text: true,
             slash: true,
+            ..
         } => vec![
             act("tui.input.tab", "complete"),
             act("tui.input.submit", "run"),
