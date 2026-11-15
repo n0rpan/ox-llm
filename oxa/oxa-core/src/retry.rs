@@ -35,8 +35,8 @@ pub fn backoff_ms(attempt: u32, p: &RetryPolicy) -> u64 {
 ///   at `max_delay_ms`), `engine_http` 5xx / 429, `stream_broken` **before any data byte**.
 ///   The same idempotency key is reused. Emits `AutoRetryStart` / `AutoRetryEnd`; the wait is
 ///   interruptible by `Shared::cancel_retry` and `cancel`.
-/// * `stream_broken` after output: not replayed (until the engine has H2); returned as the
-///   error so the loop stores `Shown { why: cut }`. No duplicate body is ever sent on its own.
+/// * `stream_broken` after output: not replayed here; returned as the error. The agent loop
+///   stores the partial as `Shown { why: cut }` and resends a transport cut itself (#456).
 /// * `context_overflow`: once per prompt, `compact_now(.., Overflow)` then one retry; a second
 ///   overflow is returned.
 /// * `aborted` is never retried.
@@ -467,7 +467,7 @@ impl Engine for ProbeEngine {
 }
 
 /// A fresh idempotency key (same construction as `exec`'s, which is private to B3).
-fn fresh_idem_key(st: &SessionState) -> String {
+pub(crate) fn fresh_idem_key(st: &SessionState) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()

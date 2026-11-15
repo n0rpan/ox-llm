@@ -166,7 +166,7 @@ impl Engine for EmbeddedEngine {
             // As with HTTP, a refusal after visible reply data is a cut stream;
             // it must never invite replay of an already visible tool or answer.
             return Err(if emitted && error.code != codes::STREAM_BROKEN {
-                broken(format!("the reply was cut: {}", error.message))
+                broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, error.message))
             } else {
                 error
             });
