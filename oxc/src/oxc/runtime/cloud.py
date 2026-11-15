@@ -369,7 +369,15 @@ def _row_cost(line):
     return usd
 
 
+_spend_lock = threading.Lock()
+
+
 def _read_spend(path):
+    with _spend_lock:
+        return _read_spend_locked(path)
+
+
+def _read_spend_locked(path):
     """Sum remote cost.  Complete lines already summed are not re-read: the ledger is
     append-only, so only the bytes after the cached offset are parsed."""
     key = str(path)
@@ -395,13 +403,13 @@ def _read_spend(path):
         for line in data[:consumed].splitlines():
             if line.strip():
                 total += _row_cost(line.decode('utf-8'))
-        rest = data[consumed:]
-        extra = _row_cost(rest.decode('utf-8')) if rest.strip() else 0.0
+        # Bytes after the last newline are a row still being appended: not counted yet,
+        # picked up by the next read once its newline is written.
     except UnicodeError:
         raise _ledger_error() from None
     if consumed:
         _spend_cache[key] = (info.st_ino, offset + consumed, total, data[max(0, consumed - 64):consumed])
-    return round(total + extra, 8)
+    return round(total, 8)
 
 
 def spend_today(value=None, day=None):

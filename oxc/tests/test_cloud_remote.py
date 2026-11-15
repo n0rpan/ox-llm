@@ -471,6 +471,43 @@ class SpendIncremental(CloudCase):
             path.write_text(json.dumps({'remote': True, 'cost_usd': 0.1}) * 1 + '\n')
             self.assertEqual(cloud.spend_today(day='20260102'), 0.1)
 
+    def test_a_row_being_appended_is_neither_parsed_nor_counted(self):
+        directory = self.tmp / 'ledger4'
+        directory.mkdir()
+        path = directory / 'requests-20260103.jsonl'
+        row = json.dumps({'remote': True, 'cost_usd': 1.0})
+        stop = threading.Event()
+        errors = []
+
+        def writer():
+            with open(path, 'ab', buffering=0) as f:
+                for _ in range(150):
+                    f.write(row[:10].encode())
+                    f.write(row[10:].encode())
+                    time.sleep(0.001)
+                    f.write(b'\n')
+            stop.set()
+
+        def reader():
+            last = 0.0
+            while not stop.is_set():
+                try:
+                    value = cloud.spend_today(day='20260103')
+                    assert value >= last and value == int(value)
+                    last = value
+                except Exception as exc:
+                    errors.append(exc)
+                    return
+
+        with patch.dict(os.environ, {'OXC_LEDGER_DIR': str(directory)}):
+            threads = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(30)
+            self.assertEqual(errors, [])
+            self.assertEqual(cloud.spend_today(day='20260103'), 150.0)
+
 
 class LedgerFailClosed(CloudCase):
     def _today(self):
