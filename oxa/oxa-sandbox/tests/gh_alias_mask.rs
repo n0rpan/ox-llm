@@ -120,3 +120,58 @@ fn ordinary_gh_config_still_opens_and_hides_the_token() {
     assert!(out.contains("editor: vi"), "{out}");
     assert!(!out.contains(SENTINEL), "{out}");
 }
+
+/// Codex review of #60: an ordinary cwd INSIDE `$HOME` (`~/work`) whose `gh` config directory is
+/// a symlink into the cwd. The source then lies under the hidden home but is shown through the
+/// cwd bind, so the empty file must go over it there too.
+fn inside_home_setup(env: &TestEnv) -> (PathBuf, PathBuf, PathBuf) {
+    let cwd = env.home().join("proj");
+    let src = cwd.join("gh-config");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("hosts.yml"), SENTINEL).unwrap();
+    std::fs::write(src.join("config.yml"), "editor: vi").unwrap();
+    std::fs::create_dir_all(env.home().join(".config")).unwrap();
+    let gh = env.home().join(".config/gh");
+    std::os::unix::fs::symlink(&src, &gh).unwrap();
+    (cwd, gh, src)
+}
+
+#[test]
+fn gh_source_inside_a_cwd_under_home_is_masked_after_the_cwd_bind() {
+    let env = TestEnv::new();
+    let (cwd, _gh, src) = inside_home_setup(&env);
+    let a = bwrap_args(&spec("true", &cwd), &env.home());
+    let cwd_c = std::fs::canonicalize(&cwd)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let hy = std::fs::canonicalize(&src)
+        .unwrap()
+        .join("hosts.yml")
+        .to_string_lossy()
+        .into_owned();
+    let bind = a
+        .windows(3)
+        .position(|w| w[0] == "--bind" && w[1] == cwd_c && w[2] == cwd_c)
+        .expect("cwd bind");
+    let mask = a
+        .windows(3)
+        .position(|w| w[0] == "--ro-bind" && w[1].ends_with("/empty") && w[2] == hy)
+        .unwrap_or_else(|| panic!("no empty overlay at {hy}: {a:?}"));
+    assert!(bind < mask, "mask must come after the cwd bind: {a:?}");
+}
+
+#[test]
+fn gh_source_inside_a_cwd_under_home_is_unreadable_in_a_real_sandbox() {
+    let env = TestEnv::new();
+    let Some(sb) = sandbox(&env) else { return };
+    let (cwd, gh, src) = inside_home_setup(&env);
+    let cmd = format!(
+        "cat '{}/hosts.yml' '{}/hosts.yml' 2>&1; true",
+        gh.display(),
+        src.display()
+    );
+    let res = sb.run(&spec(&cmd, &cwd), &CancelToken::new(), &mut |_| {});
+    let out = String::from_utf8_lossy(&res.output).into_owned();
+    assert!(!out.contains(SENTINEL), "token leaked: {out}");
+}

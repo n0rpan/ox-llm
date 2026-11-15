@@ -156,7 +156,9 @@ pub(crate) fn bwrap_args_homes(
                         || p.starts_with(&home_c)
                         || real_c.as_ref().is_some_and(|r| p.starts_with(r))
                 };
-                if !hidden_home(&gh_src) {
+                // A source under the hidden home is still shown through the cwd bind (an
+                // ordinary project directory inside `$HOME`): mask it there as well.
+                if !hidden_home(&gh_src) || gh_src.starts_with(&cwd_c) || gh_src.starts_with(cwd_path) {
                     aliases.push(gh_src.clone());
                 }
                 let via = home_entries
