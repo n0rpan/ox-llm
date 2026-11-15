@@ -1,4 +1,4 @@
-# Snapdragon Local AI Lab
+# oxc controller
 
 Large language models and image generation running locally on a **Snapdragon X Elite laptop under Linux**, on the CPU, with the receipts linked beside each speed number.
 
@@ -34,16 +34,16 @@ Be clear about the limits:
 
 ## Quick start
 
-Chat models run through the engine binaries. The lab has the controller and Studio. The coding agent is oxa.
+The engine runs inference, oxc provides the controller and Studio, and oxa is the coding agent.
 
-**1. Get the engine.** Download the attested Linux aarch64 tarball from the [engine releases](https://github.com/n0rpan/ox-llm/releases): `oxe-server-vX.Y.Z-linux-aarch64.tar.gz` for Ornith and Qwen, or the Flash tarball for the 125B model. The numbers here were measured on the Snapdragon X Elite (X1E80100) only; the X Plus has not been tested. The packaged `README.txt` says cores without i8mm or bf16 stop with "Illegal instruction"; that has not been tested on such a core.
+**1. Get the engine.** Download the attested Linux aarch64 tarball from the [engine releases](https://github.com/oxstack/ox-llm/releases): `oxe-server-vX.Y.Z-linux-aarch64.tar.gz` for Ornith and Qwen, or the Flash tarball for the 125B model. The numbers here were measured on the Snapdragon X Elite (X1E80100) only; the X Plus has not been tested. The packaged `README.txt` says cores without i8mm or bf16 stop with "Illegal instruction"; that has not been tested on such a core.
 
 **2. Verify it.** In the download directory:
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
-gh attestation verify oxe-server-vX.Y.Z-linux-aarch64.tar.gz --repo n0rpan/ox-llm \
-  --signer-workflow n0rpan/ox-llm/.github/workflows/release.yml
+gh attestation verify oxe-server-vX.Y.Z-linux-aarch64.tar.gz --repo oxstack/ox-llm \
+  --signer-workflow oxstack/ox-llm/.github/workflows/release.yml
 ```
 
 The first checks integrity. The second checks the Sigstore-signed build provenance, and needs GitHub CLI 2.49 or newer.
@@ -69,13 +69,16 @@ curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/jso
 
 The CPU lists assume the X1E80100 core layout. The server listens on loopback only.
 
-**4. Add the controller (optional).** To serve every model on one OpenAI-compatible port, build the controller from this repository and follow [docs/REPRODUCE.md](docs/REPRODUCE.md). There is no one-command installer yet.
+**4. Controller setup.** The installed runtime provides the `oxc` model, code and status commands.
+The source package provides read-only diagnostics and installation tooling; it is not a complete
+live-user installer. Start with [the sandbox bootstrap](docs/BOOTSTRAP-INSTALL.md) for its supported
+source-install and rollback boundary, and [reproduction](docs/REPRODUCE.md) for engine setup.
 
 Model-free checks run anywhere with Python 3:
 
 ```sh
 PYTHONPATH=src python3 -B -m oxc doctor
-PYTHONPATH=src python3 -B -m unittest discover -s tests
+./tools/run_lab_tests.sh
 ```
 
 ## Supported models
