@@ -54,16 +54,29 @@ def record():
         ('unknown_stop', text + end('future_stop_reason'), True),
         ('empty_text', [start(), block(0, 'text', text=''), delta(0, 'text_delta', text=''), stop(0)]
             + end('end_turn'), True),
+        ('repeated_signature', [start(), block(0, 'thinking'),
+            delta(0, 'signature_delta', signature='opaque-first'),
+            delta(0, 'signature_delta', signature='opaque-replacement'), stop(0)] + end('end_turn'), True),
+        ('redaction', [start(), block(0, 'text', text=''),
+            delta(0, 'text_delta', text='Synthetic λ synthetic-redact-'),
+            delta(0, 'text_delta', text='marker synthetic-'), stop(0), block(1, 'thinking'),
+            delta(1, 'thinking_delta', thinking='synthetic-redact-'),
+            delta(1, 'thinking_delta', thinking='marker synthetic-'),
+            delta(1, 'signature_delta', signature='opaque-signature'), stop(1),
+            block(2, 'tool_use', id='call_1', name='read_synthetic-redact-marker', input={}),
+            delta(2, 'input_json_delta', partial_json='{"note":"synthetic-redact-'),
+            delta(2, 'input_json_delta', partial_json='marker"}'), stop(2)] + end('tool_use'), True),
     ]
     rows = []
     for name, events, include_usage in cases:
-        stream = source._Stream({'id': 'synthetic-model', 'upstream_model': 'synthetic'}, include_usage)
+        marker = 'synthetic-redact-marker' if name == 'redaction' else None
+        stream = source._Stream({'id': 'synthetic-model', 'upstream_model': 'synthetic'}, include_usage, key=marker)
         chunks = []
         with patch.object(source.time, 'time', return_value=CREATED):
             for event in events:
-                chunks.extend(stream.event(event))
+                chunks.extend(source.cloud.redact_value(chunk, marker) for chunk in stream.event(event))
         rows.append({'name': name, 'events': events, 'include_usage': include_usage,
-                     'expected': chunks, 'native_blocks': stream.blocks,
+                     'expected': chunks, 'native_blocks': stream.blocks, 'redact_marker': marker,
                      'final_usage': stream.usage if stream.usage_final else None})
     return ''.join(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\n'
                    for row in rows)

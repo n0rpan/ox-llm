@@ -1,5 +1,5 @@
 //! Parsed Anthropic Messages events -> OpenAI chunks and a terminal usage record.
-//! SSE framing, transport, credential redaction and accounting belong to the gateway.
+//! SSE framing, transport, redactor implementation and accounting belong to the gateway.
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -76,10 +76,46 @@ struct Block {
     native: Value,
     slot: Option<usize>,
     arguments: String,
+    safe_arguments: String,
+    safe_id: String,
+    safe_name: String,
     closed: bool,
 }
 
-pub struct Stream {
+/// Each visible field has independent hold-back state; tool argument streams are
+/// keyed by their stable OpenAI slot, never mixed with names or another call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Field {
+    Content,
+    Thinking,
+    ToolArguments(usize),
+}
+
+/// Inject the gateway's streaming redactor without passing credentials here.
+/// `feed` may withhold partial matches; `finish` releases a field's remaining tail.
+/// `whole` redacts atomic tool names/IDs in place, never with hold-back buffering.
+pub trait Redactor {
+    fn feed(&mut self, field: Field, fragment: &str) -> String;
+    fn finish(&mut self, field: Field) -> String;
+    fn whole(&mut self, value: &str) -> String;
+}
+
+/// Explicit identity transform for callers without sensitive data and parity tests.
+pub struct Identity;
+impl Redactor for Identity {
+    fn feed(&mut self, _: Field, fragment: &str) -> String {
+        fragment.to_owned()
+    }
+    fn finish(&mut self, _: Field) -> String {
+        String::new()
+    }
+    fn whole(&mut self, value: &str) -> String {
+        value.to_owned()
+    }
+}
+
+pub struct Stream<R: Redactor = Identity> {
+    redactor: R,
     model: String,
     created: u64,
     include_usage: bool,
@@ -95,10 +131,25 @@ pub struct Stream {
     reasoning: String,
 }
 
-impl Stream {
+impl Stream<Identity> {
     /// The caller supplies one timestamp so the translator needs no clock or IO.
     pub fn new(model: impl Into<String>, created: u64, include_usage: bool) -> Self {
+        Self::with_redactor(model, created, include_usage, Identity)
+    }
+}
+
+impl<R: Redactor> Stream<R> {
+    /// Production gateways supply their stateful redactor here. Completed.assistant
+    /// is assembled from the same safe fragments as emitted chunks. Native blocks
+    /// stay opaque/unmodified and must remain inside the exact-prefix private store.
+    pub fn with_redactor(
+        model: impl Into<String>,
+        created: u64,
+        include_usage: bool,
+        redactor: R,
+    ) -> Self {
         Self {
+            redactor,
             model: model.into(),
             created,
             include_usage,
@@ -181,6 +232,7 @@ impl Stream {
                     .as_object()
                     .ok_or(StreamError)?
                     .clone();
+                let (mut safe_id, mut safe_name) = (String::new(), String::new());
                 let slot = match native.get("type").and_then(Value::as_str) {
                     Some("tool_use") => {
                         let slot = self.next_slot;
@@ -194,8 +246,17 @@ impl Stream {
                             return Err(StreamError);
                         }
                         native.entry("input").or_insert(json!({}));
-                        out.push(self.chunk(json!({"tool_calls":[{"index":slot, "id":native["id"],
-                            "type":"function", "function":{"name":native["name"], "arguments":""}}]}), None));
+                        safe_id = self
+                            .redactor
+                            .whole(native["id"].as_str().ok_or(StreamError)?);
+                        safe_name = self
+                            .redactor
+                            .whole(native["name"].as_str().ok_or(StreamError)?);
+                        out.push(self.chunk(
+                            json!({"tool_calls":[{"index":slot, "id":safe_id,
+                            "type":"function", "function":{"name":safe_name, "arguments":""}}]}),
+                            None,
+                        ));
                         Some(slot)
                     }
                     Some("thinking") => {
@@ -216,6 +277,9 @@ impl Stream {
                         native: Value::Object(native),
                         slot,
                         arguments: String::new(),
+                        safe_arguments: String::new(),
+                        safe_id,
+                        safe_name,
                         closed: false,
                     },
                 );
@@ -240,10 +304,12 @@ impl Stream {
                     if field == "partial_json" {
                         let slot = block.slot.ok_or(StreamError)?;
                         block.arguments.push_str(text);
-                        if !text.is_empty() {
+                        let safe = self.redactor.feed(Field::ToolArguments(slot), text);
+                        block.safe_arguments.push_str(&safe);
+                        if !safe.is_empty() {
                             out.push(self.chunk(
                                 json!({"tool_calls":[{"index":slot,
-                                "function":{"arguments":text}}]}),
+                                "function":{"arguments":safe}}]}),
                                 None,
                             ));
                         }
@@ -252,16 +318,29 @@ impl Stream {
                         {
                             return Err(StreamError);
                         }
+                        if field == "signature" {
+                            // Match the reference's opaque replacement semantics.
+                            block.native[field] = json!(text);
+                            return Ok(out);
+                        }
                         let existing = block.native[field].as_str().ok_or(StreamError)?;
                         block.native[field] = json!(format!("{existing}{text}"));
+                        let safe = self.redactor.feed(
+                            if field == "text" {
+                                Field::Content
+                            } else {
+                                Field::Thinking
+                            },
+                            text,
+                        );
                         if field == "text" {
-                            self.text.push_str(text);
+                            self.text.push_str(&safe);
                         }
                         if field == "thinking" {
-                            self.reasoning.push_str(text);
+                            self.reasoning.push_str(&safe);
                         }
-                        if !wire.is_empty() && !text.is_empty() {
-                            out.push(self.chunk(json!({wire:text}), None));
+                        if !safe.is_empty() {
+                            out.push(self.chunk(json!({wire:safe}), None));
                         }
                     }
                 }
@@ -284,13 +363,14 @@ impl Stream {
                 }
             }
             "message_delta" => {
+                self.usage_final = false;
                 if let Some(reason) = value["delta"]["stop_reason"].as_str() {
                     self.finish = Some(finish_reason(reason));
                 }
                 if let Some(usage) = value.get("usage") {
                     self.merge_usage(usage)?;
-                    self.usage_final =
-                        Usage::from_value(&Value::Object(self.raw_usage.clone())).is_some();
+                    self.usage_final = usage["output_tokens"].as_u64().is_some()
+                        && Usage::from_value(&Value::Object(self.raw_usage.clone())).is_some();
                 }
             }
             "message_stop" => {
@@ -298,6 +378,32 @@ impl Stream {
                     return Err(StreamError);
                 }
                 self.stopped = true;
+                let tail = self.redactor.finish(Field::Content);
+                self.text.push_str(&tail);
+                if !tail.is_empty() {
+                    out.push(self.chunk(json!({"content":tail}), None));
+                }
+                let tail = self.redactor.finish(Field::Thinking);
+                self.reasoning.push_str(&tail);
+                if !tail.is_empty() {
+                    out.push(self.chunk(json!({"reasoning_content":tail}), None));
+                }
+                let mut tails = Vec::new();
+                for block in self.blocks.values_mut() {
+                    if let Some(slot) = block.slot {
+                        let tail = self.redactor.finish(Field::ToolArguments(slot));
+                        block.safe_arguments.push_str(&tail);
+                        if !tail.is_empty() {
+                            tails.push((slot, tail));
+                        }
+                    }
+                }
+                for (slot, tail) in tails {
+                    out.push(self.chunk(
+                        json!({"tool_calls":[{"index":slot,"function":{"arguments":tail}}]}),
+                        None,
+                    ));
+                }
                 out.push(self.chunk(json!({}), Some(self.finish.unwrap_or("stop"))));
                 if self.include_usage {
                     if let Some(usage) = self.usage() {
@@ -333,8 +439,8 @@ impl Stream {
             assistant["tool_calls"] = calls
                 .iter()
                 .map(|(_, b)| {
-                    json!({"id":b.native["id"],
-                "type":"function", "function":{"name":b.native["name"], "arguments":b.arguments}})
+                    json!({"id":b.safe_id,
+                "type":"function", "function":{"name":b.safe_name, "arguments":b.safe_arguments}})
                 })
                 .collect();
         }
