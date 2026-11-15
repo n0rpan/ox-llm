@@ -2,6 +2,11 @@
 use oxc::openai_responses::{request, response, HistoryStore, Stream};
 use serde_json::{json, Value};
 
+fn canonical(mut value: Value) -> Vec<u8> {
+    value.sort_all_objects();
+    serde_json::to_vec(&value).unwrap()
+}
+
 #[test]
 fn python_requests_and_continuations() {
     for row in include_str!("fixtures/openai_responses_requests.jsonl").lines() {
@@ -35,8 +40,8 @@ fn python_requests_and_continuations() {
             );
         } else {
             assert_eq!(
-                serde_json::to_vec(&result.unwrap()).unwrap(),
-                serde_json::to_vec(&row["expected"]).unwrap(),
+                canonical(result.unwrap()),
+                canonical(row["expected"].clone()),
                 "{}",
                 row["name"]
             );
@@ -55,10 +60,7 @@ fn python_terminal_responses_and_stream_chunks() {
             .iter()
             .flat_map(|e| stream.event(e).unwrap())
             .collect();
-        assert_eq!(
-            serde_json::to_vec(&chunks).unwrap(),
-            serde_json::to_vec(&row["expected"]).unwrap()
-        );
+        assert_eq!(canonical(json!(chunks)), canonical(row["expected"].clone()));
         assert!(stream
             .event(&json!({"type":"response.completed"}))
             .unwrap()
@@ -199,6 +201,37 @@ fn unclosed_steps_never_use_historical_replay() {
         .status,
         409
     );
+}
+
+#[test]
+fn continuation_identity_sorts_nested_argument_objects_under_feature_unification() {
+    let mut store = HistoryStore::default();
+    let (mut assistant, mut output, tool) = step(1);
+    let arguments = r#"{"outer":{"z":2,"a":1},"items":[{"y":4,"x":3}]}"#;
+    assistant["tool_calls"][0]["function"]["arguments"] = json!(arguments);
+    for item in &mut output {
+        if item["type"] == "function_call" {
+            item["arguments"] = json!(arguments);
+        }
+    }
+    store.remember("scope", "gpt-6-sol", &[], &assistant, &output, 0);
+    assistant["tool_calls"][0]["function"]["arguments"] =
+        json!(r#"{"items":[{"x":3,"y":4}],"outer":{"a":1,"z":2}}"#);
+    let request_body = json!({"messages":[assistant, tool]});
+    let restored = request(
+        &request_body,
+        "gpt-6-sol",
+        Some(128),
+        "scope",
+        &mut store,
+        0,
+    )
+    .unwrap();
+    assert!(restored["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["type"] == "reasoning"));
 }
 
 #[test]

@@ -58,11 +58,12 @@ fn canonical(message: &Value) -> Value {
 }
 
 fn history_key(scope: &str, model: &str, history: &[Value]) -> [u8; 32] {
-    let material = json!([
+    let mut material = json!([
         scope,
         model,
         history.iter().map(canonical).collect::<Vec<_>>()
     ]);
+    material.sort_all_objects();
     Sha256::digest(serde_json::to_vec(&material).expect("JSON values serialize")).into()
 }
 
