@@ -128,3 +128,34 @@ fn runtime_fixture_uses_a_real_owner_only_key_file_outside_the_repository() {
     assert!(mock.requests().is_empty());
     mock.assert_healthy();
 }
+
+#[cfg(feature = "runtime")]
+#[test]
+fn real_runtime_discovers_the_fixture_without_provider_or_ledger_activity() {
+    let mock = anthropic::MockAnthropic::start(vec![]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let runtime = oxc_gateway::runtime::Runtime::new(
+        fixture.config.clone(),
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        oxc_gateway::runtime::Options::default(),
+    )
+    .unwrap();
+    std::fs::remove_file(&fixture.key_path).unwrap();
+    let discovery = runtime.discovery();
+    assert_eq!(discovery.models["data"].as_array().unwrap().len(), 1);
+    assert_eq!(discovery.models["data"][0]["id"], skeleton::MODEL);
+    assert_eq!(discovery.status["loaded"], false);
+    assert_eq!(discovery.status["sleeping"], true);
+    assert!(!discovery.models.to_string().contains(anthropic::CREDENTIAL));
+    assert!(!discovery
+        .models
+        .to_string()
+        .contains(fixture.key_path.to_str().unwrap()));
+    assert!(mock.requests().is_empty());
+    assert!(std::fs::read_dir(&fixture.ledger_dir)
+        .unwrap()
+        .next()
+        .is_none());
+    mock.assert_healthy();
+}
