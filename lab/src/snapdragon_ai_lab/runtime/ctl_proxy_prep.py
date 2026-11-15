@@ -15,7 +15,7 @@ if __package__:
     from .ctl_env import Unavailable
     from .ctl_seams import ctl
     from .harness_registry import client_label, learning_settings
-    from . import bigmoe_runtime, cache_turn, harness_compat, lan_share, openai_api, oxe_runtime, request_ledger
+    from . import bigmoe_runtime, cache_turn, cloud, harness_compat, lan_share, openai_api, oxe_runtime, request_ledger
     from . import openai_conformance, openai_responses
 else:
     from ctl_env import Unavailable
@@ -23,6 +23,7 @@ else:
     from harness_registry import client_label, learning_settings
     import bigmoe_runtime
     import cache_turn
+    import cloud
     import harness_compat
     import lan_share
     import openai_api
@@ -61,8 +62,8 @@ class ProxyRequest:
                  'body', 'model_alias', 'payload', 'rewritten', 'target', 'harness_key', 'harness', 'turn',
                  'backend_path', 'completion_meta', 'request_process', 'request_engine_config',
                  'led', 'preempt', 'runtime', 'connection', 'backend_headers', 'started_response',
-                 'client_write_failed', 'watcher', 'backend_status', 'request_error', 'content_type',
-                 'raw_body', 'robust', 'shim', 'prep_s')
+                 'client_write_failed', 'cloud_streamed', 'watcher', 'backend_status', 'request_error', 'content_type',
+                 'raw_body', 'robust', 'shim', 'prep_s', 'cloud_entry')
 
     def __init__(self, path, api_value, api_key, remote, inference, helper):
         self.path, self.api_value, self.api_key = path, api_value, api_key
@@ -75,6 +76,7 @@ class ProxyRequest:
         self.runtime = self.connection = self.backend_headers = None
         self.started_response = False
         self.client_write_failed = False
+        self.cloud_streamed = 0
         self.watcher = None
         self.backend_status = None
         self.request_error = None
@@ -83,6 +85,7 @@ class ProxyRequest:
         self.robust = None    # ctl_queue.Extras when set by proxy_request
         self.shim = None      # v0.2.0 conformance: the reply translation (openai_conformance / openai_responses)
         self.prep_s = None    # v0.2.0 #8: seconds in prepare() (body read, parse, shaping)
+        self.cloud_entry = None  # Wave D: the remote catalog entry of this request
 
     def client_gone(self):
         return self.client_write_failed or (self.watcher is not None and self.watcher.disconnected.is_set())
@@ -137,7 +140,29 @@ def prepare(self, st):
                 st.body = json.dumps(st.payload).encode(); st.rewritten = True
             if isinstance(st.payload, dict) and 'model' in st.payload:
                 if not isinstance(st.payload['model'], str): raise ValueError()
-                st.model_alias = self.manager.config(st.payload['model'])['model_alias']
+                wanted = st.payload['model']
+                configured = cloud.model(st.api_value, wanted, include_disabled=True)
+                if configured is not None:
+                    if not cloud.enabled(st.api_value):
+                        raise Unavailable('Unknown local model. Choose one listed in /v1/models.')
+                    if remote:  # a LAN-share guest never spends the owner's cloud account
+                        return answered(self.json_reply(403, {'error': {
+                            'message': 'Cloud models are not available to LAN-share requests.',
+                            'type': 'permission_error', 'param': 'model', 'code': 'cloud_not_shared'}}))
+                    if path != '/v1/chat/completions':
+                        return answered(self.json_reply(404, {'error': {
+                            'message': 'Cloud models are served on /v1/chat/completions only.',
+                            'type': 'invalid_request_error', 'code': 'unsupported_endpoint'}}))
+                    st.cloud_entry = configured
+                    st.model_alias = configured['id']
+                    st.target = {'model_alias': configured['id'], 'backend_kind': 'remote',
+                                 'display_name': configured['display_name'],
+                                 'context_size': configured['context_window'],
+                                 'max_output_tokens': configured['max_output']}
+                    st.payload['model'] = st.model_alias
+                    st.body = json.dumps(st.payload).encode(); st.rewritten = True
+                    return None
+                st.model_alias = self.manager.config(wanted)['model_alias']
                 st.payload['model'] = st.model_alias
                 st.body = json.dumps(st.payload).encode(); st.rewritten = True
         except (ValueError, OSError, EOFError): return answered(self.json_reply(400, {'error': 'Invalid model request.'}))

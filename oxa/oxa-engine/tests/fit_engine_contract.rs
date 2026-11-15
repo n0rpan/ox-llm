@@ -485,7 +485,9 @@ fn f4_parse_capabilities_with_fallback() {
             hint_clear: true,
             preserve_thinking: Some(false),
             park_disk_only: true,
-            remote: false
+            cache_hints: true,
+            prefill: true,
+            ..EngineCaps::default()
         }
     );
     // The moe row has no block: the loaded engine's oxe_hints, preserve_thinking unknown.
@@ -499,7 +501,9 @@ fn f4_parse_capabilities_with_fallback() {
             hint_clear: true,
             preserve_thinking: None,
             park_disk_only: false,
-            remote: false
+            cache_hints: true,
+            prefill: true,
+            ..EngineCaps::default()
         }
     );
     // Neither: nothing advertised.

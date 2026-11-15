@@ -152,6 +152,9 @@ impl Engine for ScriptedEngine {
                 preserve_thinking: self.preserve_thinking,
                 park_disk_only: false,
                 remote: self.remote,
+                cache_hints: true,
+                prefill: true,
+                ..oxa_proto::EngineCaps::default()
             },
             thinking: None,
             images: None,
