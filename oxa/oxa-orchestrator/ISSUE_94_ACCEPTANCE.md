@@ -298,3 +298,11 @@ Its preceding attempt failed before reviewer inference with the isolated gateway
 returning `cloud_credentials_unavailable`; the synthetic file remained present
 with mode 0600. The cause is not established. No deadline or assertion was
 relaxed, and this passing recheck does not resolve that intermittent failure.
+
+The isolated review harness now captures credential-refusal frame locations and
+owned synthetic-file metadata on failure, without dumping keys or configuration
+values or changing the gateway reader. The next ordinary priced/shared-model run
+passes; it does not reproduce or explain the earlier refusal. Fault injection
+confirms the diagnostic preserves the original exception with present and missing
+files and omits credential and path content. No production credential reader,
+retry policy or acceptance deadline changes.

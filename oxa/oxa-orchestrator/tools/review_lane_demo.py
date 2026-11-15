@@ -276,6 +276,30 @@ def run(args):
             "secrets_file": str(secrets), "models": models}, environ={"LOCAL_AI_LEDGER_DIR": str(ledger)})
         if args.pricing:
             stack.enter_context(patch.object(cloud_prices, "_fetch", refuse_public_fetch))
+        # Diagnose only this owned synthetic credential route. Keep the real
+        # reader and its fail-closed checks intact; never dump config or keys.
+        read_secret = cloud.secret
+
+        def owned_secret(provider, value):
+            try:
+                return read_secret(provider, value)
+            except cloud.CloudError as error:
+                import traceback
+                configured = cloud.settings(value).get("secrets_file")
+                detail = {"configured_owned_path": configured == str(secrets),
+                          "provider": provider if provider in ("openai", "anthropic") else "other",
+                          "frames": [{"module": Path(frame.filename).name, "line": frame.lineno}
+                                     for frame in traceback.extract_tb(error.__traceback__)]}
+                try:
+                    info = secrets.stat()
+                    detail.update(mode=oct(info.st_mode & 0o777), owned=info.st_uid == os.getuid(),
+                                  bytes=info.st_size)
+                except OSError as stat_error:
+                    detail["stat_errno"] = stat_error.errno
+                (root / "synthetic-credential-failure.json").write_text(json.dumps(detail, indent=2) + "\n")
+                raise
+
+        stack.enter_context(patch.object(cloud, "secret", owned_secret))
         connection, client = cloud.connection, cloud_anthropic._client
 
         def owned(item, key, original, port, tls=False):
