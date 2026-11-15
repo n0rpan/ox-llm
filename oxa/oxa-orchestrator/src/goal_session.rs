@@ -63,7 +63,8 @@ const CONTRACT: &str = "Pursue the operator's long-running goal across turns. A 
 
 /// Controls and status consumers are trusted operator components. The observer
 /// must not block. The SAME RPC process owns context across all turns and pauses.
-/// No cloud route, new permission, session discovery or initial-send replay.
+/// Inference authority is captured locally; no wire grants, session discovery
+/// or initial-send replay can widen it.
 pub fn pursue(
     settings: RunSettings,
     mut spec: WorkerSpec,

@@ -1341,7 +1341,7 @@ impl Engine for WorkerDriver {
     }
 }
 
-fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, recovering: bool) {
+fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, recovering: bool, gateway: bool) {
     let canceling = cancellation != "none";
     let aborting = cancellation == "escape";
     use std::os::unix::fs::PermissionsExt;
@@ -1368,7 +1368,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
             author_script,
             FakeOpts {
                 model: "author-model".into(),
-                hold_headers_ms: if aborting {
+                hold_headers_ms: if aborting || (gateway && canceling) {
                     1500
                 } else if steering {
                     600
@@ -1385,7 +1385,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
             child_script(),
             FakeOpts {
                 model: "reviewer-model".into(),
-                hold_headers_ms: if aborting {
+                hold_headers_ms: if aborting || (gateway && canceling) {
                     1500
                 } else if recovering {
                     900
@@ -1398,8 +1398,8 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
         .unwrap(),
     );
     let profiles = agent.join("workers.json");
-    let profile = |name: &str, role: &str, server: &FakeServer, model: &str| json!({"name":name,"role":role,"engine":server.url().trim_start_matches("http://"),"model":model,"budget":{"wall_ms":8000,"tokens":100000,"turns":8},"turn_ms":2000,"output_bytes":1048576});
-    std::fs::write(&profiles,json!({"version":1,"verified_local_only":true,"parallel":2,"total_tokens":200000,"total_output_bytes":2097152,"profiles":[profile("author","fixed author role",&author,"author-model"),profile("reviewer","fixed reviewer role",&reviewer,"reviewer-model")]}).to_string()).unwrap();
+    let profile = |name: &str, role: &str, server: &FakeServer, model: &str| json!({"name":name,"role":if gateway {format!("{role} [gateway-test]")} else {role.to_string()},"route":if gateway {"cloud_gateway"} else {"local"},"engine":server.url().trim_start_matches("http://"),"model":model,"budget":{"wall_ms":8000,"tokens":100000,"turns":8},"turn_ms":2000,"output_bytes":1048576});
+    std::fs::write(&profiles,json!({"version":if gateway {2} else {1},"verified_local_only":!gateway,"allow_cloud_workers":gateway,"parallel":2,"total_tokens":200000,"total_output_bytes":2097152,"profiles":[profile("author","fixed author role",&author,"author-model"),profile("reviewer","fixed reviewer role",&reviewer,"reviewer-model")]}).to_string()).unwrap();
     std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o600)).unwrap();
     std::env::set_var("OXA_WORKER_PROFILES", &profiles);
     let final_text = r#"{"state":"done","summary":"lanes-final","evidence":["worker results checked"]}"#;
@@ -1449,6 +1449,8 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
     let peer_socket = socket.clone();
     let expected_peer = expected.clone();
     let peer_driver = driver.clone();
+    let peer_author = author.clone();
+    let peer_reviewer = reviewer.clone();
     let peer = std::thread::spawn(move || {
         let initial = wait_status(&peer_socket, |v| v["status"]["session"]["id"] == expected_peer);
         request(
@@ -1461,6 +1463,9 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
         mutation(&peer_socket, "run", "resume", revision(&paused), None);
         let waiting = wait_status(&peer_socket, |v| {
             state(v) == if aborting { "active" } else { "blocked" }
+                && (!(gateway && canceling)
+                    || (peer_author.requests().iter().any(|r| r.max_tokens > 0)
+                        && peer_reviewer.requests().iter().any(|r| r.max_tokens > 0)))
                 && (!canceling
                     || v["status"]["workers"].as_array().is_some_and(|jobs| {
                         jobs.len() == 2
@@ -1507,6 +1512,7 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
         assert!(jobs.iter().any(|j| j["model"] == "author-model"));
         assert!(jobs.iter().any(|j| j["model"] == "reviewer-model"));
         for job in jobs {
+            assert_eq!(job["route"], if gateway { "cloud_gateway" } else { "local" });
             if recovering && job["profile"] == "author" {
                 let baseline = peer_driver.before_retarget.lock().unwrap();
                 let before = baseline.as_ref().unwrap();
@@ -1588,6 +1594,24 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
         let requests = server.requests();
         let chats = requests.iter().filter(|r| r.max_tokens > 0).collect::<Vec<_>>();
         if canceling {
+            if gateway {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    let _ = server.in_flight();
+                    if server
+                        .timings()
+                        .iter()
+                        .any(|t| t.max_tokens.is_some_and(|n| n > 0) && t.client_closed)
+                    {
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "cancel must close the gateway inference connection"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
             assert!(chats.len() <= 1, "cancel prevents follow-on inference");
             continue;
         }
@@ -1632,6 +1656,9 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
             .is_some_and(|text| text.contains("worker-finished") && text.contains("untrusted data"))));
     }
     let screen = strip_ansi(&String::from_utf8_lossy(&terminal.inner.out));
+    if gateway {
+        assert!(screen.contains("(cloud)"), "paid route visible in footer");
+    }
     assert!(
         screen.contains("100000 tokens"),
         "worker allowance shown in footer"
@@ -1642,9 +1669,112 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
     );
 }
 
+fn offline_parent_refuses_gateway_workers_before_contact() {
+    use std::os::unix::fs::PermissionsExt;
+    struct RestorePolicy(bool, bool);
+    impl Drop for RestorePolicy {
+        fn drop(&mut self) {
+            oxa_proto::set_net_policy(self.0, self.1);
+        }
+    }
+    let _restore = RestorePolicy(oxa_proto::offline(), oxa_proto::remote_engine_allowed());
+    oxa_proto::set_net_policy(true, false);
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    std::fs::create_dir_all(&agent).unwrap();
+    let directory = agent.join("control");
+    let socket = directory.join("session.sock");
+    let gateway = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let profiles = agent.join("workers.json");
+    std::fs::write(&profiles,json!({"version":2,"verified_local_only":false,"allow_cloud_workers":true,"parallel":1,"total_tokens":1000,"total_output_bytes":65536,"profiles":[{"name":"cloud-author","role":"fixed gateway role","route":"cloud_gateway","engine":gateway.url().trim_start_matches("http://"),"model":"fake-model","budget":{"wall_ms":5000,"tokens":1000,"turns":4},"turn_ms":1000,"output_bytes":65536}]}).to_string()).unwrap();
+    std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+    std::env::set_var("OXA_WORKER_PROFILES", &profiles);
+    let engine = Arc::new(
+        FakeServer::start(
+            vec![
+                ScriptTurn::tool(
+                    "denied-cloud",
+                    "worker_lane",
+                    r#"{"operation":"start","profile":"cloud-author","goal":"must not contact gateway"}"#,
+                ),
+                ScriptTurn::text("offline-worker-refused"),
+            ],
+            FakeOpts::default(),
+        )
+        .unwrap(),
+    );
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let session = Session::open(
+        deps(&engine.url(), env.root(), &env.work(), store.clone()),
+        Open::New,
+    )
+    .unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let peer_done = done.clone();
+    let peer_engine = engine.clone();
+    let peer = std::thread::spawn(move || {
+        let status = wait_status(&socket, |v| {
+            v["status"]["session"]["busy"] == false
+                && peer_engine.requests().iter().filter(|r| r.max_tokens > 0).count() == 2
+        });
+        assert_eq!(status["status"]["workers"], json!([]));
+        peer_done.store(true, Ordering::Release);
+    });
+    let mut terminal = LiveTerm {
+        inner: TestTerminal::new(120, 30),
+        done,
+        typing: Arc::new(AtomicBool::new(false)),
+        typed: Arc::new(AtomicBool::new(false)),
+        deadline: Instant::now() + Duration::from_secs(12),
+        quit: false,
+        final_text: "offline-worker-refused",
+        escape: false,
+        swap_when: None,
+        swapped: false,
+        rejected: Arc::new(AtomicBool::new(false)),
+    };
+    let mut options = opts(&env, &engine.url(), store);
+    options.initial_prompt = Some("Try the configured gateway worker".into());
+    let (code, _) = run_session(&mut terminal, session, &mut options);
+    peer.join().unwrap();
+    assert_eq!(code, 0);
+    let requests = engine.requests();
+    let chats = requests.iter().filter(|r| r.max_tokens > 0).collect::<Vec<_>>();
+    assert!(chats[1].messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("offline mode refuses cloud worker inference"))));
+    assert!(
+        gateway.requests().is_empty(),
+        "offline refusal precedes any worker gateway generation"
+    );
+    assert!(
+        !std::fs::read_dir(&agent).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("worker-")),
+        "no worker audit/runtime created offline"
+    );
+    std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+    std::env::remove_var("OXA_WORKER_PROFILES");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--mode") {
+        if args
+            .last()
+            .is_some_and(|role| role.contains("fixed author role") || role.contains("fixed reviewer role"))
+        {
+            let gateway = args.last().unwrap().contains("[gateway-test]");
+            assert_eq!(
+                args.iter().any(|arg| arg == "--offline"),
+                !gateway,
+                "worker route controls its offline flag"
+            );
+        }
         std::process::exit(oxa_cli::run(
             &args,
             &oxa_config::Env::from_process(),
@@ -1673,11 +1803,17 @@ fn main() {
             "Esc settlement stops workers and preserves unknown usage",
         ),
     ] {
-        model_worker_lanes_wake_same_session(steering, cancellation, false);
+        model_worker_lanes_wake_same_session(steering, cancellation, false, false);
         println!("{name} ... ok");
     }
-    model_worker_lanes_wake_same_session(true, "none", true);
+    model_worker_lanes_wake_same_session(true, "none", true, false);
+    model_worker_lanes_wake_same_session(false, "none", false, true);
+    println!("explicit gateway profiles launch online native workers against loopback fakes ... ok");
     println!("blocked worker retarget/resume preserves context and cumulative budget ... ok");
+    model_worker_lanes_wake_same_session(false, "socket", false, true);
+    println!("gateway worker cancellation closes in-flight inference connections ... ok");
+    offline_parent_refuses_gateway_workers_before_contact();
+    println!("offline parent rejects gateway workers before launch or generation ... ok");
     if args.first().map(String::as_str) == Some("--workers-only") {
         return;
     }

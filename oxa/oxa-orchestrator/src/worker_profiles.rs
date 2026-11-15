@@ -2,7 +2,7 @@
 use crate::workspace::RelativePath;
 use crate::{goals, LocalInference};
 use oxa_core::Deps;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     fs::OpenOptions,
@@ -17,6 +17,8 @@ use std::{
 pub(crate) struct Config {
     pub version: u32,
     pub verified_local_only: bool,
+    #[serde(default)]
+    pub allow_cloud_workers: bool,
     pub parallel: usize,
     pub total_tokens: u64,
     pub total_output_bytes: usize,
@@ -29,6 +31,8 @@ pub(crate) struct Profile {
     pub role: String,
     pub engine: SocketAddr,
     pub model: String,
+    #[serde(default)]
+    pub route: Route,
     pub budget: goals::Budget,
     pub turn_ms: u64,
     pub output_bytes: usize,
@@ -41,13 +45,42 @@ pub(crate) struct Profile {
     #[serde(default)]
     pub allow_new: Vec<RelativePath>,
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Route {
+    #[default]
+    Local,
+    CloudGateway,
+}
+impl Route {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::CloudGateway => "cloud",
+        }
+    }
+}
 impl Profile {
+    pub fn inference(&self) -> io::Result<LocalInference> {
+        match self.route {
+            Route::Local => LocalInference::register_verified_local(self.engine, self.model.clone()),
+            Route::CloudGateway => LocalInference::register_operator_gateway(self.engine, self.model.clone()),
+        }
+    }
+    pub fn check_policy(&self) -> io::Result<()> {
+        if self.route == Route::CloudGateway && oxa_proto::offline() {
+            return Err(io::Error::other("offline mode refuses cloud worker inference"));
+        }
+        Ok(())
+    }
     pub fn tokens(&self) -> u64 {
         self.budget.tokens.or(self.reported_tokens).unwrap_or(200_000)
     }
 }
 fn invalid() -> io::Error {
-    io::Error::other("invalid private worker profiles; verified local routes and bounded grants are required")
+    io::Error::other(
+        "invalid private worker profiles; explicit route authorization and bounded grants are required",
+    )
 }
 pub(crate) fn load(path: &Path, deps: &Deps) -> io::Result<Config> {
     load_private(path, &deps.dirs.agent_dir, &deps.cwd)
@@ -85,8 +118,14 @@ fn load_private(path: &Path, agent_dir: &Path, cwd: &Path) -> io::Result<Config>
     validate(config)
 }
 fn validate(config: Config) -> io::Result<Config> {
-    if config.version != 1
-        || !config.verified_local_only
+    let cloud = config
+        .profiles
+        .iter()
+        .any(|profile| profile.route == Route::CloudGateway);
+    if !matches!(config.version, 1 | 2)
+        || (config.version == 1 && (cloud || config.allow_cloud_workers))
+        || config.verified_local_only == cloud
+        || config.allow_cloud_workers != cloud
         || !(1..=4).contains(&config.parallel)
         || !(1..=64_000_000).contains(&config.total_tokens)
         || !(65536..=64 * 1024 * 1024).contains(&config.total_output_bytes)
@@ -129,7 +168,7 @@ fn validate(config: Config) -> io::Result<Config> {
         }
         goals::Goal::new("preflight".into(), "worker goal".into(), profile.budget.clone())
             .map_err(|_| invalid())?;
-        LocalInference::register_verified_local(profile.engine, profile.model.clone())?;
+        LocalInference::validate_route(profile.engine, &profile.model)?;
         let unique: BTreeSet<_> = profile.files.iter().map(|p| p.as_str()).collect();
         let added: BTreeSet<_> = profile.allow_new.iter().map(|p| p.as_str()).collect();
         if unique.len() != profile.files.len()
@@ -184,6 +223,26 @@ mod tests {
         assert!(load_private(&outside, &agent, &env.work()).is_err());
         assert!(load_private(Path::new("workers.json"), &agent, &env.work()).is_err());
         assert!(load_private(&path, &agent, &env.work()).is_ok());
+    }
+    #[test]
+    fn cloud_routes_require_explicit_versioned_operator_authorization() {
+        let mut cloud = config();
+        cloud["version"] = json!(2);
+        cloud["verified_local_only"] = json!(false);
+        cloud["allow_cloud_workers"] = json!(true);
+        cloud["profiles"][0]["route"] = json!("cloud_gateway");
+        assert!(accepted(cloud.clone()));
+        for (field, value) in [
+            ("version", json!(1)),
+            ("verified_local_only", json!(true)),
+            ("allow_cloud_workers", json!(false)),
+        ] {
+            let mut missing = cloud.clone();
+            missing[field] = value;
+            assert!(!accepted(missing), "{field}");
+        }
+        cloud["profiles"][0]["engine"] = json!("192.0.2.1:8080");
+        assert!(!accepted(cloud));
     }
     #[test]
     fn operator_routes_and_pool_bounds_are_validated_before_installation() {

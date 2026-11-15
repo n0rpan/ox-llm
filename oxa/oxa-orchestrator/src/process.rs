@@ -40,7 +40,12 @@ impl Process {
         mode: &str,
         byte_limit: usize,
         workspace: Option<&crate::workspace::WorkingCopy>,
+        local_only: bool,
     ) -> io::Result<Self> {
+        #[cfg(feature = "interactive-control")]
+        if !local_only && oxa_proto::offline() {
+            return Err(invalid("offline mode refuses cloud worker inference"));
+        }
         // Build a new filesystem instead of exposing the parent's root/home.
         // Only the trusted runtime libraries and the explicitly chosen binary
         // are mounted. HOME is private; /work is empty or an approved private copy.
@@ -142,7 +147,6 @@ impl Process {
                 "/agent",
                 "--mode",
                 "rpc",
-                "--offline",
                 "--permission-mode",
                 mode,
                 "--model",
@@ -165,6 +169,9 @@ impl Process {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        if local_only {
+            command.arg("--offline");
+        }
         if let Some(workspace) = workspace {
             command.arg("--tools").arg(workspace.tools().join(","));
         } else {

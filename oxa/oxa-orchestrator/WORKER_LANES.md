@@ -39,8 +39,9 @@ Example operator configuration, using an operator-verified **local-only** engine
 ```
 
 `verified_local_only` is an operator assertion about the route, not proof that a
-loopback proxy cannot forward to paid inference. This stage does not enable cloud
-workers or validate cloud cost ceilings. No cloud experiment has been run.
+loopback proxy cannot forward to paid inference. Version 1 does not enable cloud
+workers or validate cloud cost ceilings. See [GATEWAY_WORKERS.md](GATEWAY_WORKERS.md)
+for explicitly authorized version 2 gateway profiles. Only mocks have been run.
 
 Profiles fix role, model, route, goal budget, per-turn deadline, output cap, and
 file grants. The model supplies only a profile name and goal. Workspace files

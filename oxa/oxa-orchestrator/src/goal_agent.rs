@@ -130,7 +130,7 @@ impl Backend for GoalAgent {
         AgentCard {
             protocol_version: PROTOCOL_VERSION.into(),
             name: "oxa session goal worker".into(),
-            description: "One bounded offline goal in an operator-owned native session".into(),
+            description: "One bounded goal in an operator-owned native session".into(),
             url: endpoint.into(),
             version: "1".into(),
             preferred_transport: "JSONRPC".into(),
