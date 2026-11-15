@@ -27,7 +27,9 @@ pub use layout::{
 };
 pub use net::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 pub use offline::{no_network_argv, offline_argv};
-pub use run::{die_with_parent, run_argv, run_argv_stdin, run_unsandboxed};
+pub use run::{
+    die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
+};
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
@@ -89,6 +91,17 @@ impl Sandbox for Bwrap {
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
         argv.extend(bwrap_args_with(s, &self.home, &self.layout));
         run_argv(&argv, &[], s.timeout_s, c, live)
+    }
+    fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+            let mut r = refused(why);
+            r.output.clear();
+            return r;
+        }
+        bwrap::create_missing_git_files(s, &self.home, &self.layout);
+        let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
+        argv.extend(bwrap_args_with(s, &self.home, &self.layout));
+        run_argv_capture(&argv, &[], s.timeout_s, c, live, false)
     }
     fn run_with_stdin(
         &self,

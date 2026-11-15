@@ -81,6 +81,14 @@ pub trait Sandbox: Send + Sync {
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult;
+    /// Like [`Sandbox::run`], but the chunks go only to `live`; `ExecResult.output` is empty
+    /// (for long-lived callers that keep their own bounded buffer). The default calls `run`
+    /// and clears the output; real executors override it so nothing accumulates.
+    fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        let mut r = self.run(s, c, live);
+        r.output.clear();
+        r
+    }
     /// [`Sandbox::run`] with `stdin` written to the command's standard input, which is then
     /// closed (E-INT: exec-hook payloads that do not fit a command-line argument). The default
     /// is for sandboxes that cannot feed stdin: nothing runs and the output says so

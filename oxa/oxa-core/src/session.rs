@@ -405,14 +405,22 @@ impl Session {
     pub fn fork(&mut self, entry: &str) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
         let mut ui = HeadlessUi::default();
-        crate::fork_at(&mut self.st, entry, &mut ui)
+        let r = crate::fork_at(&mut self.st, entry, &mut ui);
+        if r.is_ok() {
+            self.st.jobs.reset();
+        }
+        r
     }
 
     /// `/clone`: copy the active branch into a new session and switch to it.
     pub fn clone_session(&mut self) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
         let mut ui = HeadlessUi::default();
-        crate::clone_current(&mut self.st, &mut ui)
+        let r = crate::clone_current(&mut self.st, &mut ui);
+        if r.is_ok() {
+            self.st.jobs.reset();
+        }
+        r
     }
 
     /// Switch this object to another session (`/resume`, `/new` with `Open::New`). Fires
@@ -428,6 +436,7 @@ impl Session {
         let target = payload["targetSessionFile"].as_str().map(str::to_string);
         let reason = payload["reason"].as_str().unwrap_or("new");
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
+        self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
         self.preloaded = false;
         Ok(())

@@ -153,7 +153,7 @@ impl JobRegistry {
                     buf.drain(..keep);
                 }
             };
-            let res: ExecResult = sandbox.run(&spec, &cancel, &mut sink);
+            let res: ExecResult = sandbox.run_streaming(&spec, &cancel, &mut sink);
             let final_status = match res.exit {
                 Some(code) => JobStatus::Exited(code),
                 None => JobStatus::Killed,
@@ -173,6 +173,24 @@ impl JobRegistry {
         let start = output.len().saturating_sub(READ_CAP);
         let text = String::from_utf8_lossy(&output[start..]).into_owned();
         Ok(JobRead { status, output: text })
+    }
+
+    /// The bytes a job's ring buffer holds right now (for tests of the cap). `None` for an
+    /// unknown id.
+    #[doc(hidden)]
+    pub fn buffered_len(&self, id: &str) -> Option<usize> {
+        let state = self.state.lock().unwrap();
+        state.jobs.get(id).map(|j| j.output.lock().unwrap().len())
+    }
+
+    /// Cancel every running job AND forget them all: ids stop resolving and the slots free
+    /// at once. The job threads keep their own `Arc`s and settle on their own.
+    pub fn reset(&self) {
+        let mut state = self.state.lock().unwrap();
+        for job in state.jobs.values() {
+            job.cancel.cancel();
+        }
+        state.jobs.clear();
     }
 
     /// Cancel every running job. The sandbox's run loop then kills each process group;

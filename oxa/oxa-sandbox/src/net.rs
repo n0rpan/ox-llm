@@ -52,6 +52,9 @@ impl Sandbox for NetSandbox {
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
         self.inner.run(&self.clamp(s), c, live)
     }
+    fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        self.inner.run_streaming(&self.clamp(s), c, live)
+    }
     fn run_with_stdin(
         &self,
         s: &ExecSpec,
