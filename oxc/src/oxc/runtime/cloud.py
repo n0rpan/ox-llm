@@ -504,6 +504,7 @@ class BudgetHold:
         self.output_tokens = output_tokens
         self.started = monotonic() if started is None else started
         self.settled = False
+        self.accounted = False  # A completed accounting attempt, distinct from releasing admission.
 
     def settle(self):
         with _budget_lock:
