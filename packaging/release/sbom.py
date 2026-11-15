@@ -42,7 +42,7 @@ for path in sorted(payload.rglob('*')):
                                 'hashes': [{'alg': 'SHA-256', 'content': hashlib.sha256(path.read_bytes()).hexdigest()}]}
 # Sources under lab include Python stdlib-only controller code and its provenance/notices.
 components['python-controller'] = {'type': 'application', 'bom-ref': 'ox-llm-python-controller',
-    'name': 'snapdragon-local-ai-lab', 'version': '0.2.0', 'licenses': [{'license': {'id': 'MIT'}}]}
+    'name': 'oxc', 'version': '0.2.0', 'licenses': [{'license': {'id': 'MIT'}}]}
 output.write_text(json.dumps({'bomFormat': 'CycloneDX', 'specVersion': '1.6', 'version': 1,
     'metadata': {'component': {'type': 'application', 'name': 'ox-llm', 'version': '0.2.0'}},
     'components': sorted(components.values(), key=lambda p: p['bom-ref'])}, indent=2) + '\n')

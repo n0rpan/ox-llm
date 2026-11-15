@@ -6,8 +6,9 @@ use oxa_proto::{
     codes, write_json_str, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, Finish, Hints,
     OxaError, StreamEvent, ThinkingLevel, Timings, ToolCall, Usage, Value, WireMsg,
 };
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,13 @@ const RETRY_STEP_MS: u64 = 100;
 /// `0` becomes `T,"top_p":P,"top_k":K,"min_p":M,"presence_penalty":X` (+ `,"seed":S` when
 /// one is fixed), in place, before `"cache_prompt"`.
 pub fn build_body(r: &ChatRequest, out: &mut Vec<u8>) {
+    build_body_for(r, false, out);
+}
+
+/// [`build_body`] for a local engine (`remote == false`) or a cloud model routed through the
+/// controller (`remote == true`, Wave D D4). A remote body never carries local-only prefix,
+/// cache or template fields; its thinking switch is the standard `reasoning_effort`.
+pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
     out.extend_from_slice(b"{\"model\":");
     write_json_str(r.model, out);
     out.extend_from_slice(b",\"messages\":[{\"role\":\"system\",\"content\":");
@@ -56,6 +64,15 @@ pub fn build_body(r: &ChatRequest, out: &mut Vec<u8>) {
             }
             out.extend_from_slice(keys.as_bytes());
         }
+    }
+    if remote {
+        out.extend_from_slice(b",\"max_tokens\":");
+        out.extend_from_slice(r.max_tokens.to_string().as_bytes());
+        out.extend_from_slice(b",\"reasoning_effort\":\"");
+        out.extend_from_slice(if r.thinking { b"high" } else { b"none" });
+        out.push(b'"');
+        out.push(b'}');
+        return;
     }
     out.extend_from_slice(b",\"cache_prompt\":true,\"max_tokens\":");
     out.extend_from_slice(r.max_tokens.to_string().as_bytes());
@@ -161,14 +178,14 @@ impl ReplyAssembler {
                         self.calls[slot].id = id.to_string();
                     }
                     if let Some(name) = name {
-                        self.calls[slot].name = name.to_string();
+                        self.calls[slot].name.push_str(name);
                     }
                     self.calls[slot].args_raw.push_str(args);
                     if id.is_some() || name.is_some() || !args.is_empty() {
                         events.push(StreamEvent::ToolArgs {
                             index,
                             id: id.map(str::to_string),
-                            name: name.map(str::to_string),
+                            name: name.map(|_| self.calls[slot].name.clone()),
                             delta: args.to_string(),
                         });
                     }
@@ -363,6 +380,9 @@ pub struct HttpEngine {
     /// Capability-gated proposal (cancel-contract.md section 7): the engine advertised the cancel notice (`CANCEL_HINT`)
     /// in the last [`Engine::info`] of this endpoint. Shared by the clones of this engine.
     cancel_ok: Arc<AtomicBool>,
+    /// Wave D D4: model ids the controller advertised as `remote` in the last info call. Their
+    /// requests skip the local X-Oxe-* hints and local-only body fields.
+    remote_models: Arc<Mutex<HashSet<String>>>,
     /// The handshake warning of the last [`Engine::info`] (see `handshake.rs`).
     handshake: Arc<std::sync::Mutex<Option<String>>>,
 }
@@ -378,6 +398,7 @@ impl HttpEngine {
             opts: StreamOpts::default(),
             connect_retries: 2,
             cancel_ok: Arc::new(AtomicBool::new(false)),
+            remote_models: Arc::new(Mutex::new(HashSet::new())),
             handshake: Arc::default(),
         })
     }
@@ -401,10 +422,27 @@ impl HttpEngine {
     }
 }
 
+impl HttpEngine {
+    /// True when the controller advertised this model as remote in an earlier info call.
+    fn is_remote(&self, model: &str) -> bool {
+        self.remote_models
+            .lock()
+            .map(|m| m.contains(model))
+            .unwrap_or(false)
+    }
+}
+
 impl Engine for HttpEngine {
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
         let (info, cancel, handshake) = fetch_info_full(&self.url, self.api_key.as_deref(), target)?;
         self.cancel_ok.store(cancel, Ordering::SeqCst);
+        let key = target.filter(|t| !t.is_empty()).unwrap_or(&info.model);
+        let mut remote = self.remote_models.lock().unwrap_or_else(|p| p.into_inner());
+        if info.caps.remote {
+            remote.insert(key.to_string());
+        } else {
+            remote.remove(key);
+        }
         *self.handshake.lock().unwrap_or_else(|p| p.into_inner()) = handshake;
         Ok(info)
     }
@@ -418,6 +456,9 @@ impl Engine for HttpEngine {
         clear_hint(&self.url, self.api_key.as_deref(), hint)
     }
     fn count_prompt(&self, r: &ChatRequest) -> Result<Option<u64>, OxaError> {
+        if self.is_remote(r.model) {
+            return Ok(None);
+        }
         let mut body = Vec::new();
         build_body(r, &mut body);
         crate::info::count_prompt(&self.url, self.api_key.as_deref(), &body)
@@ -428,8 +469,9 @@ impl Engine for HttpEngine {
         cancel: &CancelToken,
         on: &mut dyn FnMut(StreamEvent),
     ) -> Result<AssistantTurn, OxaError> {
+        let remote = self.is_remote(r.model);
         let mut body = Vec::new();
-        build_body(r, &mut body);
+        build_body_for(r, remote, &mut body);
 
         // One idempotency key for the whole logical request: every attempt sends it (H2).
         let key = if r.hints.idem_key.is_empty() {
@@ -441,7 +483,7 @@ impl Engine for HttpEngine {
             idem_key: &key,
             ..r.hints
         };
-        let mut headers = build_headers(&hints);
+        let mut headers = if remote { Vec::new() } else { build_headers(&hints) };
         if let Some(k) = self.api_key.as_deref().filter(|k| !k.is_empty()) {
             headers.push(("Authorization", format!("Bearer {k}")));
         }
