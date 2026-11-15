@@ -228,7 +228,8 @@ pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
 
 /// A common dir whose `info` (`exclude`, `attributes`) is a symlink: [`worktree_entries`] cannot
 /// protect a symlink, so the replaceable link would stay writable. Unsafe (fail closed). A
-/// missing or real-directory `info` is fine; a gitdir that is not a common dir has none.
+/// real `info` must hold only plain files (no symlink, no hard link: an alias into the worktree
+/// would stay writable); a missing `info` is fine; a gitdir that is not a common dir has none.
 fn symlinked_info(dir: &Path) -> Option<String> {
     if dir.join("commondir").exists() {
         return None;
@@ -236,6 +237,7 @@ fn symlinked_info(dir: &Path) -> Option<String> {
     let info = dir.join("info");
     match fs::symlink_metadata(&info) {
         Ok(m) if m.file_type().is_symlink() => Some(format!("{} is a symlink", info.display())),
+        Ok(m) if m.is_dir() => unsafe_hooks_entry(&info),
         Ok(_) => None,
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => Some(format!("{} cannot be checked ({e})", info.display())),

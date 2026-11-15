@@ -254,6 +254,39 @@ fn worktree_symlinked_info_dir_in_common_is_read_only_and_refused() {
 }
 
 #[test]
+fn worktree_info_files_symlinked_or_hardlinked_are_refused() {
+    let env = TestEnv::new();
+    let (_main, wt, common) = linked_worktree(&env);
+    fs::create_dir_all(common.join("info")).expect("mkdir");
+    let target = wt.join("alias-target");
+    fs::write(&target, "").expect("write");
+    let ex = common.join("info/exclude");
+    fs::remove_file(&ex).ok();
+    symlink(&target, &ex).expect("symlink");
+    let binds = resolve_git_binds(&wt, &env.home(), None);
+    assert!(
+        binds.notes.iter().any(|n| n.contains("exclude is a symlink")),
+        "symlinked info/exclude is unsafe: {:?}",
+        binds.notes
+    );
+    fs::remove_file(&ex).ok();
+    fs::hard_link(&target, common.join("info/attributes")).expect("hard link");
+    let binds = resolve_git_binds(&wt, &env.home(), None);
+    assert!(
+        binds
+            .notes
+            .iter()
+            .any(|n| n.contains("attributes has more than one hard link")),
+        "hard-linked info/attributes is unsafe: {:?}",
+        binds.notes
+    );
+    let Some(sb) = sandbox(&env, &wt) else { return };
+    let (exit, out) = run(&sb, &format!("printf 'x\\n' > {}", target.display()), &wt);
+    assert_ne!(exit, Some(0), "{out}");
+    assert!(out.contains("sandbox refused"), "early refusal: {out}");
+}
+
+#[test]
 fn worktree_symlinked_hooks_dir_inside_common_is_read_only() {
     let env = TestEnv::new();
     let (_main, wt, common) = linked_worktree(&env);
