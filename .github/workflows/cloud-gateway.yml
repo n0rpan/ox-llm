@@ -57,8 +57,8 @@ jobs:
           bwrap --unshare-user --unshare-net --cap-drop ALL --die-with-parent --new-session --bind / / --proc /proc --dev /dev -- \
             env -i PATH="$PATH" HOME="$gateway_test_home" CARGO_HOME="$gateway_cargo_home" RUSTUP_HOME="$gateway_rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxa-core --features in-process-gateway
-      - run: python3 -I oxc-rs/tests/fixtures/record_anthropic_requests.py --check
-      - run: python3 -I oxa/oxc-gateway/tests/fixtures/record_anthropic_streams.py --check
+      - run: /usr/bin/python3 -I oxc-rs/tests/fixtures/record_anthropic_requests.py --check
+      - run: /usr/bin/python3 -I oxa/oxc-gateway/tests/fixtures/record_anthropic_streams.py --check
       - run: cargo build --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-features --examples
       - run: /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
-      - run: OXC_CATALOG_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/catalog_contract" OXC_POLICY_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/secrets_contract" OXC_REFUSAL_ROWS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/refusal_rows_contract" OXC_PRICING_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
+      - run: OXC_CATALOG_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/catalog_contract" OXC_POLICY_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/secrets_contract" OXC_REFUSAL_ROWS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/refusal_rows_contract" OXC_PAID_ROWS_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/paid_rows_contract" OXC_PRICING_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
