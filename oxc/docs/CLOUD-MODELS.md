@@ -317,14 +317,18 @@ provider's bill: #47's validated `usage.cost` remains an additional settlement f
 
 ## Experimental: ChatGPT subscription (`chatgpt/<model>`, opt-in)
 
-> **Experimental and unsupported.** This route signs in with the OAuth client registered for
-> ox-llm (`cloud.chatgpt.client_id`; oxc ships none and never borrows another app's client
-> identity, so sign-in stays unavailable until that registration exists) and calls the ChatGPT subscription Responses backend, the way
-> several third-party agents do. OpenAI does not document it; it is tolerated and **may break
-> without notice**. The official "Sign in with ChatGPT" program (#247) replaces it.
+> **Experimental, and undocumented by the provider.** By owner decision (#252) this signs in
+> through the Codex sign-in route, the way other open-source harnesses (OpenCode, pi) do. It uses
+> the Codex CLI's public OAuth client identifier, built in, with
+> `cloud.chatgpt.client_id` as an override, and calls the ChatGPT backend's Codex Responses
+> endpoint. OpenAI does not document this route. It is tolerated and **may break without
+> notice**. The official "Sign in with ChatGPT" program (#247) replaces it once it is generally
+> available. The sources of every constant: [CHATGPT-SIGNIN.md](CHATGPT-SIGNIN.md).
 
-It is off by default. It needs `cloud.enabled: true`, catalog entries of kind
-`remote/chatgpt` named `chatgpt/<model>`, `cloud.chatgpt.client_id`, and an explicit sign-in:
+It is off by default. It needs `cloud.enabled: true`, catalog entries of kind `remote/chatgpt`
+named `chatgpt/<model>`, and an explicit sign-in. The shipped catalog (`docs/cloud-models.json`)
+has `chatgpt/gpt-6.1-sol`, `chatgpt/gpt-6.1-terra`, `chatgpt/gpt-6-sol` and `chatgpt/gpt-6-luna`.
+They are listed only while a sign-in exists:
 
 ```sh
 oxc login chatgpt                 # browser PKCE sign-in, redirect to http://localhost:1455
@@ -333,9 +337,9 @@ oxc logout chatgpt                # removes the token file
 ```
 
 ```json
-"chatgpt/gpt-5": {"kind": "remote/chatgpt", "upstream_model": "gpt-5",
-                  "base_url": "https://chatgpt.com/backend-api/codex",
-                  "context_window": 272000, "max_output": 128000}
+"chatgpt/gpt-6-luna": {"kind": "remote/chatgpt", "upstream_model": "gpt-6-luna",
+                       "base_url": "https://chatgpt.com/backend-api/codex",
+                       "context_window": 272000, "max_output": 128000}
 ```
 
 - Tokens live in `chatgpt-auth.json` next to `cloud-secrets.json` (mode 0600, never logged or

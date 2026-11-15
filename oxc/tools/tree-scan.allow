@@ -66,3 +66,4 @@ tests/test_ab_tooling_controls.py	secret-assignment	O170 control: a synthetic pl
 tests/test_prereview_fixes.py	secret-assignment	O170 control: a synthetic placeholder search-key variable must be stripped from the oxa client env; no real key.
 tests/test_cloud_openai.py	secret-assignment	D8 T3 review: synthetic credential rotation literal for the loopback OpenAI key boundary test; no real credential. Exact test path and rule only.
 tests/test_cloud_only_no_engine.py	secret-assignment	Synthetic fake credential written to a fixture secrets file in a temp dir; invented key as test input, no real credential.
+tests/test_cloud_chatgpt.py	secret-assignment	Synthetic access/refresh token values served by the fake auth server and stored by the refresh tests; no real credential.

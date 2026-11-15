@@ -150,8 +150,9 @@ OpenAI v1 endpoint by choosing a model name.
   `output_config.effort`, and place `cache_control` breakpoints on the frozen prefix and the latest history
   turn. Same key handling, cloud-off default, budget cap and ledger as D1/D2. Tests against a mock server only.
 - **D7 "Sign in with ChatGPT" (design only):** a short design for oxc as a participating app (OAuth flow,
-  per-app limit display, where tokens live, cloud-off default). Never borrow another app's client identity.
-  Implementation waits until the maintainer has registered ox-llm in the program.
+  per-app limit display, where tokens live, cloud-off default). By owner decision (issue #252) the
+  experimental Codex sign-in route ships its public client identifier, the way other open-source harnesses
+  do. The official program replaces it once it is generally available (#247).
 
 ## Done means
 

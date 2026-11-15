@@ -82,5 +82,37 @@
       "input_per_million": 0.0507,
       "output_per_million": 0.2028
     }
+  },
+  "chatgpt/gpt-6.1-sol": {
+    "kind": "remote/chatgpt",
+    "provider": "chatgpt",
+    "base_url": "https://chatgpt.com/backend-api/codex",
+    "upstream_model": "gpt-6.1-sol",
+    "context_window": 500000,
+    "max_output": 128000
+  },
+  "chatgpt/gpt-6.1-terra": {
+    "kind": "remote/chatgpt",
+    "provider": "chatgpt",
+    "base_url": "https://chatgpt.com/backend-api/codex",
+    "upstream_model": "gpt-6.1-terra",
+    "context_window": 500000,
+    "max_output": 128000
+  },
+  "chatgpt/gpt-6-sol": {
+    "kind": "remote/chatgpt",
+    "provider": "chatgpt",
+    "base_url": "https://chatgpt.com/backend-api/codex",
+    "upstream_model": "gpt-6-sol",
+    "context_window": 272000,
+    "max_output": 128000
+  },
+  "chatgpt/gpt-6-luna": {
+    "kind": "remote/chatgpt",
+    "provider": "chatgpt",
+    "base_url": "https://chatgpt.com/backend-api/codex",
+    "upstream_model": "gpt-6-luna",
+    "context_window": 272000,
+    "max_output": 128000
   }
 }

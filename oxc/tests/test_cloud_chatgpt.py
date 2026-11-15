@@ -3,6 +3,7 @@
 Fake auth server and fake backend on loopback only; no real sign-in, no real API call.
 """
 import base64
+import io
 import json
 import os
 import stat
@@ -146,6 +147,21 @@ class Subscription(Base):
         self.assertNotIn(MODEL, [row['id'] for row in self.rows()])
         self.assertEqual(self.backend.requests, [])
 
+    def test_shipped_catalog_lists_chatgpt_models_only_after_sign_in(self):
+        shipped = json.loads((Path(cloud_chatgpt.__file__).resolve().parents[3] / 'docs' / 'cloud-models.json').read_text())
+        mine = {alias: raw for alias, raw in shipped.items() if raw.get('kind') == 'remote/chatgpt'}
+        self.assertTrue(mine)
+        for alias, raw in mine.items():
+            item = cloud.entry(alias, raw)
+            self.assertEqual((item['provider'], item['base_url'], item['cost_class']),
+                             ('chatgpt', 'https://chatgpt.com/backend-api/codex', 'subscription'), alias)
+            self.assertEqual(cloud.path_for(item), '/backend-api/codex/responses')
+        value = {'cloud': {'enabled': True, 'secrets_file': str(self.secrets), 'models': shipped}}
+        self.assertFalse(set(mine) & set(cloud.entries(value)))
+        self.assertTrue(set(shipped) - set(mine) <= set(cloud.entries(value)))
+        self.sign_in()
+        self.assertTrue(set(mine) <= set(cloud.entries(value)))
+
     def test_alias_must_carry_the_chatgpt_prefix(self):
         raw = models()[MODEL]
         self.assertIsNotNone(cloud.entry(MODEL, {**raw, 'base_url': 'https://example.invalid/api'}))
@@ -164,6 +180,8 @@ class Subscription(Base):
         self.assertEqual(sent['path'], '/api/responses')
         self.assertEqual(sent['headers']['authorization'], 'Bearer ' + ACCESS)
         self.assertEqual(sent['headers']['chatgpt-account-id'], ACCOUNT)
+        self.assertEqual(sent['headers']['openai-beta'], 'responses=experimental')
+        self.assertEqual(sent['headers']['originator'], 'oxc')
         self.assertIs(sent['body']['store'], False)
         self.assertIs(sent['body']['stream'], True)
         self.assertEqual(sent['body']['instructions'], 'Be brief.')
@@ -322,25 +340,55 @@ class Login(Base):
             self.assertEqual(cloud_chatgpt.main(['logout', '--config', str(config)]), 0)
         self.assertFalse(self.tokens.exists())
 
-    def test_no_borrowed_client_identity(self):
-        # Codex review P1: login used another app's OAuth client id.  oxc ships none; without
-        # cloud.chatgpt.client_id login, refresh and importing another app's login all refuse.
-        source_text = Path(cloud_chatgpt.__file__).read_text()
-        self.assertNotIn('app_EMoam', source_text)
-        self.assertFalse(hasattr(cloud_chatgpt, 'CLIENT_ID'))
+    def test_codex_route_is_the_built_in_default_with_pinned_sourced_constants(self):
+        # Owner decision (#252): the Codex sign-in route ships its public client identifier the
+        # way OpenCode and pi do.  Each constant is pinned here, sits next to a comment naming
+        # its source file, and is documented with its source URL in docs/CHATGPT-SIGNIN.md.
+        pinned = {'CLIENT_ID': 'app_EMoamEEZ73f0CkXaXp7hrann', 'AUTH_URL': 'https://auth.openai.com',
+                  'REDIRECT_PORT': 1455, 'REDIRECT_PATH': '/auth/callback',
+                  'SCOPE': 'openid profile email offline_access', 'ORIGINATOR': 'oxc'}
+        source_lines = Path(cloud_chatgpt.__file__).read_text().splitlines()
+        doc = (Path(cloud_chatgpt.__file__).resolve().parents[3] / 'docs' / 'CHATGPT-SIGNIN.md').read_text()
+        for name, expected in pinned.items():
+            self.assertEqual(getattr(cloud_chatgpt, name), expected, name)
+            line = next(i for i, text in enumerate(source_lines) if text.startswith(name + ' = '))
+            comment = ' '.join(source_lines[max(0, line - 3):line + 1])
+            self.assertRegex(comment, r'# source: S1 packages/core/src/plugin/provider/openai\.ts L\d+', name)
+        for url in ('https://github.com/sst/opencode/blob/6c5ef96af4928524e1daa24d4a2c0d9c279cdefb/'
+                    'packages/core/src/plugin/provider/openai.ts#L18',
+                    'https://github.com/badlogic/pi-mono/blob/463e17f8dc08a76a1e24e55db37f88de81b4b118/'
+                    'packages/ai/src/auth/oauth/openai-codex.ts#L22'):
+            self.assertIn(url, doc)
+        self.assertIn(pinned['CLIENT_ID'], doc)
+        # Without cloud.chatgpt.client_id the built-in route is used; the setting overrides it.
+        self.assertEqual(cloud_chatgpt.client_id({}), pinned['CLIENT_ID'])
+        self.assertEqual(cloud_chatgpt.client_id({'cloud': {'chatgpt': {'client_id': CLIENT}}}), CLIENT)
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(
+            cloud_chatgpt.Flow(cloud_chatgpt.client_id({})).authorize_url()).query))
+        self.assertEqual(query['client_id'], pinned['CLIENT_ID'])
+        self.assertEqual(query['redirect_uri'], 'http://localhost:1455/auth/callback')
+        self.assertEqual((query['id_token_add_organizations'], query['originator']), ('true', 'oxc'))
+        # The sources' UI flag is named after a third-party client; shipped code names none (O-151).
+        self.assertNotIn('codex_cli_simplified_flow', query)
+        # Login works out of the box (fake auth server) and says the route is experimental.
         config = self.tmp / 'runtime.json'
         config.write_text(json.dumps({'cloud': {'secrets_file': str(self.secrets),
                                                 'chatgpt': {'auth_url': self.auth.base}}}))
-        with patch('builtins.input', side_effect=AssertionError('no prompt')), patch('builtins.print'):
-            self.assertEqual(cloud_chatgpt.main(['login', '--paste', '--config', str(config)]), 1)
-        with self.assertRaises(SystemExit), patch('sys.stderr'):
-            cloud_chatgpt.main(['login', '--import', str(self.tmp / 'x.json'), '--config', str(config)])
-        self.assertEqual(self.auth.calls, [])
-        self.assertFalse(self.tokens.exists())
+        flow = cloud_chatgpt.Flow(cloud_chatgpt.client_id({}), self.auth.base)
+        state_url = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(flow.authorize_url()).query))
+        err = io.StringIO()
+        with patch('builtins.input', return_value=state_url['redirect_uri'] + '?code=c&state=' + state_url['state']), \
+                patch('sys.stderr', new=err), patch('builtins.print', side_effect=lambda *a, **k: err.write(' '.join(map(str, a)))):
+            self.assertEqual(cloud_chatgpt.main(['login', '--paste', '--config', str(config)], flow=flow), 0)
+        self.assertIn('EXPERIMENTAL', err.getvalue())
+        self.assertIn('undocumented', err.getvalue())
+        self.assertEqual(self.auth.calls[-1]['form']['client_id'], pinned['CLIENT_ID'])
+        # Refresh uses the built-in client too and sends what the sources send (no scope).
         self.sign_in(expires_in=-10)
-        with self.assertRaisesRegex(cloud_chatgpt.LoginError, 'client_id'):
-            cloud_chatgpt.credentials(self.secrets, {'cloud': {'chatgpt': {'auth_url': self.auth.base}}})
-        self.assertEqual(self.auth.calls, [])
+        cloud_chatgpt.credentials(self.secrets, {'cloud': {'chatgpt': {'auth_url': self.auth.base}}})
+        form = self.auth.calls[-1]['form']
+        self.assertEqual((form['grant_type'], form['client_id']), ('refresh_token', pinned['CLIENT_ID']))
+        self.assertNotIn('scope', form)
 
     def test_login_refuses_a_relative_or_in_repository_destination(self):
         # Codex review: login wrote tokens wherever cloud.secrets_file pointed, unlike the

@@ -1028,8 +1028,9 @@ def connection(item, key, account=None):
     else:
         headers['Authorization'] = 'Bearer ' + key
     if item['provider'] == 'chatgpt':
+        # source: docs/CHATGPT-SIGNIN.md (request headers row; S1 packages/core/src/plugin/provider/openai.ts L276-L280)
         headers.update({'chatgpt-account-id': account or '', 'OpenAI-Beta': 'responses=experimental',
-                        'Accept': 'text/event-stream'})
+                        'Accept': 'text/event-stream', 'originator': cloud_chatgpt.ORIGINATOR})
     return connection, path, headers
 
 

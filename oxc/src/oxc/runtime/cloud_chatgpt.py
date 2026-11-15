@@ -1,9 +1,13 @@
 """Experimental ChatGPT subscription provider (#252), opt-in.
 
-UNDOCUMENTED UPSTREAM: this signs in only with the OAuth client registered for ox-llm
-(``cloud.chatgpt.client_id``; no other app's client identity is ever used) and calls the ChatGPT subscription Responses backend.  OpenAI does not document this
-route; it is tolerated and may break without notice.  The official "Sign in with ChatGPT"
-program (#247) replaces it.
+EXPERIMENTAL, UNDOCUMENTED BY THE PROVIDER: this is the tolerated sign-in route of OpenAI's own
+command-line agent, which other open-source harnesses ship: that agent's public OAuth client
+identifier against auth.openai.com, and the ChatGPT backend's Responses endpoint (the catalog's
+``base_url``).  It ships by owner decision (#252); ``cloud.chatgpt.client_id`` overrides the
+identifier.  OpenAI does not document this route; it is tolerated and may break without notice.
+The official "Sign in with ChatGPT" program (#247) replaces it once that is generally available.
+Every constant below names its source file; the research with commit-pinned line references for
+both harnesses is docs/CHATGPT-SIGNIN.md (S1 = the first harness's file named there).
 
 Nothing here is on by default: catalog entries of kind ``remote/chatgpt`` are listed only while
 ``cloud.enabled`` is true AND a sign-in exists (``oxc login chatgpt``).  The tokens live in an
@@ -34,10 +38,19 @@ PROVIDER = 'chatgpt'
 ALIAS_PREFIX = 'chatgpt/'
 TOKEN_FILE = 'chatgpt-auth.json'
 LOCK_FILE = 'chatgpt-auth.lock'
+# source: S1 packages/core/src/plugin/provider/openai.ts L18 (clientID); docs/CHATGPT-SIGNIN.md
+CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+# source: S1 packages/core/src/plugin/provider/openai.ts L19 (issuer)
 AUTH_URL = 'https://auth.openai.com'
+# source: S1 packages/core/src/plugin/provider/openai.ts L20 (callbackPort)
 REDIRECT_PORT = 1455
+# source: S1 packages/core/src/plugin/provider/openai.ts L101 (redirect)
 REDIRECT_PATH = '/auth/callback'
+# source: S1 packages/core/src/plugin/provider/openai.ts L414 (authorizeURL scope)
 SCOPE = 'openid profile email offline_access'
+# source: S1 packages/core/src/plugin/provider/openai.ts L420 and L320 (originator): each harness
+# sends its own name, on the authorize URL and on every backend request
+ORIGINATOR = 'oxc'
 REFRESH_MARGIN = 120  # seconds before expiry when a token is refreshed
 MAX_BYTES = 64 * 1024
 AUTH_CLAIM = 'https://api.openai.com/auth'
@@ -66,16 +79,10 @@ def auth_url(value):
 
 
 def client_id(value):
-    """The OAuth client registered for ox-llm (``cloud.chatgpt.client_id``); None when unset.
-
-    oxc ships no client identity of its own and never borrows another app's (AGENTS.md D7):
-    sign-in and refresh stay unavailable until the maintainer configures the registered one."""
+    """The OAuth client: ``cloud.chatgpt.client_id`` when set and well-formed, else the
+    built-in route's public client identifier (CLIENT_ID; owner decision, #252)."""
     raw = _settings(value).get('client_id')
-    return raw if isinstance(raw, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', raw) else None
-
-
-NO_CLIENT = ('no registered client: set cloud.chatgpt.client_id to the OAuth client registered for '
-             'ox-llm (oxc does not borrow another app\'s client identity)')
+    return raw if isinstance(raw, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', raw) else CLIENT_ID
 
 
 def token_path(secrets_file):
@@ -249,12 +256,11 @@ def _credentials(secrets_file, value):
             if not _fresh(tokens):
                 if not isinstance(tokens.get('refresh_token'), str):
                     raise LoginError('the sign-in expired (run `oxc login chatgpt`)')
-                registered = client_id(value)
-                if registered is None:
-                    raise LoginError(NO_CLIENT)
+                # source: S1 packages/core/src/plugin/provider/openai.ts L358-L367 (refresh): these
+                # three fields, no scope.
                 reply = _post_form(auth_url(value) + '/oauth/token', {
                     'grant_type': 'refresh_token', 'refresh_token': tokens['refresh_token'],
-                    'client_id': registered, 'scope': 'openid profile email'})
+                    'client_id': client_id(value)})
                 tokens = _record(reply, tokens)
                 store(path, tokens)
         finally:
@@ -324,9 +330,9 @@ def status(secrets_file):
 
 # ---------------------------------------------------------------- sign-in (CLI)
 class Flow:
-    """One PKCE authorization: verifier, challenge, state and the token exchange."""
+    """One PKCE sign-in: verifier, challenge, state and the token exchange."""
 
-    def __init__(self, client, base=AUTH_URL, port=REDIRECT_PORT):
+    def __init__(self, client=CLIENT_ID, base=AUTH_URL, port=REDIRECT_PORT):
         self.client = client
         self.base = base.rstrip('/')
         self.redirect = 'http://localhost:%d%s' % (port, REDIRECT_PATH)
@@ -340,7 +346,11 @@ class Flow:
         challenge = base64.urlsafe_b64encode(hashlib.sha256(self.verifier.encode()).digest()).rstrip(b'=').decode()
         query = {'response_type': 'code', 'client_id': self.client, 'redirect_uri': self.redirect,
                  'scope': SCOPE, 'code_challenge': challenge, 'code_challenge_method': 'S256',
-                 'state': self.state, 'id_token_add_organizations': 'true'}
+                 'state': self.state,
+                 # source: S1 packages/core/src/plugin/provider/openai.ts L417 and L420 (authorizeURL).
+                 # Both harnesses also send a UI flag named after the provider's agent (L418); it
+                 # is left out because shipped files name no third-party client (O-151).
+                 'id_token_add_organizations': 'true', 'originator': ORIGINATOR}
         return self.base + '/oauth/authorize?' + urllib.parse.urlencode(query)
 
     def code_from(self, redirected):
@@ -401,8 +411,10 @@ def _config_secrets(config):
     return value, secrets_file
 
 
-NOTICE = ('EXPERIMENTAL: this uses an undocumented ChatGPT subscription route that OpenAI tolerates '
-          'but does not support; it may stop working without notice.')
+NOTICE = ('EXPERIMENTAL: this signs in through the tolerated route of OpenAI\'s own command-line agent '
+          '(its public client identifier, as other open-source harnesses do). The route is undocumented by the provider: OpenAI '
+          'tolerates it but does not support it, and it may stop working without notice. '
+          'The official "Sign in with ChatGPT" program replaces it once generally available.')
 
 
 def main(argv, flow=None):
@@ -425,9 +437,6 @@ def main(argv, flow=None):
         print('Signed out of ChatGPT; the token file was removed.')
         return 0
     registered = client_id(value)
-    if registered is None:
-        print('oxc: sign-in unavailable: %s; nothing was changed.' % NO_CLIENT, file=sys.stderr)
-        return 1
     print(NOTICE, file=sys.stderr)
     try:
         flow = flow or Flow(registered, auth_url(value))
