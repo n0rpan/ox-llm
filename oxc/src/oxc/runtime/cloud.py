@@ -1141,10 +1141,11 @@ class CloudStream:
                     delta.pop('reasoning', None)
                     for call in delta.get('tool_calls') or []:
                         function = call.get('function') or {}
-                        for field in ('arguments', 'name'):
-                            if isinstance(function.get(field), str):
-                                function[field] = self._fragment(index, field, function[field],
-                                                                 call.get('index', 0))
+                        # Only arguments are fragmented; a tool name is atomic (redact_value
+                        # below still removes a whole key), or `ls` would split into `l`,`s`.
+                        if isinstance(function.get('arguments'), str):
+                            function['arguments'] = self._fragment(index, 'arguments', function['arguments'],
+                                                                   call.get('index', 0))
             _normalize_message(choice.get('message'))
         if isinstance(value.get('usage'), dict):
             try:

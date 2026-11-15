@@ -16,11 +16,19 @@ class StreamOrder(unittest.TestCase):
         self.assertTrue(out.endswith(b'data: [DONE]\n\n'))
         return [json.loads(line[6:]) for line in out.splitlines() if line.startswith(b'data: {')]
 
+    def test_tool_name_ending_in_key_prefix_is_not_split(self):
+        # A name is atomic: holding its last character back made `ls` arrive as `l` then `s`.
+        frames = self.transcode([{'choices': [{'index': 0, 'delta': {'tool_calls': [
+            {'index': 0, 'id': 'c1', 'function': {'name': 'ls', 'arguments': ''}}]},
+            'finish_reason': None}]}], 'sk-synthetic')
+        names = [call['function']['name'] for frame in frames for choice in frame.get('choices', [])
+                 for call in choice.get('delta', {}).get('tool_calls', []) if 'name' in call['function']]
+        self.assertEqual(names, ['ls'])
+
     def test_final_delta_precedes_its_buffered_suffix_and_finish(self):
         for field, text, key in (('content', 'hello S', 'SYNTHETIC_KEY'),
                                   ('reasoning_content', 'think S', 'SYNTHETIC_KEY'),
                                   ('refusal', 'refused S', 'SYNTHETIC_KEY'),
-                                  ('name', 'ls', 'synthetic-key'),
                                   ('arguments', '{"path":"x"}', '}SYNTHETIC_KEY')):
             with self.subTest(field=field):
                 delta = ({'tool_calls': [{'index': 0, 'function': {field: text}}]}
