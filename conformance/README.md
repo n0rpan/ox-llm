@@ -1,11 +1,11 @@
 # oxc drop-in conformance
 
-Reference: main `15fe33d6f53e61639b4232a2d229f66444c37f0d`.
+Reference: main `bbec7919fd54ddcce6de49c6c33264e50e9a7494`.
 The pre-cloud/rename suite passed 891 scenarios in 105 methods against Python
 and native at main fc869d0. Main includes #180, #251 and the rename. The reference goldens have been
 recaptured with `/usr/bin/python3`, fixed CPU-frequency/thermal sources and
 argparse usage-wrap normalization. Nine catalog, 24 gateway wire/accounting and
-15 cloud installer scenarios are captured from Python. The gateway cases include
+20 cloud installer scenarios are captured from Python. The gateway cases include
 95% cache reads and explicit cache-write prices for all provider paths. Native
 cloud runtime parity remains incomplete; the first opt-in metadata library is
 [PR #294](https://github.com/oxstack/ox-llm/pull/294), with eight source/native cases.
@@ -288,3 +288,7 @@ with `OXC_CONFORMANCE_PYTHON_DEPS=/absolute/path`; it is mounted read-only insid
 private namespaces. Arbitrary caller `PYTHONPATH`, credentials and proxy settings
 are never inherited. Every cloud process case has its own private network, so
 the reference's background public-price refresh cannot contact an external API.
+
+Current-main Python validation: all 108 methods PASS (375.649 s). The native
+integration is still incomplete for cloud; its latest 185 CLI/control/ledger
+scenarios passed under the same system-Python harness.

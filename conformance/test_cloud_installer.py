@@ -1,5 +1,6 @@
 """Cloud-only install process/file contracts; synthetic HOME and private network."""
 import http.client
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,8 @@ from test_cloud_catalog import normalize
 GOLDENS = Path(__file__).with_name('goldens') / 'cloud-installer.json'
 CASES = ('foreground', 'systemd', 'existing-config', 'force', 'bad-catalog', 'bad-json',
          'not-object', 'bad-budget', 'bad-port', 'bad-unit', 'config-symlink',
-         'launcher-symlink', 'default-catalog', 'quoted-paths', 'installed-startup')
+         'launcher-symlink', 'default-catalog', 'quoted-paths', 'installed-startup',
+         'legacy-copy', 'legacy-default-budget', 'legacy-secrets-symlink', 'legacy-keep-new', 'legacy-force')
 
 
 def call(port, method, path, body=None):
@@ -35,10 +37,14 @@ def call(port, method, path, body=None):
 def capture(name):
     home = CANONICAL_HOME
     prefix = home / ('prefix with spaces $ %' if name == 'quoted-paths' else 'prefix')
-    config = home / 'config'
-    config.mkdir(exist_ok=True, mode=0o700)
+    legacy = home / 'config/local-ai/llm' if name.startswith('legacy-') else None
+    config = home / 'config/oxc/llm' if legacy else home / 'config'
+    if not legacy or name == 'legacy-keep-new':
+        config.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if legacy:
+        legacy.mkdir(parents=True, mode=0o700)
     unit_dir = home / 'units'
-    secret = config / 'cloud-secrets.json'
+    secret = (legacy or config) / 'cloud-secrets.json'
     secret.write_text('{"synthetic-unread":"synthetic-must-stay-private"}\n')
     secret.chmod(0o600)
     original_secret = secret.read_bytes()
@@ -47,6 +53,12 @@ def capture(name):
             'base_url': 'http://127.0.0.1:1/v1', 'context_window': 64000, 'max_output': 512,
             'pricing': {'input_per_million': 1.0, 'output_per_million': 2.0}}
     models = {'synthetic-cloud': item}
+    if legacy:
+        (legacy / 'runtime.json').write_text(json.dumps({'cloud_only': True, 'cloud': {
+            'enabled': True, 'daily_budget_usd': 7.0, 'secrets_file': str(secret),
+            'models': {'synthetic-legacy': item}}}) + '\n')
+        (legacy / 'runtime.json').chmod(0o600)
+        original_runtime = (legacy / 'runtime.json').read_bytes()
     catalog.write_text(json.dumps(models))
     if name == 'bad-catalog':
         catalog.write_text(json.dumps({'bad id!': item}))
@@ -54,10 +66,14 @@ def capture(name):
         catalog.write_text('{broken')
     elif name == 'not-object':
         catalog.write_text('[]')
-    if name in ('existing-config', 'force'):
+    if name in ('existing-config', 'force', 'legacy-keep-new'):
         (config / 'runtime.json').write_text('{"owner":"synthetic-keep"}\n')
     target = home / 'untouched-target'
     target.write_text('synthetic-owned-target\n')
+    if name == 'legacy-secrets-symlink':
+        secret.unlink()
+        secret.symlink_to(target)
+        original_secret = target.read_bytes()
     if name == 'config-symlink':
         (config / 'runtime.json').symlink_to(target)
     if name == 'launcher-symlink':
@@ -82,8 +98,11 @@ def capture(name):
         args += ['--models-file', str(catalog)]
     if name not in ('systemd', 'quoted-paths'):
         args += ['--no-systemd']
-    if name == 'force':
+    if name in ('force', 'legacy-force'):
         args += ['--force']
+    if name == 'legacy-default-budget':
+        index = args.index('--daily-budget')
+        del args[index:index + 2]
     if name in ('bad-budget', 'bad-port', 'bad-unit'):
         field, bad = {'bad-budget': ('--daily-budget', '0'), 'bad-port': ('--port', '0'),
                       'bad-unit': ('--unit-name', 'bad/name')}[name]
@@ -149,6 +168,17 @@ def capture(name):
             raise AssertionError('Cloud install copied a local model/engine or credentials')
     if secret.read_bytes() != original_secret or target.read_text() != 'synthetic-owned-target\n':
         raise AssertionError('Installer overwrote a protected owner file')
+    if legacy:
+        if (legacy / 'runtime.json').read_bytes() != original_runtime:
+            raise AssertionError('Migration changed the original runtime config')
+        copied = config / 'cloud-secrets.json'
+        if copied.exists():
+            if copied.is_symlink() or copied.read_bytes() != original_secret:
+                raise AssertionError('Migration did not preserve credential bytes privately')
+        result['migration'] = {'original_runtime_sha256': hashlib.sha256(original_runtime).hexdigest(),
+                               'original_secret_sha256': hashlib.sha256(original_secret).hexdigest(),
+                               'copied_secret': copied.exists(),
+                               'copied_secret_mode': stat.S_IMODE(copied.stat().st_mode) if copied.exists() else None}
     result = normalize(result, home, port)
     # The install summary carries its port as an export string, rather than a
     # numeric `port` field or URL. Validate against the requested port first.

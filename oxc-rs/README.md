@@ -22,7 +22,7 @@ This integration branch stays draft #28.
 Build locally, keeping generated binaries outside the source checkout:
 
 ```sh
-cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --target-dir ../oxc-target
+cargo build --locked --features native-controller --release --manifest-path oxc-rs/Cargo.toml --target-dir ../oxc-target
 ```
 
 Local validation: 140 parser cases, twelve CLI ledger-file/limit cases, seven empty-install
@@ -228,7 +228,7 @@ OXC_COMMAND=/absolute/path/to/oxc python3 -m unittest discover -s conformance -p
 OXC_COMMAND=/absolute/path/to/oxc python3 -m unittest discover -s conformance -p test_cli_files.py -v
 OXC_DAEMON_COMMAND='/absolute/path/to/oxc serve' python3 -m unittest discover -s conformance -p test_http.py -v
 cargo fmt --manifest-path oxc-rs/Cargo.toml --all -- --check
-cargo clippy --locked --manifest-path oxc-rs/Cargo.toml --all-targets -- -D warnings
+cargo clippy --locked --features native-controller --manifest-path oxc-rs/Cargo.toml --all-targets -- -D warnings
 ```
 
 Keep the PR draft while iterating and test locally. Draft checkpoint pushes run

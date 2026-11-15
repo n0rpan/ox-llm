@@ -361,6 +361,230 @@
     "stdout": "",
     "systemctl": []
   },
+  "legacy-copy": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "synthetic-legacy": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/oxc/llm/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/oxc/llm/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "migration": {
+      "copied_secret": true,
+      "copied_secret_mode": 384,
+      "original_runtime_sha256": "064feb76f5d00cb08dfad555d74c66d9c5d7c11b6f638b6d418ff5ecead294ea",
+      "original_secret_sha256": "94e3575dbb40089ea757120657cab4d540c220d214ad285a616a51ccae8c99d9"
+    },
+    "stderr": "oxc: copied runtime.json, cloud-secrets.json from <HOME>/config/local-ai/llm to <HOME>/config/oxc/llm (the old files were left in place)\n",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/oxc/llm/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "run": "<HOME>/prefix/bin/oxc-controller",
+      "runtime_json": "<HOME>/config/oxc/llm/runtime.json",
+      "secrets_file": "<HOME>/config/oxc/llm/cloud-secrets.json"
+    },
+    "systemctl": [],
+    "unit": null
+  },
+  "legacy-default-budget": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 7.0,
+        "enabled": true,
+        "models": {
+          "synthetic-legacy": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/oxc/llm/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/oxc/llm/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "migration": {
+      "copied_secret": true,
+      "copied_secret_mode": 384,
+      "original_runtime_sha256": "064feb76f5d00cb08dfad555d74c66d9c5d7c11b6f638b6d418ff5ecead294ea",
+      "original_secret_sha256": "94e3575dbb40089ea757120657cab4d540c220d214ad285a616a51ccae8c99d9"
+    },
+    "stderr": "oxc: copied runtime.json, cloud-secrets.json from <HOME>/config/local-ai/llm to <HOME>/config/oxc/llm (the old files were left in place)\n",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/oxc/llm/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "run": "<HOME>/prefix/bin/oxc-controller",
+      "runtime_json": "<HOME>/config/oxc/llm/runtime.json",
+      "secrets_file": "<HOME>/config/oxc/llm/cloud-secrets.json"
+    },
+    "systemctl": [],
+    "unit": null
+  },
+  "legacy-force": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "synthetic-cloud": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/oxc/llm/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/oxc/llm/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "migration": {
+      "copied_secret": true,
+      "copied_secret_mode": 384,
+      "original_runtime_sha256": "064feb76f5d00cb08dfad555d74c66d9c5d7c11b6f638b6d418ff5ecead294ea",
+      "original_secret_sha256": "94e3575dbb40089ea757120657cab4d540c220d214ad285a616a51ccae8c99d9"
+    },
+    "stderr": "oxc: copied runtime.json, cloud-secrets.json from <HOME>/config/local-ai/llm to <HOME>/config/oxc/llm (the old files were left in place)\n",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/oxc/llm/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "run": "<HOME>/prefix/bin/oxc-controller",
+      "runtime_json": "<HOME>/config/oxc/llm/runtime.json",
+      "secrets_file": "<HOME>/config/oxc/llm/cloud-secrets.json"
+    },
+    "systemctl": [],
+    "unit": null
+  },
+  "legacy-keep-new": {
+    "config": {
+      "owner": "synthetic-keep"
+    },
+    "config_mode": 384,
+    "exit": 1,
+    "migration": {
+      "copied_secret": false,
+      "copied_secret_mode": null,
+      "original_runtime_sha256": "064feb76f5d00cb08dfad555d74c66d9c5d7c11b6f638b6d418ff5ecead294ea",
+      "original_secret_sha256": "94e3575dbb40089ea757120657cab4d540c220d214ad285a616a51ccae8c99d9"
+    },
+    "stderr": "cloud-install: runtime.json already exists in the config directory; it was kept (use --force to replace).\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "legacy-secrets-symlink": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "synthetic-legacy": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/local-ai/llm/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/oxc/llm/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "migration": {
+      "copied_secret": false,
+      "copied_secret_mode": null,
+      "original_runtime_sha256": "064feb76f5d00cb08dfad555d74c66d9c5d7c11b6f638b6d418ff5ecead294ea",
+      "original_secret_sha256": "0bdc1e1696592ad5e2ccc3fb7957ed13a1a0f04a2e2dcb56b0e7f5a1740d2cd4"
+    },
+    "stderr": "oxc: copied runtime.json from <HOME>/config/local-ai/llm to <HOME>/config/oxc/llm (the old files were left in place)\n",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/oxc/llm/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "run": "<HOME>/prefix/bin/oxc-controller",
+      "runtime_json": "<HOME>/config/oxc/llm/runtime.json",
+      "secrets_file": "<HOME>/config/oxc/llm/cloud-secrets.json"
+    },
+    "systemctl": [],
+    "unit": null
+  },
   "not-object": {
     "exit": 1,
     "stderr": "cloud-install: The models file must be a JSON object of catalog entries.\n",

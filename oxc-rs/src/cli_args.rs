@@ -67,12 +67,6 @@ pub struct Args {
     pub(crate) records: Vec<String>,
 }
 
-impl Args {
-    pub(crate) fn value(&self, name: &str) -> Option<&str> {
-        self.values.get(name).map(String::as_str)
-    }
-}
-
 fn usage(help: &str) -> &str {
     help.split("\n\n").next().unwrap_or(help)
 }

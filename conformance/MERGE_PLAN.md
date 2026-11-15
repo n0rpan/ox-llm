@@ -1,6 +1,6 @@
 # Reviewable Rust cloud migration
 
-Ported up to main `15fe33d6f53e61639b4232a2d229f66444c37f0d`.
+Ported up to main `bbec7919fd54ddcce6de49c6c33264e50e9a7494`.
 Main is incorporated with normal merges. Never rebase or force-push a published
 branch. Directory/package names follow main: `oxc/`, `oxc`, applicable `OXC_*`
 variables; retained `LOCAL_LLM_*`, cache paths and schema identifiers keep their
@@ -39,7 +39,7 @@ the cloud path. Existing transport extraction #271 remains a separate draft.
 ## Reference and test discipline
 
 The current integration inventory has 108 methods assigned exactly once. New
-Python contracts cover nine catalog, 24 gateway wire/accounting and 15 installer
+Python contracts cover nine catalog, 24 gateway wire/accounting and 20 installer
 scenarios. Those are subsets, not complete native cloud parity. Full cloud-only
 and gateway gates must not pass as empty suites or silently fall back to Python.
 

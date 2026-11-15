@@ -8,6 +8,10 @@ use std::process::Stdio;
 const CACHE_USAGE: &str = "Usage:\n  oxc cache [status] [--json]          conversation cache: used, budget, conversations\n  oxc cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  oxc cache clear [--all | --session ID]  --all (default) also clears stored prompts";
 
 impl Args {
+    pub(crate) fn value(&self, name: &str) -> Option<&str> {
+        self.values.get(name).map(String::as_str)
+    }
+
     fn flag(&self, name: &str) -> bool {
         self.flags.contains(name)
     }

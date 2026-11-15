@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `15fe33d6f53e61639b4232a2d229f66444c37f0d`.
+Reference main: `bbec7919fd54ddcce6de49c6c33264e50e9a7494`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -8,7 +8,7 @@ implementation has started in parallel with the remaining contracts. See
 The following gaps remain visible rather than being represented by skipped tests:
 
 - Cloud-only remains the first complete runtime target. Python contracts now cover
-  nine catalog, 24 gateway and 15 installer cases. Positive provider cases must
+  nine catalog, 24 gateway and 20 installer cases. Positive provider cases must
   actually forward; private namespaces prevent the price refresher reaching a
   public API. Explicit cache read/write pricing is checked with 95% cache hits
   on OpenRouter, OpenAI Chat/Responses and Anthropic. Provider-default pricing
