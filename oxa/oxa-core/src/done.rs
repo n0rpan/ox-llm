@@ -117,8 +117,9 @@ pub(crate) fn parse_entry(entry: &str) -> (Option<&str>, &str) {
     (None, e)
 }
 
-/// `<dir>` of an `in <dir>: <command>` entry, as an absolute path inside the session folder
-/// (`..`, absolute paths and symlinks that leave it are refused). The `Err` is the reason.
+/// `<dir>` of an `in <dir>: <command>` entry, relative to the canonical session folder
+/// (empty/`.` = the folder itself). `..`, absolute paths and symlinks that leave the session
+/// folder are refused. The `Err` is the reason.
 fn resolve_dir(cwd: &Path, dir: &str) -> Result<PathBuf, String> {
     if dir.is_empty() {
         return Err("no folder after `in`".to_string());
@@ -141,9 +142,21 @@ fn resolve_dir(cwd: &Path, dir: &str) -> Result<PathBuf, String> {
     match lexical.canonicalize() {
         Ok(real) if !real.starts_with(&canon_cwd) => Err(outside()),
         Ok(real) if !real.is_dir() => Err(format!("{dir} is not a folder")),
-        Ok(_) => Ok(lexical),
+        Ok(real) => {
+            let rel = real.strip_prefix(&canon_cwd).unwrap_or(Path::new("."));
+            Ok(if rel.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                rel.to_path_buf()
+            })
+        }
         Err(_) => Err(format!("folder {dir} does not exist")),
     }
+}
+
+/// `s` as one POSIX shell word.
+fn single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Run one entry; returns (passed, header line, trimmed output).
@@ -153,10 +166,20 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
         Some(d) => format!("[{d}] {cmd}"),
         None => cmd.to_string(),
     };
-    let cwd = match dir {
-        None => st.cwd.clone(),
+    // The sandbox authority always roots at the original workspace (`st.cwd`); a subdir entry
+    // is selected inside that view with a shell `cd`, so a swapped symlink cannot move the
+    // writable bind root to an outside directory.
+    let (cwd, prefixed) = match dir {
+        None => (st.cwd.clone(), None),
         Some(d) => match resolve_dir(&st.cwd, d) {
-            Ok(p) => p,
+            Ok(p) => {
+                let text = format!(
+                    "cd -- {} || exit 111\n{}",
+                    single_quote(&p.to_string_lossy()),
+                    cmd
+                );
+                (st.cwd.clone(), Some(text))
+            }
             Err(why) => return (false, format!("done check: {label} FAILED (not run)"), why),
         },
     };
@@ -171,7 +194,8 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
         shell_path: st.settings.shell_path(&st.dirs.home),
         command_prefix: st.settings.shell_command_prefix(),
     };
-    let command = match shell.command(cmd) {
+    let command_text = prefixed.as_deref().unwrap_or(cmd);
+    let command = match shell.command(command_text) {
         Ok(c) => c,
         Err(e) => return (false, format!("done check: {label} FAILED (not run)"), e),
     };

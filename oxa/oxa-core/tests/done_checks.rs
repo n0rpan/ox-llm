@@ -244,6 +244,47 @@ fn cancel_during_first_check_stops_done_phase() {
     assert_eq!(engine.remaining(), 1);
 }
 
+/// Records every `ExecSpec` it receives, then runs it directly.
+struct Recording {
+    specs: std::sync::Mutex<Vec<ExecSpec>>,
+}
+impl Sandbox for Recording {
+    fn check(&self) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+        Vec::new()
+    }
+    fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        self.specs.lock().unwrap().push(s.clone());
+        oxa_sandbox::run_unsandboxed(s, c, live)
+    }
+}
+
+/// Recording `run` that first swaps the validated child folder for a symlink to an outside
+/// directory, then delegates to Direct. Used as the deterministic child-replacement negative
+/// control.
+struct SwapChild {
+    specs: std::sync::Mutex<Vec<ExecSpec>>,
+    work: std::path::PathBuf,
+    outside: std::path::PathBuf,
+}
+impl Sandbox for SwapChild {
+    fn check(&self) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+        Vec::new()
+    }
+    fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        // Between validation and use, re-point `sub` at an outside directory.
+        std::fs::remove_dir_all(self.work.join("sub")).expect("remove sub");
+        std::os::unix::fs::symlink(&self.outside, self.work.join("sub")).expect("swap sub");
+        self.specs.lock().unwrap().push(s.clone());
+        oxa_sandbox::run_unsandboxed(s, c, live)
+    }
+}
+
 /// Runs one `done` entry after a `write`; returns the check notices.
 fn one(env: &TestEnv, entry: &str) -> Vec<String> {
     let (rec, _) = run(
@@ -420,4 +461,67 @@ fn done_failed_flag_tracks_the_last_check_round() {
         Arc::new(Direct),
     );
     assert!(!failed);
+}
+
+#[test]
+fn in_dir_recording_sandbox_cwd_stays_at_work_folder() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work().join("sub/deep")).unwrap();
+    std::fs::write(env.work().join("sub/marker.txt"), "x").unwrap();
+    let recording = Arc::new(Recording {
+        specs: std::sync::Mutex::new(Vec::new()),
+    });
+    let (rec, _) = run_with(
+        &env,
+        json!(["in sub: test -f marker.txt"]),
+        vec![write("c1", "a.txt"), ScriptTurn::text("done")],
+        recording.clone(),
+    );
+    assert_eq!(
+        rec.checks(),
+        vec!["done check: [sub] test -f marker.txt ok".to_string()]
+    );
+    let specs = recording.specs.lock().unwrap();
+    assert_eq!(specs.len(), 1);
+    let s = &specs[0];
+    // The sandbox authority stays at the original work folder, never the child.
+    assert_eq!(s.cwd, env.work().canonicalize().unwrap());
+    assert!(s.writable);
+    // The command goes through the workspace-relative cd, not an absolute child path.
+    assert!(
+        s.command.starts_with("cd -- 'sub' || exit 111\n"),
+        "command: {}",
+        s.command
+    );
+}
+#[test]
+fn swapped_subdir_symlink_cannot_move_the_bind_root() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work().join("sub")).unwrap();
+    std::fs::create_dir_all(env.root().join("outside")).unwrap();
+    let recording = Arc::new(SwapChild {
+        specs: std::sync::Mutex::new(Vec::new()),
+        work: env.work(),
+        outside: env.root().join("outside"),
+    });
+    // After validation and just before the command runs, `run` replaces the child with a
+    // symlink that leaves the workspace. Validation was on the real folder, so it is accepted.
+    // The command's exit code is not deterministic under Direct (the `cd` may land outside
+    // through the swapped symlink), so we assert only cwd and the command text.
+    let (_rec, _) = run_with(
+        &env,
+        json!(["in sub: touch ran.txt"]),
+        vec![write("c1", "a.txt"), ScriptTurn::text("done")],
+        recording.clone(),
+    );
+    let specs = recording.specs.lock().unwrap();
+    assert_eq!(specs.len(), 1);
+    let s = &specs[0];
+    assert_eq!(s.cwd, env.work().canonicalize().unwrap());
+    assert!(s.writable);
+    assert!(
+        s.command.starts_with("cd -- 'sub' || exit 111\n"),
+        "command: {}",
+        s.command
+    );
 }
