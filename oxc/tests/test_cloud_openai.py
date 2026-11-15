@@ -1,6 +1,7 @@
 """D8: real gateway + loopback OpenAI mock; no SDK credentials or paid calls."""
 import json
 import os
+import time
 from unittest.mock import patch
 
 from oxc.runtime import cloud, cloud_openai, request_ledger
@@ -293,10 +294,29 @@ class OpenAI(CloudCase):
         self.stack.close()
         self.stack = None
         self.start()
-        with patch.object(request_ledger, 'write', return_value=False):
+        def slow_failed_write(*args, **kwargs):
+            time.sleep(0.5)  # the row is written while the client already has its reply
+            return False
+        with patch.object(request_ledger, 'write', side_effect=slow_failed_write):
             self.assertEqual(self.chat()[0], 200)
         self.assertEqual(self.chat()[0], 503)
         self.assertEqual(len(self.upstream.requests), 1)
+
+    def test_client_hangup_before_the_reply_writes_one_row(self):
+        from oxc.runtime import ctl_http
+        self.start()
+        def hung_up(*args, **kwargs):
+            raise BrokenPipeError()
+        with patch.object(ctl_http.Handler, 'reply', hung_up):
+            try:
+                self.chat()
+            except Exception:
+                pass
+            time.sleep(0.5)
+        rows = self.ledger_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['status'], 200)
+        self.assertNotEqual(rows[0]['settled'], 'reserved')
 
     def test_error_and_success_redaction(self):
         for status in (200, 500):
