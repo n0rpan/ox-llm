@@ -121,46 +121,52 @@ def _assistant_key(message):
                 pass
         calls.append({'id': call.get('id'), 'type': call.get('type'),
                       'name': function.get('name'), 'arguments': args})
-    return json.dumps({'role': message.get('role'), 'content': content, 'tool_calls': calls},
+    return json.dumps({'role': message.get('role'), 'content': content, 'tool_calls': calls,
+                       'tool_call_id': message.get('tool_call_id')},
                       ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 
 def _history_digest(messages, count):
-    digest = hashlib.sha256(b'oxc-anthropic-history-v1\0')
+    digest = hashlib.sha256(b'oxc-anthropic-history-v2\0')
     for message in list(messages or ())[:count]:
         digest.update(_assistant_key(message).encode('utf-8', 'replace'))
         digest.update(b'\0')
     return digest.hexdigest()
 
 
-def _remember_blocks(item, history, assistant, blocks):
+def _cache_identity(item, key):
+    credential = hashlib.sha256(b'oxc-anthropic-credential-v1\0' + (key or '').encode('utf-8')).hexdigest()
+    return (item['id'], item.get('upstream_model'), item.get('base_url'), credential)
+
+
+def _remember_blocks(item, history, assistant, blocks, key=None):
     """Keep the native assistant content (thinking signatures included) for the next turn."""
     if not isinstance(blocks, list) or not any(
             isinstance(block, dict) and block.get('type') in THINKING_TYPES for block in blocks):
         return
     frozen = json.loads(json.dumps(blocks, ensure_ascii=False))
-    key = (item['id'], _history_digest(list(history or ()) + [assistant],
-                                       len(list(history or ())) + 1))
+    cache_key = (*_cache_identity(item, key),
+                 _history_digest(list(history or ()) + [assistant], len(list(history or ())) + 1))
     size = len(json.dumps(frozen, ensure_ascii=False).encode('utf-8'))
     with _THINKING_LOCK:
-        old = _THINKING.pop(key, None)
+        old = _THINKING.pop(cache_key, None)
         if old is not None:
             _THINKING_SIZE[0] -= len(json.dumps(old, ensure_ascii=False).encode('utf-8'))
-        _THINKING[key] = frozen
+        _THINKING[cache_key] = frozen
         _THINKING_SIZE[0] += size
         while _THINKING and (len(_THINKING) > _THINKING_ENTRIES or _THINKING_SIZE[0] > _THINKING_BYTES):
             _, dropped = _THINKING.popitem(last=False)
             _THINKING_SIZE[0] -= len(json.dumps(dropped, ensure_ascii=False).encode('utf-8'))
 
 
-def _restore_blocks(item, messages, index):
+def _restore_blocks(item, messages, index, key=None):
     """The exact native content stored for the assistant message at ``index``, if known."""
-    key = (item['id'], _history_digest(messages, index + 1))
+    cache_key = (*_cache_identity(item, key), _history_digest(messages, index + 1))
     with _THINKING_LOCK:
-        blocks = _THINKING.get(key)
+        blocks = _THINKING.get(cache_key)
         if blocks is None:
             return None
-        _THINKING.move_to_end(key)
+        _THINKING.move_to_end(cache_key)
         return json.loads(json.dumps(blocks, ensure_ascii=False))
 
 
@@ -182,7 +188,7 @@ def _native_content(message):
     return None
 
 
-def messages_request(payload, item):
+def messages_request(payload, item, key=None):
     """The native Messages API parameters for one OpenAI v1 chat body."""
     if not isinstance(payload, dict):
         raise cloud.CloudError('Invalid cloud request.', 400, 'invalid_request')
@@ -204,7 +210,7 @@ def messages_request(payload, item):
             converted.append(('user', [block]))
             continue
         if role == 'assistant':
-            restored = _restore_blocks(item, raw_messages, position)
+            restored = _restore_blocks(item, raw_messages, position, key)
             native = _native_content(message)
             if restored is not None:
                 blocks = restored
@@ -316,7 +322,7 @@ def _usage(usage):
             'completion_tokens_details': {'reasoning_tokens': 0}}
 
 
-def response(message, item, history=None):
+def response(message, item, history=None, key=None):
     """An OpenAI chat completion from a native Messages reply."""
     value = _dump(message)
     content, reasoning, calls = [], [], []
@@ -336,7 +342,7 @@ def response(message, item, history=None):
         assistant['reasoning_content'] = ''.join(reasoning)
     if calls:
         assistant['tool_calls'] = calls
-    _remember_blocks(item, [] if history is None else history, assistant, value.get('content'))
+    _remember_blocks(item, [] if history is None else history, assistant, value.get('content'), key)
     finish = STOP_REASONS.get(value.get('stop_reason'), 'stop')
     return {'id': value.get('id') or 'chatcmpl_anthropic', 'object': 'chat.completion',
             'created': int(time.time()), 'model': item['id'],
@@ -386,7 +392,7 @@ class _Stream:
                           'function': {'name': call['name'], 'arguments': call['args']}})
         if calls:
             assistant['tool_calls'] = calls
-        _remember_blocks(self.item, [] if self.history is None else self.history, assistant, self.blocks)
+        _remember_blocks(self.item, [] if self.history is None else self.history, assistant, self.blocks, self.key)
 
     def _block(self, index, block):
         native = dict(block)
@@ -583,7 +589,7 @@ def forward(self, st, item, key):
     hold = None
     started = False
     try:
-        params = messages_request(payload, item)
+        params = messages_request(payload, item, key)
         client = _client(item, key)
         hold = cloud.reserve(st.api_value, item, params)
     except cloud.CloudError as error:
@@ -594,7 +600,7 @@ def forward(self, st, item, key):
         if not streamed:
             message = client.messages.create(**params)
             present = _has_usage(message)
-            reply = response(message, item, history=payload.get('messages'))
+            reply = response(message, item, history=payload.get('messages'), key=key)
             row = _row(item)
             if present:
                 _usage_row(row, reply['usage'], item)
