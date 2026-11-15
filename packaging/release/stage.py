@@ -27,8 +27,8 @@ for workspace in ('oxc', 'oxc-rs'):
                 if target.exists():
                     raise SystemExit('duplicate binary: ' + binary.name)
                 shutil.copy2(binary, target)
-lab = dest / 'usr/share/ox-llm/lab'
-shutil.copytree(root / 'lab', lab, ignore=shutil.ignore_patterns(
+oxc = dest / 'usr/share/ox-llm/oxc'
+shutil.copytree(root / 'oxc', oxc, ignore=shutil.ignore_patterns(
     '__pycache__', '*.pyc', '*.egg-info', '.venv', 'build', 'dist',
     'tests', 'tools', 'benchmarks', 'experiments'))
 # Preserve the runtime script and sibling Python modules exactly as the bootstrap
@@ -42,7 +42,7 @@ wrapper.write_text('#!/bin/sh\nPYTHONPATH=/usr/share/ox-llm/oxc/src exec /usr/bi
 wrapper.chmod(0o755)
 licenses = dest / 'usr/share/licenses/ox-llm'
 licenses.mkdir(parents=True)
-for product in ('engine', 'oxa', 'lab'):
+for product in ('engine', 'oxa', 'oxc'):
     for name in ('LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES', 'LICENSE-QuickJS.txt', 'LICENSE-TLS.txt', 'LICENSE-syntect.txt'):
         source = root / product / name
         if source.is_file():

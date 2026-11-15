@@ -12,7 +12,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / 'tools' / 'gates'), str(ROOT / 'lab' / 'benchmarks' / 'tokens')]
+sys.path[:0] = [str(ROOT / 'tools' / 'gates'), str(ROOT / 'oxc' / 'benchmarks' / 'tokens')]
 import hop_probe as hp  # noqa: E402
 import token_harness as th  # noqa: E402
 

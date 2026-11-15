@@ -191,7 +191,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: lab
+        working-directory: oxc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -297,7 +297,7 @@ jobs:
           PY
 
       - name: Receipt scrub check (benchmarks/, experiments/)
-        working-directory: lab
+        working-directory: oxc
         # --user '': the user-name rule matches the account that RUNS the scrub (the maintainer's,
         # when receipts are scrubbed locally). Here that is the hosted runner's account, `runner`,
         # which only matches the English word "runner" in receipts. The other rules still run.
