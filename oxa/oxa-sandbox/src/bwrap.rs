@@ -1584,6 +1584,31 @@ mod git_files_tests {
     }
 
     #[test]
+    fn a_vanished_git_dir_is_not_bound() {
+        let env = TestEnv::new();
+        env.write("work/x", "");
+        let gone = env.home().join("main/.git/worktrees/w");
+        let mut layout = Layout::default();
+        layout.git.rw.push(gone.clone());
+        let a = bwrap_args_with(&spec(&env.work(), true), &env.home(), &layout);
+        let g = gone.to_string_lossy().into_owned();
+        assert!(!a.contains(&g), "{a:?}");
+    }
+
+    #[test]
+    fn a_dangling_symlink_git_dir_is_not_bound() {
+        let env = TestEnv::new();
+        env.write("work/x", "");
+        let link = env.home().join("dangling-git");
+        std::os::unix::fs::symlink(env.home().join("nowhere"), &link).expect("symlink");
+        let mut layout = Layout::default();
+        layout.git.rw.push(link.clone());
+        let a = bwrap_args_with(&spec(&env.work(), true), &env.home(), &layout);
+        let g = link.to_string_lossy().into_owned();
+        assert!(!a.contains(&g), "{a:?}");
+    }
+
+    #[test]
     fn existing_files_and_symlinks_are_left_alone() {
         let env = TestEnv::new();
         env.write("work/.git/config", "[core]\n\tworktreeConfig = true\n");
