@@ -42,6 +42,8 @@ fn assert_result(output: &std::process::Output, expected_code: i32, outcome: &st
 
 fn check(mode: &str, turn: ScriptTurn, expected_code: i32, outcome: &str, error: Option<&str>) {
     let env = TestEnv::new();
+    // Isolate outcome classification from the separately tested transient retry policy.
+    env.write("home/.oxa/agent/settings.json", r#"{"retry":{"enabled":false}}"#);
     let server = FakeServer::start(vec![turn], FakeOpts::default()).unwrap();
     let output = match mode {
         "print" => run(&env, &server, &["-p", "hello"], b""),
@@ -66,7 +68,7 @@ fn check(mode: &str, turn: ScriptTurn, expected_code: i32, outcome: &str, error:
     }
 
     if outcome == "blocked" || outcome == "failed" {
-        assert_eq!(server.requests().len(), 1, "permanent errors are not retried");
+        assert_eq!(server.requests().len(), 1, "outcome fixtures disable retries");
     }
 }
 
