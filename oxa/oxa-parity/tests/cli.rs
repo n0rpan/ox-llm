@@ -96,6 +96,16 @@ fn ok(o: &Output) {
     assert_eq!(code(o), 0, "exit code; stderr: {}", err(o));
 }
 
+fn terminal_result(o: &Output) -> serde_json::Value {
+    let records: Vec<serde_json::Value> = err(o)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["type"] == "oxa_result")
+        .collect();
+    assert_eq!(records.len(), 1, "exactly one terminal result: {}", err(o));
+    records.into_iter().next().unwrap()
+}
+
 fn user_texts(r: &Recorded) -> Vec<String> {
     r.messages
         .iter()
@@ -689,7 +699,7 @@ fn cli_019() {
     );
     assert_eq!(session_files(&env).len(), 1);
 
-    // The same id from another directory: the fork offer. Declined: "Aborted.", exit 0,
+    // The same id from another directory: the fork offer. Declined: "Aborted.", exit 130,
     // nothing sent, nothing written.
     let other = env.root().join("other-19");
     std::fs::create_dir_all(&other).expect("other dir");
@@ -701,7 +711,11 @@ fn cli_019() {
         &[],
         Some(&other),
     );
-    ok(&no);
+    assert_eq!(code(&no), 130);
+    let result = terminal_result(&no);
+    assert_eq!(result["outcome"], "interrupted");
+    assert_eq!(result["error_class"], "aborted");
+    assert_eq!(result["exit_code"], 130);
     assert!(
         out(&no).contains("Session found in different project:"),
         "{}",
@@ -1699,8 +1713,19 @@ fn cli_064() {
     let o = run(&env, &closed_url(), &["-p", "--no-session", "x"]);
     assert_eq!(code(&o), 2);
     let e = err(&o);
-    assert_eq!(e.trim_end().lines().count(), 1, "one line: {e}");
-    assert!(e.contains("cannot reach the engine"), "{e}");
+    assert_eq!(
+        e.trim_end().lines().count(),
+        2,
+        "one diagnostic and one result: {e}"
+    );
+    assert!(
+        e.lines().next().unwrap().contains("cannot reach the engine"),
+        "{e}"
+    );
+    let result = terminal_result(&o);
+    assert_eq!(result["outcome"], "failed");
+    assert_eq!(result["error_class"], "engine_down");
+    assert_eq!(result["exit_code"], 2);
 }
 
 // ----- MOD rows ------------------------------------------------------------------------------
