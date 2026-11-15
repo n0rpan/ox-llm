@@ -305,3 +305,73 @@ fn the_real_account_home_is_denied_as_well_as_a_changed_home() {
         }
     }
 }
+
+#[test]
+fn git_worktree_common_dir_hooks_and_config_are_never_written() {
+    let env = TestEnv::new();
+    let main = env.work().join("main");
+    let wt = env.work().join("wt");
+    let wtgit = main.join(".git/worktrees/wt");
+    std::fs::create_dir_all(main.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(&wtgit).unwrap();
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wtgit.display())).unwrap();
+    std::fs::write(wtgit.join("commondir"), "../..\n").unwrap();
+    let p = guarded(&env);
+    for f in [
+        main.join(".git/hooks/pre-commit"),
+        main.join(".git/config"),
+        wtgit.join("config.worktree"),
+        wtgit.join("hooks/pre-push"),
+        wtgit.join("commondir"),
+        wtgit.join("gitdir"),
+    ] {
+        for mode in [Mode::Workspace, Mode::Ask] {
+            assert_eq!(
+                p.decide(mode, &Access::Write(f.clone()), &wt),
+                Decision::Deny(deny_reasons::GIT_PROTECTED),
+                "{f:?} {mode:?}"
+            );
+        }
+    }
+    // Ordinary work in the worktree is unchanged.
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Write(wt.join("src/a.rs")), &wt),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn git_worktree_pointer_cannot_be_rewritten_and_fifo_dotgit_does_not_hang() {
+    let env = TestEnv::new();
+    let main = env.work().join("main");
+    let wt = env.work().join("wt");
+    let wtgit = main.join(".git/worktrees/wt");
+    std::fs::create_dir_all(main.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(&wtgit).unwrap();
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wtgit.display())).unwrap();
+    let p = guarded(&env);
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Write(wt.join(".git")), &wt),
+        Decision::Deny(deny_reasons::GIT_PROTECTED)
+    );
+    // A `.git` FIFO must not block the check.
+    let fifo = env.work().join("ff");
+    std::fs::create_dir_all(&fifo).unwrap();
+    let st = std::process::Command::new("mkfifo")
+        .arg(fifo.join(".git"))
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (p2, f2) = (p.clone(), fifo.clone());
+    std::thread::spawn(move || {
+        let d = p2.decide(Mode::Workspace, &Access::Write(f2.join("a.rs")), &f2);
+        let _ = tx.send(d);
+    });
+    let d = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("hung on FIFO .git");
+    assert_eq!(d, Decision::Allow);
+}
