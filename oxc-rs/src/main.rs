@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod cli_status;
 mod daemon;
 mod diagnostics;
 mod engine;

@@ -17,7 +17,9 @@ cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --target-dir ..
 Local validation: 65 parser cases, five CLI ledger-file cases, seven empty-install
 HTTP cases, all 18 HTTP gates, all 62 configured API cases, and API-key file
 rotation/fail-closed behavior pass in Rust. All 18 lifecycle tests and 13 harness registry cases pass. Read-only
-cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 35 runtime cases passes against the Python daemon.
+cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 40 runtime cases passes against the Python daemon;
+34 of those also pass with the native daemon. The six integration differences
+are status JSON, storage text/JSON and sharing status/JSON/off.
 Fifteen loopback CLI cases cover desktop dispatch, detached sessions and exec
 failure reporting, inherited stdin/umask, service failures, model qualification,
 selection and read-only planning. CLI replies are bounded to 64 KiB and control
@@ -26,7 +28,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 375 passing scenarios in 57
+suite has 391 passing scenarios in 58
 unittest methods.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
@@ -34,6 +36,10 @@ cache controls, harness prepare/forget dispatch, load/unload dispatch, storage
 listing/deletion dispatch, sharing status/on/off dispatch, and panel invocation.
 Chat/image desktop launch, model selection and read-only planning dispatch are
 also native; plan qualification remains the controller's published decision.
+Status, code and context-mode dispatch share a native filtered status projection.
+Sixteen loopback cases cover invalid metadata, offline/stopping states, model
+selection, sparse-file download receipts and active/duplicate/oversized/non-ASCII
+trial queries. Status never loads a model or reads weight/prompt contents.
 The native `serve` entry point reads the existing config paths and implements
 model metadata, Host/Origin/CORS/authentication gates, API-key file refresh and
 fail-closed behavior, request IDs and the empty-install HTTP contracts.

@@ -35,6 +35,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.server.requests.append({'method': 'GET', 'path': self.path})
+        if self.server.responses is not None:
+            return self.answer(*self.server.responses.get(('GET', self.path), (404, {})))
         aliases = [PRIMARY, SECONDARY, FLASH]
         if self.server.case == 'ornith-unavailable':
             aliases.remove(PRIMARY)
@@ -51,6 +53,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.server.requests.append({'method': 'POST', 'path': self.path, 'body': body})
+        if self.server.responses is not None:
+            return self.answer(*self.server.responses.get(('POST', self.path), (404, {})))
         if self.server.case in ('images-busy', 'select-refused'):
             self.answer(409, {'error': 'Synthetic request is running.'})
         elif self.server.case == 'select-error-bounded':
@@ -59,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
             self.answer(200, {'state': 'unloaded' if self.path.endswith('unload') else 'ready'})
 
 
-def capture(name):
+def capture(name, action=None, responses=None, setup=None, arguments=()):
     home = CANONICAL_HOME
     environment = isolated_env(home)
     binary_dir = home / 'bin'
@@ -80,33 +84,52 @@ def capture(name):
     executable = home / 'oxc'
     executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
     command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
-    action = ('images' if name.startswith('images') else 'plan' if name.startswith('plan')
+    action = action or ('images' if name.startswith('images') else 'plan' if name.startswith('plan')
               else 'flash' if name.startswith('flash') else 'ornith' if name.startswith('ornith')
               else 'moe' if name.startswith('select') else 'chat')
     server = ThreadingHTTPServer(('127.0.0.1', 8092), Handler)
-    server.case, server.requests = name, []
+    server.case, server.requests, server.responses = name, [], responses
+    servers = [server]
+    if responses is not None:
+        image = ThreadingHTTPServer(('127.0.0.1', 8090), Handler)
+        image.case, image.requests, image.responses = name, server.requests, responses
+        servers.append(image)
+    if setup is not None:
+        setup(home, environment)
+        memory = home / 'meminfo'
+        memory.write_text('MemTotal: 16777216 kB\nMemAvailable: 12582912 kB\n')
+        command = ['/usr/bin/bwrap', '--die-with-parent', '--ro-bind', '/', '/',
+                   '--dev-bind', '/dev', '/dev', '--bind', str(home), str(home),
+                   '--ro-bind', str(memory), '/proc/meminfo', '--', *command]
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
+    workers = [worker]
+    for image in servers[1:]:
+        thread = threading.Thread(target=image.serve_forever, daemon=True)
+        thread.start()
+        workers.append(thread)
     try:
-        result = subprocess.run([*command, action], cwd=home, env=environment,
+        result = subprocess.run([*command, action, *arguments], cwd=home, env=environment,
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=10, umask=0o027)
         commands = home / 'host-commands.jsonl'
-        detached = name in ('chat', 'images-busy', 'plan-ready', 'plan-directory')
+        detached = name in ('chat', 'images-busy', 'plan-ready', 'plan-directory', 'code-moe')
         deadline = time.monotonic() + 3
         while True:
             rows = [json.loads(line) for line in commands.read_text().splitlines()] if commands.exists() else []
             if not detached or any(row['command'] == 'omarchy' for row in rows):
                 break
             if time.monotonic() >= deadline:
-                raise AssertionError('Desktop peer was not invoked')
+                raise AssertionError('Desktop peer was not invoked: ' + repr((result.returncode, result.stdout, result.stderr, rows, server.requests)))
             time.sleep(.02)
         output = {'exit': result.returncode, 'stdout': result.stdout.decode(), 'stderr': result.stderr.decode(),
                   'host_commands': rows, 'requests': server.requests}
         return json.loads(json.dumps(output).replace(str(home), '<HOME>'))
     finally:
-        server.shutdown()
-        server.server_close()
-        worker.join()
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        for worker in workers:
+            worker.join()
 
 
 class CliActionsContract(unittest.TestCase):

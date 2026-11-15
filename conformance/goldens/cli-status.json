@@ -1,0 +1,2342 @@
+{
+  "code-moe": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "launch",
+          "terminal",
+          "env",
+          "-C",
+          "<HOME>/Work",
+          "OXA_ENGINE_URL=http://127.0.0.1:8092",
+          "<HOME>/bin/oxa",
+          "--model",
+          "qwen3.6-35b-a3b-local"
+        ],
+        "command": "omarchy",
+        "session_leader": true,
+        "stdin_eof": true,
+        "umask": 23
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "code-selected-unavailable": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "The selected local model is unavailable. Choose a model in Local AI and try again."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "mode-deep": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      },
+      {
+        "body": {
+          "mode": "deep",
+          "model": "ornith-35b-a3b-local"
+        },
+        "method": "POST",
+        "path": "/_local/mode"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "mode-wrong-model": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "start",
+          "local-ai-chat.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "Local AI",
+          "Context modes are for Ornith and Qwen 3.6 MoE."
+        ],
+        "command": "notify-send"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "stderr": "",
+    "stdout": ""
+  },
+  "status-download-paused": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "is-active",
+          "--quiet",
+          "local-ai-flash-download.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": false,
+      "flash_download_bytes": 33554436,
+      "flash_download_shards": 2,
+      "flash_download_state": "paused",
+      "flash_download_total_bytes": 33554440,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 1,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-download-ready": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "is-active",
+          "--quiet",
+          "local-ai-flash-download.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": true,
+      "flash_download_bytes": 33554440,
+      "flash_download_shards": 2,
+      "flash_download_state": "ready",
+      "flash_download_total_bytes": 33554440,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 2,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-download-unqualified": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "is-active",
+          "--quiet",
+          "local-ai-flash-download.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": true,
+      "flash_download_bytes": 33554440,
+      "flash_download_shards": 2,
+      "flash_download_state": "weights-ready-testing",
+      "flash_download_total_bytes": 33554440,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 2,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-download-verifying": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "is-active",
+          "--quiet",
+          "local-ai-flash-download.service"
+        ],
+        "command": "systemctl"
+      },
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": true,
+      "flash_download_bytes": 33554440,
+      "flash_download_shards": 2,
+      "flash_download_state": "verifying",
+      "flash_download_total_bytes": 33554440,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 1,
+      "flash_waiting_verification": true,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-json": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": false,
+      "flash_download_bytes": 0,
+      "flash_download_shards": 0,
+      "flash_download_state": "absent",
+      "flash_download_total_bytes": 0,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 0,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-malformed": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 0,
+      "available_gib": 12.0,
+      "backend": "cpu",
+      "chat_state": "offline",
+      "compute_busy": false,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_download_active": false,
+      "flash_download_bytes": 0,
+      "flash_download_shards": 0,
+      "flash_download_state": "absent",
+      "flash_download_total_bytes": 0,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 0,
+      "flash_waiting_verification": false,
+      "harnesses": [],
+      "has_error": false,
+      "idle_seconds": 120,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": false,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-offline": {
+    "exit": 1,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      }
+    ],
+    "status": {
+      "active_requests": 0,
+      "available_gib": 12.0,
+      "backend": "cpu",
+      "chat_state": "offline",
+      "compute_busy": false,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_download_active": false,
+      "flash_download_bytes": 0,
+      "flash_download_shards": 0,
+      "flash_download_state": "absent",
+      "flash_download_total_bytes": 0,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 0,
+      "flash_waiting_verification": false,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "model": null,
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": false,
+      "selected_model": null,
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-stopping": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "stopping",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": 10,
+      "error_origin": "organic",
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": false,
+      "flash_download_bytes": 0,
+      "flash_download_shards": 0,
+      "flash_download_state": "absent",
+      "flash_download_total_bytes": 0,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 0,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": true,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "last_failure": {
+        "model": "ornith",
+        "origin": "remote",
+        "reason": "The model was stopped to keep the laptop responsive (memory was nearly full). Close a few apps and try again.",
+        "t": 12.5
+      },
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "stop_pending": "synthetic stop reason",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-trial": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": false,
+      "flash_download_bytes": 0,
+      "flash_download_shards": 0,
+      "flash_download_state": "absent",
+      "flash_download_total_bytes": 0,
+      "flash_trial_active": true,
+      "flash_trial_elapsed_seconds": "<validated:elapsed-seconds>",
+      "flash_trial_kind": "coding",
+      "flash_verified_shards": 0,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-trial-duplicate": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": false,
+      "flash_download_bytes": 0,
+      "flash_download_shards": 0,
+      "flash_download_state": "absent",
+      "flash_download_total_bytes": 0,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 0,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-trial-non-ascii": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": false,
+      "flash_download_bytes": 0,
+      "flash_download_shards": 0,
+      "flash_download_state": "absent",
+      "flash_download_total_bytes": 0,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 0,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  },
+  "status-trial-oversized": {
+    "exit": 0,
+    "host_commands": [
+      {
+        "args": [
+          "--user",
+          "show",
+          "--no-pager",
+          "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
+          "local-ai-planning-live.service",
+          "local-ai-flash-final-agent.service",
+          "local-ai-flash-code-screen.service",
+          "local-ai-flash-agent.service",
+          "local-ai-flash-native-http.service",
+          "local-ai-flash-prefill.service",
+          "local-ai-flash-wide-prefill.service",
+          "local-ai-flash-thp.service",
+          "local-ai-flash-cache-screen.service",
+          "local-ai-flash-overlap.service",
+          "local-ai-flash-smoke.service",
+          "local-ai-flash-profile-cache-abba.service",
+          "local-ai-flash-profile-hot-parity.service",
+          "local-ai-flash-profile-hot-abba.service",
+          "local-ai-flash-profile-cpu-quota-abba.service",
+          "local-ai-flash-profile-decode46.service",
+          "local-ai-flash-profile-decode48.service",
+          "local-ai-flash-profile-selective-q8.service",
+          "local-ai-flash-profile-placement.service",
+          "local-ai-flash-profile-combined-parity.service",
+          "local-ai-flash-profile-combined-coalescing.service",
+          "local-ai-flash-profile-combined-predictive.service",
+          "local-ai-flash-profile-ngram-capture.service",
+          "local-ai-flash-profile-ngram-screen.service",
+          "local-ai-flash-profile-cache-full-12288.service",
+          "local-ai-flash-profile-cache-full-13312.service",
+          "local-ai-flash-profile-io-full-4.service",
+          "local-ai-flash-profile-io-full-8.service"
+        ],
+        "command": "systemctl"
+      }
+    ],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/_local/status"
+      },
+      {
+        "method": "GET",
+        "path": "/activity"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/_local/models"
+      }
+    ],
+    "status": {
+      "active_requests": 2,
+      "available_gib": 12.0,
+      "backend": "gpu",
+      "chat_state": "ready",
+      "compute_busy": false,
+      "context": {
+        "cap": 131072,
+        "mode": "deep",
+        "modes": [
+          {
+            "available": true,
+            "cap": 131072,
+            "compact_at": 26000,
+            "context": 32768,
+            "id": "deep",
+            "reason": null
+          }
+        ]
+      },
+      "context_size": 32768,
+      "error_at": null,
+      "error_origin": null,
+      "execution_policy_mode": "stock",
+      "flash_available": true,
+      "flash_cache": {
+        "desktop_floor_gib": 3,
+        "estimated_working_set_gib": 16,
+        "margin_gib": 2,
+        "pref": "auto",
+        "preference_control": true,
+        "reason": "preferred",
+        "tier_gib": 16
+      },
+      "flash_download_active": false,
+      "flash_download_bytes": 0,
+      "flash_download_shards": 0,
+      "flash_download_state": "absent",
+      "flash_download_total_bytes": 0,
+      "flash_trial_active": false,
+      "flash_trial_elapsed_seconds": 0,
+      "flash_trial_kind": "",
+      "flash_verified_shards": 0,
+      "flash_waiting_verification": false,
+      "harnesses": [
+        {
+          "cache_n": 128,
+          "last_used": 2,
+          "name": "synthetic",
+          "prefixes": 1,
+          "prompt_n": 16,
+          "tools": 2,
+          "warm": true
+        }
+      ],
+      "has_error": false,
+      "idle_remaining_seconds": 123.5,
+      "idle_seconds": 600,
+      "image_model": "q8",
+      "image_state": "idle",
+      "loaded_model": "ornith",
+      "model": "ornith",
+      "models": [
+        {
+          "battery_start_percent": 50,
+          "default": true,
+          "engine": "rust",
+          "engine_status": "production",
+          "flash_cache": {
+            "desktop_floor_gib": 3,
+            "estimated_working_set_gib": 16,
+            "margin_gib": 2,
+            "pref": "auto",
+            "preference_control": true,
+            "reason": "preferred",
+            "tier_gib": 16
+          },
+          "key": "ornith",
+          "memory_basis": "qualified_working_set",
+          "memory_gib": 16,
+          "prefix": "warm",
+          "selected": true,
+          "state": "ready"
+        },
+        {
+          "battery_start_percent": null,
+          "default": false,
+          "engine": null,
+          "engine_status": null,
+          "key": "moe",
+          "memory_gib": null,
+          "prefix": null,
+          "selected": false,
+          "state": null
+        }
+      ],
+      "npu_status": "experimental",
+      "ornith_available": true,
+      "prefix_cache_enabled": true,
+      "preload": {
+        "age_s": 2,
+        "ms": 12.5,
+        "src": "disk",
+        "state": "done"
+      },
+      "queued_requests": 1,
+      "resident_gib": 3.0,
+      "selected_model": "ornith",
+      "total_gib": 16.0
+    },
+    "stderr": ""
+  }
+}

@@ -296,8 +296,11 @@ fn http_client() -> reqwest::Client {
 async fn request(path: &str, body: Option<Value>) -> (u16, Value) {
     request_timeout(path, body, 15).await
 }
-async fn request_timeout(path: &str, body: Option<Value>, seconds: u64) -> (u16, Value) {
+pub(crate) async fn request_timeout(path: &str, body: Option<Value>, seconds: u64) -> (u16, Value) {
     let url = format!("http://127.0.0.1:8092{path}");
+    request_url(&url, body, seconds).await
+}
+pub(crate) async fn request_url(url: &str, body: Option<Value>, seconds: u64) -> (u16, Value) {
     let client = http_client();
     let request = if let Some(body) = body {
         client.post(url).json(&body)
@@ -371,7 +374,7 @@ async fn launch(words: &[String]) -> i32 {
     .await;
     1
 }
-async fn offered(alias: &str) -> bool {
+pub(crate) async fn offered(alias: &str) -> bool {
     let (code, value) = request_timeout("/v1/models", None, 1).await;
     code == 200
         && value["object"] == "list"
@@ -400,7 +403,28 @@ fn code_agent() -> Option<std::path::PathBuf> {
         .map(|p| p.join("oxa"))
         .find(|p| executable(p))
 }
-async fn desktop_action(name: &str) -> i32 {
+fn code_command(agent: std::path::PathBuf, alias: &str, read_only: bool) -> Vec<String> {
+    let directory = std::env::var_os("LOCAL_AI_CODE_DIRECTORY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| crate::paths::home().join("Work"));
+    let mut words = vec![
+        "omarchy".into(),
+        "launch".into(),
+        "terminal".into(),
+        "env".into(),
+        "-C".into(),
+        directory.to_string_lossy().into_owned(),
+        "OXA_ENGINE_URL=http://127.0.0.1:8092".into(),
+        agent.to_string_lossy().into_owned(),
+        "--model".into(),
+        alias.into(),
+    ];
+    if read_only {
+        words.extend(["--tools".into(), "read,grep,find,ls".into()]);
+    }
+    words
+}
+async fn desktop_action(name: &str, mode: Option<&str>) -> i32 {
     let service = if name == "images" {
         "prompt-studio-app.service"
     } else {
@@ -418,6 +442,43 @@ async fn desktop_action(name: &str) -> i32 {
     if ["flash", "plan"].contains(&name) && !offered("qwen3.8-flash-next-local").await {
         notify("Flash is not ready on this machine. Run `local-ai status` to see why.").await;
         return 1;
+    }
+    if name == "mode" {
+        let Some(mode) = mode.filter(|m| ["fast", "deep", "max"].contains(m)) else {
+            return 2;
+        };
+        let current = crate::cli_status::project().await.unwrap_or(json!({}));
+        let alias = match current["selected_model"].as_str() {
+            Some("moe") => "qwen3.6-35b-a3b-local",
+            Some("ornith") => "ornith-35b-a3b-local",
+            _ => {
+                notify("Context modes are for Ornith and Qwen 3.6 MoE.").await;
+                return 1;
+            }
+        };
+        let (code, body) = request("/_local/mode", Some(json!({"model":alias,"mode":mode}))).await;
+        if code == 200 {
+            return 0;
+        }
+        notify(&reason(&body, "That context mode is unavailable.")).await;
+        return 1;
+    }
+    if name == "code" {
+        let Some(agent) = code_agent() else {
+            notify("The coding agent (oxa) is not installed. Reinstall ox-llm or run `local-ai doctor`.").await;
+            return 1;
+        };
+        let current = crate::cli_status::project().await.unwrap_or(json!({}));
+        let alias = match current["selected_model"].as_str() {
+            Some("moe") => "qwen3.6-35b-a3b-local",
+            Some("ornith") => "ornith-35b-a3b-local",
+            Some("flash") if current["flash_available"] == true => "qwen3.8-flash-next-local",
+            _ => {
+                notify("The selected local model is unavailable. Choose a model in Local AI and try again.").await;
+                return 1;
+            }
+        };
+        return launch(&code_command(agent, alias, false)).await;
     }
     if ["moe", "ornith", "flash"].contains(&name) {
         let alias = match name {
@@ -441,24 +502,7 @@ async fn desktop_action(name: &str) -> i32 {
             notify("The coding agent (oxa) is not installed. Reinstall ox-llm or run `local-ai doctor`.").await;
             return 1;
         };
-        let directory = std::env::var_os("LOCAL_AI_CODE_DIRECTORY")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| crate::paths::home().join("Work"));
-        return launch(&[
-            "omarchy".into(),
-            "launch".into(),
-            "terminal".into(),
-            "env".into(),
-            "-C".into(),
-            directory.to_string_lossy().into_owned(),
-            "OXA_ENGINE_URL=http://127.0.0.1:8092".into(),
-            agent.to_string_lossy().into_owned(),
-            "--model".into(),
-            "qwen3.8-flash-next-local".into(),
-            "--tools".into(),
-            "read,grep,find,ls".into(),
-        ])
-        .await;
+        return launch(&code_command(agent, "qwen3.8-flash-next-local", true)).await;
     }
     if name == "images" && request("/_local/unload", Some(json!({}))).await.0 == 409 {
         notify("Chat is still answering. Image generation can start when it finishes.").await;
@@ -505,7 +549,7 @@ fn reason(body: &Value, fallback: &str) -> String {
         .map(|s| s.trim().chars().take(300).collect())
         .unwrap_or_else(|| fallback.to_owned())
 }
-fn plain_name(value: &str) -> bool {
+pub(crate) fn plain_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 32
         && value
@@ -515,9 +559,10 @@ fn plain_name(value: &str) -> bool {
 
 pub async fn run(args: Args) -> i32 {
     match args.action.as_str() {
-        "chat" | "images" | "moe" | "ornith" | "flash" | "plan" => {
-            desktop_action(&args.action).await
+        "chat" | "images" | "moe" | "ornith" | "flash" | "plan" | "code" | "mode" => {
+            desktop_action(&args.action, args.value("--mode")).await
         }
+        "status" => crate::cli_status::run(args.flag("--json")).await,
         "panel" => {
             use std::os::unix::process::ExitStatusExt;
             match tokio::process::Command::new("omarchy-shell")

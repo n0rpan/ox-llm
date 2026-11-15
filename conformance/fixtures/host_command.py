@@ -15,6 +15,9 @@ row = json.dumps({'command': name, 'args': sys.argv[1:], **details}) + '\n'
 fd = os.open(Path.home() / 'host-commands.jsonl', os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
 os.write(fd, row.encode())
 os.close(fd)
+if name == 'systemctl' and 'show' in sys.argv and os.environ.get('OXC_SYSTEMCTL_SHOW_FILE'):
+    sys.stdout.buffer.write(Path(os.environ['OXC_SYSTEMCTL_SHOW_FILE']).read_bytes())
+    raise SystemExit(0)
 if name == 'omarchy-shell' and os.environ.get('OXC_PANEL_OUTPUT') == '1':
     print('Synthetic panel output.')
     print('Synthetic panel diagnostic.', file=sys.stderr)

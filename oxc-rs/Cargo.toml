@@ -16,7 +16,7 @@ sha2 = "0.10"
 hmac = "0.12"
 subtle = "2"
 flate2 = "1"
-nix = { version = "0.30", features = ["fs", "signal", "process", "user", "resource"] }
+nix = { version = "0.30", features = ["fs", "signal", "process", "user", "resource", "time"] }
 futures-util = "0.3"
 httparse = "1"
 httpdate = "1"

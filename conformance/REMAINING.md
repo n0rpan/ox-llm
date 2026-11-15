@@ -27,10 +27,14 @@ The following gaps remain visible rather than being represented by skipped tests
   CPU pinning and Flash-specific launch adapters/capabilities.
 - Images: the CLI dispatch is covered; the shipped controller's image-slot IPC
   and related runtime paths need contracts without SDK, device or model content.
-- CLI: port status/code/mode, digest, update/rollback and uninstall commands;
+- CLI: port digest, update/rollback and uninstall commands;
   extend populated ledger/digest, valid cache status, sharing keys and offline
   failures. Fifteen desktop/model dispatch cases now cover detached sessions,
   inherited stdin/umask, exec/service failures, qualification and read-only planning.
+  Sixteen status/code/mode cases cover filtered metadata, offline/stopping states,
+  selected models, download phases and bounded trial queries. Forty runtime CLI
+  cases pass against the Python daemon. An integrated native run passes 34/40;
+  status JSON, storage text/JSON and sharing status/JSON/off remain different.
 - Bootstrap: source transfer/build/check flows need loopback fixtures, never a
   model download or real API call. Current tests cover source-payload staging,
   installation, unit text, installed help and rollback/refusal cases.
