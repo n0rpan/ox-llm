@@ -230,7 +230,7 @@ class StatusContract(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(set(limits), {row['id'] for row in models['data']})
         # v0.2.0 EG2: capabilities per alias, before any load
-        rust = {'prefill_only': True, 'snapshot_hint': 2, 'turn_kind': True, 'hint_clear': True, 'thinking': 'toggle',
+        rust = {'thinking_budget': False, 'prefill_only': True, 'snapshot_hint': 2, 'turn_kind': True, 'hint_clear': True, 'thinking': 'toggle',
                 'vision': False, 'slots': 1}
         self.assertEqual(caps['local-default'], caps[ORNITH])
         for alias in (ORNITH, QWEN):
@@ -239,7 +239,7 @@ class StatusContract(unittest.TestCase):
             available = [row['cap'] for row in limits[alias]['modes'] if row['available']]
             self.assertEqual(caps[alias]['max_context'], max(available))
         # this FLASH row is the C++ BigMoe adapter (bigmoe-cpu-stream): no Rust request hints
-        self.assertEqual(caps[FLASH], {'prefill_only': False, 'snapshot_hint': 0, 'turn_kind': False, 'hint_clear': False,
+        self.assertEqual(caps[FLASH], {'thinking_budget': False, 'prefill_only': False, 'snapshot_hint': 0, 'turn_kind': False, 'hint_clear': False,
                                        'thinking': 'toggle', 'vision': False, 'slots': 1, 'preserve_thinking': False,
                                        'mtp': False, 'max_context': 16384, 'context_window': 16384,
                                        'park': 'none', 'sampling': [], 'remote': False, 'remote_provider': None,
