@@ -20,6 +20,18 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIn('workflow_call:', rb)
         self.assertIsNone(re.search(r'ox-llm-0\.2\.0-linux', rb))
 
+    def test_release_build_does_not_cancel_called_runs(self):
+        rb = (W / 'release-build.yml').read_text()
+        self.assertIsNone(re.search(r'cancel-in-progress:\s*true', rb))
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", rb)
+
+    def test_arch_consumers_accept_the_versioned_archive(self):
+        # release-build names the archive ox-llm-v<version>-linux-<arch>; the PKGBUILD wants the
+        # unprefixed pkgver name, so arch-test.sh must map one to the other.
+        t = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
+        self.assertIn('ox-llm-v*-linux-$(uname -m).tar.gz', t)
+        self.assertIn('ox-llm-0.2.0-linux-$(uname -m).tar.gz', t)
+
 
 if __name__ == '__main__':
     unittest.main()
