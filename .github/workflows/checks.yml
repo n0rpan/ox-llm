@@ -66,7 +66,6 @@ jobs:
       build_oxa: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
   rustfmt:
-    # oxa and oxc: the engine tree predates rustfmt enforcement (a separate change).
     name: rustfmt (oxa)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -83,6 +82,9 @@ jobs:
         run: cargo fmt --all -- --check
       - name: oxc
         working-directory: oxc-rs
+        run: cargo fmt --all -- --check
+      - name: engine
+        working-directory: engine
         run: cargo fmt --all -- --check
 
   clippy:
