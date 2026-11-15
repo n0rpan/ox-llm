@@ -1001,6 +1001,19 @@ fn ascii_skin_is_pure_ascii() {
     }
 }
 
+#[test]
+fn ascii_skin_splash_cloud_label_is_ascii() {
+    let theme = Theme::plain();
+    let cloud = HeaderInfo {
+        model_remote: true,
+        model_provider: Some("openrouter"),
+        ..info()
+    };
+    for line in oxa_splash(&cloud, "oxa", true, 100, &theme, Skin::OxaAscii) {
+        assert!(line.is_ascii(), "non-ASCII glyph in {line:?}");
+    }
+}
+
 // ---- robustness -------------------------------------------------------------------------------
 
 #[test]
