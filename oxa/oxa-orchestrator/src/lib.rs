@@ -36,3 +36,6 @@ pub mod workspace;
 
 #[cfg(feature = "core")]
 pub mod workspace_jobs;
+
+#[cfg(feature = "core")]
+pub mod a2a_run;
