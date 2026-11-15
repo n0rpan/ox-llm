@@ -26,13 +26,15 @@ compared exactly. Credential values and paths must never appear in errors.
 `secrets::KeyFile::prepare` validates the configured location once per config
 generation. Keep its Result and surface the static refusal after policy checks;
 repository/source-tree paths now have their own safe reason (#331/#266). Parent
-links bind to the approved canonical directory, so later retargeting cannot
-select a repository key. Reprepare when configuration/location changes. Every
+links bind to an open descriptor for the approved canonical directory, so
+retargeting a link or replacing that directory cannot select a repository key.
+The directory descriptor is close-on-exec; no key descriptor is retained.
+Reprepare when configuration/location changes. Every
 read still opens with no-follow and verifies regular-file type, owner, mode,
 size and fresh bytes. Key material is never cached; Debug omits the path.
 The parent directory must exist when preparing the location. Create it before
 constructing/reloading the configuration; a missing file within it is allowed.
-Three filesystem regressions cover parent retargeting, missing parents,
+Four filesystem regressions cover parent retargeting/replacement, missing parents,
 rotation, mode changes and final symlinks. The 34 source contracts stay unchanged; three native repo refusals
 intentionally use the requested specific diagnostic rather than Python's generic
 message. All other errors remain exact, except the already validated Python

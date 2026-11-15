@@ -1,13 +1,19 @@
 //! Request-time owner-only credentials. Errors and Debug never contain a path
 //! or credential. Key values are never cached, logged or placed in the environment.
-use nix::{libc, unistd::Uid};
+use nix::{
+    fcntl::{openat, OFlag},
+    libc,
+    sys::stat::Mode,
+    unistd::Uid,
+};
 use serde_json::Value;
 use std::{
     fmt,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Read},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 pub struct Key(String);
@@ -195,7 +201,8 @@ fn parse(bytes: &[u8]) -> Option<Value> {
 /// inside a repository. No key material or opened key descriptor is retained.
 #[derive(Clone)]
 pub struct KeyFile {
-    path: PathBuf,
+    parent: Arc<File>,
+    name: PathBuf,
 }
 impl fmt::Debug for KeyFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -218,15 +225,36 @@ impl KeyFile {
         // only an existing canonical directory for this config generation.
         let parent =
             fs::canonicalize(path.parent().unwrap_or(path)).map_err(|_| Error::Unavailable)?;
-        if !parent.is_dir() {
-            return Err(Error::Unavailable);
-        }
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let access = libc::O_PATH;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let access = 0;
+        let parent = OpenOptions::new()
+            .read(true)
+            .custom_flags(access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(parent)
+            .map_err(|_| Error::Unavailable)?;
         Ok(Self {
-            path: parent.join(path.file_name().unwrap_or_default()),
+            parent: Arc::new(parent),
+            name: path
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(".")),
         })
     }
     pub fn read(&self, provider: &str) -> Result<Key, Error> {
-        read_file(&self.path, provider)
+        let file = openat(
+            self.parent.as_ref(),
+            &self.name,
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|error| match error {
+            nix::errno::Errno::ELOOP => Error::SymbolicLink,
+            nix::errno::Errno::EACCES | nix::errno::Errno::EPERM => Error::Unreadable,
+            _ => Error::Unavailable,
+        })?;
+        read_file(File::from(file), provider)
     }
 }
 /// Convenience for callers without a retained configuration. Runtimes should
@@ -234,16 +262,7 @@ impl KeyFile {
 pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
     KeyFile::prepare(path)?.read(provider)
 }
-fn read_file(path: &Path, provider: &str) -> Result<Key, Error> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|error| match error.raw_os_error() {
-            Some(libc::ELOOP) => Error::SymbolicLink,
-            Some(libc::EACCES | libc::EPERM) => Error::Unreadable,
-            _ => Error::Unavailable,
-        })?;
+fn read_file(file: File, provider: &str) -> Result<Key, Error> {
     let info = file.metadata().map_err(|_| Error::Unavailable)?;
     if !info.is_file() {
         return Err(Error::NotRegular);
