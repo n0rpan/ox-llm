@@ -3,21 +3,16 @@
 The next release is **v0.2.0**: the engine, the controller and oxa ship together from this repository,
 with one tag and one release page. See [DECISIONS.md](DECISIONS.md) for the reasoning.
 
-## v0.2.0 (in progress)
+## v0.2.0
 
-1. **oxa:** a fully featured Rust rewrite of the pi 1.5.2 coding agent, tuned for this engine. The work
-   comes in waves: the workspace and protocol first, then the core, tools, sessions, compaction, TUI,
-   MCP and extensions. A parity suite gives every pi behaviour a test or a recorded omission. Final
-   check: a hardware A/B against pi and OpenCode on the same tasks.
-2. **Client-neutral core:** client quirks come out of the engine and controller (no pins, no client
-   templates). Generic robustness stays in: concurrent requests are queued and replays are safe.
-   Diagnostics are client-agnostic.
-3. **Engine kernels:** the f16 GEMM-shaped prefill attention (`pfg`, opt-in) and position-blocked
-   decode `V^T.p` (`pb`, bit-identical) are promoted only if their decision measurements and gates
-   pass. User-message checkpoints (`--user-snapshots`) are default-off until their gate passes.
-4. **Operations:** a health digest, a release-update check and recovery drills.
-5. **Release:** one squashed public snapshot under a new public repository name, which the owner
-   chooses at release time. The install gate pack runs once on the final binaries.
+Scope and status live on GitHub, not in this file:
+
+- [Milestone v0.2.0](https://github.com/oxstack/ox-llm/milestone/1): what ships in the release.
+- [Milestone v0.2.1](https://github.com/oxstack/ox-llm/milestone/2): what follows it.
+- Label `post-0.2`: work that is not on the v0.2.0 release path.
+
+The release is one squashed public snapshot; the install gate pack runs once on the final binaries.
+Release steps and the public repository name are the maintainer's call (see [DECISIONS.md](DECISIONS.md)).
 
 ## After v0.2.0
 
