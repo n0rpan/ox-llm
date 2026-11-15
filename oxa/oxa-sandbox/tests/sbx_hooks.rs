@@ -85,7 +85,10 @@ fn bwrap_value(env: &TestEnv) -> Bwrap {
 }
 
 fn args_of(b: &Bwrap, cwd: &Path, writable: bool, env: &TestEnv) -> Vec<String> {
-    shown(&b.bwrap_args(&spec("git status", cwd, writable)), env)
+    shown(
+        &oxa_sandbox::without_account_home(b.bwrap_args(&spec("git status", cwd, writable))),
+        env,
+    )
 }
 
 /// Every path a `/dev/null` bind or a tmpfs lands on.
