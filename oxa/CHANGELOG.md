@@ -8,7 +8,7 @@
 
 ### Added
 
-- `done` setting: a list of shell commands (for example `cargo fmt --check`) that oxa runs itself, in the sandbox, when a run that edited files is about to finish. A failure is fed back to the model for up to 2 automatic fix rounds, then reported; nothing changes while the list is empty.
+- `done` setting: a list of shell commands (for example `cargo fmt --check`) that oxa runs itself, in the sandbox, when a run that edited files is about to finish. A failure is fed back to the model for up to 2 automatic fix rounds, then reported; nothing changes while the list is empty. An entry `in <dir>: <command>` runs in a subfolder of the project (a missing folder or one outside the project is refused as `FAILED (not run)`). `-p` and `--mode json` exit 1 with one `done checks failed` line on standard error when the checks still fail at the end, and `-p` says so when a project's `done` was skipped because the project is not trusted.
 - First public release of oxa: a Rust reimplementation of the pi 1.5.2 coding agent for the oxe engine.
 - Session files have one writer: a second oxa opening a session that is open elsewhere stops with a clear message and `--fork` as the way out. Stale locks cannot occur (the lock dies with its process).
 - A compaction without a model summary (`local` profile) now says how many assistant/tool turns it dropped and shows `no summary` in the footer.

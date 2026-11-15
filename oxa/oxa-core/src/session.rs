@@ -102,6 +102,9 @@ pub struct Stats {
     pub profile: oxa_proto::Profile,
     /// B6: the engine sent a reply without `cached_tokens` (the notice was shown).
     pub cached_unreported: bool,
+    /// The last round of `done` checks had a failure (no later round passed). Print mode reads
+    /// it at the end for its exit code.
+    pub done_failed: bool,
     /// Adaptive thinking on tool follow-ups (`think.rs`) of the current run. Never persisted.
     pub escalation: crate::think::Escalation,
 }

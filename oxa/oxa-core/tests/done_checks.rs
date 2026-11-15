@@ -55,6 +55,16 @@ fn run_with(
     turns: Vec<ScriptTurn>,
     sandbox: Arc<dyn Sandbox>,
 ) -> (Rec, Arc<ScriptedEngine>) {
+    let (rec, engine, _) = run_state(env, done, turns, sandbox);
+    (rec, engine)
+}
+
+fn run_state(
+    env: &TestEnv,
+    done: serde_json::Value,
+    turns: Vec<ScriptTurn>,
+    sandbox: Arc<dyn Sandbox>,
+) -> (Rec, Arc<ScriptedEngine>, bool) {
     let engine = Arc::new(ScriptedEngine::new(turns));
     let settings = if done.is_null() {
         Settings::default()
@@ -82,7 +92,8 @@ fn run_with(
     let mut rec = Rec::default();
     s.prompt("go".into(), Vec::new(), &mut rec, &mut HeadlessUi::default())
         .expect("prompt");
-    (rec, engine)
+    let failed = s.inner().stats.done_failed;
+    (rec, engine, failed)
 }
 
 fn write(id: &str, path: &str) -> ScriptTurn {
@@ -231,4 +242,182 @@ fn cancel_during_first_check_stops_done_phase() {
     assert!(rec.checks().is_empty(), "{:?}", rec.checks());
     assert_eq!(engine.requests().len(), 2);
     assert_eq!(engine.remaining(), 1);
+}
+
+/// Runs one `done` entry after a `write`; returns the check notices.
+fn one(env: &TestEnv, entry: &str) -> Vec<String> {
+    let (rec, _) = run(
+        env,
+        json!([entry]),
+        vec![write("c1", "a.txt"), ScriptTurn::text("done")],
+    );
+    rec.checks()
+}
+
+#[test]
+fn in_dir_runs_the_command_in_that_folder() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work().join("sub/deep")).unwrap();
+    std::fs::write(env.work().join("sub/marker.txt"), "x").unwrap();
+    // The marker exists in `sub` only, so the check passes only with cwd = sub.
+    assert_eq!(
+        one(&env, "in sub: test -f marker.txt"),
+        vec!["done check: [sub] test -f marker.txt ok".to_string()]
+    );
+    // `./sub/deep` style and an absolute path inside the session folder work too.
+    assert_eq!(
+        one(&env, "in ./sub/deep/..: test -f marker.txt")[0],
+        "done check: [./sub/deep/..] test -f marker.txt ok"
+    );
+    let abs = env.work().join("sub");
+    let entry = format!("in {}: test -f marker.txt", abs.display());
+    assert!(one(&env, &entry)[0].ends_with("ok"), "{:?}", one(&env, &entry));
+    // Without the prefix the command still runs in the session folder.
+    let plain = one(&env, "test -f marker.txt");
+    assert!(plain[0].contains("FAILED (exit 1)"), "{plain:?}");
+}
+
+#[test]
+fn in_dir_failure_names_the_folder() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work().join("sub")).unwrap();
+    let c = one(&env, "in sub: echo BOOM; exit 4");
+    assert!(
+        c[0].starts_with("done check: [sub] echo BOOM; exit 4 FAILED (exit 4)") && c[0].contains("BOOM"),
+        "{c:?}"
+    );
+}
+
+#[test]
+fn in_dir_refuses_missing_and_escaping_folders() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work().join("sub")).unwrap();
+    // A sibling of the work folder exists, so a refusal is about the escape, not about it missing.
+    std::fs::create_dir_all(env.root().join("outside")).unwrap();
+    let marker = env.root().join("outside/ran.txt");
+    let outside_abs = env.root().join("outside");
+    let cases = [
+        ("in nope: touch ran.txt".to_string(), "does not exist"),
+        (
+            "in ../outside: touch ran.txt".to_string(),
+            "outside the project folder",
+        ),
+        (
+            "in sub/../../outside: touch ran.txt".to_string(),
+            "outside the project folder",
+        ),
+        (
+            format!("in {}: touch ran.txt", outside_abs.display()),
+            "outside the project folder",
+        ),
+        (
+            "in ../nope: touch ran.txt".to_string(),
+            "outside the project folder",
+        ),
+        ("in : touch ran.txt".to_string(), "no folder"),
+    ];
+    for (entry, reason) in cases {
+        let c = one(&env, &entry);
+        assert_eq!(c.len(), 1, "{entry}: {c:?}");
+        assert!(
+            c[0].contains("FAILED (not run)") && c[0].contains(reason),
+            "{entry}: {c:?}"
+        );
+    }
+    assert!(!marker.exists(), "a refused check must not run");
+    // A symlink that leaves the session folder is refused as well.
+    std::os::unix::fs::symlink(env.root().join("outside"), env.work().join("link")).unwrap();
+    let c = one(&env, "in link: touch ran.txt");
+    assert!(
+        c[0].contains("FAILED (not run)") && c[0].contains("outside"),
+        "{c:?}"
+    );
+    assert!(!marker.exists());
+    // A file is not a folder.
+    std::fs::write(env.work().join("file.txt"), "x").unwrap();
+    let c = one(&env, "in file.txt: true");
+    assert!(
+        c[0].contains("FAILED (not run)") && c[0].contains("not a folder"),
+        "{c:?}"
+    );
+}
+
+#[test]
+fn refused_folder_goes_back_to_the_model() {
+    let env = TestEnv::new();
+    let (_, engine) = run(
+        &env,
+        json!(["in nope: true"]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::text("cannot"),
+        ],
+    );
+    let reqs = engine.requests();
+    let last_user = reqs[2]
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == oxa_proto::Role::User)
+        .unwrap();
+    assert!(last_user.content.as_ref().unwrap().contains("does not exist"));
+}
+
+#[test]
+fn done_failed_flag_tracks_the_last_check_round() {
+    let env = TestEnv::new();
+    let (_, _, failed) = run_state(
+        &env,
+        json!(["exit 1"]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            write("c2", "b.txt"),
+            ScriptTurn::text("done"),
+            write("c3", "c.txt"),
+            ScriptTurn::text("done"),
+        ],
+        Arc::new(Direct),
+    );
+    assert!(failed, "two repair rounds used up and the check still fails");
+
+    // Fixed within the rounds: not failed.
+    let env = TestEnv::new();
+    let (_, _, failed) = run_state(
+        &env,
+        json!([CHECK]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            write("c2", "fixed.txt"),
+            ScriptTurn::text("done"),
+        ],
+        Arc::new(Direct),
+    );
+    assert!(!failed);
+
+    // The model stops without fixing it (no new edit, so no re-run): still failed at the end.
+    let env = TestEnv::new();
+    let (_, _, failed) = run_state(
+        &env,
+        json!(["exit 1"]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::text("cannot fix"),
+        ],
+        Arc::new(Direct),
+    );
+    assert!(failed);
+
+    // No edits, no checks, no flag.
+    let env = TestEnv::new();
+    let (_, _, failed) = run_state(
+        &env,
+        json!(["exit 1"]),
+        vec![ScriptTurn::text("hi")],
+        Arc::new(Direct),
+    );
+    assert!(!failed);
 }
