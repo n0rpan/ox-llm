@@ -125,3 +125,19 @@ fn markdown_does_not_pass_control_characters_through() {
         );
     }
 }
+
+/// Codex finding on PR 55: the session seeds must be real records, otherwise the target only
+/// ever exercises the early timestamp rejection and never reaches the body decoder.
+#[test]
+fn session_seeds_decode_successfully() {
+    let header = oxa_fuzz::corpus("session-header.jsonl");
+    oxa_session::decode_header(header.split(|b| *b == b'\n').next().unwrap())
+        .expect("session-header.jsonl must be a valid header");
+    let entry = oxa_fuzz::corpus("session-entry.jsonl");
+    let entry = oxa_session::decode_entry(entry.split(|b| *b == b'\n').next().unwrap())
+        .expect("session-entry.jsonl must be a valid entry");
+    // Re-encoding a decoded seed is lossless, so mutations start from the real wire shape.
+    let mut again = Vec::new();
+    oxa_session::encode_entry(&entry, &mut again);
+    assert_eq!(oxa_session::decode_entry(&again).unwrap(), entry);
+}
