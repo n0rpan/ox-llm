@@ -348,3 +348,15 @@ fn auto_after_yolo_restores_the_floor() {
         Decision::Ask
     );
 }
+
+/// Review of #314: the one-line description shown in the picker, the start notice and stderr
+/// must say what the policy does at `yolo`: the file tools keep the deny-list and the
+/// protected paths (pinned by the tests above), only bash leaves the sandbox.
+#[test]
+fn yolo_description_matches_the_kept_floor() {
+    use oxa_proto::PermissionMode;
+    let text = PermissionMode::Yolo.describe();
+    assert!(text.contains("without the sandbox"), "{text}");
+    assert!(!text.contains("not limited"), "{text}");
+    assert!(text.contains("file tools keep the deny-list"), "{text}");
+}

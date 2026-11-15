@@ -115,8 +115,8 @@ pub trait Sandbox: Send + Sync {
 /// How much the policy decides on its own (#202). `Standard` asks the user what the mode table
 /// asks; `Auto` answers those questions with "allow" while the sandbox, the deny-list and the
 /// protected paths stay on; `Yolo` is full access: no prompts, bash runs without the sandbox in
-/// the user's own environment and the file tools are not limited by the deny-list or the
-/// protected-path rules. Plan mode stays read-only under every level.
+/// the user's own environment; the file tools keep the deny-list and the protected paths (a
+/// write to `.oxa` or a startup file still asks). Plan mode stays read-only under every level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Autonomy {
     #[default]
@@ -226,7 +226,7 @@ impl PermissionMode {
             }
             PermissionMode::Yolo => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \
-                 file tools are not limited by the deny-list"
+                 the file tools keep the deny-list and the protected paths"
             }
             PermissionMode::Plan => "read-only: plans, writes nothing",
         }
@@ -235,9 +235,9 @@ impl PermissionMode {
 
 /// The autonomy switch of a process (O-182, #202): [`Autonomy`] as one shared value. While it
 /// is not `Standard`, the policy answers every question it would have asked the user with
-/// "allow" and counts it; at `Yolo` it also lifts the deny-list and the protected paths and the
-/// bash tool runs without the sandbox (plan mode excepted). Cloning shares the switch (the
-/// policy of every session, the bash tool and the UI hold the same one).
+/// "allow" and counts it; at `Yolo` the bash tool also runs without the sandbox (plan mode
+/// excepted), while the file tools keep the deny-list and the protected paths. Cloning shares
+/// the switch (the policy of every session, the bash tool and the UI hold the same one).
 #[derive(Debug, Clone, Default)]
 pub struct YoloSwitch {
     inner: std::sync::Arc<YoloInner>,

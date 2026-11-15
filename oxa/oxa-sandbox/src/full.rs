@@ -119,6 +119,8 @@ impl Sandbox for FullAccess {
         }
         self.inner.run_streaming(s, c, live)
     }
+    /// Only exec hooks pass standard input; they are the user's own configuration, not the
+    /// model's bash, and stay in the wrapped sandbox at every level (no full-access bypass).
     fn run_with_stdin(
         &self,
         s: &ExecSpec,

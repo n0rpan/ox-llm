@@ -102,3 +102,18 @@ fn tempdir_outside(env: &TestEnv) -> std::path::PathBuf {
     assert!(!dir.starts_with(env.work()));
     dir
 }
+
+/// Review of #314: `run_with_stdin` is only used for exec hooks (`oxa-ext/src/exec_hooks.rs`),
+/// which the user configured, not the model's bash. They stay in the wrapped sandbox under
+/// every level, `yolo` included: the full-access bypass belongs to the bash tool alone.
+#[test]
+fn hooks_with_stdin_keep_the_sandbox_under_yolo() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let target = env.root().join("hook-wrote.txt");
+    let (sb, _switch) = full(Autonomy::Yolo, &env);
+    let s = spec(&env, format!("cat > '{}'", target.display()), true);
+    let r = sb.run_with_stdin(&s, b"payload", &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
+    assert!(!target.exists(), "the hook ran outside the wrapped sandbox");
+}
