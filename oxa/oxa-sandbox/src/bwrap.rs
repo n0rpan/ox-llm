@@ -453,6 +453,11 @@ fn is_real(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink())
 }
 
+/// The protected entries that are directories (`hooks`, `info`): a tmpfs masks them when missing.
+fn is_dir_entry(p: &Path) -> bool {
+    p.file_name().is_some_and(|n| n == "hooks" || n == "info")
+}
+
 /// sbx-hooks: keep the missing protected git entry `p` missing for the command: an empty
 /// read-only tmpfs for the `hooks` directory, `/dev/null` for a file. bwrap creates the mount
 /// point (an empty directory or file) in the host's git directory, which stays after the run.
@@ -466,7 +471,7 @@ fn mask_missing(a: &mut Vec<String>, p: &Path) {
         return;
     }
     let ps = p.to_string_lossy();
-    if p.file_name().is_some_and(|n| n == "hooks") {
+    if is_dir_entry(p) {
         push(a, &["--tmpfs", &ps, "--remount-ro", &ps]);
     } else {
         push(a, &["--ro-bind", "/dev/null", &ps]);
@@ -509,7 +514,7 @@ pub(crate) fn create_missing_git_files_homes(
         files.extend(protected_entries(&dotgit, &dotgit));
     }
     for p in files {
-        if p.file_name().is_some_and(|n| n == "hooks") || !p.parent().is_some_and(is_real_dir) {
+        if is_dir_entry(&p) || !p.parent().is_some_and(is_real_dir) {
             continue;
         }
         let _ = std::fs::OpenOptions::new().write(true).create_new(true).open(&p);

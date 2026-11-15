@@ -283,16 +283,28 @@ fn worktree_common_dir_without_hooks_masks_them() {
         got.protect,
         vec![
             canon(&w.main_git).join("config"),
-            canon(&w.main_git).join("hooks")
+            canon(&w.main_git).join("config.worktree"),
+            canon(&w.main_git).join("hooks"),
+            canon(&w.main_git).join("info"),
+            canon(&w.gitdir).join("config.worktree"),
+            canon(&w.gitdir).join("hooks"),
         ],
-        "hooks of the common dir only; the worktree gitdir's own are never read by git"
+        "issue #103: a worktree also protects info, config.worktree and its gitdir's hooks"
     );
     let b = bwrap_value(&env).with_git_dirs(&w.wt);
     let args = args_of(&b, &w.wt, true, &env);
-    let mut run = ro("<root>/main/.git/config");
-    run.extend(tmpfs_mask("<root>/main/.git/hooks"));
-    assert!(contains_run(&args, &run), "{args:?}");
-    assert_eq!(masked(&args), vec!["<root>/main/.git/hooks".to_string()]);
+    assert!(contains_run(&args, &ro("<root>/main/.git/config")), "{args:?}");
+    assert!(
+        contains_run(&args, &tmpfs_mask("<root>/main/.git/hooks")),
+        "{args:?}"
+    );
+    let m = masked(&args);
+    assert!(m.contains(&"<root>/main/.git/hooks".to_string()), "{args:?}");
+    assert!(m.contains(&"<root>/main/.git/info".to_string()), "{args:?}");
+    assert!(
+        m.contains(&"<root>/main/.git/worktrees/wt1/hooks".to_string()),
+        "{args:?}"
+    );
 }
 
 #[test]
@@ -307,7 +319,9 @@ fn worktree_with_worktree_config_masks_both_config_worktree_files() {
         mc.join("config"),
         mc.join("config.worktree"),
         mc.join("hooks"),
+        mc.join("info"),
         gd.join("config.worktree"),
+        gd.join("hooks"),
     ];
     want.sort();
     assert_eq!(got.protect, want);
@@ -317,7 +331,9 @@ fn worktree_with_worktree_config_masks_both_config_worktree_files() {
         masked(&args),
         vec![
             "<root>/main/.git/config.worktree".to_string(),
-            "<root>/main/.git/worktrees/wt1/config.worktree".to_string()
+            "<root>/main/.git/info".to_string(),
+            "<root>/main/.git/worktrees/wt1/config.worktree".to_string(),
+            "<root>/main/.git/worktrees/wt1/hooks".to_string(),
         ],
         "{args:?}"
     );
@@ -331,13 +347,26 @@ fn worktree_with_existing_hooks_and_config_is_unchanged() {
     file(&w.main_git.join("hooks/pre-commit"), "#!/bin/sh\n");
     let got = resolve_git_binds(&w.wt, &env.home(), Some(&env.agent_dir()));
     let mc = canon(&w.main_git);
-    assert_eq!(got.protect, vec![mc.join("config"), mc.join("hooks")]);
+    let gd = canon(&w.gitdir);
+    assert_eq!(
+        got.protect,
+        vec![
+            mc.join("config"),
+            mc.join("config.worktree"),
+            mc.join("hooks"),
+            mc.join("info"),
+            gd.join("config.worktree"),
+            gd.join("hooks"),
+        ]
+    );
     let b = bwrap_value(&env).with_git_dirs(&w.wt);
     let args = args_of(&b, &w.wt, true, &env);
-    let mut run = ro("<root>/main/.git/config");
-    run.extend(ro("<root>/main/.git/hooks"));
-    assert!(contains_run(&args, &run), "{args:?}");
-    assert!(masked(&args).is_empty(), "{args:?}");
+    assert!(contains_run(&args, &ro("<root>/main/.git/config")), "{args:?}");
+    assert!(contains_run(&args, &ro("<root>/main/.git/hooks")), "{args:?}");
+    assert!(
+        !masked(&args).contains(&"<root>/main/.git/hooks".to_string()),
+        "{args:?}"
+    );
 }
 
 #[test]
