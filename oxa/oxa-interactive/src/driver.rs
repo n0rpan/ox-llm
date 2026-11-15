@@ -116,6 +116,7 @@ struct BlockCache {
     content: Vec<String>,
     starts: Vec<usize>,
     /// The block index the last `update` assembled `content` from (`None`: nothing changed).
+    #[cfg(test)]
     rebuilt_from: Option<usize>,
 }
 
@@ -134,7 +135,10 @@ impl BlockCache {
         let mut changed = false;
         // The first block whose lines changed; `0` also when the header or layout changed.
         let mut first: usize = usize::MAX;
-        self.rebuilt_from = None;
+        #[cfg(test)]
+        {
+            self.rebuilt_from = None;
+        }
         if self.width != width || self.theme_epoch != theme_epoch || self.settings.as_ref() != Some(settings)
         {
             self.width = width;
@@ -190,7 +194,10 @@ impl BlockCache {
                 self.content.truncate(self.starts[first]);
                 self.starts.truncate(first);
             }
-            self.rebuilt_from = Some(first);
+            #[cfg(test)]
+            {
+                self.rebuilt_from = Some(first);
+            }
             for (_, lines) in self.entries.iter().skip(self.starts.len()) {
                 self.starts.push(self.content.len());
                 if lines.is_empty() {
@@ -3193,5 +3200,22 @@ mod block_cache_tests {
         assert_eq!(c.content[..c.starts[2]], before[..c.starts[2]]);
         assert!(c.content.iter().any(|l| l.contains("three!")));
         assert!(!run(&mut c, &vm));
+    }
+
+    /// Removing trailing blocks keeps the lines of the blocks before them.
+    #[test]
+    fn removing_blocks_rebuilds_from_the_first_removed_one() {
+        let mut vm = ViewModel {
+            blocks: vec![user("one"), user("two"), user("three")],
+            ..Default::default()
+        };
+        let mut c = BlockCache::default();
+        assert!(run(&mut c, &vm));
+        vm.blocks.truncate(2);
+        assert!(run(&mut c, &vm));
+        assert_eq!(c.rebuilt_from, Some(2));
+        assert_eq!(c.starts.len(), 2);
+        assert!(!c.content.iter().any(|l| l.contains("three")));
+        assert!(c.content.iter().any(|l| l.contains("two")));
     }
 }
