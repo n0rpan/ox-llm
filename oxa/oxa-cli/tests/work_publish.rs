@@ -254,3 +254,118 @@ fn a_local_report_retries_without_replaying_the_completed_task() {
     assert_eq!(retry["reports"][0]["disposition"], "filed", "{retry}");
     assert_eq!(retry["step"], "finished");
 }
+
+#[test]
+fn unfinished_execution_keeps_its_saved_offline_restriction() {
+    use oxa_fake::{FakeModel, FakeOpts, FakeServer};
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    run_args(
+        &env,
+        vec![ScriptTurn::text("done")],
+        &["--offline", "work", "../tasks.json"],
+        None,
+    );
+    let state_path = env.work().join("project/.git/oxa-work/test.json");
+    let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state["step"] = "agent".into();
+    state["outcome"] = "running".into();
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("network was allowed")],
+        FakeOpts {
+            remote: Some("openrouter"),
+            models: vec![FakeModel {
+                alias: "fake-model".into(),
+                cap: 64000,
+                max_output: Some(4096),
+                caps: None,
+            }],
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .output()
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["detail"].as_str().unwrap().contains("offline"));
+    assert!(server.requests().is_empty());
+}
+#[test]
+fn later_publication_and_reporting_do_not_erase_execution_policy() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    run_args(
+        &env,
+        edits(),
+        &["--offline", "work", "../tasks.json"],
+        Some(path.clone()),
+    );
+    let state_path = env.work().join("project/.git/oxa-work/test.json");
+    for flag in ["--publish", "--report-problems"] {
+        let record = run_args(&env, vec![], &["work", "../tasks.json", flag], Some(path.clone()));
+        assert_eq!(record["outcome"], "done", "{record}");
+        let state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(state["offline"], true, "{flag} erased execution policy");
+    }
+}
+#[test]
+fn optional_publication_metadata_defaults_to_inactive() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    run(&env, vec![ScriptTurn::text("done")]);
+    let state_path = env.work().join("project/.git/oxa-work/test.json");
+    let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    for key in [
+        "head",
+        "pull_request",
+        "draft",
+        "problem_notes",
+        "reports",
+        "acceptance_outcome",
+    ] {
+        state.as_object_mut().unwrap().remove(key);
+    }
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let record = run(&env, vec![]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(record["draft"], false);
+    assert_eq!(record["reports"], serde_json::json!([]));
+}
+#[test]
+fn failed_draft_creation_does_not_strand_reporting_checkpoint() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    env.write(
+        "home/.oxa/agent/issue-drafts",
+        "a file blocks the draft directory",
+    );
+    let text="<oxa-work-reports>[{\"title\":\"oxa work symptom\",\"notes\":\"Synthetic reproduction\",\"keywords\":[\"oxa work\",\"synthetic symptom\"]}]</oxa-work-reports>";
+    let first = run_args(
+        &env,
+        vec![ScriptTurn::text(text)],
+        &["work", "../tasks.json", "--report-problems"],
+        Some(path.clone()),
+    );
+    assert_eq!(first["step"], "finished", "{first}");
+    assert_eq!(first["reports"][0]["disposition"], "failed");
+    let plain = run_args(&env, vec![], &["work", "../tasks.json"], Some(path.clone()));
+    assert_eq!(plain["step"], "finished");
+    fs::remove_file(env.home().join(".oxa/agent/issue-drafts")).unwrap();
+    let retry = run_args(
+        &env,
+        vec![],
+        &["work", "../tasks.json", "--report-problems"],
+        Some(path),
+    );
+    assert_eq!(retry["reports"][0]["disposition"], "local");
+    assert_eq!(retry["step"], "finished");
+}

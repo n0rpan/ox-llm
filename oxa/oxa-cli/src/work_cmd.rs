@@ -89,10 +89,7 @@ pub(crate) fn run(
                     })
                     .unwrap_or_else(|detail| oxa_work::blocked_record(&task, detail));
             }
-            if matches!(
-                record.outcome,
-                oxa_work::Outcome::Red | oxa_work::Outcome::Blocked
-            ) {
+            if record.failed() {
                 code = 1;
             }
             serde_json::to_writer(&mut *out, &record).map_err(|e| e.to_string())?;

@@ -85,6 +85,8 @@ The runner checks existing PR queue membership before every push and refuses a
 queued PR; use a new task branch for follow-up work. It refuses branch changes
 made after acceptance until `--rerun` checks them. PR bodies include task ID and
 acceptance state, without raw prompts, transcripts or failed-check output.
+Execution preserves a saved offline restriction across restarts; later explicit
+publication uses the current network policy without changing that restriction.
 A publication failure keeps a publication checkpoint; another `--publish` retries
 without replaying the agent. Offline mode refuses network publication.
 
@@ -99,5 +101,6 @@ It comments only new notes on a matching issue, links an existing fixing PR, or
 files a new report with related links. Search failure, offline mode or missing
 report configuration keeps a local scrubbed draft and records its path/detail.
 A later explicit `--report-problems` retries local reports without replaying the
-agent. No notes are filed unless this flag is present; model output and acceptance
-logs are never treated as report bodies.
+agent. A draft-write failure records a failed report and finishes the task checkpoint;
+`--report-problems` can retry it. Reports contain only scrubbed structured symptom
+summaries, without raw assistant output or acceptance logs.

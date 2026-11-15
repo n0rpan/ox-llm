@@ -47,11 +47,23 @@ pub struct Record {
     pub detail: String,
     pub step: Step,
     pub progress_at: u64,
+    #[serde(default)]
     pub head: Option<String>,
+    #[serde(default)]
     pub pull_request: Option<String>,
+    #[serde(default)]
     pub draft: bool,
+    #[serde(default)]
     pub problem_notes: Vec<ProblemNote>,
+    #[serde(default)]
     pub reports: Vec<ReportRecord>,
+}
+
+impl Record {
+    pub fn failed(&self) -> bool {
+        matches!(self.outcome, Outcome::Red | Outcome::Blocked)
+            || self.reports.iter().any(|r| r.disposition == "failed")
+    }
 }
 
 fn output(mut command: Command) -> Result<Output> {
@@ -268,7 +280,7 @@ pub fn run_task_with_options(
     } else {
         new_state(task, tree, offline)
     };
-    state.offline = offline;
+    state.offline |= offline;
     let step = state.record.step;
     state::save(&receipt, &mut state, step)?;
     if let Err(error) = execute::execute(&root, binary, task, &receipt, &mut state, &lock) {

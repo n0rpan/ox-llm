@@ -45,7 +45,6 @@ pub fn publish(repo: &Path, task: &Task, offline: bool) -> Result<Record> {
         return Ok(value.record);
     }
     value.acceptance_outcome = Some(accepted);
-    value.offline = offline;
     state::save(&path, &mut value, Step::Publishing)?;
     let result = (|| -> Result<(String, bool)> {
         if offline {
@@ -188,19 +187,25 @@ pub fn report_notes(
     reporter: &mut dyn FnMut(&super::ProblemNote, &File, bool) -> Result<super::ReportRecord>,
 ) -> Result<Record> {
     let (path, lock, mut value) = context(repo, task)?;
-    value.offline = offline;
     let prior_step = value.record.step;
     for index in 0..value.record.problem_notes.len() {
         if value
             .record
             .reports
             .get(index)
-            .is_some_and(|r| r.disposition != "local")
+            .is_some_and(|r| !matches!(r.disposition.as_str(), "local" | "failed"))
         {
             continue;
         }
         state::save(&path, &mut value, Step::Reporting)?;
-        let report = reporter(&value.record.problem_notes[index], &lock, value.offline)?;
+        let report = reporter(&value.record.problem_notes[index], &lock, offline).unwrap_or_else(|detail| {
+            super::ReportRecord {
+                disposition: "failed".into(),
+                draft: PathBuf::new(),
+                url: None,
+                detail,
+            }
+        });
         if index < value.record.reports.len() {
             value.record.reports[index] = report;
         } else {
