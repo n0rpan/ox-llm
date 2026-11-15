@@ -85,5 +85,28 @@ class LabShards(unittest.TestCase):
         self.assertRegex(shards, r"actions/cache/save@.*\n(?:\s+#.*\n)?\s+if: .*matrix\.shard == 1")
 
 
+class EngineNextest(unittest.TestCase):
+    def setUp(self):
+        self.engine = job_block((WORKFLOWS / 'build.yml').read_text(), 'engine')
+        self.config = (WORKFLOWS.parents[1] / 'engine' / '.config' / 'nextest.toml').read_text()
+
+    def test_engine_job_runs_nextest_doctests_and_counts(self):
+        self.assertIn('tools/ci/install_nextest.sh', self.engine)
+        self.assertIn('cargo nextest run --release --locked --no-fail-fast --workspace --exclude qwen4exp',
+                      self.engine)
+        self.assertIn('cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp --doc',
+                      self.engine)
+        self.assertIn('tools/ci/engine_test_count.py', self.engine)
+        self.assertNotRegex(self.engine, r'cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp\s*$')
+
+    def test_wall_clock_binaries_run_alone(self):
+        self.assertRegex(self.config, r'(?m)^\[test-groups\.wall-clock\]\nmax-threads = 1$')
+        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = '(.*)'\ntest-group = 'wall-clock'\n"
+                             r"threads-required = 'num-test-threads'", self.config)
+        self.assertIsNotNone(override)
+        for binary in ('binary_id(sched)', 'binary_id(server)'):
+            self.assertIn(binary, override.group(1))
+
+
 if __name__ == '__main__':
     unittest.main()
