@@ -1,5 +1,5 @@
 //! OXA-LOCAL-FIRST R4: the mechanical summary, built without a model call when a compaction's
-//! summary could not be made (profile `local`). A pure function of the summarised messages and
+//! summary could not be made. A pure function of the summarised messages and
 //! the file lists (W4: same input, same bytes); every text piece is in `prompt.rs`.
 use crate::prompt;
 use oxa_proto::{Role, WireMsg};

@@ -4,7 +4,7 @@
 //! Helpers: `oxa_parity::{oxa_bin, fake_bin, run_oxa, fixture}`, `oxa_fake::TestEnv`.
 
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
-use oxa_parity::{profile, run_oxa, Profile};
+use oxa_parity::run_oxa;
 use oxa_proto::{Role, ToolCall};
 use std::process::Output;
 
@@ -147,7 +147,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     // Every P row's test body cites pi (a doc page, pi's source text, or a recorded fixture).
     let parity = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -194,26 +194,6 @@ fn a_rows_name_their_invariant() {
     }
 }
 
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    // TOOLS has no O rows; the check still asserts that none of them is silently untested.
-    let parity = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("PARITY.md"),
-    )
-    .expect("PARITY.md");
-    for line in parity.lines() {
-        let cols: Vec<&str> = line.split('|').map(str::trim).collect();
-        if cols.len() < 6 || !cols[1].starts_with("TOOLS-") || cols[3] != "O" {
-            continue;
-        }
-        let fn_name = cols[1].to_lowercase().replace('-', "_");
-        assert!(fn_body(&fn_name).contains("unsupported_in_oxa"), "{}", cols[1]);
-    }
-}
-
 /// The source text of one test fn of this file (from its `fn` line to the next top-level item).
 fn fn_body(fn_name: &str) -> String {
     let fn_at = SELF_SRC
@@ -248,14 +228,9 @@ fn tools_001() {
     for p in ["path", "offset", "limit"] {
         assert!(s["properties"].get(p).is_some(), "pi: read has property {p}");
     }
-    // pi declares numbers; profile `local` declares integers (OXA-LOCAL-FIRST T3).
-    let numeric = if profile() == Profile::Local {
-        "integer"
-    } else {
-        "number"
-    };
-    assert_eq!(s["properties"]["offset"]["type"], numeric);
-    assert_eq!(s["properties"]["limit"]["type"], numeric);
+    // OXA-LOCAL-FIRST T3: integer parameters, never numbers.
+    assert_eq!(s["properties"]["offset"]["type"], "integer");
+    assert_eq!(s["properties"]["limit"]["type"], "integer");
     // Paging: offset is 1-indexed; the user limit stops early and names the next offset.
     let page = run_one(&env, "read", r#"{"path":"a.txt","offset":2,"limit":2}"#, &[]);
     assert_eq!(
@@ -279,40 +254,30 @@ fn tools_002() {
     env.write("work/many.txt", &many);
     // Short lines, so the 2000-line limit (not the byte cap) is what stops the page.
     let lines = run_one(&env, "read", r#"{"path":"many.txt"}"#, &[]);
-    match profile() {
-        Profile::Pi => {
-            assert!(
-                lines.contains("[Showing lines 1-2000 of 2501. Use offset=2001 to continue.]"),
-                "{}",
-                &lines[lines.len().saturating_sub(200)..]
-            );
-            assert!(lines.starts_with("1\n2\n") && lines.contains("0\n"));
-        }
-        Profile::Local => {
-            // O-167: a read without offset or limit gets the first page (400 lines); the notice
-            // says how to continue. Any read with an offset is pi's read: the 2000-line limit.
-            let (page, notice) = lines.split_once("\n\n").expect("page, blank line, notice");
-            assert_eq!(
-                notice,
-                "[Showing lines 1-400 of 2501. Use offset=401 to continue. Or use grep to find the part you need.]"
-            );
-            let want: String = (1..=400).map(|i| format!("{}\n", i % 10)).collect();
-            assert_eq!(format!("{page}\n"), want, "local: lines 1-400, in order");
-            let whole = run_one(&env, "read", r#"{"path":"many.txt","offset":1}"#, &[]);
-            assert!(
-                whole.contains("[Showing lines 1-2000 of 2501. Use offset=2001 to continue.]"),
-                "{}",
-                &whole[whole.len().saturating_sub(200)..]
-            );
-            let next = run_one(&env, "read", r#"{"path":"many.txt","offset":401}"#, &[]);
-            let want: String = (401..=2400).map(|i| format!("{}\n", i % 10)).collect();
-            assert_eq!(
-                next,
-                format!("{want}\n[Showing lines 401-2400 of 2501. Use offset=2401 to continue.]"),
-                "local: the continuation starts at line 401, no gap"
-            );
-        }
-    }
+
+    // O-167: a read without offset or limit gets the first page (400 lines); the notice
+    // says how to continue. Any read with an offset is pi's read: the 2000-line limit.
+    let (page, notice) = lines.split_once("\n\n").expect("page, blank line, notice");
+    assert_eq!(
+        notice,
+        "[Showing lines 1-400 of 2501. Use offset=401 to continue. Or use grep to find the part you need.]"
+    );
+    let want: String = (1..=400).map(|i| format!("{}\n", i % 10)).collect();
+    assert_eq!(format!("{page}\n"), want, "local: lines 1-400, in order");
+    let whole = run_one(&env, "read", r#"{"path":"many.txt","offset":1}"#, &[]);
+    assert!(
+        whole.contains("[Showing lines 1-2000 of 2501. Use offset=2001 to continue.]"),
+        "{}",
+        &whole[whole.len().saturating_sub(200)..]
+    );
+    let next = run_one(&env, "read", r#"{"path":"many.txt","offset":401}"#, &[]);
+    let want: String = (401..=2400).map(|i| format!("{}\n", i % 10)).collect();
+    assert_eq!(
+        next,
+        format!("{want}\n[Showing lines 401-2400 of 2501. Use offset=2401 to continue.]"),
+        "local: the continuation starts at line 401, no gap"
+    );
+
     // Byte cap: two 9 KB lines do not fit in 16 KiB, so only the first is shown.
     let wide = format!("{}\n{}\n{}", "a".repeat(9000), "b".repeat(9000), "c");
     env.write("work/wide.txt", &wide);
@@ -414,48 +379,37 @@ fn tools_006() {
         std::fs::read_to_string(env.work().join("a.txt")).unwrap(),
         "beta2\nX\ngamma\n"
     );
-    // O-167: the declared form is the profile's (pi's text under `pi`); the capability, several
+    // O-167: the declared form is the flat one; the capability, several
     // replacements in one file from one reply, exists under both.
     let s = schema_of(&drive(&env, vec![ScriptTurn::text("ok")], &[]), "edit");
-    match profile() {
-        Profile::Pi => {
-            assert_eq!(
-                s["required"],
-                serde_json::json!(["path", "edits"]),
-                "pi: edit schema"
-            );
-            assert_eq!(s["properties"]["edits"]["type"], "array");
-        }
-        Profile::Local => {
-            // T1: three strings, no array; several edits = several calls in one reply, in order.
-            assert_eq!(s["required"], serde_json::json!(["path", "oldText", "newText"]));
-            assert!(
-                s["properties"].get("edits").is_none(),
-                "local declares no edits[]"
-            );
-            env.write("work/b.txt", "alpha\nbeta\ngamma\n");
-            let texts = run_many(
-                &env,
-                &[
-                    (
-                        "c1",
-                        "edit",
-                        r#"{"path":"b.txt","oldText":"alpha","newText":"A"}"#,
-                    ),
-                    (
-                        "c2",
-                        "edit",
-                        r#"{"path":"b.txt","oldText":"gamma","newText":"G"}"#,
-                    ),
-                ],
-            );
-            assert_eq!(texts, vec!["Successfully replaced 1 block(s) in b.txt."; 2]);
-            assert_eq!(
-                std::fs::read_to_string(env.work().join("b.txt")).unwrap(),
-                "A\nbeta\nG\n"
-            );
-        }
-    }
+
+    // T1: three strings, no array; several edits = several calls in one reply, in order.
+    assert_eq!(s["required"], serde_json::json!(["path", "oldText", "newText"]));
+    assert!(
+        s["properties"].get("edits").is_none(),
+        "local declares no edits[]"
+    );
+    env.write("work/b.txt", "alpha\nbeta\ngamma\n");
+    let texts = run_many(
+        &env,
+        &[
+            (
+                "c1",
+                "edit",
+                r#"{"path":"b.txt","oldText":"alpha","newText":"A"}"#,
+            ),
+            (
+                "c2",
+                "edit",
+                r#"{"path":"b.txt","oldText":"gamma","newText":"G"}"#,
+            ),
+        ],
+    );
+    assert_eq!(texts, vec!["Successfully replaced 1 block(s) in b.txt."; 2]);
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("b.txt")).unwrap(),
+        "A\nbeta\nG\n"
+    );
 }
 
 /// TOOLS-007 (P): edit error texts (not found, duplicate, empty, overlap, no change).
@@ -531,31 +485,30 @@ fn tools_007() {
         std::fs::read_to_string(env.work().join("a.txt")).unwrap(),
         "abc\ndef\nghi\nx x\n"
     );
-    if profile() == Profile::Local {
-        // O-167: the declared flat form gives pi's single-edit texts per call. Overlap has no
-        // flat form: each call matches the file as the previous call left it, so a call that
-        // targets text an earlier call replaced is not found, and the earlier call stays.
-        let flat = |old: &str, new: &str| {
-            serde_json::json!({"path": "a.txt", "oldText": old, "newText": new}).to_string()
-        };
-        assert_eq!(run_one(&env, "edit", &flat("zzz", "q"), &[]), not_found);
-        assert_eq!(run_one(&env, "edit", &flat("x", "y"), &[]), dup);
-        assert_eq!(run_one(&env, "edit", &flat("", "y"), &[]), empty);
-        assert_eq!(run_one(&env, "edit", &flat("abc", "abc"), &[]), same);
-        let (a, b) = (flat("abc\ndef", "1"), flat("def\nghi", "2"));
-        let texts = run_many(&env, &[("c1", "edit", &a), ("c2", "edit", &b)]);
-        assert_eq!(texts[0], "Successfully replaced 1 block(s) in a.txt.");
-        // T7: when a line of the file matches, local's not-found text also shows the closest
-        // region of the file (the meaning stays: not found, copy oldText from the file).
-        assert_eq!(
-            texts[1],
-            "Could not find oldText in a.txt. The closest text in the file is lines 1-2:\n1\nghi\nCopy oldText exactly from the file."
-        );
-        assert_eq!(
-            std::fs::read_to_string(env.work().join("a.txt")).unwrap(),
-            "1\nghi\nx x\n"
-        );
-    }
+
+    // O-167: the declared flat form gives pi's single-edit texts per call. Overlap has no
+    // flat form: each call matches the file as the previous call left it, so a call that
+    // targets text an earlier call replaced is not found, and the earlier call stays.
+    let flat = |old: &str, new: &str| {
+        serde_json::json!({"path": "a.txt", "oldText": old, "newText": new}).to_string()
+    };
+    assert_eq!(run_one(&env, "edit", &flat("zzz", "q"), &[]), not_found);
+    assert_eq!(run_one(&env, "edit", &flat("x", "y"), &[]), dup);
+    assert_eq!(run_one(&env, "edit", &flat("", "y"), &[]), empty);
+    assert_eq!(run_one(&env, "edit", &flat("abc", "abc"), &[]), same);
+    let (a, b) = (flat("abc\ndef", "1"), flat("def\nghi", "2"));
+    let texts = run_many(&env, &[("c1", "edit", &a), ("c2", "edit", &b)]);
+    assert_eq!(texts[0], "Successfully replaced 1 block(s) in a.txt.");
+    // T7: when a line of the file matches, local's not-found text also shows the closest
+    // region of the file (the meaning stays: not found, copy oldText from the file).
+    assert_eq!(
+        texts[1],
+        "Could not find oldText in a.txt. The closest text in the file is lines 1-2:\n1\nghi\nCopy oldText exactly from the file."
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("a.txt")).unwrap(),
+        "1\nghi\nx x\n"
+    );
 }
 
 /// TOOLS-008 (P): BOM, CRLF and mixed line endings are preserved; fuzzy match fallback.
@@ -621,12 +574,15 @@ fn tools_009() {
 fn tools_010() {
     let env = TestEnv::new();
     let s = schema_of(&drive(&env, vec![ScriptTurn::text("ok")], &[]), "bash");
-    assert_eq!(
-        s["required"],
-        serde_json::json!(["command"]),
-        "pi: bash requires command"
-    );
+    // Issue #127 (b): `command` is no longer required (a `job` read has no command); the
+    // schema declares `background` and `job` alongside `command` and `timeout`.
+    assert!(s["required"].is_null() || s["required"].as_array().is_some_and(|a| a.is_empty()));
     assert!(s["properties"].get("timeout").is_some(), "pi: bash has timeout");
+    assert!(
+        s["properties"].get("background").is_some(),
+        "pi: bash has background"
+    );
+    assert!(s["properties"].get("job").is_some(), "pi: bash has job");
     let r = run_one(
         &env,
         "bash",
@@ -740,27 +696,18 @@ fn tools_014() {
     }
     let r = run_one(&env, "grep", r#"{"pattern":"needle","ignoreCase":true}"#, &[]);
     let ctx = run_one(&env, "grep", r#"{"pattern":"NEEDLE","context":1}"#, &[]);
-    match profile() {
-        Profile::Pi => {
-            assert_eq!(
-                r, "a.txt:2: NEEDLE up\nb.txt:1: needle here",
-                "sorted, gitignored file skipped"
-            );
-            assert_eq!(ctx, "a.txt-1- x\na.txt:2: NEEDLE up", "context lines use '-'");
-        }
-        Profile::Local => {
-            // O-167: the path-once form (`oxa.diet.tools`): each path once, then its lines with
-            // their numbers; the same lines, sorted, the gitignored file skipped.
-            assert_eq!(
-                r, "a.txt\n  2: NEEDLE up\nb.txt\n  1: needle here",
-                "local: sorted, gitignored file skipped"
-            );
-            assert_eq!(
-                ctx, "a.txt\n  1- x\n  2: NEEDLE up",
-                "local: context lines use '-'"
-            );
-        }
-    }
+
+    // O-167: the path-once form (`oxa.diet.tools`): each path once, then its lines with
+    // their numbers; the same lines, sorted, the gitignored file skipped.
+    assert_eq!(
+        r, "a.txt\n  2: NEEDLE up\nb.txt\n  1: needle here",
+        "local: sorted, gitignored file skipped"
+    );
+    assert_eq!(
+        ctx, "a.txt\n  1- x\n  2: NEEDLE up",
+        "local: context lines use '-'"
+    );
+
     let lit = run_one(&env, "grep", r#"{"pattern":"e.d","literal":true}"#, &[]);
     assert_eq!(lit, "No matches found");
 }
@@ -828,27 +775,21 @@ fn tools_017() {
     env.write("work/b.rs", "");
     env.write("work/c.rs", "");
     let g = run_one(&env, "grep", r#"{"pattern":"hit","limit":0}"#, &[]);
-    match profile() {
-        Profile::Pi => assert_eq!(
-            g, "a.txt:1: hit\n\n[1 matches limit reached. Use limit=2 for more, or refine pattern]",
-            "pi: grep limit 0"
-        ),
-        Profile::Local => {
-            // O-167: over the limit (0 is 1), local answers the total, the limit and a count
-            // per file instead of a cut list; no more lines than the limit. A limit that fits
-            // shows every line.
-            assert_eq!(
-                g,
-                "2 matches in total, the limit was 1. Narrow the pattern, path or glob, or raise limit, to see the lines.\n\na.txt: 2 matches",
-                "local: grep limit 0"
-            );
-            let all = run_one(&env, "grep", r#"{"pattern":"hit","limit":2}"#, &[]);
-            assert_eq!(
-                all, "a.txt\n  1: hit\n  2: hit",
-                "local: limit 2 shows both lines"
-            );
-        }
-    }
+
+    // O-167: over the limit (0 is 1), local answers the total, the limit and a count
+    // per file instead of a cut list; no more lines than the limit. A limit that fits
+    // shows every line.
+    assert_eq!(
+        g,
+        "2 matches in total, the limit was 1. Narrow the pattern, path or glob, or raise limit, to see the lines.\n\na.txt: 2 matches",
+        "local: grep limit 0"
+    );
+    let all = run_one(&env, "grep", r#"{"pattern":"hit","limit":2}"#, &[]);
+    assert_eq!(
+        all, "a.txt\n  1: hit\n  2: hit",
+        "local: limit 2 shows both lines"
+    );
+
     let f = run_one(&env, "find", r#"{"pattern":"*.rs","limit":0}"#, &[]);
     assert_eq!(
         f, "b.rs\n\n[1 results limit reached. Use limit=2 for more, or refine pattern]",
@@ -1059,8 +1000,8 @@ fn tools_023() {
 
 /// Proposed TOOLS row (A, O-169; pi has no built-in search): `web_search` is declared only with
 /// a Brave key and never offline; without a key the declared tools are unchanged; with one the
-/// result of a mocked search reaches the next request, deterministic (W4), under the profile
-/// of this run (`OXA_PARITY_PROFILE`). Mocks only, a fake key (O-170).
+/// result of a mocked search reaches the next request, deterministic (W4). Mocks only, a fake
+/// key (O-170).
 /// INVARIANT: W3 tool list per epoch, W4 deterministic capped output.
 #[test]
 fn tools_024() {
@@ -1099,7 +1040,7 @@ fn tools_024() {
             .current_dir(env.work())
             .env_clear()
             .envs(env.envs(&srv.url()))
-            .envs(oxa_parity::profile_env())
+            .envs(oxa_parity::note_off_env())
             .env("OXA_BRAVE_BASE_URL", &brave_url)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

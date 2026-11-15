@@ -25,8 +25,6 @@ pub enum SelectAction {
     Cancelled,
 }
 
-/// Widest primary column pi allows before descriptions are cut to make room.
-const MAX_PRIMARY_COLUMN: usize = 32;
 /// Rows narrower than this drop their description (pi).
 const DESCRIPTION_MIN_WIDTH: usize = 40;
 /// Least description width worth showing (pi).
@@ -291,14 +289,13 @@ impl Component for SelectList {
         let start = self.window_start();
         let end = (start + self.max_visible).min(n);
 
-        // The primary column is as wide as the widest label of the shown rows, bounded (pi).
-        let widest = self
+        // Fit the widest shown label; render_row bounds it to the terminal width.
+        let column = self
             .shown
             .iter()
             .map(|&i| visible_width(display_text(&self.items[i])) + 2)
             .max()
             .unwrap_or(0);
-        let column = widest.clamp(1, MAX_PRIMARY_COLUMN);
 
         let mut lines = Vec::with_capacity(end - start + 1);
         for pos in start..end {

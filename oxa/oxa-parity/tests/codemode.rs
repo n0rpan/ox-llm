@@ -6,19 +6,18 @@
 //! over `/v1/chat/completions` the arguments are JSON, pi takes raw JavaScript), and the test
 //! reads the tool result from the next request the fake recorded. Codemode is turned on through
 //! the user settings `{"codemode": {"enabled": true}}`; extension tools that scripts call are
-//! written into the agent directory. Every spawn adds `oxa_parity::profile_env()`, so the file
-//! runs under `OXA_PARITY_PROFILE=pi` and `=local`.
+//! written into the agent directory.
 //!
 //! pi's behaviour: `packages/coding-agent/docs/codemode.md` of pi 1.5.2 (quoted in the doc
 //! comments as `pi:`). pi prints the wall time on the first result line; oxa omits it (W4: the
 //! result of a deterministic script is deterministic), so the comparisons start at
 //! `Script completed` / `Script failed` without it.
 //!
-//! Helpers: `oxa_parity::{oxa_bin, profile_env, fixture}`, `oxa_fake::{FakeServer, TestEnv,
+//! Helpers: `oxa_parity::{oxa_bin, fixture}`, `oxa_fake::{FakeServer, TestEnv,
 //! ScriptTurn}`.
 
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
-use oxa_parity::{fixture, oxa_bin, profile_env};
+use oxa_parity::{fixture, oxa_bin};
 use serde_json::{json, Value};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -89,7 +88,7 @@ fn call(id: &str, name: &str, args: Value) -> ScriptTurn {
     ScriptTurn::tool(id, name, &args.to_string())
 }
 
-/// Run `oxa <args>` in `env.work()` with only `env.envs(url)`, `extra` and the PARITY profile as
+/// Run `oxa <args>` in `env.work()` with only `env.envs(url)` and `extra` as
 /// environment (the pattern of `oxa_parity::run_oxa`, plus variables a row needs).
 fn spawn(env: &TestEnv, url: &str, args: &[&str], extra: &[(&str, &str)]) -> Output {
     Command::new(oxa_bin())
@@ -97,8 +96,8 @@ fn spawn(env: &TestEnv, url: &str, args: &[&str], extra: &[(&str, &str)]) -> Out
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(url))
+        .envs(oxa_parity::note_off_env())
         .envs(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())))
-        .envs(profile_env())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -196,9 +195,9 @@ fn description_of(r: &Recorded, name: &str) -> String {
         .unwrap_or_else(|| panic!("{name} is not declared: {:?}", declared(r)))
 }
 
-/// A user `mcp.json` with the fixture MCP server (`fixtures/pi/mcp/server.py`) as `fake`.
+/// A user `mcp.json` with the fixture MCP server (`fixtures/goldens/mcp/server.py`) as `fake`.
 fn mcp_server_files(env: &TestEnv) {
-    let src = std::fs::read_to_string(fixture("pi/mcp/server.py")).expect("fixture server");
+    let src = std::fs::read_to_string(fixture("goldens/mcp/server.py")).expect("fixture server");
     let script = env.write("mcp/server.py", &src);
     let rec = env.root().join("rec");
     std::fs::create_dir_all(&rec).expect("record dir");
@@ -266,18 +265,6 @@ fn doc_of(name: &str) -> String {
     doc.join("\n")
 }
 
-/// The body of `fn <name>()` up to its closing brace at column 0.
-fn body_of(name: &str) -> String {
-    let start = SELF_SRC
-        .find(&format!("\nfn {name}()"))
-        .unwrap_or_else(|| panic!("no fn {name}"));
-    let end = SELF_SRC[start + 1..]
-        .find("\n}\n")
-        .map(|i| start + 1 + i + 3)
-        .unwrap_or(SELF_SRC.len());
-    SELF_SRC[start..end].to_string()
-}
-
 // ---------------------------------------------------------------------------------------------
 // Meta-checks.
 // ---------------------------------------------------------------------------------------------
@@ -286,7 +273,7 @@ fn body_of(name: &str) -> String {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = cm_rows();
-    assert_eq!(rows.len(), 17, "the CM area has 17 rows: {rows:?}");
+    assert_eq!(rows.len(), 15, "the CM area has 15 rows: {rows:?}");
     let fns = test_fns();
     let missing: Vec<String> = rows
         .iter()
@@ -310,7 +297,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     // Every P row has a row test whose doc comment quotes pi's codemode.md (`pi:`); there is no
     // recorded fixture for CM (the rows are script-API contracts from the documentation).
     let p_rows = rows_with("P");
@@ -324,7 +311,7 @@ fn p_rows_compare_with_pi() {
             "P row {r} must cite pi's codemode.md (`pi:`) in its doc comment"
         );
     }
-    let fixtures = fixture("pi/codemode");
+    let fixtures = fixture("goldens/codemode");
     if fixtures.exists() {
         assert!(fixtures.is_dir());
     }
@@ -354,22 +341,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             names_invariant,
             "A row {r} names no invariant in its doc comment: {lower:?}"
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    let o_rows = rows_with("O");
-    assert!(o_rows.len() >= 2, "O rows: {o_rows:?}");
-    let fns = test_fns();
-    for r in &o_rows {
-        let name = fn_name(r);
-        assert!(fns.contains(&name), "O row {r} has no assertion");
-        assert!(
-            body_of(&name).contains("unsupported_in_oxa"),
-            "O row {r} must assert the unsupported_in_oxa error"
         );
     }
 }
@@ -746,55 +717,6 @@ fn cm_007() {
         "RED CM-007: describeTool / describeNamespace of an unknown name give `null`, pi gives \
          `undefined` (oxa-codemode/src/api.rs returns `Value::Null`, mapped to JS `null` by \
          oxa-script)"
-    );
-}
-
-/// CM-008 (O): `image(value)`: unsupported_in_oxa (text-only engine).
-/// pi: "`image(value)` Add an image to the output". oxa: the call throws an `Error` whose
-/// `code` is `unsupported_in_oxa`; the script can catch it and goes on.
-#[test]
-fn cm_008() {
-    let r = scripts(&[
-        "try { image('data:image/png;base64,iVBORw0KGgo='); text('shown'); }\n\
-         catch (e) { text(e.code + '|' + e.message); }\n\
-         try { image({ type: 'image', data: 'AAAA', mimeType: 'image/png' }); } catch (e) { text(e.code); }",
-        "image({ type: 'image', data: 'AAAA', mimeType: 'image/png' });",
-    ]);
-    r.ok();
-    let caught = r.result(0);
-    assert!(
-        caught.contains("unsupported_in_oxa|image() is not supported in oxa")
-            && caught.ends_with("\nunsupported_in_oxa")
-            && !caught.contains("shown"),
-        "image() throws unsupported_in_oxa: {caught}"
-    );
-    let uncaught = r.result(1);
-    assert!(
-        uncaught.starts_with("Script failed") && uncaught.contains("not supported in oxa"),
-        "an uncaught image() fails the script with the unsupported_in_oxa error: {uncaught}"
-    );
-}
-
-/// CM-009 (O): `models.*` (list, classify, generate images): unsupported_in_oxa (one local
-/// engine, no classifier or image models).
-/// pi: "`models` reaches the model catalog and runs non-LLM models". oxa: every method throws
-/// `unsupported_in_oxa`.
-#[test]
-fn cm_009() {
-    let r = scripts(&[
-        "const out = [];\n\
-         for (const [m, args] of [['getModelsOfType', ['image']], ['getAvailableOfType', ['classifier']], \
-         ['getModelOfType', ['image', 'p', 'm']], ['classify', [{ provider: 'p', id: 'm' }, { state: {}, questions: {} }]], \
-         ['generateImages', [{ provider: 'p', id: 'm' }, { input: [] }]]]) {\n\
-           try { await models[m](...args); out.push(m + ':ok'); } catch (e) { out.push(m + ':' + e.code); }\n\
-         }\n\
-         text(out.join(','));",
-    ]);
-    r.ok();
-    assert_eq!(
-        r.result(0),
-        "Script completed\ngetModelsOfType:unsupported_in_oxa,getAvailableOfType:unsupported_in_oxa,\
-getModelOfType:unsupported_in_oxa,classify:unsupported_in_oxa,generateImages:unsupported_in_oxa"
     );
 }
 

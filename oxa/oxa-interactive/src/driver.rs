@@ -101,11 +101,6 @@ enum Ask {
         target: String,
         refill: Option<String>,
     },
-    /// pi `/import`: "Replace current session with <path>?"
-    Import {
-        rx: Receiver<Option<bool>>,
-        path: PathBuf,
-    },
 }
 
 /// Rendered lines per block, kept between frames (fullscreen draws the whole transcript, and
@@ -225,8 +220,6 @@ pub(crate) struct Loop<'a> {
     tree_back: Option<Overlay>,
     /// The loaded resources of the start-up listing (`[Context]`, `[Skills]`, ...).
     pub(crate) resources: Vec<(String, Vec<String>)>,
-    /// The profile word of the header (`local`), see `crate::app::profile_word`.
-    pub(crate) profile: Option<String>,
     /// When the last Escape on an empty, idle editor arrived (pi `lastEscapeTime`; 0 = none).
     last_escape_ms: u64,
     /// Models of the Ctrl+P cycle (`enabledModels`, or the session-only choice).
@@ -375,7 +368,6 @@ impl<'a> Loop<'a> {
             tree_back: None,
             last_escape_ms: 0,
             resources: Vec::new(),
-            profile: None,
             scoped,
             scope_from_settings: true,
             model_pending: None,
@@ -659,6 +651,7 @@ impl<'a> Loop<'a> {
             WorkerMsg::Reopened { entries, status } => {
                 self.vm.blocks = blocks_from_entries(&entries);
                 refresh_status(&mut self.vm.status, status);
+                self.vm.status.degraded_context = false;
                 self.vm.status.activity = Activity::Idle;
                 self.vm.status.activity_ms = 0;
                 self.vm.status.steering.clear();
@@ -870,13 +863,6 @@ impl<'a> Loop<'a> {
                     Err(TryRecvError::Disconnected) => {}
                     Err(TryRecvError::Empty) => open.push(Ask::Summary { rx, target, refill }),
                 },
-                Ask::Import { rx, path } => match rx.try_recv() {
-                    Ok(Some(true)) => self.send(SessionCmd::Reopen(Reopen::Import(path))),
-                    Ok(_) | Err(TryRecvError::Disconnected) => {
-                        self.push_notice(Level::Info, "Import cancelled".to_string());
-                    }
-                    Err(TryRecvError::Empty) => open.push(Ask::Import { rx, path }),
-                },
                 Ask::SummaryFocus { rx, target, refill } => match rx.try_recv() {
                     Ok(Some(text)) => {
                         let focus = Some(text.trim().to_string()).filter(|t| !t.is_empty());
@@ -995,7 +981,7 @@ impl<'a> Loop<'a> {
     /// lines are not prefilled.
     fn draft_tick(&mut self) {
         let settings = &self.opts.settings;
-        if !settings.prefill_paste(settings.profile()) {
+        if !settings.prefill_paste() {
             return;
         }
         let blocked = self.running()
@@ -2226,18 +2212,6 @@ impl<'a> Loop<'a> {
         self.dirty = true;
         match action {
             AppAction::None => {}
-            // pi asks before `/import` replaces the current session.
-            AppAction::Session(SessionCmd::Reopen(Reopen::Import(path))) => {
-                let (tx, rx) = mpsc::channel();
-                let req = UiRequest::Confirm {
-                    title: "Import session".to_string(),
-                    body: format!("Replace current session with {}?", path.display()),
-                    timeout_ms: None,
-                    reply: tx,
-                };
-                self.dialogs.handle(req, &mut self.vm, now_ms());
-                self.asks.push(Ask::Import { rx, path });
-            }
             AppAction::Session(cmd) => self.send(cmd),
             AppAction::Open(kind) => self.open_selector(kind),
             AppAction::Notify { level, text } => self.push_notice(level, text),
@@ -2447,7 +2421,8 @@ impl<'a> Loop<'a> {
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
             model: self.vm.status.model.clone(),
-            profile: self.profile.clone(),
+            model_remote: self.vm.status.model_remote,
+            model_provider: self.vm.status.model_provider,
         };
         let header_only = self.opts.settings.get("quietStartup").and_then(Value::as_str) == Some("header");
         if self.view.skin.is_oxa() && self.vm.header_override.is_none() {
@@ -2665,7 +2640,6 @@ impl<'a> Loop<'a> {
             };
             lines.extend(oxa_footer(
                 &self.vm,
-                self.profile.as_deref(),
                 ctx,
                 keymap,
                 self.fullscreen,

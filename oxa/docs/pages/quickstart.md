@@ -33,7 +33,7 @@ Error: cannot reach the engine at 127.0.0.1:9: Connection refused (os error 111)
 
 Several endpoints, or a per-model setup, go in `~/.oxa/agent/models.json`. See [settings.md](settings.md) for the settings that choose a model.
 
-The default profile is `local`, tuned to the models the ox-llm engine serves. `pi` remains selectable with `export OXA_PROFILE=pi` or `"oxa": { "profile": "pi" }` in `~/.oxa/agent/settings.json`. [profile.md](profile.md) lists what `local` changes.
+oxa is tuned to the models the ox-llm engine serves. [tools-context.md](tools-context.md) lists the tool formats and the context defaults, and the settings that change them.
 
 ## First prompt
 

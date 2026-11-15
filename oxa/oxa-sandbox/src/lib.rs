@@ -19,7 +19,7 @@ mod net;
 mod offline;
 mod run;
 
-pub use bwrap::{bwrap_args, bwrap_args_with};
+pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
 pub use layout::{
     expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_secret_name, protected_paths,
@@ -27,7 +27,9 @@ pub use layout::{
 };
 pub use net::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 pub use offline::{no_network_argv, offline_argv};
-pub use run::{die_with_parent, run_argv, run_argv_stdin, run_unsandboxed};
+pub use run::{
+    die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
+};
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
@@ -75,6 +77,9 @@ impl Bwrap {
 }
 
 impl Sandbox for Bwrap {
+    fn persistence_notice(&self) -> Option<&str> {
+        Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
+    }
     fn check(&self) -> Result<(), OxaError> {
         bwrap::check_bwrap(self)
     }
@@ -86,9 +91,16 @@ impl Sandbox for Bwrap {
             return refused(why);
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
-        argv.extend(bwrap_args_with(s, &self.home, &self.layout));
-        run_argv(&argv, &[], s.timeout_s, c, live)
+        self.launch(s, None, c, live, true)
+    }
+    fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+            let mut r = refused(why);
+            r.output.clear();
+            return r;
+        }
+        bwrap::create_missing_git_files(s, &self.home, &self.layout);
+        self.launch(s, None, c, live, false)
     }
     fn run_with_stdin(
         &self,
@@ -101,9 +113,213 @@ impl Sandbox for Bwrap {
             return refused(why);
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
+        self.launch(s, Some(stdin), c, live, true)
+    }
+}
+
+/// Environment variables that carry a secret: kept out of the bwrap command line (visible to
+/// other processes) and handed over through `bwrap --args <fd>` instead.
+const SECRET_ENV: &[&str] = &["GH_TOKEN"];
+
+/// `s` without its [`SECRET_ENV`] entries, and those entries.
+fn split_secrets(s: &ExecSpec) -> (ExecSpec, Vec<(String, String)>) {
+    let mut public = s.clone();
+    let (secret, rest): (Vec<_>, Vec<_>) = public
+        .env
+        .drain(..)
+        .partition(|(k, _)| SECRET_ENV.contains(&k.as_str()));
+    public.env = rest;
+    (public, secret)
+}
+
+/// Insert `--args <fd>` before the trailing `-- bash -c <command>`: bwrap reads the NUL
+/// separated `--setenv` arguments from that descriptor, after `--clearenv`, so the values
+/// reach the command without being in argv.
+fn insert_args_fd(argv: &mut Vec<String>, fd: i32) {
+    let at = argv.len().saturating_sub(4);
+    argv.splice(at..at, ["--args".to_string(), fd.to_string()]);
+}
+
+/// A pipe holding `data` (closed write end); returns the read end with `O_CLOEXEC` set, so
+/// no other child spawned meanwhile inherits it. Only the bwrap child clears the flag.
+fn args_pipe(data: &[u8]) -> Result<i32, String> {
+    let mut fds = [-1i32; 2];
+    // SAFETY: `fds` is a valid array of two ints; the fds are closed below or by the caller.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err("cannot create a pipe for the sandbox environment".to_string());
+    }
+    // A few hundred bytes fit in the pipe: this never blocks.
+    // SAFETY: writes `data.len()` bytes from a live buffer to our own pipe.
+    let n = unsafe { libc::write(fds[1], data.as_ptr().cast(), data.len()) };
+    // SAFETY: the write end is ours and not used again.
+    unsafe { libc::close(fds[1]) };
+    if usize::try_from(n) != Ok(data.len()) {
+        // SAFETY: the read end is ours.
+        unsafe { libc::close(fds[0]) };
+        return Err("cannot pass the sandbox environment".to_string());
+    }
+    Ok(fds[0])
+}
+
+impl Bwrap {
+    fn launch(
+        &self,
+        s: &ExecSpec,
+        stdin: Option<&[u8]>,
+        c: &CancelToken,
+        live: &mut dyn FnMut(&[u8]),
+        capture: bool,
+    ) -> ExecResult {
+        let (public, secret) = split_secrets(s);
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
-        argv.extend(bwrap_args_with(s, &self.home, &self.layout));
-        run_argv_stdin(&argv, &[], stdin, s.timeout_s, c, live)
+        argv.extend(bwrap_args_with(&public, &self.home, &self.layout));
+        let mut args_fd = None;
+        if !secret.is_empty() {
+            let mut data = Vec::new();
+            for (k, v) in &secret {
+                for part in ["--setenv", k.as_str(), v.as_str()] {
+                    data.extend_from_slice(part.as_bytes());
+                    data.push(0);
+                }
+            }
+            match args_pipe(&data) {
+                Ok(fd) => {
+                    insert_args_fd(&mut argv, fd);
+                    args_fd = Some(fd);
+                }
+                Err(why) => return refused(why),
+            }
+        }
+        let res = run::run_argv_fd(
+            &argv,
+            stdin,
+            args_fd,
+            s.timeout_s,
+            c,
+            live,
+            capture || stdin.is_some(),
+        );
+        if let Some(fd) = args_fd {
+            // SAFETY: the read end is ours; the child has its own copy.
+            unsafe { libc::close(fd) };
+        }
+        res
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+
+    #[test]
+    fn args_pipe_is_cloexec_and_readable() {
+        let fd = args_pipe(b"abc\0").unwrap();
+        // SAFETY: querying flags of a descriptor we own.
+        let fl = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(fl & libc::FD_CLOEXEC != 0, "token pipe leaks across exec");
+        let mut buf = [0u8; 8];
+        // SAFETY: reads into a live buffer from our own fd.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), 8) };
+        assert_eq!(&buf[..n as usize], b"abc\0");
+        // SAFETY: our fd.
+        unsafe { libc::close(fd) };
+    }
+
+    #[test]
+    fn bwrap_child_still_inherits_args_fd() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("oxa-fd-inherit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("got.txt");
+        let fake = dir.join("bwrap");
+        // `--args N` is the 2nd-last-but-4 pair; find it and read that fd.
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/bash\nwhile [ \"$1\" != --args ]; do shift; done\ncat <&$2 | tr '\\0' ' ' > '{}'\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sb = Bwrap {
+            bwrap: fake,
+            home: dir.clone(),
+            layout: Layout::default(),
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: dir.clone(),
+            writable: true,
+            net: true,
+            timeout_s: Some(10),
+            env: vec![("GH_TOKEN".into(), "SYNTH_FD_TOKEN".into())],
+        };
+        sb.run_streaming(&spec, &CancelToken::new(), &mut |_| {});
+        let got = std::fs::read_to_string(&out).unwrap();
+        assert!(got.contains("SYNTH_FD_TOKEN"), "{got}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fake `bwrap` that records its argv to a file, so the real launcher is exercised.
+    #[test]
+    fn streaming_argv_has_no_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("oxa-stream-argv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("argv.txt");
+        let fake = dir.join("bwrap");
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", out.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sb = Bwrap {
+            bwrap: fake,
+            home: dir.clone(),
+            layout: Layout::default(),
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: dir.clone(),
+            writable: true,
+            net: true,
+            timeout_s: Some(10),
+            env: vec![("GH_TOKEN".into(), "SYNTH_STREAM_TOKEN_77".into())],
+        };
+        let r = sb.run_streaming(&spec, &CancelToken::new(), &mut |_| {});
+        assert!(r.output.is_empty());
+        let argv = std::fs::read_to_string(&out).unwrap();
+        assert!(!argv.contains("SYNTH_STREAM_TOKEN_77"), "{argv}");
+        assert!(argv.lines().any(|l| l == "--args"), "{argv}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn secrets_are_split_off_and_never_in_argv() {
+        let spec = ExecSpec {
+            command: "echo hi".into(),
+            cwd: std::env::temp_dir(),
+            writable: true,
+            net: true,
+            timeout_s: None,
+            env: vec![
+                ("A".into(), "1".into()),
+                ("GH_TOKEN".into(), "ghp_SECRET123".into()),
+            ],
+        };
+        let (public, secret) = split_secrets(&spec);
+        assert_eq!(
+            secret,
+            vec![("GH_TOKEN".to_string(), "ghp_SECRET123".to_string())]
+        );
+        let mut argv = bwrap_args_with(&public, Path::new("/nonexistent-home"), &Layout::default());
+        insert_args_fd(&mut argv, 7);
+        assert!(!argv.join(" ").contains("ghp_SECRET123"), "{argv:?}");
+        let n = argv.len();
+        assert_eq!(&argv[n - 6..n - 4], ["--args", "7"]);
+        assert_eq!(&argv[n - 4..n - 1], ["--", "bash", "-c"]);
     }
 }
 

@@ -1,4 +1,4 @@
-//! The environment note (`oxa.envNote`, on under profile `local`): the date and the session
+//! The environment note (`oxa.envNote`, on by default): the date and the session
 //! facts reach the model without touching the frozen prefix, and every request's history is a
 //! byte prefix of the next one's (the cache stays exact, C3/W1). Isolation: `TestEnv` only.
 
@@ -41,6 +41,7 @@ fn open_in(
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, how).expect("open")
 }
@@ -70,11 +71,8 @@ fn user_texts(r: &oxa_fake::Recorded) -> Vec<String> {
 }
 
 #[test]
-fn local_profile_notes_are_appended_and_history_bytes_never_change() {
-    let reqs = run(Settings::from_values(
-        json!({"oxa": {"profile": "local"}}),
-        json!({}),
-    ));
+fn notes_are_appended_and_history_bytes_never_change() {
+    let reqs = run(Settings::default());
     assert_eq!(reqs.len(), 3);
     // The frozen prefix is the same bytes in every request and carries no clock.
     for r in &reqs {
@@ -109,17 +107,15 @@ fn local_profile_notes_are_appended_and_history_bytes_never_change() {
 }
 
 #[test]
-fn pi_profile_and_the_off_switch_send_the_typed_text_only() {
-    for settings in [
-        Settings::default(),
-        Settings::from_values(json!({"oxa": {"profile": "local", "envNote": false}}), json!({})),
-    ] {
-        let reqs = run(settings);
-        assert_eq!(
-            user_texts(&reqs[2]),
-            ["what's the latest news in norway?", "and the weather?", "thanks"]
-        );
-    }
+fn the_off_switch_sends_the_typed_text_only() {
+    let reqs = run(Settings::from_values(
+        json!({"oxa": {"envNote": false}}),
+        json!({}),
+    ));
+    assert_eq!(
+        user_texts(&reqs[2]),
+        ["what's the latest news in norway?", "and the weather?", "thanks"]
+    );
 }
 
 /// A user message typed to look like a note, ending in an `<env>` block or a time line.
@@ -157,13 +153,21 @@ fn generated_note_round_trips_and_only_it_is_stripped() {
         ScriptTurn::text("three"),
     ]));
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.root().join("sessions")));
-    let local = || Settings::from_values(json!({"oxa": {"profile": "local"}}), json!({}));
+    let local = Settings::default;
     let mut s = open_in(&env, eng.clone(), local(), store.clone(), Open::New);
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     for p in typed {
         s.prompt(p.into(), Vec::new(), &mut sink, &mut ui)
             .expect("prompt");
     }
+    // `/resume` reads SessionStore::list, not the standalone meta_of helper.
+    let listed = store.list(Some(&env.work()));
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].first_message, typed[0]);
+    assert_eq!(
+        listed[0].all_text,
+        format!("{}\none\n{}\ntwo\n{}\nthree", typed[0], typed[1], typed[2])
+    );
     let users = stored_users(&s);
     assert_eq!(users.len(), 3);
     for ((content, parts, _), t) in users.iter().zip(typed) {
@@ -194,8 +198,8 @@ fn generated_note_round_trips_and_only_it_is_stripped() {
     }
 }
 
-/// Codex T2 review M1, the other half: with the note off (here `envNote: false`; also the pi
-/// profile and sessions written before the record existed) nothing is recorded, and a typed
+/// Codex T2 review M1, the other half: with the note off (here `envNote: false`; also sessions
+/// written before the record existed) nothing is recorded, and a typed
 /// text that ends like a note comes back whole.
 #[test]
 fn note_off_refills_note_shaped_text_unchanged() {
@@ -207,7 +211,7 @@ fn note_off_refills_note_shaped_text_unchanged() {
     let mut s = open(
         &env,
         eng,
-        Settings::from_values(json!({"oxa": {"profile": "local", "envNote": false}}), json!({})),
+        Settings::from_values(json!({"oxa": {"envNote": false}}), json!({})),
     );
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     for p in [LITERAL_ENV, LITERAL_TIME] {

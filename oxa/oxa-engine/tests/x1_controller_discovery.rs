@@ -1,4 +1,4 @@
-//! X1: engine discovery against the real local-ai controller.
+//! X1: engine discovery against the real oxc controller.
 //!
 //! The fixtures under `tests/fixtures/` follow the lab controller's own code, not oxa's
 //! preferred shape: `controller_status_*.json` is `StatusMixin.status` (`runtime/ctl_status.py`,

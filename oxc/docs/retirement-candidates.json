@@ -1,0 +1,1652 @@
+{
+  "schema": 1,
+  "mode": "draft_proposal_only",
+  "base_commit": "a1c683f9e3783fdac4716bef53241833babe60a6",
+  "deletions_applied": false,
+  "constraints": [
+    "Do not edit or delete measured benchmark receipts in this draft.",
+    "Preserve candidate-engine allowlists, exact hash binding, receipt verification and refusal behavior.",
+    "Preserve licences and attribution for any retained or moved code.",
+    "A missing literal citation is only a review candidate, not proof that evidence is disposable."
+  ],
+  "code_candidates": [
+    {
+      "path": "oxc/src/oxc/runtime/classic_beta.py",
+      "proposal": "Move model qualification metadata and unchanged proof requirements into model_catalog before removing the legacy module.",
+      "referenced_by": [
+        "oxc/src/oxc/bootstrap.py",
+        "oxc/src/oxc/runtime/controller.py",
+        "oxc/src/oxc/runtime/ctl_engines.py",
+        "oxc/src/oxc/runtime/ctl_lifecycle.py",
+        "oxc/src/oxc/runtime/ctl_models.py",
+        "oxc/src/oxc/runtime/ctl_proxy.py",
+        "oxc/tests/test_backend_token.py",
+        "oxc/tests/test_beta_selector.py",
+        "oxc/tests/test_controller_contract.py",
+        "oxc/tests/test_memlat_engine_override.py",
+        "oxc/tests/test_oxe_production.py",
+        "oxc/tests/test_runtime_sources.py",
+        "oxc/tests/test_ui_data.py",
+        "oxc/tests/test_v013_begin_golden.py",
+        "oxc/tests/test_v013_proxy_contract.py"
+      ]
+    }
+  ],
+  "requested_symbol_status": {
+    "RETIRED_MODELS": "absent",
+    "RETIRED_ALIASES": "present in classic_beta; preserve retired-model refusal until a reviewed replacement exists"
+  },
+  "experiment_candidate": {
+    "path": "oxc/experiments/",
+    "files": [
+      "oxc/experiments/q3k-i8mm/INTEGRATION.md",
+      "oxc/experiments/q3k-i8mm/LICENSE.llama.cpp",
+      "oxc/experiments/q3k-i8mm/Q3K-MOE-GEMM.md",
+      "oxc/experiments/q3k-i8mm/README.md",
+      "oxc/experiments/q3k-i8mm/RESULTS.md",
+      "oxc/experiments/q3k-i8mm/bench_q3k_i8mm.c",
+      "oxc/experiments/q3k-i8mm/q3k_i8mm.h",
+      "oxc/experiments/q3k-i8mm/run_test_ggml_repack_moe.sh",
+      "oxc/experiments/q3k-i8mm/test_ggml_repack_moe.cpp",
+      "oxc/experiments/q3k-i8mm/test_q3k_i8mm.c",
+      "oxc/experiments/q3k-i8mm/upstream_ref.h"
+    ],
+    "external_markdown_references": [
+      "oxc/docs/BEFORE-AFTER.md",
+      "oxc/docs/SCOREBOARD.md",
+      "oxc/docs/SPEEDUP-ATTRIBUTION.md"
+    ],
+    "proposal": "Review q3k-i8mm CPU experiment code and its notices before any directory deletion."
+  },
+  "receipt_method": "Literal relative path or basename in tracked Markdown outside the results directory; other references are also recorded. Historical and qualification evidence still requires review.",
+  "receipts_to_keep": [
+    {
+      "path": "oxc/benchmarks/results/arete27b-download.json",
+      "public_markdown_references": [
+        "oxc/docs/ARETE-27B-COMPARISON.md"
+      ],
+      "other_tracked_references": [
+        "oxc/dependencies/retired-model-artifacts.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/arete27b-loading-smokes.json",
+      "public_markdown_references": [
+        "oxc/docs/ARETE-27B-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/before-after.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/bootstrap-flash-build.json",
+      "public_markdown_references": [
+        "oxc/docs/BOOTSTRAP-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/bootstrap-flash-source.json",
+      "public_markdown_references": [
+        "oxc/docs/BOOTSTRAP-BUILD.md",
+        "oxc/docs/BOOTSTRAP-PARITY.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/bootstrap-flash-build.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/bootstrap-selected-downloads.json",
+      "public_markdown_references": [
+        "oxc/docs/BOOTSTRAP-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/classic-quota-batch8-complete.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/CLASSIC-QUOTA-SCREEN.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/classic-quota-batch8-incomplete.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/CLASSIC-QUOTA-SCREEN.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/classic-quota-unlimited11-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/CLASSIC-QUOTA-UNLIMITED11.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/classic-quota1200-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/CLASSIC-QUOTA1200.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/controller-cache.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/cpu-screen-preliminary.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/DEPLOYMENT-AND-EVIDENCE.md",
+        "oxc/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/disabled-paths.json",
+      "public_markdown_references": [
+        "oxc/docs/FAILED-PATHS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/final-coding-comparison.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/final-image-comparison.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-balanced-placement-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-DECODE-THREADS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-cache-full-deferred.json",
+      "public_markdown_references": [
+        "oxc/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-cache-policy-native-tests.json",
+      "public_markdown_references": [
+        "oxc/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-cache13-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/RESEARCH-ENGINE-OPPORTUNITIES.md",
+        "oxc/docs/lab-notes/FLASH-CACHE13-SCREEN.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-coalescing-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-IO-SCREENS.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-cpu-quota-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-CPU-QUOTA.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-decode6-output-identity-stop.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-DECODE-THREADS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-decode8-output-identity-stop.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-DECODE-THREADS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-dense-q4-artifacts-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-DENSE-Q4.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-dense-q4-quality-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-DENSE-Q4.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-dense-repack-allocation-v3.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-DENSE-REPACK.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-dense-repack-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-DENSE-REPACK.md",
+        "oxc/docs/FLASH-SOURCE-MAPPING.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-reclaim-meta66-readiness.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-early-expert-random-native45.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-early-expert-random-startup.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-f123-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-F123.md",
+        "oxc/docs/FLASH-PACKAGE2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-harness-growth-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-PACKAGE2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-hot-cache-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-HOT-CACHE.md",
+        "oxc/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-io-uring-fixed-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-io-uring-native44.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-io-uring-raw-admission.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-io-uring-probe.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-IO-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-io-uring-raw-admission.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-kleidiai-source-eligibility.json",
+      "public_markdown_references": [
+        "oxc/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-lookahead-screen-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-WAVE5-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-m0-authoritative.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-M0.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-m0-tuning-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-M0-TUNING.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-mtp-acceptance-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MTP-ACCEPTANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-mtp-allocation-diagnostic.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MTP-ASSESSMENT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-mtp-common-hybrid-native.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-SPECULATION-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-mtp-fixed-partial-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MTP-ACCEPTANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-mtp-head-integrity.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MTP-ASSESSMENT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-mtp-loaded-head-startup.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MTP-ASSESSMENT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-agent-client-abort.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-agent-deadline.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-cache.json",
+      "public_markdown_references": [
+        "oxc/docs/MEMORY-AND-PERFORMANCE.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-client-replay.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-demand-mapping.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-SPLIT.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-final-agent.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/BENCHMARKS.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PLANNING.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-SPLIT.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-historical-attribution.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-io-depth-abba.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/roofline/quality-corpus.txt"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-io-depth-agent.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/roofline/quality-corpus.txt"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-io-workers.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-normal-lifecycle.json",
+      "public_markdown_references": [
+        "oxc/docs/APP-SETTINGS-AUDIT.md",
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/BENCHMARKS.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PLANNING.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-SPLIT.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-next-final-agent.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-overlap-code.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-prefill.json",
+      "public_markdown_references": [
+        "oxc/docs/STREAMING-MEMORY.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-profile-agent-incomplete.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-profile-agent.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md",
+        "oxc/docs/lab-notes/INDEX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-profile-fixed.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MEMLAT-PREREQUISITES.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-profile-output-parity.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-runtime-feature-status.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-storage-reference.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PROFILE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-thp.json",
+      "public_markdown_references": [
+        "oxc/docs/STREAMING-MEMORY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-wide-prefill.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-ngram-draft2-strict-stop.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-SPECULATION-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-ngram-ready-capture.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-SPECULATION-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-ngram-rollback-prerequisite.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-SPECULATION-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-pkg2-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-PACKAGE2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-post-memlat-header-audit.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MEMLAT-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-post-memlat-route-locality.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MEMLAT-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-post-memlat-storage-kernel.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MEMLAT-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-post-memlat-storage-summary.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-MEMLAT-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-predictive-prefetch-waste-stop.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-prefetch-coalescing-native.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-IO-PREREQUISITES.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-prefetch-coalescing-off-parity.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-prefetch-coalescing-off-parity.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-IO-PREREQUISITES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-prefill-policy-screen-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-WAVE5-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-prefix-prerequisite-v3.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-PREFIX-STATE.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-prefix-prerequisite-v4.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-prefix-prerequisite-v4.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-PREFIX-STATE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-prefix2-postboot-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-PREFIX-2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-reclaim-meta66-readiness.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-DENSE-REPACK.md",
+        "oxc/docs/FLASH-SOURCE-MAPPING.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-dense-repack-screen.json",
+        "oxc/benchmarks/results/flash-reclaim-native43.json",
+        "oxc/benchmarks/results/flash-source-reclaim-ready-pair.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-reclaim-native43.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-SOURCE-MAPPING.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-ring-source-reclaim-ready.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/FLASH-IO-SCREENS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-source-reclaim-ready-pair.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-SOURCE-MAPPING.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-vulkan-precision-prerequisites.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-GPU-PREFILL-GATE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-vulkan-prefill-source-gate.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-GPU-PREFILL-GATE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/image-attention-fimgattn1-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/IMAGE-ATTENTION.md",
+        "oxc/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/image-large-screen-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/IMAGE-LARGE-SCREEN.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/image-noise-fast-gate-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/image-parity-bisect-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/image-parity-full-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/image-parity-noise-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/IMAGE-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/image-ship-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/IMAGE-SHIP.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/moe-normal-reference.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/MOE-NORMAL-REFERENCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/mtp-context-vl15-20261111.json",
+      "public_markdown_references": [
+        "oxc/docs/MTP-CONTEXT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/native-q8-runtime.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/normal-dense-opencode.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/normal-lifecycle.json",
+      "public_markdown_references": [
+        "oxc/docs/APP-SETTINGS-AUDIT.md",
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/BENCHMARKS.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PLANNING.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-PREFILL.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-SPLIT.md",
+        "oxc/docs/lab-notes/FLASH-NEXT-SSD-SCHEDULING.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-next-final-agent.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/normal-moe-opencode.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/normal-moe-port-opencode.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/BENCHMARKS.md",
+        "oxc/docs/MEMORY-AND-PERFORMANCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-idle-retirement-build.json",
+      "public_markdown_references": [
+        "oxc/docs/RESEARCH-ENGINE-OPPORTUNITIES.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-bbc2990-qualification.json",
+      "public_markdown_references": [
+        "oxc/docs/lab-notes/MOE-CANDIDATE2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-moe-download.json",
+      "public_markdown_references": [
+        "oxc/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-moe-first-smoke.json",
+      "public_markdown_references": [
+        "oxc/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-moe-normal13.json",
+      "public_markdown_references": [
+        "oxc/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-moe-v2-smokes.json",
+      "public_markdown_references": [
+        "oxc/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-moe-v3-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/ORNITH-MOE-COMPARISON.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-controller-token-audit.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-long-sync.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-pthread.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-thread-profile-summary.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-pthread-affinity-diagnosis.json",
+      "public_markdown_references": [
+        "oxc/docs/FAILED-PATHS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-pthread-controller-comparison.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-pthread-fixed8-paired.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/portable-moe-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/BEFORE-AFTER.md",
+        "oxc/docs/BENCHMARKS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/production-prefix-fairness.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-SERVER-UPGRADE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/063.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "oxc/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/FLASH-PREFIX-2.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-PREFIX-2.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-prefix2-postboot-20261111.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/public/G1-prime.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "oxc/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/G1.json",
+      "public_markdown_references": [
+        "oxc/README.md"
+      ],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/public/V013-INSTALL-G1.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/public/G3-prime.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "oxc/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/G3.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "oxc/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/IMG-SHIP-1.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "oxc/README.md",
+        "oxc/docs/IMAGE-SHIP.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/RAM-MEMLAT.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "oxc/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/ST-1.json",
+      "public_markdown_references": [
+        "oxc/docs/SESSION-TRUTH-ST1.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/V012-CHAT.json",
+      "public_markdown_references": [
+        "engine/docs/RELEASE-NOTES-v0.1.2.md",
+        "oxc/docs/RELEASE-NOTES-v0.1.2.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/V013-INSTALL-G1.json",
+      "public_markdown_references": [
+        "oxc/README.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/VAE-1.json",
+      "public_markdown_references": [
+        "engine/README.md",
+        "oxc/README.md",
+        "oxc/docs/IMAGE-VAE.md",
+        "oxc/docs/RESULTS.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/o32-cache18.json",
+      "public_markdown_references": [
+        "oxc/docs/FLASH-CACHE18.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/v011-hotfix.json",
+      "public_markdown_references": [
+        "oxc/docs/V011-HOTFIX.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/repository-software-tests.json",
+      "public_markdown_references": [
+        "oxc/docs/BOOTSTRAP-PARITY.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq001-flash-m3-exact-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq002-flash-m3-kld-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq002-flash-m3-prefill-abort-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq004-server-bench-split-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq005-head-dumps-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq008-sessions-context-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-attention-crossover-repeats.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-ATTENTION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-attention-fixed-screen.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-ATTENTION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-grouped-prefill-2k.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-GROUPED-PREFILL.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-integrated-sampling.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-SERVER-QUALIFICATION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-integrated-server-qualification.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-SERVER-QUALIFICATION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-integrated-upgrade-qualification.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-SERVER-UPGRADE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-m0-decision.json",
+      "public_markdown_references": [
+        "oxc/docs/SCOREBOARD.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-mtp-seed-fast-single-pair.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-SERVER-QUALIFICATION.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/rust-production-deployment-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/RUST-DEPLOYMENT.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/source-archive-roundtrip.json",
+      "public_markdown_references": [
+        "oxc/docs/SELECTED-SETUP-REPRODUCIBILITY.md",
+        "oxc/docs/SOURCE-ARCHIVE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/upstream-followups-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/UPSTREAM-EVIDENCE.md"
+      ],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/upstream-single-patches-20261110.json",
+      "public_markdown_references": [
+        "oxc/docs/UPSTREAM-EVIDENCE.md"
+      ],
+      "other_tracked_references": []
+    }
+  ],
+  "uncited_receipt_candidates_for_review": [
+    {
+      "path": "oxc/benchmarks/results/arete27b-metadata.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/batch1-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/disk-retire-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-cache13-power-interruption.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-dense-repack-allocation.json",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-dense-repack-allocation-v3.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-dense-repack-native-prerequisite.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-dynamic31-identity.json",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "oxc/benchmarks/roofline/quality-corpus.txt"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-m3-timing-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-mtp-cache8-native46.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-mtp-chatml4096-native46.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-agent-interruption.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-baseline.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-native-http.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-next-overlap.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-plain-sidecar-quick-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-power-guard-20261111.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-selective-conversion-power-stop.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-selective-converter-native-checks.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-selective-q8-artifact.json",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/flash-selective-q8-screen.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-selective-q8-screen.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-source-mapping-prerequisite.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-uring-build-v2.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/flash-uring-build-v3.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/guard2-model-free-20261111.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/guard2b-model-free-20261111.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/hwchar-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-dispatch-env.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-fastrpc-fixed-prefix-static.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-fixed-prefix-stage.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-guidance-buffer-failure.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-heap-access-and-idle-failure.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-native-device-failure.json",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/npu-helper-prefix-trial.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-prefix-trial.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-streaming-recorder-control.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-tokenizer-cache-build.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-tokenizer-count-parity.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-helper-v7-readiness.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-phi4mini-native-load-failure.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/npu-qwen-policy-screen-closed.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-beta-installed.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-decode-t12-perf.txt",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/ornith-patched-thread-profile-summary.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-decode-t8-perf.txt",
+      "public_markdown_references": [],
+      "other_tracked_references": [
+        "oxc/benchmarks/results/ornith-patched-thread-profile-summary.json"
+      ]
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-final-decode30s-perf.txt",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-final-decode30s-symbols.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-final-prefill4096-perf.txt",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/ornith-patched-final-prefill4096-symbols.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/DISK-CLEANUP-20261112.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/F-IMG-ATTN-1.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/G0-prime.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/G2-prime.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/G2.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/G4-prime.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/PORT-PREFLIGHT.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/QC-7.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/QC-CTX2-Q.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/QC-CTX2.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/QC-LA.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/QC-VL.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/STABLE-HISTORY-B.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/TEST-ISOLATION-20261112.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/V013-AP1.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/V013-BATCH.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/V013-INSTALL.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/V013-SOURCE-DELTA.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/V013-SPLIT-SMOKE.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/V013-TOOL-OUTPUT-CAP.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/W4-J.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/W5-G-R2.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/public/W5-G-R3.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/quick045-verify-cost-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq003-flash-m3-code-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq006-prefill-exactness-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq006-prefill-timings-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq008-session-test-boundary-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq010-static-a-abba-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq010-static-a-correctness-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq011-prefill-profile-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq014-ornith-donor-mtp-exactness-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq017-attention-numeric-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq035-config-screen-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq036-fusion-correctness-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq036-fusion-screen-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/runq041-sidecar-copy-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/storage-cleanup-20261110.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    },
+    {
+      "path": "oxc/benchmarks/results/storage-timer-qualification.json",
+      "public_markdown_references": [],
+      "other_tracked_references": []
+    }
+  ]
+}

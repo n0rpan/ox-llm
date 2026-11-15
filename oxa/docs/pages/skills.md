@@ -37,11 +37,12 @@ A skill in a user location with the same name as a built-in one replaces the bui
 
 ### Built-in skills
 
-oxa ships three skills. They appear in the list whether or not their files have been written, and `oxa.builtinSkills: false` removes them.
+oxa ships four skills. They appear in the list whether or not their files have been written, and `oxa.builtinSkills: false` removes them.
 
 | Name | Use |
 |---|---|
 | `ox-llm` | operating the local ox-llm platform: status, model switching, logs, the health digest, updates and troubleshooting with the `oxc` controller |
+| `pull-request` | the pull-request workflow: branch and commit identity, opening a draft PR with a verified body, following up on reviews, and the rules (no push to a queued PR, no force-push, no merging unless told) |
 | `report-issue` | drafting an issue for the ox-llm repository from a scrubbed system digest. The draft is shown to you, and it is posted only when you confirm in your terminal. Reporting is off until `oxa.reportIssue.repo` is set |
 | `oxa-extend` | how to extend oxa: skills, prompt templates, extensions and exec hooks, where each file goes, and how to keep the cache warm |
 

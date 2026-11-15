@@ -143,7 +143,12 @@ impl Engine for ScriptedEngine {
                 hint_clear: true,
                 preserve_thinking: self.preserve_thinking,
                 park_disk_only: false,
+                cache_hints: true,
+                prefill: true,
+                ..oxa_proto::EngineCaps::default()
             },
+            thinking: None,
+            images: None,
         })
     }
 
@@ -442,6 +447,13 @@ fn status_error(status: u16, detail: &str, retry_after: Option<u32>) -> OxaError
             None => msg,
         };
         return OxaError::new(codes::ENGINE_BUSY, msg);
+    }
+    if status == 429 && detail.contains("budget is exhausted") {
+        // As `HttpEngine` maps the gateway's 429 `budget_exceeded`.
+        return OxaError::new(
+            codes::BUDGET_EXHAUSTED,
+            format!("the cloud gateway refused the request (budget_exceeded): {detail}"),
+        );
     }
     OxaError::new(codes::ENGINE_HTTP, msg)
 }

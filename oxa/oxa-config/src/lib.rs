@@ -28,9 +28,7 @@ pub use dirs::dirs_from_env;
 pub use env::{Env, EnvVar, ENV_TABLE};
 pub use keybindings::{ActionDef, Keymap};
 pub use models::{resolve_model, resolve_scoped, Endpoint, ModelRef, ModelsConfig};
-pub use profile::{
-    env_profile, resolve_profile, set_env_overrides, ThinkingPolicy, BASH_TIMEOUT_LOCAL, SUMMARY_TARGET_LOCAL,
-};
+pub use profile::{ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
 pub use schema::{apply_list_patch, merge_settings, schema, validate, KeyDef, Kind};
 pub use settings::{CompactionSettings, ProviderRetrySettings, QueueMode, RetrySettings, Settings};
 

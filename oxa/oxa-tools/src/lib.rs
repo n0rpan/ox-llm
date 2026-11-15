@@ -23,6 +23,7 @@ mod diff;
 mod edit;
 mod find;
 mod grep;
+mod jobs;
 mod ls;
 mod read;
 mod shape;
@@ -33,6 +34,7 @@ pub use diff::{apply_edits, detect_line_ending, strip_bom, unified_diff, Edit, E
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
+pub use jobs::{JobRead, JobRegistry, JobStatus, BUFFER_CAP, MAX_JOBS, READ_CAP};
 pub use ls::LsTool;
 pub use read::ReadTool;
 pub use shape::{shape, strip_ansi};
@@ -73,6 +75,15 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
 pub fn builtin_tools_with_shell(shell: ShellConfig) -> Vec<Arc<dyn Tool>> {
     let mut tools = builtin_tools();
     tools[1] = Arc::new(BashTool::with_shell(shell));
+    tools
+}
+
+/// [`builtin_tools_with_shell`] with the `bash` tool sharing `jobs` (issue #127 (b)): the
+/// background jobs the tool starts belong to the session that owns `jobs`, which kills
+/// them all when it ends.
+pub fn builtin_tools_with_shell_and_jobs(shell: ShellConfig, jobs: Arc<JobRegistry>) -> Vec<Arc<dyn Tool>> {
+    let mut tools = builtin_tools();
+    tools[1] = Arc::new(BashTool::with_shell_and_jobs(shell, jobs));
     tools
 }
 

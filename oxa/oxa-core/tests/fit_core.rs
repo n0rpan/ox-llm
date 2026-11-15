@@ -25,7 +25,9 @@ fn open(env: &TestEnv, engine: Arc<dyn Engine>, settings: &str) -> Session {
     let path = dirs.settings_file();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, settings).unwrap();
-    let settings = Settings::load(&dirs, &env.work(), false);
+    // Rebase identity assertions below deliberately select note-free prompt bytes.
+    let settings =
+        Settings::load(&dirs, &env.work(), false).with_override("oxa.envNote", serde_json::json!(false));
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     Session::open(
         Deps {
@@ -44,6 +46,7 @@ fn open(env: &TestEnv, engine: Arc<dyn Engine>, settings: &str) -> Session {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

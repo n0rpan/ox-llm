@@ -5,7 +5,7 @@
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
-use oxa_interactive::{worker_loop_with, Reopen, SessionCmd, WorkerMsg, WorkerStop};
+use oxa_interactive::{worker_loop_with, ReopenFn, SessionCmd, WorkerMsg, WorkerStop};
 use oxa_proto::{AgentEvent, OxaError, WireMsg};
 use oxa_resources::Resources;
 use oxa_session::{MemStore, SessionStore};
@@ -60,7 +60,10 @@ fn worker_prefills_the_current_draft_only() {
             hooks: Vec::new(),
             policy: Box::new(AllowAll),
             sandbox: Arc::new(NoBash),
-            settings: Settings::from_values(json!({"oxa": {"prefill": {"paste": true}}}), json!({})),
+            settings: Settings::from_values(
+                json!({"oxa": {"envNote": false, "prefill": {"paste": true}}}),
+                json!({}),
+            ),
             dirs: Dirs::under(env.root()),
             cwd: env.work(),
             selection: ToolSelection::default(),
@@ -69,6 +72,7 @@ fn worker_prefills_the_current_draft_only() {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
@@ -77,8 +81,7 @@ fn worker_prefills_the_current_draft_only() {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (msg_tx, msg_rx) = mpsc::channel();
     let (ui_tx, _ui_rx) = mpsc::channel();
-    let reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send> =
-        Box::new(|_| Err(OxaError::new("invalid", "no reopen in this test")));
+    let reopen: ReopenFn = Box::new(|_, _| Err(OxaError::new("invalid", "no reopen in this test")));
     let worker_stop = stop.clone();
     let worker =
         std::thread::spawn(move || worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop));

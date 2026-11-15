@@ -7,7 +7,7 @@ Settings, keybindings, model endpoints, environment and directories. Depends on 
 | `lib.rs` | architect (frozen) | `Dirs`, `Diagnostic` |
 | `settings.rs`, `schema.rs` | A11 | `Settings`, `schema`, `validate`, `merge_settings`, `apply_list_patch` |
 | `keybindings.rs` | B5 | `Keymap`, `ActionDef` |
-| `profile.rs` | lprof (wave H) | `Settings::profile`, `set_env_overrides`, `ThinkingPolicy` |
+| `profile.rs` | T5 (wave H) | `ThinkingPolicy` and the tool/context defaults |
 | `models.rs`, `env.rs`, `dirs.rs` | B6 | `ModelsConfig`, `resolve_model`, `ENV_TABLE`, `Env`, `dirs_from_env` |
 
 Contracts

@@ -2,7 +2,7 @@
 //! One test per PARITY.md row of this area, named after the row id (`RPC-012` -> `fn rpc_012()`).
 //! Each test drives the real `oxa --mode rpc` binary over its stdin and stdout, against the fake
 //! engine (`oxa_fake::FakeServer`, in process). P rows compare oxa's records with pi's documented
-//! examples (`fixtures/pi/rpc/documented.json`); A rows assert the adapted behaviour and name the
+//! examples (`fixtures/goldens/rpc/documented.json`); A rows assert the adapted behaviour and name the
 //! invariant in their doc comment; O rows assert `unsupported_in_oxa`.
 //!
 //! A row whose behaviour differs from pi is `#[ignore = "RED ..."]` with the precise reason: those
@@ -50,7 +50,7 @@ impl Rpc {
             .current_dir(env.work())
             .env_clear()
             .envs(env.envs(&server.url()))
-            .envs(oxa_parity::profile_env())
+            .envs(oxa_parity::note_off_env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -242,9 +242,9 @@ fn part(id: &str, key: &str) -> Value {
         .unwrap_or_else(|| panic!("{id} has no documented {key}"))
 }
 
-/// The documented example (or rule) of a P row, from `fixtures/pi/rpc/documented.json`.
+/// The documented example (or rule) of a P row, from `fixtures/goldens/rpc/documented.json`.
 fn doc(id: &str) -> Value {
-    let text = std::fs::read_to_string(fixture("pi/rpc/documented.json")).expect("read the pi fixture");
+    let text = std::fs::read_to_string(fixture("goldens/rpc/documented.json")).expect("read the pi fixture");
     let all: Value = serde_json::from_str(&text).expect("the pi fixture is JSON");
     all.get(id)
         .cloned()
@@ -432,7 +432,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     let mut n = 0;
     for (id, verdict, _) in parity_rows() {
         if verdict != "P" {
@@ -483,27 +483,6 @@ fn a_rows_name_their_invariant() {
         );
     }
     assert_eq!(n, 13, "the RPC area has 13 A rows");
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for (id, verdict, _) in parity_rows() {
-        if verdict != "O" {
-            continue;
-        }
-        let fn_name = id.to_lowercase().replace('-', "_");
-        let start = SELF_SRC
-            .find(&format!("fn {fn_name}()"))
-            .unwrap_or_else(|| panic!("no fn {fn_name}"));
-        let body = &SELF_SRC[start..];
-        let end = body[1..].find("\n}\n").map(|e| e + 1).unwrap_or(body.len());
-        assert!(
-            body[..end].contains("unsupported_in_oxa"),
-            "{id} (O) asserts unsupported_in_oxa"
-        );
-    }
-    // The RPC area has no O rows: nothing to assert beyond the verdicts above.
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1619,7 +1598,7 @@ fn rpc_052() {
     let mut client = RpcClient::spawn(
         &oxa_bin(),
         &["--no-session".to_string()],
-        &[env.envs(&server.url()), oxa_parity::profile_env()].concat(),
+        &[env.envs(&server.url()), oxa_parity::note_off_env()].concat(),
         &env.work(),
     )
     .expect("spawn oxa --mode rpc");

@@ -86,12 +86,6 @@ fn tool_names(r: &Recorded) -> Vec<String> {
         .collect()
 }
 
-fn web_tool(r: &Recorded) -> Option<serde_json::Value> {
-    let v: Vec<serde_json::Value> = serde_json::from_str(&r.tools_json).unwrap_or_default();
-    v.into_iter()
-        .find(|t| t.pointer("/function/name").and_then(|n| n.as_str()) == Some("web_search"))
-}
-
 /// One `-p` run with an engine that calls `web_search` once; returns the requests and output.
 fn search_run(
     env: &TestEnv,
@@ -293,24 +287,6 @@ fn every_switch_turns_the_tool_off() {
         );
     }
     assert!(b.seen.lock().unwrap().is_empty(), "nothing reached the provider");
-}
-
-#[test]
-fn the_same_schema_under_both_profiles() {
-    let env = TestEnv::new();
-    let b = brave();
-    let mut tools = Vec::new();
-    for profile in ["pi", "local"] {
-        let (reqs, _) = search_run(
-            &env,
-            &b,
-            &[("BRAVE_SEARCH_API_KEY", KEY), ("OXA_PROFILE", profile)],
-            &["-p", "--no-session", "go"],
-        );
-        tools.push(web_tool(&reqs[0]).expect("declared"));
-        assert_eq!(tool_result(&reqs, "c1").as_deref(), Some(EXPECTED), "{profile}");
-    }
-    assert_eq!(tools[0], tools[1]);
 }
 
 #[test]

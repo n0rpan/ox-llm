@@ -1,6 +1,6 @@
 # M3.1: MTP speculative decoding (exact)
 
-> **Historical working note.** The branches and worktrees named here were merged into `main` and then deleted; the commit hashes cited still resolve in `main`'s history. Current state: [README](README.md).
+> **Historical working note.** The branches and worktrees named here were merged into `main` and then deleted; the commit hashes cited still resolve in `main`'s history. Current state: [README](../../README.md).
 
 **Update, 2026-11-10: rebased on M3.2 (batched prefill, 9833695, plus `prefill-mmid-pad`
 267bb7c/04c1667) and merged to main.**
@@ -300,7 +300,7 @@ cache (about 1 s).
 ```bash
 cd <repo> && CARGO_BUILD_JOBS=2 cargo build --release
 CPUS=0,1,2,4,5,6,8,9
-L=${LOCAL_AI_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/local-ai/inference.lock}
+L=${OXC_LEASE:-${XDG_STATE_HOME:-$HOME/.local/state}/oxc/inference.lock}
 O=~/.cache/local-ai/snapdragon-engine/oracle
 ORN=$MODELS/Ornith-1.5-35B-A3B-APEX-MTP-Compact.gguf
 QWEN=$MODELS/Qwen3.6-35B-A3B-MTP-UD-Q4_K_M.gguf
