@@ -115,6 +115,11 @@ model-issued steering during inference, shared-session result wakes, prevention
 of premature DONE, parent cancellation, Esc settlement with unknown usage, and visible TUI worker status. Broader
 cloud reliability and the full working-evening acceptance run remain outstanding.
 
+The blocked-worker case waits for the worker's event, then uses model-issued
+retarget and resume controls. It checks unchanged worker identity, conversation
+and budget, exact cumulative tokens across both requests, elapsed time including
+the wait, the clarification in the next inference, and reaping before completion.
+
 The only additional existing-crate hooks in this milestone are feature-gated
 footer population and copying of the reserved `oxa.worker.` status rows in
 `oxa-interactive/src/app.rs`. Worker registration uses the existing optional
