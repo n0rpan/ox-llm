@@ -21,8 +21,7 @@ impl Refusal {
     pub fn ledger() -> Self {
         Self {
             status: 503,
-            message:
-                "The request ledger is unreadable; cloud calls are blocked until it is repaired.",
+            message: "The request ledger is unreadable; cloud calls are blocked until it is repaired.",
             code: "cloud_ledger_unavailable",
             param: "model",
         }

@@ -26,9 +26,7 @@ pub struct Request {
 }
 impl Request {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .get(&name.to_ascii_lowercase())
-            .map(String::as_str)
+        self.headers.get(&name.to_ascii_lowercase()).map(String::as_str)
     }
 }
 impl fmt::Debug for Request {
@@ -63,11 +61,7 @@ impl Reply {
         let mut bytes = Vec::new();
         for event in events {
             bytes.extend_from_slice(
-                format!(
-                    "event: {}\ndata: {event}\n\n",
-                    event["type"].as_str().unwrap()
-                )
-                .as_bytes(),
+                format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap()).as_bytes(),
             );
         }
         Self {
@@ -141,11 +135,7 @@ impl MockAnthropic {
                         thread::sleep(Duration::from_millis(5))
                     }
                     Err(_) => {
-                        worker
-                            .errors
-                            .lock()
-                            .unwrap()
-                            .push("mock upstream accept failed");
+                        worker.errors.lock().unwrap().push("mock upstream accept failed");
                         break;
                     }
                 }
@@ -256,20 +246,12 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         headers,
     })
 }
-fn serve(
-    mut stream: TcpStream,
-    shared: &Shared,
-    replies: &Mutex<VecDeque<Reply>>,
-) -> io::Result<()> {
+fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>>) -> io::Result<()> {
     let request = read_request(&mut stream)?;
     let reply = {
         let mut requests = shared.requests.lock().unwrap();
         let reply = replies.lock().unwrap().pop_front().unwrap_or_else(|| {
-            shared
-                .errors
-                .lock()
-                .unwrap()
-                .push("unexpected upstream request");
+            shared.errors.lock().unwrap().push("unexpected upstream request");
             Reply::error(500, "unexpected synthetic request")
         });
         requests.push(request);

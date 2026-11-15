@@ -14,7 +14,10 @@ runtime = ["cloud-only", "ledger"]
 cloud-only = ["dep:serde_json", "dep:url"]
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
+upstream-anthropic-request = ["dep:serde_json"]
+upstream-anthropic-stream = ["dep:serde_json"]
 transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
+anthropic-client = ["transport", "secrets", "upstream-anthropic-request", "upstream-anthropic-stream"]
 
 [dependencies]
 bigdecimal = { version = "0.4", optional = true }
@@ -48,3 +51,5 @@ required-features = ["accounting"]
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[workspace]

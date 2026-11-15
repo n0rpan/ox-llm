@@ -14,6 +14,7 @@ by the gateway; zero is refused here too.
 - `cloud-only`: catalog contracts.
 - `policy`: policy contracts.
 - `secrets`: secrets contracts.
+- `upstream-anthropic-request`: the pure request translator shared with oxc.
 
 Share one `Budget` per daily ledger path across request tasks. `reserve` locks
 spend plus outstanding holds atomically. Mark the hold forwarded before sending
@@ -26,6 +27,10 @@ record in a dedicated 0700 ledger directory. Failed writes or dropped forwarded
 holds block further spending in that budget instance. Missing/failed usage costs
 the full reservation; cancelled streams use final usage or a bounded byte/time
 estimate that includes hidden reasoning.
+Build all examples with `cargo build --locked --manifest-path
+oxa/oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
+`/usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v`; native
+checks set each present `OXC_*_CONTRACT` to its absolute example executable.
 
 OpenRouter's reported cost wins even when below catalog cost, intentionally
 fixing #283 rather than copying Python's remaining maximum-of-the-two defect.
@@ -35,11 +40,11 @@ complete rows, and retain a running total/cursor. Replacement, truncation or a
 changed 64-byte cursor tail resets it. Unchanged files require bounded work.
 
 ```sh
-cargo check --locked --manifest-path oxc-gateway/Cargo.toml --no-default-features
-cargo test --locked --manifest-path oxc-gateway/Cargo.toml --all-features
-cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
-/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_PRICING_CONTRACT="$PWD/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+cargo check --locked --manifest-path oxa/oxc-gateway/Cargo.toml --no-default-features
+cargo test --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-features
+cargo build --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-features --examples
+/usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
+OXC_POLICY_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/policy_contract" OXC_PRICING_CONTRACT="$PWD/oxa/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
 ```
 
 Forty-seven price/settlement cases are captured from unmodified Python in private
@@ -150,3 +155,10 @@ provides Anthropic HTTP/stream I/O and the Engine bridge, and the runner lane
 drives that actual async entrypoint against its shared owned mock. Refusal-row
 recording before admission, replay/history, retention and other providers remain
 incomplete; the existing policy contracts still run. No Python feature changes.
+This library lives inside oxa's product tree, so oxa can consume it in-process
+without a path dependency leaving that tree. It has its own workspace and lock,
+preserving independent gateway builds and feature checks. The native oxc
+controller can depend on the same source from its separate workspace. Both entry
+points retain the same policy, key and settlement implementation; transport
+adapters supply trusted caller metadata. Default features remain empty, and
+moving the library does not enable a listener or change the default engine.

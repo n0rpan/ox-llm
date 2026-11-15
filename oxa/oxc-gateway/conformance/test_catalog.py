@@ -16,7 +16,7 @@ import tempfile
 import time
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 PYTHON = '/usr/bin/python3'
 GOLDENS = Path(__file__).with_name('catalog.json')
 CASES = ('router', 'anthropic', 'openai', 'disabled', 'default-off', 'offline',

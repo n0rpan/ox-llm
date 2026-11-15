@@ -8,7 +8,7 @@ import socket
 import subprocess
 import tempfile
 import time
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 PYTHON = '/usr/bin/python3'
 
 def config(name):

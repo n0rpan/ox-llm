@@ -23,10 +23,7 @@ impl Fixture {
         let root = std::env::temp_dir().join(format!(
             "oxc-skeleton-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
         ));
         DirBuilder::new().mode(0o700).create(&root).unwrap();
         let key_path = root.join("credentials.json");
