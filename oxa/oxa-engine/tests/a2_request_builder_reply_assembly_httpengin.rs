@@ -717,3 +717,22 @@ fn think_tag_after_answer_text_is_text() {
     let (events, _) = run_reasoning_case(ScriptTurn::text("use <think> tags"));
     assert_eq!(joined(&events), (String::new(), "use <think> tags".to_string()));
 }
+
+/// A stream that ends on a held prefix (`<`, `<thi`) must still deliver that tail through the
+/// callback: the joined live events equal the assembled reply.
+#[test]
+fn held_prefix_at_stream_end_reaches_the_callback() {
+    for text in ["<", "<thi", "ok <"] {
+        for chunk in [1usize, 1000] {
+            let (events, turn) = run_reasoning_case(ScriptTurn {
+                text: Some(text.to_string()),
+                chunk,
+                ..ScriptTurn::text("")
+            });
+            let (r, t) = joined(&events);
+            assert_eq!(r, "", "{text:?} chunk {chunk}");
+            assert_eq!(t, text, "{text:?} chunk {chunk}");
+            assert_eq!(turn.msg.content.as_deref(), Some(text), "{text:?} chunk {chunk}");
+        }
+    }
+}

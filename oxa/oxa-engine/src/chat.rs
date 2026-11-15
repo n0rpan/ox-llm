@@ -282,14 +282,25 @@ impl ReplyAssembler {
         })
     }
 
+    /// Delivers the held tail (a literal `<` or `<thi`, or a partial `</think>` at a length
+    /// stop) once the stream has ended. The events must reach the stream callback; the caller
+    /// calls this before [`Self::finish`], which then has nothing left to route.
+    pub fn flush(&mut self) -> Vec<StreamEvent> {
+        let held = std::mem::take(&mut self.held);
+        let mut events = Vec::new();
+        if self.in_think {
+            self.emit_reasoning(&held, &mut events);
+        } else {
+            self.emit_text(&held, &mut events);
+        }
+        events
+    }
+
     /// Finish after `[DONE]`. No `finish_reason` or no usage = `stream_broken`.
     pub fn finish(mut self, level: ThinkingLevel) -> Result<AssistantTurn, OxaError> {
-        let held = std::mem::take(&mut self.held);
-        if self.in_think {
-            self.emit_reasoning(&held, &mut Vec::new());
-        } else {
-            self.emit_text(&held, &mut Vec::new());
-        }
+        // Any held tail not yet flushed still joins the assembled reply; its events are dropped
+        // here because the stream loop delivers them through `flush` first.
+        let _ = self.flush();
         let finish = self
             .finish
             .ok_or_else(|| broken("the stream ended without a finish_reason".to_string()))?;
@@ -586,6 +597,9 @@ impl Engine for HttpEngine {
                     } else if !end.done {
                         Err(broken("the engine closed the stream before [DONE]".to_string()))
                     } else {
+                        for e in asm.flush() {
+                            on(e);
+                        }
                         asm.finish(level)
                     }
                 }
