@@ -165,6 +165,10 @@ pub struct Layout {
     /// sbx-git: the git data of the cwd outside it (a worktree's gitdir and common dir, shared
     /// alternates), resolved once by `Bwrap::with_git_dirs`. Empty until then.
     pub git: GitBinds,
+    /// sbx-ipc: mask the host runtime sockets (`/run/user/<uid>`, the buses, Docker/Podman,
+    /// systemd-resolved) in the argv. Set by the front end ([`Bwrap::detect`] and the CLI's
+    /// layout); off in the pure-argv tests, whose `Layout::default()` is not a sandbox.
+    pub mask_runtime_ipc: bool,
 }
 
 /// The inputs of [`Layout::build`].
@@ -278,6 +282,7 @@ impl Layout {
             env,
             allow_home_write: i.allow_home_write,
             git: GitBinds::default(),
+            mask_runtime_ipc: false,
         }
     }
 

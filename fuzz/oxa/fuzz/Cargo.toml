@@ -1,0 +1,70 @@
+[package]
+name = "oxa-fuzz-targets"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+oxa-fuzz = { path = ".." }
+
+[[bin]]
+name = "sse"
+path = "fuzz_targets/sse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reply"
+path = "fuzz_targets/reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "repair"
+path = "fuzz_targets/repair.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "markdown"
+path = "fuzz_targets/markdown.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session"
+path = "fuzz_targets/session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_sse"
+path = "fuzz_targets/mcp_sse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rpc"
+path = "fuzz_targets/rpc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path"
+path = "fuzz_targets/path.rs"
+test = false
+doc = false
+bench = false

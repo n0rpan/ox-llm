@@ -54,21 +54,27 @@ impl PathGuard {
         }
         deny.sort();
         deny.dedup();
+        let mut home_protected = home_protected_paths(home);
+        if let Some(r) = real_home.filter(|r| *r != home) {
+            home_protected.extend(home_protected_paths(r));
+        }
         PathGuard {
             deny,
             allow: vec![tmp_dir.to_path_buf()],
             home: home.to_path_buf(),
-            home_protected: home_protected_paths(home),
+            home_protected,
         }
     }
 
-    /// A write to `p` (absolute) that runs or configures something outside the sandbox later,
-    /// with `cwd` the home directory or above it.
+    /// A write to `p` (absolute) that runs or configures something outside the sandbox later:
+    /// with `cwd` the home directory or above it, and (#201) for every write outside the cwd
+    /// wherever the cwd is, so a grant never covers these files.
     fn protects_home_file(&self, p: &Path, cwd: &Path) -> bool {
         !self.home_protected.is_empty()
-            && (is_home_or_above(cwd, &self.home)
-                || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
             && self.home_protected.iter().any(|d| is_inside(p, d))
+            && (!is_inside(p, cwd)
+                || is_home_or_above(cwd, &self.home)
+                || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
     }
 
     /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
@@ -80,6 +86,11 @@ impl PathGuard {
 /// B4: how a write to `p` inside `cwd` is protected: `Some(true)` = never by a tool (git),
 /// `Some(false)` = only after the user confirms, `None` = not protected.
 fn protected_write(p: &Path, cwd: &Path) -> Option<bool> {
+    // A worktree's `.git` is a file that names the git directory git runs hooks and config
+    // from; it runs outside the sandbox later, like the files below.
+    if p == cwd.join(".git") {
+        return Some(true);
+    }
     let hit = |list: &[&str]| list.iter().any(|rel| is_inside(p, &cwd.join(rel)));
     if hit(GIT_PROTECTED_IN_CWD) || in_linked_git_dirs(p, cwd) {
         Some(true)

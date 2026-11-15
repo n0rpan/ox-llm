@@ -56,6 +56,19 @@ class Pricing(unittest.TestCase):
         item['provider'] = 'anthropic'
         self.assertEqual(cloud.cost(item, 100, 10, cache_write=100), 0.00021)
 
+    def test_anthropic_default_prices_cache_reads_at_a_tenth_of_input(self):
+        item = profiles()[REMOTE]
+        item['provider'] = 'anthropic'
+        rate = item['pricing']['input_per_million']
+        out = item['pricing']['output_per_million']
+        want = (5 * rate + 95 * rate * 0.1 + 10 * out) / 1e6
+        self.assertAlmostEqual(cloud.cost(item, 100, 10, cache_read=95), want, places=12)
+
+    def test_non_anthropic_default_stays_conservative_for_cache_reads(self):
+        item = profiles()[REMOTE]
+        item['provider'] = 'openai'
+        self.assertEqual(cloud.cost(item, 100, 10, cache_read=95), cloud.cost(item, 100, 10))
+
     def test_usage_meter_applies_cache_rates_and_rejects_inconsistent_counts(self):
         item = tiered()
         meter = cloud.Meter()

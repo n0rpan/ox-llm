@@ -1,0 +1,18 @@
+[package]
+name = "oxa-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+# Its own workspace: oxa/Cargo.toml and Cargo.lock are architect-owned and stay untouched.
+[workspace]
+
+[dependencies]
+oxa-core = { path = "../../oxa/oxa-core" }
+oxa-engine = { path = "../../oxa/oxa-engine" }
+oxa-mcp = { path = "../../oxa/oxa-mcp" }
+oxa-proto = { path = "../../oxa/oxa-proto" }
+oxa-rpc = { path = "../../oxa/oxa-rpc" }
+oxa-session = { path = "../../oxa/oxa-session" }
+oxa-tools = { path = "../../oxa/oxa-tools" }
+oxa-tui = { path = "../../oxa/oxa-tui" }
+serde_json = "1"
