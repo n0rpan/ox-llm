@@ -128,13 +128,14 @@ class Demo:
 
     def run(self):
         worker_url, worker_record = self.fake(
-            "worker", [text_turn("done", "child result", ["synthetic check"])],
+            "worker", [text_turn("done", "child result", ["synthetic check"]),
+                       text_turn("done", "child result", ["synthetic check"])],
             "--model", "worker-model", "--hold-headers", "2200",
         )
         profiles = self.agent / "workers.json"
         profiles.write_text(json.dumps({
             "version": 1, "verified_local_only": True, "parallel": 1,
-            "total_tokens": 100000, "total_output_bytes": 1048576,
+            "total_tokens": 200000, "total_output_bytes": 2097152,
             "profiles": [{
                 "name": "author", "role": "fixed demo author",
                 "engine": worker_url.removeprefix("http://"), "model": "worker-model",
@@ -151,6 +152,9 @@ class Demo:
             text_turn("done", "same-session-demo", ["one shared session"]),
             {"tool_calls": [tool], "finish": "tool_calls"},
             text_turn("done", "waiting-for-worker", ["worker started"]),
+            {"tool_calls": [{**tool, "id": "collected-worker"}], "finish": "tool_calls"},
+            text_turn("done", "waiting-for-second-worker", ["worker started"]),
+            text_turn("done", "collected-worker-result", ["worker reply verified"]),
             text_turn("continue", "long step one"),
             text_turn("continue", "long step two"),
             {"text": "live-summary-marker: previous steps checked"},
@@ -220,6 +224,20 @@ class Demo:
             "author · worker-model · canceled" in line for line in s.splitlines()[-3:]
         ))
         self.wait(lambda _: len(self.records(record)) == 4)
+        self.mutate("cancel", self.request("status"))
+        canceled = self.wait(lambda v: self.goal(v)["state"] == "canceled")
+        self.mutate("set_goal", canceled, text="Start another worker and collect its result", budget=budget)
+        funded_worker = self.wait(lambda v: self.goal(v)["id"] != self.goal(canceled)["id"])
+        self.mutate("resume", funded_worker)
+        collected = self.wait(lambda v: self.goal(v)["state"] == "done")
+        assert collected["status"]["session"]["id"] == session
+        assert len(collected["status"]["workers"]) == 2
+        assert any(w["state"] == "completed" and w["process_stopped"] for w in collected["status"]["workers"])
+        self.save_screen("collected-screen.txt", lambda s: "collected-worker-result" in s and "Goal Done" in s)
+        self.wait(lambda _: len(self.records(record)) == 7)
+        result_prompt = json.loads(self.records(record)[6]["body"])
+        assert "child result" in json.dumps(result_prompt["messages"])
+        assert "untrusted data" in json.dumps(result_prompt["messages"])
 
         self.mux("send-keys", "-t", "demo", "-l", "/new")
         self.mux("send-keys", "-t", "demo", "Enter")
@@ -238,8 +256,8 @@ class Demo:
         self.save_screen("compacted-screen.txt", lambda s: (
             "live-compaction-final" in s and "Goal Done; turns 3" in s and "Compacted from" in s
         ))
-        self.wait(lambda _: len(self.records(record)) == 11)
-        long_records = self.records(record)[4:]
+        self.wait(lambda _: len(self.records(record)) == 14)
+        long_records = self.records(record)[7:]
         kinds = [dict(r["headers"])["x-oxe-turn-kind"] for r in long_records]
         assert kinds == ["chat", "chat", "compaction", "prefill", "chat", "compaction", "prefill"], kinds
         total = sum(r["usage"]["prompt"] + r["usage"]["completion"] for r in long_records)
@@ -249,7 +267,7 @@ class Demo:
         later = json.loads(long_records[4]["body"])
         assert "live-summary-marker" in json.dumps(later["messages"])
         time.sleep(0.1)
-        assert len(self.records(record)) == 11, "stopped work triggered follow-on inference"
+        assert len(self.records(record)) == 14, "stopped work triggered follow-on inference"
         self.mux("send-keys", "-t", "demo", "C-d")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -263,7 +281,7 @@ class Demo:
         result = {
             "shared_session_steer": True, "idle_escape_paused_parent": True,
             "worker_footer_verified": True, "worker_canceled_and_reaped": True,
-            "tui_session_rebound": True, "compacted_goal_turns": 3,
+            "worker_result_collected": True, "tui_session_rebound": True, "compacted_goal_turns": 3,
             "compacted_goal_tokens": total, "sdk_kinds": kinds, "tui_exit": 0,
         }
         (self.root / "result.json").write_text(json.dumps(result, indent=2) + "\n")

@@ -8,9 +8,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-owned-background = []
+owned-background = ["dep:oxa-owned-command"]
 
 [dependencies]
+oxa-owned-command = { workspace = true, optional = true }
 serde_json.workspace = true
 
 [lints]

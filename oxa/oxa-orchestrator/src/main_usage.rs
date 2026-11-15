@@ -279,6 +279,7 @@ mod tests {
                 max_tokens: if kind == TurnKind::Prefill { 0 } else { 128 },
                 thinking: false,
                 preserve_thinking: false,
+                sampling: None,
                 hints: Hints {
                     session: "main",
                     idem_key: "",

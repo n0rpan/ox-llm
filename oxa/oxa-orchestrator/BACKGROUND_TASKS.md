@@ -134,3 +134,7 @@ concurrency/retention limits, full result reads/forget, foreign-session rejectio
 offline preparation and protected git-alias refusal. No installed model, cloud
 provider, production service or other machine is used. Worker-lane role/model/
 budget integration and full-evening cloud acceptance remain outstanding.
+
+For current upstream GitHub capability transport and redaction in owned commands,
+see [UPSTREAM_INTEGRATION.md](UPSTREAM_INTEGRATION.md) and the optional
+[`oxa-owned-command`](../oxa-owned-command/README.md) preparation helper.

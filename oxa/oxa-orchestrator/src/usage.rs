@@ -188,6 +188,7 @@ mod native {
                     max_tokens: if kind == TurnKind::Prefill { 0 } else { 128 },
                     thinking: false,
                     preserve_thinking: false,
+                    sampling: None,
                     hints: Hints {
                         session: "owned",
                         idem_key: "",
@@ -218,6 +219,7 @@ mod native {
                 max_tokens: 128,
                 thinking: false,
                 preserve_thinking: false,
+                sampling: None,
                 hints: Hints {
                     session: "owned",
                     idem_key: "",
@@ -259,6 +261,7 @@ mod native {
                 max_tokens: 128,
                 thinking: false,
                 preserve_thinking: false,
+                sampling: None,
                 hints: Hints {
                     session: "owned",
                     idem_key: "",

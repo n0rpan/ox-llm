@@ -75,3 +75,8 @@ This is a reproducible mock demo, not the cloud working-evening acceptance.
 Provider billing/cancellation, #64 continuation recovery, #47/#48/#71 settlement,
 upstream #60 integration and coordinator/T2/T3 review gates remain outstanding.
 No change is merged by this demo.
+
+The upstream-integration version also funds a second worker after cancellation,
+waits for its verified result to wake the same parent, and checks successful
+completion before `/new`. See [UPSTREAM_INTEGRATION.md](UPSTREAM_INTEGRATION.md)
+for the updated receipt and Core environment-note compatibility.

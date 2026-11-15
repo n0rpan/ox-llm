@@ -86,7 +86,7 @@ pub trait Sandbox: Send + Sync {
     /// Opt-in owned runner: apply the SAME run-time refusal/preparation checks
     /// before returning a sandbox command. Unsupported sandboxes fail closed.
     #[cfg(feature = "owned-background")]
-    fn prepare_background(&self, _s: &ExecSpec) -> Result<(PathBuf, Vec<String>), OxaError> {
+    fn prepare_background(&self, _s: &ExecSpec) -> Result<crate::PreparedBackground, OxaError> {
         Err(OxaError::new(
             crate::codes::NO_SANDBOX,
             "sandbox does not support owned background execution",

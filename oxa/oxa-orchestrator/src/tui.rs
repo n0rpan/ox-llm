@@ -585,7 +585,13 @@ impl Owner {
                     .as_deref()
                     .and_then(|text| text.rsplit_once(WAKE_MARKER))
                 {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                    // Current Core appends its environment note to user wire
+                    // messages. Decode the complete wake envelope at the start,
+                    // rather than requiring it to be the message's final bytes.
+                    if let Some(Ok(value)) = serde_json::Deserializer::from_str(data)
+                        .into_iter::<serde_json::Value>()
+                        .next()
+                    {
                         if let (Some(tasks), Some(id)) = (&self.background, value["task"].as_str()) {
                             tasks.delivered(id);
                         }

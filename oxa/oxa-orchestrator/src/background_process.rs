@@ -4,8 +4,7 @@ use std::{
     io::{self, Read},
     os::fd::AsRawFd,
     os::unix::process::CommandExt,
-    path::Path,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     thread,
     time::Duration,
 };
@@ -68,15 +67,29 @@ fn nonblocking(fd: i32) -> io::Result<()> {
 fn clock() -> io::Result<u64> {
     crate::resume::boot_time_ns()
 }
-fn read(pipe: &mut impl Read, output: &mut Vec<u8>, cap: usize, truncated: &mut bool) -> io::Result<bool> {
+fn read(
+    pipe: &mut impl Read,
+    prepared: &mut oxa_proto::PreparedBackground,
+    stderr: bool,
+    output: &mut Vec<u8>,
+    cap: usize,
+    truncated: &mut bool,
+) -> io::Result<bool> {
     let mut bytes = [0; 8192];
     for _ in 0..4 {
         match pipe.read(&mut bytes) {
-            Ok(0) => return Ok(true),
+            Ok(0) => {
+                let tail = prepared.filter(stderr, &[], true);
+                let keep = tail.len().min(cap.saturating_sub(output.len()));
+                output.extend_from_slice(&tail[..keep]);
+                *truncated |= keep != tail.len();
+                return Ok(true);
+            }
             Ok(n) => {
-                let keep = n.min(cap.saturating_sub(output.len()));
-                output.extend_from_slice(&bytes[..keep]);
-                *truncated |= keep != n;
+                let safe = prepared.filter(stderr, &bytes[..n], false);
+                let keep = safe.len().min(cap.saturating_sub(output.len()));
+                output.extend_from_slice(&safe[..keep]);
+                *truncated |= keep != safe.len();
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -86,8 +99,7 @@ fn read(pipe: &mut impl Read, output: &mut Vec<u8>, cap: usize, truncated: &mut 
     Ok(false)
 }
 pub(crate) fn run(
-    program: &Path,
-    args: &[String],
+    mut prepared: oxa_proto::PreparedBackground,
     timeout_s: u32,
     cap: usize,
     cancel: &CancelToken,
@@ -105,9 +117,8 @@ pub(crate) fn run(
     let deadline = started
         .checked_add(u64::from(timeout_s) * 1_000_000_000)
         .ok_or_else(|| io::Error::other("task deadline overflow"))?;
-    let mut command = Command::new(program);
+    let mut command = prepared.command();
     command
-        .args(args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("LANG", "C.UTF-8")
@@ -152,8 +163,15 @@ pub(crate) fn run(
     let mut exited_at = None;
     let mut killed = false;
     loop {
-        let out_eof = read(&mut stdout, &mut output, cap, &mut truncated)?;
-        let err_eof = read(&mut stderr, &mut output, cap, &mut truncated)?;
+        let out_eof = read(
+            &mut stdout,
+            &mut prepared,
+            false,
+            &mut output,
+            cap,
+            &mut truncated,
+        )?;
+        let err_eof = read(&mut stderr, &mut prepared, true, &mut output, cap, &mut truncated)?;
         let now = clock()?;
         if reason == "completed" {
             reason = if truncated {

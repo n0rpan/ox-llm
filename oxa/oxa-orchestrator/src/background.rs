@@ -253,11 +253,11 @@ impl Manager {
                         truncated: false,
                     });
                 }
-                let (program, args) = owner
+                let prepared = owner
                     .sandbox
                     .prepare_background(&spec)
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
-                crate::background_process::run(&program, &args, timeout, output, &task_cancel, |pid| {
+                crate::background_process::run(prepared, timeout, output, &task_cancel, |pid| {
                     let mut state = owner.state.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(task) = state.tasks.get_mut(&task_id) {
                         task.snapshot.state = if task.cancel.is_cancelled() {
@@ -754,6 +754,73 @@ mod tests {
             .is_err());
     }
     #[test]
+    fn owned_background_uses_private_github_capability_and_redaction() {
+        let env = TestEnv::new();
+        let work = env.work();
+        for (enabled, offline, request_net) in [
+            (true, false, true),
+            (true, true, true),
+            (false, false, true),
+            (true, false, false),
+        ] {
+            let sandbox = oxa_sandbox::NetSandbox::new(
+                Arc::new(oxa_sandbox::Bwrap {
+                    bwrap: "/usr/bin/bwrap".into(),
+                    home: env.home(),
+                    layout: oxa_sandbox::Layout::default(),
+                }),
+                enabled,
+                offline,
+            )
+            .with_gh_token(Some("SYNTHETIC_BG_CAPABILITY".into()));
+            let mut spec = ExecSpec {
+                command: "printf '%s %s' \"${GH_TOKEN:-missing}\" \"${GH_HOST:-missing}\"".into(),
+                cwd: work.clone(),
+                writable: true,
+                net: request_net,
+                timeout_s: Some(3),
+                env: vec![],
+            };
+            let prepared = sandbox.prepare_background(&spec).unwrap();
+            assert!(!prepared
+                .args()
+                .iter()
+                .any(|arg| arg.contains("SYNTHETIC_BG_CAPABILITY")));
+            let result =
+                crate::background_process::run(prepared, 3, 1024, &CancelToken::new(), |_| {}).unwrap();
+            assert_eq!(result.exit, Some(0));
+            assert_eq!(
+                String::from_utf8(result.output).unwrap(),
+                if enabled && !offline && request_net {
+                    "[redacted] github.com"
+                } else {
+                    "missing missing"
+                }
+            );
+            if enabled && !offline && request_net {
+                spec.command = "printf '%s' \"${GH_TOKEN:0:8}\"; printf 'other-pipe' >&2; sleep 0.03; printf '%s' \"${GH_TOKEN:8}\"".into();
+                let prepared = sandbox.prepare_background(&spec).unwrap();
+                let result =
+                    crate::background_process::run(prepared, 3, 1024, &CancelToken::new(), |_| {}).unwrap();
+                let output = String::from_utf8(result.output).unwrap();
+                assert!(output.contains("[redacted]") && output.contains("other-pipe"));
+                assert!(
+                    !output.contains("SYNTHETIC"),
+                    "pipe interleaving must not bypass filtering"
+                );
+                spec.command = "printf 'x%s' \"$GH_TOKEN\"".into();
+                let prepared = sandbox.prepare_background(&spec).unwrap();
+                let result =
+                    crate::background_process::run(prepared, 3, 8, &CancelToken::new(), |_| {}).unwrap();
+                assert_eq!(result.reason, "output_limit");
+                assert_eq!(
+                    result.output, b"x[redact",
+                    "redact before applying the output cap"
+                );
+            }
+        }
+    }
+    #[test]
     fn sandbox_preparation_keeps_offline_clamp_and_git_alias_refusal() {
         let env = TestEnv::new();
         let work = env.work();
@@ -772,7 +839,8 @@ mod tests {
             timeout_s: Some(1),
             env: vec![],
         };
-        let (_, args) = offline.prepare_background(&spec).unwrap();
+        let prepared = offline.prepare_background(&spec).unwrap();
+        let args = prepared.args();
         assert!(!args.iter().any(|a| a == "--share-net"));
         assert!(args.iter().any(|a| a == "--clearenv"));
         std::fs::create_dir(work.join(".git")).unwrap();

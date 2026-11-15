@@ -98,14 +98,19 @@ fn opts(env: &TestEnv, url: &str, store: Arc<dyn SessionStore>) -> InteractiveOp
         notices: vec![],
         env: vec![],
         caps: Some(TermCaps::BASIC),
-        reopen: Box::new(move |how| {
+        reopen: Box::new(move |how, current| {
             let open = match how {
                 Reopen::New => Open::New,
                 Reopen::Resume(s) => Open::Resume(s),
                 Reopen::Fork(s) => Open::Fork(s),
                 Reopen::Import(_) => return Err(OxaError::new("invalid", "no fixture import")),
             };
-            Session::open(deps(&url, &root, &work, reopened_store.clone()), open)
+            let mut config = deps(&url, &root, &work, reopened_store.clone());
+            if let Some((model, thinking)) = current {
+                config.model = Some(model);
+                config.thinking = Some(thinking);
+            }
+            Session::open(config, open)
         }),
         open_picker: false,
         save_trust: None,
@@ -2330,6 +2335,7 @@ fn source_prefill(engine: &dyn Engine, session: &str) -> Result<oxa_proto::Assis
             max_tokens: 0,
             thinking: false,
             preserve_thinking: false,
+            sampling: None,
             hints: oxa_proto::Hints {
                 session,
                 idem_key: "",
