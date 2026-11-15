@@ -79,3 +79,11 @@ codegen-units = 4
 # `oxa-cli/tests/h_panic_binary.rs`.
 panic = "unwind"
 strip = true
+
+# Model-free CI tests link hundreds of harnesses; production release settings stay above.
+[profile.ci]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+incremental = false
