@@ -18,6 +18,7 @@ upstream-anthropic-request = ["dep:serde_json"]
 upstream-anthropic-stream = ["dep:serde_json"]
 transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
 anthropic-client = ["transport", "secrets", "upstream-anthropic-request", "upstream-anthropic-stream"]
+anthropic-gateway = ["anthropic-client", "runtime"]
 
 [dependencies]
 bigdecimal = { version = "0.4", optional = true }

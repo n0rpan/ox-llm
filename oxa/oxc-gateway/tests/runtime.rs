@@ -69,11 +69,7 @@ fn canonical() -> Value {
 fn construction_and_discovery_need_no_credential_bytes_or_ledger() {
     let home = Home::new();
     home.key("synthetic-private-key");
-    fs::set_permissions(
-        home.0.join("provider.json"),
-        fs::Permissions::from_mode(0o644),
-    )
-    .unwrap();
+    fs::set_permissions(home.0.join("provider.json"), fs::Permissions::from_mode(0o644)).unwrap();
     let runtime = home.runtime(config(), Options::default());
     let discovery = runtime.discovery();
     assert_eq!(discovery.models["data"][0]["id"], "synthetic-cloud");
@@ -141,11 +137,7 @@ fn shared_runtime_admits_atomically_and_releases_only_after_the_row() {
     let runtime = home.runtime(config(), Options::default());
     let mut call = runtime.begin(payload(), Context::default()).unwrap();
     assert_eq!(
-        runtime
-            .begin(payload(), Context::default())
-            .err()
-            .unwrap()
-            .code,
+        runtime.begin(payload(), Context::default()).err().unwrap().code,
         "budget_exceeded"
     );
     call.mark_forwarded();
@@ -175,11 +167,7 @@ fn abort_records_a_conservative_charge_and_an_unforwarded_drop_costs_zero() {
     assert_eq!(rows[1]["status"], 503);
     assert_eq!(rows[1]["cost_usd"], json!(0.080064));
     assert_eq!(
-        runtime
-            .begin(payload(), Context::default())
-            .err()
-            .unwrap()
-            .code,
+        runtime.begin(payload(), Context::default()).err().unwrap().code,
         "budget_exceeded"
     );
 }
@@ -224,19 +212,12 @@ fn a_failed_append_closes_admission_for_every_following_call() {
     ));
     fs::create_dir(&path).unwrap();
     assert_eq!(
-        call.finish(Outcome::Complete, 200, None)
-            .err()
-            .unwrap()
-            .code,
+        call.finish(Outcome::Complete, 200, None).err().unwrap().code,
         "cloud_ledger_unavailable"
     );
     fs::remove_dir(path).unwrap();
     assert_eq!(
-        runtime
-            .begin(payload(), Context::default())
-            .err()
-            .unwrap()
-            .code,
+        runtime.begin(payload(), Context::default()).err().unwrap().code,
         "cloud_ledger_unavailable"
     );
 }
@@ -292,16 +273,9 @@ fn default_off_offline_and_policy_refusals_precede_keys_budget_and_io() {
     let mut disabled = config();
     disabled["cloud"]["enabled"] = json!(false);
     let runtime = home.runtime(disabled, Options::default());
-    assert!(runtime.discovery().models["data"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(runtime.discovery().models["data"].as_array().unwrap().is_empty());
     assert_eq!(
-        runtime
-            .begin(payload(), Context::default())
-            .err()
-            .unwrap()
-            .code,
+        runtime.begin(payload(), Context::default()).err().unwrap().code,
         "cloud_disabled"
     );
     let offline = home.runtime(
@@ -311,16 +285,9 @@ fn default_off_offline_and_policy_refusals_precede_keys_budget_and_io() {
             ..Options::default()
         },
     );
-    assert!(offline.discovery().models["data"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(offline.discovery().models["data"].as_array().unwrap().is_empty());
     assert_eq!(
-        offline
-            .begin(payload(), Context::default())
-            .err()
-            .unwrap()
-            .code,
+        offline.begin(payload(), Context::default()).err().unwrap().code,
         "offline"
     );
     let mut no_price = config();
@@ -356,11 +323,7 @@ fn default_off_offline_and_policy_refusals_precede_keys_budget_and_io() {
         },
     );
     assert_eq!(
-        runtime
-            .begin(payload(), Context::default())
-            .err()
-            .unwrap()
-            .code,
+        runtime.begin(payload(), Context::default()).err().unwrap().code,
         "cloud_ledger_unavailable"
     );
     assert!(!home.0.join("ledger").exists());
@@ -387,8 +350,7 @@ fn catalog_bounded_output_is_shared_with_the_provider_client() {
         );
     }
     let mut body = payload();
-    body["max_tokens"] =
-        serde_json::from_str("9999999999999999999999999999999999999999999").unwrap();
+    body["max_tokens"] = serde_json::from_str("9999999999999999999999999999999999999999999").unwrap();
     let call = runtime.begin(body, Context::default()).unwrap();
     assert_eq!(call.payload()["max_tokens"], 32);
     assert_eq!(call.model()["max_output"], 32);

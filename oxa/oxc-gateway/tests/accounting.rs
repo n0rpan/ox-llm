@@ -19,10 +19,7 @@ impl Home {
         let path = std::env::temp_dir().join(format!(
             "oxc-accounting-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
         ));
         fs::create_dir(&path).unwrap();
         Self(path)
@@ -64,8 +61,7 @@ fn unfinished_tail_is_not_a_corrupt_row_and_unchanged_reads_are_constant_work() 
         assert_eq!(reader.read(&path).unwrap(), 0.3);
     }
     assert!(reader.bytes_read() - read <= 64 * 100);
-    file.write_all(b"{\"remote\":true,\"cost_usd\":0.3}")
-        .unwrap();
+    file.write_all(b"{\"remote\":true,\"cost_usd\":0.3}").unwrap();
     assert_eq!(reader.read(&path).unwrap(), 0.3);
     file.write_all(b"\n").unwrap();
     assert_eq!(reader.read(&path).unwrap(), 0.6);
@@ -101,12 +97,7 @@ fn replace_truncate_and_malformed_costs_fail_or_reset_correctly() {
     append(&other, &json!({"remote":true,"cost_usd":0.5})).unwrap();
     fs::rename(&other, &path).unwrap();
     assert_eq!(reader.read(&path).unwrap(), 0.5);
-    for cost in [
-        json!(true),
-        json!(-1),
-        Value::Null,
-        json!("synthetic-invalid"),
-    ] {
+    for cost in [json!(true), json!(-1), Value::Null, json!("synthetic-invalid")] {
         let other = home.0.join("replacement");
         append(&other, &json!({"remote":true,"cost_usd":cost})).unwrap();
         fs::rename(&other, &path).unwrap();
@@ -152,16 +143,11 @@ fn reservations_are_atomic_and_abandoned_unforwarded_holds_release() {
     let budget = Budget::new(home.ledger());
     let mut model = model();
     assert_eq!(
-        budget
-            .reserve(&json!(1), true, &model, 0)
-            .err()
-            .unwrap()
-            .code,
+        budget.reserve(&json!(1), true, &model, 0).err().unwrap().code,
         "invalid_value"
     );
     model.price =
-        Price::from_model(&json!({"pricing":{"input_per_million":1,"output_per_million":2}}))
-            .unwrap();
+        Price::from_model(&json!({"pricing":{"input_per_million":1,"output_per_million":2}})).unwrap();
     let barrier = Arc::new(Barrier::new(20));
     let mut jobs = Vec::new();
     for _ in 0..20 {
@@ -208,14 +194,8 @@ fn settled_cache_tokens_and_reported_costs_become_remote_rows() {
         .finish(&usage, Outcome::Complete, |row| append(&path, row))
         .unwrap();
     use std::os::unix::fs::PermissionsExt;
-    assert_eq!(
-        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert_eq!(
-        fs::metadata(&home.0).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
+    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(fs::metadata(&home.0).unwrap().permissions().mode() & 0o777, 0o700);
     assert_eq!(row["remote"], true);
     assert_eq!(row["settled"], "usage");
     assert_eq!(row["cost_usd"], 0.000163);
@@ -243,9 +223,7 @@ fn missing_usage_charges_the_reservation_and_write_failures_block_further_spendi
     let reserved = hold.reserved();
     hold.mark_forwarded();
     let row = hold
-        .finish(&Usage::default(), Outcome::Complete, |row| {
-            append(&path, row)
-        })
+        .finish(&Usage::default(), Outcome::Complete, |row| append(&path, row))
         .unwrap();
     assert_eq!(row["cost_usd"], reserved);
     assert_eq!(row["settled"], "reserved");
@@ -258,11 +236,7 @@ fn missing_usage_charges_the_reservation_and_write_failures_block_further_spendi
         ))
         .is_err());
     assert_eq!(
-        budget
-            .reserve(&json!(1), true, &model(), 32)
-            .err()
-            .unwrap()
-            .code,
+        budget.reserve(&json!(1), true, &model(), 32).err().unwrap().code,
         "cloud_ledger_unavailable"
     );
 }
@@ -274,11 +248,7 @@ fn dropping_a_potentially_paid_hold_without_recording_fails_closed() {
     hold.mark_forwarded();
     drop(hold);
     assert_eq!(
-        budget
-            .reserve(&json!(1), true, &model(), 32)
-            .err()
-            .unwrap()
-            .code,
+        budget.reserve(&json!(1), true, &model(), 32).err().unwrap().code,
         "cloud_ledger_unavailable"
     );
 }
@@ -306,9 +276,7 @@ fn cancelled_cache_writes_include_hidden_output_and_final_usage_stays_exact() {
         usage_final: false,
         elapsed: Duration::from_millis(100),
     };
-    let row = hold
-        .finish(&usage, cancel, |row| append(&path, row))
-        .unwrap();
+    let row = hold.finish(&usage, cancel, |row| append(&path, row)).unwrap();
     assert_eq!(row["cost_usd"], 0.20006);
     assert_eq!(row["settled"], "estimated");
     let mut hold = budget.reserve(&json!(1), true, &model, 32).unwrap();
