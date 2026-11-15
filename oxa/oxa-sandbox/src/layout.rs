@@ -44,8 +44,9 @@ pub const SETTING_WRITE_PATHS: &str = "oxa.sandbox.writePaths";
 pub const SETTING_ALLOW_HOME_WRITE: &str = "oxa.sandbox.allowHomeWrite";
 
 /// Setting: let bash update the project's `.oxa` and `.agents/skills` (git merge, pull, checkout,
-/// stash pop, rebase bring in the committed configuration; user settings only). The trust check
-/// sees the changed content at the next start. `.git/hooks` and `.git/config` stay read-only.
+/// stash pop, rebase bring in the committed configuration; user settings only). Removes the read-only
+/// protection: unattended starts (`--approve`, `OXA_TRUST_PROJECT=1`, `always`, no record) load
+/// changed content without review; a reload does not load changed project extensions. `.git/hooks` and `.git/config` stay read-only.
 pub const SETTING_ALLOW_PROJECT_CONFIG_WRITE: &str = "oxa.sandbox.allowProjectConfigWrite";
 
 /// Fixed base `PATH` (appended when the user's lacks it).
