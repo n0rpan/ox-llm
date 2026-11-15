@@ -10,11 +10,15 @@ default = []
 cloud-only = ["dep:serde_json", "dep:url"]
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
+transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
 
 [dependencies]
 nix = { version = "0.30", features = ["user"], optional = true }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
 url = { version = "2", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [[example]]
 name = "catalog_contract"
