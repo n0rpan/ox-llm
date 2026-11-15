@@ -78,6 +78,9 @@ pub enum Block {
     Compaction {
         summary: String,
         tokens_before: u32,
+        /// Estimated context tokens after the compaction, when known (live `/compact` and
+        /// auto-compaction report it; entries resumed from disk predate the estimate).
+        tokens_after: Option<u32>,
         expanded: bool,
     },
     BranchSummary {
@@ -272,6 +275,9 @@ pub struct StatusModel {
     pub git_branch: Option<String>,
     pub session_name: Option<String>,
     pub model: String,
+    /// Wave D D4b: where the model runs (`local` or `cloud · <provider>`), display only.
+    pub model_remote: bool,
+    pub model_provider: Option<&'static str>,
     pub thinking: Option<ThinkingLevel>,
     /// Why thinking is forced off for this model (W6), shown in the status line.
     pub thinking_note: Option<String>,

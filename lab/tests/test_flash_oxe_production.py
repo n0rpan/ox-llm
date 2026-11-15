@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import signal
 import subprocess
@@ -13,7 +14,8 @@ from unittest.mock import Mock, patch
 from snapdragon_ai_lab.runtime import bigmoe_runtime, controller, oxe_runtime, profile_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-import flash_profile_fixture as stage_tool
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import flash_profile_fixture as stage_tool  # noqa: E402
 
 ALIAS = stage_tool.ALIAS
 GIB = 1024**3
