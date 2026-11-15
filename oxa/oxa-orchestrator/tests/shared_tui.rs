@@ -59,7 +59,10 @@ fn deps(url: &str, root: &Path, work: &Path, store: Arc<dyn SessionStore>) -> De
     } else {
         Arc::new(NoCommands)
     };
+    let jobs = Arc::new(oxa_tools::JobRegistry::new());
+    jobs.set_sandbox(sandbox.clone());
     let deps = Deps {
+        jobs,
         engine,
         store,
         tools: vec![],
@@ -103,7 +106,6 @@ fn opts(env: &TestEnv, url: &str, store: Arc<dyn SessionStore>) -> InteractiveOp
                 Reopen::New => Open::New,
                 Reopen::Resume(s) => Open::Resume(s),
                 Reopen::Fork(s) => Open::Fork(s),
-                Reopen::Import(_) => return Err(OxaError::new("invalid", "no fixture import")),
             };
             let mut config = deps(&url, &root, &work, reopened_store.clone());
             if let Some((model, thinking)) = current {
