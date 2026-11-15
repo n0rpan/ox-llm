@@ -17,6 +17,7 @@ name = "oxa"
 path = "src/main.rs"
 
 [dependencies]
+oxa-work.workspace = true
 oxa-proto.workspace = true
 oxa-engine.workspace = true
 oxa-session.workspace = true

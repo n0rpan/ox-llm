@@ -12,7 +12,7 @@ members = [
     "oxa-core",
     "oxa-tui",
     "oxa-interactive", "oxa-rpc", "oxa-export",
-    "oxa-cli",
+    "oxa-cli", "oxa-work",
     "oxa-fake", "oxa-parity",
 ]
 
@@ -45,6 +45,7 @@ oxa-interactive = { path = "oxa-interactive" }
 oxa-rpc = { path = "oxa-rpc" }
 oxa-export = { path = "oxa-export" }
 oxa-cli = { path = "oxa-cli" }
+oxa-work = { path = "oxa-work" }
 oxa-fake = { path = "oxa-fake" }
 # external (plan sec. 4); no async runtime anywhere
 serde = { version = "1", features = ["derive"] }

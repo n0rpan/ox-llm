@@ -431,6 +431,7 @@ dependencies = [
  "oxa-tools",
  "oxa-tui",
  "oxa-web",
+ "oxa-work",
  "regex",
  "serde_json",
  "sha2",
@@ -692,6 +693,14 @@ dependencies = [
  "oxa-tools",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "oxa-work"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
