@@ -82,7 +82,7 @@ pub(crate) fn chat_with_retry_keyed(
     let mut reloaded = false;
     let mut loading_noticed = false; // R2: one "model loading" notice per logical request
     loop {
-        let (res, got_data) = probed_request(st, &opts, sink, ui);
+        let (res, got_data) = probed_request(st, opts, sink, ui);
         let err = match res {
             Ok(turn) if opts.max_tokens != Some(0) && context_full(st, &turn) => {
                 let err = OxaError::new(
