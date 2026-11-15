@@ -78,15 +78,28 @@ pub(crate) fn layout(
         allow_home_write,
     });
     // #196: extra read-only paths are never silent; say which are mounted and which are not.
-    let (mounted, skipped): (Vec<_>, Vec<_>) = read_extra
-        .iter()
-        .partition(|p| built.read.iter().chain(&built.write).any(|m| p.starts_with(m)));
-    if !mounted.is_empty() {
-        let list: Vec<_> = mounted.iter().map(|p| p.display().to_string()).collect();
+    let (mounted, skipped): (Vec<_>, Vec<_>) = read_extra.iter().partition(|p| {
+        Layout::keeps_extra(&dirs.home, Some(&dirs.agent_dir), p)
+            && built.read.iter().chain(&built.write).any(|m| p.starts_with(m))
+    });
+    let (writable, readonly): (Vec<&&std::path::PathBuf>, Vec<&&std::path::PathBuf>) =
+        mounted.iter().partition(|p| built.is_writable(p));
+    if !readonly.is_empty() {
+        let list: Vec<_> = readonly.iter().map(|p| p.display().to_string()).collect();
         notices.push((
             Level::Info,
             format!(
                 "bash can also read (never write): {} ({SETTING_READ_PATHS})",
+                list.join(", ")
+            ),
+        ));
+    }
+    if !writable.is_empty() {
+        let list: Vec<_> = writable.iter().map(|p| p.display().to_string()).collect();
+        notices.push((
+            Level::Info,
+            format!(
+                "bash can also read and write (also writable by another setting): {} ({SETTING_READ_PATHS})",
                 list.join(", ")
             ),
         ));
@@ -190,6 +203,52 @@ mod tests {
                 .iter()
                 .any(|(l, t)| *l == Level::Warning && t.contains("nope")),
             "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn missing_or_denied_child_and_writable_overlap_are_reported_truthfully() {
+        let env = TestEnv::new();
+        env.write("data/ok/x", "x");
+        env.write("data/w/x", "x");
+        env.write("home/.ssh/id", "k");
+        let r = |p: &str| env.root().join(p).display().to_string();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(
+                r#"{{"oxa":{{"sandbox":{{"readPaths":["{}","{}","{}","{}"],"writePaths":["{}"]}}}}}}"#,
+                r("data/ok"),
+                r("data/ok/missing"),
+                env.home().join(".ssh").display(),
+                r("data/w"),
+                r("data/w")
+            ),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        layout(&e, &dirs, &env.work(), false, &mut notices);
+        let text = |lvl: Level| {
+            notices
+                .iter()
+                .filter(|(l, _)| *l == lvl)
+                .map(|(_, t)| t.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (info, warn) = (text(Level::Info), text(Level::Warning));
+        let ro = info.lines().find(|l| l.contains("never write")).unwrap_or("");
+        assert!(
+            ro.contains("data/ok") && !ro.contains("missing") && !ro.contains(".ssh"),
+            "{info}"
+        );
+        assert!(
+            warn.contains("data/ok/missing") && warn.contains(".ssh"),
+            "{warn}"
+        );
+        assert!(!ro.contains("data/w"), "{info}");
+        assert!(
+            info.contains("read and write") && info.contains("data/w"),
+            "{info}"
         );
     }
 }

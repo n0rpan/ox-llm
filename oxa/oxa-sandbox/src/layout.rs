@@ -198,6 +198,18 @@ fn denied(p: &Path, deny: &[PathBuf]) -> bool {
 }
 
 impl Layout {
+    /// Whether `build` keeps an extra path (the same checks it applies to every configured
+    /// path: absolute, existing, not a credential path, not the home itself or `/`).
+    pub fn keeps_extra(home: &Path, agent_dir: Option<&Path>, p: &Path) -> bool {
+        let deny = sensitive_paths(home, agent_dir);
+        p.is_absolute() && p.exists() && !denied(p, &deny) && p != home && p != Path::new("/")
+    }
+
+    /// Whether `p` ends up writable in this (built) layout.
+    pub fn is_writable(&self, p: &Path) -> bool {
+        self.write.iter().any(|w| p.starts_with(w))
+    }
+
     /// Build the layout from the user's environment and settings (see the module docs).
     pub fn build(i: &LayoutInputs) -> Layout {
         let deny = sensitive_paths(&i.home, i.agent_dir.as_deref());
