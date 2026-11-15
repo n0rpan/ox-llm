@@ -799,9 +799,17 @@ class SSEDecoder:
         return event, data
 
 
+def cache_pricing(item):
+    """How cache tokens are priced: explicit catalog rates, provider default or conservative."""
+    price = item.get('pricing') or {}
+    if 'cache_read_per_million' in price and 'cache_write_per_million' in price:
+        return 'explicit'
+    return 'provider_default' if item['provider'] == 'anthropic' else 'conservative'
+
+
 def capabilities(item):
     """The Wave D per-model capability block for a remote catalog entry."""
-    return {'remote': True, 'remote_provider': item['provider'], 'echo': False,
+    return {'cache_pricing': cache_pricing(item), 'remote': True, 'remote_provider': item['provider'], 'echo': False,
             'cache_hints': False, 'cancel': item['provider'] != 'openai', 'prefill': False,
             'preserve_thinking': False, 'context_window': item['context_window']}
 

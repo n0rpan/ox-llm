@@ -540,3 +540,13 @@ class ReviewBoundaries(CloudCase):
         self.assertEqual(self.upstream.requests, [])
         self.assertFalse(cloud._reserved)
         self.assertEqual(self.ledger_rows()[-1]['cost_usd'], 0)
+
+
+class CachePricingFlagTests(unittest.TestCase):
+    def test_flag_values(self):
+        from oxc.runtime import cloud
+        base = {'input_per_million': 3.0, 'output_per_million': 15.0}
+        self.assertEqual(cloud.cache_pricing({'provider': 'anthropic', 'pricing': base}), 'provider_default')
+        self.assertEqual(cloud.cache_pricing({'provider': 'openrouter', 'pricing': base}), 'conservative')
+        full = dict(base, cache_read_per_million=0.3, cache_write_per_million=3.75)
+        self.assertEqual(cloud.cache_pricing({'provider': 'openrouter', 'pricing': full}), 'explicit')
