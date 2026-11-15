@@ -146,6 +146,7 @@ fn run(st: &mut SessionState, prompt_text: &str) -> (RunEnd, Vec<AgentEvent>) {
         EntryBody::Msg {
             wire: WireMsg::user(prompt_text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();

@@ -702,6 +702,7 @@ fn blocks_from_entries_attach_results_to_calls() {
             body: EntryBody::Msg {
                 wire: WireMsg::user("list files"),
                 parts: vec![Part::Text("list files".into())],
+                tool: None,
             },
         },
         Entry {
@@ -721,6 +722,7 @@ fn blocks_from_entries_attach_results_to_calls() {
                     tool_call_id: None,
                 },
                 parts: Vec::new(),
+                tool: None,
             },
         },
         Entry {
@@ -730,6 +732,7 @@ fn blocks_from_entries_attach_results_to_calls() {
             body: EntryBody::Msg {
                 wire: WireMsg::tool_result("call_1", "a\nb"),
                 parts: Vec::new(),
+                tool: None,
             },
         },
         Entry {
@@ -750,6 +753,59 @@ fn blocks_from_entries_attach_results_to_calls() {
             assert_eq!(t.name, "bash");
             assert_eq!(t.state, ToolState::Done);
             assert_eq!(t.result.as_ref().map(|r| r.text.as_str()), Some("a\nb"));
+        }
+        other => panic!("expected the tool block, got {other:?}"),
+    }
+}
+
+#[test]
+fn blocks_from_entries_keep_error_flag_and_ui_of_results() {
+    let ui = serde_json::json!({ "exit": 2 });
+    let entry = |id: &str, parent: Option<&str>, body| Entry {
+        id: id.into(),
+        parent: parent.map(Into::into),
+        ts_ms: 0,
+        body,
+    };
+    let call = WireMsg {
+        role: oxa_proto::Role::Assistant,
+        content: None,
+        reasoning: None,
+        tool_calls: vec![oxa_proto::ToolCall {
+            id: "call_1".into(),
+            name: "bash".into(),
+            args_raw: "{}".into(),
+        }],
+        tool_call_id: None,
+    };
+    let entries = vec![
+        entry(
+            "00000001",
+            None,
+            EntryBody::Msg {
+                wire: call,
+                parts: Vec::new(),
+                tool: None,
+            },
+        ),
+        entry(
+            "00000002",
+            Some("00000001"),
+            EntryBody::Msg {
+                wire: WireMsg::tool_result("call_1", "boom"),
+                parts: Vec::new(),
+                tool: Some(oxa_proto::ToolMeta {
+                    is_error: true,
+                    ui: ui.clone(),
+                }),
+            },
+        ),
+    ];
+    match &blocks_from_entries(&entries)[1] {
+        Block::Tool(t) => {
+            let r = t.result.as_ref().expect("result");
+            assert!(r.is_error, "a failed call stays failed after resume");
+            assert_eq!(r.ui, ui);
         }
         other => panic!("expected the tool block, got {other:?}"),
     }
