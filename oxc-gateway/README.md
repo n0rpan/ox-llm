@@ -84,3 +84,37 @@ final symlinks. The 34 source contracts stay unchanged; three native repo refusa
 intentionally use the requested specific diagnostic rather than Python's generic
 message. All other errors remain exact, except the already validated Python
 3.12/3.13 symlink-loop wording.
+
+The `ledger` feature composes private request metadata with accounting for the
+in-process Anthropic skeleton (#331/#289). Open one `Ledger` for the gateway
+lifetime and clone it. Each `today()`/`day()` handle reuses exactly one Budget
+for that day's path; an admitted request keeps its day across midnight. The
+install HMAC salt is stable, owner-only, and published atomically so concurrent
+starts cannot observe a partial salt. Invalid salts fail closed without rotation.
+
+```rust,no_run
+# fn example(directory: &std::path::Path, payload: &serde_json::Value, model: &oxc_gateway::accounting::Model) -> Result<(), Box<dyn std::error::Error>> {
+use oxc_gateway::{ledger::{Context, Ledger}, accounting::{Outcome, Usage}};
+let ledger = Ledger::open(directory)?; // retain this instance across calls
+let daily = ledger.today()?;
+let mut entry = daily.entry("configured-alias", payload, Context::default())?;
+let mut hold = daily.budget().reserve(&serde_json::json!(1.0), true, model, 100)
+    .map_err(|_| std::io::ErrorKind::PermissionDenied)?;
+entry.admitted();
+hold.mark_forwarded(); // immediately before potentially paid provider I/O
+// The native client translates and redacts its stream; observe its final usage.
+let usage = Usage::default(); // missing usage retains the conservative hold
+hold.finish(&usage, Outcome::Complete, |fields| {
+    entry.append(fields, 200, None, None).map(|_| ())
+}).map_err(|_| std::io::ErrorKind::Other)?;
+# Ok(()) }
+```
+
+Pass the provider key to `Entry::append` whenever one is available, including
+failures. Metadata includes a random request ID, wall/first-data timings,
+normalized origin, keyed agent/session/idempotency identifiers and numeric
+message/tool sizes. No prompt, reply, tool contents or raw identifiers are
+retained. Only typed accounting fields are copied from settlement. Seven new
+filesystem/concurrency tests cover metadata privacy, shared admission, write
+failure, midnight, salt initialization/validation and key redaction. Full history
+classification, pruning and HTTP/CLI presentation remain outside this slice.
