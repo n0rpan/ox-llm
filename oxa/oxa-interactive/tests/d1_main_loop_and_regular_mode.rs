@@ -838,3 +838,28 @@ fn quit_with_ctrl_c_twice_on_empty_editor() {
     assert_eq!(d.code, 0);
     assert!(d.cmds.is_empty());
 }
+
+/// Issue #344: Alt+Enter on an idle prompt inserts a newline instead of sending.
+#[test]
+fn alt_enter_idle_inserts_newline() {
+    let env = TestEnv::new();
+    let s = session(&env);
+    let d = drive(
+        &s,
+        &env,
+        vec![
+            vec![ch('a'), key("alt+enter"), ch('b'), key("enter")],
+            vec![key("ctrl+d")],
+        ],
+        vec![],
+    );
+    let prompts: Vec<String> = d
+        .cmds
+        .iter()
+        .filter_map(|c| match c {
+            SessionCmd::Prompt { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts, vec!["a\nb".to_string()]);
+}

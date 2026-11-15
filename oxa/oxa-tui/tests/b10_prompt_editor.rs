@@ -553,3 +553,14 @@ fn tab_with_one_candidate_applies_it() {
     assert_eq!(t.text(), "src/main.rs");
     assert!(!t.e.autocomplete_open());
 }
+
+/// Issue #344: after an Up-arrow recall the cursor is at the start; Ctrl+U must still clear it.
+#[test]
+fn ctrl_u_at_start_clears_the_line() {
+    let mut t = Ed::new();
+    t.e.add_history("recalled text");
+    t.press("up");
+    assert_eq!(t.text(), "recalled text");
+    assert_eq!(t.press("ctrl+u"), EditorAction::Changed);
+    assert_eq!(t.text(), "");
+}

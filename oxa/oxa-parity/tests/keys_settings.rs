@@ -3537,13 +3537,15 @@ fn key_016() {
     });
     t.wait_text("follow answer");
     assert_eq!(t.prompts(), vec!["one".to_string(), "later".to_string()]);
-    // Idle, alt+enter sends like enter.
+    // Idle, alt+enter adds a newline (issue #344); enter then sends both lines.
     drop(t);
     let t = Setup::new().replies("idle answer", 1).start();
     t.type_text("now");
     t.key("alt+enter");
+    t.type_text("more");
+    t.key("enter");
     t.wait_text("idle answer");
-    assert_eq!(t.prompts(), vec!["now".to_string()]);
+    assert_eq!(t.prompts(), vec!["now\nmore".to_string()]);
     drop(t);
     // alt+up brings the queued messages back into the editor; they are not sent.
     let t = Setup::new()
