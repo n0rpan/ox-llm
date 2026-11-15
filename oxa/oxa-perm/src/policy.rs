@@ -90,6 +90,10 @@ fn protected_write(p: &Path, cwd: &Path) -> Option<bool> {
     }
 }
 
+fn is_regular_file(p: &Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| m.is_file())
+}
+
 /// A worktree's `.git` is a file pointing at its gitdir, whose `commondir` holds the real hooks
 /// and config. `true` when `p` is a hooks dir or config file of either, outside the cwd.
 fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
@@ -99,17 +103,28 @@ fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
     let Some(dotgit) = start.ancestors().map(|a| a.join(".git")).find(|d| d.exists()) else {
         return false;
     };
-    let Ok(text) = std::fs::read_to_string(&dotgit) else {
+    // Only a regular file: a FIFO or device would block the read on every write check.
+    if !is_regular_file(&dotgit) {
         return false; // a normal repository: the cwd table covers it
+    }
+    let Ok(text) = std::fs::read_to_string(&dotgit) else {
+        return false;
     };
     let Some(raw) = text.trim().strip_prefix("gitdir:") else {
         return false;
     };
     let base = dotgit.parent().unwrap_or(cwd);
     let gitdir = base.join(raw.trim());
+    // The pointer itself decides which dirs are protected, so rewriting it is never allowed.
+    if is_inside(p, &dotgit) {
+        return true;
+    }
     let mut dirs = vec![gitdir.clone()];
-    if let Ok(c) = std::fs::read_to_string(gitdir.join("commondir")) {
-        dirs.push(gitdir.join(c.trim()));
+    let common = gitdir.join("commondir");
+    if is_regular_file(&common) {
+        if let Ok(c) = std::fs::read_to_string(&common) {
+            dirs.push(gitdir.join(c.trim()));
+        }
     }
     dirs.iter().any(|d| {
         let d = resolve_real(d).unwrap_or_else(|| d.clone());
