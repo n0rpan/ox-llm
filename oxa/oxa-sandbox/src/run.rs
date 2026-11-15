@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(20);
 /// After the child exited, how long a still-open pipe (a background process) may hold the call.
 const DRAIN: Duration = Duration::from_millis(200);
+/// Most captured output kept per command (head and tail halves); the middle is dropped.
+const CAPTURE_CAP: usize = 16 * 1024 * 1024;
 /// SIGTERM to the group, then SIGKILL after this long.
 const KILL_GRACE: Duration = Duration::from_secs(2);
 
@@ -86,6 +88,50 @@ pub fn run_unsandboxed_capture(
         .current_dir(&s.cwd)
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     execute(cmd, "bash", None, s.timeout_s, cancel, live, capture)
+}
+
+/// Bounded capture: the first and last `cap / 2` bytes, with a count of what was dropped.
+struct Capture {
+    half: usize,
+    head: Vec<u8>,
+    tail: std::collections::VecDeque<u8>,
+    dropped: u64,
+}
+
+impl Capture {
+    fn new(cap: usize) -> Self {
+        Capture {
+            half: cap / 2,
+            head: Vec::new(),
+            tail: std::collections::VecDeque::new(),
+            dropped: 0,
+        }
+    }
+
+    fn push(&mut self, mut chunk: &[u8]) {
+        if self.head.len() < self.half {
+            let n = (self.half - self.head.len()).min(chunk.len());
+            self.head.extend_from_slice(&chunk[..n]);
+            chunk = &chunk[n..];
+        }
+        self.tail.extend(chunk);
+        while self.tail.len() > self.half {
+            let over = self.tail.len() - self.half;
+            self.tail.drain(..over);
+            self.dropped += over as u64;
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        let mut out = self.head;
+        if self.dropped > 0 {
+            out.extend_from_slice(
+                format!("\n[... {} bytes of output dropped ...]\n", self.dropped).as_bytes(),
+            );
+        }
+        out.extend(self.tail);
+        out
+    }
 }
 
 fn spawn_failed(text: String) -> ExecResult {
@@ -170,7 +216,7 @@ fn execute(
     });
 
     let start = Instant::now();
-    let mut out: Vec<u8> = Vec::new();
+    let mut out = Capture::new(CAPTURE_CAP);
     let mut status: Option<ExitStatus> = None;
     let mut exited_at: Option<Instant> = None;
     let mut eof = false;
@@ -183,7 +229,7 @@ fn execute(
             Ok(chunk) => {
                 live(&chunk);
                 if capture {
-                    out.extend_from_slice(&chunk);
+                    out.push(&chunk);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -231,7 +277,7 @@ fn execute(
         status.and_then(|s| s.code())
     };
     ExecResult {
-        output: out,
+        output: out.finish(),
         exit,
         timed_out,
     }
@@ -259,6 +305,31 @@ pub fn die_with_parent(cmd: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_output_is_capped_keeping_head_and_tail() {
+        let argv: Vec<String> = ["sh", "-c", "printf HEAD; head -c 40000000 /dev/zero; printf TAIL"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let r = run_argv(&argv, &[], None, &CancelToken::default(), &mut |_| {});
+        assert!(
+            r.output.len() < CAPTURE_CAP + 1024,
+            "captured {} bytes",
+            r.output.len()
+        );
+        assert!(r.output.starts_with(b"HEAD"));
+        assert!(r.output.ends_with(b"TAIL"));
+        let text = String::from_utf8_lossy(&r.output);
+        assert!(text.contains("bytes of output dropped"), "no drop notice");
+    }
+
+    #[test]
+    fn small_output_is_untouched() {
+        let mut c = Capture::new(10);
+        c.push(b"hello");
+        assert_eq!(c.finish(), b"hello");
+    }
 
     #[test]
     fn die_with_parent_command_runs_normally() {
