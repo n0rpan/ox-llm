@@ -660,7 +660,10 @@ def response_proof(response, body, validate_schema=False):
             continue
         if validate_schema:
             import jsonschema
-            from referencing.exceptions import Unresolvable
+            try:
+                from referencing.exceptions import Unresolvable
+            except ImportError:  # jsonschema older than 4.18 has no `referencing` package
+                Unresolvable = jsonschema.exceptions.RefResolutionError
             schema = tools[call['name']]
             def external_ref(node):
                 if isinstance(node, dict):

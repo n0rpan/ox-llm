@@ -56,7 +56,7 @@ fn check_namespace(directory: &File) -> io::Result<()> {
     // SAFETY: geteuid has no arguments or memory access side effects.
     let user = unsafe { libc::geteuid() };
     if !metadata.is_dir()
-        || (metadata.uid() != user && metadata.uid() != 0)
+        || !trusted_owner(metadata.uid(), user)
         || (metadata.mode() & 0o022 != 0 && metadata.mode() & libc::S_ISVTX == 0)
     {
         return Err(io::Error::new(
@@ -67,6 +67,58 @@ fn check_namespace(directory: &File) -> io::Result<()> {
     Ok(())
 }
 
+// Only the operator and real root are trusted. The overflow uid (65534) stands for
+// every unmapped host uid inside a user namespace, so it is never trusted by value.
+fn trusted_owner(owner: u32, user: u32) -> bool {
+    owner == user || owner == 0
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn overflow_and_other_owners_stay_rejected() {
+        let user = 1000;
+        assert!(trusted_owner(user, user));
+        assert!(trusted_owner(0, user));
+        assert!(!trusted_owner(65534, user));
+        assert!(!trusted_owner(1001, user));
+    }
+
+    // Fresh directory per test; removed on drop, even when an assert fails.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str, mode: u32) -> Self {
+            let path = std::env::temp_dir().join(format!("oxa-ns-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn world_writable_directory_without_sticky_bit_is_rejected() {
+        let dir = TempDir::new("open", 0o777);
+        assert!(check_namespace(&File::open(&dir.0).unwrap()).is_err());
+    }
+
+    #[test]
+    fn private_own_directory_is_accepted() {
+        let dir = TempDir::new("ok", 0o700);
+        assert!(check_namespace(&File::open(&dir.0).unwrap()).is_ok());
+    }
 }
