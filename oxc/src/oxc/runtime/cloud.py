@@ -45,6 +45,7 @@ _TRUE = ('1', 'true', 'yes')
 _budget_lock = threading.Lock()
 _reserved = {}
 _ledger_failures = set()
+_unrecorded = {}  # ledger dir -> spend whose row could not be written
 
 
 
@@ -401,11 +402,16 @@ def spend_today(value=None, day=None):
         return _read_spend(path)
 
 
-def mark_ledger_failure(value=None):
-    """A cloud ledger row could not be written: refuse further cloud calls for this directory."""
+def mark_ledger_failure(cost=None):
+    """A cloud ledger row could not be written: refuse further cloud calls for this directory.
+
+    ``cost`` is the spend that row would have recorded; it is written back when the latch clears."""
     directory = _ledger_dir()
     if directory is not None:
-        _ledger_failures.add(str(directory))
+        with _budget_lock:
+            _ledger_failures.add(str(directory))
+            if type(cost) in (int, float) and math.isfinite(cost) and cost > 0:
+                _unrecorded[str(directory)] = _unrecorded.get(str(directory), 0.0) + cost
 
 
 def ledger_latched():
@@ -427,11 +433,14 @@ def _check_ledger_health():
     if directory is None or str(directory) not in _ledger_failures:
         return
     try:
+        lost = _unrecorded.get(str(directory), 0.0)
         written = ctl.request_ledger.write({'remote': True, 'remote_provider': 'ledger_probe',
-                                            'cost_usd': 0.0, 'settled': 'probe'})
+                                            'cost_usd': lost, 'settled': 'recovered' if lost else 'probe'})
         if written is True:
             spend_today()
-            _ledger_failures.discard(str(directory))
+            with _budget_lock:
+                _unrecorded.pop(str(directory), None)
+                _ledger_failures.discard(str(directory))
             return
     except CloudError:
         pass
@@ -487,7 +496,8 @@ def estimate_prompt_tokens(payload):
     if not _text_only(conversation):
         return None
     material = {**conversation, 'tools': payload.get('tools'), 'tool_choice': payload.get('tool_choice'),
-                'response_format': payload.get('response_format')}
+                'response_format': payload.get('response_format'), 'text': payload.get('text'),
+                'instructions': payload.get('instructions')}
     try:
         text = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     except (TypeError, ValueError):
@@ -578,6 +588,15 @@ def reserve(value, item, payload):
 def spend_day():
     import time
     return time.strftime('%Y%m%d')
+
+
+CLEAN_REFUSAL_STATUSES = frozenset((400, 401, 402, 403, 404, 405, 409, 413, 415, 422, 429))
+
+
+def clean_refusal(status):
+    """True for HTTP statuses a provider returns before generating anything.  5xx (including 529)
+    can follow partial generation, so they keep the worst-case charge."""
+    return status in CLEAN_REFUSAL_STATUSES
 
 
 def conservative_cost(row, hold, failed=False, refused=False):

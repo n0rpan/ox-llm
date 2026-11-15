@@ -28,7 +28,7 @@ def _close_row(st, status, error=None):
         return
     st.led.finish(status, error)
     if getattr(st.led, 'written', True) is False:
-        cloud.mark_ledger_failure()
+        cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
 
 
 def _reply(self, st, status, message, code, error=None, param='model'):
@@ -128,7 +128,7 @@ def forward(self, st):
         if response.status >= 400:
             payload = _error_body(response.status, response.read(cloud.MAX_ERROR_BYTES), key)
             _finish(self, st, item, meter, response.status, 'cloud_upstream_error', hold, key, failed=True,
-                    refused=True)
+                    refused=cloud.clean_refusal(response.status))
             return self.reply(response.status, payload, 'application/json')
         if body.get('stream') is True or 'text/event-stream' in full_type.lower():
             self.send_response(response.status)
@@ -235,7 +235,7 @@ def forward(self, st):
                 _finish(self, st, item, meter, 503, 'cloud_interrupted', hold, key, failed=True)
             except Exception:
                 # If settlement itself fails, no subsequent request may spend past it.
-                cloud.mark_ledger_failure()
+                cloud.mark_ledger_failure(hold.reserved)
             finally:
                 hold.settle()
         if connection is not None:

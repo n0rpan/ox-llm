@@ -576,7 +576,7 @@ def _close(st, status, error=None):
         return
     st.led.finish(status, error)
     if getattr(st.led, 'written', True) is False:
-        cloud.mark_ledger_failure()
+        cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
 
 
 def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_final=False,
@@ -712,7 +712,7 @@ def forward(self, st, item, key):
         if not started:
             _error(self, st, item, status, message or 'The Anthropic provider is unavailable.',
                    key, hold=hold, failed=True,
-                   refused=isinstance(getattr(error, 'status_code', None), int))
+                   refused=cloud.clean_refusal(getattr(error, 'status_code', None)))
         else:
             _record(st, item, hold, translator.usage if translator else None, True,
                     status, 'cloud_stream_error')
