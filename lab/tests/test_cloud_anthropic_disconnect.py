@@ -1,8 +1,11 @@
 """Native SDK cancellation under the default-off orchestrator opt-in."""
 import json
 import asyncio
+import os
 import select
 import socket
+import ssl
+import subprocess
 import threading
 import time
 import types
@@ -13,6 +16,8 @@ from snapdragon_ai_lab.runtime import cloud_anthropic, controller
 from snapdragon_ai_lab.runtime.orchestrator_anthropic import Client, Canceled
 
 from mock_cloud import MockAnthropic
+import mock_cloud
+from openai_api_stack import FakeEngine
 from test_cloud_anthropic import AnthropicBase
 from test_cloud_remote import KEY
 
@@ -90,24 +95,64 @@ class QuietAnthropic(MockAnthropic):
         try:
             while not self.release.wait(0.01):
                 ready, _, _ = select.select([handler.connection], [], [], 0.01)
-                if ready and not handler.connection.recv(1, socket.MSG_PEEK):
-                    self.disconnected.set()
-                    return
+                if ready:
+                    flags = 0 if isinstance(handler.connection, ssl.SSLSocket) else socket.MSG_PEEK
+                    try:
+                        data = handler.connection.recv(1, flags)
+                    except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError, ssl.SSLZeroReturnError):
+                        # A canceled TLS peer may reset rather than send close_notify.
+                        self.disconnected.set()
+                        return
+                    if not data:
+                        self.disconnected.set()
+                        return
         finally:
             handler.close_connection = True
 
 
 class AnthropicDisconnect(AnthropicBase):
+    def tls_upstream(self, headers, trusted=True):
+        certificate, key = self.tmp / 'mock-cert.pem', self.tmp / 'mock-key.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                        '-keyout', str(key), '-out', str(certificate), '-days', '1',
+                        '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1'],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        key.chmod(0o600)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certificate, key)
+        server_type = mock_cloud.ThreadingHTTPServer
+
+        def tls_server(*args, **kwargs):
+            server = server_type(*args, **kwargs)
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+            return server
+
+        with patch.object(mock_cloud, 'ThreadingHTTPServer', tls_server):
+            upstream = QuietAnthropic(headers)
+        # Local metadata routes remain plain HTTP and separate from the provider.
+        backend = FakeEngine()
+        self.addCleanup(backend.close)
+        if trusted:
+            trust = patch.dict(os.environ, {'SSL_CERT_FILE': str(certificate)})
+            trust.start()
+            self.addCleanup(trust.stop)
+        endpoint = types.SimpleNamespace(base=upstream.base.replace('http://', 'https://', 1),
+                                         port=backend.port)
+        return upstream, endpoint
+
     def enable_watch(self):
         value = json.loads(self.stack.config_path.read_text())['cloud']
         value['orchestrator_disconnect_watch'] = True
         self.stack.set_config(cloud=value)
 
-    def check_disconnect(self, headers, enabled=True, stream=True):
-        upstream = QuietAnthropic(headers)
+    def check_disconnect(self, headers, enabled=True, stream=True, tls=False):
+        if tls:
+            upstream, endpoint = self.tls_upstream(headers)
+        else:
+            upstream = endpoint = QuietAnthropic(headers)
         self.addCleanup(upstream.close)
         self.addCleanup(upstream.release.set)
-        self.start(mock=upstream)
+        self.start(mock=endpoint)
         if enabled:
             self.enable_watch()
         body = json.dumps({'model': 'anthropic/claude-sonnet-5-5',
@@ -156,6 +201,25 @@ class AnthropicDisconnect(AnthropicBase):
 
     def test_native_nonstream_pre_header_request_cancels(self):
         self.check_disconnect(False, stream=False)
+
+    def test_native_tls_quiet_stream_cancels(self):
+        self.check_disconnect(True, tls=True)
+
+    def test_native_tls_pre_header_request_cancels(self):
+        self.check_disconnect(False, tls=True)
+
+    def test_native_tls_rejects_an_untrusted_certificate(self):
+        upstream, endpoint = self.tls_upstream(False, trusted=False)
+        self.addCleanup(upstream.close)
+        self.addCleanup(upstream.release.set)
+        self.start(mock=endpoint)
+        self.enable_watch()
+        status, body = self.chat(stream=True)
+        self.assertEqual(status, 503, body)
+        self.assertFalse(upstream.started.is_set(), 'unverified TLS sent a provider request')
+        row = self.ledger_rows()[0]
+        self.assertNotEqual(row.get('error'), 'client_disconnected')
+        self.assertNotIn(KEY, json.dumps(row))
 
     def test_tls_downstream_does_not_use_plain_socket_watcher(self):
         upstream = MockAnthropic()

@@ -8,6 +8,7 @@ import json
 import os
 import select
 import socket
+import ssl
 from pathlib import Path
 import shlex
 import subprocess
@@ -149,9 +150,16 @@ def providers(openai_base, anthropic_base, tiered_pricing=False, cancel_reviewer
                 try:
                     while not self.release.wait(0.01):
                         ready, _, _ = select.select([handler.connection], [], [], 0.01)
-                        if ready and not handler.connection.recv(1, socket.MSG_PEEK):
-                            self.disconnected.set()
-                            return
+                        if ready:
+                            flags = 0 if isinstance(handler.connection, ssl.SSLSocket) else socket.MSG_PEEK
+                            try:
+                                data = handler.connection.recv(1, flags)
+                            except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError, ssl.SSLZeroReturnError):
+                                self.disconnected.set()
+                                return
+                            if not data:
+                                self.disconnected.set()
+                                return
                 finally:
                     handler.close_connection = True
                 return
@@ -176,6 +184,7 @@ def run(args):
     gateway = args.gateway_root.resolve()
     sys.path[:0] = [str(gateway / "lab" / "src"), str(gateway / "lab" / "tests")]
     from mock_cloud import MockOpenAIResponses, MockAnthropic
+    import mock_cloud
     from openai_api_stack import Stack
     from snapdragon_ai_lab.runtime import cloud, cloud_anthropic, request_ledger
     import anthropic
@@ -185,8 +194,31 @@ def run(args):
     spec.loader.exec_module(live)
     demo = live.Demo(args.bin_dir)
     author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic, args.pricing, args.cancel_reviewer)
+    tls_context = None
+    if args.tls_reviewer:
+        certificate, private_key = root / 'mock-cert.pem', root / 'mock-key.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                        '-keyout', str(private_key), '-out', str(certificate), '-days', '1',
+                        '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1'],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        private_key.chmod(0o600)
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.load_cert_chain(certificate, private_key)
+        os.environ['SSL_CERT_FILE'] = str(certificate)
     author = author_type()
-    reviewer = reviewer_type(author)
+    if tls_context is not None:
+        server_type = mock_cloud.ThreadingHTTPServer
+
+        def owned_tls_server(*positional, **keywords):
+            server = server_type(*positional, **keywords)
+            server.socket = tls_context.wrap_socket(server.socket, server_side=True)
+            return server
+
+        with patch.object(mock_cloud, 'ThreadingHTTPServer', owned_tls_server):
+            reviewer = reviewer_type(author)
+    else:
+        reviewer = reviewer_type(author)
+    reviewer_base = reviewer.base.replace('http://', 'https://', 1) if args.tls_reviewer else reviewer.base
     stack = None
     try:
         (demo.work / "input.txt").write_text(BEFORE)
@@ -200,7 +232,7 @@ def run(args):
         for alias, provider, upstream, base in (
             ("root-gpt", "openai", "gpt-6.1-sol", author.base + "/v1"),
             ("author-gpt", "openai", "gpt-6-luna", author.base + "/v1"),
-            ("reviewer-sonnet", "anthropic", "claude-sonnet-5-5", reviewer.base),
+            ("reviewer-sonnet", "anthropic", "claude-sonnet-5-5", reviewer_base),
         ):
             models[alias] = {"kind": "remote/" + provider, "upstream_model": upstream,
                              "base_url": base, "context_window": 200000, "max_output": 1024,
@@ -226,14 +258,14 @@ def run(args):
             stack.enter_context(patch.object(cloud_prices, "_fetch", refuse_public_fetch))
         connection, client = cloud.connection, cloud_anthropic._client
 
-        def owned(item, key, original, port):
+        def owned(item, key, original, port, tls=False):
             url = urllib.parse.urlsplit(item["base_url"])
-            assert (url.scheme, url.hostname, url.port) == ("http", "127.0.0.1", port)
+            assert (url.scheme, url.hostname, url.port) == ("https" if tls else "http", "127.0.0.1", port)
             assert key == KEY
             return original(item, key)
 
         stack.enter_context(patch.object(cloud, "connection", lambda item, key: owned(item, key, connection, author.port)))
-        stack.enter_context(patch.object(cloud_anthropic, "_client", lambda item, key: owned(item, key, client, reviewer.port)))
+        stack.enter_context(patch.object(cloud_anthropic, "_client", lambda item, key: owned(item, key, client, reviewer.port, args.tls_reviewer)))
         author_model = "root-gpt" if args.shared_model else "author-gpt"
         profiles = []
         for name, model, edit, files, role in (
@@ -274,7 +306,7 @@ def run(args):
             "reviewer-sonnet (cloud) · working" in line and f"{author_model} (cloud) · completed" in line
             for line in s.splitlines()[-3:]))
         if args.cancel_reviewer:
-            check_reviewer_cancel(demo, author, reviewer, waiting, ledger, sid, root)
+            check_reviewer_cancel(demo, author, reviewer, waiting, ledger, sid, root, args.tls_reviewer)
             return
         reviewer.release.set()
         done = demo.wait(lambda v: demo.goal(v)["state"] == "done" and all(w["process_stopped"] for w in v["status"]["workers"]))
@@ -337,7 +369,7 @@ def run(args):
         else:
             raise AssertionError("TUI exit deadline")
         result = {"same_parent_session": True, "verified_author_proposal": True,
-            "native_anthropic_reviewer": True, "source_unchanged": True, "workers_reaped": True,
+            "native_anthropic_reviewer": True, "reviewer_tls": args.tls_reviewer, "source_unchanged": True, "workers_reaped": True,
             "parent_tokens": 140, "author_tokens": 40, "reviewer_tokens": reviewer_tokens,
             "tiered_pricing": args.pricing, "shared_parent_author_model": args.shared_model,
             "distinct_session_ledgers": True, "cost_usd": costs, "gateway_rows": 10, "tui_exit": 0}
@@ -363,7 +395,7 @@ def run(args):
         reviewer.close()
 
 
-def check_reviewer_cancel(demo, author, reviewer, waiting, ledger, sid, root):
+def check_reviewer_cancel(demo, author, reviewer, waiting, ledger, sid, root, tls=False):
     calls = len(author.requests)
     demo.mux('send-keys', '-t', 'demo', 'Escape')
     stopped = demo.wait(lambda v: demo.goal(v)['state'] == 'paused'
@@ -407,7 +439,7 @@ def check_reviewer_cancel(demo, author, reviewer, waiting, ledger, sid, root):
         time.sleep(0.02)
     else:
         raise AssertionError('TUI exit deadline')
-    result = {'native_reviewer_pre_header_canceled': True, 'upstream_closed': True,
+    result = {'native_reviewer_pre_header_canceled': True, 'tls_upstream': tls, 'upstream_closed': True,
               'workers_reaped': True, 'same_parent_paused': True, 'source_unchanged': True,
               'reviewer_tokens': None, 'reserved_cost': True, 'gateway_rows': len(rows), 'tui_exit': 0}
     (root / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
@@ -422,6 +454,7 @@ def main():
     parser.add_argument("--shared-model", action="store_true", help="author and parent use one gateway model alias")
     parser.add_argument("--pricing", action="store_true", help="require tier/cache pricing from gateway #162")
     parser.add_argument("--cancel-reviewer", action="store_true", help="verify Esc closes a native SDK request before headers")
+    parser.add_argument("--tls-reviewer", action="store_true", help="use an owned native TLS mock with a verified temporary CA")
     parser.add_argument("--isolated-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.isolated_root is not None:
@@ -443,6 +476,8 @@ def main():
         command.append("--shared-model")
     if args.cancel_reviewer:
         command.append("--cancel-reviewer")
+    if args.tls_reviewer:
+        command.append("--tls-reviewer")
     result = subprocess.run(command, env=env)
     print(f"Isolated mixed-provider evidence: {root}")
     raise SystemExit(result.returncode)

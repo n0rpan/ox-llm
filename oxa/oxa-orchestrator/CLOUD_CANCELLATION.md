@@ -114,10 +114,12 @@ known usage retains measured cost even when the final downstream write fails.
 Explicit provider status errors remain provider errors. Native partial usage
 does not become a known zero or a settled bill.
 
-Nine owned-loopback regressions cover streaming and nonstream pre-header
+Twelve owned-loopback regressions cover streaming and nonstream pre-header
 cancellation, quiet streaming, default-off behavior, TLS-downstream refusal of
 the plain-socket watcher, completed responses, redacted provider errors, cleanup,
-and a completed-usage/downstream-disconnect race. Run with the existing pinned
+and a completed-usage/downstream-disconnect race. Native TLS cases use a private
+temporary CA, exercise quiet and pre-header cancellation, and independently
+require an untrusted certificate to fail before any provider API request. Run with the existing pinned
 SDK installed and the isolated lab wrapper:
 
 ```sh
@@ -128,20 +130,25 @@ sh tools/run_lab_tests.sh discover -s tests -p test_cloud_anthropic_disconnect.p
 An additional controlled async-resource regression covers the watcher and request
 owner interrupting the same request while SDK cleanup is pending. Shutdown is
 idempotent: the second interruption cannot cancel that cleanup. The regression
-fails before this guard and passes with it; the ten-test focused file contains
-nine loopback SDK tests and this separate lifecycle test.
+fails before this guard and passes with it; the thirteen-test focused file contains
+twelve loopback SDK tests and this separate lifecycle test.
 
 The actual TUI/GPT-author/native-reviewer scenario also has a cancellation mode:
 
 ```sh
 cd oxa
 python3 -I oxa-orchestrator/tools/review_lane_demo.py --cancel-reviewer
+python3 -I oxa-orchestrator/tools/review_lane_demo.py --cancel-reviewer --tls-reviewer
 ```
 
 It verifies that Esc pauses the same parent, reaps the reviewer, closes the
 owned upstream before headers, preserves the source and budget, records unknown
 reviewer usage with a reserved cancellation row, and triggers no follow-on
 inference. This demonstrates owned transport shutdown, not real provider billing.
+The TLS variant retains certificate verification and the exact owned-endpoint and
+synthetic-key guards. It trusts only the generated mock CA in the isolated gateway
+process; it does not change the machine's trust store. The normal successful
+review/pricing scenario also supports `--tls-reviewer`.
 
 A broad lab run during implementation executed 2,325 tests with two failures and
 17 skips. Both failures reproduce in the untouched `32059c6` baseline: the client

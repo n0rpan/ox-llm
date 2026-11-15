@@ -26,6 +26,16 @@ missing runtime installation entry introduced by the SDK bridge; it is fixed,
 and all ten installation integration tests pass. That broad run is not
 retroactively green. No scanner, allow-list or test expectation was relaxed.
 
+A later bootstrap isolation reveals an additional integration gate: adding the
+optional SDK bridge to `bootstrap.py`'s installation inventory changes that
+executable input, so five frozen manifest records no longer match. The affected
+records are `build-manifest.json`, `checks-manifest.json`,
+`download-manifest.json`, `source-fetch-manifest.json` and `install-checkpoint.json`
+under `lab/bootstrap/`. The native TLS tests and installation completeness check
+do not qualify those records. Their checks remain intact; no receipt or checksum
+is refreshed automatically to make the draft pass. This is introduced packaging
+drift, not one of the baseline scanner findings.
+
 ## Coordinator decisions
 
 1. Choose how native Bash jobs join A2A ownership, DONE guards, cancellation and
@@ -37,6 +47,9 @@ retroactively green. No scanner, allow-list or test expectation was relaxed.
 3. The full evening's real PR writes and queue operations need the owner's scope
    and an operator who is allowed to perform them. This worker's standing brief
    forbids merges. A cloud-smoke go does not change that rule.
+4. Choose the release-compatible packaging/qualification route for the optional
+   SDK module. The implementation and inventory addition are preserved in the
+   draft; the frozen bootstrap inputs require separate qualification handling.
 
 Release mode keeps exactly four rolling drafts: protocol #22, core #88,
 background/goals #129 and assembled CLI/TUI #176. The latter preserves the full

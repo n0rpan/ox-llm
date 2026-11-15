@@ -83,3 +83,11 @@ EOF, and the reviewer ledger row is a reserved 499 with unknown usage. The autho
 proposal remains collected, source files stay unchanged, no follow-on inference
 occurs, and Ctrl-D exits zero. The successful review/pricing mode remains the
 default. See CLOUD_CANCELLATION.md for implementation scope and limits.
+
+Add `--tls-reviewer` to either mode to use an owned native TLS provider mock with
+a generated temporary CA. The gateway retains certificate verification, the
+reviewer endpoint guard requires its exact HTTPS loopback address, and the child
+worker still talks only to the plain loopback gateway. Cancellation over TLS and
+successful shared-model/tier-cache pricing both pass. The focused gateway tests
+also reject an untrusted certificate before a provider request is sent. No trust
+store or mock-only endpoint/key guard is disabled or installed globally.
