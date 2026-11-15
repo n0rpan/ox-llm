@@ -35,8 +35,8 @@ pub struct ToolText {
 pub mod limits {
     /// `read`: default page size in lines (pi `DEFAULT_MAX_LINES`).
     pub const READ_MAX_LINES: usize = 2000;
-    /// pi's byte limit (`DEFAULT_MAX_BYTES`, 50 KB). Kept for PARITY notes and `/import`;
-    /// oxa output is capped by [`TOOL_OUTPUT_CAP_DEFAULT`] instead.
+    /// pi's byte limit (`DEFAULT_MAX_BYTES`, 50 KB). Kept for PARITY notes; oxa output is
+    /// capped by [`TOOL_OUTPUT_CAP_DEFAULT`] instead.
     pub const PI_MAX_BYTES: usize = 50 * 1024;
     /// W4: default cap of any tool output on the wire (`oxa.toolOutputCap`).
     pub const TOOL_OUTPUT_CAP_DEFAULT: usize = 16 * 1024;

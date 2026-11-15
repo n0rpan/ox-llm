@@ -20,7 +20,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
-| `oxa config [-l] [--import-pi]` | print every setting with its value and where it comes from |
+| `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
@@ -32,7 +32,7 @@ Commands take the place of the message. They do not start a session.
 
 `oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
 
-`oxa config` lists the settings as oxa resolves them. Its `--import-pi` option copies skills, prompts, themes, `keybindings.json` and `mcp.json` from the agent directory of an earlier installation under your home directory. It runs once and never overwrites an existing file.
+`oxa config` lists the settings as oxa resolves them.
 
 ### MCP commands
 

@@ -237,7 +237,7 @@ fn test_fn(row: &Row) -> Option<String> {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = parity_rows();
-    assert_eq!(rows.len(), 92, "CLI 64 + MOD 11 + ENV 17");
+    assert_eq!(rows.len(), 91, "CLI 63 + MOD 11 + ENV 17");
     let src = include_str!("cli.rs");
     for row in &rows {
         if row.test == "omission" {
@@ -1556,28 +1556,6 @@ fn cli_052() {
     let o = run(&env, &server.url(), &["config"]);
     ok(&o);
     assert!(out(&o).contains("settings from"));
-}
-
-// pi: cli.md `--import-pi` copies skills, prompts, themes, keybindings and mcp.json once
-// invariant: pi dirs are never read implicitly (only by this one-time copy)
-#[test]
-fn cli_053() {
-    let server = fake(&turns(&["a"]));
-    let env = TestEnv::new();
-    env.write(
-        "home/.pi/agent/skills/imp53/SKILL.md",
-        "---\nname: imp53\ndescription: x\n---\nb\n",
-    );
-    ok(&run(&env, &server.url(), &["-p", "--no-session", "x"]));
-    assert!(
-        !env.agent_dir().join("skills/imp53").exists(),
-        "pi dirs are not read implicitly"
-    );
-    ok(&run(&env, &server.url(), &["config", "--import-pi"]));
-    assert!(
-        env.agent_dir().join("skills/imp53/SKILL.md").exists(),
-        "copied once"
-    );
 }
 
 // pi: cli.md `pi update` (self, --self, self, pi, --all) does not self-update

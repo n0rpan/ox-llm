@@ -15,7 +15,7 @@
 //!   are the header of the instruction instead;
 //! * pi's `<conversation>` serialisation ([`serialize`]) is used only where the text is not
 //!   already on the wire: a branch summary of an *abandoned* branch is still an append to
-//!   that branch's wire, so it is not needed there either; it stays for `/import` and tests.
+//!   that branch's wire, so it is not needed there either; it stays for tests.
 
 /// pi's summarizer system prompt. In oxa its text is carried by [`SUMMARY_INSTRUCTION_HEADER`].
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
@@ -102,7 +102,7 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 /// `<summary>` tags by [`summary_user_message`]. Used for a repeated compaction.
 pub const UPDATE_SUMMARIZATION_LEAD: &str = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <summary> tags at the start of the conversation.";
 
-/// pi's lead, verbatim (for PARITY notes and `/import`).
+/// pi's lead, verbatim (for PARITY notes).
 pub const PI_UPDATE_SUMMARIZATION_LEAD: &str = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.";
 
 /// pi's split-turn prompt. oxa replaces the split-turn double summary by the W5 mid-run path

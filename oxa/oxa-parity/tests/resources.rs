@@ -1714,11 +1714,11 @@ fn cfg_006() {
     );
 }
 
-/// CFG-008: pi directories are not read implicitly; `oxa config --import-pi` is the one-time copy.
+/// pi directories are not read implicitly.
 /// pi docs: configuration.md (the pi paths named there are not read by oxa).
 /// invariant: the agent directory is `~/.oxa/agent` only; pi directories are never read implicitly.
 #[test]
-fn cfg_008() {
+fn pi_directories_are_not_read() {
     let env = TestEnv::new();
     put_skill(&env, "home/.pi/agent/skills", "pi-skill", "A pi skill.");
     put_prompt(&env, "home/.pi/agent/prompts", "pi-prompt", "pi $1\n");
@@ -1733,25 +1733,25 @@ fn cfg_008() {
     let sys = system(&ran);
     assert!(
         !project_skill_listed(&sys, "pi-skill"),
-        "CFG-008: ~/.pi/agent/skills must not be read"
+        "pi directories: ~/.pi/agent/skills must not be read"
     );
     assert!(
         !project_skill_listed(&sys, "pi-project"),
-        "CFG-008: .pi/skills must not be read"
+        "pi directories: .pi/skills must not be read"
     );
     assert_eq!(
         user_text(&ran).trim(),
         "/pi-prompt x",
-        "CFG-008: ~/.pi/agent/prompts must not be read"
+        "pi directories: ~/.pi/agent/prompts must not be read"
     );
     let config = stdout_of(&cmd_ok(&env, &["config"]));
     assert!(
         !config.contains(".pi/agent"),
-        "CFG-008: no pi settings file is a source"
+        "pi directories: no pi settings file is a source"
     );
     assert!(
         config.contains("defaultThinkingLevel = \"medium\""),
-        "CFG-008: the pi settings value must not apply"
+        "pi directories: the pi settings value must not apply"
     );
 }
 
@@ -1817,8 +1817,8 @@ fn every_row_has_test_or_recorded_omission() {
     let rows = parity_rows();
     assert_eq!(
         rows.len(),
-        43,
-        "resources area rows (SKL 7, TPL 4, PKG 10, SEC 8, THM 6, CFG 8)"
+        42,
+        "resources area rows (SKL 7, TPL 4, PKG 10, SEC 8, THM 6, CFG 7)"
     );
     for row in &rows {
         if row.test == "omission" {

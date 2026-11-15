@@ -292,7 +292,6 @@ impl World {
                     Reopen::New => Open::New,
                     Reopen::Resume(sref) => Open::Resume(sref),
                     Reopen::Fork(sref) => Open::Fork(sref),
-                    Reopen::Import(_) => return Err(OxaError::new("invalid", "no import in this test")),
                 };
                 let engine: Arc<dyn Engine> = Arc::new(HttpEngine::new(&url, None)?);
                 Session::open(deps_with(engine, store.clone(), &root, &work), open)
