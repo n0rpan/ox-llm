@@ -21,11 +21,11 @@ class Paths(unittest.TestCase):
                     self.assertFalse(got['full'])
 
     def test_docs_only_and_mixed_changes(self):
-        got = paths.classify(['README.md', 'lab/docs/page.md', 'oxa/docs/page.rst'], True)
+        got = paths.classify(['README.md', 'oxc/docs/page.md', 'oxa/docs/page.rst'], True)
         self.assertTrue(got['docs'])
         self.assertTrue(got['full'])
         self.assertFalse(any(got[key] for key in ('engine', 'oxa', 'lab')))
-        got = paths.classify(['lab/docs/page.md', 'oxa/src/code.rs'])
+        got = paths.classify(['oxc/docs/page.md', 'oxa/src/code.rs'])
         self.assertTrue(got['oxa'])
         self.assertFalse(got['lab'])
         self.assertFalse(got['docs'])
@@ -33,7 +33,7 @@ class Paths(unittest.TestCase):
     def test_runtime_markdown_is_source_for_branch_pr_and_main(self):
         for name in ('oxa/oxa-resources/builtin-skills/ox-llm/SKILL.md',
                      'oxa/oxa-resources/builtin-skills/oxa-extend/SKILL.md',
-                     'lab/src/prompts/system.md', 'engine/src/template.rst'):
+                     'oxc/src/prompts/system.md', 'engine/src/template.rst'):
             for full_event in (False, True):
                 with self.subTest(name=name, full_event=full_event):
                     got = paths.classify([name], full_event)
@@ -51,7 +51,7 @@ class Paths(unittest.TestCase):
             self.assertTrue(all(got[key] for key in ('engine', 'oxa', 'lab')), path)
 
     def test_full_event_source_runs_and_empty_diffs_are_full(self):
-        self.assertTrue(paths.classify(['lab/src/code.py'], True)['full'])
+        self.assertTrue(paths.classify(['oxc/src/code.py'], True)['full'])
         self.assertFalse(paths.classify([], True)['docs'])
         self.assertTrue(paths.classify([], True)['full'])
 
@@ -90,7 +90,7 @@ class GitPaths(unittest.TestCase):
     def test_pr_uses_merge_base_and_nul_paths(self):
         event = {'pull_request': {'base': {'sha': 'a' * 40}, 'head': {'sha': 'b' * 40}}}
         with patch.object(paths.subprocess, 'check_output', return_value=b'oxa/src/a.rs\0lab/docs/a.md\0') as run:
-            self.assertEqual(paths.changed_paths(event, 'pull_request'), ['oxa/src/a.rs', 'lab/docs/a.md'])
+            self.assertEqual(paths.changed_paths(event, 'pull_request'), ['oxa/src/a.rs', 'oxc/docs/a.md'])
         self.assertIn('a' * 40 + '...' + 'b' * 40, run.call_args.args[0])
 
     def test_merge_queue_enumerates_sources_without_push_payload_fields(self):

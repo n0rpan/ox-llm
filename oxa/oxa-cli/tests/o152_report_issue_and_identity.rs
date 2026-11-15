@@ -150,16 +150,16 @@ fn draft_collects_a_scrubbed_digest_and_posts_nothing() {
         calls.push((program.to_string(), args.to_vec()));
         match (program, args.first().map(String::as_str)) {
             ("oxc", _) => None, // not installed yet: the pre-rename CLI answers
-            ("local-ai", Some("status")) => Some((
+            ("oxc", Some("status")) => Some((
                 0,
                 json!({
                     "chat_state": "ready", "available_gib": 12.5, "owner": "carol@example.com",
-                    "log": "/srv/users/carol/.local/state/local-ai/x.log",
+                    "log": "/srv/users/carol/.local/state/oxc/x.log",
                     "sessions": [{"prompt": "my secret prompt"}], "nested": {"path": "/home/carol"}
                 })
                 .to_string(),
             )),
-            ("local-ai", Some("digest")) => Some((
+            ("oxc", Some("digest")) => Some((
                 0,
                 json!({"requests": 42, "errors": 0, "p50_ms": 81.1}).to_string(),
             )),
@@ -199,7 +199,7 @@ fn draft_collects_a_scrubbed_digest_and_posts_nothing() {
         assert!(body.contains(kept), "{kept:?} missing:\n{body}");
     }
     assert!(
-        calls.iter().all(|(p, _)| p == "oxc" || p == "local-ai"),
+        calls.iter().all(|(p, _)| p == "oxc" || p == "oxc"),
         "only the controller CLI ran: {calls:?}"
     );
     assert!(!calls.iter().any(|(p, _)| p == "gh"));

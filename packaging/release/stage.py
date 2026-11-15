@@ -35,10 +35,10 @@ shutil.copytree(root / 'lab', lab, ignore=shutil.ignore_patterns(
 # installer consumes them. Alias the command without renaming product modules.
 wrapper = dest / 'usr/bin/oxc'
 if not wrapper.exists():
-    wrapper.write_text('#!/bin/sh\nexec /usr/bin/python3 -B /usr/share/ox-llm/lab/src/snapdragon_ai_lab/runtime/local-ai "$@"\n')
+    wrapper.write_text('#!/bin/sh\nexec /usr/bin/python3 -B /usr/share/ox-llm/oxc/src/oxc/runtime/oxc "$@"\n')
     wrapper.chmod(0o755)
-wrapper = dest / 'usr/bin/snapdragon-ai-lab'
-wrapper.write_text('#!/bin/sh\nPYTHONPATH=/usr/share/ox-llm/lab/src exec /usr/bin/python3 -B -m snapdragon_ai_lab "$@"\n')
+wrapper = dest / 'usr/bin/oxc'
+wrapper.write_text('#!/bin/sh\nPYTHONPATH=/usr/share/ox-llm/oxc/src exec /usr/bin/python3 -B -m oxc "$@"\n')
 wrapper.chmod(0o755)
 licenses = dest / 'usr/share/licenses/ox-llm'
 licenses.mkdir(parents=True)
