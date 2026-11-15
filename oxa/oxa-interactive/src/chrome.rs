@@ -94,9 +94,9 @@ fn stats_right(st: &StatusModel) -> String {
     } else {
         st.model.clone()
     };
-    if let Some(level) = st.thinking {
+    if let Some(level) = st.thinking_label() {
         text.push_str(" • ");
-        text.push_str(level.as_str());
+        text.push_str(&level);
     }
     if let Some(note) = &st.thinking_note {
         text.push_str(" · ");

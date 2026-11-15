@@ -286,7 +286,7 @@ impl World {
             // (and therefore the OXA skin) moved to `local`.
             env: vec![("OXA_SKIN".to_string(), "pi".to_string())],
             caps: Some(TermCaps::BASIC),
-            reopen: Box::new(move |how| {
+            reopen: Box::new(move |how, _carry| {
                 let open = match how {
                     Reopen::New => Open::New,
                     Reopen::Resume(sref) => Open::Resume(sref),
@@ -833,7 +833,7 @@ fn controls_are_rebound_to_the_new_session() {
         // The aborted reply is a Shown block (never sent); the text is in the editor again.
         step(
             "aborted",
-            &["not sent to the model", "steer me"],
+            &["the prompt stays in the conversation", "steer me"],
             vec![key("ctrl+c")],
         ),
         step("cleared", &[], vec![key("ctrl+d")]),
@@ -1026,7 +1026,7 @@ fn aborted_stream_is_shown_not_a_reply() {
         step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
         step(
             "aborted",
-            &["aborted: not sent to the model"],
+            &["aborted: cancelled; the prompt stays"],
             typed("/session", &["enter"]),
         ),
         // The Shown block is not counted as an assistant message.

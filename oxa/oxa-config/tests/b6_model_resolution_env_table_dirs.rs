@@ -345,3 +345,13 @@ fn slash_model_id_beats_provider_prefix() {
     let err = resolve_model("anthropic/other", None, &models).unwrap_err();
     assert_eq!(err.code, codes::UNSUPPORTED_IN_OXA);
 }
+
+/// Models with no endpoint name (the interactive `/model` list) show their ids as `/model <id>`
+/// takes them, without a stray leading slash.
+#[test]
+fn not_found_hint_lists_ids_without_a_leading_slash_for_an_empty_endpoint() {
+    let models = vec![mr("", "local-default"), mr("", "anthropic/claude-haiku-5-5")];
+    let err = resolve_model("nosuch", None, &models).unwrap_err();
+    let hint = err.hint.expect("a hint");
+    assert_eq!(hint, "available: local-default, anthropic/claude-haiku-5-5");
+}
