@@ -1,27 +1,24 @@
-# Opt-in Rust cloud gateway policy
+# Opt-in cloud gateway building blocks
 
-This #28 slice supplies safe refusal stages: unavailable credentials, offline,
-LAN guests, missing pricing/budget, exhausted spend and unreadable/disabled
-ledgers. Enable the `policy` feature; defaults are empty and nothing is installed.
-The functions consume trusted gateway facts. They neither read a credential nor
-create a reservation or contact a provider. Atomic accounting follows separately.
+Default features are empty; no listener or installer is enabled. Enable only the
+needed modules. Policy stages consume trusted gateway facts; pricing and atomic
+settlement are separate work. Python remains the behavior reference.
 
-Eleven contracts match main `bbec7919fd54ddcce6de49c6c33264e50e9a7494`.
-Ten use the unmodified Python HTTP controller in private HOME/network namespaces
-with an owned loopback mock and a foreign lease held through stop. Refusals send
-no provider request; the accepted case reaches exactly one mock. The guest case
-exercises the reference's already-authenticated guest context; live LAN listener
-integration remains separate. Native tests exercise the library decision stages.
+- `policy`: policy contracts.
+- `secrets`: secrets contracts.
 
-```sh
-cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
-/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-```
+Build all examples with `cargo build --locked --manifest-path
+oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
+`/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v`; native
+checks set each present `OXC_*_CONTRACT` to its absolute example executable.
 
-Bubblewrap and `/usr/bin/python3` are required. Goldens are captured only with
-`test_policy.py --record-python`. Run strict all-target/all-feature Clippy,
-formatting and an empty-default build before readying. Companion #294 introduces
-catalog metadata for the same library; preserve both features/modules/examples
-when incorporating it. Full HTTP composition, secrets, atomic settlement and
-upstream protocols remain incomplete. Python behavior stays unchanged.
+Source cases use private HOME/network namespaces and synthetic data. No real
+API, credential, SDK material or sign-in is used. Every opt-in module forbids
+unsafe code. Preserve all present feature/module/example entries when merging
+companion slices. Full cloud-only forwarding/accounting remains incomplete.
+
+The secrets loop contract explicitly supports Python 3.12's generic refusal and
+3.13's symbolic-link refusal: it validates one of those two complete messages
+before normalizing only that wording. Native uses the symbolic-link message.
+The secrets subset passes both Python versions and native; every other error is
+compared exactly. Credential values and paths must never appear in errors.
