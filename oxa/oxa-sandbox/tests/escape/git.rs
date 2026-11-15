@@ -608,3 +608,151 @@ fn a_custom_hook_symlink_to_a_read_only_payload_allows_project_work() {
     assert_ok(exit, &out, "safe custom-hook alias");
     assert_eq!(std::fs::read_to_string(payload).unwrap(), "original");
 }
+
+/// Threat: a plan-mode command can replace a hooks ancestor through a writable cache bind.
+/// Attempt: rename the cache's nested parent and plant a new hook.
+/// Expected refusal: cache ancestors are pinned, but ordinary cache output still works.
+#[test]
+fn custom_hook_ancestors_in_a_plan_cache_cannot_be_replaced() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let cache = env.tmp().join("hook-cache");
+    let hooks = cache.join("sub/hooks");
+    config(
+        &work,
+        &format!(
+            "[core]\n\trepositoryformatversion = 0\n\thooksPath = {}\n",
+            hooks.display()
+        ),
+    );
+    dir(&hooks);
+    write(&hooks.join("pre-commit"), "original");
+    let Some(mut sb) = sandbox(&env) else { return };
+    sb.layout.write.push(cache.clone());
+    let command = format!(
+        "mv {0}/sub {0}/moved && mkdir -p {0}/sub/hooks && printf replacement > {0}/sub/hooks/pre-commit",
+        cache.display()
+    );
+    let (exit, out) = run(&sb, &work, &command, false, false);
+    assert_refused(exit, &out, "plan cache hooks ancestor");
+    assert!(!cache.join("moved").exists());
+    let (exit, out) = run(
+        &sb,
+        &work,
+        &format!("printf ordinary > {}/sub/generated", cache.display()),
+        false,
+        false,
+    );
+    assert_ok(exit, &out, "ordinary plan cache output");
+}
+
+/// Threat: a linked worktree exposes its external common git directory read-write.
+/// Attempt: change a custom hook there; also try writing the common info directory.
+/// Expected refusal: custom hooks and #105 info protection survive; project writes work.
+#[test]
+fn custom_hooks_in_a_worktree_common_dir_stay_protected() {
+    for relative in ["cache/sub/hooks", "info/custom-hooks"] {
+        let env = TestEnv::new();
+        let work = env.work();
+        let common = env.tmp().join("common");
+        let gitdir = common.join("worktrees/linked");
+        let hooks = common.join(relative);
+        dir(&gitdir);
+        dir(&common.join("objects"));
+        dir(&common.join("hooks"));
+        dir(&hooks);
+        write(&common.join("info/exclude"), "keep");
+        write(
+            &common.join("config"),
+            &format!(
+                "[core]\n\trepositoryformatversion = 0\n\thooksPath = {}\n",
+                hooks.display()
+            ),
+        );
+        write(&gitdir.join("HEAD"), "ref: refs/heads/main\n");
+        write(
+            &gitdir.join("gitdir"),
+            &format!("{}\n", work.join(".git").display()),
+        );
+        write(&gitdir.join("commondir"), "../..\n");
+        write(&work.join(".git"), &format!("gitdir: {}\n", gitdir.display()));
+        write(&hooks.join("pre-commit"), "original");
+        let Some(sb) = sandbox(&env) else { return };
+        assert!(
+            !sb.layout.git.is_empty(),
+            "must exercise a validated linked worktree"
+        );
+        for path in [hooks.join("pre-commit"), common.join("info/exclude")] {
+            let (exit, out) = run(
+                &sb,
+                &work,
+                &format!("printf replacement > {}", path.display()),
+                true,
+                false,
+            );
+            assert_refused(exit, &out, "common-dir protected entry");
+        }
+        assert_eq!(
+            std::fs::read_to_string(hooks.join("pre-commit")).unwrap(),
+            "original"
+        );
+        assert_eq!(
+            std::fs::read_to_string(common.join("info/exclude")).unwrap(),
+            "keep"
+        );
+        let (exit, out) = run(&sb, &work, "printf ordinary > generated.txt", true, false);
+        assert_ok(exit, &out, "ordinary worktree output");
+    }
+}
+
+/// Control: hooksPath may name the project root, which the sandbox makes read-only.
+/// Attempt: read an ordinary project file while Git's own data has nested mounts.
+/// Expected success: a later hook mask must override those earlier writable mounts.
+#[test]
+fn a_project_root_hooks_path_allows_read_only_work() {
+    let env = TestEnv::new();
+    let work = env.work();
+    config(&work, "[core]\n\trepositoryformatversion = 0\n\thooksPath = .\n");
+    write(&work.join("ordinary"), "keep");
+    write(&work.join(".git/index"), "synthetic-index");
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(&sb, &work, "cat ordinary", true, false);
+    assert_ok(exit, &out, "read-only project-root hook control");
+    assert!(out.contains("keep"));
+}
+
+/// Control: an explicit write bind lies below a configured hooks directory outside cwd.
+/// Attempt: write hook helper content and then unrelated project output.
+/// Expected: the late hook mask removes cache writes, but ordinary project work still runs.
+#[test]
+fn a_write_bind_below_custom_hooks_does_not_refuse_unrelated_work() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let hooks = env.tmp().join("external-hooks");
+    let cache = hooks.join("helpers");
+    dir(&cache);
+    write(&cache.join("payload"), "original");
+    config(
+        &work,
+        &format!(
+            "[core]\n\trepositoryformatversion = 0\n\thooksPath = {}\n",
+            hooks.display()
+        ),
+    );
+    let Some(mut sb) = sandbox(&env) else { return };
+    sb.layout.write.push(cache.clone());
+    let (exit, out) = run(
+        &sb,
+        &work,
+        &format!("printf replacement > {}/payload", cache.display()),
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "write bind inside configured hooks");
+    assert_eq!(
+        std::fs::read_to_string(cache.join("payload")).unwrap(),
+        "original"
+    );
+    let (exit, out) = run(&sb, &work, "printf ordinary > generated.txt", true, false);
+    assert_ok(exit, &out, "ordinary work outside configured hook tree");
+}

@@ -1023,7 +1023,7 @@ impl Mounts {
     /// The command can change `q` (a physical path): its deepest mount is read-write and `q`
     /// lies below it, or is that mount and is the final target (its content is writable; a
     /// mount point itself cannot be renamed). A read-only mount wins a tie.
-    fn writable(&self, q: &Path, last: bool) -> bool {
+    pub(crate) fn writable(&self, q: &Path, last: bool) -> bool {
         let deepest = |xs: &[PathBuf]| {
             xs.iter()
                 .filter(|m| q.starts_with(m))
@@ -1134,6 +1134,19 @@ pub(crate) fn alias_refusal(dirs: &[PathBuf], m: &Mounts, home: &Path) -> Option
         }
     }
     None
+}
+
+/// A configured hooks tree uses the same bounded alias checks as the default git hooks.
+/// A missing directory is masked by the caller; a non-directory cannot contain a git hook.
+pub(crate) fn hooks_alias_refusal(hooks: &Path, mounts: &Mounts) -> Option<String> {
+    match fs::symlink_metadata(hooks) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return None,
+        Ok(m) if !m.is_dir() && !m.file_type().is_symlink() => return None,
+        _ => {}
+    }
+    walk_alias(hooks, mounts)
+        .and_then(|real| check_tree(hooks, &real, mounts))
+        .err()
 }
 
 /// The config file `p` (and what it includes) is safe from the command.

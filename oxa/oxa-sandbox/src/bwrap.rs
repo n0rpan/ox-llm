@@ -1,6 +1,7 @@
 //! A9: the bwrap argv. Owner: task A9. Signatures below are frozen; bodies are yours.
 use crate::gitdirs::{
-    alias_refusal, configured_hooks_paths, is_real_dir, protected_entries, unsafe_reason, Mounts,
+    alias_refusal, configured_hooks_paths, hooks_alias_refusal, is_real_dir, protected_entries,
+    unsafe_reason, Mounts,
 };
 use crate::layout::{
     home_protected_paths, is_home_itself, is_home_or_above, protected_paths, sensitive_paths, Layout,
@@ -203,6 +204,26 @@ pub(crate) fn bwrap_args_homes(
         let p = p.to_string_lossy();
         push(&mut a, &[git_rw, &p, &p]);
     }
+    // Pin writable ancestors before every protection mask. Moving an ancestor would otherwise
+    // move its read-only hook mount and leave Git's original pathname replaceable.
+    if writable {
+        let dotgit = cwd_path.join(".git");
+        if is_real_dir(&dotgit) {
+            let p = dotgit.to_string_lossy();
+            let bind = if unsafe_reason(&dotgit).is_none() {
+                "--bind"
+            } else {
+                "--ro-bind"
+            };
+            push(&mut a, &[bind, &p, &p]);
+        }
+    }
+    let hooks = configured_hook_paths(cwd_path, &home_c, layout);
+    let mounts = hooks_mounts(cwd_path, &home_c, layout, mode);
+    for p in hook_parent_pins(&hooks, &mounts) {
+        let p = p.to_string_lossy();
+        push(&mut a, &["--bind", &p, &p]);
+    }
     for p in layout
         .git
         .ro
@@ -221,18 +242,8 @@ pub(crate) fn bwrap_args_homes(
     // B4: what runs outside the sandbox later stays as it is.
     if writable {
         let dotgit = cwd_path.join(".git");
-        // sbx-hooks: the cwd's `.git` directory is a mount point (bound onto itself), so a
-        // command cannot rename it away and put a copy with writable hooks in its place
-        // (renaming an ancestor of a read-only mount is allowed, renaming a mount point is not).
-        // sbx-gitsym: a `.git` whose protected entries are not plain is bound read-only instead.
+        // The directory was pinned before all masks; unsafe git data stays read-only.
         let dotgit_writable = is_real_dir(&dotgit) && unsafe_reason(&dotgit).is_none();
-        if is_real_dir(&dotgit) {
-            let p = dotgit.to_string_lossy();
-            push(
-                &mut a,
-                &[if dotgit_writable { "--bind" } else { "--ro-bind" }, &p, &p],
-            );
-        }
         let protected = protected_paths(cwd_path);
         for p in &protected {
             if is_real(p) {
@@ -689,22 +700,43 @@ can write; its hooks and config cannot be protected, so commands are not run her
     // `protect_hooks_paths`. A symlink there, or a missing parent directory, cannot be
     // pinned read-only; refuse rather than let a command replace it.
     let home_c = canon(home);
-    let roots = writable_roots(&cwd, &home_c, layout, mode);
-    for p in configured_hook_paths(&cwd, &home_c, layout) {
-        let Some(root) = under_any(&p, &roots) else {
-            continue;
-        };
-        let symlink = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
-        if symlink || has_symlink_ancestor(&p, root) {
-            return Some(format!(
-                "sandbox refused: the repository's core.hooksPath {} is a symlink or lies below one, so its hooks cannot be pinned; commands are not run here",
-                p.display()
-            ));
+    let paths = configured_hook_paths(&cwd, &home_c, layout);
+    let mut mounts = hooks_mounts(&cwd, &home_c, layout, mode);
+    for p in &paths {
+        if let Some(root) = under_any(p, &mounts.rw) {
+            let symlink = std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+            if symlink || has_symlink_ancestor(p, root) {
+                return Some(format!(
+                    "sandbox refused: the repository's core.hooksPath {} is a symlink or lies below one, so its hooks cannot be pinned; commands are not run here",
+                    p.display()
+                ));
+            }
+            if std::fs::symlink_metadata(p).is_err() && !p.parent().is_some_and(is_real_dir) {
+                return Some(format!(
+                    "sandbox refused: the repository's core.hooksPath {} does not exist and its parent is not a real directory, so it cannot be masked; commands are not run here",
+                    p.display()
+                ));
+            }
+        } else if hook_path_exposed(p, &mounts) && canon(p) != *p {
+            return Some(format!("sandbox refused: the repository's core.hooksPath {} reaches a writable bind through an alias, so it cannot be pinned; commands are not run here", p.display()));
         }
-        if std::fs::symlink_metadata(&p).is_err() && !p.parent().is_some_and(is_real_dir) {
+    }
+    let masked: Vec<PathBuf> = paths
+        .iter()
+        .filter(|p| hook_path_exposed(p, &mounts))
+        .cloned()
+        .collect();
+    mounts.rw.extend(hook_parent_pins(&paths, &mounts));
+    // These directory masks are emitted after every writable bind. Their bind mounts hide
+    // earlier nested mounts, so none of those nested writable roots remains exposed.
+    mounts
+        .rw
+        .retain(|rw| !masked.iter().any(|p| rw != p && rw.starts_with(p)));
+    mounts.ro.extend(masked);
+    for p in paths {
+        if let Some(why) = hooks_alias_refusal(&p, &mounts) {
             return Some(format!(
-                "sandbox refused: the repository's core.hooksPath {} does not exist and its parent is not a real directory, so it cannot be masked; commands are not run here",
-                p.display()
+                "sandbox refused: the repository's core.hooksPath: {why}; commands are not run here"
             ));
         }
     }
@@ -827,7 +859,9 @@ fn under_any<'a>(p: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
 
 fn has_symlink_ancestor(p: &Path, root: &Path) -> bool {
     let Ok(rel) = p.strip_prefix(root) else {
-        return false;
+        // under_any found the canonical target inside a writable root: the spelling reaches
+        // it through an alias outside that root, which cannot be pinned component by component.
+        return true;
     };
     let mut cur = root.to_path_buf();
     for c in rel.components() {
@@ -844,13 +878,15 @@ fn has_symlink_ancestor(p: &Path, root: &Path) -> bool {
 /// Only paths inside what the command can write are touched; a read-only or hidden path needs
 /// nothing. A symlink or a missing parent is refused by [`refusal`].
 fn protect_hooks_paths(a: &mut Vec<String>, cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) {
-    let roots = writable_roots(cwd, home, layout, mode);
+    let mounts = hooks_mounts(cwd, home, layout, mode);
     let protected = protected_paths(cwd);
     for p in configured_hook_paths(cwd, home, layout) {
-        let Some(root) = under_any(&p, &roots) else {
+        if !hook_path_exposed(&p, &mounts) {
             continue;
-        };
-        if protected.contains(&p) || has_symlink_ancestor(&p, root) {
+        }
+        if (mode == CwdMode::Writable && protected.contains(&p) && is_real(&p))
+            || under_any(&p, &mounts.rw).is_some_and(|root| has_symlink_ancestor(&p, root))
+        {
             continue;
         }
         match std::fs::symlink_metadata(&p) {
@@ -870,6 +906,70 @@ fn protect_hooks_paths(a: &mut Vec<String>, cwd: &Path, home: &Path, layout: &La
             Err(_) => {}
         }
     }
+}
+
+/// A hooks tree must be masked if writable itself or if it contains an explicit write bind.
+fn hook_path_exposed(path: &Path, mounts: &Mounts) -> bool {
+    under_any(path, &mounts.rw).is_some() || mounts.rw.iter().any(|rw| rw.starts_with(canon(path)))
+}
+
+/// The mount view used by both configured-hook checks and their ancestor pins.
+fn hooks_mounts(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) -> Mounts {
+    let writable = mode == CwdMode::Writable;
+    let git_writable = writable && layout.git.rw.iter().all(|d| unsafe_reason(d).is_none());
+    let mut mounts = Mounts {
+        rw: writable_roots(cwd, home, layout, mode),
+        ro: layout.read.iter().map(|p| canon(p)).collect(),
+    };
+    for p in layout
+        .git
+        .rw
+        .iter()
+        .filter(|p| !p.starts_with(cwd) && !cwd.starts_with(p))
+    {
+        if git_writable {
+            mounts.rw.push(p.clone());
+        } else {
+            mounts.ro.push(p.clone());
+        }
+    }
+    mounts.ro.extend(layout.git.ro.iter().cloned());
+    mounts.ro.extend(
+        layout
+            .git
+            .protect
+            .iter()
+            .filter(|p| !p.starts_with(cwd) && !cwd.starts_with(p))
+            .cloned(),
+    );
+    if writable {
+        let dotgit = cwd.join(".git");
+        if is_real_dir(&dotgit) {
+            if unsafe_reason(&dotgit).is_none() {
+                mounts.rw.push(dotgit);
+            } else {
+                mounts.ro.push(dotgit);
+            }
+        }
+        mounts
+            .ro
+            .extend(protected_paths(cwd).into_iter().filter(|p| is_real(p)));
+    }
+    mounts
+}
+
+/// Writable directories on the way to a hook mount must themselves be mount points.
+/// Self-binds retain ordinary writes but prevent moving a protected tree through an ancestor.
+fn hook_parent_pins(paths: &[PathBuf], mounts: &Mounts) -> Vec<PathBuf> {
+    let mut pins = std::collections::BTreeSet::new();
+    for path in paths {
+        for parent in path.ancestors().skip(1) {
+            if mounts.writable(parent, false) && is_real_dir(parent) {
+                pins.insert(parent.to_path_buf());
+            }
+        }
+    }
+    pins.into_iter().collect()
 }
 
 /// The canonical (or, when it does not exist yet, lexical) directory named by a `.git` file.

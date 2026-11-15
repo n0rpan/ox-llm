@@ -208,3 +208,21 @@ a grant swapped for a symlink, a remote `readOnlyHint` without opt-in, and a pro
 - **TOCTOU inside one file-tool call** (policy check, then open) remains a process-local race;
   a model-controlled writer cannot run concurrently with the tool call under bwrap, and grants
   re-resolve the current path. The suite pins the grant and per-command re-check behaviour.
+
+
+## Main-composition verification (#199 / #105)
+
+The suite retains the parent-first dual-home mounts and late sealing from #199, and the
+linked-worktree `info`, `config.worktree` and hooks protection from #105. Normal linked-worktree
+commits and nested-home controls run alongside the escape tests; this PR does not require #203.
+
+The composition review also reproduced two residual custom-hook routes: replacing a writable
+ancestor of `core.hooksPath`, and changing a symlink/hard-link hook through a writable alias.
+`a_custom_hooks_ancestor_cannot_be_replaced`,
+`a_custom_hook_symlink_to_a_writable_payload_is_refused` and
+`a_custom_hook_hard_link_to_a_writable_payload_is_refused` fail before their fix.
+Writable ancestors are now pinned before all masks, retaining ordinary writes beside hooks.
+Configured hook contents use the existing bounded alias walker, including hook directories
+outside the project that point into a writable project. Safe read-only aliases remain allowed;
+multiply linked hooks or aliases reaching writable content refuse the command. Plan-mode cache
+and external worktree-common-dir controls cover the other writable mount sources.
