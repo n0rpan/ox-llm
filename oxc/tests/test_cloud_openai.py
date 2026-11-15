@@ -635,3 +635,38 @@ class Responses(CloudCase):
         row = self.ledger_rows()[-1]
         self.assertEqual(row['settled'], 'reserved')
         self.assertGreaterEqual(row['cost_usd'], 0.204096)
+
+
+class ResponsesMultiTool(CloudCase):
+    def setUp(self):
+        super().setUp()
+        self.secrets.write_text(json.dumps({'openai': {'api_key': KEY}}))
+
+    def test_streamed_multi_tool_turn_continues_on_the_api_key_path(self):
+        # #450: the same multi-call turn on the API-key Responses path, both final shapes.
+        from test_cloud_chatgpt import assemble, multi_tool_events
+        for completed_output in (True, False):
+            with self.subTest(completed_output=completed_output):
+                events, reasoning, calls = multi_tool_events(completed_output)
+                upstream = MockOpenAIResponses(events=events)
+                self.addCleanup(upstream.close)
+                self.start(mock=upstream, models=models('gpt-6.1-sol'))
+                tools = [{'type': 'function', 'function': {'name': n, 'parameters': {'type': 'object'}}}
+                         for n in ('bash', 'read')]
+                history = [{'role': 'user', 'content': 'inspect'}]
+                status, body = self.call('POST', '/v1/chat/completions', {
+                    'model': REMOTE, 'messages': history, 'tools': tools, 'stream': True})
+                self.assertEqual(status, 200, body)
+                history += [assemble(body)] + [{'role': 'tool', 'tool_call_id': c['call_id'],
+                                                'content': 'ok'} for c in calls]
+                upstream.events = None
+                status, body = self.call('POST', '/v1/chat/completions', {
+                    'model': REMOTE, 'messages': history, 'tools': tools})
+                self.assertEqual(status, 200, body)
+                sent = upstream.requests[-1]['body']['input']
+                self.assertIn(reasoning, sent)
+                for call in calls:
+                    self.assertIn(call, sent)
+                self.assertNotIn(KEY.encode(), body)
+                self.stack.close()
+                self.stack = None

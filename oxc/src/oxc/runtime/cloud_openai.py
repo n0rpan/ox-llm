@@ -353,6 +353,15 @@ def _usage(value):
             'completion_tokens_details': usage.get('output_tokens_details') or {'reasoning_tokens': 0}}
 
 
+def with_streamed_output(value, items):
+    """The final response with its output items. With ``store: false`` (the subscription
+    backend) ``response.completed`` may carry an empty ``output``; the items then exist only
+    as ``response.output_item.done`` events, keyed by output index (#450)."""
+    if isinstance(value, dict) and not value.get('output') and items:
+        value = dict(value, output=[items[index] for index in sorted(items)])
+    return value
+
+
 def response(value, item, history, key, scope=None):
     try:
         return _response(value, item, history, key, scope)
@@ -405,6 +414,7 @@ class ResponsesStream:
         self.item, self.history, self.key, self.scope = item, history, key, scope
         self.parser = cloud.SSEDecoder()
         self.slots = {}
+        self.items = {}
         self.done = False
         self.failed = False
 
@@ -435,6 +445,9 @@ class ResponsesStream:
                 self.slots[value['output_index']] = slot
                 return self._wire({'tool_calls': [{'index': slot, 'id': part['call_id'],
                     'type': 'function', 'function': {'name': part['name'], 'arguments': ''}}]})
+        if kind == 'response.output_item.done':
+            self.items[value['output_index']] = value['item']
+            return b''
         if kind == 'response.function_call_arguments.delta':
             return self._wire({'tool_calls': [{'index': self.slots[value['output_index']],
                                               'function': {'arguments': value['delta']}}]})
@@ -444,7 +457,7 @@ class ResponsesStream:
                      'response.reasoning_summary_text.delta': 'reasoning_content'}[kind]
             return self._wire({field: value['delta']})
         if kind in ('response.completed', 'response.incomplete'):
-            reply = response(value['response'], self.item, self.history, self.key, self.scope)
+            reply = response(with_streamed_output(value['response'], self.items), self.item, self.history, self.key, self.scope)
             self.done = True
             finish = reply['choices'][0]['finish_reason']
             out = self._wire({}, finish)

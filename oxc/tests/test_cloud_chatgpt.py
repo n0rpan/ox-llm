@@ -41,6 +41,7 @@ class FakeBackend(_Base):
     def __init__(self):
         super().__init__()
         self.output = None  # None = a plain text answer
+        self.events = None  # None = a text delta, then response.completed
         self.start()
 
     def handle(self, handler, method):
@@ -53,9 +54,10 @@ class FakeBackend(_Base):
             {'type': 'message', 'id': 'msg', 'role': 'assistant', 'status': 'completed',
              'content': [{'type': 'output_text', 'text': 'Done.'}]}],
             'usage': {'input_tokens': 7, 'output_tokens': 3}}
-        events = [{'type': 'response.created', 'response': {'id': 'resp_sub'}},
+        events = self.events or [{'type': 'response.created', 'response': {'id': 'resp_sub'}},
                   {'type': 'response.output_text.delta', 'output_index': 0, 'delta': 'Done.'},
                   {'type': 'response.completed', 'response': done}]
+        self.events = None
         handler.send_response(200)
         handler.send_header('Content-Type', 'text/event-stream')
         handler.send_header('x-sub-primary-used-percent', '42.5')
@@ -101,6 +103,58 @@ class FakeAuth:
     def close(self):
         self.server.shutdown()
         self.server.server_close()
+
+
+def multi_tool_events(completed_output):
+    """A subscription turn with three parallel tool calls, as the backend streams it: each
+    call is announced with empty arguments, filled by deltas and closed by output_item.done;
+    with ``store: false`` the final response.completed carries ``completed_output``."""
+    reasoning = {'type': 'reasoning', 'id': 'rs_1', 'summary': [], 'encrypted_content': 'opaque-synthetic'}
+    calls = [{'type': 'function_call', 'id': 'fc_%d' % n, 'call_id': 'call_%d' % n, 'name': name,
+              'arguments': args, 'status': 'completed'}
+             for n, (name, args) in enumerate([('bash', '{"command":"ls -la"}'),
+                                               ('read', '{"path":"a.txt"}'),
+                                               ('read', '{"path":"b.txt"}')], 1)]
+    events = [{'type': 'response.created', 'response': {'id': 'resp_sub'}},
+              {'type': 'response.output_item.added', 'output_index': 0, 'item': dict(reasoning, encrypted_content=None)},
+              {'type': 'response.output_item.done', 'output_index': 0, 'item': reasoning}]
+    for index, call in enumerate(calls, 1):
+        events.append({'type': 'response.output_item.added', 'output_index': index,
+                       'item': dict(call, arguments='', status='in_progress')})
+        half = len(call['arguments']) // 2
+        for piece in (call['arguments'][:half], call['arguments'][half:]):
+            events.append({'type': 'response.function_call_arguments.delta', 'output_index': index,
+                           'item_id': call['id'], 'delta': piece})
+        events.append({'type': 'response.function_call_arguments.done', 'output_index': index,
+                       'item_id': call['id'], 'arguments': call['arguments']})
+        events.append({'type': 'response.output_item.done', 'output_index': index, 'item': call})
+    output = [reasoning] + calls if completed_output else []
+    events.append({'type': 'response.completed', 'response': {
+        'id': 'resp_sub', 'status': 'completed', 'output': output,
+        'usage': {'input_tokens': 7, 'output_tokens': 3}}})
+    return events, reasoning, calls
+
+
+def assemble(body):
+    """The assistant message a streaming client (oxa) builds from the chat SSE."""
+    message, calls = {'role': 'assistant', 'content': None}, {}
+    for line in body.decode().splitlines():
+        if not line.startswith('data: ') or line == 'data: [DONE]':
+            continue
+        for choice in json.loads(line[6:]).get('choices') or []:
+            delta = choice.get('delta') or {}
+            if delta.get('content'):
+                message['content'] = (message['content'] or '') + delta['content']
+            for part in delta.get('tool_calls') or []:
+                slot = calls.setdefault(part['index'], {'id': None, 'type': 'function',
+                                                        'function': {'name': '', 'arguments': ''}})
+                slot['id'] = part.get('id') or slot['id']
+                function = part.get('function') or {}
+                slot['function']['name'] += function.get('name') or ''
+                slot['function']['arguments'] += function.get('arguments') or ''
+    if calls:
+        message['tool_calls'] = [calls[index] for index in sorted(calls)]
+    return message
 
 
 CLIENT = 'oxllm-test-client'  # synthetic stand-in for the client registered for ox-llm
@@ -274,6 +328,44 @@ class Subscription(Base):
         sent = self.backend.requests[-1]
         self.assertEqual(sent['headers']['authorization'], 'Bearer synthetic-rotated-access-token-0000')
         self.assertIn(reasoning, sent['body']['input'])
+
+    def test_streamed_multi_tool_turn_continues(self):
+        # #450: several tool calls in one streamed turn, then the continuation request.
+        for completed_output, stream in ((True, True), (False, True), (False, False)):
+            with self.subTest(completed_output=completed_output, stream=stream):
+                self.sign_in()
+                self.start()
+                events, reasoning, calls = multi_tool_events(completed_output)
+                self.backend.events = events
+                tools = [{'type': 'function', 'function': {'name': n, 'parameters': {'type': 'object'}}}
+                         for n in ('bash', 'read')]
+                messages = [{'role': 'user', 'content': 'inspect'}]
+                status, body = self.call('POST', '/v1/chat/completions', {
+                    'model': MODEL, 'max_tokens': 100, 'messages': messages, 'tools': tools, 'stream': stream})
+                self.assertEqual(status, 200, body)
+                if stream:
+                    self.assertIn(b'"finish_reason": "tool_calls"', body)
+                    assistant = assemble(body)
+                else:
+                    choice = json.loads(body)['choices'][0]
+                    self.assertEqual(choice['finish_reason'], 'tool_calls')
+                    assistant = choice['message']
+                self.assertEqual([(c['id'], c['function']['arguments']) for c in assistant['tool_calls']],
+                                 [(c['call_id'], c['arguments']) for c in calls])
+                self.sign_in(access='synthetic-rotated-access-token-0000')
+                messages += [assistant] + [{'role': 'tool', 'tool_call_id': c['call_id'], 'content': 'ok'}
+                                           for c in calls]
+                status, body = self.call('POST', '/v1/chat/completions', {
+                    'model': MODEL, 'max_tokens': 100, 'messages': messages, 'tools': tools, 'stream': True})
+                self.assertEqual(status, 200, body)
+                sent = self.backend.requests[-1]['body']['input']
+                self.assertIn(reasoning, sent)
+                for call in calls:
+                    self.assertIn(call, sent)
+                self.assertNotIn(b'synthetic-rotated-access-token', body)
+                self.assertNotIn(b'synthetic-access-token', body)
+                self.stack.close()
+                self.stack = None
 
     def test_credential_os_error_is_a_clean_503(self):
         # Review: an OSError while refreshing (here: the lock file is a link) escaped forward().
