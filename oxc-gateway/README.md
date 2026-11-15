@@ -74,7 +74,7 @@ fixtures retain unchanged Python rows and native expectations derived with its
 conservative cost oracle. Final usage stays exact; cap estimates at the hold,
 while retaining any known actual charge above it.
 
-The explicit conformance runner selects every current module: 100 cases across
+The explicit conformance runner selects every current module: 101 cases across
 catalog, policy, secrets and pricing. Native mode requires each executable
 `<name>_contract` for `test_<name>.py`, failing before any tests if a driver is
 missing; source mode clears inherited native overrides. Both the required
@@ -119,3 +119,13 @@ retained. Only typed accounting fields are copied from settlement. Seven new
 filesystem/concurrency tests cover metadata privacy, shared admission, write
 failure, midnight, salt initialization/validation and key redaction. Full history
 classification, pruning and HTTP/CLI presentation remain outside this slice.
+
+Twelve policy contracts exercise the current Python refusal stages. Eleven use
+the real HTTP controller with owned mocks and a foreign inference lease; the
+guest case enters its already-authenticated guest context. The accepted case
+reaches exactly one mock, while refusals forward none. Native checks exercise
+the same policy decisions.
+
+The outstanding-hold case seeds $0.50 spend and holds a $0.40008 Python
+reservation at the owned upstream. A second request must be refused before
+another provider call, so dropping the reserved term fails native conformance.

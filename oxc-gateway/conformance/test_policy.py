@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import unittest
 
@@ -13,7 +15,7 @@ import source_peer as peer
 
 GOLDENS = Path(__file__).with_name('policy.json')
 CASES = ('no-key', 'no-key-no-budget', 'offline', 'no-price', 'no-budget',
-         'bad-budget', 'exhausted', 'bad-ledger', 'disabled-ledger', 'guest', 'accepted')
+         'bad-budget', 'exhausted', 'reserved', 'bad-ledger', 'disabled-ledger', 'guest', 'accepted')
 
 
 def inputs(name):
@@ -23,8 +25,9 @@ def inputs(name):
             'credentials': name not in ('no-key', 'no-key-no-budget'),
             'cap': None if name in ('no-budget', 'no-key-no-budget') else False if name == 'bad-budget' else 1,
             'ledger_enabled': name != 'disabled-ledger',
-            'spent': None if name == 'bad-ledger' else .95 if name == 'exhausted' else 0,
-            'reserved': 0, 'required': .08008}
+            'spent': None if name == 'bad-ledger' else .95 if name == 'exhausted' else .5 if name == 'reserved' else 0,
+            'reserved': .40008 if name == 'reserved' else 0,
+            'required': .40008 if name == 'reserved' else .08008}
 
 
 def capture(name):
@@ -33,6 +36,8 @@ def capture(name):
     original = peer.config
     value = original('router')
     model = value['cloud']['models']['synthetic-cloud']
+    if name == 'reserved':
+        model['context_window'] = 320000
     if spec['pricing']:
         model['pricing'] = {'input_per_million': 1, 'output_per_million': 2}
     value['cloud']['daily_budget_usd'] = spec['cap']
@@ -44,8 +49,8 @@ def capture(name):
             json.dump({'openrouter': {'api_key': 'synthetic-policy-key'}}, out)
     ledger = home / '.local/state/oxc/ledger'
     ledger.mkdir(parents=True, mode=0o700)
-    if name in ('exhausted', 'bad-ledger'):
-        text = '{"remote":true,"cost_usd":0.95}\n' if name == 'exhausted' else '["synthetic-invalid-row"]\n'
+    if name in ('exhausted', 'reserved', 'bad-ledger'):
+        text = json.dumps({'remote': True, 'cost_usd': spec['spent']}) + '\n' if name != 'bad-ledger' else '["synthetic-invalid-row"]\n'
         (ledger / ('requests-' + time.strftime('%Y%m%d') + '.jsonl')).write_text(text)
     if name == 'guest':
         # Exercise the reference's already-authenticated guest context. The live
@@ -59,6 +64,40 @@ def capture(name):
     peer.config = lambda _: value
 
     def inspect(port, upstream):
+        if name == 'reserved':
+            entered, release = threading.Event(), threading.Event()
+
+            def hold():
+                entered.set()
+                if not release.wait(timeout=8):
+                    raise AssertionError('Owned hold was never released')
+
+            upstream.hook = hold
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                first = pool.submit(send, port)
+                try:
+                    if not entered.wait(timeout=5):
+                        raise AssertionError('First request did not obtain its reservation')
+                    result = send(port)
+                    if result['status'] != 429 or len(upstream.requests) != 1:
+                        raise AssertionError('Outstanding reservation did not block the second call')
+                finally:
+                    release.set()
+                if first.result(timeout=5)['status'] != 200:
+                    raise AssertionError('The held mock request failed')
+            return result
+        result = send(port)
+        if name == 'accepted':
+            if result['status'] != 200 or len(upstream.requests) != 1:
+                raise AssertionError('Valid remote request did not reach exactly one owned mock')
+            return None
+        if result['status'] < 400 or upstream.requests:
+            raise AssertionError('Policy refusal forwarded a request')
+        if 'synthetic-policy-key' in json.dumps(result) or str(secret) in json.dumps(result):
+            raise AssertionError('Policy error exposed credentials')
+        return result
+
+    def send(port):
         peer = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
         try:
             peer.request('POST', '/v1/chat/completions', json.dumps(spec['payload']),
@@ -68,14 +107,6 @@ def capture(name):
             result = {'status': response.status, 'body': body}
         finally:
             peer.close()
-        if name == 'accepted':
-            if response.status != 200 or len(upstream.requests) != 1:
-                raise AssertionError('Valid remote request did not reach exactly one owned mock')
-            return None
-        if response.status < 400 or upstream.requests:
-            raise AssertionError('Policy refusal forwarded a request')
-        if 'synthetic-policy-key' in json.dumps(result) or str(secret) in json.dumps(result):
-            raise AssertionError('Policy error exposed credentials')
         return result
 
     try:
