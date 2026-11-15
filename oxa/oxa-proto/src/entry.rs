@@ -48,6 +48,14 @@ pub struct Entry {
     pub body: EntryBody,
 }
 
+/// Display-only data of a tool result that the wire message does not carry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolMeta {
+    pub is_error: bool,
+    /// `ToolOutput::ui` (diff, exit code, duration); `Null` when the tool gave none.
+    pub ui: Value,
+}
+
 /// The body of a session entry. The variant-to-`type` mapping on disk is fixed by
 /// `oxa_session::encode_entry` (pi's entry type names; see `oxa-session/README.md`).
 ///
@@ -63,7 +71,14 @@ pub enum EntryBody {
     Prefix(FrozenPrefix),
     /// pi type `message` (roles `user`, `assistant`, `toolResult`). `wire` is exactly what goes on the wire (W2: for an assistant entry
     /// these are the bytes as streamed); `parts` is what the user attached (shown, not sent).
-    Msg { wire: WireMsg, parts: Vec<Part> },
+    ///
+    /// `tool` is set on `toolResult` entries only: the display half of the result (error flag,
+    /// diff / exit code), so a resumed session renders it as it did live. Never sent.
+    Msg {
+        wire: WireMsg,
+        parts: Vec<Part>,
+        tool: Option<ToolMeta>,
+    },
     /// oxa type `shown`. Text shown to the user and never sent: an aborted / failed / cut reply
     /// (W2) or a notice. `why` is one of [`crate::shown_why`].
     Shown { text: String, why: &'static str },

@@ -31,10 +31,10 @@ def _close_row(st, status, error=None):
         st.led.finish(status, error)
     except Exception:
         # An append may have happened before an exception; never retry an ambiguous write.
-        cloud.mark_ledger_failure()
+        cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
         return
     if getattr(st.led, 'written', True) is False:
-        cloud.mark_ledger_failure()
+        cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
 
 
 def _reply(self, st, status, message, code, error=None, param='model'):
@@ -49,7 +49,7 @@ def _reply(self, st, status, message, code, error=None, param='model'):
 
 
 def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, failed=False,
-            cancelled=None):
+            cancelled=None, refused=False):
     """Record one forwarded request.  Missing usage charges the reserved worst case.
 
     ``cancelled`` = (request_bytes, streamed_bytes) for a client cancel: settled at actual usage
@@ -61,7 +61,7 @@ def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, f
         # OpenAI/OpenRouter report usage only in the closing chunk, so any usage seen is final.
         cloud.cancelled_cost(row, hold, item, *cancelled, usage_final=True)
     else:
-        cloud.conservative_cost(row, hold, failed=failed)
+        cloud.conservative_cost(row, hold, failed=failed, refused=refused)
     if st.led is not None:
         st.led.row.update(row)
         _close_row(st, status, error)
@@ -172,7 +172,8 @@ def forward(self, st):
             cloud_chatgpt.observe(response.getheaders())
         if response.status >= 400:
             payload = _error_body(response.status, response.read(cloud.MAX_ERROR_BYTES), key)
-            _finish(self, st, item, meter, response.status, 'cloud_upstream_error', hold, key, failed=True)
+            _finish(self, st, item, meter, response.status, 'cloud_upstream_error', hold, key, failed=True,
+                    refused=cloud.clean_refusal(response.status))
             return self.reply(response.status, payload, 'application/json')
         if not collect and (body.get('stream') is True or 'text/event-stream' in full_type.lower()):
             self.send_response(response.status)
@@ -287,7 +288,7 @@ def forward(self, st):
                 _finish(self, st, item, meter, 503, 'cloud_interrupted', hold, key, failed=True)
             except Exception:
                 # If settlement itself fails, no subsequent request may spend past it.
-                cloud.mark_ledger_failure()
+                cloud.mark_ledger_failure(hold.reserved)
             finally:
                 hold.settle()
         if connection is not None:

@@ -19,6 +19,7 @@ fn msg(id: &str, parent: Option<&str>, text: &str) -> Entry {
         body: EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     }
 }

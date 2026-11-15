@@ -241,6 +241,7 @@ fn run_inner(
             EntryBody::Msg {
                 wire: turn.msg.clone(),
                 parts: Vec::new(),
+                tool: None,
             },
             sink,
         )?
@@ -258,6 +259,12 @@ fn run_inner(
             message: reply.clone(),
         });
         crate::fire::message(st, HookPoint::MessageEnd, &reply, sink, ui);
+        if turn.finish == Finish::ContentFilter {
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Warning,
+                text: "The model declined to answer this request.".to_string(),
+            });
+        }
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
         st.last_usage = Some(usage);
@@ -290,6 +297,10 @@ fn run_inner(
                     EntryBody::Msg {
                         wire: r.msg.clone(),
                         parts: Vec::new(),
+                        tool: Some(oxa_proto::ToolMeta {
+                            is_error: r.is_error,
+                            ui: r.ui.clone(),
+                        }),
                     },
                     sink,
                 )?;
@@ -466,6 +477,7 @@ pub(crate) fn push_user(
         EntryBody::Msg {
             wire,
             parts: vec![Part::Text(text)],
+            tool: None,
         },
         sink,
     )?;

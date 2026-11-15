@@ -14,6 +14,7 @@ fn entry() -> oxa_proto::Entry {
         body: oxa_proto::EntryBody::Msg {
             wire: oxa_proto::WireMsg::user("hi"),
             parts: Vec::new(),
+            tool: None,
         },
     }
 }

@@ -177,6 +177,8 @@ pub(crate) struct CallResult {
     pub msg: WireMsg,
     pub tool_name: String,
     pub is_error: bool,
+    /// `ToolOutput::ui`, stored for display on resume.
+    pub ui: Value,
     /// The repeat guard asks to end the run after this batch (`repeat.rs`).
     pub stop: bool,
 }
@@ -234,6 +236,7 @@ pub(crate) fn fail_truncated_calls(
                 msg: WireMsg::tool_result(call.id.clone(), output.text),
                 tool_name: call.name.clone(),
                 is_error: true,
+                ui: Value::Null,
                 stop: false,
             }
         })
@@ -347,6 +350,7 @@ pub(crate) fn run_calls(
             msg: WireMsg::tool_result(p.id.clone(), output.text.clone()),
             tool_name: p.name.clone(),
             is_error: output.is_error,
+            ui: output.ui.clone(),
             stop,
         });
     }

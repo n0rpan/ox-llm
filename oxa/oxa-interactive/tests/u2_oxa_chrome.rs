@@ -93,14 +93,17 @@ fn all_contexts() -> Vec<HintContext> {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         HintContext::Idle {
             has_text: true,
             slash: false,
+            armed: false,
         },
         HintContext::Idle {
             has_text: true,
             slash: true,
+            armed: false,
         },
         HintContext::Running,
         HintContext::Dialog,
@@ -334,6 +337,7 @@ fn hint_idle_empty_editor_shows_default_keys() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         true,
     );
@@ -372,6 +376,7 @@ fn hint_search_only_in_fullscreen() {
     let idle = HintContext::Idle {
         has_text: false,
         slash: false,
+        armed: false,
     };
     assert!(!hints(idle, false).contains("search"));
     assert!(hints(idle, true).contains("search"));
@@ -383,6 +388,7 @@ fn hint_text_contexts() {
         HintContext::Idle {
             has_text: true,
             slash: false,
+            armed: false,
         },
         false,
     );
@@ -393,6 +399,7 @@ fn hint_text_contexts() {
         HintContext::Idle {
             has_text: true,
             slash: true,
+            armed: false,
         },
         false,
     );
@@ -441,6 +448,7 @@ fn hint_rebinding_changes_the_hint() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &StatusModel::default(),
         &km,
@@ -462,6 +470,7 @@ fn hint_unbound_action_is_left_out() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &StatusModel::default(),
         &km,
@@ -481,6 +490,7 @@ fn hint_place_shown_at_140_and_hidden_at_50() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &st,
         &keymap(),
@@ -496,6 +506,7 @@ fn hint_place_shown_at_140_and_hidden_at_50() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &st,
         &keymap(),
@@ -1007,6 +1018,7 @@ fn ascii_skin_is_pure_ascii() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &km,
         true,
@@ -1144,6 +1156,24 @@ fn hud_thinking_label_claude_55_effective_effort() {
     assert!(line.contains("off") && !line.contains("adaptive"), "{line}");
 }
 
+#[test]
+fn waiting_behind_another_request_stays_queued() {
+    let plain = Theme::plain();
+    for (pos, place) in [(None, false), (Some(1), true), (Some(2), true)] {
+        let st = activity(Activity::Queued { pos, wait_s: 2 }, 3000);
+        let line = oxa_activity_line(&st, &keymap(), 200, &plain, Skin::Oxa).unwrap_or_default();
+        assert!(
+            line.contains("[QUEUED]") && !line.contains("STARTING"),
+            "{line:?}"
+        );
+        assert_eq!(
+            line.contains(&format!("#{}", pos.unwrap_or(0))),
+            place,
+            "{line:?}"
+        );
+    }
+}
+
 /// #343: at 60 columns a cloud model still shows where it runs and the permission mode.
 #[test]
 fn hud_keeps_location_at_60_columns() {
@@ -1164,4 +1194,18 @@ fn hud_keeps_location_at_60_columns() {
         }
         assert!(line.contains("READY"), "state at {width}: {line:?}");
     }
+}
+
+#[test]
+fn hint_armed_shows_clear_key_as_exit() {
+    let idle = |armed| HintContext::Idle {
+        has_text: false,
+        slash: false,
+        armed,
+    };
+    let plain = hints(idle(false), false);
+    let armed = hints(idle(true), false);
+    assert!(plain.contains("ctrl+d exit"), "{plain:?}");
+    assert!(armed.contains("ctrl+c exit"), "{armed:?}");
+    assert!(!armed.contains("ctrl+d exit"), "{armed:?}");
 }
