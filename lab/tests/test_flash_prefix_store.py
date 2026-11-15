@@ -1,6 +1,5 @@
 """FLASH-PREFIX-1: the Flash prefix store switch (oxe_flash.prefix_store); never starts an engine, loads weights or reads the real home."""
 import copy
-import importlib.util
 import os
 from pathlib import Path
 import tempfile
@@ -10,8 +9,7 @@ from unittest.mock import patch
 from snapdragon_ai_lab.runtime import bigmoe_runtime, oxe_runtime, profile_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('stage_flash_oxe_production', ROOT / 'tools/stage_flash_oxe_production.py')
-stage_tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(stage_tool)
+import flash_profile_fixture as stage_tool
 
 ALIAS = stage_tool.ALIAS
 GIB = 1024**3
