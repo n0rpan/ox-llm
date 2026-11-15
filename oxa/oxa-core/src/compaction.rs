@@ -497,6 +497,7 @@ pub(crate) fn prompt_tokens(st: &SessionState, wire: &[WireMsg]) -> (u32, Counte
         model: &st.model,
         max_tokens: st.info.max_output,
         thinking: st.thinking.enabled(),
+        thinking_budget: None,
         preserve_thinking: st.info.caps.preserve_thinking != Some(false),
         sampling: None,
         hints,

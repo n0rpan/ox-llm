@@ -13,6 +13,8 @@ struct ThinkForever {
     tokens: Vec<Token>,
     logits: Vec<f32>,
     close: Token,
+    start: Token,
+    literal_answer: bool,
     eos: Token,
     spec: bool,
     spec_start: usize,
@@ -35,6 +37,9 @@ impl Engine for ThinkForever {
     fn prefill(&mut self, tokens: &[Token]) -> Result<&[f32]> {
         self.tokens.extend_from_slice(tokens);
         let next = match self.tokens.last().copied() {
+            Some(t) if t == self.close && self.literal_answer => self.start,
+            Some(t) if t == self.start && self.literal_answer => b'X' as Token,
+            Some(t) if t == b'X' as Token && self.literal_answer => self.eos,
             Some(t) if t == self.close => b'A' as Token,
             Some(t) if t == b'A' as Token => self.eos,
             _ => b'a' as Token,
@@ -84,6 +89,8 @@ fn state(spec: bool) -> Arc<State<ThinkForever>> {
         tokens: vec![],
         logits: vec![0.; tok.n_vocab()],
         close: tok.token_id("</think>").unwrap(),
+        start: tok.token_id("<think>").unwrap(),
+        literal_answer: false,
         eos: tok.eos.unwrap(),
         spec,
         spec_start: 0,
@@ -332,4 +339,20 @@ async fn thinking_budget_discovery_and_unsupported_template_are_fail_closed() {
     )
     .await;
     assert!(matches!(raw, Reply::Json(400, _)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn thinking_budget_does_not_rewrite_literal_think_tags_in_the_answer() {
+    let mut st = state(true);
+    Arc::get_mut(&mut st)
+        .unwrap()
+        .worker
+        .get_mut()
+        .unwrap()
+        .engine
+        .literal_answer = true;
+    let (_, reply) = chat(st, Some(json!(3)), false, 16).await;
+    assert_eq!(reply["choices"][0]["finish_reason"], "stop");
+    assert_eq!(reply["choices"][0]["message"]["reasoning_content"], "aaa");
+    assert_eq!(reply["choices"][0]["message"]["content"], "<think>X");
 }

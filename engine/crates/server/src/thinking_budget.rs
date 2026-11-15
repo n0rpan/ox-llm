@@ -12,6 +12,7 @@ pub(crate) struct Budget {
     markers: Markers,
     remaining: usize,
     active: bool,
+    finished: bool,
     output_left: usize,
 }
 impl Budget {
@@ -21,6 +22,7 @@ impl Budget {
             markers,
             remaining: requested.min(output_room.saturating_sub(2)),
             active,
+            finished: false,
             output_left: output_room,
         }
     }
@@ -31,7 +33,8 @@ impl Budget {
         self.output_left = self.output_left.saturating_sub(1);
         if token == self.markers.end {
             self.active = false;
-        } else if token == self.markers.start {
+            self.finished = true;
+        } else if token == self.markers.start && !self.finished {
             self.active = true;
         } else if self.active {
             self.remaining = self.remaining.saturating_sub(1);

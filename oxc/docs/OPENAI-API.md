@@ -214,7 +214,9 @@ The loaded engine's `/props.thinking_budget` also checks that the template and t
 have the required single-token think markers. Unsupported templates and invalid values
 (negative, fractional, boolean or string) return 400. Cloud models, LAN-share requests and
 non-chat endpoints refuse a non-null budget before inference; it is not a provider's
-reasoning-budget parameter. No profile default is changed by this API extension.
+reasoning-budget parameter. No profile default is changed by this API extension. oxa can opt in with
+`{"oxa":{"thinking":{"budget":512}}}`; it sends the field only when thinking is on and
+the selected local engine advertises support.
 
 Talking to the engine port directly (no controller) is for tests. The v0.2.0 engine has its own
 output default, `/v1/models/{id}`, string error codes and the sampling controls; it has no
