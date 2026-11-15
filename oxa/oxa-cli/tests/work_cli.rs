@@ -42,6 +42,21 @@ fn failed_checks_get_exactly_one_retry() {
         "attemptattempt"
     );
 }
+
+#[test]
+fn failed_agent_with_failed_checks_is_blocked_and_keeps_both_causes() {
+    let env = TestEnv::new();
+    setup(&env, r#"["echo external-check-failed; exit 1"]"#);
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"missing-model","prompt":"Finish task"}]"#,
+    );
+    let record = run(&env, vec![]);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let detail = record["detail"].as_str().unwrap();
+    assert!(detail.contains("missing-model"), "{detail}");
+    assert!(detail.contains("external-check-failed"), "{detail}");
+}
 #[test]
 fn retry_can_make_acceptance_green() {
     let env = TestEnv::new();
