@@ -40,7 +40,7 @@ User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only 
 | [extensions.md](pages/extensions.md) | JavaScript extensions, exec hooks, packages |
 | [mcp.md](pages/mcp.md) | MCP servers: configuration, OAuth, exposure |
 | [rpc.md](pages/rpc.md) | print and JSON output, the RPC protocol, the Rust client |
-| [differences.md](differences.md) | what differs from the earlier agent, and what is not included |
+| [differences.md](differences.md) | derived from pi: attribution and licence |
 | [engine-support.md](pages/engine-support.md) | the engine features oxa uses, and their support status |
 
 The security summary for the repository is in [SECURITY.md](../SECURITY.md). The project overview and the crate layout are in [README.md](../README.md).

@@ -509,3 +509,17 @@ fn settings_page_does_not_call_a_working_key_reserved() {
         hits.join("\n")
     );
 }
+
+#[test]
+fn docs_have_no_merge_conflict_markers() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for page in ["docs/differences.md", "PARITY.md", "README.md"] {
+        let text = std::fs::read_to_string(root.join(page)).unwrap();
+        for line in text.lines() {
+            assert!(
+                !(line.starts_with("<<<<<<< ") || line == "=======" || line.starts_with(">>>>>>> ")),
+                "{page}: conflict marker"
+            );
+        }
+    }
+}
