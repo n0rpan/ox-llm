@@ -733,4 +733,25 @@ mod tests {
         assert!(bash_execution_text("x", "o", None, true, Some("/t/f"))
             .ends_with("\n\n(command cancelled)\n\n[Output truncated. Full output: /t/f]"));
     }
+
+    #[test]
+    fn truncate_chars_keeps_short_text_and_counts_chars_not_bytes() {
+        assert_eq!(truncate_chars("short", 5), "short");
+        assert_eq!(truncate_chars("", 0), "");
+        // "héllo world" is 11 chars but 12 bytes: the cut must be by char, not byte.
+        assert_eq!(truncate_chars("héllo world", 6), "héllo…");
+        assert_eq!(truncate_chars("héllo world", 6).chars().count(), 6);
+    }
+
+    #[test]
+    fn truncate_chars_trims_whitespace_before_ellipsis() {
+        assert_eq!(truncate_chars("ab  cd", 4), "ab…");
+        assert_eq!(truncate_chars("abcdef", 4), "abc…");
+    }
+
+    #[test]
+    fn truncate_chars_with_tiny_limit_returns_empty() {
+        assert_eq!(truncate_chars("abcdef", 1), "");
+        assert_eq!(truncate_chars("abcdef", 0), "");
+    }
 }
