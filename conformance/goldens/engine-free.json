@@ -1,0 +1,243 @@
+{
+  "auth-api-key": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "param": null,
+        "type": "unavailable_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "auth-bearer": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "param": null,
+        "type": "unavailable_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "auth-missing": {
+    "body": {
+      "error": {
+        "code": "invalid_api_key",
+        "message": "Missing or wrong API key. Send \"Authorization: Bearer <key>\".",
+        "param": null,
+        "type": "authentication_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 401,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "auth-wrong": {
+    "body": {
+      "error": {
+        "code": "invalid_api_key",
+        "message": "Missing or wrong API key. Send \"Authorization: Bearer <key>\".",
+        "param": null,
+        "type": "authentication_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 401,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "auth-x-api-key": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "param": null,
+        "type": "unavailable_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "chunked-body-refused": {
+    "body": {
+      "error": {
+        "code": "length_required",
+        "message": "Use a content length for request bodies.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 411,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "chunked-refused": {
+    "body": {
+      "error": {
+        "code": "length_required",
+        "message": "Use a content length for request bodies.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 411,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "cors-allowed": {
+    "access-control-allow-origin": "https://example.invalid",
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "param": null,
+        "type": "unavailable_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "vary": "Origin",
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "cors-preflight-missing-request-id": {
+    "access-control-allow-headers": "authorization, content-type",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "https://example.invalid",
+    "access-control-allow-private-network": "true",
+    "access-control-max-age": "600",
+    "body": null,
+    "content-type": null,
+    "status": 204,
+    "vary": "Origin",
+    "x-request-id": null
+  },
+  "head-models": {
+    "body": null,
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "host-refused": {
+    "body": {
+      "error": {
+        "code": "forbidden",
+        "message": "Host not allowed: use 127.0.0.1, localhost or [::1] with this port.",
+        "param": null,
+        "type": "permission_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 403,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "invalid-gzip": {
+    "body": {
+      "error": {
+        "code": "invalid_request",
+        "message": "Invalid model request.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 400,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "invalid-length": {
+    "body": {
+      "error": {
+        "code": "invalid_request",
+        "message": "Invalid content length.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 400,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "negative-length": {
+    "body": {
+      "error": {
+        "code": "request_too_large",
+        "message": "Request is too large.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 413,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "origin-refused": {
+    "body": {
+      "error": {
+        "code": "forbidden",
+        "message": "Cross-origin local AI request refused.",
+        "param": null,
+        "type": "permission_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 403,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "oversize-length": {
+    "body": {
+      "error": {
+        "code": "request_too_large",
+        "message": "Request is too large.",
+        "param": null,
+        "type": "invalid_request_error"
+      }
+    },
+    "content-type": "application/json",
+    "status": 413,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "percent-route-refused": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model is sleeping; submitting a message will load it.",
+        "param": null,
+        "type": "local_backend_busy"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "unknown-route-body-is-not-gzip-decoded": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model is sleeping; submitting a message will load it.",
+        "param": null,
+        "type": "local_backend_busy"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  },
+  "unknown-route-body-is-not-json-parsed": {
+    "body": {
+      "error": {
+        "code": "service_unavailable",
+        "message": "Model is sleeping; submitting a message will load it.",
+        "param": null,
+        "type": "local_backend_busy"
+      }
+    },
+    "content-type": "application/json",
+    "status": 503,
+    "x-request-id": "<generated:req_32hex>"
+  }
+}

@@ -809,7 +809,31 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
             )
         }
     };
-    let raw = if encoding == "gzip" {
+    // Python parses model bodies only on inference/helper routes. An unknown
+    // route on a classic backend reaches sleeping admission without inspecting
+    // JSON or gzip, and Oxe's endpoint errors apply to that backend only.
+    let model_body = method == Method::POST
+        && [
+            "/completion",
+            "/completions",
+            "/chat/completions",
+            "/infill",
+            "/embedding",
+            "/embeddings",
+            "/rerank",
+            "/reranking",
+            "/v1/completions",
+            "/v1/chat/completions",
+            "/v1/embeddings",
+            "/v1/rerank",
+            "/v1/reranking",
+            "/v1/responses",
+            "/tokenize",
+            "/detokenize",
+            "/apply-template",
+        ]
+        .contains(&path.as_str());
+    let raw = if model_body && encoding == "gzip" {
         let mut raw_decompressed = Vec::new();
         if flate2::read::GzDecoder::new(raw.as_ref())
             .take(16 * 1024 * 1024 + 1)
@@ -829,7 +853,7 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
     } else {
         raw.to_vec()
     };
-    let payload = if !raw.is_empty() && method == Method::POST {
+    let payload = if !raw.is_empty() && model_body {
         match serde_json::from_slice::<Value>(&raw) {
             Ok(value) => Some(value),
             Err(_) => {
@@ -865,7 +889,11 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
             );
         }
     }
-    if fresh.is_some() {
+    let target = app.engine.loaded().or_else(|| {
+        models::resolve(&config, payload.as_ref().and_then(|p| p["model"].as_str())).ok()
+    });
+    let kind = target.as_ref().and_then(|p| p["backend_kind"].as_str());
+    if method == Method::POST && matches!(kind, Some("oxe" | "bigmoe-cpu-stream")) {
         let unsupported = match path.as_str() {
             "/v1/embeddings" | "/embeddings" | "/embedding" => Some("embeddings"),
             "/v1/rerank" | "/rerank" | "/v1/reranking" | "/reranking" => Some("reranking"),
@@ -889,7 +917,7 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
             );
         }
     }
-    if fresh.is_some()
+    if kind == Some("oxe")
         && path.starts_with("/v1/")
         && ![
             "/v1/chat/completions",
@@ -938,7 +966,11 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
     }
     context.error(
         503,
-        "Local model setup is still being prepared.",
+        if fresh.is_some() {
+            "Model is sleeping; submitting a message will load it."
+        } else {
+            "Local model setup is still being prepared."
+        },
         "local_backend_busy",
         "service_unavailable",
         None,

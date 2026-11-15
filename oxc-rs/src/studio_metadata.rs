@@ -41,55 +41,101 @@ fn variable(name: &str, default: PathBuf) -> PathBuf {
     std::env::var_os(name).map(PathBuf::from).unwrap_or(default)
 }
 impl Studio {
-    fn cpu_optimized(&self, model: &str, width: i64, height: i64, steps: i64, edit: bool) -> bool {
+    pub(super) fn cpu_optimized(
+        &self,
+        model: &str,
+        width: i64,
+        height: i64,
+        steps: i64,
+        edit: bool,
+    ) -> bool {
+        self.cpu_profile(model, width, height, steps, edit)
+            .is_ok_and(|v| v.is_some())
+    }
+    pub(super) fn cpu_profile(
+        &self,
+        model: &str,
+        width: i64,
+        height: i64,
+        steps: i64,
+        edit: bool,
+    ) -> Result<Option<Value>, String> {
         if !["q4", "q8"].contains(&model) || steps != 8 {
-            return false;
+            return Ok(None);
         }
-        let profile = read(&self.project.join("cpu-profile.json"));
-        let model_list = profile
+        let path = self.project.join("cpu-profile.json");
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let incomplete = || "CPU optimization profile is incomplete".to_owned();
+        let bytes = fs::read(path).map_err(|_| incomplete())?;
+        let profile: Value = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(_) => {
+                return if model == "q8" {
+                    Ok(None)
+                } else {
+                    Err(incomplete())
+                }
+            }
+        };
+        let fields = profile.as_object().ok_or_else(incomplete)?;
+        let models = fields
             .get("models")
             .cloned()
             .unwrap_or_else(|| json!(["q4"]));
-        let listed = match &model_list {
+        let listed = match &models {
             Value::String(s) => s.contains(model),
             Value::Array(a) => a.contains(&json!(model)),
             Value::Object(m) => m.contains_key(model),
-            _ => false,
+            _ => return Err(incomplete()),
         };
-        if !listed || !truthy(&profile["enabled"]) || !truthy(&profile["validated"]) {
-            return false;
+        if !listed || !truthy(&profile["enabled"]) {
+            return Ok(None);
         }
-        let dimensions = if edit {
+        if !truthy(&profile["validated"]) {
+            return Err("CPU optimization has not passed validation".into());
+        }
+        let key = if edit {
             if profile["img2img_validated"] != true {
-                return false;
+                return Ok(None);
             }
-            &profile["img2img_dimensions"]
+            "img2img_dimensions"
         } else {
-            &profile["dimensions"]
+            "dimensions"
         };
-        if !dimensions.as_array().is_some_and(|a| {
-            a.iter().any(|v| {
+        let dimensions = fields.get(key).cloned().unwrap_or_else(|| json!([]));
+        let matched = dimensions
+            .as_array()
+            .ok_or_else(incomplete)?
+            .iter()
+            .any(|v| {
                 v.as_array().is_some_and(|p| {
                     p.len() == 2
                         && p[0].as_f64() == Some(width as f64)
                         && p[1].as_f64() == Some(height as f64)
                 })
-            })
-        }) {
-            return false;
+            });
+        if !matched {
+            return Ok(None);
         }
-        let Some(binary) = profile["binary"].as_str() else {
-            return false;
-        };
-        let Ok(binary) = fs::canonicalize(binary) else {
-            return false;
-        };
-        let Ok(releases) = fs::canonicalize(self.stack.join("releases")) else {
-            return false;
-        };
-        binary.starts_with(releases)
-            && executable(&binary)
-            && crate::bootstrap::sha(&binary).is_ok_and(|sha| json!(sha) == profile["sha256"])
+        let binary = fields
+            .get("binary")
+            .and_then(Value::as_str)
+            .ok_or_else(incomplete)?;
+        let binary = fs::canonicalize(binary)
+            .map_err(|_| "Installed CPU optimization is unavailable".to_owned())?;
+        let releases = fs::canonicalize(self.stack.join("releases"))
+            .map_err(|_| "Installed CPU optimization is unavailable".to_owned())?;
+        if !binary.starts_with(releases) || !executable(&binary) {
+            return Err("Installed CPU optimization is unavailable".into());
+        }
+        let expected = fields.get("sha256").ok_or_else(incomplete)?;
+        let sha = crate::bootstrap::sha(&binary).map_err(|_| incomplete())?;
+        if json!(sha) != *expected {
+            return Err("Installed CPU binary failed its checksum".into());
+        }
+        Ok(Some(profile))
     }
     fn zimage_estimates(&self) -> Value {
         let mut estimate = json!({"calibrated":false,"q8":{"fixed_s":12.0,"s_per_mpx_step":59.9,"pixel_exponent":1.5},"q4":{"fixed_s":12.0,"s_per_mpx_step":70.7,"pixel_exponent":1.35},"unoptimized_factor":1.59,"vae_encode_s_per_mpx":10.0,"esrgan_fixed_s":3.0,"esrgan_s_per_output_mpx":20.0});
@@ -222,13 +268,13 @@ impl Studio {
             json!({"seconds":rounded(seconds,1),"optimized":optimized,"calibrated":estimate["calibrated"]}),
         )
     }
-    fn image_models(&self) -> PathBuf {
+    pub(super) fn image_models(&self) -> PathBuf {
         self.stack.join("models/images")
     }
-    fn klein_dir(&self) -> PathBuf {
+    pub(super) fn klein_dir(&self) -> PathBuf {
         self.image_models().join("flux2-klein")
     }
-    fn klein_missing(&self, model: &str) -> Vec<String> {
+    pub(super) fn klein_missing(&self, model: &str) -> Vec<String> {
         [
             self.klein_dir().join(if model == "q4" {
                 "flux-2-klein-4b-Q4_0.gguf"
@@ -251,7 +297,7 @@ impl Studio {
     fn oxi_binary(&self) -> PathBuf {
         variable("OXI_BIN", self.stack.join("releases/oxi/oxi"))
     }
-    fn oxi_missing(&self) -> Vec<String> {
+    pub(super) fn oxi_missing(&self) -> Vec<String> {
         let mut missing = Vec::new();
         for path in [
             self.oxi_binary(),
@@ -269,7 +315,7 @@ impl Studio {
         missing.extend(self.klein_missing("q8"));
         missing
     }
-    fn engine_setting(&self) -> String {
+    pub(super) fn engine_setting(&self) -> String {
         let v = read(&self.project.join("engine.json"));
         v["engine"]
             .as_str()
@@ -434,7 +480,7 @@ impl Studio {
         }
         estimate
     }
-    fn edit_seconds(&self, width: i64, height: i64, t2i: bool, count: i64) -> f64 {
+    pub(super) fn edit_seconds(&self, width: i64, height: i64, t2i: bool, count: i64) -> f64 {
         let e = self.edit_settings();
         let mpx = width as f64 * height as f64 / 1e6;
         let sampling = e["s_per_mpx_step"].as_f64().unwrap_or(80.0)
@@ -538,7 +584,7 @@ impl Studio {
                     .contains(&e.to_string_lossy().to_lowercase().as_str())
             })
     }
-    fn upscale_info(&self) -> Value {
+    pub(super) fn upscale_info(&self) -> Value {
         let value = read(&self.project.join("upscale.json"));
         let mut targets = vec![768, 1024];
         let edge = |v: &Value| integer(v).filter(|n| (256..=1536).contains(n) && n % 64 == 0);
@@ -695,7 +741,7 @@ fn decimal_ascii(value: &str) -> String {
         })
         .collect()
 }
-fn python_int(value: &str) -> Option<i64> {
+pub(super) fn python_int(value: &str) -> Option<i64> {
     static RX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let value = decimal_ascii(value);
     let value = value.trim();
@@ -704,7 +750,7 @@ fn python_int(value: &str) -> Option<i64> {
         .then(|| value.replace('_', "").parse().ok())
         .flatten()
 }
-fn python_float(value: &str) -> Option<f64> {
+pub(super) fn python_float(value: &str) -> Option<f64> {
     static RX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let value = decimal_ascii(value);
     let value = value.trim();

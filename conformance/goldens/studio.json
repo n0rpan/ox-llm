@@ -26,6 +26,46 @@
     "http_version": 10,
     "status": 403
   },
+  "edit-bad-crop": {
+    "body": {
+      "error": "crop must be true or false"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "edit-bad-model": {
+    "body": {
+      "error": "Choose Q8 or Q4"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "edit-bad-size": {
+    "body": {
+      "error": "Edit size must be 512 or 768"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "edit-empty": {
+    "body": {
+      "error": "Type what to change first"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "edit-long-instruction": {
+    "body": {
+      "error": "Instruction is longer than 1000 characters"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
   "engine": {
     "body": {
       "choices": [
@@ -380,11 +420,749 @@
     "http_version": 10,
     "status": 200
   },
+  "generate-bad-dimensions": {
+    "body": {
+      "error": "Use dimensions 256\u20131536 in multiples of 64, at most 1536\u00d71024 pixels, and 1\u201350 steps"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "generate-bad-seed": {
+    "body": {
+      "error": "Seed must be a whole number of 0 or more"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "generate-bad-variations": {
+    "body": {
+      "error": "Variations must be 1\u20134"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "generate-empty": {
+    "body": {
+      "error": "empty prompt"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "generate-klein-bad-size": {
+    "body": {
+      "error": "FLUX.2 klein sizes are multiples of 16 from 256 to 1024"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "generate-klein-gpu": {
+    "body": {
+      "error": "FLUX.2 klein runs on CPU only; keep CPU selected"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "generate-klein-missing": {
+    "body": {
+      "error": "Missing klein model files: flux-2-klein-4b-Q8_0.gguf, Qwen3-4B-Q8_0.gguf, flux2-vae.safetensors (see docs/STUDIO-EDIT.md)"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "generate-klein-photo": {
+    "body": {
+      "error": "FLUX.2 klein text-to-image does not take a photo; use the Edit panel for photos"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "generate-missing-default": {
+    "body": {
+      "error": "missing model z_image_turbo-Q4_K.gguf"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "generate-missing-q8": {
+    "body": {
+      "error": "missing model z_image_turbo-Q8_0.gguf"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 200
+  },
+  "generate-model-invalid": {
+    "body": {
+      "error": "Choose Q4 or Q8, or FLUX.2 klein"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
+  "generate-prompt-shape": {
+    "closed_without_response": true
+  },
   "get-origin": {
     "content_type": "text/html; charset=utf-8",
     "http_version": 10,
     "page_bytes": 19502,
     "page_sha256": "16e84e00c12bfb59fc46a0fabd5f200b89004b43058869b3ee5feb2bcc22da40",
+    "status": 200
+  },
+  "job-activity": {
+    "active": {
+      "active_jobs": 1,
+      "device": "cpu",
+      "model": "q4",
+      "state": "generating"
+    },
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/z_image_turbo-Q4_K.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/vae/vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--steps",
+        "8",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>.png",
+        "--threads",
+        "6",
+        "--flash-attn",
+        "off,diffusion=off",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": null
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "images": [
+        {
+          "actions": {
+            "post_upscale": false,
+            "refine": {
+              "1024": 515.1,
+              "768": 248.9
+            },
+            "upscale": null
+          },
+          "height": 512,
+          "id": "<image:v4:0>",
+          "kind": "image",
+          "path": "<HOME>/pictures/<output>.png",
+          "seed": 42,
+          "width": 512
+        }
+      ],
+      "model": "q4",
+      "path": "<HOME>/pictures/<output>.png",
+      "state": "done"
+    },
+    "status": 200
+  },
+  "job-batch": {
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/z_image_turbo-Q4_K.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/vae/vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--steps",
+        "8",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>-%d.png",
+        "--threads",
+        "6",
+        "--flash-attn",
+        "off,diffusion=off",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--seed",
+        "9",
+        "-b",
+        "2",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": null
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "images": [
+        {
+          "actions": {
+            "post_upscale": false,
+            "refine": {
+              "1024": 515.1,
+              "768": 248.9
+            },
+            "upscale": null
+          },
+          "height": 512,
+          "id": "<image:v4:0>",
+          "kind": "image",
+          "path": "<HOME>/pictures/<output>-0.png",
+          "seed": 9,
+          "width": 512
+        },
+        {
+          "actions": {
+            "post_upscale": false,
+            "refine": {
+              "1024": 515.1,
+              "768": 248.9
+            },
+            "upscale": null
+          },
+          "height": 512,
+          "id": "<image:v4:1>",
+          "kind": "image",
+          "path": "<HOME>/pictures/<output>-1.png",
+          "seed": 10,
+          "width": 512
+        }
+      ],
+      "model": "q4",
+      "path": "<HOME>/pictures/<output>-0.png",
+      "state": "done"
+    },
+    "status": 200
+  },
+  "job-cpu-profile": {
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/z_image_turbo-Q4_K.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/vae/vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--steps",
+        "8",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>.png",
+        "--threads",
+        "6",
+        "--flash-attn",
+        "off,diffusion=off",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--auto-fit",
+        "off",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": "1"
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "images": [
+        {
+          "actions": {
+            "post_upscale": false,
+            "refine": {
+              "1024": 515.1,
+              "768": 248.9
+            },
+            "upscale": null
+          },
+          "height": 512,
+          "id": "<image:v4:0>",
+          "kind": "image",
+          "path": "<HOME>/pictures/<output>.png",
+          "seed": 42,
+          "width": 512
+        }
+      ],
+      "model": "q4",
+      "path": "<HOME>/pictures/<output>.png",
+      "state": "done"
+    },
+    "status": 200
+  },
+  "job-error": {
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/z_image_turbo-Q4_K.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/vae/vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--steps",
+        "8",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>.png",
+        "--threads",
+        "6",
+        "--flash-attn",
+        "off,diffusion=off",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": null
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "error": "sd-cli exited 7",
+      "model": "q4",
+      "state": "error",
+      "step": ""
+    },
+    "status": 200
+  },
+  "job-klein-sdcpp": {
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/flux2-klein/flux-2-klein-4b-Q8_0.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/flux2-klein/Qwen3-4B-Q8_0.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/flux2-klein/flux2-vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--sampling-method",
+        "euler",
+        "--steps",
+        "4",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>.png",
+        "--threads",
+        "6",
+        "--flash-attn",
+        "off,diffusion=off",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": null
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "engine": "sd.cpp",
+      "engine_reason": "oxi is not installed (oxi, sd-cli (probe)); using sd.cpp",
+      "images": [
+        {
+          "actions": {
+            "post_upscale": false,
+            "refine": {
+              "1024": 444.8,
+              "768": 201.0
+            },
+            "upscale": null
+          },
+          "backend": "sd.cpp",
+          "height": 512,
+          "id": "<image:v4:0>",
+          "kind": "image",
+          "path": "<HOME>/pictures/<output>.png",
+          "seed": 42,
+          "width": 512
+        }
+      ],
+      "model": "klein-q8",
+      "path": "<HOME>/pictures/<output>.png",
+      "state": "done"
+    },
+    "status": 200
+  },
+  "job-missing": {
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/z_image_turbo-Q4_K.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/vae/vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--steps",
+        "8",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>.png",
+        "--threads",
+        "6",
+        "--flash-attn",
+        "off,diffusion=off",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": null
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "error": "sd-cli exited 0 without writing its image",
+      "model": "q4",
+      "state": "error",
+      "step": ""
+    },
+    "status": 200
+  },
+  "job-q4": {
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/z_image_turbo-Q4_K.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/vae/vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--steps",
+        "8",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>.png",
+        "--threads",
+        "6",
+        "--flash-attn",
+        "off,diffusion=off",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": null
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "images": [
+        {
+          "actions": {
+            "post_upscale": false,
+            "refine": {
+              "1024": 515.1,
+              "768": 248.9
+            },
+            "upscale": null
+          },
+          "height": 512,
+          "id": "<image:v4:0>",
+          "kind": "image",
+          "path": "<HOME>/pictures/<output>.png",
+          "seed": 42,
+          "width": 512
+        }
+      ],
+      "model": "q4",
+      "path": "<HOME>/pictures/<output>.png",
+      "state": "done"
+    },
+    "status": 200
+  },
+  "job-q8": {
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/z_image_turbo-Q8_0.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/vae/vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--steps",
+        "8",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>.png",
+        "--threads",
+        "6",
+        "--flash-attn",
+        "off,diffusion=off",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": null
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "images": [
+        {
+          "actions": {
+            "post_upscale": false,
+            "refine": {
+              "1024": 444.8,
+              "768": 201.0
+            },
+            "upscale": null
+          },
+          "height": 512,
+          "id": "<image:v4:0>",
+          "kind": "image",
+          "path": "<HOME>/pictures/<output>.png",
+          "seed": 42,
+          "width": 512
+        }
+      ],
+      "model": "q8",
+      "path": "<HOME>/pictures/<output>.png",
+      "state": "done"
+    },
+    "status": 200
+  },
+  "job-tuning": {
+    "body": {
+      "id": "<job:v4>"
+    },
+    "content_type": "application/json",
+    "engine": {
+      "argv": [
+        "--diffusion-model",
+        "<HOME>/stack/models/images/z_image_turbo-Q4_K.gguf",
+        "--llm",
+        "<HOME>/stack/models/images/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "--vae",
+        "<HOME>/stack/models/images/vae/vae.safetensors",
+        "--cfg-scale",
+        "1.0",
+        "--steps",
+        "8",
+        "-W",
+        "512",
+        "-H",
+        "512",
+        "-o",
+        "<HOME>/pictures/<output>.png",
+        "--threads",
+        "9",
+        "--flash-attn",
+        "off,diffusion=on",
+        "--vae-tiling",
+        "--vae-tile-size",
+        "512",
+        "--disable-image-metadata",
+        "--backend",
+        "cpu",
+        "--prompt-file",
+        "<validated:prompt-memfd>"
+      ],
+      "prompt_memfd": true,
+      "repack": null
+    },
+    "http_version": 10,
+    "idle": {
+      "active_jobs": 0,
+      "device": null,
+      "model": null,
+      "state": "idle"
+    },
+    "job": {
+      "device": "cpu",
+      "images": [
+        {
+          "actions": {
+            "post_upscale": false,
+            "refine": {
+              "1024": 515.1,
+              "768": 248.9
+            },
+            "upscale": null
+          },
+          "height": 512,
+          "id": "<image:v4:0>",
+          "kind": "image",
+          "path": "<HOME>/pictures/<output>.png",
+          "seed": 42,
+          "width": 512
+        }
+      ],
+      "model": "q4",
+      "path": "<HOME>/pictures/<output>.png",
+      "state": "done"
+    },
     "status": 200
   },
   "missing": {
@@ -867,6 +1645,14 @@
     "http_version": 10,
     "status": 403
   },
+  "refine-missing-image": {
+    "body": {
+      "error": "That image is no longer available here; generate it again"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
+  },
   "upload-bad-type": {
     "body": {
       "error": "unsupported image type"
@@ -925,5 +1711,13 @@
     "http_version": 10,
     "status": 200,
     "uploaded_mode": 384
+  },
+  "upscale-missing-image": {
+    "body": {
+      "error": "That image is no longer available here; generate it again"
+    },
+    "content_type": "application/json",
+    "http_version": 10,
+    "status": 400
   }
 }

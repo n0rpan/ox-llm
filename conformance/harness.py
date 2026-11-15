@@ -98,8 +98,12 @@ def normalize_responses(body):
 
 
 class Daemon:
-    def __init__(self, configured=False, environ=None, config_changes=None, port=None, home=None):
+    def __init__(self, configured=False, environ=None, config_changes=None, port=None, home=None,
+                 engine_free=False):
+        if configured and engine_free:
+            raise ValueError('An engine-free fixture cannot install a local engine')
         self.configured = configured
+        self.engine_free = engine_free
         self.environ = environ or {}
         self.config_changes = config_changes or {}
         self.request_ids = set()
@@ -138,6 +142,13 @@ class Daemon:
         self.config_path = Path(self.env['LOCAL_LLM_CONFIG'])
         if self.configured:
             self.install_fixture()
+        elif self.engine_free:
+            # Cloud-only contracts must run without fake models, engine binaries,
+            # host-memory fixtures or Snapdragon-specific namespaces. The remote
+            # catalog is supplied by the caller after its Python baseline lands.
+            self.config_path.parent.mkdir(parents=True, mode=0o700)
+            self.config_path.write_text(json.dumps(self.config_changes))
+            self.config_path.chmod(0o600)
         command = shlex.split(os.environ['OXC_DAEMON_COMMAND']) if 'OXC_DAEMON_COMMAND' in os.environ else [
             sys.executable, '-m', 'snapdragon_ai_lab.runtime.controller']
         self.namespace = []

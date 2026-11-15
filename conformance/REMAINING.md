@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `756852b05c3a8d06e2b368e979607ec9426c8e52`.
+Reference main: `e62260833e5d0414fb295df0abd004d15ba4d1d9`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -9,8 +9,12 @@ The following gaps remain visible rather than being represented by skipped tests
 
 - Cloud routing, three upstream providers, budget reservations, unknown-price
   refusal, remote ledger labels and redaction: no implementation exists on this
-  reference main. Implement the planned native functionality after the existing
-  runtime paths, keeping the absent Python baseline explicit.
+  reference main. The coordinator has prioritized complete cloud-only mode
+  (no local engine) as the first A/B target. Wait for #24 and the cloud-only
+  stack to land, capture their actual behavior on main, then port it. Do not
+  port the previous gateway. Nineteen engine-free HTTP foundation cases pass
+  with no model/engine fixtures and an untouched foreign inference lease.
+  The review runner refuses a cloud-only parity claim until real contracts exist.
 - Disk state/prefix/session caches: extend actual on-disk formats,
   scopes, preload, concurrent mutation and additional cross-implementation reads.
   Usage tests now read populated state formats, pending-write ages, overrides and
@@ -36,11 +40,13 @@ The following gaps remain visible rather than being represented by skipped tests
 - Lifecycle: pressure-based keep-warm, crashed engine/reaper recovery, host
   admission/memory guard variants, queue/replay flags, background preemption,
   CPU pinning and Flash-specific launch adapters/capabilities.
-- Images: 59 Studio contracts now cover the unchanged page, HTTP/1.0, request
+- Images: 87 Studio contracts now cover the unchanged page, HTTP/1.0, request
   gates, metadata/settings, calibrated estimates/routing, private uploads, anchored
-  file reads, MIME quirks and malformed-input EOF. Job/generation planners, pixel
-  operations, controller image-slot IPC and engine adapters still need contracts
-  without SDK, device or model content.
+  file reads, MIME quirks, planner refusals and synthetic CPU generation/batches,
+  anonymous prompt descriptors, validated CPU profiles/tuning, failure cleanup
+  and activity. Full editing, pixel operations, controller image-slot IPC and
+  Oxi/NPU adapters still need contracts without SDK, device or model content.
+  Pause further image work behind cloud-only completion.
 - CLI: extend malformed metadata, argument combinations and filesystem failures;
   extend populated ledger/digest, valid cache status, sharing keys and offline
   failures. Fifteen desktop/model dispatch cases now cover detached sessions,
@@ -89,7 +95,7 @@ ported behavior; do not change Python behavior to ease parity. Continue cross-im
 current paired synthetic benchmark verifies identical engine work and records
 source/harness/binary identities; hardware performance remains unmeasured. Hardware A/B remains the owner's responsibility.
 
-Fetch/merge main every few hours and before any completion claim. Review all
+Follow main daily during active work and before any slice is readied. Review all
 `lab/` changes since the previous merge point, add reference contracts first,
 then port the changed behavior. Keep the draft PR's first line and parity table
 in sync. Never merge, tag, release, push main or mark hardware readiness early.
@@ -100,7 +106,10 @@ run/review, mark ready deliberately or dispatch checks.yml once for the branch.
 The merge queue runs full integration CI again. If waiting is needed, use one
 blocking gh pr checks --watch; never poll CI status.
 
-Next implementation step: complete Studio/image contracts and generated materialization. Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
+Next implementation step: complete the cloud-only path after its main baseline
+lands, while extracting reviewable PRs using [the merge plan](MERGE_PLAN.md).
+The parser-only first slice is draft #173; #28 stays the integration branch.
+Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
 filtering, stored days, private writes, trend/soak thresholds, stale status, dates,
 installed versions and file interoperability. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
@@ -128,5 +137,7 @@ overrides from config/environment, and dropping stores/options when disk is off.
 Twelve automatic engine-ledger cases now cover per-profile opt-in, an inherited
 pipe separate from stdout, numeric/enum filtering, bounded lines, private rotation,
 advisory filesystem failures, explicit ledger arguments and unload/reload drain.
-More malformed numeric inputs and stop races remain uncovered. Full Rust conformance
-remains FAIL, and no native deployment or readiness claim is made.
+More malformed numeric inputs and stop races remain uncovered. The captured
+Python/native suite passes; complete product parity is unfinished. No native
+deployment or readiness claim is made, and hardware A/B waits for green cloud-only
+conformance.

@@ -1,5 +1,6 @@
 """Model-free installed Studio wire contracts; all traffic targets loopback."""
 import hashlib
+import datetime
 import http.client
 import json
 import os
@@ -31,6 +32,32 @@ CASES = ('page', 'activity', 'models', 'missing', 'missing-job', 'bad-host',
          'file-symlink-outside', 'file-missing', 'file-upload-root-symlink', 'upload-nonutf8-name',
          'models-invalid-setup', 'models-invalid-benchmarks', 'models-invalid-dimensions', 'file-directory')
 
+PLANNER_CASES = {
+    'generate-empty': ('/generate', {}),
+    'generate-missing-default': ('/generate', {'prompt': 'synthetic generation prompt'}),
+    'generate-model-invalid': ('/generate', {'prompt': 'synthetic generation prompt', 'model': 'synthetic-invalid'}),
+    'generate-bad-dimensions': ('/generate', {'prompt': 'synthetic generation prompt', 'width': 255}),
+    'generate-bad-variations': ('/generate', {'prompt': 'synthetic generation prompt', 'variations': True}),
+    'generate-bad-seed': ('/generate', {'prompt': 'synthetic generation prompt', 'seed': -1}),
+    'generate-missing-q8': ('/generate', {'prompt': 'synthetic generation prompt', 'model': 'q8'}),
+    'generate-klein-missing': ('/generate', {'prompt': 'synthetic generation prompt', 'model': 'klein-q8'}),
+    'generate-klein-bad-size': ('/generate', {'prompt': 'synthetic generation prompt', 'model': 'klein-q8', 'width': 513}),
+    'generate-klein-photo': ('/generate', {'prompt': 'synthetic generation prompt', 'model': 'klein-q8', 'init': '/tmp/synthetic-photo'}),
+    'generate-klein-gpu': ('/generate', {'prompt': 'synthetic generation prompt', 'model': 'klein-q8', 'cpu': False}),
+    'generate-prompt-shape': ('/generate', {'prompt': {'synthetic': 1}}),
+    'edit-empty': ('/edit', {}),
+    'edit-long-instruction': ('/edit', {'instruction': 's' * 1001}),
+    'edit-bad-crop': ('/edit', {'instruction': 'synthetic instruction', 'crop': 'invalid'}),
+    'edit-bad-size': ('/edit', {'instruction': 'synthetic instruction', 'size': 1024}),
+    'edit-bad-model': ('/edit', {'instruction': 'synthetic instruction', 'model': 'synthetic-invalid'}),
+    'upscale-missing-image': ('/upscale', {}),
+    'refine-missing-image': ('/refine', {}),
+}
+CASES += tuple(PLANNER_CASES)
+JOB_CASES = ('job-q4', 'job-q8', 'job-batch', 'job-klein-sdcpp', 'job-error', 'job-missing', 'job-activity',
+             'job-cpu-profile', 'job-tuning')
+CASES += JOB_CASES
+
 
 def capture(name):
     with tempfile.TemporaryDirectory(prefix='oxc-studio-conformance-') as directory:
@@ -42,6 +69,32 @@ def capture(name):
         env.update(STUDIO_PORT=str(port), LOCAL_IMAGE_CONFIG_DIR=str(project),
                    SD_HOME=str(home / 'stack'), IMG_OUTDIR=str(home / 'pictures'),
                    LOCAL_AI_LEASE=str(home / 'inference.lock'))
+        if name in JOB_CASES:
+            executable = home / 'bin/sd-cli'
+            executable.parent.mkdir(mode=0o700)
+            source = (ROOT / 'conformance/fixtures/fake_image_engine.py').read_text().split('\n', 1)[1]
+            executable.write_text('#!' + sys.executable + '\n' + source)
+            executable.chmod(0o700)
+            env.update(SD_CLI=str(executable), FAKE_IMAGE_EVENTS=str(home / 'image-events.json'),
+                       FAKE_IMAGE_EXPECTED_PROMPT='synthetic generation prompt',
+                       FAKE_IMAGE_MODE={'job-error': 'error', 'job-missing': 'missing', 'job-activity': 'delay'}.get(name, 'ok'))
+            for filename in ('z_image_turbo-Q4_K.gguf', 'z_image_turbo-Q8_0.gguf',
+                             'Qwen3-4B-Instruct-2507-Q4_K_M.gguf', 'vae/vae.safetensors',
+                             'flux2-klein/flux-2-klein-4b-Q8_0.gguf',
+                             'flux2-klein/Qwen3-4B-Q8_0.gguf', 'flux2-klein/flux2-vae.safetensors'):
+                path = home / 'stack/models/images' / filename
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                path.write_bytes(b'synthetic metadata fixture\n')
+            if name == 'job-cpu-profile':
+                selected = home / 'stack/releases/synthetic-cpu/sd-cli'
+                selected.parent.mkdir(mode=0o700, parents=True)
+                selected.write_bytes(executable.read_bytes())
+                selected.chmod(0o700)
+                (project / 'cpu-profile.json').write_text(json.dumps({'enabled': True, 'validated': True,
+                    'models': ['q4'], 'dimensions': [[512, 512]], 'binary': str(selected),
+                    'sha256': hashlib.sha256(selected.read_bytes()).hexdigest()}))
+            elif name == 'job-tuning':
+                (project / 'runtime-settings.json').write_text('{"q4":{"threads":"9","flash_attention":"on"}}\n')
         ready_cases = ('engine-ready', 'engine-bad-gate', 'estimate-klein-ready',
                        'estimate-klein-gated', 'estimate-forced-sdcpp')
         if name == 'models-populated' or name in ready_cases:
@@ -159,7 +212,19 @@ def capture(name):
                     raise AssertionError('Studio did not start')
                 method, path, body = 'GET', '/', None
                 headers = [('Host', '127.0.0.1:' + str(port))]
-                if name.startswith('upload-'):
+                if name in JOB_CASES:
+                    method, path = 'POST', '/generate'
+                    value = {'prompt': 'synthetic generation prompt',
+                             'model': 'q8' if name == 'job-q8' else 'klein-q8' if name == 'job-klein-sdcpp' else 'q4'}
+                    if name == 'job-batch':
+                        value.update(variations=2, seed=9)
+                    body = json.dumps(value).encode()
+                    headers += [('Content-Length', str(len(body)))]
+                elif name in PLANNER_CASES:
+                    path, value = PLANNER_CASES[name]
+                    method, body = 'POST', json.dumps(value).encode()
+                    headers += [('Content-Length', str(len(body)))]
+                elif name.startswith('upload-'):
                     method, path = 'POST', '/upload'
                     extension = 'webp' if name == 'upload-webp' else 'exe' if name == 'upload-bad-type' else 'PNG'
                     body = (b'--synthetic-boundary\r\nContent-Disposition: form-data; name="file"; filename="synthetic.' +
@@ -264,6 +329,55 @@ def capture(name):
                             raise AssertionError('Upload contents changed')
                         value['uploaded_mode'] = uploaded.stat().st_mode & 0o777
                         value['body']['path'] = str(uploaded.parent / ('<upload:v4>' + expected_suffix))
+                    if name in JOB_CASES and response.status == 200 and isinstance(value.get('body'), dict) and 'id' in value['body']:
+                        job_id = value['body']['id']
+                        if not re.fullmatch(r'[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}', job_id):
+                            raise AssertionError('Invalid job UUID')
+                        value['body']['id'] = '<job:v4>'
+                        def get(route):
+                            peer = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+                            try:
+                                peer.request('GET', route)
+                                reply = peer.getresponse()
+                                self_value = json.loads(reply.read())
+                                if reply.status != 200:
+                                    raise AssertionError('Job metadata request failed')
+                                return self_value
+                            finally:
+                                peer.close()
+                        if name == 'job-activity':
+                            value['active'] = get('/activity')
+                        deadline = time.monotonic() + 5
+                        while True:
+                            job = get('/job?id=' + job_id)
+                            if job.get('state') in ('done', 'error'):
+                                break
+                            if time.monotonic() >= deadline:
+                                raise AssertionError('Synthetic image job did not finish')
+                            time.sleep(.02)
+                        for index, image in enumerate(job.get('images', [])):
+                            if not re.fullmatch(r'[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}', image['id']):
+                                raise AssertionError('Invalid image UUID')
+                            image['id'] = '<image:v4:' + str(index) + '>'
+                            if not Path(image['path']).is_file():
+                                raise AssertionError('Job lost its output')
+                        value['job'] = job
+                        value['engine'] = json.loads((home / 'image-events.json').read_text())
+                        value['idle'] = get('/activity')
+                        def normalize_output(item):
+                            if isinstance(item, dict):
+                                return {key: normalize_output(value) for key, value in item.items()}
+                            if isinstance(item, list):
+                                return [normalize_output(value) for value in item]
+                            if isinstance(item, str):
+                                match = re.fullmatch(r'(.*/)([0-9]{8}-[0-9]{6})-[0-9a-f]{6}(-(?:[0-9]+|%d))?\.png', item)
+                                if match:
+                                    stamp = datetime.datetime.strptime(match[2], '%Y%m%d-%H%M%S').timestamp()
+                                    if abs(time.time() - stamp) > 60:
+                                        raise AssertionError('Invalid output timestamp')
+                                    return match[1] + '<output>' + (match[3] or '') + '.png'
+                            return item
+                        value = normalize_output(value)
                 finally:
                     connection.close()
                 return json.loads(json.dumps(value).replace(str(home), '<HOME>'))

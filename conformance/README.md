@@ -1,9 +1,33 @@
 # oxc drop-in conformance
 
-Reference: main `756852b05c3a8d06e2b368e979607ec9426c8e52`.
-The current suite covers 662 scenarios in 97 unittest methods. This remains a
+Reference: main `e62260833e5d0414fb295df0abd004d15ba4d1d9`.
+The current suite covers 709 scenarios in 98 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
+
+Cloud-only mode is the first complete runtime target. See the
+[merge plan](MERGE_PLAN.md) for separate review slices; the first parser slice is
+draft [#173](https://github.com/oxstack/ox-llm/pull/173). The integration branch
+remains in draft #28. Capture cloud gateway contracts after #24 lands on main,
+then port them and the cloud-only stack. Hardware A/B waits until cloud-only
+conformance is green.
+
+The review runner audits that every captured method belongs to one slice and
+sets all seven native command overrides. For example:
+
+```sh
+python3 conformance/run_suite.py cloud-foundation --python
+python3 conformance/run_suite.py cloud-foundation --native /absolute/path/to/oxc
+python3 conformance/run_suite.py all --list
+```
+
+The 19 engine-free HTTP cases install no engine/model and use no hardware
+fixtures or bubblewrap. They hold a foreign inference lease, compare the real
+HTTP replies and verify no child, local model or lease/config mutation remains.
+Three new failures before the fix established the classic-backend unknown-route
+and body-parsing behavior. Together with CLI cases they form `cloud-foundation`;
+this is not cloud-only parity. The runner refuses `cloud-only`, `cloud-gateway`
+and `cloud-installer` explicitly until their main reference contracts exist.
 
 Requires Linux, Python 3.10+, OpenSSL, util-linux `setpriv`, and bubblewrap with unprivileged
 user, network and cgroup namespaces. The lab CI job already installs bubblewrap. Run from the repository root:
@@ -102,6 +126,7 @@ python3 conformance/test_cli_files.py --record-python
 python3 conformance/test_http.py --record-python
 python3 conformance/test_api.py --record-python
 python3 conformance/test_http_gates.py --record-python
+python3 conformance/test_engine_free.py --record-python
 python3 conformance/test_state_cache.py --record-python
 python3 conformance/test_cache_budget.py --record-python
 python3 conformance/test_cache_clear.py --record-python
@@ -156,14 +181,15 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Context modes | PASS, 8 cases | PASS: limits/capabilities, fast/deep/max, RSS-proof gates, active/cap-changing controls and private config writes | Execution override adapters and more malformed profiles |
 | Storage inventory | PASS, 5 cases | PASS | Deletion, races and additional identity variants |
 | HTTP gates | PASS, 18 cases | PASS | More malformed framing variants |
+| Engine-free HTTP foundation | PASS, 19 cases | PASS: held foreign lease, no local engine/model/child or config mutation, backend-specific route/body parsing | Actual cloud-only catalog/routing/install after the upstream stack lands |
 | Lifecycle | PASS, 18 tests | PASS | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
 | Harness registry | PASS, 13 cases | PASS: learning/privacy, controls, prepare, streaming, limits and Python/Rust file reads | More malformed/advisory-I/O cases |
 | Request ledger | PASS, 12 goldens and 8 additional checks | PASS: private HMACs, JSON/SSE records, history/reply tracking, errors/cancel, retention, limits, engine hints, advisory I/O and unload finalization | Optional turn diagnostics, queue/replay modes and more malformed backend timings |
 | Files | PASS, 3 tests | PASS: config and ledger Python/Rust/Python, API-key refresh/fail-closed | Additional state stores and sharing secrets |
-| Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
+| Cloud gateway / cloud-only | Main baseline pending #24 and the cloud-only stack | Deferred until reference contracts land; first complete runtime priority | All three providers, loopback mocks, continuation, reservations/settlement, budgets, ledger, redaction, off/offline, engine-free installation |
 | Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |
 | Bootstrap/install | PASS, 34 scenarios / 24 methods | PASS: pinned plans, native bundle, installed help and both services, unchanged 8 MiB bound, create-only transactions, journals, leases, owner edits, refusals, agent refresh and Python/Rust rollback | Transfer/build flows, interruption and more filesystem races |
-| Studio | PASS, 59 cases | PASS: unchanged page, HTTP/1.0, request gates, metadata/settings, calibrated estimates and routing gates, private uploads, anchored file reads, MIME quirks and malformed-input EOF | Job/generation planners, pixel operations, image-slot IPC and native engine adapters |
+| Studio | PASS, 87 cases | PASS: unchanged page, HTTP/1.0, request gates, metadata/settings, estimates/routing, private uploads/files, planner refusals, synthetic CPU jobs/batches, anonymous prompt FDs, validated CPU profiles/tuning and failure/activity state | Pixel operations, full edit/upscale/refine, Oxi/NPU/image-slot adapters and more ownership edges; deferred behind cloud-only |
 | Staged update/rollback | PASS, 15 scenarios / 22 CLI goldens | PASS: generic manifest transactions, sealed/bound hashes, exact restore, created/removed files, private state, receipts, positive identity, agent refresh and owner-edit refusal/recovery | Generated runtime materialization, interruptions and more filesystem races |
 | Uninstall | PASS, 27 cases plus original empty-install CLI cases | PASS: exact journal/stage records, hash/owner-edit protection, dry-run/apply, positive stops/restoration, models kept by default, explicit model deletion, symlinks/parent escape, private-home refusal and partial failures | More concurrent record/filesystem changes and filesystem failure cases |
 | Shipped scans | PASS, 38 cases | PASS: rules/order, machine words, exemptions, Unicode limits, generated trees, structured redaction/hashes, numeric values, directories, refusal before writing and layout-preserving scrubbing | More malformed inputs and filesystem races |
@@ -172,10 +198,10 @@ do not refresh goldens merely because an alternate implementation fails them.
 No hardware calls or real cloud API calls are part of this suite. Hardware A/B
 belongs to the owner's lane.
 
-At this reference SHA there is no cloud gateway implementation in the runtime:
-Wave D in AGENTS.md describes future work. Cloud provider/budget tests cannot yet
-be validated against Python. This remains an explicit baseline gap; complete
-cloud parity is not claimed.
+At this reference SHA the gateway and cloud-only changes are still unmerged.
+Do not port the earlier gateway in detail. Establish the reference suite from
+merged main, then make the Rust cloud-only path complete and conformance-green
+before hardware A/B. No empty suite or skipped test represents this pending work.
 
 Bootstrap contracts use the real source payload in a throwaway prefix, compare
 complete unit text, execute installed CLI help without PYTHONPATH, and verify

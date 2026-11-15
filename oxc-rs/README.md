@@ -8,6 +8,13 @@ The owner authorized starting Rust while the remaining conformance work and CI
 proceed. Existing Python product code and pre-existing goldens remain unchanged;
 new tests still establish Python behavior before checking a ported path.
 
+Cloud-only mode (no local engine) is the first complete runtime target. Its
+gateway and installation contracts will follow #24 and the cloud-only stack
+after they land on main. Hardware A/B waits for that suite to be green. See the
+[reviewable merge plan](../conformance/MERGE_PLAN.md); draft
+[#173](https://github.com/oxstack/ox-llm/pull/173) extracts only the opt-in parser
+binary. This integration branch remains draft #28 and is not a merge slice.
+
 Build locally, keeping generated binaries outside the source checkout:
 
 ```sh
@@ -27,8 +34,15 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite covers 662 scenarios in 97
-unittest methods.
+and native suites both pass 709 scenarios in 98 unittest methods.
+
+Nineteen engine-free HTTP cases need no fake model/engine or host-memory
+namespace. They compare the real gates while another owner holds the inference
+lease and verify no child/model, config mutation or lease replacement remains.
+Three regressions establish classic-backend route/body parsing before the fix.
+`conformance/run_suite.py cloud-foundation` selects these foundations plus CLI
+contracts; `--native /absolute/path/to/oxc` sets every helper override explicitly.
+Cloud-only validation remains an explicit pending-baseline error.
 
 Native bootstrap/install passes 34 scenarios in 24 methods: pinned asset plans,
 model-free native bundles, installed help and service startup, create-only file
@@ -40,12 +54,15 @@ payload bound. Bundles include no Python runtime; the two ExecStart lines become
 `local-ai serve` and `local-ai studio`, with every other unit byte checked against
 the original snapshots. Installation starts no service and enables no qualification.
 
-Fifty-nine Studio cases cover the unchanged frontend, HTTP/1.0, request gates,
+Eighty-seven Studio cases cover the unchanged frontend, HTTP/1.0, request gates,
 model metadata/settings, calibrated estimates, CPU identity proofs and Oxi routing
 gates, private multipart uploads, descriptor-anchored file reads, MIME quirks and
-malformed-input EOF. Fixtures use synthetic files/executables; no image engine
-or model runs. Jobs, generation planners, pixel operations and image-slot/engine
-adapters remain pending.
+malformed-input EOF. Further cases cover planner refusals, synthetic CPU jobs
+and batches, anonymous prompt descriptors, validated CPU profiles/tuning,
+activity and failure cleanup. A tiny fake image peer writes a deterministic
+blank PNG without reading model contents; no real inference runs. Full
+edit/upscale/refine, pixel operations and Oxi/NPU/image-slot adapters remain
+pending, deferred behind cloud-only completion.
 
 Thirty-eight receipt-tool cases cover the native scanner, exporter and scrubber:
 reference rules/order, machine identifiers and explicit exemptions, Unicode line

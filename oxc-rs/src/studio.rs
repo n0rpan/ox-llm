@@ -10,8 +10,12 @@ use std::{net::Ipv4Addr, path::PathBuf, sync::Arc};
 
 #[path = "studio_files.rs"]
 mod files;
+#[path = "studio_jobs.rs"]
+mod jobs;
 #[path = "studio_metadata.rs"]
 mod metadata;
+#[path = "studio_plans.rs"]
+mod plans;
 
 struct Studio {
     port: u16,
@@ -19,6 +23,11 @@ struct Studio {
     stack: PathBuf,
     output: PathBuf,
     sha_cache: std::sync::Mutex<Option<(PathBuf, u64, i128, String)>>,
+    lease: PathBuf,
+    jobs: std::sync::Mutex<jobs::Store>,
+    admission: tokio::sync::Mutex<()>,
+    job_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    stopping: tokio::sync::watch::Sender<bool>,
 }
 fn single<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let mut values = headers.get_all(name).iter();
@@ -93,11 +102,8 @@ async fn handle(State(studio): State<Arc<Studio>>, request: Request) -> Response
                 include_bytes!("studio.html").to_vec(),
                 "text/html; charset=utf-8",
             ),
-            "/activity" => data(
-                200,
-                json!({"state":"idle","active_jobs":0,"model":null,"device":null}),
-            ),
-            "/job" => data(404, json!({"state":"error","error":"no such job"})),
+            "/activity" => data(200, studio.activity()),
+            "/job" => studio.job(request.uri().query().unwrap_or_default()),
             "/file" => studio.file(request.uri().query().unwrap_or_default()),
             "/models" => match studio.models() {
                 Ok(value) => data(200, value),
@@ -175,7 +181,24 @@ async fn handle(State(studio): State<Arc<Studio>>, request: Request) -> Response
             }
             return data(200, studio.engine_info());
         }
-        return error(503, "Image generation is not available.");
+        if path == "/generate" {
+            return match studio.generation_input(&value) {
+                Ok(input) => studio.start_generation(input, &value).await,
+                Err(plans::PlanError::Reply(code, message)) => error(code, &message),
+                Err(plans::PlanError::Close) => files::silent_close(),
+            };
+        }
+        if path == "/edit" {
+            return match studio.edit_input(&value) {
+                Err(plans::PlanError::Reply(code, message)) => error(code, &message),
+                Err(plans::PlanError::Close) => files::silent_close(),
+                Ok(()) => error(400, "Upload the photo to edit first"),
+            };
+        }
+        return error(
+            400,
+            "That image is no longer available here; generate it again",
+        );
     }
     reply(404, b"not found".to_vec(), "application/json")
 }
@@ -213,14 +236,20 @@ pub async fn run() -> i32 {
     let stack = std::env::var_os("SD_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".local/share/ai-stack"));
+    let (stopping, _) = tokio::sync::watch::channel(false);
     let studio = Arc::new(Studio {
         port,
         project,
         stack,
         output,
         sha_cache: std::sync::Mutex::new(None),
+        lease,
+        jobs: std::sync::Mutex::new(jobs::Store::default()),
+        admission: tokio::sync::Mutex::new(()),
+        job_tasks: std::sync::Mutex::new(Vec::new()),
+        stopping,
     });
-    let router = Router::new().fallback(handle).with_state(studio);
+    let router = Router::new().fallback(handle).with_state(studio.clone());
     let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
     else {
         return 1;
@@ -234,5 +263,10 @@ pub async fn run() -> i32 {
     }
     connections.abort_all();
     while connections.join_next().await.is_some() {}
+    let _ = studio.stopping.send(true);
+    let tasks = std::mem::take(&mut *studio.job_tasks.lock().expect("image tasks"));
+    for task in tasks {
+        let _ = task.await;
+    }
     0
 }

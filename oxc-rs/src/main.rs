@@ -41,6 +41,38 @@ fn main() {
         Some("__scrub_receipts") => std::process::exit(receipt_tools::scrub_cli(&words[1..])),
         _ => {}
     }
+    if words.first().map(String::as_str) == Some("__studio_exec") {
+        use std::os::unix::process::CommandExt;
+        if words.len() < 2 {
+            std::process::exit(2);
+        }
+        let prompt = match nix::unistd::dup(std::io::stderr()) {
+            Ok(fd) => fd,
+            Err(_) => std::process::exit(1),
+        };
+        let output = match nix::unistd::dup(std::io::stdout()) {
+            Ok(fd) => fd,
+            Err(_) => std::process::exit(1),
+        };
+        if nix::fcntl::fcntl(
+            &output,
+            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+        )
+        .is_err()
+        {
+            std::process::exit(1);
+        }
+        use std::os::fd::AsRawFd;
+        let _error = std::process::Command::new(&words[1])
+            .args(&words[2..])
+            .args([
+                "--prompt-file",
+                &format!("/proc/self/fd/{}", prompt.as_raw_fd()),
+            ])
+            .stderr(std::process::Stdio::from(output))
+            .exec();
+        std::process::exit(1);
+    }
     if words.first().map(String::as_str) == Some("__desktop_exec") {
         use nix::fcntl::{fcntl, FcntlArg, FdFlag};
         use std::{io::Write, os::unix::process::CommandExt};
