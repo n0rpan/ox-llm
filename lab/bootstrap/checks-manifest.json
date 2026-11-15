@@ -6,9 +6,9 @@
     "tests/test_bootstrap_checks.py": "428444558929e0717370c7264c2e3185d3511ee66397895aafc7145c9a763098",
     "src/snapdragon_ai_lab/bootstrap_guard.py": "d57bb008e7ef227b9874658222e654ea4978850d13670d9fae6a1e396af821d4",
     "src/snapdragon_ai_lab/bootstrap_jobs.py": "ff8a9a3b2cb1bc98afef0624226d0f77f647de021130e82834ddb337b9321958",
-    "src/snapdragon_ai_lab/bootstrap.py": "b17049ca2a7dcbb54086faa9389f975444d0a34d2d14748ee06044fb32ddbfd6",
+    "src/snapdragon_ai_lab/bootstrap.py": "849b218d0b3113dfd7219414cdbdaa819c631abadd7ae07fbea1a54244aab2fa",
     "src/snapdragon_ai_lab/power.py": "a453ebd095a2347ccc49bbb1be0086e18cf5bc5fa9773654b179cab72f38d4f5",
-    "bootstrap/build-manifest.json": "11c039212789b28d53058ae1c4838153c10d8962e0af11ec2199c99dce6a5375"
+    "bootstrap/build-manifest.json": "d7a8b49c954e3b58f388228256d2dc68f280a549312404fd8975b968a17522ca"
   },
   "build_manifest_sha256": "11c039212789b28d53058ae1c4838153c10d8962e0af11ec2199c99dce6a5375",
   "synthetic_tests_passed": 3,
