@@ -617,3 +617,147 @@ pub(crate) fn for_session(session: &Session) -> Option<Arc<Manager>> {
         .filter_map(Weak::upgrade)
         .find(|owner| session.inner().hooks.iter().any(|h| h.name() == owner.name))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxa_proto::{CancelToken, ExecResult, ExecSpec};
+    use std::path::Path;
+    struct NoCommands;
+    impl Sandbox for NoCommands {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _: &ExecSpec) -> Vec<String> {
+            vec![]
+        }
+        fn run(&self, _: &ExecSpec, _: &CancelToken, _: &mut dyn FnMut(&[u8])) -> ExecResult {
+            panic!("permission fixture must not execute commands")
+        }
+    }
+    fn owner(root: &Path) -> Arc<Manager> {
+        let config:Config=serde_json::from_value(json!({"version":1,"verified_local_only":true,"parallel":1,"total_tokens":1000,"total_output_bytes":65536,"profiles":[{"name":"author","role":"fixed role","engine":"127.0.0.1:1","model":"fake","budget":{"wall_ms":5000,"tokens":1000,"turns":8},"turn_ms":1000,"output_bytes":65536,"files":["approved.rs"],"edit":true}]})).unwrap();
+        Arc::new(Manager {
+            name: "fixture".into(),
+            nonce: "fixture".into(),
+            sandbox: Arc::new(NoCommands),
+            agent_dir: root.join("private-agent"),
+            binary: "/nonexistent/worker".into(),
+            config,
+            state: Mutex::new(State {
+                session: None,
+                goal: None,
+                enabled: false,
+                jobs: BTreeMap::new(),
+                completed: VecDeque::new(),
+                next: 1,
+                reservations: Reservations::new(1000, 65536),
+            }),
+        })
+    }
+    fn tool(manager: Arc<Manager>) -> WorkerTool {
+        WorkerTool {
+            manager,
+            spec: ToolSpec {
+                name: "worker_lane".into(),
+                description: String::new(),
+                schema_json: "{}".into(),
+                class: ToolClass::Exec,
+                exposure: Exposure::Direct,
+                source: Source::Extension("builtin:workers".into()),
+            },
+        }
+    }
+    #[test]
+    fn worker_arguments_cannot_replace_operator_authority_or_cross_sessions() {
+        let env = oxa_fake::TestEnv::new();
+        let manager = owner(env.root());
+        manager.bind("session-a");
+        let tool = tool(manager.clone());
+        let cwd = env.work();
+        let cancel = CancelToken::new();
+        let vars = vec![("OXA_SESSION_ID".into(), "session-a".into())];
+        let mut cx = ToolCtx {
+            cwd: &cwd,
+            spill_dir: env.root(),
+            sandbox: manager.sandbox.as_ref(),
+            mode: Mode::Workspace,
+            cancel: &cancel,
+            env: &vars,
+            tune: Default::default(),
+        };
+        let start = json!({"operation":"start","profile":"author","goal":"bounded work"});
+        for field in [
+            "model",
+            "engine",
+            "role",
+            "budget",
+            "files",
+            "directory",
+            "worker_binary",
+        ] {
+            let mut args = start.clone();
+            args[field] = json!("model-supplied replacement");
+            assert!(tool.run(&args, &cx, &mut |_| {}).is_error, "{field}");
+        }
+        assert!(
+            tool.run(
+                &json!({"operation":"start","profile":"unknown","goal":"bounded work"}),
+                &cx,
+                &mut |_| {}
+            )
+            .is_error
+        );
+        assert!(manager.state.lock().unwrap().jobs.is_empty());
+        let foreign = vec![("OXA_SESSION_ID".into(), "session-b".into())];
+        cx.env = &foreign;
+        assert!(tool.run(&json!({"operation":"list"}), &cx, &mut |_| {}).is_error);
+        assert!(tool.run(&start, &cx, &mut |_| {}).is_error);
+        assert!(!manager.agent_dir.exists());
+    }
+    #[test]
+    fn editing_profile_requires_workspace_and_exact_read_scope_before_capture() {
+        let env = oxa_fake::TestEnv::new();
+        let manager = owner(env.root());
+        manager.bind("session-a");
+        let tool = tool(manager.clone());
+        let cwd = env.work();
+        let cancel = CancelToken::new();
+        let vars = vec![("OXA_SESSION_ID".into(), "session-a".into())];
+        let mut cx = ToolCtx {
+            cwd: &cwd,
+            spill_dir: env.root(),
+            sandbox: manager.sandbox.as_ref(),
+            mode: Mode::Plan,
+            cancel: &cancel,
+            env: &vars,
+            tune: Default::default(),
+        };
+        let start = json!({"operation":"start","profile":"author","goal":"bounded work"});
+        assert!(tool.access(&start, &cx).is_err());
+        assert!(tool.run(&start, &cx, &mut |_| {}).is_error);
+        cx.mode = Mode::Workspace;
+        let access = tool.access(&start, &cx).unwrap();
+        assert_eq!(access.len(), 1);
+        assert!(matches!(&access[0],Access::Read(path) if path==&cwd.join("approved.rs")));
+        assert!(manager.state.lock().unwrap().jobs.is_empty());
+        assert!(!manager.agent_dir.exists());
+    }
+    #[test]
+    fn changing_goal_or_session_does_not_refund_worker_reservations() {
+        let env = oxa_fake::TestEnv::new();
+        let manager = owner(env.root());
+        manager.bind("session-a");
+        manager
+            .state
+            .lock()
+            .unwrap()
+            .reservations
+            .reserve(1000, 65536)
+            .unwrap();
+        manager.scope(Some("new-parent-goal".into()), true);
+        manager.cancel_all();
+        manager.bind("session-b");
+        assert!(manager.state.lock().unwrap().reservations.reserve(1, 1).is_err());
+    }
+}
