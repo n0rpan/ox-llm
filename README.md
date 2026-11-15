@@ -33,9 +33,11 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 ## Quick start
 
 - **Start here:** [oxc/README.md](oxc/README.md#quick-start) covers engine downloads and verification.
-  The controller bootstrap currently installs source into an explicit sandbox HOME; see its
+  The controller bootstrap installs source into an explicit sandbox HOME; see its
   [installation status and limits](oxc/docs/BOOTSTRAP-INSTALL.md).
-- **Code (installed runtime):** run `oxc code`, or press the code button in the widget. Both
+- **Cloud only, no local engine:** [oxc/docs/CLOUD-ONLY-QUICKSTART.md](oxc/docs/CLOUD-ONLY-QUICKSTART.md)
+  (any Linux, x86_64 or arm64; cloud models through oxc, plus oxa).
+- **Code (installed runtime):** run `oxc code` in a project directory, or press the code button in the widget. Both
   start oxa against the controller.
 - **Other clients:** any OpenAI-compatible client can use `http://127.0.0.1:8092/v1`. See
   [oxc/docs/OTHER-CLIENTS.md](oxc/docs/OTHER-CLIENTS.md).

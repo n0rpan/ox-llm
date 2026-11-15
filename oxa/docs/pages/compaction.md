@@ -21,8 +21,8 @@ The soft limit is always below the hard limit.
 There are two triggers.
 
 1. **After a reply (soft limit).** When a run ends and the context is above the soft limit, oxa compacts in idle time. The summary request runs in the background and can be cancelled by your next input. If it is cancelled, the conversation is unchanged and the decision is taken again after the next run.
-   With `oxa.compaction.turnStart` on (off by default under `pi`, on under `local`), a prompt that finds the context already above the soft limit (for example after an aborted turn, whose large tool result was never counted) is compacted in the foreground before it is sent.
-   With `oxa.compaction.midRun` on (off by default under `pi`, on under `local`), a run whose context passes the soft limit is compacted in the foreground between two tool steps, before its next request, and the tool calls and results the model has not answered yet are kept verbatim.
+   With `oxa.compaction.turnStart` on by default, a prompt that finds the context already above the soft limit (for example after an aborted turn, whose large tool result was never counted) is compacted in the foreground before it is sent.
+   With `oxa.compaction.midRun` on by default, a run whose context passes the soft limit is compacted in the foreground between two tool steps, before its next request, and the tool calls and results the model has not answered yet are kept verbatim.
 2. **During a run (hard limit or overflow).** When the context is above the hard limit, or the engine reports that the request does not fit, oxa compacts in the foreground and then retries the request once. This happens also when `compaction.enabled` is `false`, because otherwise the request would fail.
 
 `/compact [instructions]` compacts now. Any text after the command is added to the summary request as guidance, for example `/compact keep the list of open questions`.
@@ -79,14 +79,14 @@ A miss after a compaction or a leaf move is expected once. A miss with cause `en
 
 ## Summary length and idle summary
 
-Two settings change how the summary is made. Both use oxa’s default context handling ([details](profile.md)).
+Two settings change how the summary is made ([tools-context.md](tools-context.md)).
 
-- **`oxa.compaction.summaryTarget`** (tokens). The summary request asks the model for about three quarters of this many words. It is a request, not a limit: the summary is still at most the output limit above. `0` is no target. Unset is no target under `pi` and 700 tokens (about 550 words) under `local`.
+- **`oxa.compaction.summaryTarget`** (tokens). The summary request asks the model for about three quarters of this many words. It is a request, not a limit: the summary is still at most the output limit above. `0` is no target. Unset is 700 tokens (about 550 words).
 - **`oxa.compaction.idleSummary`**. When a run ends with the context between 80 % and 100 % of the soft limit, oxa writes the summary of the next compaction in idle time. That compaction then uses it with no model request, if the session, the frozen prefix, the model and the messages it covers are unchanged and the kept tail is not too large. Otherwise the summary is dropped and the compaction runs as usual. A cancelled or failed idle summary is silent.
 
 ### If no summary can be made
 
-Under `local`, when the summary of a compaction fails, or is cancelled twice in a row, oxa does not stop the session. It writes a mechanical record instead: the user's messages in order, and the files read and changed. Assistant replies and tool results are left out. A warning notice says that the record was built without the model, and the compaction entry is marked as mechanical. Under `pi` the failure is an error.
+When the summary of a compaction fails, or is cancelled twice in a row, oxa does not stop the session. It writes a mechanical record instead: the user's messages in order, and the files read and changed. Assistant replies and tool results are left out. A warning notice says that the record was built without the model, and the compaction entry is marked as mechanical.
 
 ## Settings
 
@@ -97,8 +97,8 @@ Under `local`, when the summary of a compaction fails, or is cancelled twice in 
 | `compaction.keepRecentTokens` | `4000` | size of the kept tail |
 | `compaction.modelOverrides` | `null` | per model: `{"<model-id>": {"reserveTokens": n, "keepRecentTokens": n}}` |
 | `oxa.compaction.softTokens` | unset | context size that starts the idle compaction |
-| `oxa.compaction.idleSummary` | unset (off under `pi`, on under `local`) | writes the next summary in idle time |
-| `oxa.compaction.summaryTarget` | unset (0 under `pi`, 700 under `local`) | soft length target of the summary, in tokens |
+| `oxa.compaction.idleSummary` | unset (on) | writes the next summary in idle time |
+| `oxa.compaction.summaryTarget` | unset (700) | soft length target of the summary, in tokens |
 | `cacheWarming` | `"idle"` | `"off"` disables the idle prefill |
 | `showCacheMissNotices` | `false` | show a notice for each cache miss |
 | `branchSummary.reserveTokens` | `16384` | output budget of a branch summary |

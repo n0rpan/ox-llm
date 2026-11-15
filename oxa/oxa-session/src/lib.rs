@@ -17,16 +17,18 @@
 //! * **Layout.** `<sessions_dir>/--<cwd with '/' -> '-'>--/<timestamp>_<id>.jsonl` (pi's scheme),
 //!   first line = the session header.
 
+mod clock;
 mod durable;
+mod lock;
 mod meta;
-mod migrate;
 mod ops;
 mod store;
 mod transcript;
 mod tree;
 
+pub use clock::{local_time, LocalTime};
+pub use lock::{lock_path_of, SessionLock, LOCKED};
 pub use meta::{meta_of, search_sessions, sort_sessions, SessionSort};
-pub use migrate::{import_pi, import_session, migrate_lines};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
 pub use store::{
     count_files, decode_entry, decode_header, encode_entry, encode_header, new_entry_id, purge_session_file,
@@ -98,6 +100,20 @@ pub trait SessionStore: Send + Sync {
     fn sync(&self, _s: &SessionRef) -> Result<(), OxaError> {
         Ok(())
     }
+    /// Become the one writer of `s`: refuse (code `LOCKED`) when another process has it open.
+    /// The lock is held until another session is acquired or the store is dropped. In-memory
+    /// stores have nothing to lock.
+    ///
+    /// Two-phase so that a failed switch never unlocks the session still in use: `acquire`
+    /// only STAGES the new lock (the current one is untouched); [`SessionStore::commit_lock`]
+    /// makes it the held one and drops the old, [`SessionStore::abort_lock`] drops it.
+    fn acquire(&self, _s: &SessionRef) -> Result<(), OxaError> {
+        Ok(())
+    }
+    /// The staged lock of [`SessionStore::acquire`] becomes the held one; the old is released.
+    fn commit_lock(&self) {}
+    /// The staged lock is released; the held one is untouched.
+    fn abort_lock(&self) {}
     /// [`SessionStore::delete`], telling how the file went (pi's picker says "Session moved
     /// to trash" or "Session deleted"). Default: `delete`, reported as [`Removed::Deleted`].
     fn remove(&self, s: &SessionRef) -> Result<Removed, OxaError> {

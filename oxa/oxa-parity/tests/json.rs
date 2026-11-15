@@ -1,7 +1,7 @@
 //! G6 PARITY tests (json). Owner: task G6.
 //! One test per PARITY.md row of this area, named after the row id (`JSON-012` -> `fn json_012()`).
 //!
-//! Verdicts (see PARITY.md): P rows compare with pi's documented output (`fixtures/pi/json/
+//! Verdicts (see PARITY.md): P rows compare with pi's documented output (`fixtures/goldens/json/
 //! documented-fields.json`, copied from pi 1.5.2 `docs/json.md`); A rows assert the adapted
 //! behaviour and carry an `Invariant:` line; O rows assert `unsupported_in_oxa` (none in JSON).
 //!
@@ -24,7 +24,7 @@ use std::time::Duration;
 
 /// The documented field table (pi 1.5.2 `docs/json.md`).
 fn documented_doc() -> Value {
-    let path = fixture("pi/json/documented-fields.json");
+    let path = fixture("goldens/json/documented-fields.json");
     let text = std::fs::read_to_string(&path).expect("read documented-fields.json");
     serde_json::from_str(&text).expect("documented-fields.json parses")
 }
@@ -107,7 +107,7 @@ fn run_paced(env: &TestEnv, server: &FakeServer, args: &[&str], steps: Vec<(u64,
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(&server.url()))
-        .envs(oxa_parity::profile_env())
+        .envs(oxa_parity::note_off_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -247,7 +247,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     let doc = documented_doc();
     let rows = &doc["rows"];
     let mut p_count = 0;
@@ -286,23 +286,6 @@ fn a_rows_name_their_invariant() {
         );
     }
     assert_eq!(a_count, 3, "the JSON section has 3 A rows");
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    // The JSON section has no O rows; every O row, if one is added, must assert the error.
-    for (id, verdict) in parity_rows() {
-        if verdict == "O" {
-            let name = id.to_lowercase().replace('-', "_");
-            let at = SOURCE.find(&format!("\nfn {name}()")).expect("O row test");
-            assert!(
-                SOURCE[at..].contains("unsupported_in_oxa"),
-                "{id} must assert unsupported_in_oxa"
-            );
-        }
-    }
-    assert!(parity_rows().iter().all(|(_, v)| v != "O"), "JSON has no O rows");
 }
 
 // ---------------------------------------------------------------------------------------------

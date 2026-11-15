@@ -192,6 +192,15 @@ output default, `/v1/models/{id}`, string error codes and the sampling controls;
 today), no `/v1/responses`, and
 `n` > 1 and `x-request-id` are still open there (`tools/openai-contract/xfail.engine.txt`).
 
+## 3a. Cloud models (opt-in)
+
+Cloud models are off by default. When `cloud.enabled` is true in `runtime.json`, remote
+catalog entries appear in `/v1/models` and are called through the same endpoint by model id.
+The key lives in an owner-only controller secrets file and is never listed or logged; every
+OpenRouter request is forced to zero data retention (`provider.zdr`) and no data collection;
+`OXC_OFFLINE=1` refuses remote models; a per-day USD cap stops requests once reached. See
+[CLOUD-MODELS.md](CLOUD-MODELS.md).
+
 ## 4. Harnesses
 
 None of the harnesses in this section was run here; the settings are from their

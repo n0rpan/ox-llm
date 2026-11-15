@@ -28,20 +28,8 @@ rows does not cite the internal work items.
 | CLI-035 | `-e`, `--extension <path>`: file, directory or `builtin:<name>`; repeatable | JavaScript in QuickJS; a `.ts` file is always rejected, with a hint to write JavaScript |
 | CLI-047 | `--offline` | hard switch: every connection of the harness to a host that is not loopback is refused with one error, the bash sandbox has no network, oxa's own git and `gh` calls refuse, `web_search` is not declared; the local engine keeps working. Keeps pi's meaning (no automatic network activity; oxa has none) |
 | CLI-051 | `oxa install <source>` / `oxa remove <source>` (`uninstall` alias) / `oxa list` | `oxa install\|remove\|list`; git and local sources; `npm:` is refused |
-| CLI-053 | `oxa config --import-pi` | oxa only: one-time copy of skills/prompts/themes/keybindings/mcp.json from pi dirs; pi dirs are never read implicitly |
 | CLI-055 | `oxa update --extensions` / `oxa update <source>` / `--extension <source>` | `oxa update` for git + local packages |
 | CLI-064 | No engine reachable: one-line error + hint, exit code 2 | oxa only: `engine_down` |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| CLI-011 | `--provider <name>` | one provider type (the engine); a non-engine provider is a clear error |
-| CLI-033 | Built-in tool `powershell` | Linux only |
-| CLI-054 | `oxa update` (self), `--self`, `self`, `pi`, `--all`, `OXA_SELF_UPDATE_COMMAND`, `selfUpdateCommand` | no self-update, no version check (no network unless asked) |
-| CLI-056 | `oxa update --models` | no model catalogs |
-| CLI-057 | `oxa auth check\|print-api-key\|print-bearer-token` and their options | no provider credentials, no OAuth |
-| CLI-058 | `oxa login` options `--api-key`, `--no-browser` | no provider sign-in |
 
 ## MOD: Models, providers, thinking
 
@@ -54,17 +42,6 @@ rows does not cite the internal work items.
 | MOD-003 | Thinking levels off..max with per-model clamping | boolean on the wire; `thinkingBudgets` ignored with a warning |
 | MOD-004 | Model without preserved thinking: thinking defaults to off, status line says why | (oxa only) |
 | MOD-010 | llama.cpp router management (`/llama`) | `/engine`: status and model load over `/_local/status` |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| MOD-005 | Providers: 20+ cloud providers, API keys, `auth.json` | one provider type: the oxe engine |
-| MOD-006 | Subscription / OAuth sign-in (`/login`, `/logout`) | no accounts |
-| MOD-007 | Custom providers (`registerProvider`, custom-provider.md) |  |
-| MOD-008 | Virtual models (virtual-models.md) |  |
-| MOD-009 | Classifier and image models (`models.classify`, `models.generateImage`) | no such engine endpoints; calls return `unsupported_in_oxa` |
-| MOD-011 | Remote model catalog refresh | no network unless asked |
 
 ## SET: Settings
 
@@ -93,32 +70,13 @@ rows does not cite the internal work items.
 | SET-054 | `retry.provider.timeoutMs`, `retry.provider.maxRetries`, `retry.provider.maxRetryDelayMs` | same rule; one HTTP layer |
 | SET-061 | `hooks: {event: command}` | oxa only: exec hooks (JSON on stdin, reply on stdout, run in bwrap) |
 
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| SET-003 | `defaultProvider` | accepted and ignored with a warning (one provider) |
-| SET-007 | `thinkingBudgets` | ignored with a warning |
-| SET-020 | `codemode.inlineBudget` (3000) | not in oxa: the codemode description is one fixed text, so the frozen prefix does not grow or change with the tool catalogue; tools are found with `searchTools` / `describeTool`; the key is an unknown setting |
-| SET-022 | `sessionShareDestination` | `/share` omitted |
-| SET-040 | `showHardwareCursor` | pi-specific, not in oxa: the terminal's own cursor is always shown at the editor's cursor (works with input methods); the key is an unknown setting |
-| SET-043 | `terminal.showTerminalProgress` (OSC 9;4) | pi-specific, not in oxa: no OSC 9;4 progress; the key is an unknown setting |
-| SET-044 | `terminal.hyperlinks`, `terminal.images`, `terminal.trueColor` overrides | pi-specific, not in oxa: terminal capabilities come from detection only; the keys are unknown settings |
-| SET-045 | `images.autoResize` | images are never sent; accepted and ignored |
-| SET-049 | `transport` | SSE only; other values warn |
-| SET-052 | `websocketConnectTimeoutMs` | no websocket |
-| SET-057 | `npmCommand` | pi-specific, not in oxa: no npm package sources; the key is an unknown setting (warned, ignored) |
-| SET-058 | `selfUpdateCommand` | no self-update |
-| SET-062 | `collapseChangelog` | pi-specific, not in oxa: no changelog display; the key is an unknown setting |
-| SET-063 | `enableInstallTelemetry`, `enableAnalytics` | no telemetry; accepted and ignored |
-| SET-064 | `warnings.anthropicExtraUsage` | no cloud providers |
-
 ## KEY: Keybindings
 
 ### Adapted
 
 | id | behaviour | how oxa differs |
 |---|---|---|
+| KEY-009 | Fullscreen search: `tui.altScreen.search` (ctrl+shift+f), `searchNext` (enter, ctrl+g), `searchPrevious` (shift+enter, ctrl+shift+g), `searchClose` (escape) | Linux defaults only; oxa adds `alt+s` to `search` (a terminal without the kitty keyboard protocol cannot send ctrl+shift+f), and the footer shows only keys the terminal can send |
 | KEY-011 | `app.clipboard.pasteImage` (ctrl+v) | pastes files and images into the session; an image is shown, the wire gets the placeholder |
 | KEY-013 | Models: `app.model.select` (ctrl+l), `cycleForward` (ctrl+p), `cycleBackward` (shift+ctrl+p), `app.models.save` (ctrl+s) | over engine models; a switch is a new epoch |
 | KEY-014 | Thinking: `app.thinking.cycle` (shift+tab), `app.thinking.save` (ctrl+s), `app.thinking.toggle` (ctrl+t) | boolean; shift+tab stays thinking |
@@ -134,16 +92,6 @@ rows does not cite the internal work items.
 | ENV-003 | Shell tool env `OXA_PROVIDER`, `OXA_MODEL`, `OXA_REASONING_LEVEL` | `OXA_MODEL`, `OXA_REASONING_LEVEL`; `OXA_PROVIDER` is always `oxe`. Set per run, never on the wire |
 | ENV-007 | `OXA_OFFLINE` | accepted as `OXA_OFFLINE`; the same hard switch as `--offline` (truthy: 1, true, yes) |
 | ENV-016 | `HTTP_PROXY`, `HTTPS_PROXY` | MCP HTTP only |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| ENV-008 | `OXA_SKIP_VERSION_CHECK`, `OXA_SELF_UPDATE_COMMAND`, `OXA_TELEMETRY` | no version check, self-update or telemetry |
-| ENV-010 | `OXA_CACHE_RETENTION` | engine-side cache; no retention knob |
-| ENV-011 | `OXA_SHARE_VIEWER_URL`, `OXA_RADIUS_GATEWAY` | no uploads |
-| ENV-014 | `OXA_TUI_ESC_TIMEOUT` (default 100 ms) | pi-specific, not in oxa: one constant ESC timeout (10 ms), no variable |
-| ENV-017 | Provider API key variables (`ANTHROPIC_API_KEY`, ...) | no cloud providers |
 
 ## TOOLS: Built-in tools
 
@@ -184,19 +132,9 @@ rows does not cite the internal work items.
 | SLASH-007 | `/llama` | `/engine`: status, load |
 | SLASH-012 | `/tree` | a leaf move is a rebase; optional branch summary |
 | SLASH-015 | `/compact [instructions]` | summary request |
-| SLASH-016 | `/import <path>` | migrates pi v1-v3; cache cold |
 | SLASH-020 | `/bug [description]` | writes a local redacted bundle; no upload |
 | SLASH-023 | `/reload` | unchanged resources = no new epoch; changed = one new `Prefix` entry + cost notice |
 | SLASH-027 | `/mode [plan\|workspace\|ask]` | oxa only |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| SLASH-005 | `/login [provider]` | `unsupported_in_oxa` |
-| SLASH-006 | `/logout` | `unsupported_in_oxa` |
-| SLASH-019 | `/share` | no third-party upload from a local-first tool |
-| SLASH-025 | `/changelog` | pi-specific, not in oxa: `/changelog` removed |
 
 ## SES: Sessions
 
@@ -204,16 +142,9 @@ rows does not cite the internal work items.
 
 | id | behaviour | how oxa differs |
 |---|---|---|
-| SES-008 | `/import <path>` preserves id and cwd | pi v1-v3 migrated; assistant entries lack exact wire bytes, so the cache is cold |
 | SES-012 | Automatic compaction keeps long sessions usable | automatic compaction at the context limit, in idle time when possible |
 | SES-015 | `/bug` prepares a report | local redacted bundle |
 | SES-016 | Torn last line of a session file is dropped on load | oxa only |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| SES-014 | `/share` uploads a session | no uploads |
 
 ## FMT: Session file format
 
@@ -228,7 +159,6 @@ rows does not cite the internal work items.
 | FMT-009 | `CompactionEntry` (`summary`, `firstKeptEntryId`, `tokensBefore`, `details`, `fromHook`, `systemMessage`) | head after compaction is `[system, user:<summary>, tail]`; pi's `systemMessage` is not written, the epoch's prefix entry is the checkpoint |
 | FMT-010 | `ContextEditEntry` | oxa reads the entry type and applies a stored one when the session is loaded (replacement and omission reach the wire: a rebase); oxa itself never writes one |
 | FMT-018 | Context building: compaction replaces entries before `firstKeptEntryId` | rebase |
-| FMT-019 | Session versions 1 and 2 are migrated on load | through `/import` |
 | FMT-020 | `ImageContent` blocks in user messages | `Part:Image` stored; never serialised to the wire |
 | FMT-021 | oxa entry types `shown` and `mode_change` | oxa only: aborted/failed/cut replies and mode changes; ignored by pi tooling |
 
@@ -304,13 +234,6 @@ rows does not cite the internal work items.
 | TUI-026 | Footer / status line shows mode, cache hit, prefill progress and tok/s | oxa only |
 | TUI-027 | Permission prompt Once / Session / Deny; mode cycle; timed dialogs | oxa only |
 
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| TUI-011 | Terminal progress (OSC 9;4) and program status (OSC 7501) | pi-specific, not in oxa: no terminal progress or program-status reports |
-| TUI-024 | Windows / Termux / macOS terminal notes | Linux only |
-
 ## CFG: Configuration files
 
 ### Adapted
@@ -318,13 +241,6 @@ rows does not cite the internal work items.
 | id | behaviour | how oxa differs |
 |---|---|---|
 | CFG-003 | Context files `AGENTS.md` / `CLAUDE.md`: agent dir, then parents of cwd down to cwd | part of the frozen prefix; below HOME the upward walk ends at HOME (pi walks to `/`) |
-| CFG-008 | pi directories are not read implicitly | oxa only: `oxa config --import-pi` |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| CFG-007 | `auth.json` | no credentials store |
 
 ## PKG: Packages
 
@@ -333,15 +249,6 @@ rows does not cite the internal work items.
 | id | behaviour | how oxa differs |
 |---|---|---|
 | PKG-005 | Package manifest (`pi` key in package.json) and conventional directories | `oxa` key, `pi` key accepted |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| PKG-003 | `npm:` sources | pi-specific, not in oxa: no npm package sources; `npm:` is refused with `unsupported_in_oxa`, use a git URL or a local path |
-| PKG-008 | Package dependencies on npm modules | no Node runtime: a package that needs Node modules is rejected with a clear error |
-| PKG-009 | Package changelog display | pi-specific, not in oxa: no package changelog display |
-| PKG-010 | Install telemetry | none |
 
 ## SEC: Security and project trust
 
@@ -365,13 +272,6 @@ rows does not cite the internal work items.
 | CM-016 | `codemode.mode` `on\|only` | the description is one fixed text, frozen per epoch; no inline tool listing, so no `codemode.inlineBudget` |
 | CM-017 | `tool_search` declares matched tools for the next call | matches returned as text; called through one frozen `call_tool {name, args}`; prefix sha unchanged |
 
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| CM-008 | `image(value)` | `unsupported_in_oxa` |
-| CM-009 | `models.list/classify/generateImage` | `unsupported_in_oxa` |
-
 ## MCP: MCP servers
 
 ### Adapted
@@ -385,14 +285,6 @@ rows does not cite the internal work items.
 | MCP-015 | Resource tools `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource` | text-only engine: image / audio / binary content blocks of any MCP result become the fixed placeholder line |
 | MCP-022 | Permissions: MCP tool calls | workspace mode asks for MCP write-class tools |
 | MCP-025 | MCP from the SDK | Rust API of `oxa-mcp` |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| MCP-023 | `pi.registerMcpServer` / `unregisterMcpServer` / `getMcpServers`; `mcp_servers_change` | pi-specific, not in oxa: MCP servers come from `mcp.json` / `oxa mcp add` only; the extension calls throw `unsupported_in_oxa` |
-| MCP-024 | Replacing the built-in MCP support by an extension | built in (Rust); `-ne -e builtin:mcp` selection kept |
-| MCP-026 | MCP `sampling/createMessage` (a server asks the client's model) | the engine has one inference slot and a server may not take it; the capability is not advertised and the request gets JSON-RPC -32601; the manager never calls the engine |
 
 ## EXT: Extensions
 
@@ -430,17 +322,6 @@ rows does not cite the internal work items.
 | EXT-093 | Example ports: plan-mode, permission-gate, custom-compaction, todo, status-line | each loads and passes a scripted session. pi's custom-compaction summarises with a second (cloud) model; the port sends no model request of its own (one model, one slot) and supplies custom instructions to the summary request |
 | EXT-095 | TypeScript SDK (sdk.md) | the Rust API of `oxa-core` is the SDK; other languages use RPC |
 
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| EXT-003 | Available imports (`@earendil-works/pi-*`, Node built-ins, npm dependencies) | no Node/npm imports; host functions only |
-| EXT-038 | event `before_provider_headers` | one engine; headers are the fixed hints |
-| EXT-056 | Streaming model calls from extensions | no side requests; `unsupported_in_oxa` |
-| EXT-078 | `pi.registerProvider` / `unregisterProvider` | `unsupported_in_oxa` |
-| EXT-079 | `pi.registerVirtualModel` / `unregisterVirtualModel` | `unsupported_in_oxa` |
-| EXT-096 | Examples needing providers, Node modules or macOS (custom-provider-*, with-deps, mac-system-theme, ssh, gondolin) | out of scope |
-
 ## ENG: Engine support (oxa only)
 
 ### Adapted
@@ -471,18 +352,3 @@ rows does not cite the internal work items.
 | id | behaviour | how oxa differs |
 |---|---|---|
 | OUT-011 | quickstart.md, index.md, how-pi-works.md | ported as oxa docs; every command line in them runs against the fake |
-
-### Not in oxa
-
-| id | behaviour | reason |
-|---|---|---|
-| OUT-001 | providers.md: cloud provider setup | one provider type: the oxe engine |
-| OUT-002 | custom-provider.md |  |
-| OUT-003 | virtual-models.md |  |
-| OUT-004 | models.md / models-configuration.md beyond the rows in MOD | catalogs, costs and provider options do not apply |
-| OUT-005 | llama-cpp.md, nvidia-rtx-llama-cpp.md | replaced by the engine's own docs and `/engine` |
-| OUT-006 | windows.md | Linux aarch64/x86_64 only |
-| OUT-007 | termux.md | Linux aarch64/x86_64 only |
-| OUT-008 | containerization.md | replaced by the built-in sandbox (see SEC) |
-| OUT-009 | shell-aliases.md | `!cmd` runs `bash -c` with the user's environment; no alias loading |
-| OUT-010 | cli-integration.md (wrapping other CLIs with provider credentials) | no provider credentials |

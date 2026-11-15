@@ -122,24 +122,23 @@ pub struct ToolCtx<'a> {
     pub cancel: &'a CancelToken,
     /// Environment for child processes (`OXA_SESSION_*`, `AI_AGENT=oxa`).
     pub env: &'a [(String, String)],
-    /// How the built-ins shape their results in this epoch ([`ToolTune::default`] = pi).
+    /// How the built-ins shape their results in this epoch ([`ToolTune::default`] = the
+    /// unshaped baseline; `diet` and the page caps shape it further).
     pub tune: ToolTune,
 }
 
 /// Per-epoch tuning of the built-in tools (V020-OPTIMIZE #2, OXA-LOCAL-FIRST T7, T8, F5, R5).
-/// The core computes it once per prefix epoch from `oxa.profile`, the settings and the model's
-/// limits; a tool only obeys it. `Default` is pi 1.5.2's behaviour in every field, so a tool
-/// run with the default returns the bytes it returned before this struct existed (W4 holds per
-/// value: same arguments + same file state + same `ToolTune` = the same bytes).
+/// The core computes it once per prefix epoch from the settings and the model's
+/// limits; a tool only obeys it. `Default` keeps pi 1.5.2's numbers but not its texts: the
+/// built-ins always use the tolerant `edit` match and the read-class shaping below, so W4's
+/// same-bytes rule holds per value (same arguments + same file state + same `ToolTune` = the
+/// same bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ToolTune {
     /// TOOL-DIET (`oxa.diet.tools`): lossless shaping of read-class results (path once per
     /// file in `grep`, runs of blank lines collapsed in `bash` output, short `edit` / `write`
     /// acknowledgements).
     pub diet: bool,
-    /// Profile `local`: the failure path of `edit` (T7) and per-file counts when `grep` is
-    /// over its limit (T8). These change texts pi specifies.
-    pub local: bool,
     /// `read` without `offset` / `limit` on a file larger than one page: lines of the first
     /// page (T8, R5). 0 = pi (2000 lines).
     pub read_page_lines: u32,
@@ -147,7 +146,7 @@ pub struct ToolTune {
     pub read_page_bytes: u32,
     /// `bash`: timeout in seconds when the call sets none (F5). 0 = none (pi).
     pub bash_timeout_s: u32,
-    /// L4, profile `local`: the tool output cap in bytes. `grep`, `find`, `ls` and a `read` with
+    /// L4: the tool output cap in bytes. `grep`, `find`, `ls` and a `read` with
     /// `offset` / `limit` cut their result at it (never above pi's 16 KiB), notices inside it.
     /// 0 = none (pi: each tool's own 16 KiB cut).
     pub output_cap_bytes: u32,

@@ -70,7 +70,7 @@ places, so outputs can differ from those builds in the last bits of floating-poi
 selftest pass on it; it has not been through the lab's model-based identity or quality gates.
 
 Usage, models and benchmarks: README.md of this repository and its oxc/ directory
-https://github.com/n0rpan/ox-llm/tree/main/lab. No model weights are included.
+https://github.com/n0rpan/ox-llm/tree/main/oxc. No model weights are included.
 
 Verify this download:
   sha256sum -c SHA256SUMS                        (from the same release)

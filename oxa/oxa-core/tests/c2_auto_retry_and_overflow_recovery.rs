@@ -97,6 +97,7 @@ fn state(
         host_rx: None,
         host_deferred: Vec::new(),
         compact_memo: Default::default(),
+        jobs: oxa_core::fresh_jobs(),
     };
     (st, eng)
 }
@@ -695,4 +696,54 @@ fn fit_engine_busy_waits_as_told_and_4xx_error_event_is_final() {
     assert_eq!(err.code, codes::ENGINE_HTTP);
     assert_eq!(eng.requests().len(), 1);
     assert!(retry_starts(&sink.0).is_empty());
+}
+
+/// #141: a looping reply is stopped, the run ends Failed, the Shown entry carries the partial
+/// text and the notice, and the shown text is never sent back to the engine.
+#[test]
+fn looping_reply_ends_failed_with_notice_and_is_not_sent_back() {
+    let env = TestEnv::new();
+    let para: String = (0..40).map(|i| format!("word{} ", (i * 7) % 97)).collect();
+    let looping = format!("Start.\n\n{}", para.repeat(8));
+    let mut turn = ScriptTurn::text(&looping);
+    turn.chunk = 16;
+    let (mut st, eng) = state(&env, vec![turn, ScriptTurn::text("fine")], json!({}));
+    say(&mut st, "hi");
+
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let end = run_loop(&mut st, &mut sink, &mut ui).expect("run_loop");
+    match end {
+        RunEnd::Failed(e) => assert!(e.message.contains("repetition loop"), "{e}"),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(!st.shared.cancel.is_cancelled(), "our own stop clears the flag");
+
+    let shown: Vec<String> = st
+        .tree
+        .entries()
+        .iter()
+        .filter_map(|e| match &e.body {
+            EntryBody::Shown { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].starts_with("Start."), "partial reply first");
+    assert!(
+        shown[0].contains("\n\nResponse stopped: the model fell into a repetition loop"),
+        "notice after a blank line: {}",
+        shown[0]
+    );
+    assert!(shown[0].contains("Rephrase the request"), "hint included");
+
+    // The next request does not carry the looping text.
+    say(&mut st, "again");
+    let end = run_loop(&mut st, &mut sink, &mut ui).expect("run_loop 2");
+    assert_eq!(end, RunEnd::Stopped);
+    let sent = eng.requests().last().cloned().expect("request").messages;
+    assert!(sent.iter().all(
+        |m| !m.content.as_deref().unwrap_or("").contains("repetition loop")
+            && !m.content.as_deref().unwrap_or("").contains("word0 ")
+    ));
 }

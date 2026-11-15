@@ -1,7 +1,7 @@
 //! V020-OPTIMIZE #1 (OUT-DIET), #6 (PREFIX-BUDGET), #10 (the subagent rule) and OXA-ANCHOR-MOE:
-//! the frozen prefix of a default session under `pi`, `local` with the output diet on, and
-//! `local` with it off, with and without a `subagent` tool. Prints the byte table (run with
-//! `-- --nocapture`); pins the `pi` bytes; checks the local saving and the anchor.
+//! the frozen prefix of a default session with the output diet on and off, with and without a
+//! `subagent` tool. Prints the byte table (run with `-- --nocapture`); checks the diet cost and
+//! the anchor.
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
@@ -16,19 +16,6 @@ use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-
-/// Pinned: SHA-256 over every section but `cwd`, then `\0` and the tools JSON, of the `pi`
-/// default session (the seven built-ins), and the same with a `subagent` tool. These are
-/// today's bytes: a `pi` change is a PARITY event.
-const PI_STABLE_SHA: &str = "dc4995c3e0dd2bf7704c8324ca3c9644fad2fda6ec69dbfa3a12fe9439d88141";
-const PI_STABLE_SHA_SUBAGENT: &str = "02a0db1861a4572b28671937db8395c6e28ffbfcd70b03564a4d4a52d7be3e61";
-
-/// Pinned: the `local` diet-on prefix is at least this many bytes smaller than the `pi` one, with
-/// and without the subagent tool. Measured 2355 (default) and 2344 (with subagent) on 2026-11-13;
-/// the pin is the smaller one minus a 32-byte margin. L4-SUBVERIFY: the parent's subagent rule
-/// `RULE_SUBAGENT_CHECK` (115 bytes with its "- " and newline) lowers the with-subagent saving to
-/// 2229, so the pin moved from 2312 to 2197 (= 2229 - 32).
-const LOCAL_DIET_SAVING_MIN: usize = 2197;
 
 /// The rule texts of V020-OPTIMIZE #1 and #10, pinned here word for word.
 const DIET_RULES: [&str; 5] = [
@@ -127,6 +114,7 @@ fn open(env: &TestEnv, cwd: &std::path::Path, settings: &str, subagent: bool) ->
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
@@ -153,6 +141,16 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
     hex(&h.finalize())
 }
 
+/// Pinned: SHA-256 over every section but `cwd`, then `\0` and the tools JSON, of the default
+/// session (the seven built-ins) and the same with a `subagent` tool. These are the default
+/// bytes: a prefix change is a PARITY event.
+/// 2026-11-14: the identity fallback text changed with the env note PR (#5).
+/// 2026-11-15: issue #127 (b) added `background`/`job` to the `bash` schema and dropped its
+/// `required: ["command"]` (a `job` read has no command), so the tools JSON changed.
+/// 2026-11-15: the built-in `pull-request` skill (#181) joined the skills section.
+const DEFAULT_STABLE_SHA: &str = "2b111da47c3af0ffe5af7e30178369dd2fa75fa219077092d59e769a21e3099b";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "468c2144693e7c16b991b46d034276bdbc24419964c082b1f52c542d5605e940";
+
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
     let b = s.as_bytes();
@@ -171,23 +169,19 @@ struct Case {
     settings: &'static str,
 }
 
-const CASES: [Case; 3] = [
+const CASES: [Case; 2] = [
     Case {
-        label: "pi",
-        settings: "{}",
+        label: "diet on",
+        settings: r#"{"oxa": {}}"#,
     },
     Case {
-        label: "local, diet on",
-        settings: r#"{"oxa": {"profile": "local"}}"#,
-    },
-    Case {
-        label: "local, diet off",
-        settings: r#"{"oxa": {"profile": "local", "diet": {"output": false}}}"#,
+        label: "diet off",
+        settings: r#"{"oxa": {"diet": {"output": false}}}"#,
     },
 ];
 
 #[test]
-fn prefix_bytes_by_profile_and_the_anchor() {
+fn prefix_bytes_and_the_anchor() {
     let env = TestEnv::new();
     let cwd = env.work();
     // Every row first, then the checks: a failing check still leaves the whole table printed.
@@ -201,8 +195,8 @@ fn prefix_bytes_by_profile_and_the_anchor() {
             ));
         }
     }
-    let mut pi_sha = [String::new(), String::new()];
     let mut totals: Vec<(bool, &str, usize)> = Vec::new();
+    let mut default_sha = [String::new(), String::new()];
     for subagent in [false, true] {
         let title = if subagent {
             "with a subagent tool declared"
@@ -210,12 +204,12 @@ fn prefix_bytes_by_profile_and_the_anchor() {
             "default session (seven built-ins)"
         };
         eprintln!("== {title}: frozen prefix bytes (system = all sections joined, tools = tools_json)");
-        eprintln!("{:<18} {:>7} {:>7} {:>7}", "profile", "system", "tools", "total");
+        eprintln!("{:<12} {:>7} {:>7} {:>7}", "arm", "system", "tools", "total");
         for (_, label, p) in rows.iter().filter(|r| r.0 == subagent) {
             let system = p.system_text();
             let total = system.len() + p.tools_json.len();
             eprintln!(
-                "{:<18} {:>7} {:>7} {:>7}",
+                "{:<12} {:>7} {:>7} {:>7}",
                 label,
                 system.len(),
                 p.tools_json.len(),
@@ -224,40 +218,18 @@ fn prefix_bytes_by_profile_and_the_anchor() {
             for (name, text) in &p.sections {
                 eprintln!("    {name:<14} {:>6}", text.len());
             }
-            if *label == "pi" {
-                let i = subagent as usize;
-                pi_sha[i] = stable_sha(p, env.root());
-                eprintln!("    stable sha256 {}", pi_sha[i]);
+            if *label == "diet on" {
+                default_sha[usize::from(subagent)] = stable_sha(p, env.root());
+                eprintln!("    stable sha256 {}", default_sha[usize::from(subagent)]);
             }
             totals.push((subagent, label, total));
         }
     }
-    for subagent in [false, true] {
-        let get = |label: &str| {
-            totals
-                .iter()
-                .find(|(s, l, _)| *s == subagent && *l == label)
-                .map(|t| t.2)
-                .unwrap()
-        };
-        let (pi, on, off) = (get("pi"), get("local, diet on"), get("local, diet off"));
-        eprintln!(
-            "saving vs pi (subagent={subagent}): local diet on {} bytes, local diet off {} bytes",
-            pi as i64 - on as i64,
-            pi as i64 - off as i64
-        );
-    }
 
     for (subagent, label, p) in &rows {
         let system = p.system_text();
-        let on = *label == "local, diet on";
-        let off = *label == "local, diet off";
-        let local = on || off;
-        assert_eq!(
-            system.contains("<tools>"),
-            !local,
-            "{label}: <tools> only under pi"
-        );
+        let on = *label == "diet on";
+        assert!(!system.contains("<tools>"), "{label}: no <tools> section");
         assert!(system.starts_with("You are a coding assistant"));
         for r in DIET_RULES {
             assert_eq!(system.contains(r), on, "{label}: {r}");
@@ -273,20 +245,26 @@ fn prefix_bytes_by_profile_and_the_anchor() {
             on && *subagent,
             "{label}: subagent rule only with diet on and subagent declared"
         );
-        if local {
-            assert!(system.contains("<rules>\n"), "{label}: rules section kept");
-        }
+        assert!(system.contains("<rules>\n"), "{label}: rules section kept");
         assert_eq!(
             p.tools_json.contains("\"name\":\"subagent\""),
             *subagent,
             "{label}: subagent declared"
         );
     }
-    // The pi default must stay byte-identical to today's (PI_STABLE_SHA*).
-    assert_eq!(pi_sha[0], PI_STABLE_SHA, "pi default bytes drifted");
-    assert_eq!(pi_sha[1], PI_STABLE_SHA_SUBAGENT, "pi subagent bytes drifted");
 
-    // The local diet-on prefix is smaller than pi's, and the diet makes it smaller still.
+    // The default prefix stays byte-identical to the pinned bytes.
+    assert_eq!(
+        default_sha[0], DEFAULT_STABLE_SHA,
+        "the default prefix bytes drifted"
+    );
+    assert_eq!(
+        default_sha[1], DEFAULT_STABLE_SHA_SUBAGENT,
+        "the default prefix bytes with a subagent drifted"
+    );
+
+    // The diet costs prefix bytes (its rules replace one line): exactly the rule lines' bytes,
+    // one "\n- " + text per rule line, plus the subagent rule when it is declared.
     for subagent in [false, true] {
         let get = |label: &str| {
             totals
@@ -295,14 +273,7 @@ fn prefix_bytes_by_profile_and_the_anchor() {
                 .map(|t| t.2)
                 .unwrap()
         };
-        let (pi, on, off) = (get("pi"), get("local, diet on"), get("local, diet off"));
-        assert!(
-            pi >= on + LOCAL_DIET_SAVING_MIN,
-            "local+diet saves {} bytes, pinned minimum {LOCAL_DIET_SAVING_MIN}",
-            pi as i64 - on as i64
-        );
-        // The diet costs prefix bytes (its rules replace one line): exactly the rule lines'
-        // bytes, one "\n- " + text per rule line, plus the subagent rule when it is declared.
+        let (on, off) = (get("diet on"), get("diet off"));
         let line = |t: &str| t.len() + 3;
         let mut cost: i64 = DIET_RULES.iter().map(|r| line(r) as i64).sum::<i64>() - line(CONCISE) as i64;
         if subagent {

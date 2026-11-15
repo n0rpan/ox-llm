@@ -78,6 +78,9 @@ pub enum Block {
     Compaction {
         summary: String,
         tokens_before: u32,
+        /// Estimated context tokens after the compaction, when known (live `/compact` and
+        /// auto-compaction report it; entries resumed from disk predate the estimate).
+        tokens_after: Option<u32>,
         expanded: bool,
     },
     BranchSummary {
@@ -164,6 +167,102 @@ pub enum Activity {
     },
 }
 
+impl StatusModel {
+    /// The thinking text for the status line. The request path only sends a boolean
+    /// `enable_thinking` and oxc maps it to the effort: `true` -> `high`, `false` -> `none`
+    /// (adaptive `low`). Claude 5.5 cannot disable thinking, so `off` shows as `adaptive • low`
+    /// and every other level as `adaptive • high`. Other models show the level name.
+    pub fn thinking_label(&self) -> Option<String> {
+        self.thinking_label_with("•")
+    }
+
+    /// [`Self::thinking_label`] with the separator between `adaptive` and the effort supplied by
+    /// the caller (the ASCII skin passes its `mid` glyph so the HUD stays ASCII).
+    pub fn thinking_label_with(&self, sep: &str) -> Option<String> {
+        let level = self.thinking?;
+        if !is_claude_55(&self.model) {
+            return Some(level.as_str().to_string());
+        }
+        let eff = if level == ThinkingLevel::Off {
+            "low"
+        } else {
+            "high"
+        };
+        Some(format!("adaptive {sep} {eff}"))
+    }
+}
+
+/// True for the Claude 5.5 families (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`),
+/// optionally behind `anthropic/` and with a `-`-separated suffix such as a date. Other names
+/// that merely contain `-5-5` (`claude-haiku-5-50`, `claude-5-5-x`) do not match.
+pub(crate) fn is_claude_55(model: &str) -> bool {
+    let m = model.strip_prefix("anthropic/").unwrap_or(model);
+    ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+        .iter()
+        .any(|family| {
+            m.strip_prefix(family)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+        })
+}
+
+#[cfg(test)]
+mod thinking_tests {
+    use super::*;
+
+    #[test]
+    fn claude_55_matcher_edges() {
+        for yes in [
+            "anthropic/claude-opus-5-5",
+            "anthropic/claude-sonnet-5-5",
+            "anthropic/claude-haiku-5-5",
+            "claude-haiku-5-5",
+            "anthropic/claude-haiku-5-5-20261001",
+            "anthropic/claude-sonnet-5-5-v2",
+        ] {
+            assert!(is_claude_55(yes), "{yes} should match");
+        }
+        for no in [
+            "anthropic/claude-haiku-5-50",
+            "anthropic/claude-5-5-x",
+            "anthropic/claude-haiku-5-5x",
+            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-opus-5-55",
+            "openrouter/claude-haiku-5-5",
+            "qwen-local",
+            "",
+        ] {
+            assert!(!is_claude_55(no), "{no} should not match");
+        }
+    }
+
+    #[test]
+    fn thinking_label_table() {
+        let levels = [
+            (ThinkingLevel::Off, "adaptive • low"),
+            (ThinkingLevel::Minimal, "adaptive • high"),
+            (ThinkingLevel::Low, "adaptive • high"),
+            (ThinkingLevel::Medium, "adaptive • high"),
+            (ThinkingLevel::High, "adaptive • high"),
+            (ThinkingLevel::Xhigh, "adaptive • high"),
+            (ThinkingLevel::Max, "adaptive • high"),
+        ];
+        for (level, want) in levels {
+            let st = StatusModel {
+                model: "anthropic/claude-haiku-5-5".to_string(),
+                thinking: Some(level),
+                ..StatusModel::default()
+            };
+            assert_eq!(st.thinking_label().as_deref(), Some(want), "5.5 level {level:?}");
+            let plain = StatusModel {
+                model: "qwen-local".to_string(),
+                thinking: Some(level),
+                ..StatusModel::default()
+            };
+            assert_eq!(plain.thinking_label().as_deref(), Some(level.as_str()));
+        }
+    }
+}
+
 /// Everything the chrome (D6) draws. Updated by [`crate::apply_event`] and by the app from
 /// `Session::state()` / `Session::stats()` after each settle.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -176,6 +275,9 @@ pub struct StatusModel {
     pub git_branch: Option<String>,
     pub session_name: Option<String>,
     pub model: String,
+    /// Wave D D4b: where the model runs (`local` or `cloud · <provider>`), display only.
+    pub model_remote: bool,
+    pub model_provider: Option<&'static str>,
     pub thinking: Option<ThinkingLevel>,
     /// Why thinking is forced off for this model (W6), shown in the status line.
     pub thinking_note: Option<String>,
@@ -205,16 +307,18 @@ pub struct StatusModel {
     pub unknown_misses: u32,
     /// T2: malformed-call repairs of the session (`Stats::tool_repairs`); shown when not 0.
     pub tool_repairs: u32,
+    /// The last compaction had no model summary (`details.mechanical`); shown in the footer
+    /// until a compaction with a model summary, or a new session.
+    pub degraded_context: bool,
     /// O-182: YOLO is on (prompts are auto-approved) and how many were approved. Display only;
     /// set by the UI loop from the process's `YoloSwitch`.
     pub yolo: bool,
     pub yolo_approved: u64,
 }
 
-/// The look of the interactive UI. `Pi` is pi's look, byte for byte (the default, and the
-/// only look of the `pi` profile unless `ui.skin` says otherwise). `Oxa` is OXA's own look
-/// (frames, HUD line, hint bar; OXA-UI-DESIGN.md); `OxaAscii` is the same with ASCII glyphs
-/// for terminals without UTF-8.
+/// The look of the interactive UI. `Oxa` is OXA's own look (frames, HUD line, hint bar;
+/// OXA-UI-DESIGN.md); `OxaAscii` is the same with ASCII glyphs for terminals without UTF-8.
+/// `Pi` is the plain look (the parity reference), reachable with `ui.skin = "pi"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Skin {
     #[default]
@@ -257,7 +361,7 @@ pub struct ViewSettings {
     /// Copy the selection to the clipboard when the mouse button is released.
     pub copy_on_select: bool,
     pub hyperlinks: bool,
-    /// The look (`ui.skin`, else by profile).
+    /// The look (`ui.skin` / `OXA_SKIN`, else OXA's).
     pub skin: Skin,
 }
 
@@ -301,15 +405,19 @@ pub struct ViewModel {
 // Commands to the worker thread
 // ---------------------------------------------------------------------------------------------
 
-/// How to open the next session (`/new`, `/resume`, `/fork`, `/clone`, `/import`).
+/// How to open the next session (`/new`, `/resume`, `/fork`, `/clone`).
 pub enum Reopen {
     New,
     Resume(SessionRef),
     /// Fork the given session file into a new one and open it.
     Fork(SessionRef),
-    /// Import a pi session file (migrated, cache cold) and open it.
-    Import(PathBuf),
 }
+
+/// Builds the next session for [`Reopen`]. The second argument carries the model and thinking
+/// level of the session being left (`Some` only for [`Reopen::New`], which keeps them; the
+/// other modes restore the target session's own, so the caller passes `None`).
+pub type ReopenFn =
+    Box<dyn FnMut(Reopen, Option<(String, ThinkingLevel)>) -> Result<Session, OxaError> + Send>;
 
 /// One request to the worker thread that owns the `Session`. Each maps to one
 /// `oxa_core::Session` call; the results come back as `AgentEvent`s and [`WorkerMsg`]s.
@@ -386,11 +494,11 @@ pub enum WorkerMsg {
     /// Fresh status after a settle.
     Status(StatusModel),
     /// Which session the worker holds now (D-INT): sent once when the worker starts and after
-    /// every swap (`/new`, `/resume`, `/fork`, `/clone`, import) and reload.
+    /// every swap (`/new`, `/resume`, `/fork`, `/clone`) and reload.
     Session(SessionInfo),
     /// The answer to [`SessionCmd::Snapshot`].
     Tree(oxa_session::Tree),
-    /// The worker opened another `Session` object (`/new`, `/resume`, import): this is its
+    /// The worker opened another `Session` object (`/new`, `/resume`): this is its
     /// control handle (D-INT). Abort, steering and follow-ups go to it from now on; what was
     /// still queued for the previous session is handed back to the user, never sent.
     Rebind(oxa_core::Handle),
@@ -600,9 +708,11 @@ pub struct InteractiveOpts {
     pub env: Vec<(String, String)>,
     /// Capability overrides resolved by the CLI; `None` = detect from `env`.
     pub caps: Option<TermCaps>,
-    /// Builds the next session for `/new`, `/resume`, fork, clone and import. Runs on the
-    /// worker thread after the previous session was dropped.
-    pub reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send>,
+    /// Builds the next session for `/new`, `/resume`, fork and clone. Runs on the
+    /// worker thread after the previous session was dropped. The second argument is the model
+    /// and thinking level of the session being left (only for [`Reopen::New`], which carries
+    /// them over; `None` for the other modes, which restore the target session's own).
+    pub reopen: ReopenFn,
     /// `-r` / `--resume`: open the session picker right after start (D-INT).
     pub open_picker: bool,
     /// Saves a `/trust` decision for the session's directory (D-INT; the CLI owns the trust

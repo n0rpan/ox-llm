@@ -35,17 +35,7 @@ Error: cannot reach the engine at 127.0.0.1:9: Connection refused (os error 111)
 
 Several endpoints, or a per-model setup, go in `~/.oxa/agent/models.json`. See [settings.md](settings.md) for the settings that choose a model.
 
-Select the local tools/context behavior described in this guide:
-
-```console
-$ export OXA_PROFILE=local
-```
-
-For launches outside this shell, set `oxa.profile` to `local` in
-`~/.oxa/agent/settings.json`. This version defaults to `pi` when neither selection is
-present. Its implicit bash timeout is unlimited and its thinking policy is `fixed`;
-`local` selects the 120-second timeout, shorter first read and `auto` thinking below.
-See [tools and context handling](profile.md) for settings and overrides.
+oxa is tuned to the models the ox-llm engine serves. [tools-context.md](tools-context.md) lists the tool formats and the context defaults, and the settings that change them.
 
 ## First prompt
 

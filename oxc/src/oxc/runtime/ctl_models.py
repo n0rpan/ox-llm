@@ -8,13 +8,14 @@ if __package__:
     from .ctl_env import Unavailable
     from .ctl_seams import ctl
     from .harness_registry import learning_settings
-    from . import bigmoe_runtime, classic_beta, harness_registry, lan_share, model_catalog, openai_api, oxe_runtime, profile_policy
+    from . import bigmoe_runtime, classic_beta, cloud, harness_registry, lan_share, model_catalog, openai_api, oxe_runtime, profile_policy
 else:
     from ctl_env import Unavailable
     from ctl_seams import ctl
     from harness_registry import learning_settings
     import bigmoe_runtime
     import classic_beta
+    import cloud
     import harness_registry
     import lan_share
     import model_catalog
@@ -108,6 +109,9 @@ def capabilities(config, context):
             'thinking': 'toggle', 'preserve_thinking': family == 'rust', 'mtp': _mtp(config, family),
             'max_context': max_context, 'vision': False, 'slots': 1,
             'park': {'rust': 'ram+disk', 'rust-flash': 'disk'}.get(family, 'none'),
+            # Wave D D4: the client-neutral, per-model capability names (also on each /v1/models row).
+            'remote': False, 'remote_provider': None, 'echo': rust,
+            'cache_hints': rust, 'cancel': True, 'prefill': rust, 'context_window': max_context,
             'sampling': sampling_controls(family)}
 
 
@@ -156,6 +160,11 @@ class ModelsMixin:
         except (OSError, ValueError):
             raise Unavailable('Local model setup is still being prepared.')
 
+    def cloud_only(self):
+        """#70: the install has no local engine (`"cloud_only": true` in the runtime config)."""
+        try: return json.loads(ctl.CONFIG.read_text()).get('cloud_only') is True
+        except (OSError, ValueError, AttributeError): return False
+
     def eligible(self, config):
         if classic_beta.is_retired(config): return False
         if config.get('backend_kind') == oxe_runtime.KIND:
@@ -167,8 +176,10 @@ class ModelsMixin:
             return bigmoe_runtime.eligible(config)
         return bool(config.get('ready'))
 
-    def models(self):
+    def models(self, remote=False):
         value = json.loads(ctl.CONFIG.read_text())
+        if value.get('cloud_only') is True:  # no local rows; only the remote catalog
+            return [cloud.row(item) for item in cloud.models(value)] if cloud.enabled(value) and not cloud.offline() and not remote else []
         aliases = [value.get('model_alias', 'qwen-local'), *value.get('profiles', {})]
         if value.get('profiles'): aliases.insert(0, 'qwen-local')
         rows = [{'id': alias, 'object': 'model', 'created': 0, 'owned_by': 'local',
@@ -176,6 +187,8 @@ class ModelsMixin:
                 if self.eligible(self.config(alias))]
         models = openai_api.model_rows(value, rows, value.get('selected_model', value.get('model_alias', 'qwen-local')))
         self._publish_limits(models, value)
+        if cloud.enabled(value) and not cloud.offline() and not remote:  # never to a LAN-share guest
+            models.extend(cloud.row(item) for item in cloud.models(value))
         return models
 
     def _publish_limits(self, rows, value):
@@ -195,13 +208,17 @@ class ModelsMixin:
                     cap = self.context_block(config, value).get('cap')
                     if type(cap) is not int:
                         cap = config.get('context_size') if type(config.get('context_size')) is int else None
-                    limits[target] = {'context_length': cap, 'max_output_tokens': output_limit(config)}
+                    caps = capabilities(config, self.context_block(config, value))
+                    limits[target] = {'context_length': cap, 'max_output_tokens': output_limit(config),
+                                      'capabilities': caps}
                 except (Unavailable, OSError, ValueError, KeyError, TypeError, AttributeError):
                     limits[target] = None
             if limits[target] is not None:
                 row.update(limits[target])
+                if isinstance(limits[target].get('capabilities'), dict):
+                    row.setdefault('context_window', limits[target]['capabilities'].get('context_window'))
 
-    def catalog(self):
+    def catalog(self, remote=False):
         """Chooser rows for eligible profiles; metadata only, never loads a model."""
         value = json.loads(ctl.CONFIG.read_text())
         if not isinstance(value, dict): raise ValueError('runtime_object_required')
@@ -221,8 +238,31 @@ class ModelsMixin:
                                           flash_cache=(getattr(self, 'flash_cache_status', None) if loaded and
                                               loaded.get('model_alias') == alias else None)))
         rows.sort(key=model_catalog.sort_key)
+        if cloud.enabled(value) and not cloud.offline() and not remote:
+            rows.extend(cloud.catalog_row(item) for item in cloud.models(value))
         return {'object': 'list', 'default_model': model_catalog.DEFAULT_ALIAS,
                 'selected_model': selected, 'data': rows}
+
+    def cloud_status(self):
+        """The privacy switch, budget and secret readiness.  Never the key or its path."""
+        try:
+            value = json.loads(ctl.CONFIG.read_text())
+            if not isinstance(value, dict):
+                value = {}
+        except (OSError, ValueError):
+            value = {}
+        try:
+            cap, spend = cloud.budget(value)
+            ledger_error = None
+        except cloud.CloudError as error:
+            # Status must stay alive: report the accounting fault instead of a 500, and cloud
+            # admission will refuse anyway until the ledger is repaired.
+            cap, spend, ledger_error = None, None, error.code
+        return {'enabled': cloud.enabled(value), 'offline': cloud.offline(),
+                'daily_budget_usd': cap, 'spend_today_usd': spend, 'ledger_ok': ledger_error is None,
+                'ledger_error': ledger_error,
+                'providers': cloud.configured(value), 'models': len(cloud.models(value)),
+                'rejected': cloud.rejected(value)}
 
     def flash_qualification(self):
         """M3: Flash's derived status (model_catalog.qualification of the resolved installed
@@ -284,12 +324,24 @@ class ModelsMixin:
             rows = self.models()
         except (OSError, ValueError, Unavailable):
             return {}
+        try:
+            value = json.loads(ctl.CONFIG.read_text())
+        except (OSError, ValueError):
+            value = {}
         limits, out = {}, {}
         for row in rows:
             target = row.get('alias_of') or row.get('id')
             if not isinstance(target, str):
                 continue
             if target not in limits:
+                remote = cloud.model(value, target)
+                if remote is not None:
+                    caps = cloud.capabilities(remote)
+                    limits[target] = {'cap': remote['context_window'], 'mode': None, 'modes': [],
+                                      'max_output': remote['max_output'], 'capabilities': caps,
+                                      'context_window': remote['context_window']}
+                    out[row['id']] = limits[target]
+                    continue
                 try:
                     config = self.config(target)
                     context = self.context_block(config, runtime)

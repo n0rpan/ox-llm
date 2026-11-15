@@ -1,6 +1,8 @@
 //! A10: the mode x access policy table. Owner: task A10. Signatures below are frozen; bodies are yours.
 use crate::paths::{is_inside, is_read_only_command, resolve_real};
-use oxa_proto::guard::{sensitive_paths, GIT_PROTECTED_IN_CWD, PROTECTED_IN_CWD};
+use oxa_proto::guard::{
+    home_protected_paths, is_home_or_above, sensitive_paths, GIT_PROTECTED_IN_CWD, PROTECTED_IN_CWD,
+};
 use oxa_proto::{Access, Decision, Mode, Policy, ToolClass, YoloSwitch};
 use std::path::{Path, PathBuf};
 
@@ -24,15 +26,49 @@ pub mod deny_reasons {
 pub struct PathGuard {
     deny: Vec<PathBuf>,
     allow: Vec<PathBuf>,
+    /// The home directory and its startup files, keys and agent settings
+    /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
+    /// directory or above it (O-199 first run: oxa started in `$HOME`).
+    home: PathBuf,
+    home_protected: Vec<PathBuf>,
 }
 
 impl PathGuard {
-    /// The deny-list of `home` and `agent_dir`, with `tmp_dir` (the spill files) excepted.
+    /// The deny-list of `home` and `agent_dir` only (use [`PathGuard::with_real_home`] to add the
+    /// account's real home), with `tmp_dir` (the spill files) excepted.
     pub fn new(home: &Path, agent_dir: &Path, tmp_dir: &Path) -> PathGuard {
-        PathGuard {
-            deny: sensitive_paths(home, Some(agent_dir)),
-            allow: vec![tmp_dir.to_path_buf()],
+        PathGuard::with_real_home(home, None, agent_dir, tmp_dir)
+    }
+
+    /// Like [`PathGuard::new`], plus the deny-list of the account's real home.
+    pub fn with_real_home(
+        home: &Path,
+        real_home: Option<&Path>,
+        agent_dir: &Path,
+        tmp_dir: &Path,
+    ) -> PathGuard {
+        // The same dual-home deny-list as the bash sandbox: a changed `$HOME` never widens access.
+        let mut deny = sensitive_paths(home, Some(agent_dir));
+        if let Some(r) = real_home.filter(|r| *r != home) {
+            deny.extend(sensitive_paths(r, None));
         }
+        deny.sort();
+        deny.dedup();
+        PathGuard {
+            deny,
+            allow: vec![tmp_dir.to_path_buf()],
+            home: home.to_path_buf(),
+            home_protected: home_protected_paths(home),
+        }
+    }
+
+    /// A write to `p` (absolute) that runs or configures something outside the sandbox later,
+    /// with `cwd` the home directory or above it.
+    fn protects_home_file(&self, p: &Path, cwd: &Path) -> bool {
+        !self.home_protected.is_empty()
+            && (is_home_or_above(cwd, &self.home)
+                || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
+            && self.home_protected.iter().any(|d| is_inside(p, d))
     }
 
     /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
@@ -205,7 +241,9 @@ impl Policy for ModePolicy {
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.
             if let Access::Write(_) = a {
-                match (protected_write(&abs, cwd), mode) {
+                let protected = protected_write(&abs, cwd)
+                    .or_else(|| self.guard.protects_home_file(&abs, cwd).then_some(false));
+                match (protected, mode) {
                     (Some(true), _) => return Decision::Deny(deny_reasons::GIT_PROTECTED),
                     (Some(false), Mode::Plan) => return Decision::Deny(deny_reasons::PLAN_WRITE),
                     (Some(false), _) => return Decision::Ask,

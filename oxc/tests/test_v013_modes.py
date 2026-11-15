@@ -241,7 +241,9 @@ class StatusContract(unittest.TestCase):
         # this FLASH row is the C++ BigMoe adapter (bigmoe-cpu-stream): no Rust request hints
         self.assertEqual(caps[FLASH], {'prefill_only': False, 'snapshot_hint': 0, 'turn_kind': False, 'hint_clear': False,
                                        'thinking': 'toggle', 'vision': False, 'slots': 1, 'preserve_thinking': False,
-                                       'mtp': False, 'max_context': 16384, 'park': 'none', 'sampling': []})
+                                       'mtp': False, 'max_context': 16384, 'context_window': 16384,
+                                       'park': 'none', 'sampling': [], 'remote': False, 'remote_provider': None,
+                                       'echo': False, 'cache_hints': False, 'cancel': True, 'prefill': False})
         self.assertEqual((value['loaded_model'], stack.manager.loads), (None, 0))
 
     def test_model_limits_report_an_mtp_fallback_of_the_loaded_engine(self):

@@ -12,7 +12,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(ROOT / 'tools' / 'gates'), str(Path(__file__).resolve().parents[1] / 'benchmarks' / 'tokens')]
+sys.path[:0] = [str(ROOT / 'tools' / 'gates'), str(ROOT / 'oxc' / 'benchmarks' / 'tokens')]
 import hop_probe as hp  # noqa: E402
 import token_harness as th  # noqa: E402
 
@@ -49,6 +49,7 @@ class GapChainTests(unittest.TestCase):
         self.proxy = http.server.ThreadingHTTPServer(('127.0.0.1', 0), hp.make_handler(hp.State(self.tmp, self.up.server_address[1], True)))
         threading.Thread(target=self.proxy.serve_forever, daemon=True).start()
         Upstream.fail = False
+        self.completed = 0
 
     def tearDown(self):
         self.proxy.shutdown()
@@ -60,6 +61,10 @@ class GapChainTests(unittest.TestCase):
         r = c.getresponse()
         r.read()
         c.close()
+        if path != hp.EPOCH_PATH:
+            # HTTP completion precedes asynchronous gap-state and ledger updates.
+            self.completed += 1
+            self.assertEqual(len(self.recs(self.completed)), self.completed)
         return r.status
 
     def recs(self, n):

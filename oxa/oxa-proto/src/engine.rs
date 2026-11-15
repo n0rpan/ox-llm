@@ -26,6 +26,11 @@ pub struct EngineInfo {
     pub prefill_only: bool,
     /// The other capabilities of `limits_for` (F4 / EG2).
     pub caps: EngineCaps,
+    /// Whether the model thinks (reasoning). `None` = the controller published no thinking field
+    /// (a plain OpenAI server), so a client must not assume it does.
+    pub thinking: Option<bool>,
+    /// Whether the model accepts images as input. `None` = no input-modality field was published.
+    pub images: Option<bool>,
 }
 
 /// What the engine lets a client use with a model, known before the model loads: the
@@ -45,6 +50,22 @@ pub struct EngineCaps {
     pub preserve_thinking: Option<bool>,
     /// `park == "disk"`: a parked session of this model is restored from disk only (Flash).
     pub park_disk_only: bool,
+    /// Wave D D4: this model runs at a cloud provider through the controller. Local-only
+    /// features (prefix hints, cache warming, engine-side state and the X-Oxe-* headers) are
+    /// not sent to it.
+    pub remote: bool,
+    /// The provider name of a remote model (`openrouter`, `anthropic`); `None` when local.
+    pub remote_provider: Option<&'static str>,
+    /// The engine echoes a previous reply (CACHE-PERFECT ECHO); local only.
+    pub echo: bool,
+    /// Prefix/cache hints are useful (snapshot, hint clear, cache warming); local only.
+    pub cache_hints: bool,
+    /// The client may cancel a running request (the controller/engine closes the socket).
+    pub cancel: bool,
+    /// Zero-token prefill (`max_tokens: 0`) is available; local Rust engines only.
+    pub prefill: bool,
+    /// The model's context window when the engine publishes it as a capability.
+    pub context_window: Option<u32>,
 }
 
 /// The capability string an engine puts in the `oxe_hints.hints` array of its `/props` when it
@@ -95,7 +116,23 @@ pub struct ChatRequest<'a> {
     /// W6 / F8: send `chat_template_kwargs.preserve_thinking: true`. `false` omits the key (the
     /// server's own default applies; never forced on a model without the capability).
     pub preserve_thinking: bool,
+    /// Stochastic sampling for this request. `None` = W6 greedy: `"temperature":0` and no other
+    /// sampling key (the engine's MTP speculation runs on greedy requests only).
+    pub sampling: Option<Sampling>,
     pub hints: Hints<'a>,
+}
+
+/// Sampling parameters sent with a request (`oxa.sampling.mode = model`): the model card's
+/// recommended values. The engine reads `presence_penalty` per reply.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sampling {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: i32,
+    pub min_p: f32,
+    pub presence_penalty: f32,
+    /// A fixed seed (tests, reproducible runs); `None` = the engine's own.
+    pub seed: Option<u64>,
 }
 
 /// The engine as the core sees it. `oxa-engine` implements it over HTTP; tests script it.
@@ -105,6 +142,12 @@ pub trait Engine: Send + Sync {
     /// target's, read before its first request even when it is not loaded
     /// (`EngineInfo::limits_for` says which). Never loads a model.
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError>;
+    /// One warning line when the server advertises a newer protocol than this oxa understands,
+    /// or lacks a capability oxa expects, as read by the last [`Engine::info`] (no request of
+    /// its own). `None` = nothing to say, or an engine that does not check.
+    fn handshake_warning(&self) -> Option<String> {
+        None
+    }
     /// Exact token count of `text` (`POST /tokenize`).
     fn count_tokens(&self, text: &str) -> Result<u32, OxaError>;
     /// Run one request to completion, calling `on` for each stream increment in order.

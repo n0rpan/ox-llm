@@ -39,6 +39,17 @@ cd oxa && cargo test --locked                            # oxa
 python3 -I -m unittest discover -s tools/release/tests   # release tooling (repository root)
 ```
 
-In the development repository, CI runs only on self-hosted helper machines: `ci-engine.yml`,
-`ci-oxa.yml`, `ci-lab.yml` and `ci-repo.yml`. Each is path-filtered to its product. Start a run on any
-branch with `gh workflow run <file> --ref <branch>`.
+Hosted CI runs in three tiers:
+
+- Draft PRs run formatting, cheap path controls and all secret, SDK-material, product-isolation
+  and receipt scans. Test locally while iterating, then mark the PR ready for review.
+- Ready PRs also run clippy, the oxa build and the x86 stub checks. Engine/Flash builds, oxa's
+  mandatory-bwrap workspace tests and the lab suite skip via job-level conditions, so all nine
+  required check names still report. Documentation links are checked when applicable.
+- The native merge queue (`merge_group`) is the full integration gate. Queue runs, pushes to
+  main, manual runs and nightly runs execute the full set, including the loopback OpenAI contract,
+  regardless of changed paths. Ordinary branch pushes do not duplicate the PR workflow.
+
+Workflows use GitHub-hosted runners and pinned actions. Only PR events cancel superseded runs;
+main and merge-group runs are not cancelled in progress. Existing cargo and pip caches contain
+no credential files. No real cloud key or paid API is used by tests.

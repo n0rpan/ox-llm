@@ -40,9 +40,40 @@ class ProxyCase(StubManagerCase):
         super().setUp()
         self.server = controller.Server(('127.0.0.1', 0), controller.Handler)
         self.server.manager = self.manager
+        # Track the per-request handler threads so tearDown can join them with a deadline.
+        # A handler that has already sent its reply is still finishing its bookkeeping
+        # (record_engine_death, the request_end diagnostic) into self.root/engine-stderr.log,
+        # and must be done before StubManagerCase.tearDown removes the directory. The server's
+        # own server_close() does not join them: Server.daemon_threads is True, so the handler
+        # threads are daemon and ThreadingMixIn._threads skips daemon threads.
+        self._handler_threads = set()
+        self._handler_lock = threading.Lock()
+        original = self.server.process_request_thread
+
+        def tracked(request, client_address):
+            thread = threading.current_thread()
+            with self._handler_lock:
+                self._handler_threads.add(thread)
+            try:
+                original(request, client_address)
+            finally:
+                with self._handler_lock:
+                    self._handler_threads.discard(thread)
+        self.server.process_request_thread = tracked
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
+
+    def tearDown(self):
+        # Stop the HTTP server and join every handler thread BEFORE the tmp dir is removed
+        # (StubManagerCase.tearDown). The old server_close/shutdown addCleanup callbacks ran
+        # LIFO *after* tearDown, i.e. after tmp.cleanup() had already removed the directory a
+        # handler could still be writing into.
+        self.server.shutdown()
+        self.server.server_close()
+        with self._handler_lock:
+            threads = list(self._handler_threads)
+        for thread in threads:
+            thread.join(timeout=5)
+        super().tearDown()
 
     def chat(self, stream=True):
         client = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=20)

@@ -53,7 +53,11 @@ pub struct ServerChatOptions {
 
 impl Default for ServerChatOptions {
     fn default() -> Self {
-        ServerChatOptions { chat_template_kwargs: Map::new(), reasoning_format: ReasoningFormat::Deepseek, enable_thinking: true }
+        ServerChatOptions {
+            chat_template_kwargs: Map::new(),
+            reasoning_format: ReasoningFormat::Deepseek,
+            enable_thinking: true,
+        }
     }
 }
 
@@ -76,6 +80,9 @@ pub struct ChatInputs {
     /// restore its own reasoning, O-96), an explicit string, the empty one included, is the
     /// client's edit and must match.
     pub reasoning_sent: Vec<Option<String>>,
+    /// v0.2.0 H6: the request only prefills (`max_tokens: 0`), it generates nothing. Such a request
+    /// may carry no user turn (a client preloading its system + tools prefix); see [`apply`].
+    pub prefill_only: bool,
 }
 
 /// Result of applying the template.
@@ -108,18 +115,33 @@ pub fn parse_tools(tools: &Json) -> Result<Vec<Tool>, BadRequest> {
         Json::Array(a) => {
             for t in a {
                 if t.get("type").and_then(Json::as_str) != Some("function") {
-                    return Err(bad(format!("Failed to parse tools: Unsupported tool type: {t}")));
+                    return Err(bad(format!(
+                        "Failed to parse tools: Unsupported tool type: {t}"
+                    )));
                 }
-                let f = t.get("function").ok_or_else(|| bad(format!("Failed to parse tools: Missing tool function: {t}")))?;
-                let name = f.get("name").and_then(Json::as_str).ok_or_else(|| bad("Failed to parse tools: missing name"))?;
+                let f = t.get("function").ok_or_else(|| {
+                    bad(format!("Failed to parse tools: Missing tool function: {t}"))
+                })?;
+                let name = f
+                    .get("name")
+                    .and_then(Json::as_str)
+                    .ok_or_else(|| bad("Failed to parse tools: missing name"))?;
                 out.push(Tool {
                     name: name.to_string(),
-                    description: f.get("description").and_then(Json::as_str).unwrap_or("").to_string(),
+                    description: f
+                        .get("description")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     parameters: f.get("parameters").cloned().unwrap_or_else(|| json!({})),
                 });
             }
         }
-        _ => return Err(bad(format!("Failed to parse tools: Expected 'tools' to be an array, got {tools}"))),
+        _ => {
+            return Err(bad(format!(
+                "Failed to parse tools: Expected 'tools' to be an array, got {tools}"
+            )))
+        }
     }
     Ok(out)
 }
@@ -127,24 +149,41 @@ pub fn parse_tools(tools: &Json) -> Result<Vec<Tool>, BadRequest> {
 /// `common_chat_msgs_parse_oaicompat` + `common_chat_msg::to_json_oaicompat` + workarounds
 /// (developer->system, func_args_not_string).
 pub fn normalize_messages(messages: &Json) -> Result<Json, BadRequest> {
-    let arr = messages.as_array().ok_or_else(|| bad("Expected 'messages' to be an array"))?;
+    let arr = messages
+        .as_array()
+        .ok_or_else(|| bad("Expected 'messages' to be an array"))?;
     let mut out = Vec::with_capacity(arr.len());
     for m in arr {
-        let m = m.as_object().ok_or_else(|| bad(format!("Expected 'message' to be an object, got {m}")))?;
-        let role = m.get("role").and_then(Json::as_str).ok_or_else(|| bad("Missing 'role' in message"))?;
+        let m = m
+            .as_object()
+            .ok_or_else(|| bad(format!("Expected 'message' to be an object, got {m}")))?;
+        let role = m
+            .get("role")
+            .and_then(Json::as_str)
+            .ok_or_else(|| bad("Missing 'role' in message"))?;
         let has_content = m.contains_key("content");
         let has_tool_calls = m.contains_key("tool_calls");
         if !has_content && !has_tool_calls {
             return Err(bad("Expected 'content' or 'tool_calls'"));
         }
         let mut j = Map::new();
-        j.insert("role".into(), Json::String(if role == "developer" { "system".into() } else { role.into() }));
+        j.insert(
+            "role".into(),
+            Json::String(if role == "developer" {
+                "system".into()
+            } else {
+                role.into()
+            }),
+        );
         let content = match m.get("content") {
             Some(Json::String(s)) => Json::String(s.clone()),
             Some(Json::Array(parts)) => {
                 let mut ps = Vec::new();
                 for p in parts {
-                    let ty = p.get("type").and_then(Json::as_str).ok_or_else(|| bad(format!("Missing content part type: {p}")))?;
+                    let ty = p
+                        .get("type")
+                        .and_then(Json::as_str)
+                        .ok_or_else(|| bad(format!("Missing content part type: {p}")))?;
                     match ty {
                         "text" | "media_marker" => {
                             let text = p.get("text").and_then(Json::as_str).unwrap_or("");
@@ -154,8 +193,11 @@ pub fn normalize_messages(messages: &Json) -> Result<Json, BadRequest> {
                             ps.push(json!({"type": ty, "name": p.get("name").cloned().unwrap_or(Json::Null)}));
                         }
                         // OpenAI answers a non-vision model's image part with a 400 too
-                        "image_url" | "input_audio" | "file" | "image" | "video" | "audio" | "input_image" => {
-                            return Err(bad(format!("Unsupported content part type: \"{ty}\" (this model takes text only)")))
+                        "image_url" | "input_audio" | "file" | "image" | "video" | "audio"
+                        | "input_image" => {
+                            return Err(bad(format!(
+                            "Unsupported content part type: \"{ty}\" (this model takes text only)"
+                        )))
                         }
                         _ => return Err(bad(format!("Unsupported content part type: \"{ty}\""))),
                     }
@@ -167,7 +209,11 @@ pub fn normalize_messages(messages: &Json) -> Result<Json, BadRequest> {
                 }
             }
             Some(Json::Null) | None => Json::String(String::new()),
-            Some(c) => return Err(bad(format!("Invalid 'content' type: expected string or array, got {c}"))),
+            Some(c) => {
+                return Err(bad(format!(
+                    "Invalid 'content' type: expected string or array, got {c}"
+                )))
+            }
         };
         j.insert("content".into(), content);
         if let Some(r) = m.get("reasoning_content").and_then(Json::as_str) {
@@ -192,12 +238,18 @@ pub fn normalize_messages(messages: &Json) -> Result<Json, BadRequest> {
                     if tc.get("type").and_then(Json::as_str) != Some("function") {
                         return Err(bad(format!("Unsupported tool call type: {tc}")));
                     }
-                    let f = tc.get("function").ok_or_else(|| bad("Missing tool call function"))?;
-                    let name = f.get("name").and_then(Json::as_str).ok_or_else(|| bad("Missing tool call name"))?;
+                    let f = tc
+                        .get("function")
+                        .ok_or_else(|| bad("Missing tool call function"))?;
+                    let name = f
+                        .get("name")
+                        .and_then(Json::as_str)
+                        .ok_or_else(|| bad("Missing tool call name"))?;
                     // func_args_not_string: the template sees parsed arguments
                     let args = match f.get("arguments") {
-                        Some(Json::String(s)) => serde_json::from_str::<Json>(s)
-                            .map_err(|e| bad(format!("Failed to parse tool call arguments as JSON: {e}")))?,
+                        Some(Json::String(s)) => serde_json::from_str::<Json>(s).map_err(|e| {
+                            bad(format!("Failed to parse tool call arguments as JSON: {e}"))
+                        })?,
                         Some(a) => a.clone(),
                         None => return Err(bad("Missing tool call arguments")),
                     };
@@ -230,15 +282,26 @@ fn reasoning_format_from_name(s: &str) -> Result<ReasoningFormat, BadRequest> {
 }
 
 /// `oaicompat_chat_params_parse` (the template-related part).
-pub fn chat_inputs(body: &Json, opt: &ServerChatOptions, tmpl: &ChatTemplate) -> Result<ChatInputs, BadRequest> {
-    let messages = body.get("messages").ok_or_else(|| bad("'messages' is required"))?;
-    for m in messages.as_array().ok_or_else(|| bad("Expected 'messages' to be an array"))? {
+pub fn chat_inputs(
+    body: &Json,
+    opt: &ServerChatOptions,
+    tmpl: &ChatTemplate,
+) -> Result<ChatInputs, BadRequest> {
+    let messages = body
+        .get("messages")
+        .ok_or_else(|| bad("'messages' is required"))?;
+    for m in messages
+        .as_array()
+        .ok_or_else(|| bad("Expected 'messages' to be an array"))?
+    {
         let role = m.get("role").and_then(Json::as_str).unwrap_or("");
         if role != "assistant" && m.get("content").is_none() {
             return Err(bad("All non-assistant messages must contain 'content'"));
         }
         if role == "assistant" && m.get("content").is_none() && m.get("tool_calls").is_none() {
-            return Err(bad("Assistant message must contain either 'content' or 'tool_calls'!"));
+            return Err(bad(
+                "Assistant message must contain either 'content' or 'tool_calls'!",
+            ));
         }
     }
     let mut tools = parse_tools(body.get("tools").unwrap_or(&Json::Null))?;
@@ -253,9 +316,13 @@ pub fn chat_inputs(body: &Json, opt: &ServerChatOptions, tmpl: &ChatTemplate) ->
         // OpenAI's named-function form {"type":"function","function":{"name":N}} (llama-server
         // rejects it): call N, i.e. tool_choice "required" with the tool list cut to N
         Some(o) => match o.pointer("/function/name").and_then(Json::as_str) {
-            Some(name) if o.get("type").and_then(Json::as_str).unwrap_or("function") == "function" => {
+            Some(name)
+                if o.get("type").and_then(Json::as_str).unwrap_or("function") == "function" =>
+            {
                 if !tools.iter().any(|t| t.name == name) {
-                    return Err(bad(format!("Invalid tool_choice: function {name} is not in 'tools'")));
+                    return Err(bad(format!(
+                        "Invalid tool_choice: function {name} is not in 'tools'"
+                    )));
                 }
                 tools.retain(|t| t.name == name);
                 ToolChoice::Required
@@ -269,7 +336,18 @@ pub fn chat_inputs(body: &Json, opt: &ServerChatOptions, tmpl: &ChatTemplate) ->
         },
     };
     let mut msgs = normalize_messages(messages)?;
-    let reasoning_sent = messages.as_array().map(|a| a.iter().map(|m| m.get("reasoning_content").and_then(Json::as_str).map(str::to_string)).collect()).unwrap_or_default();
+    let reasoning_sent = messages
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|m| {
+                    m.get("reasoning_content")
+                        .and_then(Json::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     // a system message after the first message (agents insert reminders mid-conversation): the
     // Qwen templates reject it, so it is passed on as a user message at the same position
     if let Json::Array(a) = &mut msgs {
@@ -288,16 +366,29 @@ pub fn chat_inputs(body: &Json, opt: &ServerChatOptions, tmpl: &ChatTemplate) ->
     // default there), which renders it as a finished turn without an opener. Only an explicit
     // continuation (llama-server's assistant prefill: `add_generation_prompt: false` on a request
     // that generates) is refused: the reply would extend the client's message in place.
-    let limit = ["n_predict", "max_completion_tokens", "max_tokens"].iter().find_map(|k| body.get(*k).and_then(Json::as_i64));
-    let continuation = limit != Some(0) && body.get("add_generation_prompt").and_then(Json::as_bool) == Some(false);
-    if let Some(last) = msgs.as_array().and_then(|a| a.last()).filter(|_| continuation) {
+    let limit = ["n_predict", "max_completion_tokens", "max_tokens"]
+        .iter()
+        .find_map(|k| body.get(*k).and_then(Json::as_i64));
+    let continuation = limit != Some(0)
+        && body.get("add_generation_prompt").and_then(Json::as_bool) == Some(false);
+    if let Some(last) = msgs
+        .as_array()
+        .and_then(|a| a.last())
+        .filter(|_| continuation)
+    {
         if last.get("role").and_then(Json::as_str) == Some("assistant") {
             return Err(bad("continuing a trailing assistant message in place (add_generation_prompt: false) is not supported by this server; send it with the generation prompt (the default) to get a new assistant turn"));
         }
     }
     let mut extra = Map::new();
-    extra.insert("datetime".into(), Json::String(crate::template::strftime_now("%b %d %Y")));
-    extra.insert("date_string".into(), Json::String(crate::template::strftime_now("%d %b %Y")));
+    extra.insert(
+        "datetime".into(),
+        Json::String(crate::template::strftime_now("%b %d %Y")),
+    );
+    extra.insert(
+        "date_string".into(),
+        Json::String(crate::template::strftime_now("%d %b %Y")),
+    );
     let mut kwargs = opt.chat_template_kwargs.clone();
     if let Some(Json::Object(k)) = body.get("chat_template_kwargs") {
         for (a, b) in k {
@@ -307,14 +398,21 @@ pub fn chat_inputs(body: &Json, opt: &ServerChatOptions, tmpl: &ChatTemplate) ->
     let mut enable_thinking = opt.enable_thinking && tmpl.supports_thinking;
     match kwargs.get("enable_thinking") {
         Some(Json::Bool(b)) => enable_thinking = *b,
-        Some(Json::String(_)) => return Err(bad("invalid type for \"enable_thinking\" (expected boolean, got string)")),
+        Some(Json::String(_)) => {
+            return Err(bad(
+                "invalid type for \"enable_thinking\" (expected boolean, got string)",
+            ))
+        }
         _ => {}
     }
     // OpenAI `reasoning_effort` is the standard thinking switch (the model has an on/off switch, no
     // budget levels): `none` / `minimal` = off, `low` / `medium` / `high` / `xhigh` = on; absent or
     // null = the server default. An explicit `chat_template_kwargs.enable_thinking` in the request
     // wins. An unknown word switches nothing.
-    let explicit = matches!(body.pointer("/chat_template_kwargs/enable_thinking"), Some(Json::Bool(_)));
+    let explicit = matches!(
+        body.pointer("/chat_template_kwargs/enable_thinking"),
+        Some(Json::Bool(_))
+    );
     match body.get("reasoning_effort") {
         None | Some(Json::Null) => {}
         Some(Json::String(re)) => {
@@ -344,8 +442,14 @@ pub fn chat_inputs(body: &Json, opt: &ServerChatOptions, tmpl: &ChatTemplate) ->
         None => opt.reasoning_format,
     };
     // llama.cpp: parallel_tool_calls defaults to the template caps (Qwen templates: true)
-    let parallel_tool_calls = body.get("parallel_tool_calls").and_then(Json::as_bool).unwrap_or(true);
-    let add_generation_prompt = body.get("add_generation_prompt").and_then(Json::as_bool).unwrap_or(true);
+    let parallel_tool_calls = body
+        .get("parallel_tool_calls")
+        .and_then(Json::as_bool)
+        .unwrap_or(true);
+    let add_generation_prompt = body
+        .get("add_generation_prompt")
+        .and_then(Json::as_bool)
+        .unwrap_or(true);
     if let Json::Array(a) = &mut msgs {
         let _ = a;
     }
@@ -359,6 +463,7 @@ pub fn chat_inputs(body: &Json, opt: &ServerChatOptions, tmpl: &ChatTemplate) ->
         reasoning_format,
         extra,
         reasoning_sent,
+        prefill_only: limit == Some(0),
     })
 }
 
@@ -378,25 +483,102 @@ fn context(inp: &ChatInputs, add_generation_prompt: bool) -> Json {
     Json::Object(ctx)
 }
 
+/// Placeholder user turn of [`prefix_only_render`] (never part of the returned prompt).
+const PREFIX_PLACEHOLDER: [&str; 2] = ["prefix placeholder A", "prefix placeholder B"];
+
+/// v0.2.0 H6 prefix preload: a prefill-only request without a generation prompt and without any
+/// user message (a client warming its frozen system + tools prefix before the first prompt).
+/// Templates that look for the last user query (Qwen3.5, Ornith: `No user query found in
+/// messages.`) refuse to render such a conversation. The prefix is then rendered with one
+/// placeholder user turn appended and cut at that turn's opener (`<|im_start|>user`), which is
+/// exactly where the real first request (the same messages + the user's prompt) first differs:
+/// the cut is a byte prefix of it, at a special token, so the tokens match too. Checked with two
+/// different placeholders (the cut must not depend on the user text). None when the request does
+/// not qualify or the template is not ChatML-shaped.
+fn prefix_only_render(tmpl: &ChatTemplate, inp: &ChatInputs) -> Option<String> {
+    let msgs = inp.messages.as_array()?;
+    if !inp.prefill_only
+        || inp.add_generation_prompt
+        || msgs
+            .iter()
+            .any(|m| m.get("role").and_then(Json::as_str) == Some("user"))
+    {
+        return None;
+    }
+    let opener = format!("{IM_START}user");
+    let cut = |text: &str| -> Option<String> {
+        let mut with = inp.clone();
+        let mut m = msgs.clone();
+        m.push(json!({"role": "user", "content": text}));
+        with.messages = Json::Array(m);
+        let full = tmpl.render_ctx(&context(&with, false)).ok()?;
+        let at = full.rfind(&opener)?;
+        full[at..].contains(text).then(|| full[..at].to_string())
+    };
+    let a = cut(PREFIX_PLACEHOLDER[0])?;
+    (cut(PREFIX_PLACEHOLDER[1])? == a).then_some(a)
+}
+
 /// `common_chat_templates_apply` for the supported formats.
 pub fn apply(tmpl: &ChatTemplate, inp: &ChatInputs) -> Result<Applied, minijinja::Error> {
-    let prompt = tmpl.render_ctx(&context(inp, inp.add_generation_prompt))?;
+    let prompt = match tmpl.render_ctx(&context(inp, inp.add_generation_prompt)) {
+        Ok(p) => p,
+        Err(e) => match prefix_only_render(tmpl, inp) {
+            // nothing is generated, so there is no generation prompt to parse
+            Some(prefix) => {
+                let (thinking_start, thinking_end) = thinking_marks(tmpl);
+                return Ok(Applied {
+                    prompt: prefix,
+                    generation_prompt: String::new(),
+                    format: tmpl.format,
+                    thinking_start,
+                    thinking_end,
+                });
+            }
+            None => return Err(e),
+        },
+    };
     let no_gen = tmpl.render_ctx(&context(inp, false))?;
-    let gen = if inp.add_generation_prompt { prompt.clone() } else { tmpl.render_ctx(&context(inp, true))? };
-    let p = no_gen.bytes().zip(gen.bytes()).take_while(|(a, b)| a == b).count();
+    let gen = if inp.add_generation_prompt {
+        prompt.clone()
+    } else {
+        tmpl.render_ctx(&context(inp, true))?
+    };
+    let p = no_gen
+        .bytes()
+        .zip(gen.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
     let mut p = p;
     while !gen.is_char_boundary(p) {
         p -= 1;
     }
     let generation_prompt = gen[p..].to_string();
-    let (thinking_start, thinking_end) = if tmpl.format == Format::Qwen3Coder && tmpl.supports_thinking {
-        (Some("<think>".to_string()), vec!["\n</think>".to_string(), "</think>".to_string(), "<tool_call>".to_string()])
+    let (thinking_start, thinking_end) = thinking_marks(tmpl);
+    Ok(Applied {
+        prompt,
+        generation_prompt,
+        format: tmpl.format,
+        thinking_start,
+        thinking_end,
+    })
+}
+
+fn thinking_marks(tmpl: &ChatTemplate) -> (Option<String>, Vec<String>) {
+    if tmpl.format == Format::Qwen3Coder && tmpl.supports_thinking {
+        (
+            Some("<think>".to_string()),
+            vec![
+                "\n</think>".to_string(),
+                "</think>".to_string(),
+                "<tool_call>".to_string(),
+            ],
+        )
     } else if tmpl.supports_thinking {
         (Some("<think>".to_string()), vec!["</think>".to_string()])
     } else {
         (None, vec![])
-    };
-    Ok(Applied { prompt, generation_prompt, format: tmpl.format, thinking_start, thinking_end })
+    }
 }
 
 /// Turn delimiters of ChatML templates (Qwen3.x, Ornith).
@@ -413,12 +595,18 @@ pub const IM_END: &str = "<|im_end|>";
 /// equal length, and the delimiter text sits at each offset in `prompt` too). Returns
 /// (opener offsets, turn-end offsets), sorted; None when the check fails (the caller then treats
 /// the layout as unknown and never splices).
-pub fn template_marks(tmpl: &ChatTemplate, inp: &ChatInputs, prompt: &str) -> Result<Option<(Vec<usize>, Vec<usize>)>, minijinja::Error> {
+pub fn template_marks(
+    tmpl: &ChatTemplate,
+    inp: &ChatInputs,
+    prompt: &str,
+) -> Result<Option<(Vec<usize>, Vec<usize>)>, minijinja::Error> {
     fn dirty(v: &Json) -> bool {
         match v {
             Json::String(s) => s.contains(IM_START) || s.contains(IM_END),
             Json::Array(a) => a.iter().any(dirty),
-            Json::Object(m) => m.iter().any(|(k, v)| k.contains(IM_START) || k.contains(IM_END) || dirty(v)),
+            Json::Object(m) => m
+                .iter()
+                .any(|(k, v)| k.contains(IM_START) || k.contains(IM_END) || dirty(v)),
             _ => false,
         }
     }
@@ -426,7 +614,9 @@ pub fn template_marks(tmpl: &ChatTemplate, inp: &ChatInputs, prompt: &str) -> Re
         match v {
             Json::String(s) => {
                 if s.contains(IM_START) || s.contains(IM_END) {
-                    *s = s.replace(IM_START, "<|im_xtart|>").replace(IM_END, "<|im_exd|>");
+                    *s = s
+                        .replace(IM_START, "<|im_xtart|>")
+                        .replace(IM_END, "<|im_exd|>");
                 }
             }
             Json::Array(a) => a.iter_mut().for_each(clean),
@@ -437,7 +627,11 @@ pub fn template_marks(tmpl: &ChatTemplate, inp: &ChatInputs, prompt: &str) -> Re
                     .into_iter()
                     .map(|(k, mut v)| {
                         clean(&mut v);
-                        (k.replace(IM_START, "<|im_xtart|>").replace(IM_END, "<|im_exd|>"), v)
+                        (
+                            k.replace(IM_START, "<|im_xtart|>")
+                                .replace(IM_END, "<|im_exd|>"),
+                            v,
+                        )
                     })
                     .collect();
             }
@@ -459,7 +653,9 @@ pub fn template_marks(tmpl: &ChatTemplate, inp: &ChatInputs, prompt: &str) -> Re
     };
     let find = |pat: &str| -> Option<Vec<usize>> {
         let v: Vec<usize> = san.match_indices(pat).map(|(i, _)| i).collect();
-        v.iter().all(|&i| prompt.get(i..i + pat.len()) == Some(pat)).then_some(v)
+        v.iter()
+            .all(|&i| prompt.get(i..i + pat.len()) == Some(pat))
+            .then_some(v)
     };
     match (find(IM_START), find(IM_END)) {
         (Some(s), Some(e)) => Ok(Some((s, e))),

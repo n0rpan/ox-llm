@@ -1,4 +1,4 @@
-//! R6 (wave H lane `local`): every refusal, stop and notice added for local-first use has one
+//! R6 (wave H): every refusal, stop and notice added for local-first use has one
 //! shape: line 1 `<what happened>: <reason>`, line 2 `Fix: <command or action>`. Goldens of
 //! each text; the per-feature tests check where each one appears.
 

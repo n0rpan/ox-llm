@@ -29,6 +29,7 @@ fn req(seq: usize, kind: &str, messages: Vec<WireMsg>, reply: Option<WireMsg>) -
         background: matches!(kind, "compaction" | "branch_summary" | "prefill" | "subagent"),
         snapshot_keep: kind == "prefill",
         preserve_thinking: Some(true),
+        temperature: 0.0,
         headers: Vec::new(),
         body: Vec::new(),
         reply: if kind == "prefill" { None } else { reply },

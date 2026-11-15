@@ -53,8 +53,16 @@ class StubManagerCase(unittest.TestCase):
         self.use()
 
     def tearDown(self):
-        with self.manager.mu:
-            self.manager.cleanup()
+        # Deterministic teardown: nothing may still be writing into self.root when
+        # tmp.cleanup() removes it. The manager's reaper thread and the engine's stderr
+        # pump (EngineStderrReader) both write engine-stderr.log, and an in-flight HTTP
+        # handler can too (record_engine_death / the request_end diagnostic). close()
+        # stops the reaper, runs cleanup() (which reaps the child and joins the stderr
+        # pump) and joins the reaper thread. Subclasses that run an HTTP server must stop
+        # it and join its handler threads first (ProxyCase.tearDown): addCleanup callbacks
+        # run LIFO *after* tearDown, so a server registered there would still be serving
+        # when this directory is removed.
+        self.manager.close()
         for item in reversed(self.patches):
             item.stop()
         self.tmp.cleanup()

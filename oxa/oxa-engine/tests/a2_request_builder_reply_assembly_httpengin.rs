@@ -46,6 +46,7 @@ fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hin
         max_tokens,
         thinking: false,
         preserve_thinking: true,
+        sampling: None,
         hints: h,
     }
 }
@@ -149,6 +150,36 @@ fn args_raw_is_concatenated_deltas() {
     );
 }
 
+/// A gateway can hold a name suffix while redacting a key split across deltas.
+#[test]
+fn fragmented_tool_names_are_appended_and_progress_keeps_the_full_name() {
+    let mut assembler = ReplyAssembler::new();
+    assembler
+        .chunk(
+            &serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                "index": 0, "id": "call_directory", "type": "function",
+                "function": {"name": "l", "arguments": "{\"path\":\"oxa\"}"}
+            }]}}]})
+            .to_string(),
+        )
+        .unwrap();
+    let events = assembler
+        .chunk(
+            &serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+        "index": 0, "function": {"name": "s"}
+    }]}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 1,
+        "completion_tokens": 1, "total_tokens": 2}})
+            .to_string(),
+        )
+        .unwrap();
+    let turn = assembler.finish(ThinkingLevel::Off).unwrap();
+    assert_eq!(turn.msg.tool_calls[0].name, "ls");
+    assert_eq!(turn.msg.tool_calls[0].id, "call_directory");
+    assert_eq!(turn.msg.tool_calls[0].args_raw, "{\"path\":\"oxa\"}");
+    assert!(events.iter().any(|event| matches!(event,
+        StreamEvent::ToolArgs { name: Some(name), .. } if name == "ls")));
+}
+
 /// leading/trailing whitespace survives assembly
 #[test]
 fn content_and_reasoning_untrimmed() {
@@ -209,6 +240,29 @@ fn body_prefill_max_tokens_zero() {
     let r = request(&p, &[], 0, hints("s1", ""));
     let expected = r#"{"model":"fake-model","messages":[{"role":"system","content":"SYS"}],"stream":true,"stream_options":{"include_usage":true},"temperature":0,"cache_prompt":true,"max_tokens":0,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":false}}"#;
     assert_eq!(body_of(&r), expected);
+}
+
+/// Opt-in sampling (`oxa.sampling.mode = model`): the card's keys replace the greedy `0` in place
+/// and the result is valid JSON the engine's validator accepts (numbers, top_k an integer).
+#[test]
+fn body_with_model_sampling() {
+    let p = prefix("SYS", "[]");
+    let msgs = [WireMsg::user("hi")];
+    let mut r = request(&p, &msgs, 5, hints("", ""));
+    r.sampling = Some(oxa_proto::Sampling {
+        temperature: 0.7,
+        top_p: 0.8,
+        top_k: 20,
+        min_p: 0.0,
+        presence_penalty: 1.5,
+        seed: Some(7),
+    });
+    let expected = r#"{"model":"fake-model","messages":[{"role":"system","content":"SYS"},{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true},"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0,"presence_penalty":1.5,"seed":7,"cache_prompt":true,"max_tokens":5,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":false}}"#;
+    assert_eq!(body_of(&r), expected);
+    let v: Value = serde_json::from_str(&body_of(&r)).unwrap();
+    assert_eq!(v["top_k"].as_i64(), Some(20));
+    r.sampling.as_mut().unwrap().seed = None;
+    assert!(!body_of(&r).contains("\"seed\""));
 }
 
 /// build_headers per hint combination
@@ -626,4 +680,20 @@ fn reply_assembler_prefill_comment() {
     );
     assert_eq!(asm.comment("keepalive", 1), None);
     assert_eq!(asm.comment("queuedx 3", 1), None);
+}
+
+#[test]
+fn expired_cloud_continuation_is_reported_without_retry() {
+    let body =
+        r#"{"error":{"message":"OpenAI tool continuation expired","code":"tool_continuation_expired"}}"#;
+    let response = format!("HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+    let (url, handle) = raw_server(response.into_bytes());
+    let engine = HttpEngine::new(&url, None).unwrap();
+    let p = prefix("SYS", "[]");
+    let go = [WireMsg::user("go")];
+    let r = request(&p, &go, 64, hints("s1", KEY));
+    let err = engine.chat(&r, &CancelToken::new(), &mut |_| {}).unwrap_err();
+    assert!(err.message.contains("continuation expired"), "{}", err.message);
+    let received = handle.join().unwrap();
+    assert!(received.starts_with(b"POST "));
 }

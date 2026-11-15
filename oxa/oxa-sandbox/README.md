@@ -18,7 +18,8 @@ masks are sorted by path.
 | What | Inside the sandbox | Why |
 |---|---|---|
 | `/` | read-only | the system toolchains (`/usr/bin/cargo`, `python3`, ...) |
-| `$HOME` | empty tmpfs | nothing of the home is visible unless listed below |
+| `$HOME` | empty read-only tmpfs | nothing of the home is visible unless listed below; writes outside the exposed binds fail with `Read-only file system` (or a missing-path error) rather than silently disappearing |
+| `/tmp` | writable private tmpfs, discarded after each command | scratch for cargo, git and compilers; not a place to save deliverables, even when the command succeeds. Use the workspace for persistent output. Startup and tool guidance explain this limit; bash results append a short reminder only when the command mentions `/tmp` or `TMPDIR` (case sensitive), or fails with a read-only/permission error. Commands' raw output (including hook protocols) stays unchanged. |
 | `PATH` | the user's own, filtered to absolute directories that exist (order kept), plus `/usr/local/bin:/usr/bin:/bin` when missing | `uv`, `mise` shims, `~/.cargo/bin` tools resolve as in the user's shell |
 | `PATH` entries under `$HOME` | read-only | the tools on the user's `PATH` run |
 | `~/.cargo/bin`, `~/.cargo/config.toml`, `~/.cargo/config`, `~/.rustup` | read-only | rustup proxies, toolchains, cargo config |
@@ -32,7 +33,8 @@ masks are sorted by path.
 | Toolchain variables (`CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOMODCACHE`, `NVM_DIR`, `npm_config_cache`, `UV_CACHE_DIR`, `MISE_*`, `XDG_*`, ...) | passed when set | they say where the binds above are |
 | Any variable whose name holds `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` | never passed | credentials stay outside |
 | The cwd | read-write (read-only in plan mode) | the project |
-| The cwd when it is `$HOME`, `/` or a parent of `$HOME` | read-only, unless the user settings say `oxa.sandbox.allowHomeWrite: true`; a startup warning says so | starting oxa in `~` must not hand the whole home to a model that has the network |
+| The cwd when it is `/` or a parent of `$HOME` | read-only, whatever the settings; a startup warning says so | never a sensible project root |
+| The cwd when it is `$HOME` | read-only (a startup warning says so), unless the user confirmed the interactive start there or the user settings say `oxa.sandbox.allowHomeWrite: true` (O-199): then the home root, every dot-entry, symlinks and `~/bin` stay read-only, its plain folders and files are bound read-write, and a startup notice says "workspace = your home directory" | the workspace follows where oxa starts, while nothing that runs at login or holds keys can change |
 | `.oxa`, `.agents/skills`, `.git/hooks`, `.git/config` inside a writable cwd (when they exist) | read-only | they run outside the sandbox later (MCP servers, extensions, hooks, git) |
 | The deny-list: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh`, `~/.config/hub`, `~/.config/oxc`, `~/.local/state/oxc`, the agent directory (`~/.oxa/agent`), `~/.pi/agent`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials{,.toml}`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`, `~/.password-store`, `~/.local/share/keyrings`, `~/.config/op`, `~/.config/Bitwarden`, `~/.pki`, browser profiles (`~/.mozilla`, `~/.thunderbird`, `~/.config/{google-chrome,chromium,BraveSoftware,microsoft-edge,vivaldi,opera}`) | masked after every bind: an empty read-only tmpfs over a directory, `/dev/null` over a file | keys, tokens, trust, other projects' sessions; neither readable nor writable whatever the cwd or the settings. The file tools obey the same list (`oxa-perm` `PathGuard`) |
 

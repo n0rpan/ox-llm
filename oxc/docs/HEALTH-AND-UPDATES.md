@@ -104,19 +104,23 @@ The readiness wait needs the same identity proof. Previous release dirs are neve
 Exit codes: 0 done; 1 the update failed and the previous version is back; 2 refused, nothing changed;
 3 needs attention, and the message says what to run.
 
-## Failure drills
+## Install, rollback and smoke checks
 
-The four drills from OEM-DONE §2(e) are kill -9, corrupt block, guard trip and swap cycle x3.
+The local staged-release lifecycle keeps its seal, preimage, service-identity and automatic
+rollback checks. The helper exposes the same operations plus a bounded local-model smoke chat:
 
-- **CI, model-free:** `tests/test_oem_drills.py` runs a real controller Manager against the stub backend. Run it with `python3 tools/oem_drills.py ci`.
-- **On the laptop, under 5 minutes each:** `python3 tools/oem_drills.py hw <kill9|corrupt|swap|guard|all>`. Every request is lab-origin. One receipt per drill is written under `$XDG_STATE_HOME/oxc/drills/<stamp>/`. `guard` squeezes desktop memory, so it needs `--i-understand-memory-pressure` and should run with someone watching.
+```sh
+python3 tools/oem_drills.py install ~/project/stage
+python3 tools/oem_drills.py rollback
+python3 tools/oem_drills.py smoke
+```
 
-| Drill | Fault | Self-healing asserted | Message asserted |
-|---|---|---|---|
-| kill9 | SIGKILL the engine mid-decode | `engine_died` logged; the old pid is gone; the next chat answers 200 from a new engine | 502 `backend_died` "Local backend connection closed." before the reply starts |
-| corrupt | flip one byte in (or truncate) a block of the drill's own session | the next turn answers 200 (recompute); other sessions are untouched | none needed: the answer is normal |
-| guard | bounded memory pressure until the guard stops the model | the model unloads cleanly; nothing is pending; the next chat answers 200 | `last_failure` is a plain sentence (`oxc status`) |
-| swap | ornith / qwen x3 | every chat 200; the previous engine exits; the session resumes (`cache_n > 0`) | none needed |
+The stage must already exist and pass the installer's checks. The smoke request is marked as
+lab usage, refuses remote models, and unloads a model only when it was not already loaded.
+It performs no process killing, memory-pressure injection or cache corruption.
+
+Model-free recovery and ownership regressions remain in `tests/test_controller_recovery.py`.
+Run those and the smoke tests with the normal isolated lab test runner.
 
 ## Error messages
 

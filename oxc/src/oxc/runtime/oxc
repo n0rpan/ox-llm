@@ -1118,6 +1118,7 @@ def main(argv=None):
             return 1
         return module.main(words[1:])
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="version", version="oxc 0.2.0")
     parser.add_argument('action', nargs='?', default='panel',
         choices=('panel', 'status', 'ledger', 'storage', 'chat', 'code', 'plan', 'images', 'load', 'unload', 'moe', 'ornith', 'flash',
                  'clear-cache', 'storage-delete', 'harness-prepare', 'harness-forget', 'flash-cache', 'cache', 'mode', 'share',

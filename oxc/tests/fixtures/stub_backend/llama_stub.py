@@ -6,7 +6,7 @@ model id X; `--no-bind` keeps running without ever listening (another process ma
 port instead); `--bad-gzip` answers GET / with a corrupt `Content-Encoding: gzip` body. POST
 /v1/chat/completions streams one SSE chunk and [DONE]; `--die-mid-stream` exits (code 9) right
 after the first chunk instead (an engine crash while a client is reading); `--die-before-response`
-exits (code 9) as soon as a chat request arrives, before any response byte (tools/oem_drills.py CI).
+exits (code 9) as soon as a chat request arrives, before any response byte (controller recovery tests).
 """
 import argparse
 import json

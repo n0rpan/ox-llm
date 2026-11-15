@@ -15,8 +15,12 @@ RUST_MOE = {'backend_kind': oxe_runtime.KIND, 'oxe_args': ['--model', 'x']}
 RUST_FLASH = {'backend_kind': oxe_runtime.KIND, 'oxe_flash': {}, 'oxe_args': ['--engine', 'flash']}
 CLASSIC_FLASH = {'backend_kind': bigmoe_runtime.KIND}
 CLASSIC = {'backend_kind': 'llama', 'extra_args': ['--spec-type', 'draft-mtp']}
-NO_HINTS = {'prefill_only': False, 'snapshot_hint': 0, 'turn_kind': False, 'hint_clear': False}
-HINTS = {'prefill_only': True, 'snapshot_hint': 2, 'turn_kind': True, 'hint_clear': True}
+NO_HINTS = {'prefill_only': False, 'snapshot_hint': 0, 'turn_kind': False, 'hint_clear': False,
+            'remote': False, 'remote_provider': None, 'echo': False, 'cache_hints': False,
+            'cancel': True, 'prefill': False}
+HINTS = {'prefill_only': True, 'snapshot_hint': 2, 'turn_kind': True, 'hint_clear': True,
+         'remote': False, 'remote_provider': None, 'echo': True, 'cache_hints': True,
+         'cancel': True, 'prefill': True}
 
 
 class Capabilities(unittest.TestCase):
@@ -30,7 +34,7 @@ class Capabilities(unittest.TestCase):
 
     def test_rust_moe(self):
         self.assertEqual(self.caps(RUST_MOE), {**HINTS, 'thinking': 'toggle', 'preserve_thinking': True, 'mtp': None,
-                                               'max_context': 131072, 'vision': False, 'slots': 1, 'park': 'ram+disk',
+                                               'max_context': 131072, 'context_window': 131072, 'vision': False, 'slots': 1, 'park': 'ram+disk',
                                                'sampling': None})  # v0.2.0: the engine reports it once it runs
 
     def test_rust_flash(self):
@@ -38,12 +42,13 @@ class Capabilities(unittest.TestCase):
                      ['--engine', 'flash', '--flash-mtp-depth', '1'], ['--engine', 'flash', '--flash-mtp-depth', '0']):
             got = self.caps({**RUST_FLASH, 'oxe_args': args}, FLAT)
             self.assertEqual(got, {**HINTS, 'thinking': 'toggle', 'preserve_thinking': False, 'mtp': False,
-                                   'max_context': 16384, 'vision': False, 'slots': 1, 'park': 'disk', 'sampling': None}, args)
+                                   'max_context': 16384, 'context_window': 16384, 'vision': False, 'slots': 1, 'park': 'disk',
+                                   'sampling': None}, args)
 
     def test_classic_flash_claims_no_hint(self):
         self.assertEqual(self.caps(CLASSIC_FLASH, FLAT), {**NO_HINTS, 'thinking': 'toggle', 'preserve_thinking': False,
                                                           'mtp': False, 'max_context': 16384, 'vision': False,
-                                                          'slots': 1, 'park': 'none', 'sampling': []})
+                                                          'slots': 1, 'park': 'none', 'context_window': 16384, 'sampling': []})
 
     def test_classic_and_unknown_claim_no_hint(self):
         classic = self.caps(CLASSIC, FLAT)

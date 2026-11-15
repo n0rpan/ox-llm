@@ -450,9 +450,10 @@ fn empty_resources_give_only_preamble_identity_and_cwd() {
         section(&p, "identity"),
         Some(prompt::identity_section(None).as_str())
     );
+    // No `<tools>` section: the chat template renders the tool list from the tool JSON.
     assert_eq!(
         p.sections[0].1,
-        prompt::preamble(
+        prompt::preamble_with(
             &[
                 ("read", "Read the contents of a file."),
                 ("bash", "Execute a bash command in the working directory."),
@@ -460,6 +461,9 @@ fn empty_resources_give_only_preamble_identity_and_cwd() {
                 ("write", "Create or overwrite files.")
             ],
             &[],
+            true,
+            false,
+            false,
         )
     );
 }

@@ -13,7 +13,7 @@ use oxa_compact::prompt;
 use oxa_compact::{decide, file_lists, first_kept_index, summary_request_with_target, When};
 use oxa_proto::{
     codes, AgentEvent, AssistantTurn, CompactReason, CompactionResult, Entry, EntryBody, EventSink, Finish,
-    HookPoint, HookReply, Level, OxaError, Profile, Role, TurnKind, Ui, Usage, Value, WireMsg,
+    HookPoint, HookReply, Level, OxaError, Role, TurnKind, Ui, Usage, Value, WireMsg,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -24,8 +24,8 @@ use sha2::{Digest, Sha256};
 /// * The pending idle summary (V020-OPTIMIZE #7, `oxa.compaction.idleSummary`): a summary made
 ///   ahead in idle time and not applied yet; see [`maybe_compact`].
 /// * The last idle-summary attempt (its `MemoKey` and wire length): one attempt per wire.
-/// * The cancelled summaries of the current compaction need (OXA-LOCAL-FIRST R4, profile
-///   `local`): the second cancel in a row builds the mechanical summary.
+/// * The cancelled summaries of the current compaction need (OXA-LOCAL-FIRST R4): the second
+///   cancel in a row builds the mechanical summary.
 #[derive(Debug, Default, Clone)]
 pub struct CompactMemo {
     pending: Option<Pending>,
@@ -108,8 +108,8 @@ struct Applied {
     from_hook: bool,
     usage: Option<Usage>,
     head: Vec<WireMsg>,
-    /// R4 (`local`): why the model summary could not be made when the mechanical summary
-    /// replaced it; `None` otherwise.
+    /// R4: why the model summary could not be made when the mechanical summary replaced it;
+    /// `None` otherwise.
     summary_error: Option<String>,
 }
 
@@ -117,10 +117,8 @@ struct Applied {
 /// `No` (or auto-compaction is off and the answer is `AfterReply`), run [`compact_now`] with
 /// reason `Threshold` (`AfterReply`) or `Overflow` (`MidRun`). Returns whether it compacted.
 ///
-/// A failed `AfterReply` summary is reported by `CompactionEnd { error_message }` and returns
-/// `Ok(false)`: the reply is already stored and the next prompt still works. A failed `MidRun`
-/// summary is returned, since the next request would overflow. Under profile `local` a failed
-/// summary is replaced by the mechanical one instead (R4, see [`compact_now`]).
+/// A failed summary (after a reply or mid-run) is replaced by the mechanical record (R4, see
+/// [`compact_now`]), so the wire is compacted and the session continues.
 ///
 /// Idle summary (V020-OPTIMIZE #7, `oxa.compaction.idleSummary`): at the end of a run whose
 /// context is above 80% of `soft` and not above it, the summary request a threshold compaction
@@ -178,15 +176,16 @@ pub fn maybe_compact(
 /// `compact_now` on overflow, so wrapping it would allow unbounded recursion); it has pi's
 /// summarization retry instead (`retry::summary_with_retry`, no overflow handling).
 ///
-/// Returns `Err` only when the summary failed; cancellation and "nothing to summarise" are `Ok`.
+/// Returns `Err` only when a compaction step other than the summary fails; a failed summary is
+/// not a failure (R4), and cancellation and "nothing to summarise" are `Ok`.
 ///
-/// R4 (profile `local` only): when the summary request fails, its reply is cut or empty, or it
+/// R4: when the summary request fails, its reply is cut or empty, or it
 /// is cancelled by the user's input a second time in a row for the same compaction need, the
 /// summary is built without the model (`oxa_compact::mechanical_summary`: the user messages,
 /// the file lists, the count of tool results left out) and the compaction completes as usual,
 /// with `details.mechanical: true` and one warning notice. The hook is `SessionCompact` (the
 /// wire was compacted) with `mechanical: true` and `summaryError` (the failure's text) in its
-/// payload; `SessionCompactFailed` does not fire. Under `pi` a failure is as above.
+/// payload; `SessionCompactFailed` does not fire.
 pub fn compact_now(
     st: &mut SessionState,
     instructions: Option<&str>,
@@ -206,15 +205,15 @@ pub fn compact_now(
 /// (the user waits): no background priority, no idle prefill (the prompt's own request follows
 /// over the same head). A valid pending idle summary is applied with no request (see
 /// [`usable_pending`]). Nothing is started when auto-compaction is off or the setting is off.
-/// A failed summary is reported as `CompactionEnd { error_message }` (under `local` the
-/// mechanical summary applies instead) and the prompt continues uncompacted. Returns whether it
-/// compacted.
+/// A failed summary is replaced by the mechanical record (R4), so it still compacts; a
+/// non-summary error is reported as `CompactionEnd { error_message }` and the prompt continues
+/// uncompacted. Returns whether it compacted.
 pub(crate) fn compact_at_turn_start(
     st: &mut SessionState,
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> bool {
-    if !st.auto_compaction || !st.settings.turn_start_compaction(st.stats.profile) {
+    if !st.auto_compaction || !st.settings.turn_start_compaction() {
         return false;
     }
     if context_estimate(st) <= st.compact.soft {
@@ -239,9 +238,9 @@ pub(crate) enum MidRun {
     NotRun,
     /// The wire was compacted.
     Compacted,
-    /// Attempted but the wire is unchanged: a hook cancelled, the user aborted, or the summary
-    /// failed (reported by `CompactionEnd { error_message }`; under `local` the mechanical
-    /// summary applies instead, so this is only a hook cancel or an abort there).
+    /// Attempted but the wire is unchanged: a hook cancelled, the user aborted, or a
+    /// non-summary step failed (reported by `CompactionEnd { error_message }`). A failed
+    /// summary becomes the mechanical record, so it is not `Unchanged`.
     Unchanged,
 }
 
@@ -267,7 +266,7 @@ pub(crate) enum MidRun {
 ///
 /// The hard-limit path ([`maybe_compact`]) runs after this one as the backstop, unchanged.
 pub(crate) fn compact_mid_run(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> MidRun {
-    if !st.auto_compaction || !st.settings.mid_run_compaction(st.stats.profile) {
+    if !st.auto_compaction || !st.settings.mid_run_compaction() {
         return MidRun::NotRun;
     }
     // Without usage (a rebase since the last reply) the estimate is 0: no compaction until a
@@ -476,7 +475,8 @@ pub(crate) enum Counted {
     /// `Engine::count_prompt`: the engine's own render, what a request would report.
     Exact,
     /// No exact count from the engine: [`prefix_tokens`] + [`messages_tokens`] (message content
-    /// only, no template framing: slightly low).
+    /// only, no template framing). This can over-count on cloud models, whose tokenizer differs
+    /// from the local one used for the estimate.
     Estimate,
 }
 
@@ -498,6 +498,7 @@ pub(crate) fn prompt_tokens(st: &SessionState, wire: &[WireMsg]) -> (u32, Counte
         max_tokens: st.info.max_output,
         thinking: st.thinking.enabled(),
         preserve_thinking: st.info.caps.preserve_thinking != Some(false),
+        sampling: None,
         hints,
     };
     match st.engine.count_prompt(&req) {
@@ -838,13 +839,20 @@ fn run_compaction(st: &mut SessionState, spec: &Spec, sink: &mut dyn EventSink, 
             }
             observe(st, HookPoint::SessionCompact, &payload, sink, ui);
             st.stats.compactions += 1;
-            st.stats.context_tokens = st.transcript.context();
-            let count = counter(st);
-            let estimated = a
-                .head
-                .iter()
-                .map(|m| count(m.content.as_deref().unwrap_or("")))
-                .fold(0u32, u32::saturating_add);
+            // Rebase clears transcript usage. Count the full request (including the
+            // frozen system/tools prefix), not just the surviving message content.
+            // The local estimate over-counts (about 2.5x on a small cloud session), so an
+            // estimated count never exceeds what the context was before compaction. But after a
+            // rebase without usage `tokens_before` is 0 (navigate::rebase_to_leaf), so capping
+            // then would force the estimate to 0 and CTX would show 0; keep the honest nonzero
+            // estimate in that case.
+            let (counted, how) = prompt_tokens(st, &a.head);
+            let estimated = if how == Counted::Exact || a.tokens_before == 0 {
+                counted
+            } else {
+                counted.min(a.tokens_before)
+            };
+            st.stats.context_tokens = estimated;
             sink.emit(&AgentEvent::CompactionEnd {
                 reason,
                 result: Some(CompactionResult {
@@ -1004,23 +1012,29 @@ fn compact_inner(
                 };
                 match made {
                     Ok((text, usage)) => (format!("{text}{lists}"), details, false, Some(usage)),
-                    // R4: under `local` a summary that could not be made is replaced by
-                    // the mechanical one, so the session never blocks on it.
-                    Err(e) if st.stats.profile == Profile::Local => {
+                    // R4: a summary that could not be made is replaced by the mechanical
+                    // one, so the session never blocks on it.
+                    Err(e) => {
+                        // Self-feedback: say how much memory this cost (the assistant and
+                        // tool turns are what the record leaves out) and that it is degraded.
+                        let dropped = st.transcript.wire()[..cut]
+                            .iter()
+                            .filter(|m| matches!(m.role, Role::Assistant | Role::Tool))
+                            .count();
                         sink.emit(&AgentEvent::Notice {
-                                level: Level::Warning,
-                                text: format!(
-                                    "compaction: no summary could be made ({}); an automatic record of the user's messages and files is used instead",
-                                    e.message
-                                ),
-                            });
+                            level: Level::Warning,
+                            text: format!(
+                                "context compacted without a model summary: {dropped} assistant/tool turns were dropped from memory ({}); an automatic record of the user's messages and files is used instead",
+                                e.message
+                            ),
+                        });
+                        details["droppedTurns"] = json!(dropped);
                         details["mechanical"] = json!(true);
                         summary_error = Some(e.message.clone());
                         let summary =
                             oxa_compact::mechanical_summary(&st.transcript.wire()[..cut], &read, &modified);
                         (summary, details, false, None)
                     }
-                    Err(e) => return Err(e),
                 }
             }
         }
@@ -1139,10 +1153,10 @@ fn summarised<'a>(st: &'a SessionState, first_kept: &str) -> Vec<&'a Entry> {
     branch.into_iter().take_while(|e| e.id != first_kept).collect()
 }
 
-/// R4 (profile `local`): count a summary cancelled by the user's input (not an abort) for the
-/// current compaction need (the same [`MemoKey`]); `true` on the second one in a row.
+/// R4: count a summary cancelled by the user's input (not an abort) for the current compaction
+/// need (the same [`MemoKey`]); `true` on the second one in a row.
 fn cancelled_twice(st: &mut SessionState) -> bool {
-    if st.stats.profile != Profile::Local || st.shared.cancel.is_cancelled() {
+    if st.shared.cancel.is_cancelled() {
         return false;
     }
     let key = memo_key(st);
@@ -1168,7 +1182,7 @@ fn summary_opts(
     summary_max: u32,
 ) -> RequestOpts {
     let wire_len = st.transcript.wire().len();
-    let words = prompt::summary_target_words(st.settings.summary_target(st.stats.profile));
+    let words = prompt::summary_target_words(st.settings.summary_target());
     let mut messages = summary_request_with_target(&st.transcript, instructions, words);
     let extra = messages.split_off(wire_len);
     RequestOpts {
@@ -1216,7 +1230,7 @@ fn summary_turn(
 /// the summary request, an append to the same wire, leaves in the engine) and is followed by
 /// the idle prefill of the unchanged wire, so the engine's state ends at the wire again.
 fn idle_summary(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
-    if !st.auto_compaction || !st.settings.idle_summary(st.stats.profile) {
+    if !st.auto_compaction || !st.settings.idle_summary() {
         return;
     }
     let (context, soft) = (st.transcript.context(), st.compact.soft);

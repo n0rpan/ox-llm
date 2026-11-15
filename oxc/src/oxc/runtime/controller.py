@@ -62,7 +62,7 @@ from urllib.parse import parse_qs, urlsplit
 if __package__:
     from .prefix_plan import make_plan
     from .prefix_store import PrefixStore
-    from . import bigmoe_runtime, classic_beta, memory_policy, model_catalog, profile_policy, oxe_runtime, engine_ledger, storage_view
+    from . import cloud, cloud_prices, bigmoe_runtime, classic_beta, memory_policy, model_catalog, profile_policy, oxe_runtime, engine_ledger, storage_view
     from .engine_diagnostics import EngineLogWriter, EngineStderrReader, swap_guard_mode
     from .client_disconnect import ClientDisconnect
     from . import harness_compat, openai_api, request_ledger, image_slot, image_npu, cache_turn, state_cache, lan_share
@@ -104,6 +104,8 @@ else:
     import classic_beta
     import memory_policy
     import model_catalog
+    import cloud
+    import cloud_prices
     import profile_policy
     import oxe_runtime
     import engine_ledger
@@ -165,6 +167,11 @@ def log_effective_engines(manager, stream=None):
     except (OSError, ValueError, AttributeError, TypeError):
         print(f'oxc: no readable runtime config at {CONFIG}', file=stream, flush=True)
         return
+    if value.get('cloud_only') is True:  # #83: no local engine, nothing to name
+        try: count = len(manager.models())
+        except Exception: count = 0
+        print(f'oxc: cloud-only mode, no local engine, {count} remote models', file=stream, flush=True)
+        return
     for alias in dict.fromkeys(aliases):
         try:
             summary = engine_summary(manager.config(alias))
@@ -172,6 +179,17 @@ def log_effective_engines(manager, stream=None):
             print(f"oxc: {alias}: engine {summary['engine']}{note}", file=stream, flush=True)
         except Exception as error:
             print(f'oxc: {alias}: profile not usable: {error}', file=stream, flush=True)
+
+
+def cloud_price_refresh_allowed():
+    if cloud.offline():
+        return False
+    try:
+        value = json.loads(CONFIG.read_text())
+    except (OSError, ValueError):
+        return False
+    return cloud.enabled(value) and any(item['provider'] == 'openrouter'
+                                        for item in cloud.entries(value).values())
 
 
 def main():
@@ -184,12 +202,14 @@ def main():
     server = Server(('127.0.0.1', PROXY_PORT), Handler)
     server.manager = manager
     share = start_lan_share(manager)
+    prices = cloud_prices.Refresher(cloud_price_refresh_allowed)
     # Raising out of the serve loop guarantees child cleanup on service stop.
     def stop(*_): raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, stop)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally:
+        prices.close()
         share.close()
         server.server_close()
         manager.close()

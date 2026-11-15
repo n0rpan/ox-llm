@@ -1,26 +1,24 @@
 //! B4: the frozen prefix builder (W3). Owner: task B4. Signatures below are frozen; bodies are yours.
 // ported from pi packages/coding-agent/src/core/system-prompt.ts (text comes from prompt.rs)
-use oxa_proto::{Exposure, FrozenPrefix, Profile, Source, ToolSpec};
+use oxa_proto::{Exposure, FrozenPrefix, Source, ToolSpec};
 use oxa_resources::Resources;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
 use crate::prompt::{self, McpReach, SkillReader};
 
-/// What an epoch's prefix depends on besides the inputs of [`build_prefix`]: the profile (T-#6:
-/// `local` leaves `<tools>` out of the preamble) and `oxa.diet.output` (V020-OPTIMIZE #1, #10),
-/// resolved by the caller from the settings. `child` (L4-SUBVERIFY): this process is a subagent
-/// child; it adds [`crate::prompt::RULE_CHILD_VERIFY`] under `local` with the diet on. `Default` =
-/// `pi`, diet off, not a child: [`build_prefix`]'s bytes.
+/// What an epoch's prefix depends on besides the inputs of [`build_prefix`]: `oxa.diet.output`
+/// (V020-OPTIMIZE #1, #10), resolved by the caller from the settings, and `child`
+/// (L4-SUBVERIFY): this process is a subagent child; it adds
+/// [`crate::prompt::RULE_CHILD_VERIFY`] with the diet on. `Default` = diet off, not a child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PrefixOpts {
-    pub profile: Profile,
     pub diet_output: bool,
     pub child: bool,
 }
 
-/// Build the prefix of an epoch under the default options (`pi`, diet off). Pure: same inputs =
-/// same bytes = same sha. See [`build_prefix_with`] for the sections.
+/// Build the prefix of an epoch under the default options (diet off, not a child). Pure: same
+/// inputs = same bytes = same sha. See [`build_prefix_with`] for the sections.
 pub fn build_prefix(
     cwd: &Path,
     r: &Resources,
@@ -60,8 +58,8 @@ pub fn build_prefix_with(
                 .map(|t| (t.name.as_str(), first_line(&t.description)))
                 .collect();
             let pairs: Vec<(&str, &str)> = snippets.iter().map(|(n, s)| (*n, s.as_str())).collect();
-            let local = opts.profile == Profile::Local;
-            prompt::preamble_with(&pairs, &[], local, opts.diet_output, local, opts.child)
+            let omit_tools = true;
+            prompt::preamble_with(&pairs, &[], omit_tools, opts.diet_output, opts.child)
         }
     };
     push(&mut sections, "preamble", preamble);

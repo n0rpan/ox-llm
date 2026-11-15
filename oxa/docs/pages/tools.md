@@ -1,21 +1,18 @@
 # Tools
 
-The model acts through tools. oxa has seven built-in tools, all on by default under `local`, and a few optional ones: `subagent`, `web_search`, `codemode`, `tool_search` and `call_tool`. Extensions and MCP servers add more. Every tool result is capped before it reaches the model.
+The model acts through tools. oxa has seven built-in tools, all on by default, and a few optional ones: `subagent`, `web_search`, `codemode`, `tool_search` and `call_tool`. Extensions and MCP servers add more. Every tool result is capped before it reaches the model.
 
-The defaults and formats below assume `local` is selected, as in the
-[quickstart](quickstart.md). Without that selection this version defaults to `pi`,
-including no implicit bash timeout, a longer first read and fixed thinking;
-see [tools and context handling](profile.md).
+See [tools and context handling](tools-context.md) for the defaults and formats.
 
 ## The built-in tools
 
 | Tool | Access | What it does |
 |---|---|---|
-| `read` | read | reads a file. Parameters `path`, `offset` (first line, 1-based), `limit` (lines). A call returns at most 2000 lines or 16 KB; continue with `offset` for the rest. A call with neither `offset` nor `limit` returns a shorter first page; see [profile.md](profile.md) |
-| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` the limit is 120 seconds; `oxa.bash.defaultTimeout` sets it. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
-| `edit` | write | replaces exact text in one file. Takes one `oldText` / `newText` pair per call. See [profile.md](profile.md) |
+| `read` | read | reads a file. Parameters `path`, `offset` (first line, 1-based), `limit` (lines). A call returns at most 2000 lines or 16 KB; continue with `offset` for the rest. A call with neither `offset` nor `limit` returns a shorter first page; see [tools-context.md](tools-context.md) |
+| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it stops after 120 seconds; `oxa.bash.defaultTimeout` sets it. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
+| `edit` | write | replaces exact text in one file. Takes one `oldText` / `newText` pair per call; the array form is still accepted. See [tools-context.md](tools-context.md) |
 | `write` | write | writes a file, creating it and its parent directories, and overwrites an existing file |
-| `grep` | read | searches file contents for `pattern`. Optional `path`, `glob`, `ignoreCase`, `literal`, `context` and `limit` (default 100 matches). Respects `.gitignore`; lines are cut at 500 characters. When matches exceed `limit`, the answer is the total and one count per file instead of the lines; see [profile.md](profile.md) |
+| `grep` | read | searches file contents for `pattern`. Optional `path`, `glob`, `ignoreCase`, `literal`, `context` and `limit` (default 100 matches). Respects `.gitignore`; lines are cut at 500 characters. When matches exceed `limit`, the answer is the total and one count per file instead of the lines; see [tools-context.md](tools-context.md) |
 | `find` | read | finds files by glob `pattern` under `path`, up to `limit` results (default 1000). Respects `.gitignore` |
 | `ls` | read | lists a directory, sorted, directories with a trailing `/`, dotfiles included. Up to `limit` entries (default 500) |
 
@@ -25,7 +22,7 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 
 ### Output limits
 
-- Any tool output sent to the model is capped at `oxa.toolOutputCap` bytes (16384 by default). Output above the cap is cut and says so. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (three bytes per token, never below 2048 bytes), unless `oxa.toolOutputCap` is set. Only the first page of a `read` (no `offset` or `limit`) is at most 8 KiB; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at the cap itself, with a note inside the cap that says how to go on. See [profile.md](profile.md).
+- Any tool output sent to the model is capped at `oxa.toolOutputCap` bytes (16384 by default). Output above the cap is cut and says so. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (three bytes per token, never below 2048 bytes), unless `oxa.toolOutputCap` is set. Only the first page of a `read` (no `offset` or `limit`) is at most 8 KiB; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at the cap itself, with a note inside the cap that says how to go on. See [tools-context.md](tools-context.md).
 - `read`, `grep`, `find` and `ls` apply their own line or match limits first.
 - For bash, the full output is kept in a file, and the model is told where it is.
 
@@ -64,6 +61,29 @@ Some models write a tool call as text instead of a structured call, or write a m
 At most two repairs can follow each other. A valid tool call resets the count. The third malformed reply ends the run; the raw reply stays visible, with a stop message. Each repair shows a warning notice and adds to the footer count `repairs N`.
 
 `oxa.toolRepair: false` turns repairs off, and a malformed reply then ends the run at once.
+
+## Repeated calls
+
+A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. The second note is the last: the next identical call ends the run with a stop message. A re-run after an edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
+
+`oxa.toolRepeatGuard: false` turns this off.
+
+## Thinking on tool follow-ups
+
+Under `oxa.thinking.policy: auto` the first reply after your prompt thinks. The replies after tool results follow `oxa.thinking.toolFollowups`:
+
+- `off`: they never think. Fast, but a model that does not think between steps can loop.
+- `on`: they always think. Steady, but slow on long runs of routine steps such as paging through a large file.
+- `auto` (the default): they think only while the run needs it. Thinking turns on for the next reply after:
+  - a failed call: a command that exits non-zero, an edit that did not apply, any tool error, or (when your prompt asks to fix, debug or implement something) a test or build command whose output reports a failure;
+  - a repeat note ([Repeated calls](#repeated-calls));
+  - `oxa.thinking.escalation.fruitlessCalls` calls (default 6) without an edit or write since the prompt. Reading a new file or range counts as progress; re-reads, repeated calls and commands count.
+
+  When your prompt asks to fix, debug or implement something, thinking then stays on until an edit or write succeeds or a test or build command passes. Only a test runner or build that the `bash` call actually runs counts (`cargo test`, `pytest`, `go test`, `npm test`, `make`, `tsc`, ...), and a test run passes only when it exits 0 and prints its pass summary; a search or read that merely mentions a test command (`grep -rn "cargo test"`, `ls tests/`) never does. For other prompts (questions, reviews, reading) it goes back off after the next step whose calls all succeed and are new, so a read-heavy task stays fast. A new prompt starts from off.
+
+  The footer shows `thinking: auto→on` while it is on, and the transcript shows a note with the reason each time it turns on.
+
+The thinking level `off` (Shift+Tab, `/thinking`) always wins: nothing turns thinking on. The policy `fixed` sends the level on every request. Switching thinking between requests changes no byte already sent, so the prompt cache is kept.
 
 ## subagent
 
@@ -111,7 +131,7 @@ A key added or removed during a session takes effect at the next `/reload` or ne
 
 ### Use
 
-The model passes `query` (up to 600 characters). Optional parameters are `count` (1 to 20 results), `freshness` (`pd`, `pw`, `pm`, `py`, or a date range `YYYY-MM-DDtoYYYY-MM-DD`), `country` (two letters) and `search_lang` (for example `en`).
+The model passes `query` (up to 600 characters). Optional parameters are `count` (1 to 20 results), `freshness` (`pd`, `pw`, `pm`, `py`, or a date range `YYYY-MM-DDtoYYYY-MM-DD`; the words `day`, `24h`, `today`, `week`, `month` and `year` are accepted too), `country` (two letters) and `search_lang` (for example `en`).
 
 oxa uses Brave's LLM Context endpoint first. Its output size is `oxa.webSearch.maxTokens` (2048 by default, from 1024 to 32768). If the key's plan does not include that endpoint, oxa switches to Brave's web search endpoint for the rest of the process and says so once.
 

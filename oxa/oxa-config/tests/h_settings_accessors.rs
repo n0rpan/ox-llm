@@ -104,3 +104,25 @@ fn consumed_codemode_keys_are_known() {
     );
     assert!(d.is_empty(), "{d:?}");
 }
+
+#[test]
+fn project_declares_done_reads_the_file_whatever_the_trust() {
+    let env = oxa_fake::TestEnv::new();
+    let dirs = oxa_config::Dirs::under(env.root());
+    let work = env.work();
+    assert!(!Settings::project_declares_done(&dirs, &work), "no file");
+    env.write("work/.oxa/settings.json", r#"{"done": []}"#);
+    assert!(!Settings::project_declares_done(&dirs, &work), "empty list");
+    env.write("work/.oxa/settings.json", r#"{"done": ["  "]}"#);
+    assert!(!Settings::project_declares_done(&dirs, &work), "blank entries");
+    env.write("work/.oxa/settings.json", "not json");
+    assert!(!Settings::project_declares_done(&dirs, &work), "invalid file");
+    env.write("work/.oxa/settings.json", r#"{"done": ["cargo fmt --check"]}"#);
+    assert!(Settings::project_declares_done(&dirs, &work));
+    // The trust gate itself is unchanged: an untrusted load does not merge it.
+    assert!(Settings::load(&dirs, &work, false).done_commands().is_empty());
+    assert_eq!(
+        Settings::load(&dirs, &work, true).done_commands(),
+        vec!["cargo fmt --check".to_string()]
+    );
+}

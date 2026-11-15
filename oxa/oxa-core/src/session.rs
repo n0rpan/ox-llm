@@ -35,6 +35,8 @@ pub struct Deps {
     pub mode: Option<Mode>,
     /// `--session-id`.
     pub session_id: Option<String>,
+    /// The background-job registry the `bash` tool shares with this session (issue #127 (b)).
+    pub jobs: Arc<oxa_tools::JobRegistry>,
 }
 
 /// How to open.
@@ -57,6 +59,9 @@ pub struct State {
     pub session_file: Option<PathBuf>,
     pub session_name: Option<String>,
     pub model: String,
+    /// Wave D D4b: the model runs at a cloud provider through the controller; `None` = local.
+    pub model_remote: bool,
+    pub model_provider: Option<&'static str>,
     pub thinking: ThinkingLevel,
     pub mode: Mode,
     pub is_streaming: bool,
@@ -70,8 +75,6 @@ pub struct State {
     pub leaf: String,
     pub prefix_sha256: [u8; 32],
     pub n_ctx: u32,
-    /// `oxa.profile` of the epoch in force.
-    pub profile: oxa_proto::Profile,
 }
 
 /// The RPC `get_session_stats` data plus cache accounting.
@@ -98,10 +101,13 @@ pub struct Stats {
     /// F11: the token position of the last checkpoint the engine reported kept for an H4
     /// request (`timings.snap_pos`) of this process; `None` = none reported yet.
     pub last_snap_pos: Option<u32>,
-    /// `oxa.profile` of the epoch in force (read once per epoch, stored with it).
-    pub profile: oxa_proto::Profile,
     /// B6: the engine sent a reply without `cached_tokens` (the notice was shown).
     pub cached_unreported: bool,
+    /// The last round of `done` checks had a failure (no later round passed). Print mode reads
+    /// it at the end for its exit code.
+    pub done_failed: bool,
+    /// Adaptive thinking on tool follow-ups (`think.rs`) of the current run. Never persisted.
+    pub escalation: crate::think::Escalation,
 }
 
 /// A running session.
@@ -177,6 +183,7 @@ impl Session {
             thinking,
             mode,
             session_id,
+            jobs,
         } = d;
         // H: `defaultModel` (pi settings.md "Startup model ID") when no model was chosen and the
         // engine serves it; otherwise the engine's own model, as before.
@@ -208,12 +215,7 @@ impl Session {
             .as_deref()
             .and_then(Mode::parse)
             .unwrap_or(Mode::Workspace);
-        let compact = policy_for_model(
-            &info,
-            &settings,
-            model.as_deref().unwrap_or(&info.model),
-            settings.profile(),
-        );
+        let compact = policy_for_model(&info, &settings, model.as_deref().unwrap_or(&info.model));
         let auto_compaction = compact.enabled;
         let auto_retry = settings.retry().enabled;
         let shared = Arc::new(Shared::new(settings.steering_mode(), settings.follow_up_mode()));
@@ -263,6 +265,7 @@ impl Session {
             host_rx: None,
             host_deferred: Vec::new(),
             compact_memo: Default::default(),
+            jobs,
         };
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
@@ -399,14 +402,22 @@ impl Session {
     pub fn fork(&mut self, entry: &str) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
         let mut ui = HeadlessUi::default();
-        crate::fork_at(&mut self.st, entry, &mut ui)
+        let r = crate::fork_at(&mut self.st, entry, &mut ui);
+        if r.is_ok() {
+            self.st.jobs.reset();
+        }
+        r
     }
 
     /// `/clone`: copy the active branch into a new session and switch to it.
     pub fn clone_session(&mut self) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
         let mut ui = HeadlessUi::default();
-        crate::clone_current(&mut self.st, &mut ui)
+        let r = crate::clone_current(&mut self.st, &mut ui);
+        if r.is_ok() {
+            self.st.jobs.reset();
+        }
+        r
     }
 
     /// Switch this object to another session (`/resume`, `/new` with `Open::New`). Fires
@@ -422,6 +433,7 @@ impl Session {
         let target = payload["targetSessionFile"].as_str().map(str::to_string);
         let reason = payload["reason"].as_str().unwrap_or("new");
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
+        self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
         self.preloaded = false;
         Ok(())
@@ -602,6 +614,8 @@ impl Session {
             session_file,
             session_name: session_name(st),
             model: st.model.clone(),
+            model_remote: st.info.caps.remote,
+            model_provider: st.info.caps.remote_provider,
             thinking: st.thinking,
             mode: st.mode,
             is_streaming: st.shared.busy.load(Ordering::SeqCst),
@@ -615,7 +629,6 @@ impl Session {
             leaf: st.tree.leaf().to_string(),
             prefix_sha256: st.prefix.sha256,
             n_ctx: st.info.n_ctx,
-            profile: st.stats.profile,
         }
     }
 
@@ -646,6 +659,7 @@ impl Session {
         );
         self.st.host_rx = None;
         self.st.host_deferred.clear();
+        self.st.jobs.kill_all();
     }
 
     /// Fire `SessionShutdown`, shut hook sets down. Called once before exit.
@@ -696,7 +710,7 @@ impl Session {
         crate::exec::set_tool_prefill_after_for_tests(after);
     }
 
-    /// V020-OPTIMIZE #13 (`oxa.prefill.paste`, on under profile `local`): while the user is
+    /// V020-OPTIMIZE #13 (`oxa.prefill.paste`): while the user is
     /// still composing, prefill the user message that `prompt(text, parts)` would append now,
     /// in one background zero-token request over `wire + [that message]` (the draft prefill
     /// of `compaction.rs`). The message is built by the functions the
@@ -868,7 +882,10 @@ impl Session {
             )?;
         }
         let images = crate::fire::images_json(&parts);
-        let wire = user_message(&text, &parts);
+        let (wire, note) = crate::envnote::add_note(st, user_message(&text, &parts));
+        // The note's provenance is stored with the entry (refill and display strip exactly it).
+        let mut parts = parts;
+        parts.extend(note.map(Part::EnvNote));
         st.stats.user_messages += 1;
         persist(st, EntryBody::Msg { wire, parts }, sink)?;
 
@@ -1151,9 +1168,12 @@ fn start_new(
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
     let sref = st.store.create(&st.cwd, session_id, None)?;
+    st.store.acquire(&sref)?;
+    st.store.commit_lock();
     st.sref = sref;
     st.tree = Tree::new(Vec::new());
     st.transcript = Transcript::default();
+    st.stats.last_tok_s = 0.0;
     st.stats.user_messages = 0;
     st.stats.assistant_messages = 0;
     st.stats.tool_calls = 0;
@@ -1186,6 +1206,27 @@ fn restore(
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
     let header = st.store.header(&sref)?;
+    // One writer per session file: a session open in another oxa is refused before anything
+    // of this one is read. The lock is staged; `restore_locked` commits it at the moment the
+    // state adopts the target (after validation and load). A failure before that keeps the
+    // session we are in locked; a failure after it leaves the target current AND locked.
+    st.store.acquire(&sref)?;
+    let r = restore_locked(st, sref, header, cli, start, sink, ui);
+    if r.is_err() {
+        st.store.abort_lock(); // a no-op once committed
+    }
+    r
+}
+
+fn restore_locked(
+    st: &mut SessionState,
+    sref: SessionRef,
+    header: oxa_session::SessionHeader,
+    cli: Option<&Cli>,
+    start: &crate::fire::SessionStart,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<(), OxaError> {
     if !header.cwd.is_dir() {
         return Err(OxaError::new(
             codes::NOT_FOUND,
@@ -1199,6 +1240,10 @@ fn restore(
         let refs: Vec<&Entry> = branch.iter().collect();
         crate::replay_prefix(&refs)
     };
+    // The state adopts the target here, so the target's lock becomes the held one now: every
+    // later step (open_epoch, close_interrupted) may fail, and the state must not then point
+    // at a session this process does not hold.
+    st.store.commit_lock();
     st.transcript = Transcript::project(&branch);
     st.tree = tree;
     st.sref = sref;
@@ -1206,14 +1251,6 @@ fn restore(
     attach_hosts(st, sink, ui);
     apply_branch_counts(&mut st.stats, &branch);
     st.stats.context_tokens = st.transcript.context();
-    // The profile this session keeps: the branch's when its prefix is replayed (a session keeps
-    // its epoch's profile until a new epoch opens), else the settings' (the epoch opened below).
-    let profile = if replayed.is_some() {
-        crate::profile_of_branch(&branch)
-    } else {
-        st.settings.profile()
-    };
-
     if let Some(cli) = cli {
         let mut all = cli.builtins.clone();
         for h in &st.hooks {
@@ -1228,16 +1265,16 @@ fn restore(
         st.active = active;
     }
 
+    // An old pi session replays its stored prefix bytes; the profile it was opened under is
+    // gone, so the session takes the single default from here on. No migration.
     match replayed {
         Some(prefix) => {
             st.prefix = prefix;
-            st.stats.profile = profile;
             crate::tune::refresh(st);
-            // R5 follows the branch's profile too (the policy of `open` used the settings').
             let enabled = st.compact.enabled;
             st.compact = CompactPolicy {
                 enabled,
-                ..policy_for_model(&st.info, &st.settings, &st.model, profile)
+                ..policy_for_model(&st.info, &st.settings, &st.model)
             };
         }
         None => {
@@ -1386,7 +1423,7 @@ fn user_message(text: &str, parts: &[Part]) -> WireMsg {
 /// now, built by the prompt's own functions; `None` when the draft is not prefilled (see
 /// [`Session::prefill_draft`]).
 fn draft_message(st: &mut SessionState, text: &str, parts: &[Part]) -> Option<WireMsg> {
-    if !st.settings.prefill_paste(st.stats.profile)
+    if !st.settings.prefill_paste()
         || !st.info.prefill_only
         || !engine_on_this_machine(&st.info.base_url)
         || st.settings.string("cacheWarming").as_deref() == Some("off")
@@ -1415,7 +1452,8 @@ fn draft_message(st: &mut SessionState, text: &str, parts: &[Part]) -> Option<Wi
     let text = prompt_text(st, text.to_string()).ok()?;
     let msg = user_message(&text, parts);
     let len = msg.content.as_deref().map_or(0, str::len);
-    (len >= Session::DRAFT_PREFILL_MIN_BYTES).then_some(msg)
+    // The draft carries the note the prompt would get, so the prefilled bytes match the send.
+    (len >= Session::DRAFT_PREFILL_MIN_BYTES).then(|| crate::envnote::with_note(st, msg))
 }
 
 /// V020-OPTIMIZE #13, privacy: a draft the user never submitted is sent only to an engine on
@@ -1438,6 +1476,8 @@ fn wire_text(text: &str, parts: &[Part]) -> String {
     for part in parts {
         match part {
             Part::Text(t) => lines.push(t.clone()),
+            // Provenance of a stored message; never among a prompt's parts.
+            Part::EnvNote(_) => {}
             Part::Image { path, w, h, .. } => {
                 let name = path
                     .file_name()
@@ -1490,7 +1530,7 @@ pub fn prefill_estimate_secs(tokens: u32) -> u32 {
 fn target_policy(st: &SessionState, m: &str) -> Option<(EngineInfo, CompactPolicy)> {
     match st.engine.info(Some(m)) {
         Ok(info) if info.limits_for == m => {
-            let policy = policy_for_model(&info, &st.settings, m, st.settings.profile());
+            let policy = policy_for_model(&info, &st.settings, m);
             Some((info, policy))
         }
         _ => None,
@@ -1538,6 +1578,22 @@ pub(crate) fn plan_switch(st: &SessionState, m: &str) -> SwitchPlan {
     }
 }
 
+/// Offline mode (`OXA_OFFLINE`, `--offline`, `oxa.offline`) is a hard error on the switch path:
+/// a remote model is refused whether the engine client refuses to describe it (`offline`
+/// error) or reports it as remote. Nothing is persisted and the model stays as it was.
+fn refuse_offline_remote(st: &SessionState, m: &str) -> Result<(), OxaError> {
+    if !oxa_proto::offline() {
+        return Ok(());
+    }
+    match st.engine.info(Some(m)) {
+        Err(e) if e.code == codes::OFFLINE => Err(e),
+        Ok(info) if info.limits_for == m && info.caps.remote => {
+            Err(oxa_proto::offline_error(&format!("the cloud model {m}")))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The one door for a model switch (`Session::set_model*`, `HostAction::SetModel`, RPC).
 ///
 /// 1. [`plan_switch`]. Over the target's cap:
@@ -1562,6 +1618,7 @@ pub(crate) fn switch_model(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
+    refuse_offline_remote(st, m)?;
     let plan = plan_switch(st, m);
     let mut cold = plan.cold_tokens;
     if plan.over_cap {
@@ -1628,6 +1685,8 @@ pub(crate) fn switch_model(
     }
     persist(st, EntryBody::ModelChange(m.to_string()), sink)?;
     let previous = std::mem::replace(&mut st.model, m.to_string());
+    // The speed belongs to the model that produced it.
+    st.stats.last_tok_s = 0.0;
     sink.emit(&AgentEvent::ModelSelect {
         model: m.to_string(),
         previous: Some(previous.clone()),
@@ -1665,7 +1724,7 @@ fn flush_queue(st: &SessionState, sink: &mut dyn EventSink) {
 /// context mode (D5 `compact_at`); else the policy's default.
 #[cfg(test)]
 pub(crate) fn policy_for(info: &EngineInfo, settings: &Settings) -> CompactPolicy {
-    policy_for_model(info, settings, &info.limits_for, oxa_proto::Profile::Pi)
+    policy_for_model(info, settings, &info.limits_for)
 }
 
 /// [`policy_for`] for the session model `model`, with its `compaction.modelOverrides` entry
@@ -1674,15 +1733,9 @@ pub(crate) fn policy_for(info: &EngineInfo, settings: &Settings) -> CompactPolic
 /// Entries of other models do nothing here; a `model` that names another model than `model`
 /// is ignored (see [`override_summary_model`]).
 ///
-/// `profile` is the epoch's (R5): under `local` on a small context the kept tail is
-/// [`crate::tune::SMALL_KEEP_TOKENS`] unless `compaction.keepRecentTokens` is set in a layer or
-/// by the model's override.
-pub(crate) fn policy_for_model(
-    info: &EngineInfo,
-    settings: &Settings,
-    model: &str,
-    profile: oxa_proto::Profile,
-) -> CompactPolicy {
+/// R5: on a small context the kept tail is [`crate::tune::SMALL_KEEP_TOKENS`] unless
+/// `compaction.keepRecentTokens` is set in a layer or by the model's override.
+pub(crate) fn policy_for_model(info: &EngineInfo, settings: &Settings, model: &str) -> CompactPolicy {
     let comp = settings.compaction();
     let entry = settings
         .get("compaction.modelOverrides")
@@ -1698,7 +1751,6 @@ pub(crate) fn policy_for_model(
     let keep_set = settings.get("compaction.keepRecentTokens").is_some()
         || entry.is_some_and(|e| e.get("keepRecentTokens").is_some());
     let keep = crate::tune::keep_tokens(
-        profile,
         info.n_ctx,
         keep_set,
         num("keepRecentTokens", comp.keep_recent_tokens),
@@ -1761,6 +1813,8 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             };
             st.info = EngineInfo {
                 prefill_only,
+                thinking: fresh.thinking,
+                images: fresh.images,
                 ..fresh
             };
         }
@@ -1780,6 +1834,8 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
                     hint_clear: old.caps.hint_clear && fresh.caps.hint_clear,
                     ..fresh.caps
                 },
+                thinking: fresh.thinking,
+                images: fresh.images,
                 ..fresh
             };
             if merged != st.info {
@@ -1794,13 +1850,19 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             }
             st.info = merged;
         }
+        Err(e) if e.code == codes::OFFLINE => {
+            // The engine client refused to describe a remote model: remember it, so a request
+            // is refused (see `exec::request`) instead of going out on the stale local limits.
+            st.info.caps.remote = true;
+            notice(sink, Level::Warning, e.to_string());
+        }
         Err(e) => notice(
             sink,
             Level::Warning,
             format!("could not re-read the engine limits ({e}); keeping the previous ones"),
         ),
     }
-    st.compact = policy_for_model(&st.info, &st.settings, &st.model, st.settings.profile());
+    st.compact = policy_for_model(&st.info, &st.settings, &st.model);
     if prev_enabled.is_some_and(|p| p != st.compact.enabled) {
         st.auto_compaction = st.compact.enabled;
     }
@@ -1848,7 +1910,26 @@ mod tests {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: Arc::new(oxa_tools::JobRegistry::new()),
         }
+    }
+
+    /// The speed belongs to the model that produced it: a switch drops it for every later status.
+    #[test]
+    fn model_switch_resets_last_tok_s() {
+        let env = oxa_fake::TestEnv::new();
+        let mut s = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).expect("open");
+        s.st.stats.last_tok_s = 54.4;
+        let other = if s.st.model == "other-model" {
+            "x-model"
+        } else {
+            "other-model"
+        };
+        let mut sink = VecSink::default();
+        let _ = s.set_model(other, &mut sink);
+        assert_eq!(s.st.model, other, "the switch must have happened");
+        assert_eq!(s.stats().last_tok_s, 0.0);
+        assert_eq!(s.stats().last_tok_s, 0.0, "and it stays cleared");
     }
 
     /// Messages queued for the next turn are appended, in order, before the prompt's own message.
@@ -1867,7 +1948,20 @@ mod tests {
             .iter()
             .filter_map(|m| m.content.clone())
             .collect();
-        assert_eq!(texts[..2], ["queued earlier".to_string(), "now".to_string()]);
+        assert_eq!(texts[0], "queued earlier");
+        // The prompt may carry the default environment note. Compare its typed text using
+        // the persisted provenance, while still checking the wire ordering above.
+        let parts = s
+            .inner()
+            .tree
+            .entries()
+            .iter()
+            .find_map(|entry| match &entry.body {
+                EntryBody::Msg { wire, parts } if wire.content.as_deref() == Some(&texts[1]) => Some(parts),
+                _ => None,
+            })
+            .expect("stored prompt");
+        assert_eq!(crate::envnote::strip_note(&texts[1], parts), "now");
         assert!(s.st.next_turn.is_empty());
     }
 }

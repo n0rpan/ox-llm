@@ -301,7 +301,7 @@ fn oklch_to_rgb(l: f64, chroma: f64, hue_deg: f64) -> (u8, u8, u8) {
 // ----------------------------------------------------------------------------
 
 /// The xterm 256-colour palette entry `n` as RGB.
-fn indexed_rgb(n: u8) -> (u8, u8, u8) {
+pub(crate) fn indexed_rgb(n: u8) -> (u8, u8, u8) {
     const BASE16: [(u8, u8, u8); 16] = [
         (0, 0, 0),
         (205, 0, 0),

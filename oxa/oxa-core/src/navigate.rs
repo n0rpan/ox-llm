@@ -7,8 +7,8 @@ use crate::SessionState;
 use oxa_compact::prompt::{branch_summary_user_message, BRANCH_SUMMARY_PREAMBLE};
 use oxa_compact::{branch_entries, branch_summary_request, file_lists};
 use oxa_proto::{
-    codes, rebase_why, AgentEvent, Entry, EntryBody, EventSink, HookPoint, HookReply, Level, OxaError, Role,
-    TurnKind, Ui, Value, WireMsg,
+    codes, rebase_why, AgentEvent, Entry, EntryBody, EventSink, HookPoint, HookReply, Level, OxaError, Part,
+    Role, TurnKind, Ui, Value, WireMsg,
 };
 use oxa_session::{fork_session, SessionRef, Transcript, Tree};
 use serde_json::json;
@@ -42,10 +42,9 @@ pub fn navigate(
     }
     let target_entry = st.tree.get(target).cloned().ok_or_else(|| not_found(target))?;
     let (new_leaf, editor) = match &target_entry.body {
-        EntryBody::Msg { wire, .. } if wire.role == Role::User => (
-            target_entry.parent.clone(),
-            Some(wire.content.clone().unwrap_or_default()),
-        ),
+        EntryBody::Msg { wire, parts } if wire.role == Role::User => {
+            (target_entry.parent.clone(), Some(user_text(wire, parts)))
+        }
         EntryBody::CustomMessage { content, .. } => (target_entry.parent.clone(), Some(content.clone())),
         _ => (Some(target.to_string()), None),
     };
@@ -261,7 +260,7 @@ pub fn fork_from(
         ForkPosition::At => (entry.to_string(), None),
         ForkPosition::Before => {
             let text = match &chosen.body {
-                EntryBody::Msg { wire, .. } if wire.role == Role::User => user_text(wire),
+                EntryBody::Msg { wire, parts } if wire.role == Role::User => user_text(wire, parts),
                 _ => {
                     return Err(OxaError::new(codes::INVALID, "Invalid entry ID for forking")
                         .with_hint("fork from a user message"))
@@ -297,8 +296,10 @@ pub fn fork_from(
 }
 
 /// The text of a user message as pi's `extractUserMessageText` gives it (the wire content).
-fn user_text(wire: &WireMsg) -> String {
-    wire.content.clone().unwrap_or_default()
+fn user_text(wire: &WireMsg, parts: &[Part]) -> String {
+    // The editor gets back what was typed, not the environment note oxa appended (only the
+    // note recorded with the entry is dropped).
+    crate::envnote::strip_note(wire.content.as_deref().unwrap_or_default(), parts).to_string()
 }
 
 /// `/clone`: the active branch copied into a new session (pi: a fork at the leaf, position `at`;
@@ -383,13 +384,25 @@ fn branch_of_leaf(st: &SessionState) -> Vec<Entry> {
 /// rebuilt from that branch; a changed wire is one `leaf_move` rebase, an identical one keeps
 /// the transcript (and its cache expectation) as it is.
 fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<(), OxaError> {
-    let entries = st.store.load(dst)?;
-    let mut tree = Tree::new(entries);
-    if !tree.set_leaf(leaf) {
-        return Err(not_found(leaf));
-    }
-    let branch: Vec<Entry> = tree.branch(leaf).into_iter().cloned().collect();
-    let head = Transcript::project(&branch).wire().to_vec();
+    st.store.acquire(dst)?;
+    let loaded = (|| {
+        let entries = st.store.load(dst)?;
+        let mut tree = Tree::new(entries);
+        if !tree.set_leaf(leaf) {
+            return Err(not_found(leaf));
+        }
+        let branch: Vec<Entry> = tree.branch(leaf).into_iter().cloned().collect();
+        Ok((tree, Transcript::project(&branch).wire().to_vec()))
+    })();
+    let (tree, head) = match loaded {
+        Ok(value) => value,
+        Err(error) => {
+            st.store.abort_lock();
+            return Err(error);
+        }
+    };
+    // Adopt the destination and its writer lock together, releasing the old session.
+    st.store.commit_lock();
     if head.as_slice() != st.transcript.wire() {
         st.transcript.rebase(head, rebase_why::LEAF_MOVE);
     }

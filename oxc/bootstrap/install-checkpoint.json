@@ -8,7 +8,7 @@
     "docs/BOOTSTRAP-INSTALL.md": "6d960978791de96c7fb1b88e9b87ba86bca15b38c00b23c4bcf7a2318a09bce0"
   },
   "source_dependencies": {
-    "src/oxc/bootstrap.py": "718032cf5b52210a997b2605bfd83f15bd9534c46a774396c66ac10dd91f79a0",
+    "src/oxc/bootstrap.py": "e5f9b5245a5a8d54586bd74ff02efe8fc5dd12e3f291f1265e2f4e058829c230",
     "src/oxc/bootstrap_transfer.py": "a58dbdd2db77d64c9e4ba3fc1967fdba225aec8c8a1d134f444e74c679d2dec4"
   },
   "focused_tests_passed": 11,

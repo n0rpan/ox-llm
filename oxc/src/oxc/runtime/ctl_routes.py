@@ -34,6 +34,7 @@ class ControlRoutes:
     def control_route(self, path, api_value):
         """Answer a control route (`/_local/*`), a model row or a model-list/health poll. Returns
         PASS when the request is none of these and goes on to the proxy."""
+        remote = getattr(self, 'share_client', None) is not None  # a LAN-share guest
         if path == '/_local/status':
             return self.json_reply(200, self.manager.status())
         if path == '/_local/flash/cache' and self.command in ('GET', 'HEAD'):
@@ -41,7 +42,7 @@ class ControlRoutes:
             except (Unavailable, OSError, ValueError, KeyError, TypeError, AttributeError):
                 return self.json_reply(503, {'error': 'Flash cache settings are unavailable.'})
         if path == '/_local/models' and self.command in ('GET', 'HEAD'):
-            try: return self.json_reply(200, self.manager.catalog())
+            try: return self.json_reply(200, self.manager.catalog(remote=remote))
             except (Unavailable, OSError, ValueError, KeyError, TypeError):
                 return self.json_reply(503, {'error': 'Model setup is not finished yet. Run `oxc status` to follow it.'})
         if path == '/_local/storage' and self.command in ('GET', 'HEAD'):
@@ -237,7 +238,7 @@ class ControlRoutes:
         if self.command in ('GET', 'HEAD') and path.startswith(('/v1/models/', '/models/')):
             wanted = path.split('/models/', 1)[1]
             try:
-                rows = self.manager.models()
+                rows = self.manager.models(remote=remote)
                 target = openai_api.resolve_model(wanted, api_value)
             except (Unavailable, OSError, ValueError, KeyError, TypeError):
                 return self.json_reply(503, {'error': 'Model setup is not finished yet. Run `oxc status` to follow it.'})
@@ -251,11 +252,13 @@ class ControlRoutes:
             return self.json_reply(404, {'error': 'Unknown local control route.'})
         # Polling these routes must never repeatedly reload an idle model.
         if self.command in ('GET', 'HEAD') and path in ('/health', '/v1/models', '/models'):
+            if path != '/health' and self.manager.cloud_only():
+                return self.json_reply(200, {'object': 'list', 'data': self.manager.models(remote=remote)})
             if path != '/health':
                 try:
                     if self.manager.config().get('profiles'):
                         # Qualification is independent of the backend lifecycle lock.
-                        models = self.manager.models()
+                        models = self.manager.models(remote=remote)
                         if models:
                             return self.json_reply(200, {'object': 'list', 'data': models})
                         return self.json_reply(503, {'error': 'Model setup is not finished yet. Run `oxc status` to follow it.'})

@@ -8,10 +8,11 @@ which runs the three proxy stages in order:
 import time
 if __package__:
     from .ctl_proxy_prep import ANSWERED, FLASH_CHAT_HTML, HOP_HEADERS, ProxyRequest, _BadFlashChat
-    from . import classic_beta, ctl_proxy_ledger, ctl_proxy_prep, ctl_proxy_stream, ctl_queue, ctl_replay, oxe_runtime
+    from . import classic_beta, ctl_cloud, ctl_proxy_ledger, ctl_proxy_prep, ctl_proxy_stream, ctl_queue, ctl_replay, oxe_runtime
 else:
     from ctl_proxy_prep import ANSWERED, FLASH_CHAT_HTML, HOP_HEADERS, ProxyRequest, _BadFlashChat
     import classic_beta
+    import ctl_cloud
     import ctl_proxy_ledger
     import ctl_proxy_prep
     import ctl_proxy_stream
@@ -49,6 +50,8 @@ class ProxyRoutes:
                 return
             request.prep_s = time.monotonic() - started  # v0.2.0 #8: body read + shaping
             ctl_proxy_ledger.open_entry(self, request)
+            if request.cloud_entry is not None:
+                return ctl_cloud.forward(self, request)
             if ctl_replay.try_attach(self, request) is ANSWERED:
                 return
             while True:

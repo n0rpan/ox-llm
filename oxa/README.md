@@ -12,15 +12,11 @@ Build from the `oxa/` directory of the checkout:
 $ cargo build --release --locked -p oxa-cli
 $ export PATH="$PWD/target/release:$PATH"
 $ export OXA_ENGINE_URL=http://127.0.0.1:8092
-$ export OXA_PROFILE=local
 $ cd ~/project
 $ oxa
 ```
 
-The tools/context defaults described here require `OXA_PROFILE=local` in this version.
-For launches outside this shell, set `oxa.profile` to `local` in
-`~/.oxa/agent/settings.json`. Without explicit selection this version uses `pi`;
-see [tools and context handling](docs/pages/profile.md).
+See [tools and context handling](docs/pages/tools-context.md) for the defaults.
 
 `OXA_ENGINE_URL` defaults to the controller on `http://127.0.0.1:8092`. Without a running engine oxa stops with an error that names the address. For one answer from a script, use print mode:
 
@@ -35,7 +31,7 @@ The documentation is in [docs/](docs/README.md):
 - [quickstart](docs/pages/quickstart.md): build, connect, first prompt, file locations
 - [usage](docs/pages/usage.md): the interface, keys and slash commands
 - [cli](docs/pages/cli.md) and [settings](docs/pages/settings.md): every flag, variable and key
-- [sessions](docs/pages/sessions.md), [compaction](docs/pages/compaction.md) and [tools and context handling](docs/pages/profile.md)
+- [sessions](docs/pages/sessions.md), [compaction](docs/pages/compaction.md) and [tools and context](docs/pages/tools-context.md)
 - [tools](docs/pages/tools.md), [skills](docs/pages/skills.md), [extensions](docs/pages/extensions.md) and [mcp](docs/pages/mcp.md)
 - [security](docs/pages/security.md) and [SECURITY.md](SECURITY.md): permission modes, the sandbox, network and offline mode, and how to report a vulnerability
 - [rpc](docs/pages/rpc.md): print and JSON output, and the RPC protocol
@@ -72,7 +68,7 @@ Twenty product crates and two test crates. The product crates have no async runt
 ## Files that steer the work
 
 - `WAVES.toml`: the task manifest, with the files each task owns and its acceptance tests. `ci/check_manifest.py` checks it against the tree.
-- `PARITY.md`: one row per documented behaviour of the earlier agent, with a verdict (P: the same behaviour, A: an addition or adaptation in oxa, O: omitted) and the test that checks it.
+- `PARITY.md`: oxa’s behavior regression contracts, retaining historical row IDs and pi provenance (P: inherited behavior; A: adapted behavior), with the tests that check them.
 - `docs/fake-script.md`: the script format of the fake engine.
 - [Hosted checks](../.github/workflows/checks.yml) build and test the products. `ci/check_net_surface.py` checks where the code connects to the network.
 
@@ -95,7 +91,6 @@ The tests that need `bwrap` are skipped with a message when it is missing, unles
 
 - `!cmd` in the interface and stdio MCP servers run with your rights and outside the bash sandbox. In offline mode they run through `bubblewrap` without network, and they are not otherwise limited.
 - The package caches that the sandbox leaves writable are shared with your own builds.
-- Two oxa processes can write to one session file; oxa does not lock session files.
 - oxa does not update itself. Install a new build to upgrade.
 
 ## Licence

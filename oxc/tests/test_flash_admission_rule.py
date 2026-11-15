@@ -1,15 +1,15 @@
 """Flash admission rule: cache GiB + 5.87 GiB (1 GiB floor) or the measured peak + floor, whichever is larger.
 Synthetic configs only; never starts an engine, loads weights or reads ~/.config."""
 import copy
-import importlib.util
+import sys
 from pathlib import Path
 import unittest
 
 from oxc.runtime import bigmoe_runtime, oxe_runtime, profile_policy
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('stage_flash_oxe_production', ROOT / 'tools/stage_flash_oxe_production.py')
-stage_tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(stage_tool)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import flash_profile_fixture as stage_tool  # noqa: E402
 
 GIB = 1024**3
 ALIAS = stage_tool.ALIAS

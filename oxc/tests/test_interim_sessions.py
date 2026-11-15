@@ -180,7 +180,7 @@ class RealUseVerdictTests(unittest.TestCase):
                 self.st('r2', 'read', 't1-large-read', path=T, offset=151), self.en('r2', 'read', 't1-large-read', text='y\n' * 150),
                 self.st('b1', 'bash', 't2-bug', command='cd engine && cargo test -p gguf --offline'),
                 self.en('b1', 'bash', 't2-bug', text='running 11 tests\ntest result: ok. 11 passed; 0 failed', exit_code=0),
-                self.st('b2', 'bash', 't3-unittest', command='cd lab && ./tools/run_lab_tests.sh discover -s tests'),
+                self.st('b2', 'bash', 't3-unittest', command='cd oxc && ./tools/run_lab_tests.sh discover -s tests'),
                 self.en('b2', 'bash', 't3-unittest', text='...\nRan 12 tests in 2.4s\n\nOK\n', exit_code=0),
                 self.st('s1', 'subagent', 't4-subagent'), self.en('s1', 'subagent', 't4-subagent', text='list')]
         rows = [{'chat': True, 'status': 200, 'usage_seen': True, 'session_hdr': 'm', 't': 100.0 + 10 * i, 'dur_s': 9.0} for i in range(6)]

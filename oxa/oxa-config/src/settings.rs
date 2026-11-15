@@ -80,6 +80,16 @@ impl Settings {
             &project_src,
         )
     }
+    /// Whether the project's own settings file declares a non-empty `done` list. Reads the file
+    /// whatever the trust (it only looks at that key and never merges it), so the caller can
+    /// say that the checks were skipped for an untrusted project.
+    pub fn project_declares_done(dirs: &Dirs, cwd: &Path) -> bool {
+        let layer = read_layer(&dirs.project_settings_file(cwd), &mut Vec::new());
+        layer
+            .get("done")
+            .and_then(Value::as_array)
+            .is_some_and(|l| l.iter().any(|c| c.as_str().is_some_and(|c| !c.trim().is_empty())))
+    }
     /// Build from already-parsed values (tests, SDK).
     pub fn from_values(user: Value, project: Value) -> Settings {
         build(user, project, Vec::new(), "user settings", "project settings")
@@ -201,6 +211,13 @@ impl Settings {
         self.string("shellPath")
             .filter(|s| !s.is_empty())
             .map(|s| resolve_user_path(&s, home, Path::new("/")))
+    }
+    /// `done`: shell commands oxa runs itself before it reports completion; empty = off.
+    pub fn done_commands(&self) -> Vec<String> {
+        self.list("done")
+            .into_iter()
+            .filter(|c| !c.trim().is_empty())
+            .collect()
     }
     /// H: `shellCommandPrefix`; `None` when unset or empty.
     pub fn shell_command_prefix(&self) -> Option<String> {

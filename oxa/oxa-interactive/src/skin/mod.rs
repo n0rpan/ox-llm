@@ -14,11 +14,17 @@
 use crate::Skin;
 use oxa_tui::{truncate_to_width, visible_width, Theme};
 
+mod arcade;
+mod batch;
 mod chrome;
 mod panels;
+mod pixel;
 
+pub use arcade::*;
+pub use batch::*;
 pub use chrome::*;
 pub use panels::*;
+pub use pixel::*;
 
 /// The glyphs of the skin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,14 +134,10 @@ pub fn glyphs(skin: Skin) -> &'static Glyphs {
 }
 
 /// The skin of a session: the `ui.skin` setting (`"pi"`, `"oxa"`, anything else = `"auto"`),
-/// where `auto` is OXA's look under the `local` profile and pi's look under the `pi` profile.
-/// `utf8 == false` (a locale without UTF-8) turns `Oxa` into `OxaAscii`.
-pub fn resolve_skin(setting: Option<&str>, profile_local: bool, utf8: bool) -> Skin {
-    let oxa = match setting.map(str::trim) {
-        Some("pi") => false,
-        Some("oxa") => true,
-        _ => profile_local,
-    };
+/// where `auto` is OXA's look. `utf8 == false` (a locale without UTF-8) turns `Oxa` into
+/// `OxaAscii`.
+pub fn resolve_skin(setting: Option<&str>, utf8: bool) -> Skin {
+    let oxa = !matches!(setting.map(str::trim), Some("pi"));
     match (oxa, utf8) {
         (false, _) => Skin::Pi,
         (true, true) => Skin::Oxa,
@@ -273,17 +275,28 @@ pub fn left_right(left: &str, right: &str, width: usize) -> String {
     }
 }
 
+/// Float `popup` over `frame` so that it ends right above row `base` (the editor's first
+/// row): the rows it covers are replaced, nothing else moves and the frame keeps its height.
+/// A popup taller than the room above `base` loses its top rows.
+pub fn float_above(frame: &mut [String], base: usize, popup: &[String]) {
+    let base = base.min(frame.len());
+    let shown = popup.len().min(base);
+    let (first, skip) = (base - shown, popup.len() - shown);
+    for (row, line) in frame[first..base].iter_mut().zip(&popup[skip..]) {
+        row.clone_from(line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn skin_follows_setting_then_profile() {
-        assert_eq!(resolve_skin(None, false, true), Skin::Pi);
-        assert_eq!(resolve_skin(None, true, true), Skin::Oxa);
-        assert_eq!(resolve_skin(Some("auto"), true, false), Skin::OxaAscii);
-        assert_eq!(resolve_skin(Some("pi"), true, true), Skin::Pi);
-        assert_eq!(resolve_skin(Some("oxa"), false, true), Skin::Oxa);
+    fn skin_defaults_to_oxa_and_the_setting_wins() {
+        assert_eq!(resolve_skin(None, true), Skin::Oxa);
+        assert_eq!(resolve_skin(Some("auto"), false), Skin::OxaAscii);
+        assert_eq!(resolve_skin(Some("pi"), true), Skin::Pi);
+        assert_eq!(resolve_skin(Some("oxa"), false), Skin::OxaAscii);
     }
 
     #[test]
@@ -336,6 +349,18 @@ mod tests {
             assert_eq!(sprite_frame(sprite, 0), sprite_frame(sprite, SPRITE_FRAME_MS - 1));
             assert_eq!(sprite_frame(sprite, u64::MAX).chars().count(), SPRITE_CELLS);
         }
+    }
+
+    #[test]
+    fn a_floating_popup_covers_rows_and_moves_none() {
+        let mut frame: Vec<String> = (0..6).map(|i| format!("row{i}")).collect();
+        let popup = vec!["A".to_string(), "B".to_string()];
+        float_above(&mut frame, 4, &popup);
+        assert_eq!(frame, ["row0", "row1", "A", "B", "row4", "row5"]);
+        float_above(&mut frame, 1, &popup);
+        assert_eq!(frame, ["B", "row1", "A", "B", "row4", "row5"]);
+        float_above(&mut frame, 99, &[]);
+        assert_eq!(frame.len(), 6);
     }
 
     #[test]

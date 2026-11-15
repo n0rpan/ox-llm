@@ -91,6 +91,7 @@ const SCHEMA: &[KeyDef] = &[
         Kind::StringList,
         "[\"read\",\"bash\",\"edit\",\"write\",\"grep\",\"find\",\"ls\"]",
     ),
+    key("done", Kind::StringList, "[]"),
     key(
         "doubleEscapeAction",
         Kind::Enum(&["tree", "fork", "none"]),
@@ -135,52 +136,71 @@ const SCHEMA: &[KeyDef] = &[
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
-    // F5: seconds; unset = none under profile `pi`, 120 under `local`; 0 = none.
+    // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
-    // V020-OPTIMIZE #7: unset = off under profile `pi`, on under `local`.
+    // V020-OPTIMIZE #7: unset = on.
     key("oxa.compaction.idleSummary", Kind::Bool, "null"),
-    // L5 mid-run: unset = off under profile `pi`, on under `local`.
+    // L5 mid-run: unset = on.
     key("oxa.compaction.midRun", Kind::Bool, "null"),
     key("oxa.compaction.softTokens", Kind::Number, "null"),
-    // V020-OPTIMIZE #7: soft length target of a summary in tokens; unset = none under `pi`,
-    // 700 under `local`; 0 = none.
+    // V020-OPTIMIZE #7: soft length target of a summary in tokens; unset = 700; 0 = none.
     key("oxa.compaction.summaryTarget", Kind::Number, "null"),
-    // L5: unset = off under profile `pi`, on under `local`.
+    // L5: unset = on.
     key("oxa.compaction.turnStart", Kind::Bool, "null"),
-    // V020-OPTIMIZE #1 / #2: unset = off under profile `pi`, on under `local`.
+    // V020-OPTIMIZE #1 / #2: unset = on.
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    // The per-prompt environment note (date, time, runtime facts): unset = on.
+    key("oxa.envNote", Kind::Bool, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
         "\"workspace\"",
     ),
     key("oxa.offline", Kind::Bool, "false"),
-    // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = off under
-    // profile `pi`, on under `local`.
+    // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
-    // OXA-LOCAL-FIRST sec. 6; the default is `Profile::DEFAULT` (a test keeps them equal).
-    key("oxa.profile", Kind::Enum(&["pi", "local"]), "\"pi\""),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).
+    // `greedy` = W6 `temperature: 0` (MTP on); `model` = the model card's sampling (oxa-core
+    // `sampling.rs`). The seed is sent only with `model`.
+    key(
+        "oxa.sampling.mode",
+        Kind::Enum(&["greedy", "model"]),
+        "\"greedy\"",
+    ),
+    key("oxa.sampling.seed", Kind::Number, "null"),
     key("oxa.sandbox.allowHomeWrite", Kind::Bool, "false"),
     key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
+    // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
+    key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
-    // T5: unset = `fixed` under profile `pi`, `auto` under `local`.
+    // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
+    // before thinking turns on; 0 = never on that ground.
+    key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
+    // T5: unset = `auto`.
     key("oxa.thinking.policy", Kind::Enum(&["fixed", "auto"]), "null"),
+    // Thinking on tool follow-ups under policy `auto` (oxa-core `think.rs`).
+    key(
+        "oxa.thinking.toolFollowups",
+        Kind::Enum(&["auto", "on", "off"]),
+        "\"auto\"",
+    ),
     key("oxa.toolOutputCap", Kind::Number, "16384"),
     key("oxa.toolRepair", Kind::Bool, "true"),
+    // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
+    key("oxa.toolRepeatGuard", Kind::Bool, "true"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
     key("oxa.webSearch.maxTokens", Kind::Number, "2048"),
@@ -236,6 +256,17 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["regular", "fullscreen"]),
         "\"fullscreen\"",
     ),
+    key(
+        "ui.animation",
+        Kind::Enum(&["arcade", "minimal", "off"]),
+        "\"arcade\"",
+    ),
+    key("ui.animationGraphics", Kind::Enum(&["auto", "off"]), "\"auto\""),
+    key(
+        "ui.animationScene",
+        Kind::Enum(&["graphics", "stack", "stars", "charge"]),
+        "null",
+    ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa"]), "\"auto\""),
     verdict_o("warnings.anthropicExtraUsage", Kind::Bool, "true"),
@@ -244,7 +275,7 @@ const SCHEMA: &[KeyDef] = &[
 
 /// Every key of pi's settings.md plus oxa's `oxa.*` keys (`oxa.toolOutputCap`,
 /// `oxa.compaction.softTokens`, `oxa.mode`, `oxa.subagent.*`, O-152's `oxa.bootPreload`,
-/// `oxa.builtinSkills`, `oxa.reportIssue.repo`; `oxa.profile`, `oxa.thinking.policy`; `ui.skin`), sorted by key.
+/// `oxa.builtinSkills`, `oxa.reportIssue.repo`, `oxa.thinking.policy`; `ui.skin`), sorted by key.
 pub fn schema() -> &'static [KeyDef] {
     SCHEMA
 }

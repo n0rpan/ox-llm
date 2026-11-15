@@ -11,6 +11,10 @@ license = "MIT"
 license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "third_party/*"]
 readme = "README.md"
 
+[project.optional-dependencies]
+# D6: the native Anthropic Messages upstream uses the official SDK at request time only.
+cloud = ["anthropic==0.125.0"]
+
 [project.scripts]
 oxc = "oxc.__main__:main"
 

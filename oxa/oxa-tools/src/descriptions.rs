@@ -35,8 +35,8 @@ pub struct ToolText {
 pub mod limits {
     /// `read`: default page size in lines (pi `DEFAULT_MAX_LINES`).
     pub const READ_MAX_LINES: usize = 2000;
-    /// pi's byte limit (`DEFAULT_MAX_BYTES`, 50 KB). Kept for PARITY notes and `/import`;
-    /// oxa output is capped by [`TOOL_OUTPUT_CAP_DEFAULT`] instead.
+    /// pi's byte limit (`DEFAULT_MAX_BYTES`, 50 KB). Kept for PARITY notes; oxa output is
+    /// capped by [`TOOL_OUTPUT_CAP_DEFAULT`] instead.
     pub const PI_MAX_BYTES: usize = 50 * 1024;
     /// W4: default cap of any tool output on the wire (`oxa.toolOutputCap`).
     pub const TOOL_OUTPUT_CAP_DEFAULT: usize = 16 * 1024;
@@ -65,11 +65,14 @@ pub const READ: ToolText = ToolText {
 /// ADAPTED: pi says "truncated to last 2000 lines or 50KB ... saved to a temp file".
 pub const BASH: ToolText = ToolText {
     name: "bash",
-    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part. If truncated, full output is saved to a file. Optionally provide a timeout in seconds.",
-    schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"}},"required":["command"]}"#,
+    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part. If truncated, full output is saved to a file. Optionally provide a timeout in seconds. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60).",
+    schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"number","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."}}}"#,
     class: ToolClass::Exec,
     prompt_snippet: "Execute bash commands (ls, grep, find, etc.)",
-    guidelines: &["You can inspect OXA_* environment variables for current model and session details."],
+    guidelines: &[
+        "You can inspect OXA_* environment variables for current model and session details.",
+        "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is private scratch discarded after each command, even on success. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
+    ],
 };
 
 pub const EDIT: ToolText = ToolText {
@@ -84,12 +87,12 @@ pub const EDIT: ToolText = ToolText {
     ],
 };
 
-/// ADAPTED (profile `local` only, OXA-LOCAL-FIRST T1): pi's `edit` declared with three string
+/// ADAPTED (OXA-LOCAL-FIRST T1): `edit` declared with three string
 /// parameters instead of the `edits[]` array, so a model that writes calls as
 /// `<parameter=..>` blocks writes code as raw text, not as escaped JSON. Derived from [`EDIT`];
 /// only the parameter part of the texts changes. Several changes to one file = several calls
 /// in one reply, run in order (same-path writes are serialised), each matched against the file
-/// as the previous call left it. The tool accepts both forms under both profiles.
+/// as the previous call left it. The tool accepts both forms.
 pub const EDIT_FLAT: ToolText = ToolText {
     name: "edit",
     description: "Edit a single file using exact text replacement. oldText must match a unique region of the file. For several changes to one file, make one edit call per change in the same reply; the calls run in order, each on the file as the previous call left it. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
@@ -260,6 +263,9 @@ pub mod errors {
     pub const BASH_NO_OUTPUT: &str = "(no output)";
     pub const BASH_ABORTED: &str = "Command aborted";
     pub const BASH_NO_EXIT_CODE: &str = "Command terminated without an exit code";
+    /// Appended to a result when the command looked backgrounded (a line ending in `&`, or `nohup`).
+    pub const BASH_BACKGROUND_STOPPED: &str =
+        "If this command started background processes (nohup or a trailing &), they were stopped when the call ended. Run long jobs in the foreground within the timeout.";
     pub const BASH_BAD_TIMEOUT: &str = "Invalid timeout: must be a finite number of seconds";
     pub fn bash_exit(code: i32) -> String {
         format!("Command exited with code {code}")
@@ -442,8 +448,8 @@ pub mod subagent {
 pub mod web_search {
     pub const NAME: &str = "web_search";
     pub const DESCRIPTION: &str = "Search the web (Brave Search). Returns numbered sources, each with its title, URL and text snippets from the page. Use it for current information or facts that are not in the workspace, and cite the sources you use by URL. The query is sent to Brave Search.";
-    /// Strings and integers only (the same schema under both profiles).
-    pub const SCHEMA: &str = r#"{"type":"object","properties":{"query":{"type":"string","description":"The search query (at most 600 characters)"},"count":{"type":"integer","description":"Maximum number of sources, 1 to 20 (optional)"},"freshness":{"type":"string","description":"Only pages from: pd (past day), pw (past week), pm (past month), py (past year), or a range YYYY-MM-DDtoYYYY-MM-DD (optional)"},"country":{"type":"string","description":"Two-letter country code for the results, e.g. us (optional)"},"search_lang":{"type":"string","description":"Language code for the results, e.g. en (optional)"}},"required":["query"]}"#;
+    /// Strings and integers only.
+    pub const SCHEMA: &str = r#"{"type":"object","properties":{"query":{"type":"string","description":"The search query (at most 600 characters)"},"count":{"type":"integer","description":"Maximum number of sources, 1 to 20 (optional)"},"freshness":{"type":"string","description":"Only pages from: pd (past day), pw (past week), pm (past month), py (past year), or a date range like 2026-01-01to2026-01-31 (optional)","anyOf":[{"enum":["pd","pw","pm","py"]},{"pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}to[0-9]{4}-[0-9]{2}-[0-9]{2}$"}]},"country":{"type":"string","description":"Two-letter country code for the results, e.g. us (optional)"},"search_lang":{"type":"string","description":"Language code for the results, e.g. en (optional)"}},"required":["query"]}"#;
     /// The longest query in characters (the provider's limit).
     pub const MAX_QUERY_CHARS: usize = 600;
     /// The largest `count`.
@@ -471,7 +477,7 @@ pub mod web_search {
     pub const QUERY_TOO_LONG: &str =
         "Invalid query: it has {n} characters, the limit is 600\nFix: shorten the query to 600 characters or fewer";
     pub const BAD_COUNT: &str = "Invalid count: it must be a whole number from 1 to 20\nFix: pass count between 1 and 20, or leave it out";
-    pub const BAD_FRESHNESS: &str = "Invalid freshness: it must be pd, pw, pm, py or YYYY-MM-DDtoYYYY-MM-DD\nFix: pass one of these values, or leave freshness out";
+    pub const BAD_FRESHNESS: &str = "Invalid freshness: it must be pd (past day), pw (past week), pm (past month), py (past year) or a range YYYY-MM-DDtoYYYY-MM-DD\nFix: pass one of these values, or leave freshness out";
     pub const BAD_COUNTRY: &str = "Invalid country: it must be a two-letter country code such as us\nFix: pass a two-letter code, or leave country out";
     pub const BAD_LANG: &str = "Invalid search_lang: it must be a language code such as en or pt-br\nFix: pass a language code, or leave search_lang out";
     /// `{name}` = an argument the tool does not know.
@@ -501,21 +507,20 @@ pub mod web_search {
     pub const TEST_REAL_HOST: &str = "web_search refused: the real Brave Search host is not allowed under OXA_TEST_ISOLATION=1\nFix: point OXA_BRAVE_BASE_URL at a loopback mock server";
 }
 
-/// TOOL-DIET and profile `local` texts of the read-class tools (V020-OPTIMIZE #2,
-/// OXA-LOCAL-FIRST T8). Lane `l4-read` fills this module; nothing here is used under
-/// `ToolTune::default()`.
+/// TOOL-DIET texts of the read-class tools (V020-OPTIMIZE #2,
+/// OXA-LOCAL-FIRST T8). Lane `l4-read` fills this module.
 pub mod diet {
-    /// Added inside the first-page notice of `read` in profile `local` (T8), before the `]`.
+    /// Added inside the first-page notice of `read` (T8), before the `]`.
     pub const READ_PAGE_HINT: &str = " Or use grep to find the part you need.";
-    /// The one notice of an over-limit `grep` in profile `local` (T8): the total, the limit,
+    /// The one notice of an over-limit `grep` (T8): the total, the limit,
     /// and how to narrow the search.
     pub fn grep_over_limit_notice(total: usize, limit: usize) -> String {
         format!(
             "{total} matches in total, the limit was {limit}. Narrow the pattern, path or glob, or raise limit, to see the lines."
         )
     }
-    /// L4: the second notice of a `grep`, `find` or `ls` answer cut by its byte cap in profile
-    /// `local` (after `<cap> limit reached`).
+    /// L4: the second notice of a `grep`, `find` or `ls` answer cut by its byte cap (after
+    /// `<cap> limit reached`).
     pub const BYTE_CUT_HINT: &str = "Narrow the search to see the rest";
     /// One file's line in an over-limit `grep` answer: `<path>: <n> matches`.
     pub fn grep_file_count(path: &str, n: usize) -> String {
@@ -523,9 +528,9 @@ pub mod diet {
     }
 }
 
-/// Profile `local` texts of `edit`'s failure path and of `bash` (OXA-LOCAL-FIRST T7, F5).
-/// Lane `l4-edit` fills this module; nothing here is used under `ToolTune::default()`.
-pub mod local_edit {
+/// Texts of `edit`'s failure path and of `bash` (OXA-LOCAL-FIRST T7, F5). Lane `l4-edit` fills
+/// this module.
+pub mod default_edit {
     /// The most bytes of the closest region shown by [`not_found`].
     pub const CLOSEST_MAX_BYTES: usize = 400;
     /// How many line numbers [`not_unique`] lists before `...`.
@@ -551,13 +556,13 @@ pub mod local_edit {
     }
 }
 
-/// Profile `local` declarations of the built-ins (OXA-LOCAL-FIRST T3: integer parameters,
-/// required first, one-sentence descriptions). Same names, classes, snippets and guidelines as
-/// pi's texts; `edit` is [`super::EDIT_FLAT`].
-pub mod local_specs {
+/// The declarations of the built-ins (OXA-LOCAL-FIRST T3: integer parameters, required first,
+/// one-sentence descriptions). Same names, classes, snippets and guidelines as pi's texts;
+/// `edit` is [`super::EDIT_FLAT`]. These are the texts a tool declares.
+pub mod builtin_specs {
     use super::{ToolText, BASH, EDIT_FLAT, FIND, GREP, LS, READ, WRITE};
 
-    pub const READ_LOCAL: ToolText = ToolText {
+    pub const READ_DEFAULT: ToolText = ToolText {
         name: READ.name,
         description: "Read a text file. Long files are returned one page at a time; continue with offset.",
         schema_json: r#"{"type":"object","properties":{"path":{"type":"string","description":"File path (relative or absolute)"},"offset":{"type":"integer","description":"First line to read (1-indexed)"},"limit":{"type":"integer","description":"Maximum number of lines"}},"required":["path"]}"#,
@@ -566,16 +571,16 @@ pub mod local_specs {
         guidelines: READ.guidelines,
     };
 
-    pub const BASH_LOCAL: ToolText = ToolText {
+    pub const BASH_DEFAULT: ToolText = ToolText {
         name: BASH.name,
-        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file.",
-        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"}},"required":["command"]}"#,
+        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60).",
+        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"integer","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."}}}"#,
         class: BASH.class,
         prompt_snippet: BASH.prompt_snippet,
         guidelines: BASH.guidelines,
     };
 
-    pub const WRITE_LOCAL: ToolText = ToolText {
+    pub const WRITE_DEFAULT: ToolText = ToolText {
         name: WRITE.name,
         description: "Write a file, creating parent directories. Overwrites an existing file.",
         schema_json: r#"{"type":"object","properties":{"path":{"type":"string","description":"File path (relative or absolute)"},"content":{"type":"string","description":"The whole file content"}},"required":["path","content"]}"#,
@@ -584,7 +589,7 @@ pub mod local_specs {
         guidelines: WRITE.guidelines,
     };
 
-    pub const GREP_LOCAL: ToolText = ToolText {
+    pub const GREP_DEFAULT: ToolText = ToolText {
         name: GREP.name,
         description: "Search file contents for a regex. Returns matching lines with path and line number. Respects .gitignore. At most 100 matches unless limit is set.",
         schema_json: r#"{"type":"object","properties":{"pattern":{"type":"string","description":"Regex (a literal string with literal=true)"},"path":{"type":"string","description":"Directory or file to search (default: working directory)"},"glob":{"type":"string","description":"Only files matching this glob, e.g. '*.rs' or 'src/**/*.ts'"},"ignoreCase":{"type":"boolean","description":"Case-insensitive search"},"literal":{"type":"boolean","description":"Treat pattern as a literal string"},"context":{"type":"integer","description":"Lines to show before and after each match"},"limit":{"type":"integer","description":"Maximum number of matches"}},"required":["pattern"]}"#,
@@ -593,7 +598,7 @@ pub mod local_specs {
         guidelines: GREP.guidelines,
     };
 
-    pub const FIND_LOCAL: ToolText = ToolText {
+    pub const FIND_DEFAULT: ToolText = ToolText {
         name: FIND.name,
         description: "Find files by glob pattern. Returns paths relative to the search directory. Respects .gitignore. At most 1000 results unless limit is set.",
         schema_json: r#"{"type":"object","properties":{"pattern":{"type":"string","description":"Glob, e.g. '*.rs' or 'src/**/*.ts'"},"path":{"type":"string","description":"Directory to search (default: working directory)"},"limit":{"type":"integer","description":"Maximum number of results"}},"required":["pattern"]}"#,
@@ -602,7 +607,7 @@ pub mod local_specs {
         guidelines: FIND.guidelines,
     };
 
-    pub const LS_LOCAL: ToolText = ToolText {
+    pub const LS_DEFAULT: ToolText = ToolText {
         name: LS.name,
         description: "List a directory. Directories end with '/'. Dotfiles are included. At most 500 entries unless limit is set.",
         schema_json: r#"{"type":"object","properties":{"path":{"type":"string","description":"Directory to list (default: working directory)"},"limit":{"type":"integer","description":"Maximum number of entries"}}}"#,
@@ -611,16 +616,16 @@ pub mod local_specs {
         guidelines: LS.guidelines,
     };
 
-    /// The profile `local` text of a built-in, by name; `None` for any other name.
+    /// The declared text of a built-in, by name; `None` for any other name.
     pub fn by_name(name: &str) -> Option<&'static ToolText> {
         match name {
-            "read" => Some(&READ_LOCAL),
-            "bash" => Some(&BASH_LOCAL),
+            "read" => Some(&READ_DEFAULT),
+            "bash" => Some(&BASH_DEFAULT),
             "edit" => Some(&EDIT_FLAT),
-            "write" => Some(&WRITE_LOCAL),
-            "grep" => Some(&GREP_LOCAL),
-            "find" => Some(&FIND_LOCAL),
-            "ls" => Some(&LS_LOCAL),
+            "write" => Some(&WRITE_DEFAULT),
+            "grep" => Some(&GREP_DEFAULT),
+            "find" => Some(&FIND_DEFAULT),
+            "ls" => Some(&LS_DEFAULT),
             _ => None,
         }
     }

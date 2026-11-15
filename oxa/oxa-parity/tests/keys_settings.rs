@@ -446,6 +446,19 @@ mod tui {
     }
 
     /// The first row whose text (without the fullscreen scrollbar column) is exactly `needle`.
+    /// The numbered reply is completely drawn at the bottom and the turn is over: the closing
+    /// code fence row sits right after the `last` line and the "Working..." loader (blank line
+    /// plus spinner above the editor) is gone. Both arrive/leave after the last line while the
+    /// turn ends, and each shifts every transcript row above by one or two.
+    pub fn reply_closed(s: &Screen, last: &str) -> bool {
+        !s.contains("Working")
+            && row_index(s, last).is_some_and(|r| {
+                s.rows()
+                    .get(r + 1)
+                    .is_some_and(|f| f.trim_end().trim_end_matches(['│', '█']).trim() == "```")
+            })
+    }
+
     pub fn row_index(s: &Screen, needle: &str) -> Option<usize> {
         s.rows()
             .iter()
@@ -597,6 +610,13 @@ mod tui {
         pub fn wait(&self, what: &str, pred: impl Fn(&Screen) -> bool) -> Screen {
             self.pty.wait_for_named(what, pred, DEFAULT_TIMEOUT).unwrap()
         }
+        /// Content-based: wait until `pred` holds on a complete frame (input read, bounded by
+        /// `DEFAULT_TIMEOUT`), then until it still holds after 250 ms of quiet. Use it for a
+        /// baseline measured before the next input: a frame that merely looks right while the
+        /// transcript is still being drawn must not end the wait.
+        pub fn wait_steady(&self, what: &str, pred: impl Fn(&Screen) -> bool) -> Screen {
+            self.pty.wait_steady(what, pred, 250, DEFAULT_TIMEOUT).unwrap()
+        }
         pub fn wait_text(&self, needle: &str) -> Screen {
             self.pty.wait_for_text(needle).unwrap()
         }
@@ -646,6 +666,9 @@ mod tui {
             self.type_text(text);
             self.key("enter");
             self.wait_text(reply);
+            // The reply text is on screen before the turn ends; the next input must not be
+            // sent into the still-working turn (it would be queued or swallowed under load).
+            self.wait("the turn finished", |s| !s.contains("Working"));
         }
         /// The user prompts the engine got (chat requests only), in order.
         pub fn prompts(&self) -> Vec<String> {
@@ -757,8 +780,8 @@ fn every_row_has_test_or_recorded_omission() {
     let rows = area_rows();
     assert_eq!(
         rows.len(),
-        84,
-        "the SET and KEY areas of PARITY.md have 64 + 20 rows"
+        69,
+        "the SET and KEY areas of PARITY.md have 49 + 20 rows"
     );
     let src = include_str!("keys_settings.rs");
     for (id, _) in &rows {
@@ -772,7 +795,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     let src = include_str!("keys_settings.rs");
     for (id, verdict) in area_rows() {
         if verdict != "P" {
@@ -798,22 +821,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             body.contains("// invariant:"),
             "{id} is A but its test names no invariant (`// invariant:`)"
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    let src = include_str!("keys_settings.rs");
-    for (id, verdict) in area_rows() {
-        if verdict != "O" {
-            continue;
-        }
-        let body = body_of(src, &fn_name(&id));
-        assert!(
-            body.contains("unsupported_in_oxa"),
-            "{id} is O but its test does not assert the unsupported_in_oxa behaviour"
         );
     }
 }
@@ -873,23 +880,6 @@ fn set_002() {
         stderr(&out)
     );
     assert_eq!(rig.bodies().len(), 1, "the run went on after the diagnostics");
-}
-
-/// SET-003: `defaultProvider` is accepted and ignored with a warning (one provider).
-#[test]
-fn set_003() {
-    // pi docs: settings.md `defaultProvider` "Startup AI provider". unsupported_in_oxa: oxa has
-    // one provider (the engine), so the key is accepted and ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "defaultProvider": "anthropic" }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "defaultProvider") && stderr(&out).contains("ignored"),
-        "unsupported_in_oxa: defaultProvider is ignored with a warning: {}",
-        stderr(&out)
-    );
-    assert_eq!(rig.bodies().len(), 1);
 }
 
 /// SET-004: `defaultModel` is an engine model id.
@@ -962,22 +952,6 @@ fn set_006() {
         enable_thinking(&rig.bodies()[0]),
         Some(true),
         "modelThinkingLevels names fake-model high over the default off"
-    );
-}
-
-/// SET-007: `thinkingBudgets` is ignored with a warning.
-#[test]
-fn set_007() {
-    // pi docs: settings.md `thinkingBudgets` "Token budgets for minimal, low, medium, and high".
-    // unsupported_in_oxa: the W6 boolean has no budget, so the object is ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "thinkingBudgets": { "low": 1000 } }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "thinkingBudgets") && stderr(&out).contains("ignored"),
-        "{}",
-        stderr(&out)
     );
 }
 
@@ -1463,73 +1437,6 @@ fn set_019() {
     );
 }
 
-/// SET-020: `codemode.inlineBudget` is not an oxa setting.
-#[test]
-fn set_020() {
-    // pi docs: settings.md `codemode.inlineBudget` "Estimated tokens (characters / 4) the
-    // `codemode` tool's description may spend on tool declarations." unsupported_in_oxa (ignored
-    // with the unknown-setting warning): oxa's codemode description
-    // is one fixed text (W3: the frozen prefix does not grow or change with the tool catalogue;
-    // tools are found with `searchTools()` / `describeTool()`), so there is nothing to budget:
-    // the key is unknown (warned, ignored) and the description is the same with and without
-    // codemode-exposed tools.
-    let registrations: String = (1..=6)
-        .map(|i| {
-            format!(
-                "oxa.registerTool({{name: 'cat_tool_{i}', namespace: 'catalog', exposure: 'codemode', \
-                 description: 'Catalog tool number {i} with a description long enough to cost tokens.', \
-                 parameters: {{type: 'object', properties: {{q: {{type: 'string'}}}}}}, \
-                 execute: async () => ({{content: [{{type: 'text', text: 'ok'}}]}})}});\n"
-            )
-        })
-        .collect();
-    let ext = format!("export default function (oxa) {{\n{registrations}}}\n");
-    let description = |catalog: bool, budget: Option<u32>| {
-        let rig = Rig::new(&[text("ok")]);
-        if catalog {
-            rig.env.write("home/.oxa/agent/extensions/catalog.js", &ext);
-        }
-        let mut settings = json!({ "codemode": { "enabled": true } });
-        if let Some(b) = budget {
-            settings["codemode"]["inlineBudget"] = json!(b);
-        }
-        rig.user_settings(settings);
-        let out = rig.print(&[]);
-        ok(&out);
-        let body = rig.bodies().remove(0);
-        let d = body["tools"]
-            .as_array()
-            .and_then(|a| a.iter().find(|t| t["function"]["name"] == "codemode"))
-            .map(|t| t["function"]["description"].as_str().unwrap_or("").to_string())
-            .unwrap_or_else(|| panic!("the codemode tool is declared: {:?}", tools(&body)));
-        (d, String::from_utf8_lossy(&out.stderr).into_owned())
-    };
-    let (plain, _) = description(false, None);
-    let (with_catalog, quiet) = description(true, None);
-    assert_eq!(
-        plain, with_catalog,
-        "the description does not depend on the tool catalogue"
-    );
-    assert!(
-        !with_catalog.contains("cat_tool_"),
-        "no inline declarations:\n{with_catalog}"
-    );
-    assert!(
-        with_catalog.contains("searchTools("),
-        "the script finds tools itself:\n{with_catalog}"
-    );
-    assert!(
-        !quiet.contains("inlineBudget"),
-        "no warning without the key: {quiet}"
-    );
-    let (budgeted, warned) = description(true, Some(60));
-    assert_eq!(budgeted, plain, "the key changes nothing");
-    assert!(
-        warned.contains("unknown setting `codemode.inlineBudget`"),
-        "the unknown-setting warning: {warned}"
-    );
-}
-
 /// SET-021: `sessionDir`.
 #[test]
 fn set_021() {
@@ -1563,22 +1470,6 @@ fn set_021() {
     assert!(
         !below(&rig.env.agent_dir().join("sessions")),
         "the default sessions directory is not used"
-    );
-}
-
-/// SET-022: `sessionShareDestination` (the `/share` command is omitted).
-#[test]
-fn set_022() {
-    // pi docs: settings.md `sessionShareDestination`. unsupported_in_oxa: /share is omitted, so
-    // the setting is accepted and ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "sessionShareDestination": "gist" }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "sessionShareDestination") && stderr(&out).contains("ignored"),
-        "{}",
-        stderr(&out)
     );
 }
 
@@ -2025,21 +1916,30 @@ fn set_036() {
         let t = r.trim_end().trim_end_matches(['│', '█']).trim();
         t.strip_prefix('R')?.parse().ok()
     };
-    let moved = |settings: Value, button: u32| {
+    let moved = |settings: Value, button: u32, want: i64| {
         let t = Setup::new()
             .settings(settings)
             .script(&[numbered_reply("R", 80)])
             .start();
         t.prompt("count", "R80");
-        let before = number_at(&t.settle(), 10).expect("a numbered line in row 10");
+        // The baseline is the steady bottom view: R80 on screen and row 10 unchanged for a
+        // quiet period (the numbered line in row 10 is the one measured).
+        let s = t.wait_steady("the bottom view drawn", |s| {
+            reply_closed(s, "R80") && number_at(s, 10).is_some()
+        });
+        let before = number_at(&s, 10).expect("a numbered line in row 10");
         t.pty.send_bytes(format!("\x1b[<{button};5;5M").as_bytes());
-        let s = t.wait("the view moved", |s| number_at(s, 10) != Some(before));
+        // Wait for the frame with the exact expected position (bounded; a wrong distance times
+        // out with the screen dump), then assert it unchanged after the redraw is quiet.
+        let s = t.wait_steady("the view moved by the expected distance", |s| {
+            number_at(s, 10) == Some(before - want)
+        });
         number_at(&s, 10).map(|n| before - n)
     };
-    assert_eq!(moved(json!({}), 64), Some(1), "auto: one line");
-    assert_eq!(moved(json!({ "fullscreenWheelScrollLines": 5 }), 64), Some(5));
+    assert_eq!(moved(json!({}), 64, 1), Some(1), "auto: one line");
+    assert_eq!(moved(json!({ "fullscreenWheelScrollLines": 5 }), 64, 5), Some(5));
     assert_eq!(
-        moved(json!({ "fullscreenWheelScrollLines": 2 }), 64 + 8),
+        moved(json!({ "fullscreenWheelScrollLines": 2 }), 64 + 8, 10),
         Some(10),
         "alt: x5"
     );
@@ -2049,7 +1949,7 @@ fn set_036() {
         .script(&[numbered_reply("R", 80)])
         .start();
     t.prompt("count", "R80");
-    t.settle();
+    t.wait_steady("the bottom view drawn", |s| reply_closed(s, "R80"));
     t.pty.send_bytes(b"\x1b[<64;5;5M");
     t.wait("the top in one event", |s| s.row(0).starts_with("oxa v"));
 }
@@ -2119,25 +2019,6 @@ fn set_039() {
     assert_eq!(shown(json!({ "autocompleteMaxVisible": 1 })), 3, "at least 3");
 }
 
-/// SET-040: `showHardwareCursor`.
-#[test]
-fn set_040() {
-    // unsupported_in_oxa (O-175): the key is an unknown setting, warned and ignored.
-    // pi docs: settings.md `showHardwareCursor`. O-175: oxa always shows the terminal's
-    // cursor at the editor position (no drawn cursor), so the key is an unknown setting:
-    // reported, kept and ignored.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "showHardwareCursor": false }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "unknown setting `showHardwareCursor`"),
-        "{}",
-        stderr(&out)
-    );
-    assert_eq!(rig.bodies().len(), 1, "the run went on");
-}
-
 /// SET-041: `terminal.showImages`, `terminal.imageWidthCells`: inline display only.
 #[test]
 fn set_041() {
@@ -2191,63 +2072,6 @@ fn set_042() {
         json!({ "terminal": { "clearOnShrink": false } }),
         &[("OXA_CLEAR_ON_SHRINK", "1")]
     ));
-}
-
-/// SET-043: `terminal.showTerminalProgress` (OSC 9;4).
-#[test]
-fn set_043() {
-    // unsupported_in_oxa (O-175): the key is an unknown setting, warned and ignored.
-    // pi docs: settings.md `terminal.showTerminalProgress`. O-175: OSC 9;4 progress is not in
-    // oxa, so the key is an unknown setting: reported, kept and ignored.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "terminal": { "showTerminalProgress": true } }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "unknown setting `terminal.showTerminalProgress`"),
-        "{}",
-        stderr(&out)
-    );
-    assert_eq!(rig.bodies().len(), 1, "the run went on");
-}
-
-/// SET-044: `terminal.hyperlinks`, `terminal.images`, `terminal.trueColor` overrides.
-#[test]
-fn set_044() {
-    // unsupported_in_oxa (O-175): the keys are unknown settings, warned and ignored.
-    // pi docs: settings.md `terminal.hyperlinks`, `terminal.images`, `terminal.trueColor`.
-    // O-175: oxa keeps the detection only, so the keys are unknown settings: reported, kept
-    // and ignored.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({
-        "terminal": { "hyperlinks": true, "images": "kitty", "trueColor": true }
-    }));
-    let out = rig.print(&[]);
-    ok(&out);
-    for key in ["terminal.hyperlinks", "terminal.images", "terminal.trueColor"] {
-        assert!(
-            warned(&out, &format!("unknown setting `{key}`")),
-            "{key}: {}",
-            stderr(&out)
-        );
-    }
-    assert_eq!(rig.bodies().len(), 1, "the run went on");
-}
-
-/// SET-045: `images.autoResize` is accepted and ignored (images are never sent).
-#[test]
-fn set_045() {
-    // pi docs: settings.md `images.autoResize`. unsupported_in_oxa: images are never sent, so
-    // the setting is accepted and ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "images": { "autoResize": false } }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "images.autoResize") && stderr(&out).contains("ignored"),
-        "{}",
-        stderr(&out)
-    );
 }
 
 /// SET-046: `images.blockImages`: always effectively true on the wire.
@@ -2322,22 +2146,6 @@ fn set_048() {
     }
 }
 
-/// SET-049: `transport` is SSE only; other values warn.
-#[test]
-fn set_049() {
-    // pi docs: settings.md `transport`. unsupported_in_oxa: oxa streams over SSE only; other
-    // values are accepted and ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "transport": "websocket" }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "transport") && stderr(&out).contains("ignored"),
-        "{}",
-        stderr(&out)
-    );
-}
-
 /// SET-050: `httpProxy` applies to MCP HTTP only; the engine connection is direct.
 #[test]
 fn set_050() {
@@ -2395,22 +2203,6 @@ fn set_051() {
         stdout(&out).contains("a reply that stalls half way"),
         "{}",
         stdout(&out)
-    );
-}
-
-/// SET-052: `websocketConnectTimeoutMs` (no websocket).
-#[test]
-fn set_052() {
-    // pi docs: settings.md `websocketConnectTimeoutMs`. unsupported_in_oxa: no websocket, so the
-    // setting is accepted and ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "websocketConnectTimeoutMs": 5000 }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "websocketConnectTimeoutMs") && stderr(&out).contains("ignored"),
-        "{}",
-        stderr(&out)
     );
 }
 
@@ -2519,36 +2311,6 @@ fn set_056() {
     );
 }
 
-/// SET-057: `npmCommand` (O-175: npm package sources are not in oxa).
-#[test]
-fn set_057() {
-    // unsupported_in_oxa (O-175): the key is an unknown setting, warned and ignored.
-    // pi docs: settings.md `npmCommand` "Command used to run npm". unsupported_in_oxa (O-175):
-    // oxa has no npm package sources, so the key is an unknown setting: the plain
-    // unknown-setting warning, the run goes on.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "npmCommand": ["npm"] }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(warned(&out, "unknown setting `npmCommand`"), "{}", stderr(&out));
-}
-
-/// SET-058: `selfUpdateCommand` (no self-update).
-#[test]
-fn set_058() {
-    // pi docs: settings.md `selfUpdateCommand`. unsupported_in_oxa: no self-update, so the
-    // setting is accepted and ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "selfUpdateCommand": "true" }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "selfUpdateCommand") && stderr(&out).contains("ignored"),
-        "{}",
-        stderr(&out)
-    );
-}
-
 /// SET-059: `packages`, `extensions`, `skills`, `prompts`, `themes` resource lists.
 #[test]
 fn set_059() {
@@ -2619,59 +2381,6 @@ fn set_061() {
     assert!(
         warned(&out, "not_an_event"),
         "an unknown event is reported: {}",
-        stderr(&out)
-    );
-}
-
-/// SET-062: `collapseChangelog`.
-#[test]
-fn set_062() {
-    // unsupported_in_oxa (O-175): the key is an unknown setting, warned and ignored.
-    // pi docs: settings.md `collapseChangelog`. O-175: oxa shows no changelog at start-up and
-    // has no /changelog, so the key (and pi's bookkeeping key `lastChangelogVersion`) is an
-    // unknown setting: reported, kept and ignored.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "collapseChangelog": true, "lastChangelogVersion": "0.0.1" }));
-    let out = rig.print(&[]);
-    ok(&out);
-    for key in ["collapseChangelog", "lastChangelogVersion"] {
-        assert!(
-            warned(&out, &format!("unknown setting `{key}`")),
-            "{key}: {}",
-            stderr(&out)
-        );
-    }
-    assert_eq!(rig.bodies().len(), 1, "the run went on");
-}
-
-/// SET-063: `enableInstallTelemetry`, `enableAnalytics` are accepted and ignored.
-#[test]
-fn set_063() {
-    // pi docs: settings.md `enableInstallTelemetry`, `enableAnalytics`. unsupported_in_oxa: no
-    // telemetry; both keys are accepted and ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "enableInstallTelemetry": false, "enableAnalytics": false }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "enableInstallTelemetry") && warned(&out, "enableAnalytics"),
-        "{}",
-        stderr(&out)
-    );
-}
-
-/// SET-064: `warnings.anthropicExtraUsage` is accepted and ignored (no cloud providers).
-#[test]
-fn set_064() {
-    // pi docs: settings.md `warnings.anthropicExtraUsage`. unsupported_in_oxa: no cloud
-    // providers, so the setting is accepted and ignored with a Warning.
-    let rig = Rig::new(&[text("ok")]);
-    rig.user_settings(json!({ "warnings": { "anthropicExtraUsage": false } }));
-    let out = rig.print(&[]);
-    ok(&out);
-    assert!(
-        warned(&out, "warnings.anthropicExtraUsage") && stderr(&out).contains("ignored"),
-        "{}",
         stderr(&out)
     );
 }
@@ -3085,7 +2794,9 @@ fn key_007() {
         .start();
     t.prompt("count", "R80");
     let row_of = |s: &Screen, needle: &str| row_index(s, needle);
-    let at_bottom = t.wait("R80 shown", |s| row_of(s, "R80").is_some());
+    let at_bottom = t.wait_steady("the reply drawn to its closing fence", |s| {
+        reply_closed(s, "R80") && row_of(s, "R70").is_some()
+    });
     let r70 = row_of(&at_bottom, "R70").unwrap();
     t.key("pageUp");
     let s = t.wait("a page up", |s| row_of(s, "R80").is_none());
@@ -3098,7 +2809,9 @@ fn key_007() {
     t.key("ctrl+home");
     t.wait("the top", |s| s.row(0).starts_with("oxa v"));
     t.key("ctrl+end");
-    t.wait("the bottom", |s| row_of(s, "R80").is_some());
+    t.wait_steady("the bottom", |s| {
+        reply_closed(s, "R80") && row_of(s, "R70") == Some(r70)
+    });
     // lineUp moves the transcript down by exactly one row; lineDown back.
     t.key("f5");
     t.wait("one line up", |s| row_of(s, "R70") == Some(r70 + 1));
@@ -3183,6 +2896,9 @@ fn key_009() {
     // searchNext (enter, ctrl+g), searchPrevious (shift+enter, ctrl+shift+g), searchClose
     // (escape). ctrl+shift+f and shift+enter need the kitty protocol (a legacy terminal sends
     // ctrl+f / CR for them).
+    // invariant: oxa adds `alt+s` to `tui.altScreen.search`, which a legacy terminal can send;
+    // ctrl+shift+f keeps working with the kitty protocol (asserted below), and OXA's footer
+    // shows only keys the terminal can send (`key_009_legacy_terminal_shows_and_takes_the_fallback`).
     let row_of = |s: &Screen, needle: &str| row_index(s, needle);
     let t = Setup::new()
         .profile(TermProfile::kitty())
@@ -3239,6 +2955,87 @@ fn key_009() {
     t.key("f4");
     t.pty.send_text("R05");
     t.wait("R05 revealed", |s| row_of(s, "R05").is_some());
+    assert_eq!(t.editor(), "", "the query went to the search, not the editor");
+    drop(t);
+    // Adapted (oxa): the default `alt+s` opens the search on a legacy terminal.
+    let t = Setup::new().script(&[numbered_reply("R", 80)]).start();
+    t.prompt("count", "R80");
+    t.key("alt+s");
+    t.pty.send_text("R03");
+    t.wait("R03 revealed", |s| row_of(s, "R03").is_some());
+    assert_eq!(t.editor(), "", "the query went to the search, not the editor");
+}
+
+/// KEY-009 (O-199 first run, foot): the kitty keyboard protocol keeps one flags stack per
+/// screen, so the push must be made on the alternate screen too; then ctrl+shift+f arrives as
+/// CSI-u and opens the search. (Pushed on the main screen only, the alternate screen stays
+/// legacy and ctrl+shift+f arrives as ctrl+f, the cursor key.)
+#[test]
+fn key_009_kitty_protocol_on_the_alternate_screen() {
+    let foot = TermProfile {
+        name: "foot",
+        env: vec![("TERM".into(), "foot".into())],
+        ..TermProfile::kitty()
+    };
+    // The footer's key hints are OXA's look (the harness drives pi's look by default).
+    let t = Setup::new()
+        .profile(foot)
+        .env("OXA_SKIN", "oxa")
+        .size(30, 200)
+        .script(&[numbered_reply("R", 40)])
+        .start();
+    let m = t.pty.modes();
+    assert!(m.alt_screen, "fullscreen by default: {m:?}");
+    assert_eq!(
+        m.kitty_flags(),
+        7,
+        "the alternate screen has the flags pushed: {m:?}"
+    );
+    t.prompt("count", "R40");
+    let s = t.wait("the footer advertises ctrl+shift+f", |s| {
+        s.contains("ctrl+shift+f search")
+    });
+    assert!(!s.contains("alt+s search"), "the first key is shown\n{s:?}");
+    // The CSI-u bytes a kitty-protocol terminal sends (flags 7: `CSI 102 ; 6 u`).
+    let bytes = t
+        .pty
+        .key_bytes("ctrl+shift+f", KeyEncoding::Auto)
+        .expect("encodable");
+    assert!(
+        bytes.starts_with(b"\x1b[102"),
+        "{:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    t.pty.send_bytes(&bytes);
+    t.wait("search open", |s| s.contains("Search:"));
+    t.pty.send_text("R07");
+    t.wait("R07 revealed", |s| row_index(s, "R07").is_some());
+    assert_eq!(t.editor(), "", "the query went to the search, not the editor");
+}
+
+/// KEY-009 (O-199 first run): a terminal without the kitty keyboard protocol cannot send
+/// ctrl+shift+f (it sends ctrl+f). The footer then shows the fallback `alt+s`, which works.
+#[test]
+fn key_009_legacy_terminal_shows_and_takes_the_fallback() {
+    // The footer's key hints are OXA's look (the harness drives pi's look by default).
+    let t = Setup::new()
+        .env("OXA_SKIN", "oxa")
+        .size(30, 200)
+        .script(&[numbered_reply("R", 40)])
+        .start();
+    assert_eq!(t.pty.modes().kitty_flags(), 0, "legacy terminal");
+    t.prompt("count", "R40");
+    let s = t.wait("the footer advertises the fallback", |s| {
+        s.contains("alt+s search")
+    });
+    assert!(
+        !s.contains("ctrl+shift+f"),
+        "a key the terminal cannot send is not advertised\n{s:?}"
+    );
+    t.key_as("alt+s", KeyEncoding::Legacy);
+    t.wait("search open", |s| s.contains("Search:"));
+    t.pty.send_text("R05");
+    t.wait("R05 revealed", |s| row_index(s, "R05").is_some());
     assert_eq!(t.editor(), "", "the query went to the search, not the editor");
 }
 

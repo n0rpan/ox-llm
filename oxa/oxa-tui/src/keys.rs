@@ -116,6 +116,9 @@ pub enum InputEvent {
         w: u16,
         h: u16,
     },
+    /// An application program command from the terminal (`ESC _ G <body> ESC \`, the reply
+    /// to a kitty graphics query): the body with its leading `G`.
+    Apc(String),
 }
 
 /// Time to wait after a lone `ESC` (or an unfinished sequence) before reporting it as the
@@ -147,6 +150,16 @@ pub fn parse_input(buf: &[u8]) -> (Vec<InputEvent>, usize) {
 /// Consumes all of `buf`. An unterminated paste is delivered as a `Paste` of what arrived.
 pub fn flush_pending(buf: &[u8]) -> Vec<InputEvent> {
     scan(buf, true).0
+}
+
+/// `true` when a terminal without the kitty keyboard protocol can send `id` as itself: its
+/// legacy bytes ([`encode_legacy`]) parse back to `id`. `ctrl+shift+f` cannot (it arrives as
+/// ctrl+f), nor can `shift+enter` (CR, enter); `alt+s`, `ctrl+up` and `shift+tab` can.
+pub fn legacy_sendable(id: &KeyId) -> bool {
+    let Some(bytes) = encode_legacy(id) else {
+        return false;
+    };
+    matches!(flush_pending(&bytes).as_slice(), [InputEvent::Key(k)] if &k.id == id)
 }
 
 /// The legacy byte sequence a terminal without the kitty protocol sends for `id`, if it has
@@ -332,6 +345,8 @@ fn step(buf: &[u8], i: usize) -> Step {
     match next {
         b'[' => csi_step(buf, i),
         b']' => osc_step(buf, i),
+        // `ESC _ G`: a kitty graphics reply (alt+_ followed at once by `G` does not occur).
+        b'_' if buf.get(i + 2) == Some(&b'G') => apc_step(buf, i),
         b'O' => {
             let x = *buf.get(i + 2)?;
             let name = match x {
@@ -374,6 +389,8 @@ fn fallback(buf: &[u8], i: usize) -> (Vec<InputEvent>, usize) {
         }
         // An unfinished OSC reply is noise; drop it.
         Some(&b']') => (Vec::new(), len),
+        // So is an unfinished graphics reply.
+        Some(&b'_') if buf.get(i + 2) == Some(&b'G') => (Vec::new(), len),
         Some(_) => match decode_char(buf, i + 1) {
             Decoded::Char(c, n) => (one(char_key(c, M_ALT)), i + 1 + n),
             _ => (esc_event(), i + 1),
@@ -467,6 +484,13 @@ fn osc_step(buf: &[u8], i: usize) -> Step {
             _ => j += 1,
         }
     }
+}
+
+/// `ESC _ <body> ESC \`: the body as one event. Unterminated: wait for more.
+fn apc_step(buf: &[u8], i: usize) -> Step {
+    let end = find(&buf[i + 2..], b"\x1b\\")?;
+    let body = String::from_utf8_lossy(&buf[i + 2..i + 2 + end]).into_owned();
+    Some((vec![InputEvent::Apc(body)], i + 2 + end + 2))
 }
 
 fn osc_event(body: &[u8]) -> Vec<InputEvent> {

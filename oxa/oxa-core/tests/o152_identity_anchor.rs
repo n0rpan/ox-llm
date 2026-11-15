@@ -49,6 +49,7 @@ fn open_in(env: &TestEnv, cwd: &Path, engine: Arc<dyn Engine>, session_id: &str)
             thinking: None,
             mode: None,
             session_id: Some(session_id.to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
@@ -177,11 +178,11 @@ fn anchor_bytes_are_identical_across_cwd_date_and_session() {
     );
     // What the anchor holds: the identity, the skills index (names and descriptions; bodies
     // stay on disk) and the tool schemas.
-    assert!(anchor.contains("<identity>\noxa is the coding agent of ox-llm"));
+    assert!(anchor.contains("<identity>\noxa is the local agent of ox-llm"));
     assert!(
         anchor.contains("Snapdragon X Elite (X1E80100)") && anchor.contains("  - moe: context 131072 tokens")
     );
-    for skill in ["deploy", "ox-llm", "oxa-extend", "report-issue"] {
+    for skill in ["deploy", "ox-llm", "oxa-extend", "pull-request", "report-issue"] {
         assert!(
             anchor.contains(&format!("<name>{skill}</name>")),
             "{skill} indexed"

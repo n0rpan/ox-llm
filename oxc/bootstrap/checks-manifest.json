@@ -6,11 +6,11 @@
     "tests/test_bootstrap_checks.py": "c119ba13bcf78bf40a0e8086ac38a8764c46144befa150644e98a344de687c3f",
     "src/oxc/bootstrap_guard.py": "37778922d8bde5af04de2c2ec1c1e4e79f1d5ca9cbc7b0222f3301c949969349",
     "src/oxc/bootstrap_jobs.py": "ff8a9a3b2cb1bc98afef0624226d0f77f647de021130e82834ddb337b9321958",
-    "src/oxc/bootstrap.py": "718032cf5b52210a997b2605bfd83f15bd9534c46a774396c66ac10dd91f79a0",
+    "src/oxc/bootstrap.py": "e5f9b5245a5a8d54586bd74ff02efe8fc5dd12e3f291f1265e2f4e058829c230",
     "src/oxc/power.py": "a453ebd095a2347ccc49bbb1be0086e18cf5bc5fa9773654b179cab72f38d4f5",
-    "bootstrap/build-manifest.json": "6812acd43053d24c8afbb5d0109e371f38b8bf0688eb5fb8cacb4ebd0ab10b0e"
+    "bootstrap/build-manifest.json": "11306da4e7e0a00104633d5f8c8f3e6a5a4c9bf5a798fcc5759819a1bc4e8999"
   },
-  "build_manifest_sha256": "6812acd43053d24c8afbb5d0109e371f38b8bf0688eb5fb8cacb4ebd0ab10b0e",
+  "build_manifest_sha256": "11c039212789b28d53058ae1c4838153c10d8962e0af11ec2199c99dce6a5375",
   "synthetic_tests_passed": 3,
   "native_checks_executed_by_preparer": false,
   "qualified": false,

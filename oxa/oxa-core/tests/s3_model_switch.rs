@@ -6,11 +6,11 @@
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, OverCap, Session, ToolSelection};
-use oxa_fake::{cache_bytes, FakeModel, FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
+use oxa_fake::{cache_bytes, FakeModel, FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    codes, AgentEvent, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, EntryBody, HeadlessUi,
-    HookPoint, HookReply, Hooks, Host, HostAction, OxaError, StreamEvent, Tool, Ui, Value, VecSink, WireMsg,
+    codes, AgentEvent, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, HeadlessUi, HookPoint,
+    HookReply, Hooks, Host, HostAction, OxaError, StreamEvent, Tool, Ui, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -115,11 +115,11 @@ impl Hooks for Probe {
 fn write_settings(env: &TestEnv) {
     let path = Dirs::under(env.root()).settings_file();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(
-        path,
+    let settings: serde_json::Value = serde_json::from_str(
         r#"{"compaction": {"reserveTokens": 256, "keepRecentTokens": 200}, "retry": {"enabled": false}}"#,
     )
     .unwrap();
+    std::fs::write(path, settings.to_string()).unwrap();
 }
 
 fn deps(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> Deps {
@@ -142,6 +142,7 @@ fn deps(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> D
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     }
 }
 
@@ -319,6 +320,7 @@ fn recorder_catches_an_oversized_target_request() {
         max_tokens: 1,
         thinking: false,
         preserve_thinking: false,
+        sampling: None,
         hints: oxa_proto::Hints {
             session: "s",
             idem_key: "",
@@ -402,50 +404,6 @@ fn extension_set_model_compacts_first_through_the_host() {
     assert_eq!(r.eng.violations(), Vec::<String>::new());
 }
 
-/// (d) A failed summary leaves the model unchanged and sends nothing to the target.
-#[test]
-fn failed_summary_keeps_the_model() {
-    let env = TestEnv::new();
-    let mut r = rig(
-        &env,
-        script_big(vec![
-            ScriptTurn::fault(Fault::Http {
-                status: 500,
-                body: "boom".into(),
-            }),
-            ScriptTurn::text("still moe"),
-        ]),
-        true,
-    );
-    big_conversation(&mut r.session);
-    let mut sink = VecSink::default();
-    let err = r
-        .session
-        .set_model_with(
-            FLASH,
-            OverCap::CompactFirst,
-            &mut sink,
-            &mut HeadlessUi::default(),
-        )
-        .expect_err("the switch fails");
-    assert!(
-        err.message.contains("still moe") || err.message.contains(MOE),
-        "{}",
-        err.message
-    );
-    assert_eq!(r.session.state().model, MOE);
-    assert!(!sink.0.iter().any(|e| matches!(e, AgentEvent::ModelSelect { .. })));
-    assert!(!r
-        .session
-        .inner()
-        .tree
-        .entries()
-        .iter()
-        .any(|e| e.body == EntryBody::ModelChange(FLASH.to_string())));
-    prompt(&mut r.session, "next");
-    assert!(r.eng.log().iter().all(|(m, _, _)| m == MOE), "{:?}", r.eng.log());
-}
-
 /// (e) Not over the cap: one notice names the target, the tokens it prefills cold and the
 /// estimated seconds; the epoch event carries the same number.
 #[test]
@@ -495,4 +453,23 @@ fn model_select_hook_fires_before_the_epoch() {
         "epoch after the hook: {log:?}"
     );
     assert!(!log[..at].iter().any(|l| l == "tools"), "{log:?}");
+}
+
+/// A cloud model has no cold-prefill time estimate: the notice says the context is re-sent.
+#[test]
+fn cloud_switch_notice_has_no_time_estimate() {
+    let env = TestEnv::new();
+    let mut r = rig(&env, vec![ScriptTurn::text("one")], true);
+    prompt(&mut r.session, "small");
+    let mut sink = VecSink::default();
+    r.session
+        .set_model("anthropic/claude-sonnet-5-5", &mut sink)
+        .expect("switch");
+    let costs: Vec<String> = notices(&sink.0)
+        .into_iter()
+        .filter(|n| n.contains("tokens"))
+        .collect();
+    assert_eq!(costs.len(), 1, "{costs:?}");
+    assert!(costs[0].contains("re-sent"), "{}", costs[0]);
+    assert!(!costs[0].contains(" s)"), "{}", costs[0]);
 }
