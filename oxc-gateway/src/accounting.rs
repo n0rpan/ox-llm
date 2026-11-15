@@ -256,7 +256,7 @@ impl Hold {
                         Cache::Invalid,
                     )
                     .unwrap_or(self.reserved);
-                row["cost_usd"] = json!(self.reserved.min(estimate.max(actual.unwrap_or(0.0))));
+                row["cost_usd"] = json!(self.reserved.min(estimate).max(actual.unwrap_or(0.0)));
                 row["usage_missing"] = json!(true);
                 row["settled"] = json!("estimated");
             }

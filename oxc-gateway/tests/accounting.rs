@@ -345,3 +345,30 @@ fn cancelled_cache_writes_include_hidden_output_and_final_usage_stays_exact() {
     assert_eq!(row["cost_usd"], reserved);
     assert_eq!(row["settled"], "estimated");
 }
+#[test]
+fn cancellation_never_caps_a_known_charge_at_the_reservation() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
+    assert!(hold.reserved() < 0.004);
+    hold.mark_forwarded();
+    let usage = Usage {
+        reported_cost: Some(0.004),
+        ..Usage::default()
+    };
+    let row = hold
+        .finish(
+            &usage,
+            Outcome::Cancelled {
+                request_bytes: 0,
+                streamed_bytes: 0,
+                usage_final: false,
+                elapsed: std::time::Duration::ZERO,
+            },
+            |row| append(&path, row),
+        )
+        .unwrap();
+    assert_eq!(row["cost_usd"], 0.004);
+    assert_eq!(budget.spend().unwrap(), 0.004);
+}
