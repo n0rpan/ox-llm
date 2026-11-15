@@ -109,7 +109,36 @@ fn every_kept_command_has_handler() {
     }
     // Plain text and unknown names are not commands.
     assert!(fx.run("hello /model").is_none());
-    assert!(fx.run("/no-such-command").is_none());
+    // A path is not a command.
+    assert!(fx.run("/tmp/file.txt what is this").is_none());
+}
+
+/// #341: an unknown `/x` is rejected locally; `/help`, `/usage` and `/cost` answer locally.
+#[test]
+fn unknown_slash_is_local_error_and_help_usage_exist() {
+    let fx = Fx::new();
+    let (level, text) = notice(expect_some("/bogus", fx.run("/bogus")));
+    assert_eq!(level, Level::Error);
+    assert!(text.contains("/bogus") && text.contains("/help"), "{text}");
+    match expect_some("/help", fx.run("/help")) {
+        AppAction::ShowLines(l) => {
+            assert!(l.iter().any(|x| x.contains("/model")));
+            assert!(l.iter().any(|x| x.contains("/hotkeys")));
+        }
+        _ => panic!("/help shows lines"),
+    }
+    for n in ["/usage", "/cost"] {
+        assert!(matches!(expect_some(n, fx.run(n)), AppAction::ShowLines(_)));
+    }
+    // A template or skill command of the session still goes to the core.
+    let mut fx = Fx::new();
+    fx.commands.push(CommandSpec {
+        name: "skill:demo".to_string(),
+        description: "demo".to_string(),
+        argument_hint: None,
+        source: Source::Extension("x".to_string()),
+    });
+    assert!(fx.run("/skill:demo go").is_none());
 }
 
 /// /engine status and load
