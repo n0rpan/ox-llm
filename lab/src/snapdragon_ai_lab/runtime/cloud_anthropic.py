@@ -286,11 +286,8 @@ def messages_request(payload, item):
 
 
 def _max_tokens(payload, item):
-    for field in ('max_tokens', 'max_completion_tokens'):
-        value = payload.get(field)
-        if type(value) is int and value > 0:
-            return min(value, 64_000)
-    return item.get('max_output') or 4096
+    return cloud._max_tokens(payload, item)
+
 
 
 def _dump(value):
@@ -588,7 +585,7 @@ def forward(self, st, item, key):
     try:
         params = messages_request(payload, item)
         client = _client(item, key)
-        hold = cloud.reserve(st.api_value, item, payload)
+        hold = cloud.reserve(st.api_value, item, params)
     except cloud.CloudError as error:
         if hold is not None and not hold.settled:
             hold.settle()

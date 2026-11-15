@@ -263,3 +263,11 @@ price: configure conservative catalog rates for the allowed routes. A reported
 bill can exceed the reservation; it is still charged in full and blocks subsequent
 requests at the daily cap. Missing usage or a failed request retains at least the
 reservation and any larger reported bill. No automatic paid retry is made.
+
+Compatible upstream requests use an explicit chat-field allow-list. Client plugins,
+fallback-model lists, transforms, service tiers and routing preferences are not forwarded.
+OpenRouter receives only the mandatory privacy preferences. Tools are client function
+definitions; provider-hosted paid tools are refused. Ordinary tool selection, reasoning,
+sampling and structured-output controls remain supported, including omitted/null tools.
+Anthropic translation and admission share one validated output limit, including `n_predict`,
+and never exceed the catalog maximum. Invalid limits refuse before an upstream call.

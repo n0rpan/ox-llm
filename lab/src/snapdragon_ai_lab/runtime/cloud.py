@@ -287,15 +287,19 @@ def _check_ledger_health():
 
 
 def _max_tokens(payload, item):
+    """The validated catalog-bounded output limit shared by translation and admission."""
     fields = ('max_tokens', 'max_completion_tokens', 'n_predict')
     if item.get('provider') == 'openai':
         fields += ('max_output_tokens',)
+    maximum = item.get('max_output') or 4096
     for field in fields:
-        value = payload.get(field) if isinstance(payload, dict) else None
-        if type(value) is int and value > 0:
-            return value
-    value = item.get('max_output')
-    return value if type(value) is int and value > 0 else 4096
+        if isinstance(payload, dict) and field in payload:
+            value = payload[field]
+            if type(value) is not int or value <= 0:
+                raise CloudError('The output token limit must be a positive integer.',
+                                 400, 'invalid_value', field)
+            return min(value, maximum)
+    return maximum
 
 
 def estimate_prompt_tokens(payload):
@@ -637,23 +641,28 @@ def remote_payload(payload, item):
     id and the mandatory OpenRouter privacy prefs.  D3 adds the normalisation on top."""
     if not isinstance(payload, dict):
         raise CloudError('Invalid cloud request.', 400, 'invalid_request')
-    body = dict(payload)
+    fields = ('messages', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream',
+              'response_format', 'temperature', 'top_p', 'frequency_penalty',
+              'presence_penalty', 'logit_bias', 'logprobs', 'top_logprobs', 'stop', 'seed',
+              'reasoning_effort', 'chat_template_kwargs')
+    body = {name: payload[name] for name in fields if name in payload}
+    if body.get('tools') is None:
+        body.pop('tools', None)
+    tools = body.get('tools', [])
+    if not isinstance(tools, list) or any(
+            not isinstance(tool, dict) or tool.get('type') != 'function'
+            or set(tool) - {'type', 'function'} or not isinstance(tool.get('function'), dict)
+            for tool in tools):
+        raise CloudError('Only client function tools are supported.', 400, 'invalid_value', 'tools')
     body['model'] = item['upstream_model']
-    maximum = item.get('max_output') or 4096
-    field = 'max_completion_tokens' if 'max_completion_tokens' in body else 'max_tokens'
-    limit = body.get(field, body.get('n_predict', maximum))
-    if type(limit) is not int or limit <= 0:
-        raise CloudError('The output token limit must be a positive integer.',
-                         400, 'invalid_value', field)
-    body.pop('max_tokens', None)
-    body.pop('max_completion_tokens', None)
-    body[field] = min(limit, maximum)
+    field = 'max_completion_tokens' if 'max_completion_tokens' in payload else 'max_tokens'
+    # Resolve alias precedence once; admission receives this normalized body.
+    body[field] = _max_tokens(payload, item)
     for field in ('cache_prompt', 'n_predict', 'id_slot', 'slot',
                   'ignore_eos', 'typical_p', 'min_p', 'repeat_penalty', 'top_k'):
         body.pop(field, None)
     if item['provider'] == 'openrouter':
-        prefs = body.get('provider') if isinstance(body.get('provider'), dict) else {}
-        body['provider'] = {**prefs, 'zdr': True, 'data_collection': 'deny'}
+        body['provider'] = {'zdr': True, 'data_collection': 'deny'}
     return body
 
 
@@ -803,8 +812,7 @@ def upstream_payload(payload, item, key=None):
     elif isinstance(kwargs, dict) and isinstance(kwargs.get('enable_thinking'), bool):
         body['reasoning_effort'] = 'high' if kwargs['enable_thinking'] else 'none'
     if body.get('stream') is True:
-        options = body.get('stream_options') if isinstance(body.get('stream_options'), dict) else {}
-        body['stream_options'] = {**options, 'include_usage': True}
+        body['stream_options'] = {'include_usage': True}
     return body
 
 

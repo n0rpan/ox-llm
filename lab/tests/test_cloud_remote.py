@@ -175,7 +175,7 @@ class Routing(CloudCase):
             'provider': {'zdr': False, 'data_collection': 'allow', 'order': ['x']}})
         self.assertEqual(status, 200)
         self.assertEqual(self.upstream.requests[0]['body']['provider'],
-                         {'zdr': True, 'data_collection': 'deny', 'order': ['x']})
+                         {'zdr': True, 'data_collection': 'deny'})
 
     def test_key_is_redacted_from_an_upstream_error_and_never_written_to_the_ledger(self):
         bad = MockOpenRouter(status=500, error='provider rejected Authorization: Bearer ' + KEY)
