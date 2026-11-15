@@ -175,3 +175,52 @@ fn gh_source_inside_a_cwd_under_home_is_unreadable_in_a_real_sandbox() {
     let out = String::from_utf8_lossy(&res.output).into_owned();
     assert!(!out.contains(SENTINEL), "token leaked: {out}");
 }
+
+/// N28: every gh token-store mask comes after ALL binds that could cover it.
+fn assert_no_bind_after_gh_masks(a: &[String]) {
+    let masks: Vec<usize> = (0..a.len().saturating_sub(2))
+        .filter(|&i| a[i] == "--ro-bind" && a[i + 1].ends_with("/empty") && a[i + 2].ends_with("/hosts.yml"))
+        .collect();
+    assert!(!masks.is_empty(), "no gh mask in {a:?}");
+    for m in masks {
+        let dst = Path::new(&a[m + 2]);
+        for j in m + 3..a.len().saturating_sub(2) {
+            if matches!(a[j].as_str(), "--bind" | "--ro-bind" | "--tmpfs") {
+                let d = if a[j] == "--tmpfs" { &a[j + 1] } else { &a[j + 2] };
+                assert!(
+                    !dst.starts_with(Path::new(d)),
+                    "bind {d} after mask {dst:?}: {a:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn no_bind_covering_a_gh_mask_follows_it() {
+    let env = TestEnv::new();
+    let (_gh, _src) = symlink_setup(&env);
+    std::fs::create_dir_all(env.work().join(".git")).unwrap();
+    assert_no_bind_after_gh_masks(&bwrap_args(&spec("true", &env.work()), &env.home()));
+    let env2 = TestEnv::new();
+    let (cwd, _g, _s) = inside_home_setup(&env2);
+    std::fs::create_dir_all(cwd.join(".git")).unwrap();
+    assert_no_bind_after_gh_masks(&bwrap_args(&spec("true", &cwd), &env2.home()));
+}
+
+#[test]
+fn gh_source_under_cwd_dot_git_is_masked_after_the_dot_git_bind() {
+    let env = TestEnv::new();
+    let src = env.work().join(".git/ghcfg");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("hosts.yml"), SENTINEL).unwrap();
+    std::fs::write(src.join("config.yml"), "editor: vi").unwrap();
+    std::fs::create_dir_all(env.home().join(".config")).unwrap();
+    std::os::unix::fs::symlink(&src, env.home().join(".config/gh")).unwrap();
+    let a = bwrap_args(&spec("true", &env.work()), &env.home());
+    assert_no_bind_after_gh_masks(&a);
+    let Some(sb) = sandbox(&env) else { return };
+    let cmd = format!("cat '{0}/hosts.yml' 2>&1; true", src.display());
+    let out = run(&sb, &env, &cmd);
+    assert!(!out.contains(SENTINEL), "token leaked: {out}");
+}
