@@ -104,6 +104,19 @@ fn exhausted() -> Refusal {
     }
 }
 impl Budget {
+    /// Serialize an unpaid refusal with paid settlements. A failed audit append
+    /// closes admission too; it never releases or creates a reservation.
+    pub(crate) fn write_unpaid(&self, write: impl FnOnce() -> io::Result<()>) -> Result<(), Refusal> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.failed {
+            return Err(Refusal::ledger());
+        }
+        let result = write();
+        if result.is_err() {
+            state.failed = true;
+        }
+        result.map_err(|_| Refusal::ledger())
+    }
     /// One instance per daily ledger path; share it across all request tasks.
     pub fn new(path: PathBuf) -> Self {
         Self {

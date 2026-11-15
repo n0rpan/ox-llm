@@ -153,8 +153,7 @@ models. The native client's async entrypoint composes these methods:
 Nine new native integration tests exercise this orchestration without network
 or an engine. This is not yet the complete async client: the rust-upstreams lane
 provides Anthropic HTTP/stream I/O and the Engine bridge, and the runner lane
-drives that actual async entrypoint against its shared owned mock. Refusal-row
-recording before admission, replay/history, retention and other providers remain
+drives that actual async entrypoint against its shared owned mock. Replay/history, retention and other providers remain
 incomplete; the existing policy contracts still run. No Python feature changes.
 This library lives inside oxa's product tree, so oxa can consume it in-process
 without a path dependency leaving that tree. It has its own workspace and lock,
@@ -163,3 +162,16 @@ controller can depend on the same source from its separate workspace. Both entry
 points retain the same policy, key and settlement implementation; transport
 adapters supply trusted caller metadata. Default features remain empty, and
 moving the library does not enable a listener or change the default engine.
+
+Known Anthropic admission refusals now append one private remote row with zero
+spend and `settled: not_forwarded`, while preserving the original error. The
+audit uses the original request metadata and the same serialized daily budget
+writer as settlements. A failed audit append blocks later spending; disabled
+ledger policy creates no ledger files. Default-off and unknown/non-Anthropic
+requests create no remote audit.
+
+Seven new contracts project actual Python refusal-recorder/private-file output,
+complementing the existing live HTTP policy contracts. The native peer triggers
+actual Runtime failures; six cases failed before the fix because their rows
+were missing. An extra native regression covers a failed unpaid append, original
+credential refusal preservation, and blocked spending after key creation.

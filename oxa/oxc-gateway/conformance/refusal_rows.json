@@ -1,0 +1,109 @@
+{
+  "disabled-ledger": {
+    "code": "cloud_ledger_unavailable",
+    "rows": [],
+    "status": 503
+  },
+  "exhausted": {
+    "code": "budget_exceeded",
+    "rows": [
+      {
+        "cost_usd": 0.0,
+        "error": "budget_exceeded",
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "origin": "lab",
+        "remote": true,
+        "remote_provider": "anthropic",
+        "settled": "not_forwarded",
+        "status": 429
+      }
+    ],
+    "status": 429
+  },
+  "invalid-limit": {
+    "code": "invalid_value",
+    "rows": [
+      {
+        "cost_usd": 0.0,
+        "error": "invalid_value",
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "origin": "lab",
+        "remote": true,
+        "remote_provider": "anthropic",
+        "settled": "not_forwarded",
+        "status": 400
+      }
+    ],
+    "status": 400
+  },
+  "missing-budget": {
+    "code": "budget_not_configured",
+    "rows": [
+      {
+        "cost_usd": 0.0,
+        "error": "budget_not_configured",
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "origin": "lab",
+        "remote": true,
+        "remote_provider": "anthropic",
+        "settled": "not_forwarded",
+        "status": 403
+      }
+    ],
+    "status": 403
+  },
+  "missing-key": {
+    "code": "cloud_credentials_unavailable",
+    "rows": [
+      {
+        "cost_usd": 0.0,
+        "error": "cloud_credentials_unavailable",
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "origin": "lab",
+        "remote": true,
+        "remote_provider": "anthropic",
+        "settled": "not_forwarded",
+        "status": 503
+      }
+    ],
+    "status": 503
+  },
+  "offline": {
+    "code": "offline",
+    "rows": [
+      {
+        "cost_usd": 0.0,
+        "error": "offline",
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "origin": "lab",
+        "remote": true,
+        "remote_provider": "anthropic",
+        "settled": "not_forwarded",
+        "status": 403
+      }
+    ],
+    "status": 403
+  },
+  "unknown-price": {
+    "code": "cloud_pricing_unavailable",
+    "rows": [
+      {
+        "cost_usd": 0.0,
+        "error": "cloud_pricing_unavailable",
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "origin": "lab",
+        "remote": true,
+        "remote_provider": "anthropic",
+        "settled": "not_forwarded",
+        "status": 400
+      }
+    ],
+    "status": 400
+  }
+}
