@@ -48,6 +48,8 @@ def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, f
 
     ``cancelled`` = (request_bytes, streamed_bytes) for a client cancel: settled at actual usage
     or an estimate of what was streamed."""
+    if hold is not None and hold.settled:
+        return  # A client write can fail after this request was durably accounted.
     row = meter.row(item, secret)
     if cancelled is not None:
         # OpenAI/OpenRouter report usage only in the closing chunk, so any usage seen is final.
@@ -211,8 +213,9 @@ def forward(self, st):
         payload = cloud.redact(payload, key)
         if st.led is not None:
             st.led.observe(payload)
-        self.reply(response.status, payload, 'application/json')
+        # Complete accounting before the client can start its next request.
         _finish(self, st, item, meter, response.status, hold=hold, secret=key)
+        self.reply(response.status, payload, 'application/json')
     except cloud.CloudError as error:
         _finish(self, st, item, meter, error.status, error.code, hold, key, failed=True)
         if started:
