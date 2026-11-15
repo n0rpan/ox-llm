@@ -189,29 +189,20 @@ pub fn approval_files(cwd: &Path) -> Vec<PathBuf> {
 }
 
 /// Every regular file below `dir` (symlinks are not followed: a link is hashed as its target
-/// path).
+/// path). Iterative with no depth limit, so approval covers every file the loaders can find.
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    walk_to(dir, out, MAX_WALK_DEPTH);
-}
-
-/// Directories deeper than this below a skills/extensions/prompts root are not followed (a
-/// pathological tree must not overflow the stack at start).
-const MAX_WALK_DEPTH: usize = 64;
-
-fn walk_to(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in rd.flatten() {
-        let p = e.path();
-        match e.file_type() {
-            Ok(t) if t.is_dir() => {
-                if depth > 0 {
-                    walk_to(&p, out, depth - 1);
-                }
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(p),
+                Ok(_) => out.push(p),
+                Err(_) => {}
             }
-            Ok(_) => out.push(p),
-            Err(_) => {}
         }
     }
 }

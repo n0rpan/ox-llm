@@ -257,9 +257,10 @@ fn save_waits_for_the_trust_file_lock() {
     assert_eq!(TrustStore::load(&file).lookup(&work), Some(true));
 }
 
-/// #211: a very deep skills tree is cut at a depth limit instead of recursing without bound.
+/// #261 review: a very deep skill file is still approved (the skill loader finds it too), and
+/// the walk does not overflow the stack.
 #[test]
-fn approval_walk_has_a_depth_limit() {
+fn approval_walk_covers_deep_trees() {
     let env = TestEnv::new();
     let work = env.work();
     let mut deep = work.join(".oxa").join("skills");
@@ -273,5 +274,8 @@ fn approval_walk_has_a_depth_limit() {
     std::fs::write(shallow.join("SKILL.md"), "x").expect("write");
     let files = oxa_perm::approval_files(&work);
     assert!(files.contains(&shallow.join("SKILL.md")));
-    assert!(!files.iter().any(|f| f.ends_with("d/SKILL.md")), "{files:?}");
+    assert!(
+        files.contains(&deep.join("SKILL.md")),
+        "deep skill must be approved"
+    );
 }
