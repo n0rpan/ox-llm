@@ -1158,7 +1158,9 @@ class CloudStream:
                         if isinstance(function.get('name'), str):
                             self.names[slot] = self.names.get(slot, '') + function.pop('name')
                         if isinstance(function.get('arguments'), str):
-                            if slot in self.names:
+                            # _normalize_calls fills a missing arguments with '': only real
+                            # argument text proves the name is complete.
+                            if function['arguments'] and slot in self.names:
                                 function['name'] = self.names.pop(slot)
                             function['arguments'] = self._fragment(index, 'arguments', function['arguments'],
                                                                    call.get('index', 0))
