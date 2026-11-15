@@ -107,11 +107,7 @@ fn runtime_fixture_uses_a_real_owner_only_key_file_outside_the_repository() {
     assert_eq!(key.expose(), CREDENTIAL);
     assert!(!format!("{key:?}").contains(CREDENTIAL));
     assert_eq!(
-        std::fs::metadata(&fixture.key_path)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
+        std::fs::metadata(&fixture.key_path).unwrap().permissions().mode() & 0o777,
         0o600
     );
     assert_eq!(
