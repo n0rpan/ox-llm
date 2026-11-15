@@ -1,7 +1,8 @@
 # Opt-in orchestrator foundations
 
-First independently testable slice of rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
-Only private audit storage is present here. No worker, listener, CLI command,
+Independently testable foundations from rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
+Private audit storage, approved text snapshots and private review copies are
+present here. No worker, listener, CLI command,
 recovery/replay operation, installed service or inference route is enabled.
 
 The `core` feature exports `AuditJournal`. Its caller explicitly supplies a new
@@ -37,6 +38,54 @@ cargo clippy -p oxa-orchestrator --all-targets -- -D warnings
 
 Normal builds leave `core` off. The test-only self dependency enables it for the
 ordinary workspace test command too, so CI's default test inventory includes the
-seven actual filesystem/fork regressions. Existing binaries do not depend on this
+seventeen actual filesystem/fork/workspace regressions. Existing binaries do not depend on this
 crate. No workflow or scanner change is needed. See [slice plan](SLICES.md) for
 the remaining dependency order and preserved rollup sources.
+
+## Explicit source snapshots
+
+With `core`, `workspace::Snapshot::approve(root, paths)` captures only selected
+UTF-8 files. The caller must first approve those contents for delegation;
+filename filtering cannot establish that arbitrary source text is secret-free.
+This operation grants no worker access and performs no writes or execution.
+`text` returns a selected in-memory value, and `paths` lists the approved names.
+Later source edits do not change the snapshot. Debug prints only the file count
+and manifest digest, never paths or content.
+
+`RelativePath` validates construction and JSON deserialization, rejecting traversal,
+absolute paths, control characters, empty components, backslashes and protected
+credential/configuration names. Bounds are 32 files, 256 KiB per file, 1 MiB total,
+16 nested directories and 128 virtual tree entries. Unselected source entries do
+not count or get read. The root itself is explicitly selected and canonicalized;
+symlinks below that root are refused, including ancestor directories. Files must
+be plain single-link files on the root filesystem. Linux O_PATH/openat validation
+precedes opening the pinned inode through `/proc/self/fd`, so a FIFO is rejected
+without blocking. Metadata changes during the bounded read cause refusal. This
+is not an atomic multi-file repository snapshot; the caller approves a quiescent
+source. The deterministic manifest hashes sorted path/content-digest pairs.
+
+## Private copies and review data
+
+`Grant::read_only` and `Grant::editing` retain an immutable snapshot. An editing
+grant names every eligible new file and refuses duplicate paths and file/parent
+collisions. `Arc<Grant>::materialize` creates a fresh mode-0700 tree beneath a
+private operator-owned parent, containing only approved mode-0600 text files.
+Creation is bound to the validated parent inode. Existing names are never
+replaced. A failed materialization may leave a partial tree; the caller decides
+how to clean up that owned path. Same-UID/root remains the namespace boundary.
+
+After stopping and reaping the worker, the trusted controller calls `collect`.
+The library cannot establish that process-lifecycle precondition itself. It
+refuses changed read-only copies, unapproved files, executable files, symlinks,
+hardlinks, special files and oversized/deep/excessive trees. These grants govern
+review eligibility; a future supervisor must separately confine a worker's tools
+and mount access. No worker or sandbox integration is added in this slice.
+
+A versioned `ReviewBundle` contains selected before/after text, digests and a
+linear-time deterministic diff. Its serialized size is bounded to 128 KiB.
+Raw review data intentionally includes approved source content; callers must not
+log or forward it as metadata. Bound an untrusted transport before deserializing.
+`verify` checks the original manifest, allowed paths, digests, duplicate changes
+and diff/content agreement; then `verify_current_base` checks source freshness.
+Neither operation applies edits, provides an atomic apply lock or authorizes
+publication. Git worktrees and publication remain later slices.
