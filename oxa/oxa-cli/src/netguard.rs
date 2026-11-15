@@ -52,8 +52,16 @@ fn trusted_gh_for(
         let under_home = |x: &Path| x.starts_with(&h) || x.starts_with(home.unwrap_or(&h));
         !(under_home(d) || under_home(&dc)) || allowed.iter().any(|a| dc.starts_with(a))
     };
-    let kept: Vec<std::path::PathBuf> = std::env::split_paths(path?).filter(|d| ok(d)).collect();
-    trusted_gh(Some(&std::env::join_paths(kept).ok()?), None)
+    // The final executable must resolve to an allowed place too; otherwise keep searching.
+    let file_ok = |f: &Path| {
+        let fc = canon(f);
+        let under_home = |x: &Path| x.starts_with(&h) || x.starts_with(home.unwrap_or(&h));
+        !(under_home(f) || under_home(&fc)) || allowed.iter().any(|a| fc.starts_with(a))
+    };
+    std::env::split_paths(path?)
+        .filter(|d| ok(d))
+        .filter_map(|d| trusted_gh(Some(d.as_os_str()), None))
+        .find(|f| file_ok(f))
 }
 
 /// The directories below `~` where a user installs their own tools.
@@ -121,7 +129,13 @@ fn trusted_gh(path: Option<&std::ffi::OsStr>, cwd: Option<&Path>) -> Option<std:
                 && std::fs::metadata(&dc).is_ok_and(|m| m.permissions().mode() & 0o022 == 0)
         })
         .map(|d| d.join("gh"))
-        .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+        .find(|p| {
+            // The file's own resolved target must not lie in the project either.
+            let pc = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            !cwd.is_some_and(|c| pc.starts_with(c))
+                && !cwd_c.as_ref().is_some_and(|c| pc.starts_with(c))
+                && std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
 }
 
 /// The setting that allows an engine host that is not loopback (P3). Read from the user's
@@ -250,6 +264,58 @@ mod tests {
         std::os::unix::fs::symlink(&proj, lb.join("bin")).unwrap();
         let q = std::env::join_paths([lb.join("bin").to_str().unwrap()]).unwrap();
         assert_eq!(trusted_gh_for(Some(&q), Some(&home), Some(&home)), None);
+    }
+
+    /// P1: the final executable is checked, not just its directory.
+    #[test]
+    fn cwd_home_refuses_a_gh_symlink_into_a_project_file() {
+        let d = tmp("ghlink");
+        let home = d.join("home");
+        let proj = home.join("project/bin");
+        let lb = home.join(".local/bin");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&lb).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        std::os::unix::fs::symlink(proj.join("gh"), lb.join("gh")).unwrap();
+        let p = std::env::join_paths([lb.to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh_for(Some(&p), Some(&home), Some(&home)), None);
+    }
+
+    /// Control: a real gh, and a symlink to another file inside the allowed dir, still work.
+    #[test]
+    fn cwd_home_accepts_a_real_gh_and_an_in_dir_symlink() {
+        let d = tmp("ghreal");
+        let home = d.join("home");
+        let lb = home.join(".local/bin");
+        std::fs::create_dir_all(&lb).unwrap();
+        script(&lb, "gh", "echo GOOD");
+        let p = std::env::join_paths([lb.to_str().unwrap()]).unwrap();
+        assert_eq!(
+            trusted_gh_for(Some(&p), Some(&home), Some(&home)),
+            Some(lb.join("gh"))
+        );
+        let lb2 = home.join(".cargo/bin");
+        std::fs::create_dir_all(&lb2).unwrap();
+        script(&lb2, "gh-real", "echo GOOD");
+        std::os::unix::fs::symlink(lb2.join("gh-real"), lb2.join("gh")).unwrap();
+        let q = std::env::join_paths([lb2.to_str().unwrap()]).unwrap();
+        assert_eq!(
+            trusted_gh_for(Some(&q), Some(&home), Some(&home)),
+            Some(lb2.join("gh"))
+        );
+    }
+
+    /// A `gh` symlink in a good directory that points into the project is refused too.
+    #[test]
+    fn a_gh_symlink_into_the_project_is_refused() {
+        let d = tmp("projlink");
+        let (proj, good) = (d.join("proj"), d.join("good"));
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        std::os::unix::fs::symlink(proj.join("gh"), good.join("gh")).unwrap();
+        let p = std::env::join_paths([good.to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh(Some(&p), Some(&proj)), None);
     }
 
     #[test]
