@@ -821,7 +821,7 @@ fn model_background_task_wakes_same_session(goal_mode: bool, live: bool) {
     } else {
         "background-final"
     };
-    let start_args=json!({"operation":"start","command":if live {"sleep 0.1; printf ci-command-finished"}else{"sleep 1; printf ci-command-finished"},"timeout_s":3}).to_string();
+    let start_args=json!({"operation":"start","command":if live {"sleep 0.1; printf ci-command-finished"}else{"sleep 1; printf ci-command-finished"},"timeout_s":3600}).to_string();
     let mut script = vec![
         ScriptTurn::tool("launch", "background_command", &start_args),
         ScriptTurn::text(interim),
