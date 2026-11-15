@@ -327,3 +327,72 @@ fn a_reader_rejection_does_not_replace_an_earlier_accepted_prompt_failure() {
     );
     assert_result(&output, 3, "blocked", Some("budget_exhausted"));
 }
+
+#[test]
+fn a_later_broken_output_pipe_keeps_the_first_failure() {
+    use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
+    struct ClosedOutput;
+    impl Write for ClosedOutput {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let env = TestEnv::new();
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::fault(Fault::Http {
+                status: 429,
+                body: json!({"error":{"code":"budget_exceeded","message":"Daily budget exhausted"}})
+                    .to_string(),
+            }),
+            ScriptTurn::text("finished"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let owned = env.envs(&server.url());
+    let pairs: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let err = Capture::default();
+    let code = oxa_cli::run(
+        &["-p", "--no-session", "--no-tools", "first", "second"].map(String::from),
+        &oxa_config::Env::from_pairs(&pairs),
+        oxa_cli::Stdio {
+            stdin: Box::new(Cursor::new(Vec::new())),
+            stdout: Box::new(ClosedOutput),
+            stderr: Box::new(err.clone()),
+            stdin_is_tty: false,
+            stdout_is_tty: false,
+            cwd: env.work(),
+        },
+    );
+    let stderr = String::from_utf8(err.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(code, 3, "{stderr}");
+    let result: Value = stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|record| record["type"] == "oxa_result")
+        .unwrap();
+    assert_eq!(result["error_class"], "budget_exhausted");
+    assert!(
+        stderr.contains("cannot write the reply"),
+        "the pipe failure remains visible"
+    );
+}
