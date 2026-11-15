@@ -196,7 +196,12 @@ pub(crate) fn bwrap_args_homes(
     // sbx-gitsym: checked again for every command (the session may run long): a git directory
     // whose protected entries are not plain (`gitdirs::unsafe_reason`) is never read-write, and
     // then none of them is (no masks either: nothing can be created in a read-only bind).
-    let git_writable = writable && layout.git.rw.iter().all(|d| unsafe_reason(d).is_none());
+    let git_writable = writable
+        && layout.git.rw.iter().all(|d| {
+            // A vanished git directory (`git worktree prune`) could be recreated with its own
+            // config and hooks inside the writable common dir: then all of them are read-only.
+            std::fs::symlink_metadata(d).is_ok() && unsafe_reason(d).is_none()
+        });
     let git_rw = if git_writable { "--bind" } else { "--ro-bind" };
     for p in layout
         .git
