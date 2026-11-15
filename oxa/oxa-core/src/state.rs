@@ -74,4 +74,7 @@ pub struct SessionState {
     /// In-memory compaction memory (the pending idle summary, the cancel count of the R4
     /// fallback). Never persisted; `Default` = empty.
     pub compact_memo: crate::compaction::CompactMemo,
+    /// The background-job registry the `bash` tool shares with this session (issue #127 (b)).
+    /// Killed on `Session::close` / `shutdown`.
+    pub jobs: Arc<oxa_tools::JobRegistry>,
 }

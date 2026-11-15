@@ -1,15 +1,18 @@
 //! A9: the `bash` tool. Owner: task A9. Signatures below are frozen; bodies are yours.
 // ported from pi packages/coding-agent/src/core/tools/bash.ts (execution replaced by the sandbox)
 use crate::descriptions::{self, errors};
+use crate::jobs::JobRegistry;
 use oxa_proto::{Access, ExecSpec, Mode, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// `bash {command, timeout?}`: runs through `ToolCtx::sandbox` (never directly). `writable` = mode is not Plan; `net` = [`net_for`] (O-167(b): the sandbox network by mode and `oxa.sandbox.net`; `access` keeps `net: false`). Output streams to `live`; the result text is the merged output plus pi's exit-code / timeout lines; no timing text (W4). If `sandbox.check()` fails the result is that error (`is_error`). `ToolOutput::ui` = `{"exit": n|null, "timedOut": bool}`. Environment: `ToolCtx::env`.
 #[derive(Debug, Clone)]
 pub struct BashTool {
     spec: ToolSpec,
     shell: ShellConfig,
+    jobs: Arc<JobRegistry>,
 }
 
 impl BashTool {
@@ -17,6 +20,7 @@ impl BashTool {
         BashTool {
             spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell: ShellConfig::default(),
+            jobs: Arc::new(JobRegistry::new()),
         }
     }
     /// H: the tool with pi's `shellPath` / `shellCommandPrefix` settings.
@@ -24,6 +28,15 @@ impl BashTool {
         BashTool {
             spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
+            jobs: Arc::new(JobRegistry::new()),
+        }
+    }
+    /// Issue #127 (b): the tool with `shell` and a shared [`JobRegistry`] (the session's).
+    pub fn with_shell_and_jobs(shell: ShellConfig, jobs: Arc<JobRegistry>) -> BashTool {
+        BashTool {
+            spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
+            shell,
+            jobs,
         }
     }
 }
@@ -87,34 +100,61 @@ impl Default for BashTool {
 
 /// The validated arguments of one call.
 #[derive(Debug, Clone, PartialEq)]
-struct BashArgs {
-    command: String,
-    /// Whole seconds, rounded up; `None` = no timeout.
-    timeout_s: Option<u32>,
+enum BashArgs {
+    /// Run `command` (foreground, or detached when `background`).
+    Run {
+        command: String,
+        /// Whole seconds, rounded up; `None` = no timeout.
+        timeout_s: Option<u32>,
+        background: bool,
+    },
+    /// Read the status and output of a background job.
+    Job { id: String },
 }
 
 /// pi's validation text for a missing required property (TypeBox's message, verbatim shape).
 const MISSING_COMMAND: &str =
     "Validation failed for tool \"bash\":\n  - must have required property 'command'";
 
+/// Issue #127 (b): exactly one of `command` / `job` must be given.
+const COMMAND_OR_JOB: &str =
+    "Provide exactly one of \"command\" (to run) or \"job\" (to read a background job)";
+const BACKGROUND_NEEDS_COMMAND: &str =
+    "\"background\" applies to a command; provide \"command\", not \"job\"";
+
 fn parse(args: &Value) -> Result<BashArgs, String> {
-    let command = args
-        .get("command")
-        .and_then(Value::as_str)
-        .ok_or_else(|| MISSING_COMMAND.to_string())?
-        .to_string();
-    let timeout_s = match args.get("timeout") {
-        None | Some(Value::Null) => None,
-        Some(v) => {
-            // pi: a finite number of seconds greater than zero, else refused.
-            let t = v
-                .as_f64()
-                .filter(|t| t.is_finite() && *t > 0.0)
-                .ok_or_else(|| errors::BASH_BAD_TIMEOUT.to_string())?;
-            Some(t.ceil().min(f64::from(u32::MAX)) as u32)
+    let command = args.get("command").and_then(Value::as_str);
+    let job = args.get("job").and_then(Value::as_str);
+    let background = args.get("background").and_then(Value::as_bool).unwrap_or(false);
+
+    match (command, job) {
+        (Some(_), Some(_)) => Err(COMMAND_OR_JOB.to_string()),
+        (None, None) => Err(MISSING_COMMAND.to_string()),
+        (Some(command), None) => {
+            let timeout_s = match args.get("timeout") {
+                None | Some(Value::Null) => None,
+                Some(v) => {
+                    // pi: a finite number of seconds greater than zero, else refused.
+                    let t = v
+                        .as_f64()
+                        .filter(|t| t.is_finite() && *t > 0.0)
+                        .ok_or_else(|| errors::BASH_BAD_TIMEOUT.to_string())?;
+                    Some(t.ceil().min(f64::from(u32::MAX)) as u32)
+                }
+            };
+            Ok(BashArgs::Run {
+                command: command.to_string(),
+                timeout_s,
+                background,
+            })
         }
-    };
-    Ok(BashArgs { command, timeout_s })
+        (None, Some(id)) => {
+            if background {
+                return Err(BACKGROUND_NEEDS_COMMAND.to_string());
+            }
+            Ok(BashArgs::Job { id: id.to_string() })
+        }
+    }
 }
 
 /// Split off the longest prefix of `pending` that is valid UTF-8 (keeping an incomplete trailing
@@ -210,23 +250,100 @@ impl Tool for BashTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
     }
-    /// `[Access::Exec { command, net: false }]`.
+    /// `[Access::Exec { command, net: false }]` for a run; nothing for a job read.
     fn access(&self, args: &Value, _cx: &ToolCtx) -> Result<Vec<Access>, String> {
-        let a = parse(args)?;
-        Ok(vec![Access::Exec {
-            command: a.command,
-            net: false,
-        }])
+        match parse(args)? {
+            BashArgs::Run { command, .. } => Ok(vec![Access::Exec { command, net: false }]),
+            BashArgs::Job { .. } => Ok(Vec::new()),
+        }
     }
     fn run(&self, args: &Value, cx: &ToolCtx, live: &mut dyn FnMut(&str)) -> ToolOutput {
         let a = match parse(args) {
             Ok(a) => a,
             Err(e) => return ToolOutput::error(e),
         };
+        match a {
+            BashArgs::Job { id } => self.read_job(&id),
+            BashArgs::Run {
+                command,
+                timeout_s,
+                background,
+            } => {
+                if background {
+                    return self.start_job(&command, cx);
+                }
+                self.run_foreground(&command, timeout_s, cx, live)
+            }
+        }
+    }
+}
+
+impl BashTool {
+    /// Issue #127 (b): read a background job's status and the last 8 KiB of its output.
+    fn read_job(&self, id: &str) -> ToolOutput {
+        match self.jobs.read(id) {
+            Ok(read) => {
+                let text = if read.output.is_empty() {
+                    format!("Job {id}: {}", read.status.text())
+                } else {
+                    format!("Job {id}: {}\n\n{}", read.status.text(), read.output)
+                };
+                ToolOutput {
+                    text,
+                    is_error: false,
+                    ui: json!({ "job": id, "status": read.status.text() }),
+                }
+            }
+            Err(e) => ToolOutput::error(e),
+        }
+    }
+
+    /// Issue #127 (b): start `command` detached and return its job id at once.
+    fn start_job(&self, command: &str, cx: &ToolCtx) -> ToolOutput {
         if let Err(e) = cx.sandbox.check() {
             return ToolOutput::error(e.to_string());
         }
-        let command = match self.shell.command(&a.command) {
+        let command = match self.shell.command(command) {
+            Ok(c) => c,
+            Err(e) => return ToolOutput::error(e),
+        };
+        let spec = ExecSpec {
+            command,
+            cwd: cx.cwd.to_path_buf(),
+            writable: !matches!(cx.mode, Mode::Plan),
+            net: net_for(cx.mode, cx.sandbox.network()),
+            // A background job has no timeout: it runs until it exits or the session ends.
+            timeout_s: None,
+            env: cx.env.to_vec(),
+        };
+        match self.jobs.spawn(spec) {
+            Ok(id) => ToolOutput {
+                text: format!(
+                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}."
+                ),
+                is_error: false,
+                ui: json!({ "job": id }),
+            },
+            Err(e) => ToolOutput::error(e),
+        }
+    }
+
+    /// The existing foreground path, unchanged except that the "background processes were
+    /// stopped" notice is never printed for a `background: true` start (which never reaches
+    /// here).
+    fn run_foreground(
+        &self,
+        command: &str,
+        timeout_s: Option<u32>,
+        cx: &ToolCtx,
+        live: &mut dyn FnMut(&str),
+    ) -> ToolOutput {
+        if let Err(e) = cx.sandbox.check() {
+            return ToolOutput::error(e.to_string());
+        }
+        let backgrounded = looks_backgrounded(command);
+        let raw_command = command;
+        let command = match self.shell.command(command) {
             Ok(c) => c,
             Err(e) => return ToolOutput::error(e),
         };
@@ -236,9 +353,7 @@ impl Tool for BashTool {
             writable: !matches!(cx.mode, Mode::Plan),
             net: net_for(cx.mode, cx.sandbox.network()),
             // F5: the call's own timeout wins; else the epoch's default (0 = none, pi).
-            timeout_s: a
-                .timeout_s
-                .or_else(|| (cx.tune.bash_timeout_s > 0).then_some(cx.tune.bash_timeout_s)),
+            timeout_s: timeout_s.or_else(|| (cx.tune.bash_timeout_s > 0).then_some(cx.tune.bash_timeout_s)),
             env: cx.env.to_vec(),
         };
         let mut pending: Vec<u8> = Vec::new();
@@ -255,8 +370,8 @@ impl Tool for BashTool {
         }
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
-        let persistence_relevant = a.command.contains("/tmp")
-            || a.command.contains("TMPDIR")
+        let persistence_relevant = raw_command.contains("/tmp")
+            || raw_command.contains("TMPDIR")
             || (res.exit != Some(0)
                 && [
                     "read-only file system",
@@ -276,7 +391,7 @@ impl Tool for BashTool {
             output
         };
         // A trailing `&` or `nohup` means the shell's children were cut off at the end of the call.
-        let output = if looks_backgrounded(&a.command) {
+        let output = if backgrounded {
             if output.is_empty() {
                 errors::BASH_BACKGROUND_STOPPED.to_string()
             } else {
@@ -761,5 +876,176 @@ echo '\''a'\'''"#
         assert!(out.text.starts_with("x  \n"), "{:?}", out.text);
         assert!(out.text.ends_with("Command exited with code 3"), "{:?}", out.text);
         assert_eq!(out.ui, json!({"exit": 3, "timedOut": false}));
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Issue #127 (b): background jobs.
+
+    /// A sandbox that blocks until its cancel token is set, then reports "killed".
+    struct Blocking {
+        seen: Mutex<Option<ExecSpec>>,
+    }
+
+    impl Sandbox for Blocking {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+            *self.seen.lock().unwrap() = Some(s.clone());
+            live(b"started\n");
+            while !c.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            ExecResult {
+                output: b"started\n".to_vec(),
+                exit: None,
+                timed_out: false,
+            }
+        }
+    }
+
+    /// Build a `BashTool` sharing `jobs` with a sandbox, and run one call.
+    fn run_job_tool(tool: &BashTool, sb: &dyn Sandbox, args: Value) -> ToolOutput {
+        let cwd = Path::new("/work");
+        let env: Vec<(String, String)> = Vec::new();
+        let cancel = CancelToken::new();
+        let cx = ToolCtx {
+            cwd,
+            spill_dir: cwd,
+            sandbox: sb,
+            mode: Mode::Workspace,
+            cancel: &cancel,
+            env: &env,
+            tune: Default::default(),
+        };
+        tool.run(&args, &cx, &mut |_| {})
+    }
+
+    #[test]
+    fn background_start_returns_a_job_id() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+        assert!(!out.is_error, "{:?}", out.text);
+        assert_eq!(out.ui, json!({"job": "job-1"}));
+        assert!(
+            out.text.contains("Started background job job-1"),
+            "{:?}",
+            out.text
+        );
+        jobs.kill_all();
+    }
+
+    #[test]
+    fn job_read_returns_status_and_output() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let _ = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let out = run_job_tool(&tool, &*sb, json!({"job": "job-1"}));
+        assert!(!out.is_error, "{:?}", out.text);
+        assert_eq!(out.ui, json!({"job": "job-1", "status": "running"}));
+        assert!(out.text.starts_with("Job job-1: running"), "{:?}", out.text);
+        assert!(out.text.contains("started"), "{:?}", out.text);
+        jobs.kill_all();
+    }
+
+    #[test]
+    fn job_read_unknown_is_an_error() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let out = run_job_tool(&tool, &*sb, json!({"job": "job-99"}));
+        assert!(out.is_error);
+        assert_eq!(out.text, "Unknown job: job-99");
+    }
+
+    #[test]
+    fn background_with_job_is_refused() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        // `background` with a `job` (and no `command`) is refused.
+        let out = run_job_tool(&tool, &*sb, json!({"job": "job-1", "background": true}));
+        assert!(out.is_error);
+        assert_eq!(out.text, BACKGROUND_NEEDS_COMMAND);
+        // Both `command` and `job` is refused as "exactly one".
+        let out = run_job_tool(&tool, &*sb, json!({"command": "x", "job": "job-1"}));
+        assert!(out.is_error);
+        assert_eq!(out.text, COMMAND_OR_JOB);
+    }
+
+    #[test]
+    fn neither_command_nor_job_is_missing_command() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let out = run_job_tool(&tool, &*sb, json!({}));
+        assert!(out.is_error);
+        assert_eq!(out.text, MISSING_COMMAND);
+    }
+
+    #[test]
+    fn fifth_job_is_refused() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        for _ in 0..4 {
+            let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+            assert!(!out.is_error, "{:?}", out.text);
+        }
+        let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+        assert!(out.is_error);
+        assert!(out.text.contains("At most 4 background jobs"), "{:?}", out.text);
+        jobs.kill_all();
+    }
+
+    #[test]
+    fn session_end_kills_jobs() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let _ = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        jobs.kill_all();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let out = run_job_tool(&tool, &*sb, json!({"job": "job-1"}));
+            if out.ui == json!({"job": "job-1", "status": "killed"}) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "job did not settle as killed: {:?}",
+                out.text
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
