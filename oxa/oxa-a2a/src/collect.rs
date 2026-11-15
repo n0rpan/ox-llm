@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 
+#[derive(Clone)]
 pub struct Collector {
     task: Option<Task>,
     message: Option<MessageObject>,
@@ -42,11 +43,27 @@ impl Collector {
         if self.failed {
             return Err(invalid("collector already failed"));
         }
-        let result = self.apply_inner(event);
-        if result.is_err() {
-            self.failed = true;
+        self.stage(event, false)
+    }
+
+    // The retained state stays within its bound even after a rejected update.
+    // Staging temporarily duplicates only the previously bounded state; the
+    // incoming event and candidate result are each checked before publication.
+    fn stage(&mut self, event: Event, reconnect: bool) -> io::Result<()> {
+        let mut candidate = self.clone();
+        if reconnect {
+            candidate.stream_final = false;
         }
-        result
+        match candidate.apply_inner(event) {
+            Ok(()) => {
+                *self = candidate;
+                Ok(())
+            }
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
+        }
     }
 
     /// A query snapshot reconciles a disconnected stream; it does not resend
@@ -69,8 +86,7 @@ impl Collector {
             self.failed = true;
             return Err(invalid("terminal snapshot omits an incomplete artifact"));
         }
-        self.stream_final = false;
-        self.apply(Event::Task(task))
+        self.stage(Event::Task(task), true)
     }
 
     fn apply_inner(&mut self, event: Event) -> io::Result<()> {

@@ -115,3 +115,64 @@ fn recovery_cannot_promote_an_incomplete_artifact_to_a_complete_result() {
     assert!(collector.is_failed());
     assert_eq!(collector.task().unwrap().status.state, TaskState::Working);
 }
+
+#[test]
+fn rejected_accumulated_updates_preserve_the_previous_bounded_result() {
+    let first = chunk(&"a".repeat(128), false, false);
+    let second = chunk(&"b".repeat(128), true, true);
+    let mut reference = Collector::new(usize::MAX);
+    reference.apply(first.clone()).unwrap();
+    let before = Event::Task(reference.task().unwrap().clone());
+    let limit = serde_json::to_vec(&first)
+        .unwrap()
+        .len()
+        .max(serde_json::to_vec(&second).unwrap().len())
+        .max(serde_json::to_vec(&before).unwrap().len());
+    let mut collector = Collector::new(limit);
+    collector.apply(first).unwrap();
+    let expected = serde_json::to_value(&before).unwrap();
+    assert!(collector.apply(second).is_err());
+    assert!(collector.is_failed());
+    let retained = Event::Task(collector.task().unwrap().clone());
+    assert_eq!(serde_json::to_value(&retained).unwrap(), expected);
+    assert!(serde_json::to_vec(&retained).unwrap().len() <= limit);
+    assert!(!collector.stream_final());
+    assert!(collector.reconcile(task(TaskState::Completed)).is_err());
+}
+
+#[test]
+fn failed_reconciliation_keeps_the_previous_paused_snapshot_and_stream_flag() {
+    let mut initial = task(TaskState::InputRequired);
+    initial.artifacts.push(Artifact {
+        artifact_id: "a".into(),
+        parts: vec![Part::Text {
+            text: "a".repeat(128),
+        }],
+        name: None,
+        description: None,
+    });
+    let mut update = task(TaskState::Working);
+    update.artifacts.push(Artifact {
+        artifact_id: "b".into(),
+        parts: vec![Part::Text {
+            text: "b".repeat(128),
+        }],
+        name: None,
+        description: None,
+    });
+    let limit = serde_json::to_vec(&Event::Task(initial.clone()))
+        .unwrap()
+        .len()
+        .max(serde_json::to_vec(&Event::Task(update.clone())).unwrap().len());
+    let mut collector = Collector::new(limit);
+    collector.apply(Event::Task(initial.clone())).unwrap();
+    collector.apply(status(TaskState::InputRequired, true)).unwrap();
+    assert!(collector.stream_final());
+    assert!(collector.reconcile(update).is_err());
+    assert!(collector.is_failed());
+    assert!(collector.stream_final());
+    assert_eq!(
+        serde_json::to_value(Event::Task(collector.task().unwrap().clone())).unwrap(),
+        serde_json::to_value(Event::Task(initial)).unwrap()
+    );
+}
