@@ -146,7 +146,8 @@ fn main() {
     let mut flash_cache_auto = false;
     let mut flash_admit_harness: Option<f64> = None;
     // O-27: preferred tier (`--flash-cache-pref auto|20|18|16|14`); implies `--flash-cache-gib auto`
-    let _flash_cache_pref: Option<f64> = None;
+    #[allow(unused_mut)]
+    let mut flash_cache_pref: Option<f64> = None;
     let mut flash_cache_pref_set = false;
     // O-27: active-desktop resident floor of the swap-tolerant rule (explicit 20 / 18 preference only)
     let mut flash_desktop_floor: f64 = 3.0;
