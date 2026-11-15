@@ -39,6 +39,10 @@ fn fake_opts(script: &str, opts: FakeOpts) -> FakeServer {
 }
 
 /// A URL where nothing listens.
+///
+/// The port stays reserved for the life of the test process: a socket that is bound but never
+/// listening refuses connections, and the kernel cannot hand the port to another test's fake
+/// engine (a dropped listener could be, which sent one test's requests to another's server).
 fn closed_url() -> String {
     // A socket that is bound but never listening refuses connections, and holding it for the
     // life of the test process keeps the kernel from handing the port to another test's
@@ -46,7 +50,7 @@ fn closed_url() -> String {
     // SAFETY: plain socket/bind/getsockname calls on a local zeroed sockaddr_in; the fd is
     // deliberately kept open.
     let port = unsafe {
-        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
         assert!(fd >= 0, "socket");
         let mut addr: libc::sockaddr_in = std::mem::zeroed();
         addr.sin_family = libc::AF_INET as libc::sa_family_t;

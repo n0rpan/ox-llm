@@ -91,6 +91,60 @@ pub struct Renderer {
     size: Option<(u16, u16)>,
     /// Set by `reset` and `clear`: the next draw repaints everything.
     stale: bool,
+    /// The terminal rewraps old rows when it narrows (see `terminal_reflows`). When it does
+    /// not, climbing by the reflowed height would erase committed transcript lines.
+    reflow: bool,
+}
+
+/// Whether the terminal is known to reflow on a width change: a few modern emulators do;
+/// xterm, the Linux console and multiplexers truncate rows instead. Unknown means no.
+fn terminal_reflows() -> bool {
+    let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    if set("TMUX") || set("STY") {
+        return false;
+    }
+    [
+        "KITTY_WINDOW_ID",
+        "WEZTERM_PANE",
+        "ALACRITTY_WINDOW_ID",
+        "GHOSTTY_RESOURCES_DIR",
+        "VTE_VERSION",
+    ]
+    .iter()
+    .any(|k| set(k))
+}
+
+/// The part of `line` (ANSI stripped) up to and including the character under display column
+/// `col`, if there is one: that character decides which row the cursor is on after a reflow.
+fn prefix_to_col(line: &str, col: usize) -> String {
+    let mut x = 0;
+    let mut out = String::new();
+    for ch in crate::strip_ansi(line).chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if x >= col && w > 0 {
+            out.push(ch);
+            break;
+        }
+        x += w;
+        out.push(ch);
+    }
+    out
+}
+
+/// Rows a line occupies after the terminal reflowed it to `cols` columns; a wide character
+/// that does not fit at the end of a row moves to the next one.
+fn reflowed_rows(line: &str, cols: u16) -> usize {
+    let cols = cols as usize;
+    let (mut rows, mut x) = (1, 0);
+    for ch in crate::strip_ansi(line).chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w > 0 && x + w > cols {
+            rows += 1;
+            x = 0;
+        }
+        x += w;
+    }
+    rows
 }
 
 /// The bytes that move the hardware cursor from row `from` to row `to` (0-based, relative to
@@ -120,7 +174,13 @@ impl Renderer {
             cursor_shown: None,
             size: None,
             stale: true,
+            reflow: terminal_reflows(),
         }
+    }
+
+    /// Override the reflow detection (tests, or a terminal known to reflow).
+    pub fn set_reflow(&mut self, reflow: bool) {
+        self.reflow = reflow;
     }
 
     pub fn mode(&self) -> ScreenMode {
@@ -264,6 +324,22 @@ impl Renderer {
             }),
             _ => None,
         };
+        // A narrower terminal has reflowed the old lines into more rows than there are lines.
+        let old_cols = self.size.map_or(cols, |s| s.0);
+        let reflowed_up = if self.reflow && full && cols < old_cols && cols > 0 {
+            let end = self.cursor_row.min(self.prev.len());
+            let above: usize = self.prev[..end].iter().map(|l| reflowed_rows(l, cols)).sum();
+            // Inside the cursor's own line only the rows up to the cursor's column count.
+            let within = match (self.prev_cursor, self.prev.get(self.cursor_row)) {
+                (Some(cur), Some(l)) => reflowed_rows(&prefix_to_col(l, cur.col as usize), cols) - 1,
+                (Some(cur), None) => cur.col as usize / cols as usize,
+                (None, Some(l)) => reflowed_rows(l, cols) - 1,
+                (None, None) => 0,
+            };
+            Some(above + within)
+        } else {
+            None
+        };
         let prev = if full {
             Vec::new()
         } else {
@@ -274,7 +350,10 @@ impl Renderer {
         if full {
             // Repaint from the first live row; the rows below are cleared unless this is the
             // very first frame (nothing was drawn yet, so there is nothing to clear).
-            body.push_str(&goto(c, 0));
+            match reflowed_up {
+                Some(up) if up > c => body.push_str(&format!("\x1b[{up}A\r")),
+                _ => body.push_str(&goto(c, 0)),
+            }
             if self.size.is_some() {
                 body.push_str("\x1b[J");
             }
