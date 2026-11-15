@@ -57,20 +57,6 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
     Ok(code)
 }
 
-/// The profile word of the start-up header: `local` under the `local` profile
-/// (`OXA_PROFILE`, else the `oxa.profile` setting, else the default), nothing under `pi`.
-pub fn profile_word(env: &[(String, String)], settings: &oxa_config::Settings) -> Option<String> {
-    let valid = |v: &str| matches!(v, "pi" | "local").then(|| v.to_string());
-    let from_env = env
-        .iter()
-        .find(|(k, _)| k == "OXA_PROFILE")
-        .and_then(|(_, v)| valid(v.trim()));
-    let profile = from_env
-        .or_else(|| settings.string("oxa.profile").and_then(|v| valid(v.trim())))
-        .unwrap_or_else(|| oxa_proto::Profile::DEFAULT.as_str().to_string());
-    (profile == "local").then_some(profile)
-}
-
 /// pi interactive-mode.ts `showLoadedResources`, compact form: `Context` (the context files
 /// in prompt order, relative to the cwd or `~`-shortened), `Skills` (names, sorted),
 /// `Prompts` (`/name`, sorted), `Extensions` (entry file labels: the file name, or the
@@ -414,11 +400,9 @@ fn drive(
     stop: WorkerStop,
     resources: Vec<(String, Vec<String>)>,
 ) -> (i32, Handle) {
-    let profile = profile_word(&opts.env, &opts.settings);
     let mut lp = Loop::new(term, opts, handle, cmds, initial);
     lp.worker = stop;
     lp.resources = resources;
-    lp.profile = profile;
     let code = loop {
         // State first: worker and dialog messages, then input (so a key sees the run's state).
         let mut disconnected = false;
@@ -521,8 +505,8 @@ pub fn worker_loop_with(
         match cmd {
             SessionCmd::Shutdown => break,
             SessionCmd::Reopen(how) => {
-                // The session to return to when the new one cannot be opened (a bad import
-                // path, an unreadable file): the old one is already shut down by then.
+                // The session to return to when the new one cannot be opened (an unreadable
+                // file): the old one is already shut down by then.
                 let back = session.as_ref().map(|s| s.inner().sref.clone());
                 // `/new` keeps the model and thinking level of the session it leaves (the
                 // status bar shows them); the other modes restore the target's own.
@@ -531,14 +515,13 @@ pub fn worker_loop_with(
                         let st = s.state();
                         (st.model.clone(), st.thinking)
                     }),
-                    Reopen::Resume(_) | Reopen::Fork(_) | Reopen::Import(_) => None,
+                    Reopen::Resume(_) | Reopen::Fork(_) => None,
                 };
                 // pi's status line for the swap, shown at the top of the new transcript.
                 let status = match &how {
                     Reopen::New => "New session started".to_string(),
                     Reopen::Resume(_) => "Resumed session".to_string(),
                     Reopen::Fork(_) => "Forked to new session".to_string(),
-                    Reopen::Import(path) => format!("Session imported from: {}", path.display()),
                 };
                 let mut opened = false;
                 if let Some(mut old) = session.take() {
@@ -1729,11 +1712,9 @@ pub(crate) fn view_settings(opts: &InteractiveOpts, caps: &TermCaps) -> ViewSett
     }
 }
 
-/// The look of this session: `ui.skin`, else by profile (`local` = OXA's look), with the ASCII
-/// glyph set when the locale is not UTF-8.
+/// The look of this session: `OXA_SKIN` (this run) over the `ui.skin` setting, else OXA's look,
+/// with the ASCII glyph set when the locale is not UTF-8.
 pub(crate) fn skin_of(opts: &InteractiveOpts) -> crate::Skin {
-    let local = profile_word(&opts.env, &opts.settings).is_some();
-    // `OXA_SKIN` (this run) over the `ui.skin` setting.
     let from_env = opts
         .env
         .iter()
@@ -1741,7 +1722,6 @@ pub(crate) fn skin_of(opts: &InteractiveOpts) -> crate::Skin {
         .map(|(_, v)| v.trim().to_string());
     crate::skin::resolve_skin(
         from_env.or_else(|| opts.settings.string("ui.skin")).as_deref(),
-        local,
         crate::skin::env_is_utf8(&opts.env),
     )
 }
@@ -2124,59 +2104,6 @@ mod preload_tests {
         assert!(stop.clone().is_preloading());
         stop.set_preloading(false);
         assert!(!stop.is_preloading());
-    }
-}
-
-#[cfg(test)]
-mod profile_word_tests {
-    use super::*;
-    use serde_json::json;
-
-    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    fn settings(v: serde_json::Value) -> oxa_config::Settings {
-        oxa_config::Settings::from_values(v, json!({}))
-    }
-
-    #[test]
-    fn profile_word_only_for_local() {
-        assert_eq!(
-            profile_word(&env(&[]), &settings(json!({}))),
-            Some("local".to_string()),
-            "the default profile is local"
-        );
-        assert_eq!(
-            profile_word(&env(&[]), &settings(json!({"oxa": {"profile": "pi"}}))),
-            None
-        );
-        assert_eq!(
-            profile_word(&env(&[]), &settings(json!({"oxa": {"profile": "local"}}))),
-            Some("local".to_string())
-        );
-        assert_eq!(
-            profile_word(
-                &env(&[("OXA_PROFILE", "pi")]),
-                &settings(json!({"oxa": {"profile": "local"}}))
-            ),
-            None,
-            "the environment wins"
-        );
-        assert_eq!(
-            profile_word(&env(&[("OXA_PROFILE", "local")]), &settings(json!({}))),
-            Some("local".to_string())
-        );
-        assert_eq!(
-            profile_word(
-                &env(&[("OXA_PROFILE", "x")]),
-                &settings(json!({"oxa": {"profile": "local"}}))
-            ),
-            Some("local".to_string())
-        );
     }
 }
 

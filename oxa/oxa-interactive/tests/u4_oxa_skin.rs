@@ -1,8 +1,7 @@
 //! U4: OXA's look, end to end. The real app (`run_session`: worker thread + UI loop) with a
-//! real `Session` against `oxa-fake` over HTTP on a scripted `TestTerminal`: the skin follows
-//! the profile and `ui.skin`, the HUD / hint bar / panels reach the screen, a resize keeps
-//! every line inside the terminal, `NO_COLOR` writes no colour, and pi's look is untouched
-//! under the `pi` profile and under `ui.skin = "pi"`.
+//! real `Session` against `oxa-fake` over HTTP on a scripted `TestTerminal`: OXA is the
+//! default skin, `ui.skin` overrides it, the HUD / hint bar / panels reach the screen, a resize
+//! keeps every line inside the terminal, and `NO_COLOR` writes no colour.
 
 use oxa_config::{Dirs, Keymap, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
@@ -276,7 +275,6 @@ fn run_on(
                 Reopen::New => Open::New,
                 Reopen::Resume(sref) => Open::Resume(sref),
                 Reopen::Fork(sref) => Open::Fork(sref),
-                Reopen::Import(_) => return Err(OxaError::new("invalid", "no import in this test")),
             };
             let engine: Arc<dyn Engine> = Arc::new(HttpEngine::new(&url, None)?);
             Session::open(deps(engine, store2.clone(), &root, &work), open)
@@ -306,7 +304,7 @@ fn write_notes(env: &TestEnv) {
     std::fs::write(env.work().join("notes.txt"), "first line\nsecond line\n").expect("notes");
 }
 
-const LOCAL: &[(&str, &str)] = &[("OXA_PROFILE", "local"), ("LANG", "C.UTF-8")];
+const UTF8: &[(&str, &str)] = &[("LANG", "C.UTF-8")];
 
 /// The colour-selecting SGR parameters in `raw` (30-38, 40-48, 90-97, 100-107).
 fn colour_params(raw: &str) -> Vec<u32> {
@@ -342,12 +340,12 @@ fn colour_params_finds_colours_only() {
 }
 
 #[test]
-fn local_profile_draws_oxa_chrome_and_panels() {
+fn the_oxa_skin_draws_chrome_and_panels() {
     let term = run_on(
         slow_engine(),
         read_then_answer(),
         json!({}),
-        LOCAL,
+        UTF8,
         (110, 34),
         vec![
             step(
@@ -386,10 +384,10 @@ fn local_profile_draws_oxa_chrome_and_panels() {
 }
 
 #[test]
-fn pi_profile_keeps_pis_look() {
+fn ui_skin_pi_keeps_the_plain_look() {
     let term = run(
         read_then_answer(),
-        json!({"oxa": {"profile": "pi"}}),
+        json!({"ui": {"skin": "pi"}}),
         &[("LANG", "C.UTF-8")],
         (110, 34),
         vec![
@@ -399,7 +397,7 @@ fn pi_profile_keeps_pis_look() {
         write_notes,
     );
     let text = term.all_text();
-    assert!(!text.contains("OXA"), "no OXA chrome under the pi profile");
+    assert!(!text.contains("OXA"), "no OXA chrome under ui.skin = pi");
     assert!(!text.contains("READY"));
     assert!(!text.contains("┌─"));
     assert!(!text.contains("▌"));
@@ -408,11 +406,11 @@ fn pi_profile_keeps_pis_look() {
 }
 
 #[test]
-fn ui_skin_pi_wins_over_the_local_profile_and_oxa_over_pi() {
-    let pi_under_local = run(
+fn ui_skin_selects_the_look() {
+    let plain = run(
         vec![ScriptTurn::text("ALPHA done.\n")],
         json!({"ui": {"skin": "pi"}}),
-        LOCAL,
+        UTF8,
         (100, 30),
         vec![
             step("start", &["oxa v"], typed("hello", &["enter"])),
@@ -420,10 +418,10 @@ fn ui_skin_pi_wins_over_the_local_profile_and_oxa_over_pi() {
         ],
         |_| {},
     );
-    let text = pi_under_local.all_text();
+    let text = plain.all_text();
     assert!(!text.contains("READY") && !text.contains("OXA v"));
 
-    let oxa_under_pi = run(
+    let oxa = run(
         vec![ScriptTurn::text("ALPHA done.\n")],
         json!({"ui": {"skin": "oxa"}}),
         &[("LANG", "C.UTF-8")],
@@ -434,7 +432,7 @@ fn ui_skin_pi_wins_over_the_local_profile_and_oxa_over_pi() {
         ],
         |_| {},
     );
-    assert!(oxa_under_pi.all_text().contains(" OXA │ "));
+    assert!(oxa.all_text().contains(" OXA │ "));
 }
 
 #[test]
@@ -449,7 +447,7 @@ fn resize_redraws_the_chrome_for_the_new_width() {
     let term = run(
         read_then_answer(),
         json!({}),
-        LOCAL,
+        UTF8,
         (110, 34),
         vec![
             step("start", &["READY"], typed("look at notes.txt", &["enter"])),
@@ -477,7 +475,7 @@ fn no_color_writes_no_colour_and_stays_readable() {
     let term = run(
         read_then_answer(),
         json!({}),
-        &[("OXA_PROFILE", "local"), ("LANG", "C.UTF-8"), ("NO_COLOR", "1")],
+        &[("LANG", "C.UTF-8"), ("NO_COLOR", "1")],
         (110, 34),
         vec![
             step("start", &["READY"], typed("look at notes.txt", &["enter"])),
@@ -500,7 +498,7 @@ fn ascii_locale_draws_ascii_frames() {
     let term = run(
         read_then_answer(),
         json!({}),
-        &[("OXA_PROFILE", "local"), ("LANG", "C")],
+        &[("LANG", "C")],
         (110, 34),
         vec![
             step("start", &["READY"], typed("look at notes.txt", &["enter"])),
@@ -525,7 +523,7 @@ fn omarchy_palette_colours_the_ui_and_falls_back_without_one() {
     let with = run(
         vec![ScriptTurn::text("ALPHA done.\n")],
         json!({}),
-        LOCAL,
+        UTF8,
         (110, 30),
         vec![
             step("start", &["READY"], typed("hello", &["enter"])),
@@ -557,7 +555,7 @@ fn omarchy_palette_colours_the_ui_and_falls_back_without_one() {
     let without = run(
         vec![ScriptTurn::text("ALPHA done.\n")],
         json!({}),
-        LOCAL,
+        UTF8,
         (110, 30),
         vec![
             step("start", &["READY"], typed("hello", &["enter"])),
@@ -577,7 +575,7 @@ fn engine_error_is_one_error_panel() {
                 .to_string(),
         })],
         json!({}),
-        LOCAL,
+        UTF8,
         (110, 30),
         vec![
             step("start", &["READY"], typed("hello", &["enter"])),
@@ -599,7 +597,7 @@ fn selector_is_framed_and_the_hint_bar_shows_its_keys() {
     let term = run(
         Vec::new(),
         json!({}),
-        LOCAL,
+        UTF8,
         (100, 30),
         vec![
             step("start", &["READY"], typed("/theme", &["enter"])),
@@ -621,7 +619,7 @@ fn yolo_toggle_shows_the_flame_the_banner_and_goes_away() {
     let term = run(
         Vec::new(),
         json!({}),
-        LOCAL,
+        UTF8,
         (120, 30),
         vec![
             step("start", &["READY"], typed("/yolo", &["enter"])),
@@ -651,7 +649,7 @@ fn yolo_key_toggles_and_no_color_shows_a_text_badge() {
     let term = run(
         Vec::new(),
         json!({}),
-        &[("OXA_PROFILE", "local"), ("LANG", "C.UTF-8"), ("NO_COLOR", "1")],
+        &[("LANG", "C.UTF-8"), ("NO_COLOR", "1")],
         (120, 30),
         vec![
             step("start", &["READY"], vec![key("ctrl+alt+o")]),
@@ -671,10 +669,10 @@ fn yolo_key_toggles_and_no_color_shows_a_text_badge() {
 }
 
 #[test]
-fn yolo_under_pis_look_is_a_footer_status() {
+fn yolo_under_the_plain_look_is_a_footer_status() {
     let term = run(
         Vec::new(),
-        json!({"oxa": {"profile": "pi"}}),
+        json!({"ui": {"skin": "pi"}}),
         &[("LANG", "C.UTF-8")],
         (100, 30),
         vec![
@@ -686,7 +684,7 @@ fn yolo_under_pis_look_is_a_footer_status() {
     let text = term.all_text();
     assert!(
         !text.contains("YOLO MODE") && !text.contains("🔥"),
-        "pi's look gets no banner"
+        "the plain look gets no banner"
     );
 }
 
@@ -701,7 +699,7 @@ fn hud_counts_auto_approved_actions_and_reduced_motion_stills_the_flames() {
         ..StatusModel::default()
     };
     for width in 20..=160u16 {
-        let line = oxa_hud(&st, Some("local"), width, &theme, Skin::Oxa);
+        let line = oxa_hud(&st, width, &theme, Skin::Oxa);
         assert!(visible_width(&line) <= width as usize);
         if width >= 40 {
             assert!(
@@ -710,17 +708,17 @@ fn hud_counts_auto_approved_actions_and_reduced_motion_stills_the_flames() {
             );
         }
     }
-    let ascii = oxa_hud(&st, None, 100, &oxa_tui::Theme::plain(), Skin::OxaAscii);
+    let ascii = oxa_hud(&st, 100, &oxa_tui::Theme::plain(), Skin::OxaAscii);
     assert!(ascii.contains("^ [YOLO] 12") && ascii.is_ascii());
     let claude = StatusModel {
         model: "anthropic/claude-haiku-5-5".to_string(),
         thinking: Some(oxa_proto::ThinkingLevel::Off),
         ..StatusModel::default()
     };
-    let claude_ascii = oxa_hud(&claude, None, 100, &oxa_tui::Theme::plain(), Skin::OxaAscii);
+    let claude_ascii = oxa_hud(&claude, 100, &oxa_tui::Theme::plain(), Skin::OxaAscii);
     assert!(claude_ascii.is_ascii(), "{claude_ascii:?}");
     assert!(claude_ascii.contains("adaptive - low"), "{claude_ascii:?}");
-    let off = oxa_hud(&StatusModel::default(), None, 100, &theme, Skin::Oxa);
+    let off = oxa_hud(&StatusModel::default(), 100, &theme, Skin::Oxa);
     assert!(!strip_ansi(&off).contains("YOLO"));
 
     let moving = strip_ansi(&oxa_yolo_banner(0, true, 120, &theme, Skin::Oxa));
@@ -760,7 +758,7 @@ fn suggestions_are_a_panel_that_floats_and_a_whole_run_shows_the_arcade() {
         slow_engine(),
         read_then_answer(),
         json!({}),
-        LOCAL,
+        UTF8,
         (cols, rows),
         vec![
             step("start", &["READY"], typed("look at notes.txt", &["enter"])),
@@ -838,7 +836,6 @@ fn image_ids(raw: &str) -> (Vec<u32>, Vec<u32>) {
 #[test]
 fn a_graphics_terminal_gets_the_pixel_scene_once_per_frame_and_is_left_clean() {
     const GHOSTTY: &[(&str, &str)] = &[
-        ("OXA_PROFILE", "local"),
         ("LANG", "C.UTF-8"),
         ("TERM", "xterm-ghostty"),
         ("TEST_GRAPHICS_REPLY", "1"),
@@ -878,7 +875,7 @@ fn a_graphics_terminal_gets_the_pixel_scene_once_per_frame_and_is_left_clean() {
         slow_engine(),
         read_then_answer(),
         json!({}),
-        &[("OXA_PROFILE", "local"), ("LANG", "C.UTF-8"), ("TERM", "foot")],
+        &[("LANG", "C.UTF-8"), ("TERM", "foot")],
         (110, 34),
         vec![
             step("start", &["READY"], typed("look at notes.txt", &["enter"])),

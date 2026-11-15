@@ -11,7 +11,7 @@ use oxa_perm::ModePolicy;
 use oxa_proto::{
     rebase_why, AgentEvent, AssistantTurn, CancelToken, ChatRequest, CommandSpec, CompactReason, Engine,
     EngineInfo, EntryBody, FrozenPrefix, HeadlessUi, HookPoint, HookReply, Hooks, Mode, OxaError, Policy,
-    Profile, StreamEvent, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
+    StreamEvent, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -98,16 +98,10 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, compact: CompactPolicy, setting
     }
 }
 
-fn state(
-    env: &TestEnv,
-    turns: Vec<ScriptTurn>,
-    settings: Settings,
-    profile: Profile,
-) -> (SessionState, Arc<ScriptedEngine>) {
+fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionState, Arc<ScriptedEngine>) {
     let eng = Arc::new(ScriptedEngine::new(turns));
     let engine: Arc<dyn Engine> = eng.clone();
-    let mut st = build(env, engine, policy(1), settings);
-    st.stats.profile = profile;
+    let st = build(env, engine, policy(1), settings);
     (st, eng)
 }
 
@@ -234,7 +228,6 @@ fn idle_summary_then_instant_compaction() {
             ScriptTurn::text("r2"),
         ],
         idle_on(),
-        Profile::Pi,
     );
     say(&mut st, "p1");
     run(&mut st);
@@ -257,8 +250,15 @@ fn idle_summary_then_instant_compaction() {
     assert_eq!(summary.messages[..wire1.len()], wire1[..], "the whole wire");
     assert_eq!(
         summary.messages.last().and_then(|m| m.content.clone()).as_deref(),
-        Some(prompt::summary_instruction(SummaryKind::Initial, None).as_str()),
-        "the instruction a threshold compaction sends (no target under pi)"
+        Some(
+            prompt::summary_instruction_with_target(
+                SummaryKind::Initial,
+                None,
+                prompt::summary_target_words(st.settings.summary_target()),
+            )
+            .as_str()
+        ),
+        "the instruction a threshold compaction sends (the default target)"
     );
     assert_eq!(st.transcript.wire(), &wire1[..], "no rebase");
     assert_eq!(compactions(&st), 0);
@@ -310,7 +310,6 @@ fn idle_summary_not_repeated_while_pending() {
             ScriptTurn::text("r3"),
         ],
         idle_on(),
-        Profile::Pi,
     );
     say(&mut st, "p1");
     run(&mut st);
@@ -344,7 +343,6 @@ fn invalidated_by(change: impl Fn(&mut SessionState)) {
             ScriptTurn::text("FRESH"),
         ],
         idle_on(),
-        Profile::Pi,
     );
     say(&mut st, "p1");
     run(&mut st);
@@ -408,7 +406,6 @@ fn too_large_tail_compacts_normally() {
             ScriptTurn::text("FRESH"),
         ],
         idle_on(),
-        Profile::Pi,
     );
     say(&mut st, "p1");
     run(&mut st);
@@ -441,7 +438,6 @@ fn input_cancels_idle_summary_then_normal_compaction() {
             ScriptTurn::text("NORMAL"),
         ],
         idle_on(),
-        Profile::Pi,
     );
     let armed = Arc::new(AtomicBool::new(false));
     st.hooks.push(Arc::new(InputArrives {
@@ -489,7 +485,7 @@ fn input_cancels_idle_summary_then_normal_compaction() {
 #[test]
 fn queued_input_skips_idle_summary() {
     let env = TestEnv::new();
-    let (mut st, eng) = state(&env, vec![ScriptTurn::text("r1")], idle_on(), Profile::Pi);
+    let (mut st, eng) = state(&env, vec![ScriptTurn::text("r1")], idle_on());
     say(&mut st, "p1");
     run(&mut st);
     band(&mut st);
@@ -503,8 +499,9 @@ fn queued_input_skips_idle_summary() {
 // (d) setting off: today's sequence
 
 #[test]
-fn off_under_pi_is_todays_sequence() {
+fn off_by_setting_is_todays_sequence() {
     let env = TestEnv::new();
+    let off = Settings::from_values(json!({"oxa": {"compaction": {"idleSummary": false}}}), json!({}));
     let (mut st, eng) = state(
         &env,
         vec![
@@ -512,8 +509,7 @@ fn off_under_pi_is_todays_sequence() {
             ScriptTurn::text("r2"),
             ScriptTurn::text("SUMMARY"),
         ],
-        Settings::default(),
-        Profile::Pi,
+        off,
     );
     say(&mut st, "p1");
     run(&mut st);
@@ -529,18 +525,25 @@ fn off_under_pi_is_todays_sequence() {
     assert_eq!(kinds(&reqs), ["chat", "chat", "compaction", "prefill"]);
     assert_eq!(
         reqs[2].messages.last().and_then(|m| m.content.clone()).as_deref(),
-        Some(prompt::summary_instruction(SummaryKind::Initial, None).as_str())
+        Some(
+            prompt::summary_instruction_with_target(
+                SummaryKind::Initial,
+                None,
+                prompt::summary_target_words(st.settings.summary_target()),
+            )
+            .as_str()
+        )
     );
     let details = end_details(&events);
     assert!(details.get("precomputed").is_none() && details.get("mechanical").is_none());
 }
 
-/// Explicitly off under `local`: no idle request either.
+/// Explicitly off: no idle request either.
 #[test]
-fn off_by_setting_under_local() {
+fn off_by_setting() {
     let env = TestEnv::new();
     let off = Settings::from_values(json!({"oxa": {"compaction": {"idleSummary": false}}}), json!({}));
-    let (mut st, eng) = state(&env, vec![ScriptTurn::text("r1")], off, Profile::Local);
+    let (mut st, eng) = state(&env, vec![ScriptTurn::text("r1")], off);
     say(&mut st, "p1");
     run(&mut st);
     band(&mut st);
@@ -552,24 +555,19 @@ fn off_by_setting_under_local() {
 // Item 1: the soft length target in the request
 
 #[test]
-fn local_summary_request_carries_the_target() {
+fn the_summary_request_carries_the_target() {
     let env = TestEnv::new();
     let (mut st, eng) = state(
         &env,
         vec![ScriptTurn::text("r1"), ScriptTurn::text("IDLE")],
         Settings::default(),
-        Profile::Local,
     );
     say(&mut st, "p1");
     run(&mut st);
     band(&mut st);
     settle(&mut st);
     let reqs = eng.requests();
-    assert_eq!(
-        kinds(&reqs),
-        ["chat", "compaction", "prefill"],
-        "idle summary on under local"
-    );
+    assert_eq!(kinds(&reqs), ["chat", "compaction", "prefill"], "idle summary on");
     assert_eq!(
         reqs[1].max_tokens, 1024,
         "the target is soft: max_tokens unchanged"
@@ -585,7 +583,7 @@ fn local_summary_request_carries_the_target() {
 // request is sent with thinking off (and temperature 0 is in every request body the engine
 // builder writes: oxa-engine's a2 goldens).
 
-fn one_compaction(profile: Profile) -> (Vec<WireMsg>, Vec<Recorded>) {
+fn one_compaction() -> (Vec<WireMsg>, Vec<Recorded>) {
     let env = TestEnv::new();
     let off = Settings::from_values(json!({"oxa": {"compaction": {"idleSummary": false}}}), json!({}));
     let (mut st, eng) = state(
@@ -597,7 +595,6 @@ fn one_compaction(profile: Profile) -> (Vec<WireMsg>, Vec<Recorded>) {
             ScriptTurn::text("SUM"),
         ],
         off,
-        profile,
     );
     st.compact.keep_tokens = 30;
     for p in ["one", "two", "three"] {
@@ -611,22 +608,20 @@ fn one_compaction(profile: Profile) -> (Vec<WireMsg>, Vec<Recorded>) {
 
 #[test]
 fn cut_and_tail_are_pure() {
-    for profile in [Profile::Pi, Profile::Local] {
-        let (w1, r1) = one_compaction(profile);
-        let (w2, r2) = one_compaction(profile);
-        assert_eq!(w1, w2, "same wire bytes after compaction ({profile:?})");
-        let s1 = r1
-            .iter()
-            .find(|r| r.kind == "compaction")
-            .expect("summary request");
-        let s2 = r2
-            .iter()
-            .find(|r| r.kind == "compaction")
-            .expect("summary request");
-        assert_eq!(s1.messages, s2.messages, "same summary request bytes");
-        assert!(!s1.thinking, "summary request with thinking off");
-        assert!(w1.len() > 1 && w1.len() < s1.messages.len(), "a real cut");
-    }
+    let (w1, r1) = one_compaction();
+    let (w2, r2) = one_compaction();
+    assert_eq!(w1, w2, "same wire bytes after compaction");
+    let s1 = r1
+        .iter()
+        .find(|r| r.kind == "compaction")
+        .expect("summary request");
+    let s2 = r2
+        .iter()
+        .find(|r| r.kind == "compaction")
+        .expect("summary request");
+    assert_eq!(s1.messages, s2.messages, "same summary request bytes");
+    assert!(!s1.thinking, "summary request with thinking off");
+    assert!(w1.len() > 1 && w1.len() < s1.messages.len(), "a real cut");
 }
 
 // ---------------------------------------------------------------------------------------------

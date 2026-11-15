@@ -39,11 +39,6 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
         Some("[path]"),
     ),
     (
-        "import",
-        "Import a JSONL session, preserving its ID and working directory",
-        Some("<path>"),
-    ),
-    (
         "bug",
         "Write a local, redacted bug report bundle",
         Some("<description>"),

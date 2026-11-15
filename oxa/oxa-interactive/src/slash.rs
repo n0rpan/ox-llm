@@ -36,12 +36,11 @@ pub struct SlashCx<'a> {
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
 /// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
 /// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 30] = [
+pub const INTERACTIVE_COMMANDS: [&str; 29] = [
     "settings",
     "model",
     "scoped-models",
     "export",
-    "import",
     "copy",
     "name",
     "session",
@@ -80,7 +79,7 @@ const OMITTED: [&str; 3] = ["login", "logout", "share"];
 ///   extension commands, and reports unknown commands).
 /// * A built-in: returns the action. Arguments follow slash-commands.md: `/model <pattern>`
 ///   switches directly, `/model` opens the selector; `/compact [instructions]`; `/name <text>`;
-///   `/export [path]`; `/import <path>`; `/thinking [level]`; `/theme [name]`;
+///   `/export [path]`; `/thinking [level]`; `/theme [name]`;
 ///   `/mode [plan|workspace|ask]`; `/resume`, `/tree`, `/fork`, `/settings`, `/scoped-models`,
 ///   `/mcp`, `/trust` open selectors; `/session`, `/hotkeys`, `/engine` show
 ///   lines; `/debug` -> `DebugDump`; `/bug` writes a local redacted bundle (no upload) and
@@ -157,15 +156,6 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
         "export" => AppAction::Export {
             path: (!args.is_empty()).then(|| PathBuf::from(args)),
         },
-        "import" => {
-            if args.is_empty() {
-                usage("Usage: /import <path>")
-            } else {
-                idle_or(cx, name, || {
-                    AppAction::Session(SessionCmd::Reopen(Reopen::Import(PathBuf::from(args))))
-                })
-            }
-        }
         "copy" => match cx.last_assistant_text {
             Some(text) => AppAction::Copy(text.to_string()),
             None => notify(Level::Warning, "No assistant message to copy yet."),

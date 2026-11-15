@@ -267,7 +267,7 @@ fn compact_name_session_copy_export() {
 
 /// handlers
 #[test]
-fn new_resume_tree_fork_clone_import() {
+fn new_resume_tree_fork_clone() {
     let fx = Fx::new();
     assert!(matches!(
         expect_some("/new", fx.run("/new")),
@@ -289,11 +289,6 @@ fn new_resume_tree_fork_clone_import() {
         expect_some("/clone", fx.run("/clone")),
         AppAction::Session(SessionCmd::CloneSession)
     ));
-    match expect_some("/import a.jsonl", fx.run("/import a.jsonl")) {
-        AppAction::Session(SessionCmd::Reopen(Reopen::Import(p))) => assert_eq!(p, PathBuf::from("a.jsonl")),
-        _ => panic!("/import opens the imported file"),
-    }
-    assert_eq!(notice(expect_some("/import", fx.run("/import"))).0, Level::Error);
     let busy = dispatch_slash("/new", &fx.cx(true, None)).unwrap();
     assert_eq!(notice(busy).0, Level::Warning);
     // Opening selectors is allowed while busy.
