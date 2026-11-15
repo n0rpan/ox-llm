@@ -67,6 +67,16 @@ fn deps(
     engine: Arc<ScriptedEngine>,
     hooks: Vec<Arc<dyn Hooks>>,
 ) -> Deps {
+    deps_with_settings(env, store, engine, hooks, Settings::default())
+}
+
+fn deps_with_settings(
+    env: &TestEnv,
+    store: Arc<dyn SessionStore>,
+    engine: Arc<ScriptedEngine>,
+    hooks: Vec<Arc<dyn Hooks>>,
+    settings: Settings,
+) -> Deps {
     Deps {
         engine,
         store,
@@ -74,7 +84,7 @@ fn deps(
         hooks,
         policy: Box::new(AllowAll),
         sandbox: Arc::new(NoBash),
-        settings: Settings::default(),
+        settings,
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),
@@ -218,6 +228,22 @@ fn events_until(w: &Worker, until: impl Fn(&AgentEvent) -> bool) -> Vec<AgentEve
         }
     }
     panic!("the expected event did not arrive; got {} events", out.len());
+}
+
+/// Drain messages until a `Done` arrives, then return the `Status` that follows it (the worker
+/// sends `Done`, then a fresh `Status`, after every command).
+fn status_after_done(w: &Worker) -> oxa_interactive::StatusModel {
+    let end = Instant::now() + Duration::from_secs(10);
+    let mut done = false;
+    while Instant::now() < end {
+        match w.msgs.recv_timeout(Duration::from_millis(50)) {
+            Ok(WorkerMsg::Done(_)) => done = true,
+            Ok(WorkerMsg::Status(s)) if done => return s,
+            Ok(_) => {}
+            Err(_) => {}
+        }
+    }
+    panic!("no Status after Done arrived");
 }
 
 /// Item 3: a turn an extension triggers while the session is idle runs on the worker's idle
@@ -448,6 +474,113 @@ fn stop_during_a_swap_aborts_the_session_entered_after_it() {
     });
 }
 
+/// Hooks that ask for a new session at `agent_end` and may cancel `session_before_switch`.
+#[derive(Default)]
+struct SwapHooks {
+    host: Mutex<Option<Arc<dyn Host>>>,
+    cancel: bool,
+    before_switch: AtomicUsize,
+}
+
+impl Hooks for SwapHooks {
+    fn fire(&self, p: HookPoint, _payload: &Value, _ui: &mut dyn Ui) -> HookReply {
+        match p {
+            HookPoint::AgentEnd => {
+                if let Some(h) = self.host.lock().unwrap().clone() {
+                    let _ = h.call(HostAction::NewSession);
+                }
+            }
+            HookPoint::SessionBeforeSwitch => {
+                self.before_switch.fetch_add(1, Ordering::SeqCst);
+                if self.cancel {
+                    return HookReply::Cancel("not now".into());
+                }
+            }
+            _ => {}
+        }
+        HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        Vec::new()
+    }
+    fn commands(&self) -> Vec<CommandSpec> {
+        Vec::new()
+    }
+    fn run_command(&self, name: &str, _args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+        Err(OxaError::new(oxa_proto::codes::NOT_FOUND, name))
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn attach(&self, host: Arc<dyn Host>) {
+        *self.host.lock().unwrap() = Some(host);
+    }
+}
+
+/// Run one prompt whose `agent_end` handler asks for a new session; returns the worker
+/// messages seen until the worker settles, the hooks and the original session id.
+fn swap_scenario(cancel: bool) -> (Vec<WorkerMsg>, Arc<SwapHooks>, String, Worker) {
+    let env = TestEnv::new();
+    let hooks = Arc::new(SwapHooks {
+        cancel,
+        ..SwapHooks::default()
+    });
+    let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("ok")]));
+    let first =
+        Session::open(deps(&env, store.clone(), engine, vec![hooks.clone()]), Open::New).expect("open");
+    let old_id = first.state().session_id.to_string();
+    let env2 = TestEnv::new();
+    let (h2, s2) = (hooks.clone(), store.clone());
+    let reopen: ReopenFn = Box::new(move |_, _| {
+        let engine = Arc::new(ScriptedEngine::new(Vec::new()));
+        Session::open(deps(&env2, s2.clone(), engine, vec![h2.clone()]), Open::New)
+    });
+    let w = spawn_worker(first, reopen);
+    w.cmds
+        .send(SessionCmd::Prompt {
+            text: "hi".into(),
+            parts: Vec::new(),
+        })
+        .unwrap();
+    let mut seen = Vec::new();
+    let end = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < end {
+        if let Ok(m) = w.msgs.recv_timeout(Duration::from_millis(50)) {
+            seen.push(m);
+        }
+    }
+    (seen, hooks, old_id, w)
+}
+
+/// An extension's `newSession` in the TUI reopens the session, after the before-switch hook.
+#[test]
+fn tui_applies_an_extension_new_session_through_the_before_switch_hook() {
+    bounded(30, || {
+        let (seen, hooks, old_id, w) = swap_scenario(false);
+        w.stop.stop();
+        let last = w.done.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        assert_ne!(last.id.to_string(), old_id, "the session was swapped");
+        assert!(hooks.before_switch.load(Ordering::SeqCst) >= 1);
+        assert!(seen.iter().any(|m| matches!(m, WorkerMsg::Rebind(_))));
+    });
+}
+
+/// A cancel from `session_before_switch` keeps the session, and the refusal does not send a
+/// stray `Done` (no command is running).
+#[test]
+fn tui_extension_swap_cancelled_by_the_hook_keeps_the_session_without_a_stray_done() {
+    bounded(30, || {
+        let (seen, hooks, old_id, w) = swap_scenario(true);
+        w.stop.stop();
+        let last = w.done.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        assert_eq!(last.id.to_string(), old_id, "cancelled: still the old session");
+        assert!(hooks.before_switch.load(Ordering::SeqCst) >= 1);
+        let dones = seen.iter().filter(|m| matches!(m, WorkerMsg::Done(_))).count();
+        assert_eq!(dones, 1, "only the prompt's own Done");
+    });
+}
+
 /// Item 6: the stop flag aborts the run in progress (here a triggered turn on the idle tick)
 /// without any handle from the UI side.
 #[test]
@@ -658,6 +791,58 @@ fn queued_input_runs_after_a_compact_command() {
         )));
         assert_eq!(engine.requests().len(), 1, "the queued message was sent once");
         assert!(handle.queued().0.is_empty() && handle.queued().1.is_empty());
+        let _ = w.cmds.send(SessionCmd::Shutdown);
+        w.done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker ended");
+    });
+}
+
+/// #75: the status the worker sends after a `/compact` (the `Status` refresh that follows the
+/// `CompactionEnd` event) keeps the post-compaction estimate, not 0. The `CompactionEnd` event
+/// sets the estimate, but a later `Status` refresh used to overwrite it with
+/// `stats.context_tokens` (0 after a rebase).
+#[test]
+fn status_after_compact_keeps_the_estimate() {
+    bounded(30, || {
+        let env = TestEnv::new();
+        let engine = Arc::new(ScriptedEngine::new(vec![
+            ScriptTurn::text("pong"),
+            ScriptTurn::text("SUM"),
+        ]));
+        // A tiny keep budget forces the manual compaction to actually cut the transcript.
+        let settings = Settings::from_values(
+            serde_json::json!({"compaction": {"keepRecentTokens": 1}}),
+            serde_json::json!({}),
+        );
+        let session = Session::open(
+            deps_with_settings(
+                &env,
+                Arc::new(MemStore::new()),
+                engine.clone(),
+                Vec::new(),
+                settings,
+            ),
+            Open::New,
+        )
+        .expect("open");
+        let w = spawn_worker(session, no_reopen());
+        // Build some context, then compact it.
+        let _ = w.cmds.send(SessionCmd::Prompt {
+            text: "hello".into(),
+            parts: Vec::new(),
+        });
+        events_until(&w, |e| matches!(e, AgentEvent::AgentSettled { .. }));
+        // Drain the prompt's own Done + Status so the next Status is the compaction's.
+        let _ = status_after_done(&w);
+        let _ = w.cmds.send(SessionCmd::Compact { instructions: None });
+        // The worker sends Done, then a fresh Status; the Status must carry the estimate.
+        let status = status_after_done(&w);
+        assert!(
+            status.context_tokens > 0,
+            "the post-compaction status must keep the estimate, got {}",
+            status.context_tokens
+        );
         let _ = w.cmds.send(SessionCmd::Shutdown);
         w.done
             .recv_timeout(Duration::from_secs(10))

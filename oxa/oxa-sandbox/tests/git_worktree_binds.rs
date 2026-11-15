@@ -205,10 +205,14 @@ fn worktree_binds_its_gitdir_and_common_dir() {
         sorted(vec![
             canon(&w.main_git).join("commondir"),
             canon(&w.main_git.join("config")),
+            canon(&w.main_git).join("config.worktree"),
             canon(&w.main_git).join("gitdir"),
             canon(&w.main_git.join("hooks")),
+            canon(&w.main_git).join("info"),
             canon(&w.gitdir.join("commondir")),
+            canon(&w.gitdir).join("config.worktree"),
             canon(&w.gitdir.join("gitdir")),
+            canon(&w.gitdir).join("hooks"),
         ])
     );
 }
@@ -774,4 +778,101 @@ fn plain_repository_works_as_before_in_the_sandbox() {
     let (exit, out) = run(&sb, "git status --short && git log -1 --format=%s", &plain, true);
     assert_eq!(exit, Some(0), "{out}");
     assert_eq!(out.trim(), "init");
+}
+
+// ---------------------------------------------- issue #103: commit in a worktree, hooks stay
+
+fn real_worktree(env: &TestEnv) -> (PathBuf, PathBuf) {
+    let main = env.work().join("main");
+    init_repo(&main, env);
+    let wt = env.work().join("wt");
+    assert_git(
+        &main,
+        env,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            wt.to_str().expect("utf8"),
+            "-b",
+            "feature",
+        ],
+    );
+    (main, wt)
+}
+
+fn gitdir_of(main: &Path, name: &str) -> PathBuf {
+    canon(&main.join(".git/worktrees").join(name))
+}
+
+#[test]
+fn issue_103_worktree_commit_works_and_hooks_and_config_stay_read_only() {
+    let env = TestEnv::new();
+    let (main, wt) = real_worktree(&env);
+    let common = canon(&main.join(".git"));
+    let gitdir = gitdir_of(&main, "wt");
+    let Some(sb) = sandbox(&env, &wt) else { return };
+    // A real commit with content: index, objects, refs and logs are all written.
+    let (exit, out) = run(
+        &sb,
+        "echo hi > f.txt && git add f.txt && git commit -q -m real && git log -1 --format=%s",
+        &wt,
+        true,
+    );
+    assert_eq!(exit, Some(0), "{out}");
+    let log = git(&main, &env, &["log", "-1", "--format=%s", "feature"]);
+    assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "real");
+    // Nothing a tool call writes there may run or configure git outside the sandbox.
+    let cfg_before = fs::read(common.join("config")).expect("config");
+    for target in [
+        common.join("hooks/pre-commit"),
+        common.join("hooks/x"),
+        common.join("config"),
+        common.join("config.worktree"),
+        common.join("info/exclude"),
+        gitdir.join("hooks/pre-commit"),
+        gitdir.join("hooks/x"),
+        gitdir.join("config.worktree"),
+    ] {
+        let (exit, out) = run(&sb, &format!("echo '[core]' >> {}", target.display()), &wt, true);
+        assert_ne!(exit, Some(0), "{} was writable: {out}", target.display());
+        let (exit, out) = run(&sb, &format!("rm -rf {}", target.display()), &wt, true);
+        let _ = (exit, out);
+    }
+    assert_eq!(fs::read(common.join("config")).expect("config"), cfg_before);
+    assert!(!common.join("hooks/x").exists());
+    assert!(!gitdir.join("hooks/x").exists());
+    assert!(!gitdir.join("hooks/pre-commit").exists());
+    assert!(
+        !common.join("config.worktree").exists()
+            || fs::read(common.join("config.worktree")).expect("r").is_empty()
+    );
+}
+
+#[test]
+fn issue_103_worktree_binds_only_what_a_commit_needs_writable() {
+    let env = TestEnv::new();
+    let (main, wt) = real_worktree(&env);
+    let common = canon(&main.join(".git"));
+    let gitdir = gitdir_of(&main, "wt");
+    let b = resolve_git_binds(&wt, &env.home(), Some(&env.agent_dir()));
+    for rel in ["hooks", "config", "info"] {
+        assert!(b.protect.contains(&common.join(rel)), "{rel}: {:?}", b.protect);
+    }
+    assert!(b.protect.contains(&gitdir.join("hooks")), "{:?}", b.protect);
+}
+
+#[test]
+fn issue_103_plain_clone_keeps_hooks_and_config_read_only() {
+    let env = TestEnv::new();
+    let plain = env.work().join("plain");
+    init_repo(&plain, &env);
+    let Some(sb) = sandbox(&env, &plain) else { return };
+    let (exit, out) = run(&sb, "git commit -q --allow-empty -m again", &plain, true);
+    assert_eq!(exit, Some(0), "{out}");
+    for target in [".git/hooks/x", ".git/config"] {
+        let (exit, out) = run(&sb, &format!("echo x >> {target}"), &plain, true);
+        assert_ne!(exit, Some(0), "{target}: {out}");
+    }
+    assert!(!plain.join(".git/hooks/x").exists());
 }

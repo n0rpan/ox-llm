@@ -16,12 +16,12 @@ engine/THIRD_PARTY_NOTICES
      fork (MIT)                                       engine/third_party/ (reference copies);
                                                       licenses/ inside each Flash tarball
 
-lab/THIRD_PARTY_NOTICES
+oxc/THIRD_PARTY_NOTICES
   1. llama.cpp and ggml patches, q3k-i8mm experiment, MIT
-                                                      lab/third_party/llama.cpp-LICENSE,
-                                                      lab/experiments/q3k-i8mm/LICENSE.llama.cpp
-  2. stable-diffusion.cpp patch, MIT                  lab/third_party/stable-diffusion.cpp-LICENSE
-  3. BigMoeOnEdge patches, Apache-2.0                 lab/third_party/BigMoeOnEdge-LICENSE
+                                                      oxc/third_party/llama.cpp-LICENSE,
+                                                      oxc/experiments/q3k-i8mm/LICENSE.llama.cpp
+  2. stable-diffusion.cpp patch, MIT                  oxc/third_party/stable-diffusion.cpp-LICENSE
+  3. BigMoeOnEdge patches, Apache-2.0                 oxc/third_party/BigMoeOnEdge-LICENSE
 
 oxa/NOTICE
   1. pi coding agent (design reference pi 1.5.2), MIT, Copyright (c) 2025

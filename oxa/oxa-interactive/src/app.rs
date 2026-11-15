@@ -479,6 +479,40 @@ pub fn worker_loop_with(
     // must not begin after it).
     let mut backlog: VecDeque<SessionCmd> = VecDeque::new();
     loop {
+        // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
+        // before the next command (the commands queued behind it run in the new session).
+        if let Some(s) = session.as_mut() {
+            s.enable_swap();
+            let asked = match s.take_swap_request() {
+                None => None,
+                Some(oxa_core::SwapRequest::New) => Some(Ok((oxa_core::Open::New, Reopen::New))),
+                Some(oxa_core::SwapRequest::Switch(path)) => Some(
+                    s.inner()
+                        .store
+                        .resolve(&path)
+                        .map(|sref| (oxa_core::Open::Resume(sref.clone()), Reopen::Resume(sref))),
+                ),
+            };
+            // The before-switch hook runs (and may cancel) before the old session closes. A
+            // refusal is shown as a notice: no command is running, so no `Done`.
+            let refused = |e: OxaError| {
+                let _ = out.send(WorkerMsg::Event(AgentEvent::Notice {
+                    level: Level::Warning,
+                    text: e.to_string(),
+                }));
+            };
+            match asked {
+                None => {}
+                Some(Err(e)) => refused(e),
+                Some(Ok((open, how))) => {
+                    let mut sink = ChanSink(out.clone());
+                    match s.before_switch(&open, &mut sink, &mut ui_proxy) {
+                        Ok(_) => backlog.push_front(SessionCmd::Reopen(how)),
+                        Err(e) => refused(e),
+                    }
+                }
+            }
+        }
         while let Ok(more) = cmds.try_recv() {
             backlog.push_back(more);
         }
@@ -904,9 +938,13 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                         r.tokens_before, r.estimated_tokens_after
                     ),
                 );
+                // The rebase invalidates the cache: clear the CACHE meter.
+                vm.status.last_cached = None;
+                vm.status.last_prompt = None;
                 vm.blocks.push(Block::Compaction {
                     summary: r.summary.clone(),
                     tokens_before: r.tokens_before,
+                    tokens_after: Some(r.estimated_tokens_after),
                     expanded: false,
                 });
             }
@@ -1158,6 +1196,7 @@ pub fn blocks_from_entries(branch: &[Entry]) -> Vec<Block> {
             } => out.push(Block::Compaction {
                 summary: summary.clone(),
                 tokens_before: *tokens_before,
+                tokens_after: None,
                 expanded: false,
             }),
             EntryBody::BranchSummary { summary, .. } => out.push(Block::BranchSummary {
@@ -1321,6 +1360,8 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         git_branch: prev.git_branch.clone(),
         session_name: state.session_name.clone(),
         model: state.model.clone(),
+        model_remote: state.model_remote,
+        model_provider: state.model_provider,
         thinking: Some(state.thinking),
         thinking_note: prev.thinking_note.clone(),
         mode: Some(state.mode),

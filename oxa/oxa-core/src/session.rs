@@ -59,6 +59,9 @@ pub struct State {
     pub session_file: Option<PathBuf>,
     pub session_name: Option<String>,
     pub model: String,
+    /// Wave D D4b: the model runs at a cloud provider through the controller; `None` = local.
+    pub model_remote: bool,
+    pub model_provider: Option<&'static str>,
     pub thinking: ThinkingLevel,
     pub mode: Mode,
     pub is_streaming: bool,
@@ -421,12 +424,7 @@ impl Session {
     /// `SessionBeforeSwitch` (cancellable) and re-attaches hosts.
     pub fn switch(&mut self, how: Open, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<(), OxaError> {
         self.ensure_idle()?;
-        let payload = crate::fire::before_switch_payload(&how);
-        if let HookReply::Cancel(reason) =
-            first_reply(&mut self.st, HookPoint::SessionBeforeSwitch, &payload, sink, ui)
-        {
-            return Err(OxaError::new(codes::ABORTED, reason));
-        }
+        let payload = self.before_switch(&how, sink, ui)?;
         let target = payload["targetSessionFile"].as_str().map(str::to_string);
         let reason = payload["reason"].as_str().unwrap_or("new");
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
@@ -434,6 +432,41 @@ impl Session {
         enter(&mut self.st, how, None, sink, ui)?;
         self.preloaded = false;
         Ok(())
+    }
+
+    /// Fire `session_before_switch` for `how` and honour a cancel (`aborted`). Returns the
+    /// hook payload. A front end that reopens sessions itself calls this first.
+    pub fn before_switch(
+        &mut self,
+        how: &Open,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<serde_json::Value, OxaError> {
+        let payload = crate::fire::before_switch_payload(how);
+        if let HookReply::Cancel(reason) =
+            first_reply(&mut self.st, HookPoint::SessionBeforeSwitch, &payload, sink, ui)
+        {
+            return Err(OxaError::new(codes::ABORTED, reason));
+        }
+        Ok(payload)
+    }
+
+    /// Opt in to extension session swaps: a front end that calls this polls
+    /// [`Session::take_swap_request`] and applies the request (`switch`, or its own reopen).
+    /// Without it an extension's `newSession` / `switchSession` answer `unsupported_in_oxa`.
+    pub fn enable_swap(&self) {
+        self.st.shared.gate.swap_enabled.store(true, Ordering::SeqCst);
+    }
+
+    /// The session swap an extension asked for since the last call, if any.
+    pub fn take_swap_request(&mut self) -> Option<crate::SwapRequest> {
+        self.st
+            .shared
+            .gate
+            .swap
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
     }
 
     /// Model switch = a new epoch (W3), applied now when idle. Appends `ModelChange`, then
@@ -611,6 +644,8 @@ impl Session {
             session_file,
             session_name: session_name(st),
             model: st.model.clone(),
+            model_remote: st.info.caps.remote,
+            model_provider: st.info.caps.remote_provider,
             thinking: st.thinking,
             mode: st.mode,
             is_streaming: st.shared.busy.load(Ordering::SeqCst),
@@ -1573,6 +1608,22 @@ pub(crate) fn plan_switch(st: &SessionState, m: &str) -> SwitchPlan {
     }
 }
 
+/// Offline mode (`OXA_OFFLINE`, `--offline`, `oxa.offline`) is a hard error on the switch path:
+/// a remote model is refused whether the engine client refuses to describe it (`offline`
+/// error) or reports it as remote. Nothing is persisted and the model stays as it was.
+fn refuse_offline_remote(st: &SessionState, m: &str) -> Result<(), OxaError> {
+    if !oxa_proto::offline() {
+        return Ok(());
+    }
+    match st.engine.info(Some(m)) {
+        Err(e) if e.code == codes::OFFLINE => Err(e),
+        Ok(info) if info.limits_for == m && info.caps.remote => {
+            Err(oxa_proto::offline_error(&format!("the cloud model {m}")))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The one door for a model switch (`Session::set_model*`, `HostAction::SetModel`, RPC).
 ///
 /// 1. [`plan_switch`]. Over the target's cap:
@@ -1597,6 +1648,7 @@ pub(crate) fn switch_model(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<(), OxaError> {
+    refuse_offline_remote(st, m)?;
     let plan = plan_switch(st, m);
     let mut cold = plan.cold_tokens;
     if plan.over_cap {
@@ -1827,6 +1879,12 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
                 );
             }
             st.info = merged;
+        }
+        Err(e) if e.code == codes::OFFLINE => {
+            // The engine client refused to describe a remote model: remember it, so a request
+            // is refused (see `exec::request`) instead of going out on the stale local limits.
+            st.info.caps.remote = true;
+            notice(sink, Level::Warning, e.to_string());
         }
         Err(e) => notice(
             sink,

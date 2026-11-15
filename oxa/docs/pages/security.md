@@ -97,7 +97,7 @@ These paths are masked inside the sandbox, and the file tools refuse them in eve
 
 - SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`.
 - Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`.
-- oxa Cloud keys: `~/.config/local-ai/llm/cloud-secrets.json`.
+- oxa Cloud keys: `~/.config/oxc/llm/cloud-secrets.json`.
 - Password stores and keyrings: `~/.password-store`, `~/.local/share/keyrings`, `~/.config/op`, `~/.config/Bitwarden`, `~/.pki`.
 - Browser profiles: Firefox, Thunderbird, Chrome, Chromium, Brave, Edge, Vivaldi and Opera profile directories.
 - oxa's own state: the agent directory `~/.oxa/agent` (keys, trust records, sessions), `~/.config/oxc` and `~/.local/state/oxc`.
@@ -117,6 +117,8 @@ A git worktree keeps its history in the main repository, and a clone made with `
 - the worktree's own git directory (`.git/worktrees/<name>` in the main repository): read-write;
 - the main repository's git directory (its `.git`): read-write, so commits, branches and the index can be written. Its `hooks` and `config` files are read-only, because git runs them outside the sandbox later;
 - the object directories that a shared clone reads from: read-only.
+
+In a worktree, a commit only needs the worktree's own git directory and the objects, refs, logs, packed-refs and index parts of the main repository, and those stay writable. Everything git runs or reads outside the sandbox is read-only, as in a normal checkout: the main repository's `hooks`, `config`, `config.worktree` and `info`, and the worktree git directory's `hooks` and `config.worktree`, so a tool call cannot plant a hook or change the configuration.
 
 Git's hooks and config stay as they are even when they do not exist yet. In a git directory that bash can write (the project's own `.git`, or the main repository's `.git` of a worktree), a missing `hooks` directory is covered by an empty read-only directory and a missing `config` file by an empty read-only file, so a command cannot create a hook that git would run later. The same holds for `config.worktree` (in the main repository and in the worktree's own git directory) when the repository's `config` turns on `extensions.worktreeConfig`. To do this, the sandbox has to create the empty directory or file in your repository, and it stays there after the command: an empty `.git/hooks` directory (what `git init` makes anyway, minus the samples), or an empty `config` / `config.worktree` file. Git treats an empty one as no hooks and no settings. Symlinks are never bound over: a `hooks` that is a symlink is left as it is.
 

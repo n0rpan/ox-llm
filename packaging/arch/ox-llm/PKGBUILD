@@ -3,7 +3,7 @@
 pkgname=ox-llm
 pkgver=0.2.0
 pkgrel=1
-pkgdesc='Local AI engine, controller and coding agent (CPU build)'
+pkgdesc='oxe engine, oxc controller and oxa coding agent (CPU build)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/oxstack/ox-llm'
 license=('MIT')

@@ -143,6 +143,27 @@ fn insert_args_fd(argv: &mut Vec<String>, fd: i32) {
     argv.splice(at..at, ["--args".to_string(), fd.to_string()]);
 }
 
+/// A pipe holding `data` (closed write end); returns the read end with `O_CLOEXEC` set, so
+/// no other child spawned meanwhile inherits it. Only the bwrap child clears the flag.
+fn args_pipe(data: &[u8]) -> Result<i32, String> {
+    let mut fds = [-1i32; 2];
+    // SAFETY: `fds` is a valid array of two ints; the fds are closed below or by the caller.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err("cannot create a pipe for the sandbox environment".to_string());
+    }
+    // A few hundred bytes fit in the pipe: this never blocks.
+    // SAFETY: writes `data.len()` bytes from a live buffer to our own pipe.
+    let n = unsafe { libc::write(fds[1], data.as_ptr().cast(), data.len()) };
+    // SAFETY: the write end is ours and not used again.
+    unsafe { libc::close(fds[1]) };
+    if usize::try_from(n) != Ok(data.len()) {
+        // SAFETY: the read end is ours.
+        unsafe { libc::close(fds[0]) };
+        return Err("cannot pass the sandbox environment".to_string());
+    }
+    Ok(fds[0])
+}
+
 impl Bwrap {
     fn launch(
         &self,
@@ -155,13 +176,8 @@ impl Bwrap {
         let (public, secret) = split_secrets(s);
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
         argv.extend(bwrap_args_with(&public, &self.home, &self.layout));
-        let mut fds = [-1i32; 2];
+        let mut args_fd = None;
         if !secret.is_empty() {
-            // SAFETY: `fds` is a valid array of two ints; the pipe fds are closed below.
-            let ok = unsafe { libc::pipe(fds.as_mut_ptr()) } == 0;
-            if !ok {
-                return refused("cannot create a pipe for the sandbox environment".to_string());
-            }
             let mut data = Vec::new();
             for (k, v) in &secret {
                 for part in ["--setenv", k.as_str(), v.as_str()] {
@@ -169,25 +185,26 @@ impl Bwrap {
                     data.push(0);
                 }
             }
-            // A few hundred bytes fit in the pipe: this never blocks.
-            // SAFETY: writes `data.len()` bytes from a live buffer to our own pipe.
-            let n = unsafe { libc::write(fds[1], data.as_ptr().cast(), data.len()) };
-            // SAFETY: the write end is ours and not used again.
-            unsafe { libc::close(fds[1]) };
-            if usize::try_from(n) != Ok(data.len()) {
-                // SAFETY: the read end is ours.
-                unsafe { libc::close(fds[0]) };
-                return refused("cannot pass the sandbox environment".to_string());
+            match args_pipe(&data) {
+                Ok(fd) => {
+                    insert_args_fd(&mut argv, fd);
+                    args_fd = Some(fd);
+                }
+                Err(why) => return refused(why),
             }
-            insert_args_fd(&mut argv, fds[0]);
         }
-        let res = match stdin {
-            Some(b) => run_argv_stdin(&argv, &[], b, s.timeout_s, c, live),
-            None => run_argv_capture(&argv, &[], s.timeout_s, c, live, capture),
-        };
-        if fds[0] >= 0 {
+        let res = run::run_argv_fd(
+            &argv,
+            stdin,
+            args_fd,
+            s.timeout_s,
+            c,
+            live,
+            capture || stdin.is_some(),
+        );
+        if let Some(fd) = args_fd {
             // SAFETY: the read end is ours; the child has its own copy.
-            unsafe { libc::close(fds[0]) };
+            unsafe { libc::close(fd) };
         }
         res
     }
@@ -196,6 +213,56 @@ impl Bwrap {
 #[cfg(test)]
 mod secret_tests {
     use super::*;
+
+    #[test]
+    fn args_pipe_is_cloexec_and_readable() {
+        let fd = args_pipe(b"abc\0").unwrap();
+        // SAFETY: querying flags of a descriptor we own.
+        let fl = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(fl & libc::FD_CLOEXEC != 0, "token pipe leaks across exec");
+        let mut buf = [0u8; 8];
+        // SAFETY: reads into a live buffer from our own fd.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), 8) };
+        assert_eq!(&buf[..n as usize], b"abc\0");
+        // SAFETY: our fd.
+        unsafe { libc::close(fd) };
+    }
+
+    #[test]
+    fn bwrap_child_still_inherits_args_fd() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("oxa-fd-inherit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("got.txt");
+        let fake = dir.join("bwrap");
+        // `--args N` is the 2nd-last-but-4 pair; find it and read that fd.
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/bash\nwhile [ \"$1\" != --args ]; do shift; done\ncat <&$2 | tr '\\0' ' ' > '{}'\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sb = Bwrap {
+            bwrap: fake,
+            home: dir.clone(),
+            layout: Layout::default(),
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: dir.clone(),
+            writable: true,
+            net: true,
+            timeout_s: Some(10),
+            env: vec![("GH_TOKEN".into(), "SYNTH_FD_TOKEN".into())],
+        };
+        sb.run_streaming(&spec, &CancelToken::new(), &mut |_| {});
+        let got = std::fs::read_to_string(&out).unwrap();
+        assert!(got.contains("SYNTH_FD_TOKEN"), "{got}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A fake `bwrap` that records its argv to a file, so the real launcher is exercised.
     #[test]

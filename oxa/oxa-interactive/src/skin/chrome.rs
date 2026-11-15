@@ -43,6 +43,16 @@ pub fn oxa_splash(
     let model = clean(&info.model);
     let engine = clean(&info.engine_url);
     let mut second = String::new();
+    if info.model_remote {
+        second.push_str(&theme.fg(
+            "accent",
+            &format!("cloud · {}", clean(info.model_provider.unwrap_or("remote"))),
+        ));
+        second.push_str(&theme.fg("muted", &format!(" {} ", g.mid)));
+    } else if !model.is_empty() {
+        second.push_str(&theme.fg("success", "local"));
+        second.push_str(&theme.fg("muted", &format!(" {} ", g.mid)));
+    }
     if !model.is_empty() {
         second.push_str(&theme.fg("text", &model));
     }
