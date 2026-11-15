@@ -78,10 +78,31 @@ pub(crate) fn layout(
         allow_home_write,
     });
     // #196: extra read-only paths are never silent; say which are mounted and which are not.
-    let (mounted, skipped): (Vec<_>, Vec<_>) = read_extra.iter().partition(|p| {
-        Layout::keeps_extra(&dirs.home, Some(&dirs.agent_dir), p)
-            && built.read.iter().chain(&built.write).any(|m| p.starts_with(m))
+    // A bind that contains the cwd is never mounted (the cwd bind covers it): its siblings
+    // stay hidden and the cwd keeps its own access.
+    let holds_cwd = |m: &Path| cwd.starts_with(m) || resolved.as_deref().is_some_and(|r| r.starts_with(m));
+    let (kept, skipped): (Vec<_>, Vec<_>) = read_extra
+        .iter()
+        .partition(|p| Layout::keeps_extra(&dirs.home, Some(&dirs.agent_dir), p));
+    let (over_cwd, kept): (Vec<_>, Vec<_>) = kept.into_iter().partition(|p| holds_cwd(p));
+    let (mounted, unmounted): (Vec<_>, Vec<_>) = kept.into_iter().partition(|p| {
+        built
+            .read
+            .iter()
+            .chain(&built.write)
+            .any(|m| p.starts_with(m) && !holds_cwd(m))
     });
+    let skipped: Vec<_> = skipped.into_iter().chain(unmounted).collect();
+    if !over_cwd.is_empty() {
+        let list: Vec<_> = over_cwd.iter().map(|p| p.display().to_string()).collect();
+        notices.push((
+            Level::Info,
+            format!(
+                "{SETTING_READ_PATHS} contains the workspace, so only the workspace itself is mounted there (siblings stay hidden): {}",
+                list.join(", ")
+            ),
+        ));
+    }
     let (writable, rest): (Vec<&&std::path::PathBuf>, Vec<&&std::path::PathBuf>) =
         mounted.iter().partition(|p| built.is_writable(p));
     let (partly, readonly): (Vec<&&std::path::PathBuf>, Vec<&&std::path::PathBuf>) =
@@ -289,6 +310,30 @@ mod tests {
         assert!(
             info.contains("read and write") && info.contains("data/w"),
             "{info}"
+        );
+    }
+
+    #[test]
+    fn read_path_above_the_workspace_is_not_called_readable() {
+        let env = TestEnv::new();
+        env.write("data/app/x", "x");
+        let r = |p: &str| env.root().join(p).display().to_string();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(r#"{{"oxa":{{"sandbox":{{"readPaths":["{}"]}}}}}}"#, r("data")),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        layout(&e, &dirs, &env.root().join("data/app"), false, &mut notices);
+        assert!(
+            !notices.iter().any(|(_, t)| t.contains("never write")),
+            "{notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|(_, t)| t.contains("contains the workspace") && t.contains("data")),
+            "{notices:?}"
         );
     }
 }
