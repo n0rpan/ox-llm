@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 pub(crate) struct LimitWatcher {
     stop: Arc<(Mutex<bool>, Condvar)>,
     worker: Option<JoinHandle<()>>,
-    signal: signal_hook::SigId,
+    signals: Vec<signal_hook::SigId>,
 }
 
 impl LimitWatcher {
@@ -22,8 +22,19 @@ impl LimitWatcher {
             })
             .transpose()?;
         let terminated = Arc::new(AtomicBool::new(false));
-        let signal = signal_hook::flag::register(signal_hook::consts::SIGTERM, terminated.clone())
-            .map_err(|error| OxaError::io("cannot install the SIGTERM handler", &error))?;
+        // Register escalation first: the first SIGTERM sets the flag below; any
+        // subsequent signal takes its default action even if the watcher is blocked.
+        // A deadline also arms escalation, so SIGTERM can stop a stuck final turn.
+        let escalate =
+            signal_hook::flag::register_conditional_default(signal_hook::consts::SIGTERM, terminated.clone())
+                .map_err(|error| OxaError::io("cannot install SIGTERM escalation", &error))?;
+        let signal = match signal_hook::flag::register(signal_hook::consts::SIGTERM, terminated.clone()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                signal_hook::low_level::unregister(escalate);
+                return Err(OxaError::io("cannot install the SIGTERM handler", &error));
+            }
+        };
         let stop = Arc::new((Mutex::new(false), Condvar::new()));
         let watch_stop = stop.clone();
         let worker = match thread::Builder::new()
@@ -40,6 +51,7 @@ impl LimitWatcher {
                         None
                     };
                     if let Some(reason) = reason {
+                        terminated.store(true, Ordering::SeqCst);
                         handle.request_wrap_up(reason);
                         return;
                     }
@@ -56,13 +68,14 @@ impl LimitWatcher {
             Ok(worker) => worker,
             Err(error) => {
                 signal_hook::low_level::unregister(signal);
+                signal_hook::low_level::unregister(escalate);
                 return Err(OxaError::io("cannot start the wrap-up watcher", &error));
             }
         };
         Ok(Self {
             stop,
             worker: Some(worker),
-            signal,
+            signals: vec![signal, escalate],
         })
     }
 }
@@ -75,6 +88,8 @@ impl Drop for LimitWatcher {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-        signal_hook::low_level::unregister(self.signal);
+        for signal in self.signals.drain(..) {
+            signal_hook::low_level::unregister(signal);
+        }
     }
 }

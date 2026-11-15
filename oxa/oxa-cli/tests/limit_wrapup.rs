@@ -272,3 +272,52 @@ fn a_limit_during_done_checks_still_gets_the_final_turn() {
             .contains("Save interrupted work")
     );
 }
+
+#[test]
+fn sigterm_during_wrap_up_restores_default_termination() {
+    use std::os::unix::process::ExitStatusExt;
+    for limit in [false, true] {
+        let env = fixture();
+        let server = FakeServer::start(
+            vec![ScriptTurn::tool(
+                "hang",
+                "bash",
+                r#"{"command":"printf started > started; sleep 30"}"#,
+            )],
+            FakeOpts::default(),
+        )
+        .unwrap();
+        let mut child = start(&env, &server, "print", limit);
+        let started = Instant::now();
+        while !env.work().join("started").exists() && started.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(env.work().join("started").exists());
+        let terminate = || {
+            assert!(Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status()
+                .unwrap()
+                .success())
+        };
+        if !limit {
+            terminate();
+        }
+        // Let either the deadline or first signal request cooperative wrap-up.
+        std::thread::sleep(Duration::from_millis(300));
+        terminate();
+        let sent = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if sent.elapsed() > Duration::from_secs(1) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("SIGTERM during wrap-up was swallowed (limit={limit})");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status.signal(), Some(15));
+    }
+}

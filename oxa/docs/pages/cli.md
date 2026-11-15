@@ -46,7 +46,7 @@ Retries use the `retry` settings: transient gateway credentials/ledger refusals,
 
 `--max-time <seconds>` sets a soft runtime limit for print, JSON and RPC modes, measured after startup/session loading. Fractional seconds are accepted. At the limit, or on SIGTERM, oxa lets the active tool batch finish, then gives the agent one final turn (up to 1,024 output tokens, thinking off) to commit changes from this run or summarize its state. That final request is not retried by the agent. The session and completed tool results are retained; the outcome is `interrupted` (130), and later prompts are left unstarted. Resume with the session id and a new instruction. RPC also exits on a limit/SIGTERM while stdin is still open. `--no-session` continues to disable session storage.
 
-This is a graceful limit: an active tool or model request finishes before the final turn, so elapsed time can exceed the requested duration. SIGTERM does not cancel that tool. SIGKILL and process/system crashes cannot run a wrap-up turn.
+This is a graceful limit: an active tool or model request finishes before the final turn, so elapsed time can exceed the requested duration. The first SIGTERM does not cancel that tool. A further SIGTERM, or SIGTERM after the time limit has requested wrap-up, takes the default termination action so a stuck tool or final request can be stopped. This forced termination cannot guarantee a final result record or session flush. SIGKILL and process/system crashes cannot run a wrap-up turn.
 
 ## Commands
 
