@@ -171,6 +171,10 @@ jobs:
           for fixture in oxc-rs/tests/fixtures/record_*.py; do
             python3 -I "$fixture" --check
           done
+      - name: HTTP policy reference contracts
+        run: |
+          python3 conformance/generate_http_policy_inputs.py --check
+          python3 -m unittest discover -s conformance -p 'test_http_policy_reference.py' -v
       - name: Python and native parser conformance
         run: |
           python3 -m unittest discover -s conformance -p 'test_cli*.py' -v

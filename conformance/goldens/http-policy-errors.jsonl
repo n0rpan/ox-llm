@@ -1,0 +1,21 @@
+{"expected":{"error":{"code":"invalid_request","message":"Synthetic error","param":null,"type":"invalid_request_error"}},"input":{"error":"Synthetic error"},"status":400}
+{"expected":{"error":{"code":"invalid_api_key","message":"Synthetic error","param":null,"type":"authentication_error"}},"input":{"error":"Synthetic error"},"status":401}
+{"expected":{"error":{"code":"forbidden","message":"Synthetic error","param":null,"type":"permission_error"}},"input":{"error":"Synthetic error"},"status":403}
+{"expected":{"error":{"code":"not_found","message":"Synthetic error","param":null,"type":"not_found_error"}},"input":{"error":"Synthetic error"},"status":404}
+{"expected":{"error":{"code":"timeout","message":"Synthetic error","param":null,"type":"server_error"}},"input":{"error":"Synthetic error"},"status":408}
+{"expected":{"error":{"code":"conflict","message":"Synthetic error","param":null,"type":"conflict_error"}},"input":{"error":"Synthetic error"},"status":409}
+{"expected":{"error":{"code":"length_required","message":"Synthetic error","param":null,"type":"invalid_request_error"}},"input":{"error":"Synthetic error"},"status":411}
+{"expected":{"error":{"code":"request_too_large","message":"Synthetic error","param":null,"type":"invalid_request_error"}},"input":{"error":"Synthetic error"},"status":413}
+{"expected":{"error":{"code":"invalid_request","message":"Synthetic error","param":null,"type":"server_error"}},"input":{"error":"Synthetic error"},"status":422}
+{"expected":{"error":{"code":"rate_limit_exceeded","message":"Synthetic error","param":null,"type":"rate_limit_error"}},"input":{"error":"Synthetic error"},"status":429}
+{"expected":{"error":{"code":"client_closed_request","message":"Synthetic error","param":null,"type":"server_error"}},"input":{"error":"Synthetic error"},"status":499}
+{"expected":{"error":{"code":"server_error","message":"Synthetic error","param":null,"type":"server_error"}},"input":{"error":"Synthetic error"},"status":500}
+{"expected":{"error":{"code":"not_implemented","message":"Synthetic error","param":null,"type":"not_supported_error"}},"input":{"error":"Synthetic error"},"status":501}
+{"expected":{"error":{"code":"bad_gateway","message":"Synthetic error","param":null,"type":"server_error"}},"input":{"error":"Synthetic error"},"status":502}
+{"expected":{"error":{"code":"service_unavailable","message":"Synthetic error","param":null,"type":"unavailable_error"}},"input":{"error":"Synthetic error"},"status":503}
+{"expected":{"error":{"code":"timeout","message":"Synthetic error","param":null,"type":"server_error"}},"input":{"error":"Synthetic error"},"status":504}
+{"expected":{"error":{"code":"context_length_exceeded","extra":7,"message":"context size exceeded","param":"messages","type":"invalid_request_error"}},"input":{"error":{"extra":7,"message":"context size exceeded"}},"status":400}
+{"expected":{"error":{"code":"model_not_found","message":"Unknown model","param":"model","type":"not_found_error"}},"input":{"error":{"message":"Unknown model","param":null}},"status":404}
+{"expected":{"error":{"code":"custom_code","message":"Synthetic","param":"field","type":"custom_type"}},"input":{"error":{"code":"custom_code","message":"Synthetic","param":"field","type":"custom_type"}},"status":503}
+{"expected":{"error":"unchanged"},"input":{"error":"unchanged"},"status":200}
+{"expected":{"other":"unchanged"},"input":{"other":"unchanged"},"status":500}

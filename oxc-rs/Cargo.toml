@@ -9,10 +9,14 @@ autobins = false
 [features]
 default = []
 native-controller = ["dep:serde_json", "dep:chrono", "dep:nix"]
+http-policy = ["http-transport", "dep:serde_json", "dep:getrandom", "dep:subtle", "dep:flate2", "dep:nix"]
 http-transport = ["dep:axum", "dep:tokio", "dep:futures-util", "dep:httparse", "dep:httpdate", "dep:tower"]
 upstream-anthropic-request = ["dep:serde_json"]
 
 [dependencies]
+getrandom = { version = "0.3", optional = true }
+subtle = { version = "2", optional = true }
+flate2 = { version = "1", optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1.54.1", features = ["rt", "net", "time", "io-util", "macros", "sync"], optional = true }
 futures-util = { version = "0.3", optional = true }
