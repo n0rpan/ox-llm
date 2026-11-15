@@ -9,7 +9,6 @@ Snapdragon/Hexagon/NPU hardware; it imports none of the bootstrap_* modules. It 
 in <config-dir>/cloud-secrets.json (mode 0600), see docs/CLOUD-MODELS.md.
 """
 import argparse
-import copy
 import json
 import os
 from pathlib import Path
@@ -23,40 +22,11 @@ RUNTIME = Path(__file__).resolve().parent / 'runtime'
 UNIT_NAME = re.compile(r'[A-Za-z0-9_.@-]{1,64}')
 
 
-def _anthropic(name, output, price_in, price_out):
-    return {'kind': 'remote/anthropic', 'provider': 'anthropic', 'base_url': 'https://api.anthropic.com',
-            'upstream_model': name, 'context_window': 200000, 'max_output': output,
-            'pricing': {'input_per_million': price_in, 'output_per_million': price_out}}
-
-
-def _openai(name, output, price_in, price_out):
-    return {'kind': 'remote/openai', 'provider': 'openai', 'base_url': 'https://api.openai.com/v1',
-            'upstream_model': name, 'context_window': 200000, 'max_output': output,
-            'pricing': {'input_per_million': price_in, 'output_per_million': price_out}}
-
-
-def _openrouter(name, output, price_in, price_out):
-    return {'kind': 'remote/openrouter', 'provider': 'openrouter', 'base_url': 'https://openrouter.ai/api/v1',
-            'upstream_model': name, 'context_window': 200000, 'max_output': output,
-            'pricing': {'input_per_million': price_in, 'output_per_million': price_out}}
-
-
-# The Anthropic model family is a vendor model name, not a coding client, but the O-151 scan
-# (test_core_client_neutral) reads every shipped file for client names and allows no exception, so the
-# family name is assembled here instead of spelled in the catalog rows.
-_FAMILY = 'cla' + 'ude'
-
 # Used when --models-file is absent: the owner's catalog (id, upstream model, context, max output,
-# USD per million input/output tokens). Review prices before relying on the daily budget.
-DEFAULT_MODELS = {
-    f'anthropic/{_FAMILY}-haiku-5-5': _anthropic(f'{_FAMILY}-haiku-5-5', 32000, 0.5, 2.5),
-    f'anthropic/{_FAMILY}-sonnet-5-5': _anthropic(f'{_FAMILY}-sonnet-5-5', 32000, 2.0, 10.0),
-    f'anthropic/{_FAMILY}-opus-5-5': _anthropic(f'{_FAMILY}-opus-5-5', 32000, 4.0, 20.0),
-    'openai/gpt-6-luna': _openai('gpt-6-luna', 128000, 0.1, 0.5),
-    'openai/gpt-6.1-sol': _openai('gpt-6.1-sol', 128000, 2.0, 10.0),
-    'openrouter/deepseek-v4-pro': _openrouter('deepseek/deepseek-v4-pro-0813', 32768, 0.111, 4.44),
-    'openrouter/deepseek-v4.1-flash': _openrouter('deepseek/deepseek-v4.1-flash', 32768, 0.0507, 0.2028),
-}
+# USD per million input/output tokens), kept as data in the source tree (docs/cloud-models.json, format
+# in docs/CLOUD-MODELS.md) and not in the shipped package: the O-151 scan (test_core_client_neutral)
+# allows no vendor/client-style names in shipped code. Review prices before relying on the daily budget.
+DEFAULT_CATALOG = Path(__file__).resolve().parents[2] / 'docs' / 'cloud-models.json'
 
 
 class InstallError(Exception):
@@ -67,10 +37,15 @@ def load_models(path):
     """The catalog from a JSON file, validated with the gateway's own rules (no network)."""
     from .runtime import cloud
     if path is None:
-        models = copy.deepcopy(DEFAULT_MODELS)
+        try:
+            models = json.loads(DEFAULT_CATALOG.read_text())
+        except (OSError, ValueError):
+            raise InstallError('No default catalog in this install: pass --models-file (docs/CLOUD-MODELS.md).') from None
+        if not isinstance(models, dict):
+            raise InstallError('The default catalog is not a JSON object.')
         for alias, raw in models.items():
             if cloud.entry(alias, raw) is None:
-                raise InstallError(f'Built-in catalog entry {alias!r} is invalid.')
+                raise InstallError(f'Default catalog entry {alias!r} is invalid.')
         return models
     try:
         models = json.loads(Path(path).read_text())
@@ -159,7 +134,7 @@ def main(argv=None, runner=subprocess.run):
     parser.add_argument('--unit-name', default='oxc')
     parser.add_argument('--unit-dir', help='default: ~/.config/systemd/user')
     parser.add_argument('--no-systemd', action='store_true', help='write no unit; run bin/oxc-controller in the foreground')
-    parser.add_argument('--models-file', help='JSON object of remote catalog entries (docs/CLOUD-MODELS.md); default: built-in catalog')
+    parser.add_argument('--models-file', help='JSON object of remote catalog entries (docs/CLOUD-MODELS.md); default: docs/cloud-models.json')
     parser.add_argument('--daily-budget', type=float, default=1.0, help='USD per day (default 1.0)')
     parser.add_argument('--oxa-binary', help='copy this built oxa binary to <prefix>/bin/oxa')
     parser.add_argument('--force', action='store_true', help='replace an existing runtime.json')

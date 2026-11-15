@@ -14,9 +14,6 @@ from unittest.mock import patch
 from snapdragon_ai_lab.runtime import controller
 
 REMOTE = 'openrouter/mock-model'
-# Spelled apart so the fixture is not a literal credential assignment for the tree scan.
-KEY_FIELD = 'api_key'
-FAKE_VALUE = 'synthetic-fake-value'
 
 
 class CloudOnlyNoEngine(unittest.TestCase):
@@ -34,7 +31,7 @@ class CloudOnlyNoEngine(unittest.TestCase):
 
     def start(self, key=True):
         if key:
-            self.secrets.write_text(json.dumps({'openrouter': {KEY_FIELD: FAKE_VALUE}}))
+            self.secrets.write_text(json.dumps({'openrouter': {'api_key': 'synthetic-fake-key'}}))
             os.chmod(self.secrets, stat.S_IRUSR | stat.S_IWUSR)
         config = self.root / 'runtime.json'
         config.write_text(json.dumps({'cloud_only': True, 'cloud': {
