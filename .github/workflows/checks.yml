@@ -150,7 +150,8 @@ jobs:
     needs: changes
     if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.changes.outputs.full == 'true' || needs.changes.outputs.lab == 'true'))
     name: experimental oxc CLI (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    # stays on the hosted image for now: its conformance step failed on the project's runner (to be looked at)
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
