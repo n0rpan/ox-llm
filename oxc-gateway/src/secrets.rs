@@ -1,13 +1,19 @@
 //! Request-time owner-only credentials. Errors and Debug never contain a path
-//! or credential. No value is cached, logged or placed in the environment.
-use nix::{libc, unistd::Uid};
+//! or credential. Key values are never cached, logged or placed in the environment.
+use nix::{
+    fcntl::{openat, OFlag},
+    libc,
+    sys::stat::Mode,
+    unistd::Uid,
+};
 use serde_json::Value;
 use std::{
     fmt,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Read},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 pub struct Key(String);
@@ -25,6 +31,7 @@ impl fmt::Debug for Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Unavailable,
+    InsideRepository,
     SymbolicLink,
     Unreadable,
     NotRegular,
@@ -36,6 +43,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let reason = match self {
             Self::Unavailable => return f.write_str("Cloud credentials are not configured."),
+            Self::InsideRepository => "the configured path is inside a source repository",
             Self::SymbolicLink => "the configured path is a symbolic link",
             Self::Unreadable => "the file cannot be read",
             Self::NotRegular => "the configured path is not a regular file",
@@ -187,28 +195,74 @@ fn parse(bytes: &[u8]) -> Option<Value> {
     serde_json::from_slice(&normalized).ok()
 }
 /// `path` is chosen by trusted configuration (defaulting belongs to the caller).
-/// The final component is never followed; parent symlinks are resolved for the
-/// source-tree exclusion. All checks are repeated on the opened descriptor.
-pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
-    if !path.is_absolute() {
-        return Err(Error::Unavailable);
+/// A path approved for one configuration generation. Prepare when configuration
+/// changes; read fresh bytes and descriptor metadata for every request. Parent
+/// links bind to the approved location, so retargeting them cannot select a key
+/// inside a repository. No key material or opened key descriptor is retained.
+#[derive(Clone)]
+pub struct KeyFile {
+    parent: Arc<File>,
+    name: PathBuf,
+}
+impl fmt::Debug for KeyFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("KeyFile([configured])")
     }
-    let resolved = resolve(path, &mut 0).map_err(|_| Error::Unavailable)?;
-    if resolved.ancestors().skip(1).any(|parent| {
-        parent.join(".git").exists()
-            || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
-    }) {
-        return Err(Error::Unavailable);
+}
+impl KeyFile {
+    pub fn prepare(path: &Path) -> Result<Self, Error> {
+        if !path.is_absolute() {
+            return Err(Error::Unavailable);
+        }
+        let resolved = resolve(path, &mut 0).map_err(|_| Error::Unavailable)?;
+        if resolved.ancestors().skip(1).any(|parent| {
+            parent.join(".git").exists()
+                || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
+        }) {
+            return Err(Error::InsideRepository);
+        }
+        // A missing parent could later become a link into a repository. Bind
+        // only an existing canonical directory for this config generation.
+        let parent =
+            fs::canonicalize(path.parent().unwrap_or(path)).map_err(|_| Error::Unavailable)?;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let access = libc::O_PATH;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let access = 0;
+        let parent = OpenOptions::new()
+            .read(true)
+            .custom_flags(access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(parent)
+            .map_err(|_| Error::Unavailable)?;
+        Ok(Self {
+            parent: Arc::new(parent),
+            name: path
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(".")),
+        })
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|error| match error.raw_os_error() {
-            Some(libc::ELOOP) => Error::SymbolicLink,
-            Some(libc::EACCES | libc::EPERM) => Error::Unreadable,
+    pub fn read(&self, provider: &str) -> Result<Key, Error> {
+        let file = openat(
+            self.parent.as_ref(),
+            &self.name,
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|error| match error {
+            nix::errno::Errno::ELOOP => Error::SymbolicLink,
+            nix::errno::Errno::EACCES | nix::errno::Errno::EPERM => Error::Unreadable,
             _ => Error::Unavailable,
         })?;
+        read_file(File::from(file), provider)
+    }
+}
+/// Convenience for callers without a retained configuration. Runtimes should
+/// keep prepare's Result and expose its safe refusal only after policy checks.
+pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
+    KeyFile::prepare(path)?.read(provider)
+}
+fn read_file(file: File, provider: &str) -> Result<Key, Error> {
     let info = file.metadata().map_err(|_| Error::Unavailable)?;
     if !info.is_file() {
         return Err(Error::NotRegular);
