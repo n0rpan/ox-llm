@@ -15,8 +15,9 @@ last line is fingerprinted but never interpreted as an event.
 
 A2A validation requires a complete queued manifest before launch, fixed task
 and context bindings, valid hashes/response reservations, ordered lifecycle and
-matching terminal counts. Native process events and unimplemented resume
-bindings are rejected. Completed outcomes require consistent terminal evidence;
+matching terminal counts. Native process events and malformed or incomplete resume
+bindings are rejected; original-plan metadata is described in
+[RESUME_BINDINGS.md](RESUME_BINDINGS.md). Completed outcomes require consistent terminal evidence;
 local run_finished can still coexist with explicit unconfirmed remote cleanup.
 The snapshot preserves that uncertainty. Missing legacy ownership is inspectable
 but cannot establish an exclusive recovery claim.

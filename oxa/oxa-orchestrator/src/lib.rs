@@ -48,3 +48,6 @@ pub mod a2a_recovery;
 
 #[cfg(feature = "core")]
 mod a2a_reconcile;
+
+#[cfg(feature = "core")]
+pub mod resume;

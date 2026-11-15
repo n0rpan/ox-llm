@@ -36,6 +36,7 @@ pub struct WorkerSnapshot {
     pub recorded_task_state: Option<TaskState>,
     pub result_sha256: Option<String>,
     pub checkpoint_sha256: Option<String>,
+    pub resume_binding: Option<crate::resume::WorkerBinding>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
@@ -51,6 +52,7 @@ pub struct Snapshot {
     pub exclusive_ownership_supported: bool,
     pub persist_results: bool,
     pub workers: Vec<WorkerSnapshot>,
+    pub resume_binding: Option<crate::resume::RunBinding>,
 }
 pub struct InspectedRun {
     snapshot: Snapshot,
@@ -178,6 +180,7 @@ impl InspectedRun {
         let mut finished = false;
         let mut exclusive = false;
         let mut persist_results = false;
+        let mut resume_binding = None;
         for line in bytes[..end - 1].split(|b| *b == b'\n') {
             if line.len() > MAX_LINE || records >= MAX_RECORDS {
                 return Err(invalid("journal record bound exceeded"));
@@ -199,7 +202,6 @@ impl InspectedRun {
                 if record.event != "run_started"
                     || record.worker.is_some()
                     || details["transport"] != "A2A-0.3.0"
-                    || details.get("resumeBinding").is_some()
                 {
                     return Err(invalid("unsupported A2A journal start or resume binding"));
                 }
@@ -223,6 +225,21 @@ impl InspectedRun {
                     Some(Value::Bool(v)) => *v,
                     _ => return Err(invalid("invalid checkpoint consent metadata")),
                 };
+                resume_binding = match details.get("resumeBinding") {
+                    None => None,
+                    Some(value) => {
+                        let binding: crate::resume::RunBinding = serde_json::from_value(value.clone())
+                            .map_err(|_| invalid("invalid run budget binding"))?;
+                        binding.validate()?;
+                        if !exclusive
+                            || details["parallelism"].as_u64() != Some(binding.parallelism as u64)
+                            || binding.persist_results != persist_results
+                        {
+                            return Err(invalid("run binding disagrees with journal"));
+                        }
+                        Some(binding)
+                    }
+                };
                 continue;
             }
             match record.event.as_str() {
@@ -235,7 +252,6 @@ impl InspectedRun {
                     if workers.len() >= expected
                         || workers.contains_key(id)
                         || workers.values().any(|w| w.phase != Phase::Queued)
-                        || details.get("resumeBinding").is_some()
                     {
                         return Err(invalid("invalid queued worker manifest"));
                     }
@@ -247,6 +263,23 @@ impl InspectedRun {
                     {
                         return Err(invalid("invalid worker response reservation"));
                     }
+                    let worker_binding = match details.get("resumeBinding") {
+                        None if resume_binding.is_none() => None,
+                        Some(value) if resume_binding.is_some() => {
+                            let binding: crate::resume::WorkerBinding = serde_json::from_value(value.clone())
+                                .map_err(|_| invalid("invalid worker plan binding"))?;
+                            binding.validate()?;
+                            if binding.endpoint_sha256 != required_hash(details, "agentUrlSha256")?
+                                || binding.role_sha256 != required_hash(details, "roleSha256")?
+                                || binding.task_sha256 != required_hash(details, "taskSha256")?
+                                || details["reservedBytes"].as_u64() != Some(binding.response_bytes as u64)
+                            {
+                                return Err(invalid("worker binding disagrees with journal"));
+                            }
+                            Some(binding)
+                        }
+                        _ => return Err(invalid("incomplete resume bindings")),
+                    };
                     workers.insert(
                         id.into(),
                         WorkerSnapshot {
@@ -259,6 +292,7 @@ impl InspectedRun {
                             recorded_task_state: None,
                             result_sha256: None,
                             checkpoint_sha256: None,
+                            resume_binding: worker_binding,
                         },
                     );
                 }
@@ -363,6 +397,15 @@ impl InspectedRun {
                 _ => return Err(invalid("unsupported A2A journal event")),
             }
         }
+        if let Some(binding) = &resume_binding {
+            let reserved = workers.values().try_fold(0usize, |sum, w| {
+                sum.checked_add(w.resume_binding.as_ref().unwrap().response_bytes)
+                    .ok_or_else(|| invalid("worker reservation overflow"))
+            })?;
+            if reserved > binding.response_reservation {
+                return Err(invalid("worker reservations exceed run binding"));
+            }
+        }
         Ok(Self {
             snapshot: Snapshot {
                 version: 1,
@@ -375,6 +418,7 @@ impl InspectedRun {
                 recorded_run_finished: finished,
                 exclusive_ownership_supported: exclusive,
                 persist_results,
+                resume_binding,
                 workers: workers.into_values().collect(),
             },
         })
@@ -640,5 +684,72 @@ mod tests {
         assert!(ExclusiveRun::claim(&legacy).is_err());
         fs::write(&legacy, encode(fixture())).unwrap();
         assert!(ExclusiveRun::claim(&legacy).is_ok());
+    }
+    #[test]
+    fn resume_bindings_match_the_manifest_and_cannot_widen_recorded_policy() {
+        use crate::resume::{RunBinding, WorkerBinding};
+        let mut rows = fixture();
+        let run = RunBinding {
+            version: 1,
+            boot_sha256: "a".repeat(64),
+            started_ns: 100,
+            deadline_ns: 200,
+            parallelism: 1,
+            response_reservation: 1024,
+            journal_bytes: 1024,
+            request_timeout_ns: 1,
+            poll_interval_ns: 1_000_000,
+            cancel_grace_ns: 1,
+            persist_results: true,
+        };
+        let worker = WorkerBinding {
+            role_sha256: "a".repeat(64),
+            task_sha256: "a".repeat(64),
+            endpoint_sha256: "a".repeat(64),
+            wall_time_ns: 1,
+            response_bytes: 1024,
+            reported_tokens: Some(1),
+        };
+        rows[0]["details"]["parallelism"] = json!(1);
+        rows[0]["details"]["resumeBinding"] = serde_json::to_value(&run).unwrap();
+        rows[1]["details"]["resumeBinding"] = serde_json::to_value(&worker).unwrap();
+        let inspected = InspectedRun::from_bytes(encode(rows.clone())).unwrap();
+        assert_eq!(inspected.snapshot.resume_binding.as_ref(), Some(&run));
+        assert_eq!(
+            inspected.snapshot.workers[0].resume_binding.as_ref(),
+            Some(&worker)
+        );
+        for mutation in 0..13 {
+            let mut changed = rows.clone();
+            match mutation {
+                0 => changed[0]["details"]["resumeBinding"]["response_reservation"] = json!(1023),
+                1 => changed[0]["details"]["resumeBinding"]["parallelism"] = json!(2),
+                2 => changed[0]["details"]["resumeBinding"]["persist_results"] = json!(false),
+                3 => {
+                    changed[1]["details"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("resumeBinding");
+                }
+                4 => {
+                    changed[0]["details"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("resumeBinding");
+                }
+                5 => changed[1]["details"]["resumeBinding"]["role_sha256"] = json!("b".repeat(64)),
+                6 => changed[1]["details"]["resumeBinding"]["response_bytes"] = json!(2048),
+                7 => changed[1]["details"]["resumeBinding"]["reported_tokens"] = json!(0),
+                8 => changed[0]["details"]["resumeBinding"]["journal_bytes"] = json!(16 * 1024 * 1024 + 1),
+                9 => changed[0]["details"]["resumeBinding"]["unknown_policy"] = json!(true),
+                10 => changed[1]["details"]["resumeBinding"]["unknown_policy"] = json!(true),
+                11 => changed[0]["details"]["resumeBinding"]["deadline_ns"] = json!(100),
+                _ => changed[0]["details"]["resumeBinding"]["boot_sha256"] = json!("bad"),
+            }
+            assert!(
+                InspectedRun::from_bytes(encode(changed)).is_err(),
+                "mutation {mutation}"
+            );
+        }
     }
 }
