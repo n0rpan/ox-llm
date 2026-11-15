@@ -8,7 +8,8 @@ autobins = false
 
 [features]
 default = []
-native-controller = ["dep:oxc-gateway"]
+native-controller = ["dep:oxc-gateway", "dep:serde_json"]
+upstream-anthropic-request = ["dep:serde_json"]
 
 [[bin]]
 name = "oxc-native"
@@ -24,7 +25,7 @@ required-features = ["native-controller"]
 oxc-gateway = { path = "../oxc-gateway", optional = true, features = ["cloud-only", "policy"] }
 axum = "0.8"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "fs", "sync", "time", "io-util"] }
-serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

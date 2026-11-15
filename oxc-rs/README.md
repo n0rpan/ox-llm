@@ -9,7 +9,7 @@ proceed. Python product code remains unchanged; reference goldens follow merged 
 new tests still establish Python behavior before checking a ported path.
 
 Cloud-only mode (no local engine) is the first complete target. Main is merged
-normally through `2f23a0e`; the discovery proof also includes #294's current
+normally through `d5d3581`; the discovery proof also includes #294's current
 snapshot API. Native discovery passes nine live HTTP cases, including an owned
 public-price cache, and eight public refusal cases. They hold a foreign inference
 lease throughout and install no engine/model. Positive forwarding, accounting,
