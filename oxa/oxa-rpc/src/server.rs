@@ -134,16 +134,20 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// A command that needs the session, queued for the session thread. `reply` is false for a
 /// prompt: its response was written when it was accepted. `claimed` marks a prompt that took
 /// the run claim ([`Gate::claimed`]) when it was accepted.
-struct Job {
-    cmd: RpcCommand,
-    reply: bool,
-    claimed: bool,
+enum Job {
+    Command {
+        cmd: RpcCommand,
+        reply: bool,
+        claimed: bool,
+    },
+    /// Reader failures share the command FIFO so they cannot overtake an earlier run.
+    Outcome(RunOutcome),
 }
 
 /// What the reader and the session thread decide together, under one lock.
 #[derive(Default)]
 struct Gate {
-    /// Jobs sent to the session thread and not yet finished.
+    /// Session commands sent to the worker and not finished (outcome-only jobs claim nothing).
     pending: usize,
     /// A prompt was answered `started` and its run has not settled yet. Set by the reader when
     /// it accepts the prompt (pi: the run is active once `started` is sent), cleared by the
@@ -179,9 +183,18 @@ impl Front {
     fn reply(&self, cmd: &RpcCommand, r: Result<Value, OxaError>) {
         let v = match r {
             Ok(data) => response_ok(cmd, data),
-            Err(e) => response_err(cmd, &e),
+            Err(e) => {
+                self.record_error(&e);
+                response_err(cmd, &e)
+            }
         };
         write_out(&self.out, &v);
+    }
+
+    fn record_error(&self, error: &OxaError) {
+        // No session claim or gate lock: this can be called while a rejected command holds
+        // the gate. The worker folds the error after all earlier accepted commands.
+        let _ = self.tx.send(Job::Outcome(RunOutcome::from_error(error)));
     }
 
     /// After a queue change made here: the `queue_update` record, at once (pi emits it when the
@@ -198,7 +211,7 @@ impl Front {
     /// Queue a job (the caller holds the gate). `claimed` = the job carries the run claim.
     fn enqueue(&self, gate: &mut Gate, cmd: &RpcCommand, reply: bool, claimed: bool) {
         gate.pending += 1;
-        let job = Job {
+        let job = Job::Command {
             cmd: cmd.clone(),
             reply,
             claimed,
@@ -388,14 +401,27 @@ fn session_loop(
 ) -> RunOutcome {
     let mut outcome = RunOutcome::NothingToDo;
     loop {
-        if cx.handle.wrap_up_requested() && lock(&gate).pending == 0 {
-            outcome.include(RunOutcome::Interrupted);
-            break;
-        }
-        let Job { cmd, reply, claimed } = match rx.recv_timeout(std::time::Duration::from_millis(20)) {
-            Ok(job) => job,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        let job = if cx.handle.wrap_up_requested() && lock(&gate).pending == 0 {
+            match rx.try_recv() {
+                Ok(job) => job,
+                Err(_) => {
+                    outcome.include(RunOutcome::Interrupted);
+                    break;
+                }
+            }
+        } else {
+            match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(job) => job,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        };
+        let (cmd, reply, claimed) = match job {
+            Job::Command { cmd, reply, claimed } => (cmd, reply, claimed),
+            Job::Outcome(next) => {
+                outcome.include(next);
+                continue;
+            }
         };
         let _ = cx.session.take_outcome();
         let is_bash = cmd.kind == "bash";
@@ -486,6 +512,7 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
             Ok(0) => break,
             Ok(_) => {}
             Err(e) => {
+                front.record_error(&OxaError::io("cannot read RPC commands", &e));
                 eprintln!("oxa rpc: cannot read commands: {e}");
                 break;
             }
@@ -494,6 +521,7 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
             Ok(t) => t,
             Err(e) => {
                 let err = OxaError::new(codes::INVALID, format!("the line is not UTF-8: {e}"));
+                front.record_error(&err);
                 write_out(&front.out, &parse_error(&err));
                 continue;
             }
@@ -504,7 +532,10 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
         }
         match parse_command(text) {
             Ok(cmd) => front.accept(cmd),
-            Err(e) => write_out(&front.out, &parse_error(&e)),
+            Err(e) => {
+                front.record_error(&e);
+                write_out(&front.out, &parse_error(&e));
+            }
         }
     }
 }
