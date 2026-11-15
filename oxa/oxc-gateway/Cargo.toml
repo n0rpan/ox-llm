@@ -9,6 +9,7 @@ publish = false
 default = []
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
+upstream-anthropic-request = ["dep:serde_json"]
 
 [dependencies]
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }

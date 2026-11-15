@@ -6,6 +6,7 @@ settlement are separate work. Python remains the behavior reference.
 
 - `policy`: policy contracts.
 - `secrets`: secrets contracts.
+- `upstream-anthropic-request`: the pure request translator shared with oxc.
 
 Build all examples with `cargo build --locked --manifest-path
 oxa/oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with

@@ -2,7 +2,7 @@ name: cloud gateway
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-    paths: ['oxa/oxc-gateway/**', 'oxa/Cargo.toml', 'oxa/Cargo.lock', 'oxc/**', '.github/workflows/cloud-gateway.yml']
+    paths: ['oxa/oxc-gateway/**', 'oxa/Cargo.toml', 'oxa/Cargo.lock', 'oxc/**', 'oxc-rs/tests/fixtures/**', '.github/workflows/cloud-gateway.yml']
   merge_group:
   workflow_dispatch:
 permissions:
@@ -39,6 +39,8 @@ jobs:
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --no-self-update
       - run: cargo check --locked --manifest-path oxa/oxc-gateway/Cargo.toml --no-default-features
       - run: cargo clippy --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-features
+      - run: python3 -I oxc-rs/tests/fixtures/record_anthropic_requests.py --check
       - run: cargo build --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-features --examples
       - run: /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v
       - run: OXC_POLICY_CONTRACT="$PWD/oxa/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxa/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v

@@ -9,9 +9,10 @@ autobins = false
 [features]
 default = []
 native-controller = []
-upstream-anthropic-request = ["dep:serde_json"]
+upstream-anthropic-request = ["dep:serde_json", "dep:oxc-gateway", "oxc-gateway/upstream-anthropic-request"]
 
 [dependencies]
+oxc-gateway = { path = "../oxa/oxc-gateway", default-features = false, optional = true }
 serde_json = { version = "1", optional = true }
 
 [[bin]]
