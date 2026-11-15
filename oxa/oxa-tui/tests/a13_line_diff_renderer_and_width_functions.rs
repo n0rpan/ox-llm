@@ -454,7 +454,7 @@ fn narrowing_counts_wide_character_wrap() {
     r.draw(&frame(&[&line, "z"]), &mut term);
     let out = term.take_output();
     // 5 columns hold two wide chars (4 cols): 3 rows, plus "z" row; cursor on last line
-    assert!(out.contains("\x1b[4A\r\x1b[J"), "{out:?}");
+    assert!(out.contains("\x1b[3A\r\x1b[J"), "{out:?}");
 }
 
 /// a terminal that does not reflow must never be climbed past the live region
