@@ -1,6 +1,6 @@
 # oxc drop-in conformance
 
-Reference: main `2d5825e19301dead4703362c556ddc11c4635662`.
+Reference: main `291aee395e1810284a30c63ce66849d0cef46513`.
 The current suite passes 332 scenarios in 54 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
@@ -99,7 +99,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | HTTP empty install | PASS, 7 cases | PASS | Additional setup failures |
 | Configured HTTP | PASS, 62 cases | PASS: chat, completions and Responses JSON/SSE | More option combinations and engine error paths |
 | Cache usage | PASS, 9 cases | PASS | More malformed/advisory I/O cases |
-| Cache budgets | PASS, 12 cases | PASS: persistence, value/TTL eviction, pins/recent sessions, shared blocks, orphan echo, opaque models, lease refusal and symlink safety | State-cache engine adapter and mutation races |
+| Cache budgets | PASS, 12 cases | PASS: persistence, value/TTL eviction, pins/recent sessions, shared blocks, orphan echo, opaque models, lease refusal and symlink safety | More mutation races |
 | Cache clear | PASS, 18 cases | PASS: all/model/session/hint scopes, shared/anonymous owners, opaque manifests, private durable rewrites, busy/lease refusal, classic/Rust prefixes and retained primers | More mutation races |
 | Engine-owned cache | PASS, 9 cases | PASS: launch flags, disk off, private override, authenticated usage/budget/clear, bounded replies, explicit/async preload, saved/in-memory hints and crashed-owner recovery | Legacy conversation-store launch rewriting and more preload states/races |
 | Context modes | PASS, 8 cases | PASS: limits/capabilities, fast/deep/max, RSS-proof gates, active/cap-changing controls and private config writes | Execution override adapters and more malformed profiles |
