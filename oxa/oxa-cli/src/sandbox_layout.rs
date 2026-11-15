@@ -41,6 +41,38 @@ pub(crate) fn home_confirm_effect() -> String {
 /// notice when they apply. `confirmed` = the interactive start in `$HOME` itself was confirmed
 /// (`home_cwd::check`); the user setting [`SETTING_ALLOW_HOME_WRITE`] does the same in every
 /// mode. Neither ever makes `/` or a parent of `$HOME` writable.
+/// True when the binary lives under a writable root (workspace or a writable extra path):
+/// a read-only bind there would make `cargo build`/`clean` fail with EBUSY.
+fn exe_under_writable(exe: &Path, roots: &[&Path]) -> bool {
+    let canon = exe.canonicalize().ok();
+    roots.iter().any(|r| {
+        let rc = r.canonicalize().ok();
+        exe.starts_with(r)
+            || canon.as_deref().is_some_and(|k| k.starts_with(r))
+            || rc
+                .as_deref()
+                .is_some_and(|rc| exe.starts_with(rc) || canon.as_deref().is_some_and(|k| k.starts_with(rc)))
+    })
+}
+
+#[cfg(test)]
+mod exe_tests {
+    use super::*;
+
+    #[test]
+    fn exe_under_cwd_or_writable_extra_is_detected() {
+        let d = std::env::temp_dir().join(format!("oxa-exe-{}", std::process::id()));
+        let (w, other) = (d.join("w"), d.join("o"));
+        std::fs::create_dir_all(w.join("target")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let exe = w.join("target/oxa");
+        std::fs::write(&exe, b"").unwrap();
+        assert!(exe_under_writable(&exe, &[other.as_path(), w.as_path()]));
+        assert!(!exe_under_writable(&exe, &[other.as_path()]));
+        std::fs::remove_dir_all(&d).ok();
+    }
+}
+
 pub(crate) fn layout(
     env: &Env,
     dirs: &Dirs,
@@ -68,14 +100,22 @@ pub(crate) fn layout(
         notices.push((Level::Warning, home_root_warning(cwd, home_itself)));
     }
     let read_extra = paths(SETTING_READ_PATHS);
+    let exe = std::env::current_exe().ok();
+    let write_extra = paths(SETTING_WRITE_PATHS);
+    let mut roots: Vec<&Path> = vec![cwd];
+    roots.extend(resolved.as_deref());
+    roots.extend(write_extra.iter().map(|p| p.as_path()));
+    let exe_in_workspace = exe.as_deref().is_some_and(|e| exe_under_writable(e, &roots));
     let mut built = Layout::build(&LayoutInputs {
         home: dirs.home.clone(),
         agent_dir: Some(dirs.agent_dir.clone()),
         path_var: env.get("PATH").unwrap_or("").to_string(),
         env: env.pairs().to_vec(),
         read_extra: read_extra.clone(),
-        write_extra: paths(SETTING_WRITE_PATHS),
+        write_extra,
         allow_home_write,
+        exe,
+        exe_in_workspace,
     });
     // #196: extra read-only paths are never silent; say which are mounted and which are not.
     // A bind that contains the cwd is never mounted (the cwd bind covers it): its siblings
