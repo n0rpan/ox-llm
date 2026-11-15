@@ -97,6 +97,8 @@ struct Observation {
     before_tokens: Option<u64>,
 }
 struct Owner {
+    source: Option<Arc<crate::main_usage::Source>>,
+    auto_compaction: bool,
     background: Option<Arc<crate::background::Manager>>,
     workers: Option<Arc<crate::worker_lanes::Manager>>,
     wakes: VecDeque<crate::background::Snapshot>,
@@ -111,6 +113,7 @@ struct Owner {
     generation: u64,
     revision: u64,
     command_active: bool,
+    pending_finish: Option<bool>,
     idle_wakes_paused: bool,
     observation: Observation,
     publisher: Publisher,
@@ -201,6 +204,9 @@ impl Owner {
         }
     }
     fn interrupt(&self) {
+        if let Some(source) = &self.source {
+            source.close();
+        }
         if let Some(workers) = &self.workers {
             workers.cancel_all();
         }
@@ -215,6 +221,34 @@ impl Owner {
         self.handle.cancel_background();
     }
     fn tick(&mut self) {
+        if let Some(success) = self.pending_finish {
+            if self
+                .source
+                .as_ref()
+                .is_some_and(|source| source.snapshot().active == 0)
+            {
+                self.finish(success);
+            }
+        }
+        if self.observation.tracking {
+            let minimum = self.source.as_ref().and_then(|source| {
+                self.observation
+                    .before_tokens
+                    .and_then(|before| before.checked_add(source.snapshot().total))
+            });
+            if self.goal.as_ref().is_some_and(|goal| {
+                goal.state() == State::Active
+                    && goal
+                        .snapshot()
+                        .budget
+                        .tokens
+                        .is_some_and(|cap| minimum.is_some_and(|total| total > cap))
+            }) {
+                self.goal.as_mut().unwrap().runtime_budget("token_budget");
+                self.interrupt();
+                self.publish("goal_budget_exhausted", None, None, true);
+            }
+        }
         if let Some(goal) = &mut self.goal {
             let revision = goal.revision();
             let effect = goal.tick();
@@ -289,14 +323,42 @@ impl Owner {
         }
     }
     fn start_turn(&mut self) -> Result<(), OxaError> {
+        if self.pending_finish.is_some() {
+            return Err(OxaError::new(codes::INVALID, "Goal inference is still settling"));
+        }
         if let Some(goal) = &mut self.goal {
-            let before_tokens = goal.snapshot().reported_tokens;
-            goal.begin_turn().map_err(|_| {
+            let snapshot = goal.snapshot();
+            let before_tokens = snapshot.reported_tokens;
+            let error = || {
                 OxaError::new(
                     codes::INVALID,
                     "Resume or cancel the goal before starting session work",
                 )
-            })?;
+            };
+            if goal.state() != State::Active {
+                return Err(error());
+            }
+            if let Some(source) = &self.source {
+                let remaining = snapshot
+                    .budget
+                    .tokens
+                    .map(|cap| cap.saturating_sub(before_tokens.unwrap_or(cap)));
+                if !source.begin(
+                    remaining,
+                    snapshot.budget.wall_ms.saturating_sub(snapshot.elapsed_ms),
+                ) {
+                    return Err(OxaError::new(
+                        codes::INVALID,
+                        "Goal inference has not settled or has no remaining allowance",
+                    ));
+                }
+            }
+            if goal.begin_turn().is_err() {
+                if let Some(source) = &self.source {
+                    source.close();
+                }
+                return Err(error());
+            }
             self.observation = Observation {
                 tracking: true,
                 claiming: true,
@@ -305,6 +367,9 @@ impl Owner {
             };
             self.publish("turn_started", None, None, true);
         } else {
+            if let Some(source) = &self.source {
+                source.unscoped();
+            }
             self.observation = Observation::default();
             self.command_active = true;
             self.publish("session_command_started", None, None, true);
@@ -324,14 +389,28 @@ impl Owner {
             self.publish("session_command_settled", None, None, true);
             return;
         }
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|source| source.freeze().active != 0)
+        {
+            self.pending_finish = Some(success);
+            self.observation.claiming = false;
+            self.publish("turn_settling", None, None, true);
+            return;
+        }
+        self.pending_finish = None;
         self.observation.tracking = false;
         self.observation.claiming = false;
+        let source_usage = self.source.as_ref().map(|source| source.freeze());
         let observation = &self.observation;
         let Some(goal) = &mut self.goal else { return };
         if observation.aborted && goal.state() == State::Active {
             let _ = goal.pause(goal.revision()); // TUI Esc pauses autonomous progression.
         }
-        let usage = if observation.seen && !observation.unknown && !observation.aborted {
+        let usage = if let Some(source) = source_usage {
+            source.tokens()
+        } else if observation.seen && !observation.unknown && !observation.aborted {
             Some(observation.tokens)
         } else {
             None
@@ -339,6 +418,10 @@ impl Owner {
         let mut decision = if observation.aborted {
             Decision::Continue {
                 summary: "Turn interrupted".into(),
+            }
+        } else if source_usage.is_some_and(|source| source.tokens().is_none()) {
+            Decision::Blocked {
+                reason: "inference_usage_unknown".into(),
             }
         } else if !success {
             Decision::Blocked {
@@ -405,6 +488,11 @@ impl Owner {
                     let name = format!("tui-goal-{}", self.generation + 1);
                     match Goal::new(name, text, budget.unwrap_or_else(default_budget)) {
                         Ok(mut goal) => {
+                            self.handle.cancel_background();
+                            if self.source.as_ref().is_some_and(|source| !source.scope()) {
+                                self.publish("control_rejected", None, id, false);
+                                return;
+                            }
                             let _ = goal.pause(goal.revision());
                             self.goal = Some(goal);
                             self.wakes.clear();
@@ -515,7 +603,7 @@ impl Owner {
             self.observation = Observation::default();
         }
         if let AgentEvent::MessageUpdate { usage, .. } = event {
-            if self.observation.tracking {
+            if self.observation.tracking && self.source.is_none() {
                 let observed = self
                     .observation
                     .before_tokens
@@ -609,6 +697,9 @@ impl Drop for Attachment {
             let _ = thread.join();
         }
         if let Some(owner) = OWNER.with(|slot| slot.borrow_mut().take()) {
+            if let Some(source) = &owner.lock().unwrap_or_else(|e| e.into_inner()).source {
+                source.close();
+            }
             let workers = owner.lock().unwrap_or_else(|e| e.into_inner()).workers.clone();
             if let Some(workers) = workers {
                 workers.stop();
@@ -684,6 +775,8 @@ fn start(
         false,
     );
     let mut owner = Owner {
+        source: crate::main_usage::for_session(session),
+        auto_compaction: std::env::var("OXA_GOAL_AUTO_COMPACTION").as_deref() == Ok("1"),
         background: crate::background::for_session(session),
         workers: crate::worker_lanes::for_session(session),
         wakes: VecDeque::new(),
@@ -698,6 +791,7 @@ fn start(
         generation: 0,
         revision: 1,
         command_active: false,
+        pending_finish: None,
         idle_wakes_paused: false,
         observation: Observation::default(),
         publisher,
@@ -796,9 +890,11 @@ pub fn bind(session: &mut Session) {
         owner.idle_wakes_paused = false;
         owner.restore = None;
         owner.command_active = false;
+        owner.pending_finish = None;
         owner.observation = Observation::default();
         owner.agent_dir = session.inner().dirs.agent_dir.clone();
         owner.session = state.session_id.clone();
+        owner.source = crate::main_usage::for_session(session);
         owner.handle = session.handle();
         owner.model = state.model.clone();
         owner.mode = mode.clone();
@@ -831,7 +927,7 @@ pub fn bind(session: &mut Session) {
             owner.restore = Some((state.auto_retry, state.auto_compaction));
         }
         session.set_auto_retry(false);
-        session.set_auto_compaction(false);
+        session.set_auto_compaction(owner.auto_compaction && owner.source.is_some());
     } else if let Some((retry, compact)) = owner.restore.take() {
         session.set_auto_retry(retry);
         session.set_auto_compaction(compact);
@@ -854,6 +950,9 @@ pub fn admit(session: &mut Session) -> Result<(), OxaError> {
     {
         owner.goal = None;
         owner.wakes.clear();
+        if let Some(source) = &owner.source {
+            source.unscoped();
+        }
         owner.command_active = true;
         owner.observation = Observation::default();
         owner.publish("session_command_started", None, None, true);

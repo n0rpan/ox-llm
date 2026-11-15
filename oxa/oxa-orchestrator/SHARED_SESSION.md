@@ -165,8 +165,10 @@ TUI Esc pauses autonomous
 progression after the running turn settles. An interrupted turn's uncertain usage
 stays unknown; token-bounded goals cannot resume it with a fabricated zero.
 
-This bounded goal profile disables automatic retry/compaction while a goal is
-active/paused/blocked and restores the previous switches afterward. It suppresses
+This bounded goal profile disables automatic agent retry while a goal is
+active/paused/blocked and restores the previous switches afterward. Automatic
+compaction stays off unless the operator enables the engine-metered
+[main-session compaction opt-in](MAIN_USAGE.md). It suppresses
 unrelated idle-host work and invisible draft/prefix requests while a goal ledger
 owns the session, including after exhaustion. This prevents hidden follow-on
 inference from bypassing a stop. Long cloud compaction/reliability is still a
