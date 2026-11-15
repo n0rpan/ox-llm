@@ -170,6 +170,27 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
     );
 }
 
+/// #280: with `oxa.sandbox.allowProjectConfigWrite` git can update `.oxa` and `.agents/skills`
+/// (merge, pull, checkout); the git hooks and config stay read-only.
+#[test]
+fn project_config_write_setting_unprotects_oxa_and_skills_only() {
+    let env = TestEnv::new();
+    let mut l = machine(&env);
+    env.write("work/.git/config", "[core]\n");
+    env.write("work/.oxa/settings.json", "{}");
+    env.write("work/.agents/skills/x/SKILL.md", "");
+    env.write("work/.git/hooks/pre-commit.sample", "");
+    let has = |l: &Layout, p: &str| {
+        let a = bwrap_args_with(&spec("true", &env.work(), true), &env.home(), l);
+        let want = env.work().join(p).display().to_string();
+        a.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == want)
+    };
+    assert!(has(&l, ".oxa") && has(&l, ".agents/skills"));
+    l.allow_project_config_write = true;
+    assert!(!has(&l, ".oxa") && !has(&l, ".agents/skills"));
+    assert!(has(&l, ".git/config") && has(&l, ".git/hooks"));
+}
+
 #[test]
 fn golden_project_cwd() {
     let env = TestEnv::new();

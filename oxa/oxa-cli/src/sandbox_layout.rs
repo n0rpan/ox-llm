@@ -4,7 +4,7 @@ use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::Level;
 use oxa_sandbox::{
     expand_home, is_home_itself, is_home_or_above, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE,
-    SETTING_READ_PATHS, SETTING_WRITE_PATHS,
+    SETTING_ALLOW_PROJECT_CONFIG_WRITE, SETTING_READ_PATHS, SETTING_WRITE_PATHS,
 };
 use std::path::Path;
 
@@ -67,7 +67,7 @@ pub(crate) fn layout(
     } else if home_root {
         notices.push((Level::Warning, home_root_warning(cwd, home_itself)));
     }
-    Layout::build(&LayoutInputs {
+    let mut layout = Layout::build(&LayoutInputs {
         home: dirs.home.clone(),
         agent_dir: Some(dirs.agent_dir.clone()),
         path_var: env.get("PATH").unwrap_or("").to_string(),
@@ -75,7 +75,9 @@ pub(crate) fn layout(
         read_extra: paths(SETTING_READ_PATHS),
         write_extra: paths(SETTING_WRITE_PATHS),
         allow_home_write,
-    })
+    });
+    layout.allow_project_config_write = user.bool(SETTING_ALLOW_PROJECT_CONFIG_WRITE, false);
+    layout
 }
 
 #[cfg(test)]

@@ -232,6 +232,10 @@ pub(crate) fn bwrap_args_homes(
         }
         let protected = protected_paths(cwd_path);
         for p in &protected {
+            let config = p.ends_with(".oxa") || p.ends_with(".agents/skills");
+            if layout.allow_project_config_write && config {
+                continue;
+            }
             if is_real(p) {
                 let p = p.to_string_lossy();
                 push(&mut a, &["--ro-bind", &p, &p]);

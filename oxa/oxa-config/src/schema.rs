@@ -175,6 +175,7 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("oxa.sampling.seed", Kind::Number, "null"),
     key("oxa.sandbox.allowHomeWrite", Kind::Bool, "false"),
+    key("oxa.sandbox.allowProjectConfigWrite", Kind::Bool, "false"),
     key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),

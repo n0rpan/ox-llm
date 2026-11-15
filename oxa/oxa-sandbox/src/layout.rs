@@ -43,6 +43,11 @@ pub const SETTING_WRITE_PATHS: &str = "oxa.sandbox.writePaths";
 /// docs). Never for `/` or a parent of `$HOME`. The deny-list still holds.
 pub const SETTING_ALLOW_HOME_WRITE: &str = "oxa.sandbox.allowHomeWrite";
 
+/// Setting: let bash update the project's `.oxa` and `.agents/skills` (git merge, pull, checkout,
+/// stash pop, rebase bring in the committed configuration; user settings only). The trust check
+/// sees the changed content at the next start. `.git/hooks` and `.git/config` stay read-only.
+pub const SETTING_ALLOW_PROJECT_CONFIG_WRITE: &str = "oxa.sandbox.allowProjectConfigWrite";
+
 /// Fixed base `PATH` (appended when the user's lacks it).
 pub const BASE_PATH: &[&str] = &["/usr/local/bin", "/usr/bin", "/bin"];
 
@@ -162,6 +167,9 @@ pub struct Layout {
     /// A home workspace when the cwd is `$HOME` itself (O-199): [`SETTING_ALLOW_HOME_WRITE`],
     /// or the user confirmed the interactive start in `$HOME`. No effect elsewhere.
     pub allow_home_write: bool,
+    /// #280: `.oxa` and `.agents/skills` of the cwd are writable for bash
+    /// ([`SETTING_ALLOW_PROJECT_CONFIG_WRITE`]).
+    pub allow_project_config_write: bool,
     /// sbx-git: the git data of the cwd outside it (a worktree's gitdir and common dir, shared
     /// alternates), resolved once by `Bwrap::with_git_dirs`. Empty until then.
     pub git: GitBinds,
@@ -277,6 +285,7 @@ impl Layout {
             agent_dir: i.agent_dir.clone(),
             env,
             allow_home_write: i.allow_home_write,
+            allow_project_config_write: false,
             git: GitBinds::default(),
         }
     }
