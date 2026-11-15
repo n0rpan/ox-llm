@@ -143,7 +143,28 @@ impl Owner {
         snapshot.revision = self.revision;
         snapshot
     }
+    fn cancel_owned_children(&self) {
+        if let Some(workers) = &self.workers {
+            workers.cancel_all();
+        }
+        if let Some(tasks) = &self.background {
+            tasks.cancel_all();
+        }
+    }
     fn publish(&mut self, kind: &str, reply: Option<String>, request_id: Option<String>, changed: bool) {
+        // Disabling admission alone leaves existing children running. Preserve
+        // only the explicit wait states that depend on those children finishing.
+        if self.goal.as_ref().is_some_and(|goal| {
+            let snapshot = goal.snapshot();
+            snapshot.state != State::Active
+                && !(snapshot.state == State::Blocked
+                    && matches!(
+                        snapshot.reason.as_deref(),
+                        Some("waiting_background_tasks" | "waiting_workers")
+                    ))
+        }) {
+            self.cancel_owned_children();
+        }
         if let Some(tasks) = &self.background {
             tasks.scope(
                 self.goal.as_ref().map(|g| g.snapshot().id),
@@ -347,6 +368,8 @@ impl Owner {
                     remaining,
                     snapshot.budget.wall_ms.saturating_sub(snapshot.elapsed_ms),
                 ) {
+                    self.cancel_owned_children();
+                    self.publish("turn_rejected", None, None, true);
                     return Err(OxaError::new(
                         codes::INVALID,
                         "Goal inference has not settled or has no remaining allowance",
@@ -357,6 +380,8 @@ impl Owner {
                 if let Some(source) = &self.source {
                     source.close();
                 }
+                self.cancel_owned_children();
+                self.publish("turn_rejected", None, None, true);
                 return Err(error());
             }
             self.observation = Observation {

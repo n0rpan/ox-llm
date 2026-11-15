@@ -130,3 +130,23 @@ prove real cancellation/billing termination, or exercise authenticated GitHub fr
 oxa's Workspace sandbox. Any further paid attempt requires another explicit go;
 the original one-run authorization has been consumed. Real PR/queue operations
 remain separately scoped to the owner/operator permitted to perform them.
+
+## Settlement/admission cleanup follow-up
+
+The assembled CLI/TUI integration fixes the #129 review finding for parent
+settlement and turn admission: changing goal state now revokes already-running
+owned tasks, while explicit background/worker waiting states preserve them.
+Failed admission after resuming a waiting goal at its turn limit publishes a
+rejection and cancels its children. This fix is in the assembled integration;
+the historical #129 source snapshot does not independently contain it.
+
+The new real-session settlement and admission regressions both fail before the
+fix (the child completes after the parent exhausts its budget) and pass after
+it. The rebuilt real CLI/tmux acceptance also checks Esc, confirmed process
+reap, absence of a delayed descendant write and no follow-on inference. The
+Esc case waits for the rendered TUI to be READY before sending input. This does
+not qualify input sent before the terminal is ready. See
+[background cleanup acceptance](BACKGROUND_TASKS.md).
+No native JobRegistry change, shared-gateway operation or paid request is part
+of this follow-up. The earlier one-shot live result and its remaining acceptance
+gaps are unchanged.

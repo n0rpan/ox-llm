@@ -152,3 +152,30 @@ Run `python3 -I oxa-orchestrator/tools/native_jobs_policy_demo.py` from `oxa/` t
 verify both refusals and a successful foreground command in the actual TUI
 against owned fakes. This regression fails without the A2A guard. Existing
 background-command tests verify the supported detached path and its wakes.
+
+## Settlement and admission revoke owned work
+
+Disabling new tool admission does not stop an already-running command. The TUI
+owner now requests child cancellation whenever its goal becomes paused,
+canceled, exhausted, done, or blocked for a reason other than the explicit
+`waiting_background_tasks` / `waiting_workers` states. Those two states retain
+owned work so its completion can wake the same parent. Failed turn admission
+also cancels owned children and publishes `turn_rejected`, including when a
+resumed waiting goal has used its last turn. Managers retain actual process
+ownership; `canceling` becomes terminal only after confirmed cleanup.
+
+The real-session regression cases `settlement` and `admission` both fail before
+the fix: the child runs to completion after parent budget exhaustion. They pass
+with cancellation and confirmed reap, while the waiting state remains a positive
+control. Build the actual binaries and exercise all three real tmux scenarios:
+
+```sh
+cargo build --locked --offline -p oxa-cli --features orchestrator -p oxa-fake
+python3 -I oxa-orchestrator/tools/background_settlement_demo.py
+```
+
+The demo uses isolated homes, private tmux servers, owned loopback fake models
+and real sandboxed commands. Settlement exhaustion, failed resumed admission and
+Esc each cancel/reap the task, prevent its delayed file write, make no third
+inference request and exit the actual TUI cleanly. This does not test native
+JobRegistry integration or real provider cancellation/billing.

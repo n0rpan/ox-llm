@@ -1095,8 +1095,12 @@ fn background_owned_cleanup(kind: &str) {
     let socket = directory.join("session.sock");
     std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
     std::env::set_var("OXA_BACKGROUND_TASKS", "1");
-    let goal_mode = kind == "cancel" || kind == "deadline" || kind == "pause";
-    let reply = if goal_mode {
+    let settlement = kind == "settlement";
+    let admission = kind == "admission";
+    let goal_mode = matches!(kind, "cancel" | "deadline" | "pause" | "settlement" | "admission");
+    let reply = if settlement {
+        r#"{"state":"continue","summary":"task still running"}"#
+    } else if goal_mode {
         r#"{"state":"blocked","reason":"waiting_background_tasks"}"#
     } else {
         "cleanup-ready"
@@ -1139,7 +1143,7 @@ fn background_owned_cleanup(kind: &str) {
             assert_eq!(
                 request(
                     &peer_socket,
-                    json!({"id":"owned-goal","method":"set_goal","revision":revision(&status),"text":"Run and await background work","budget":{"wall_ms":if mode=="deadline"{1000}else{8000},"tokens":null,"turns":4}})
+                    json!({"id":"owned-goal","method":"set_goal","revision":revision(&status),"text":"Run and await background work","budget":{"wall_ms":if mode=="deadline"{1000}else{8000},"tokens":null,"turns":if settlement || admission {1}else{4}}})
                 )["queued"],
                 true
             );
@@ -1149,7 +1153,8 @@ fn background_owned_cleanup(kind: &str) {
             mutation(&peer_socket, "run", "resume", revision(&paused), None);
         }
         let working = wait_status(&peer_socket, |v| {
-            v["status"]["tasks"][0]["state"] == "running"
+            (settlement || v["status"]["tasks"][0]["state"] == "running")
+                && v["status"]["tasks"][0]["process_id"].as_u64().is_some()
                 && v["status"]["session"]["busy"] == false
                 && peer_engine.requests().iter().filter(|r| r.max_tokens > 0).count() == 2
         });
@@ -1165,7 +1170,12 @@ fn background_owned_cleanup(kind: &str) {
             assert!(new["status"]["tasks"].as_array().unwrap().is_empty());
             assert!(!Path::new(&format!("/proc/{child}")).exists());
         } else if goal_mode {
-            if mode != "deadline" {
+            if admission {
+                assert_eq!(state(&working), "blocked");
+                assert_eq!(working["status"]["goal"]["reason"], "waiting_background_tasks");
+                assert_eq!(working["status"]["tasks"][0]["process_stopped"], false);
+                mutation(&peer_socket, "retry", "resume", revision(&working), None);
+            } else if mode != "deadline" && !settlement {
                 mutation(
                     &peer_socket,
                     "stop",
@@ -1176,7 +1186,7 @@ fn background_owned_cleanup(kind: &str) {
             }
             let stopped = wait_status(&peer_socket, |v| {
                 state(v)
-                    == if mode == "deadline" {
+                    == if mode == "deadline" || settlement || admission {
                         "budget_exhausted"
                     } else if mode == "pause" {
                         "paused"
@@ -2507,6 +2517,17 @@ fn main() {
             oxa_cli::Stdio::real(),
         ));
     }
+    if args.first().map(String::as_str) == Some("--background-admission-only") {
+        background_owned_cleanup("admission");
+        return;
+    }
+    if args.first().map(String::as_str) == Some("--background-settlement-only") {
+        for kind in ["settlement", "admission"] {
+            background_owned_cleanup(kind);
+            println!("background {kind} revokes and reaps owned work ... ok");
+        }
+        return;
+    }
     main_goal_settles_pending_prefill(false);
     main_goal_settles_pending_prefill(true);
     println!("main goal waits for a pending SDK prefill and cancels it without fabricating usage ... ok");
@@ -2590,7 +2611,15 @@ fn main() {
         background_permission_boundaries(kind);
         println!("background tool preserves {kind} permissions ... ok");
     }
-    for kind in ["exit", "swap", "cancel", "deadline", "pause"] {
+    for kind in [
+        "exit",
+        "swap",
+        "cancel",
+        "deadline",
+        "pause",
+        "settlement",
+        "admission",
+    ] {
         background_owned_cleanup(kind);
         println!("background task {kind} cancels and reaps owned work ... ok");
     }
