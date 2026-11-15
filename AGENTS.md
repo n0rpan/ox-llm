@@ -25,8 +25,10 @@ maintainer, who says in the PR when a hardware check is needed.
 - **CI tiers:** draft PRs run formatting and all secret/SDK/isolation/receipt scans (plus cheap path
   controls). Ready PRs also run clippy, the oxa build and the x86 stub checks. Engine/Flash builds,
   oxa's mandatory-bwrap workspace tests and the lab suite skip at job level on PR events, so every
-  required check name still reports. The merge queue (`merge_group`), main pushes, manual and nightly
-  runs execute the full set regardless of changed paths. The queue is the full integration gate.
+  required check name still reports. The merge queue (`merge_group`), manual and nightly runs execute
+  the full set regardless of changed paths. The queue is the full integration gate. Main pushes run
+  the fast set only: the queue already ran the full set on exactly the tree that lands, and the nightly
+  run re-checks main in full.
   Only PR events cancel superseded runs; main and merge-group runs are not cancelled in progress.
 - You can build and test x86_64 code locally: the Rust workspace `oxa/`, the Python controller `lab/`, and
   `oxe-server --engine stub` in `engine/`. The model engine is aarch64-only; rely on CI for those jobs.
