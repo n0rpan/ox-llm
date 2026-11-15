@@ -268,6 +268,16 @@ impl Layout {
             })
             .cloned()
             .collect();
+        // Version-manager shims (mise) write cache/state under the read-only home and warn on
+        // every call; point them at the sandbox /tmp unless the caller set them.
+        for (k, v) in [
+            ("MISE_CACHE_DIR", "/tmp/mise-cache"),
+            ("MISE_STATE_DIR", "/tmp/mise-state"),
+        ] {
+            if !env.iter().any(|(n, _)| n == k) {
+                env.push((k.to_string(), v.to_string()));
+            }
+        }
         env.sort();
         env.dedup_by(|a, b| a.0 == b.0);
         Layout {
