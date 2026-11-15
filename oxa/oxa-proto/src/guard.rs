@@ -203,6 +203,13 @@ mod tests {
                 "{rel} is not denied: {deny:?}"
             );
         }
+        // #252 review: `.config/oxc` already covers the new-path token file, so assert the
+        // legacy one, which no parent entry covers, on its own.
+        let legacy = home.join(".config/local-ai/llm/chatgpt-auth.json");
+        assert!(
+            deny.iter().all(|d| d == &legacy || !legacy.starts_with(d)) && deny.contains(&legacy),
+            "{deny:?}"
+        );
     }
 
     use super::*;

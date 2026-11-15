@@ -126,8 +126,11 @@ def forward(self, st):
         return _reply(self, st, error.status, str(error), error.code, 'cloud_credentials_unavailable', error.param)
     if item['provider'] == 'anthropic':
         return cloud_anthropic.forward(self, st, item, key)
+    # Continuations of the subscription provider belong to the account, not to one access
+    # token: a refresh between a tool call and its result must not break the loop.
+    scope = 'chatgpt-account:' + account if account else None
     try:
-        body = cloud.upstream_payload(st.payload, item, key)
+        body = cloud.upstream_payload(st.payload, item, key, scope)
         data = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, param=error.param)
@@ -137,7 +140,7 @@ def forward(self, st):
         hold = cloud.reserve(value, item, body)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, error.code, param=error.param)
-    responses = (cloud_openai.ResponsesStream(item, st.payload.get('messages'), key)
+    responses = (cloud_openai.ResponsesStream(item, st.payload.get('messages'), key, scope)
                  if item['provider'] in ('openai', 'chatgpt') and cloud_openai.endpoint(item) == '/responses'
                  else None)
     # The subscription backend always streams; a client that did not ask for a stream gets
@@ -229,7 +232,7 @@ def forward(self, st):
             payload = _completed_response(payload)
         if responses is not None:
             payload = json.dumps(cloud_openai.response(json.loads(payload), item,
-                                 st.payload.get('messages'), key), ensure_ascii=False).encode()
+                                 st.payload.get('messages'), key, scope), ensure_ascii=False).encode()
         meter.feed(payload)
         try:
             parsed = json.loads(payload)

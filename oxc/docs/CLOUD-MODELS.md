@@ -339,8 +339,14 @@ oxc logout chatgpt                # removes the token file
 ```
 
 - Tokens live in `chatgpt-auth.json` next to `cloud-secrets.json` (mode 0600, never logged or
-  shown, redacted from replies). oxc refreshes them itself, one refresher at a time. oxa's
-  sandbox denies the file in every mode.
+  shown, redacted from replies). oxc refreshes them itself, one refresher at a time; `oxc logout
+  chatgpt` waits for a running refresh. `oxc login chatgpt` refuses a relative `secrets_file` or
+  one inside a source checkout. oxa's sandbox denies the file in every mode at the default
+  locations (`~/.config/oxc/llm/` and the legacy `~/.config/local-ai/llm/`); if you move
+  `cloud.secrets_file` elsewhere, the token file moves with it and, like `cloud-secrets.json`, is
+  not covered by the sandbox deny-list.
+- Tokens are not counted against `daily_tokens` for requests that report no usage (failed or
+  cancelled streams), so that cap is a soft limit.
 - Requests are always streamed upstream, never stored (`store: false`); system/developer
   messages become `instructions`; the output cap is not sent (the backend rejects it).
 - Cost class `subscription`: ledger rows cost 0 USD but keep their token counts. The daily USD

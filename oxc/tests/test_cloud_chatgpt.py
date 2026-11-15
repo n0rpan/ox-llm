@@ -39,6 +39,7 @@ class FakeBackend(_Base):
 
     def __init__(self):
         super().__init__()
+        self.output = None  # None = a plain text answer
         self.start()
 
     def handle(self, handler, method):
@@ -47,7 +48,7 @@ class FakeBackend(_Base):
                               'headers': {k.lower(): v for k, v in handler.headers.items()}})
         if not body.get('stream'):
             return self._json(handler, 400, {'detail': 'Stream must be set to true'})
-        done = {'id': 'resp_sub', 'status': 'completed', 'output': [
+        done = {'id': 'resp_sub', 'status': 'completed', 'output': self.output or [
             {'type': 'message', 'id': 'msg', 'role': 'assistant', 'status': 'completed',
              'content': [{'type': 'output_text', 'text': 'Done.'}]}],
             'usage': {'input_tokens': 7, 'output_tokens': 3}}
@@ -227,6 +228,42 @@ class Subscription(Base):
         self.assertTrue(all(r['headers']['authorization'] == 'Bearer new-access-1'
                             for r in self.backend.requests))
 
+    def test_tool_continuation_survives_an_access_token_refresh(self):
+        # Codex review: the continuation cache was keyed by the access token, so a routine
+        # refresh between a tool call and its result made the loop fail with 409.
+        self.sign_in()
+        self.start()
+        reasoning = {'type': 'reasoning', 'id': 'rs_1', 'summary': [],
+                     'encrypted_content': 'opaque-synthetic'}
+        call = {'type': 'function_call', 'id': 'fc_1', 'call_id': 'call_1', 'name': 'ls',
+                'arguments': '{}'}
+        self.backend.output = [reasoning, call]
+        tools = [{'type': 'function', 'function': {'name': 'ls', 'parameters': {'type': 'object'}}}]
+        messages = [{'role': 'user', 'content': 'list'}]
+        status, body = self.call('POST', '/v1/chat/completions', {
+            'model': MODEL, 'max_tokens': 100, 'messages': messages, 'tools': tools})
+        self.assertEqual(status, 200, body)
+        assistant = json.loads(body)['choices'][0]['message']
+        self.sign_in(access='synthetic-rotated-access-token-0000')  # the token was refreshed
+        self.backend.output = None
+        messages += [assistant, {'role': 'tool', 'tool_call_id': 'call_1', 'content': 'a.txt'}]
+        status, body = self.call('POST', '/v1/chat/completions', {
+            'model': MODEL, 'max_tokens': 100, 'messages': messages, 'tools': tools})
+        self.assertEqual(status, 200, body)
+        sent = self.backend.requests[-1]
+        self.assertEqual(sent['headers']['authorization'], 'Bearer synthetic-rotated-access-token-0000')
+        self.assertIn(reasoning, sent['body']['input'])
+
+    def test_credential_os_error_is_a_clean_503(self):
+        # Review: an OSError while refreshing (here: the lock file is a link) escaped forward().
+        self.sign_in(expires_in=-10)
+        os.symlink(self.tmp / 'nowhere', self.tmp / cloud_chatgpt.LOCK_FILE)
+        self.start()
+        status, body = self.chat(model=MODEL)
+        self.assertEqual(status, 503, body)
+        self.assertEqual(json.loads(body)['error']['code'], 'cloud_credentials_unavailable')
+        self.assertEqual(self.backend.requests, [])
+
     def test_lan_guest_is_refused_even_when_signed_in(self):
         self.sign_in()
         self.start()
@@ -291,6 +328,45 @@ class Login(Base):
         self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), before)
         saved = json.loads(self.tokens.read_text())
         self.assertEqual((saved['access_token'], saved['account_id']), (ACCESS, ACCOUNT))
+
+    def test_login_refuses_a_relative_or_in_repository_destination(self):
+        # Codex review: login wrote tokens wherever cloud.secrets_file pointed, unlike the
+        # controller, which refuses relative paths and paths inside a source checkout.
+        self.addCleanup(lambda: __import__('shutil').rmtree('relative', ignore_errors=True))
+        checkout = self.tmp / 'checkout'
+        (checkout / '.git').mkdir(parents=True)
+        source = self.tmp / 'other-auth.json'
+        source.write_text(json.dumps({'tokens': {'access_token': ACCESS, 'refresh_token': REFRESH,
+                                                 'id_token': id_token()}}))
+        for raw in ('relative/cloud-secrets.json', str(checkout / 'sub/cloud-secrets.json')):
+            config = self.tmp / 'runtime.json'
+            config.write_text(json.dumps({'cloud': {'secrets_file': raw}}))
+            with patch('builtins.print'):
+                self.assertEqual(cloud_chatgpt.main(['login', '--import', str(source),
+                                                     '--config', str(config)]), 1, raw)
+        self.assertEqual(list(checkout.rglob(cloud_chatgpt.TOKEN_FILE)), [])
+        self.assertFalse(Path('relative').exists())
+
+    def test_logout_waits_for_a_running_refresh_and_keeps_the_lock(self):
+        # Codex review: logout during a refresh let the refresher re-create the login.
+        self.sign_in()
+        lock = self.tokens.with_name(cloud_chatgpt.LOCK_FILE)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)  # a refresher holds the lock
+        done = threading.Event()
+        worker = threading.Thread(target=lambda: (cloud_chatgpt.remove(self.tokens), done.set()))
+        worker.start()
+        self.assertFalse(done.wait(0.3))
+        cloud_chatgpt.store(self.tokens, {'access_token': 'refreshed'})  # refresher finishes
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        worker.join(5)
+        self.assertTrue(done.is_set())
+        self.assertFalse(self.tokens.exists())
+        self.assertTrue(lock.exists())
+        with self.assertRaises(cloud_chatgpt.LoginError):
+            cloud_chatgpt.credentials(self.secrets, {})
 
     def test_store_refuses_a_symlink(self):
         target = self.tmp / 'elsewhere'

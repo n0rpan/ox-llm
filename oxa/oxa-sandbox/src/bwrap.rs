@@ -1010,8 +1010,13 @@ mod tests {
     #[test]
     fn chatgpt_auth_file_is_masked() {
         let env = TestEnv::new();
-        env.write("home/.config/oxc/llm/chatgpt-auth.json", "SYNTH-CHATGPT-TOKEN");
-        let f = env.home().join(".config/oxc/llm/chatgpt-auth.json");
+        // The legacy path: no parent directory mask covers it (`.config/oxc` would hide the
+        // new path even without this entry), so only the dedicated entry can hide it.
+        env.write(
+            "home/.config/local-ai/llm/chatgpt-auth.json",
+            "SYNTH-CHATGPT-TOKEN",
+        );
+        let f = env.home().join(".config/local-ai/llm/chatgpt-auth.json");
         for online in [false, true] {
             let on = bwrap_args_homes(&spec(&env.home(), online), &env.home(), &Layout::default(), None);
             let hidden = f.ancestors().take_while(|a| *a != env.home()).any(|a| {

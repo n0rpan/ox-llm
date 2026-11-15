@@ -1095,7 +1095,7 @@ REASONING_EFFORT = {'none': 'none', 'minimal': 'none', 'low': 'low', 'medium': '
                     'high': 'high', 'xhigh': 'high'}
 
 
-def upstream_payload(payload, item, key=None):
+def upstream_payload(payload, item, key=None, scope=None):
     """The normalised upstream body: the remote catalog swap plus the OpenAI v1 mapping.
 
     Local-only fields (``chat_template_kwargs``, cache/slot controls) are removed; an OpenAI
@@ -1108,7 +1108,7 @@ def upstream_payload(payload, item, key=None):
             from . import cloud_openai
         else:
             import cloud_openai
-        body = cloud_openai.request(payload, item, key)
+        body = cloud_openai.request(payload, item, key, scope)
         return cloud_chatgpt.adapt(body) if item['provider'] == 'chatgpt' else body
     body = remote_payload(payload, item)
     effort = body.get('reasoning_effort')

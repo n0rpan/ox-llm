@@ -128,11 +128,35 @@ def store(path, tokens):
 
 
 def remove(path):
-    for name in (Path(path), Path(path).with_name(LOCK_FILE)):
+    """Delete the tokens under the refresh lock, so a running refresh cannot store them again
+    after logout.  The lock file stays: unlinking it would let a later refresher lock a new
+    inode while another still holds the old one."""
+    path = Path(path)
+    with _refresh_lock:
+        fd = os.open(path.with_name(LOCK_FILE), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
-            os.unlink(name)
-        except FileNotFoundError:
-            pass
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        finally:
+            os.close(fd)
+
+
+def destination_ok(secrets_file):
+    """The same rule as the controller's ``cloud.secrets_file``: absolute and outside any
+    source checkout (a ``.git`` entry, or an exported tree with AGENTS.md and engine/)."""
+    path = Path(secrets_file)
+    if not path.is_absolute():
+        return False
+    try:
+        for parent in path.resolve().parents:
+            if (parent / '.git').exists() or ((parent / 'AGENTS.md').is_file() and (parent / 'engine').is_dir()):
+                return False
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
 
 
 def _claims(token):
@@ -189,7 +213,14 @@ def credentials(secrets_file, value):
 
     One refresher at a time: a process lock plus ``flock`` on a sibling lock file; after the
     lock the file is read again, so a waiter uses the token another refresher just stored.
-    Raises LoginError (no token text in the message)."""
+    Raises LoginError (no token text in the message), also for a file-system error."""
+    try:
+        return _credentials(secrets_file, value)
+    except OSError as error:
+        raise LoginError('the token file cannot be used (%s)' % (error.strerror or type(error).__name__)) from None
+
+
+def _credentials(secrets_file, value):
     path = token_path(secrets_file)
     tokens = load(path)
     if tokens is None:
@@ -385,6 +416,10 @@ def main(argv, flow=None):
     config = args.config or os.environ.get('LOCAL_LLM_CONFIG') or str(
         Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'oxc/llm/runtime.json')
     value, secrets_file = _config_secrets(config)
+    if not destination_ok(secrets_file):
+        print('oxc: cloud.secrets_file must be an absolute path outside any source checkout; '
+              'nothing was changed.', file=sys.stderr)
+        return 1
     path = token_path(secrets_file)
     if args.action == 'logout':
         remove(path)
