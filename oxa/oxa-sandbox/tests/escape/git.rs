@@ -500,3 +500,111 @@ fn a_nested_cwd_does_not_protect_a_hooks_path_derived_from_the_session_cwd() {
     assert_ok(exit, &out, "nested cwd unrelated .githooks");
     assert!(nested.join(".githooks/pre-commit").exists());
 }
+
+/// Threat: moving a writable ancestor moves the read-only hook mount out of Git's path.
+/// Attempt: replace each ancestor of a nested hooksPath, then plant a replacement hook.
+/// Expected refusal: ancestors are pinned, while unrelated project files remain writable.
+#[test]
+fn a_custom_hooks_ancestor_cannot_be_replaced() {
+    for (hooks, ancestor) in [("sub/hooks", "sub"), ("a/b/hooks", "a"), ("a/b/hooks", "a/b")] {
+        let env = TestEnv::new();
+        let work = env.work();
+        config(
+            &work,
+            &format!("[core]\n\trepositoryformatversion = 0\n\thooksPath = {hooks}\n"),
+        );
+        dir(&work.join(hooks));
+        write(&work.join(hooks).join("pre-commit"), "original");
+        let Some(sb) = sandbox(&env) else { return };
+        let command = format!(
+            "mv {ancestor} {ancestor}.moved && mkdir -p {hooks} && printf replacement > {hooks}/pre-commit"
+        );
+        let (exit, out) = run(&sb, &work, &command, true, false);
+        assert_refused(exit, &out, "replace a custom hooks ancestor");
+        assert!(!work.join(format!("{ancestor}.moved")).exists());
+        assert_eq!(
+            std::fs::read_to_string(work.join(hooks).join("pre-commit")).unwrap(),
+            "original"
+        );
+        let parent = Path::new(hooks).parent().unwrap().display();
+        let (exit, out) = run(
+            &sb,
+            &work,
+            &format!("printf ordinary > {parent}/generated.txt"),
+            true,
+            false,
+        );
+        assert_ok(exit, &out, "ordinary build output beside hooks");
+    }
+}
+
+/// Threat: a read-only custom hook is a symlink to a writable project payload.
+/// Attempt: overwrite the payload, with the hook directory inside or outside the project.
+/// Expected refusal: the alias cannot make host Git execute changed project content.
+#[test]
+fn a_custom_hook_symlink_to_a_writable_payload_is_refused() {
+    for outside in [false, true] {
+        let env = TestEnv::new();
+        let work = env.work();
+        let hooks = if outside {
+            env.root().join("external-hooks")
+        } else {
+            work.join(".githooks")
+        };
+        config(
+            &work,
+            &format!(
+                "[core]\n\trepositoryformatversion = 0\n\thooksPath = {}\n",
+                hooks.display()
+            ),
+        );
+        dir(&hooks);
+        write(&work.join("payload"), "original");
+        std::os::unix::fs::symlink(work.join("payload"), hooks.join("pre-commit")).unwrap();
+        let Some(sb) = sandbox(&env) else { return };
+        let (exit, out) = run(&sb, &work, "printf replacement > payload", true, false);
+        assert_refused(exit, &out, "custom hook's writable symlink target");
+        assert_eq!(std::fs::read_to_string(work.join("payload")).unwrap(), "original");
+    }
+}
+
+/// Threat: a custom hook has another hard-link name in the writable project.
+/// Attempt: overwrite that name, bypassing the directory's read-only mount.
+/// Expected refusal: multiply linked executable hook content cannot be changed.
+#[test]
+fn a_custom_hook_hard_link_to_a_writable_payload_is_refused() {
+    let env = TestEnv::new();
+    let work = env.work();
+    config(
+        &work,
+        "[core]\n\trepositoryformatversion = 0\n\thooksPath = .githooks\n",
+    );
+    dir(&work.join(".githooks"));
+    write(&work.join("payload"), "original");
+    std::fs::hard_link(work.join("payload"), work.join(".githooks/pre-commit")).unwrap();
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(&sb, &work, "printf replacement > payload", true, false);
+    assert_refused(exit, &out, "custom hook's writable hard-link alias");
+    assert_eq!(std::fs::read_to_string(work.join("payload")).unwrap(), "original");
+}
+
+/// Control: a custom hook may link to an immutable file outside every writable root.
+/// Attempt: write unrelated project content with that hook installed.
+/// Expected success: safe read-only aliases do not refuse normal project work.
+#[test]
+fn a_custom_hook_symlink_to_a_read_only_payload_allows_project_work() {
+    let env = TestEnv::new();
+    let work = env.work();
+    config(
+        &work,
+        "[core]\n\trepositoryformatversion = 0\n\thooksPath = .githooks\n",
+    );
+    dir(&work.join(".githooks"));
+    let payload = env.root().join("read-only-hook");
+    write(&payload, "original");
+    std::os::unix::fs::symlink(&payload, work.join(".githooks/pre-commit")).unwrap();
+    let Some(sb) = sandbox(&env) else { return };
+    let (exit, out) = run(&sb, &work, "printf ordinary > generated.txt", true, false);
+    assert_ok(exit, &out, "safe custom-hook alias");
+    assert_eq!(std::fs::read_to_string(payload).unwrap(), "original");
+}
