@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P2 (wave H lane `local`): the network surface of the oxa binary stays where it is reviewed.
+"""P2 (wave H): the network surface of the oxa binary stays where it is reviewed.
 
 Rules (OXA-LOCAL-FIRST sec. 2, "Network surface"):
 1. The socket / HTTP-client identifiers in IDENTS may appear in the source of the oxa binary

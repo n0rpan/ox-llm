@@ -6,11 +6,11 @@
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, OverCap, Session, ToolSelection};
-use oxa_fake::{cache_bytes, FakeModel, FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
+use oxa_fake::{cache_bytes, FakeModel, FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{
-    codes, AgentEvent, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, EntryBody, HeadlessUi,
-    HookPoint, HookReply, Hooks, Host, HostAction, OxaError, StreamEvent, Tool, Ui, Value, VecSink, WireMsg,
+    codes, AgentEvent, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, HeadlessUi, HookPoint,
+    HookReply, Hooks, Host, HostAction, OxaError, StreamEvent, Tool, Ui, Value, VecSink, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
@@ -112,17 +112,13 @@ impl Hooks for Probe {
     }
 }
 
-/// `profile` = `Some(..)` pins `oxa.profile` (a pi-specific test); `None` uses the default.
-fn write_settings_profile(env: &TestEnv, profile: Option<&str>) {
+fn write_settings(env: &TestEnv) {
     let path = Dirs::under(env.root()).settings_file();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let mut settings: serde_json::Value = serde_json::from_str(
+    let settings: serde_json::Value = serde_json::from_str(
         r#"{"compaction": {"reserveTokens": 256, "keepRecentTokens": 200}, "retry": {"enabled": false}}"#,
     )
     .unwrap();
-    if let Some(profile) = profile {
-        settings["oxa"] = serde_json::json!({"profile": profile});
-    }
     std::fs::write(path, settings.to_string()).unwrap();
 }
 
@@ -168,16 +164,7 @@ struct Rig {
 /// A fake controller with both models (`publish_flash = false`: Flash has no `model_limits`
 /// row, an engine that does not publish the target's limits) and a session on "moe".
 fn rig(env: &TestEnv, script: Vec<ScriptTurn>, publish_flash: bool) -> Rig {
-    rig_with_profile(env, script, publish_flash, None)
-}
-
-fn rig_with_profile(
-    env: &TestEnv,
-    script: Vec<ScriptTurn>,
-    publish_flash: bool,
-    profile: Option<&str>,
-) -> Rig {
-    write_settings_profile(env, profile);
+    write_settings(env);
     let flash_cap = prefix_len(env) + 4000;
     let mut models = vec![FakeModel::moe(MOE, 1 << 20)];
     if publish_flash {
@@ -414,52 +401,6 @@ fn extension_set_model_compacts_first_through_the_host() {
     assert_eq!(log[summary].0, MOE);
     assert!(summary < first_flash);
     assert_eq!(r.eng.violations(), Vec::<String>::new());
-}
-
-/// (d) A failed summary leaves the model unchanged and sends nothing to the target.
-#[test]
-fn failed_summary_keeps_the_model() {
-    let env = TestEnv::new();
-    // `local` falls back to a mechanical summary; the failure policy tested here is pi's.
-    let mut r = rig_with_profile(
-        &env,
-        script_big(vec![
-            ScriptTurn::fault(Fault::Http {
-                status: 500,
-                body: "boom".into(),
-            }),
-            ScriptTurn::text("still moe"),
-        ]),
-        true,
-        Some("pi"),
-    );
-    big_conversation(&mut r.session);
-    let mut sink = VecSink::default();
-    let err = r
-        .session
-        .set_model_with(
-            FLASH,
-            OverCap::CompactFirst,
-            &mut sink,
-            &mut HeadlessUi::default(),
-        )
-        .expect_err("the switch fails");
-    assert!(
-        err.message.contains("still moe") || err.message.contains(MOE),
-        "{}",
-        err.message
-    );
-    assert_eq!(r.session.state().model, MOE);
-    assert!(!sink.0.iter().any(|e| matches!(e, AgentEvent::ModelSelect { .. })));
-    assert!(!r
-        .session
-        .inner()
-        .tree
-        .entries()
-        .iter()
-        .any(|e| e.body == EntryBody::ModelChange(FLASH.to_string())));
-    prompt(&mut r.session, "next");
-    assert!(r.eng.log().iter().all(|(m, _, _)| m == MOE), "{:?}", r.eng.log());
 }
 
 /// (e) Not over the cap: one notice names the target, the tokens it prefills cold and the

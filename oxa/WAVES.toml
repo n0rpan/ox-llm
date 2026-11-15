@@ -924,7 +924,6 @@ acceptance = [
   { test = "hook_cancel", text = "SessionBeforeCompact Cancel" },
   { test = "hook_custom_summary_lands_as_head", text = "from_hook" },
   { test = "summary_request_is_whole_wire_plus_one", text = "check_w5 green" },
-  { test = "failure_leaves_wire_unchanged", text = "CompactionEnd error" },
   { test = "compaction_entry_details_have_file_lists", text = "readFiles / modifiedFiles" },
   { test = "events_sequence", text = "CompactionStart/End fields" },
 ]

@@ -1,7 +1,9 @@
 # Shared-session orchestrator through the actual cloud gateway
 
 This dependency-validation branch applies the A2A stack from draft #159
-(`0062e0f`) to draft #24's pinned cloud stack (`87c86c2`). It is not a replacement
+(`0062e0f`) to draft #24's cloud stack. The first proof used `87c86c2`; the
+current integration includes `d5f0ff8`, including upstream profile removal and
+cloud accounting/admission updates. It is not a replacement
 for #159's integration with main. Neither dependency is merged by this work.
 The gateway/provider implementation is unchanged. The targets are #94's shared
 session, worker-result wake, continuation recovery and compaction requirements.

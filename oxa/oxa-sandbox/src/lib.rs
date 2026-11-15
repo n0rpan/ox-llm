@@ -75,6 +75,9 @@ impl Bwrap {
 }
 
 impl Sandbox for Bwrap {
+    fn persistence_notice(&self) -> Option<&str> {
+        Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
+    }
     fn check(&self) -> Result<(), OxaError> {
         bwrap::check_bwrap(self)
     }

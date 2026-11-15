@@ -395,13 +395,6 @@ fn prepare(
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<Prep, OxaError> {
     let mut notices: Vec<(Level, String)> = Vec::new();
-    // `OXA_PROFILE` over every settings layer, for every `Settings::load` of this process.
-    notices.extend(
-        oxa_config::set_env_overrides(env)
-            .into_iter()
-            .map(|d| (d.level, format!("{}: {}", d.source, d.message))),
-    );
-
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -498,6 +491,14 @@ fn prepare(
                 "project resources were skipped (not trusted): {}",
                 gated.join(", ")
             ),
+        ));
+    }
+    // `done` is a project-only key in practice: an untrusted project's list is never merged,
+    // so say that its checks will not run.
+    if !trusted && Settings::project_declares_done(dirs, cwd) {
+        notices.push((
+            Level::Warning,
+            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
         ));
     }
     let mut settings = child.apply(Settings::load(dirs, cwd, trusted));

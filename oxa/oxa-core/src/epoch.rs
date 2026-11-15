@@ -23,8 +23,6 @@ struct Inputs {
     specs: Vec<ToolSpec>,
     extra: Vec<(String, String)>,
     warnings: Vec<String>,
-    /// `oxa.profile`, read once for this epoch (stored with it).
-    profile: oxa_proto::Profile,
     /// The tool tuning of this epoch (`tune::tune_for`).
     tune: oxa_proto::ToolTune,
 }
@@ -48,27 +46,24 @@ fn gather(st: &SessionState) -> Inputs {
         default_edits: st.settings.default_tools_edits(),
         ..st.selection.clone()
     };
-    let profile = st.settings.profile();
     let (mut active, warnings) = resolve_toolset(&all, &sel);
     crate::toolset::apply_codemode_mode(&mut active, &st.settings);
-    let specs = crate::profile::declared_specs(active.specs(), profile);
-    let tune = crate::tune::tune_for(profile, &st.settings, st.info.n_ctx, crate::tune::budget_soft(st));
+    let specs = active.specs();
+    let tune = crate::tune::tune_for(&st.settings, st.info.n_ctx, crate::tune::budget_soft(st));
     Inputs {
         all,
         active,
         specs,
         extra,
         warnings,
-        profile,
         tune,
     }
 }
 
-/// The prefix options of an epoch of `profile`, from the settings as they are now.
-pub(crate) fn prefix_opts(st: &SessionState, profile: oxa_proto::Profile) -> PrefixOpts {
+/// The prefix options of an epoch, from the settings as they are now.
+pub(crate) fn prefix_opts(st: &SessionState) -> PrefixOpts {
     PrefixOpts {
-        profile,
-        diet_output: st.settings.diet_output(profile),
+        diet_output: st.settings.diet_output(),
         child: crate::subagent::is_child_process(),
     }
 }
@@ -141,7 +136,6 @@ fn open_epoch_at(
         specs,
         extra,
         warnings,
-        profile,
         tune,
     } = gather(st);
     for w in warnings {
@@ -150,7 +144,7 @@ fn open_epoch_at(
             text: w,
         });
     }
-    let prefix = build_prefix_with(&st.cwd, &st.resources, &specs, &extra, &prefix_opts(st, profile));
+    let prefix = build_prefix_with(&st.cwd, &st.resources, &specs, &extra, &prefix_opts(st));
     if !force && prefix.sha256 == st.prefix.sha256 {
         // Same bytes: no epoch. Callable-only tools may still have changed, which does not
         // touch the prefix (W3).
@@ -169,10 +163,6 @@ fn open_epoch_at(
     // `append_entry` folds the entry: `Transcript::apply` rebases the kept messages with cause
     // `epoch` when a prefix was already in force, so no second rebase is logged here.
     persist(st, EntryBody::Prefix(prefix.clone()), sink)?;
-    if let Some(marker) = crate::profile::profile_entry(profile) {
-        persist(st, marker, sink)?;
-    }
-    st.stats.profile = profile;
     st.tune = tune;
     st.prefix = prefix;
     st.all_tools = all;

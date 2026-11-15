@@ -15,14 +15,14 @@ pub struct BashTool {
 impl BashTool {
     pub fn new() -> BashTool {
         BashTool {
-            spec: crate::spec_of(&descriptions::BASH),
+            spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell: ShellConfig::default(),
         }
     }
     /// H: the tool with pi's `shellPath` / `shellCommandPrefix` settings.
     pub fn with_shell(shell: ShellConfig) -> BashTool {
         BashTool {
-            spec: crate::spec_of(&descriptions::BASH),
+            spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
         }
     }
@@ -254,7 +254,21 @@ impl Tool for BashTool {
             live(&String::from_utf8_lossy(&pending));
         }
 
-        let output = String::from_utf8_lossy(&res.output).into_owned();
+        let mut output = String::from_utf8_lossy(&res.output).into_owned();
+        let persistence_relevant = a.command.contains("/tmp")
+            || a.command.contains("TMPDIR")
+            || (res.exit != Some(0)
+                && [
+                    "read-only file system",
+                    "permission denied",
+                    "operation not permitted",
+                ]
+                .iter()
+                .any(|error| output.to_ascii_lowercase().contains(error)));
+        if let Some(notice) = cx.sandbox.persistence_notice().filter(|_| persistence_relevant) {
+            output.push_str("\n\n");
+            output.push_str(notice);
+        }
         // TOOL-DIET: the result text only; the raw bytes went to `live` above.
         let output = if cx.tune.diet {
             diet_output(&output)

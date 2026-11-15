@@ -10,8 +10,8 @@ use std::path::Path;
 const BINARY_PROBE: u64 = 8 * 1024;
 /// Bytes read to find a JPEG frame header. Markers before the frame are short in practice.
 const JPEG_HEADER_MAX: u64 = 1024 * 1024;
-/// L4: bytes kept free in a `local` read for the notice after the content (at most 256, a
-/// eighth of the cap for a small one).
+/// L4: bytes kept free in a read for the notice after the content (at most 256, an eighth of
+/// the cap for a small one).
 const NOTICE_ROOM: usize = 256;
 /// Chunk size of the streaming line scan. Only one chunk is in memory at a time.
 const SCAN_CHUNK: usize = 64 * 1024;
@@ -27,7 +27,7 @@ pub struct ReadTool {
 impl ReadTool {
     pub fn new() -> ReadTool {
         ReadTool {
-            spec: crate::spec_of(&descriptions::READ),
+            spec: crate::spec_of(&descriptions::builtin_specs::READ_DEFAULT),
         }
     }
 }
@@ -111,12 +111,12 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
     // larger file, if the tuning sets one. Any other call is pi's read, cut at the tool output
     // cap of the tuning (pi's 16 KiB when it sets none).
     let mut first_page = offset.is_none() && limit.is_none() && cx.tune.read_page_lines > 0;
-    // L4: the first page is cut at the page cap, any other call at the tool output cap. Under
-    // the `local` budget the notice is written inside that cap too (the output cap of `shape`
-    // then never cuts a notice away).
+    // L4: the first page is cut at the page cap, any other call at the tool output cap. The
+    // notice is written inside that cap too (the output cap of `shape` then never cuts a
+    // notice away).
     let (mut max_lines, mut cap, mut content) = if first_page {
         let cap = page_cap(&cx.tune);
-        let content = if cx.tune.local && cx.tune.read_page_bytes > 0 {
+        let content = if cx.tune.read_page_bytes > 0 {
             body_room(cap)
         } else {
             cap
@@ -156,12 +156,8 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
     }
     let mut text = shown.content;
     let last = start + shown.lines;
-    // The local hint goes inside the first page's notice, before its closing bracket.
-    let hint = if first_page && cx.tune.local {
-        diet::READ_PAGE_HINT
-    } else {
-        ""
-    };
+    // The page hint goes inside the first page's notice, before its closing bracket.
+    let hint = if first_page { diet::READ_PAGE_HINT } else { "" };
     match shown.cut {
         Some(Cut::Lines) => {
             text.push_str("\n\n");
@@ -204,8 +200,8 @@ pub(crate) fn output_cap(tune: &ToolTune) -> usize {
     }
 }
 
-/// L4: whether the tuning sets a tool output cap (profile `local`): the cut is then written
-/// inside it and names the way on. Pi: no.
+/// L4: whether the tuning sets a tool output cap: the cut is then written inside it and names
+/// the way on.
 pub(crate) fn budgeted(tune: &ToolTune) -> bool {
     tune.output_cap_bytes > 0
 }

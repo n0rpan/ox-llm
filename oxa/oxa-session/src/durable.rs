@@ -1,4 +1,4 @@
-//! R1 (wave H lane `local`): durability of the session file.
+//! R1 (wave H): durability of the session file.
 use oxa_proto::OxaError;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;

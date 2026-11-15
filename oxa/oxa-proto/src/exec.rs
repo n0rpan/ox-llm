@@ -77,6 +77,10 @@ pub trait Sandbox: Send + Sync {
     fn network(&self) -> bool {
         false
     }
+    /// Persistence limits to include in human/model-facing tool results, not process bytes.
+    fn persistence_notice(&self) -> Option<&str> {
+        None
+    }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Opt-in owned runner: apply the SAME run-time refusal/preparation checks

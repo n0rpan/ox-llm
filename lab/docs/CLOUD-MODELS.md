@@ -251,3 +251,23 @@ The contract follows the official [GPT-6 guidance](https://developers.openai.com
 [reasoning replay guidance](https://developers.openai.com/api/docs/guides/reasoning),
 and [Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
 Tests in `lab/tests/test_cloud_openai.py` exercise loopback mocks only.
+
+OpenRouter settlement records `catalog_cost_usd` and, when supplied by upstream,
+`reported_cost_usd` separately. The charged `cost_usd` is their maximum, so a more
+expensive routed provider consumes the daily budget accurately. Only finite,
+non-negative numeric `usage.cost` values from upstream are accepted; client fields
+are not billing evidence. Repeated usage frames cannot reduce an earlier bill.
+Admission reserves the full catalog input window and bounded output, with 25%
+additional OpenRouter headroom. This cushion is not a bound on every provider's
+price: configure conservative catalog rates for the allowed routes. A reported
+bill can exceed the reservation; it is still charged in full and blocks subsequent
+requests at the daily cap. Missing usage or a failed request retains at least the
+reservation and any larger reported bill. No automatic paid retry is made.
+
+Compatible upstream requests use an explicit chat-field allow-list. Client plugins,
+fallback-model lists, transforms, service tiers and routing preferences are not forwarded.
+OpenRouter receives only the mandatory privacy preferences. Tools are client function
+definitions; provider-hosted paid tools are refused. Ordinary tool selection, reasoning,
+sampling and structured-output controls remain supported, including omitted/null tools.
+Anthropic translation and admission share one validated output limit, including `n_predict`,
+and never exceed the catalog maximum. Invalid limits refuse before an upstream call.
