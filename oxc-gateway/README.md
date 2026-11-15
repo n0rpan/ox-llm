@@ -2,7 +2,7 @@
 
 Default features are empty; nothing is installed or starts a listener. Python is
 the behavior reference. This #28 / #289 slice adds `pricing` and `accounting` to
-the existing `policy` feature.
+the existing policy, secrets and catalog features.
 
 `Price` validates flat/tiered catalog prices and computes decimal actual charges,
 separating uncached input, cache reads, cache writes and output. Direct Anthropic
@@ -35,8 +35,8 @@ changed 64-byte cursor tail resets it. Unchanged files require bounded work.
 cargo check --locked --manifest-path oxc-gateway/Cargo.toml --no-default-features
 cargo test --locked --manifest-path oxc-gateway/Cargo.toml --all-features
 cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
-/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_PRICING_CONTRACT="$PWD/oxc-gateway/target/debug/examples/pricing_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+/usr/bin/python3 oxc-gateway/conformance/run.py --python
+/usr/bin/python3 oxc-gateway/conformance/run.py --native-dir /absolute/cargo-target/debug/examples
 ```
 
 Forty-seven price/settlement cases are captured from unmodified Python in private
@@ -66,3 +66,15 @@ stays exact. Two costs differ; the reservation-capped case agrees.
 
 Cancellation estimates are capped at the admission hold, but a known actual
 charge above that hold is always retained (#283).
+
+The explicit conformance runner selects every current module: 100 cases across
+catalog, policy, secrets and pricing. Native mode requires each executable
+`<name>_contract` for `test_<name>.py`, failing before any tests if a driver is
+missing; source mode clears inherited native overrides. Both the required
+checks.yml gateway job and the manual workflow run source/native contracts and
+Rust tests with private HOME, cleared environment and private network.
+
+`Catalog::from_config` takes a trusted normalized public-price snapshot keyed
+by upstream ID. This keeps file IO outside metadata; valid/no configured router
+prices receive the overlay, while invalid configured prices stay invalid. Source
+contracts seed an owner-only public cache and make no public network calls.
