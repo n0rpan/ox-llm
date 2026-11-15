@@ -146,7 +146,7 @@ fn main() {
     let mut flash_cache_auto = false;
     let mut flash_admit_harness: Option<f64> = None;
     // O-27: preferred tier (`--flash-cache-pref auto|20|18|16|14`); implies `--flash-cache-gib auto`
-    let mut flash_cache_pref: Option<f64> = None;
+    let _flash_cache_pref: Option<f64> = None;
     let mut flash_cache_pref_set = false;
     // O-27: active-desktop resident floor of the swap-tolerant rule (explicit 20 / 18 preference only)
     let mut flash_desktop_floor: f64 = 3.0;
@@ -1029,7 +1029,7 @@ fn main() {
                 "oxe-server: engine switches: {}",
                 model::engine::effective_switches()
             );
-            let mut eng = server::oxe_engine::OxeEngine::open_head(
+            let eng = server::oxe_engine::OxeEngine::open_head(
                 std::path::Path::new(&model),
                 head.as_deref(),
                 &cpus,
