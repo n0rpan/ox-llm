@@ -51,6 +51,8 @@ pub struct A2AWorkerSpec {
 pub struct A2ARunSettings {
     pub id: String,
     pub directory: PathBuf,
+    /// Explicit consent to store raw results in private worker checkpoints.
+    pub persist_results: bool,
     pub parallelism: usize,
     pub wall_time: Duration,
     pub response_reservation: usize,
@@ -258,7 +260,7 @@ pub fn run_a2a(
         .join(name);
     DirBuilder::new().mode(0o700).create(&pinned)?;
     let mut journal = Journal::create(&directory.join("transcript.jsonl"), settings.journal_bytes)?;
-    journal.record(None,"run_started",json!({"run":settings.id,"transport":"A2A-0.3.0","workers":plan.len(),"parallelism":settings.parallelism,"offline":true}))?;
+    journal.record(None,"run_started",json!({"run":settings.id,"transport":"A2A-0.3.0","workers":plan.len(),"parallelism":settings.parallelism,"offline":true,"persistResults":settings.persist_results}))?;
     for spec in &plan {
         journal.record(Some(&spec.id),"queued",json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"reservedBytes":spec.response_bytes,"agentUrlSha256":hash(&spec.agent.client.url())}))?;
         observe(A2AStatus {
@@ -281,7 +283,13 @@ pub fn run_a2a(
                     if let Some(index) = pending.iter().position(|s| s.id == worker) {
                         let spec = pending.remove(index).unwrap();
                         let report = empty(&spec.id, Outcome::Canceled);
-                        finish(&mut journal, &report, &mut observe)?;
+                        finish(
+                            &mut journal,
+                            settings.persist_results.then_some(directory.as_path()),
+                            &settings.id,
+                            &report,
+                            &mut observe,
+                        )?;
                         reports.push(report);
                     } else if let Some(job) = active.iter_mut().find(|a| a.id == worker) {
                         job.cancel_reason = Some(Outcome::Canceled);
@@ -333,7 +341,13 @@ pub fn run_a2a(
             }
             while let Some(spec) = pending.pop_front() {
                 let report = empty(&spec.id, reason);
-                finish(&mut journal, &report, &mut observe)?;
+                finish(
+                    &mut journal,
+                    settings.persist_results.then_some(directory.as_path()),
+                    &settings.id,
+                    &report,
+                    &mut observe,
+                )?;
                 reports.push(report);
             }
         }
@@ -481,7 +495,13 @@ pub fn run_a2a(
                         )?;
                     }
                 }
-                finish(&mut journal, &report, &mut observe)?;
+                finish(
+                    &mut journal,
+                    settings.persist_results.then_some(directory.as_path()),
+                    &settings.id,
+                    &report,
+                    &mut observe,
+                )?;
                 reports.push(report);
             } else {
                 i += 1;
@@ -965,9 +985,14 @@ fn reject_control(control: Control, journal: &mut Journal) -> io::Result<()> {
 }
 fn finish(
     journal: &mut Journal,
+    directory: Option<&std::path::Path>,
+    run: &str,
     report: &A2AWorkerReport,
     observe: &mut impl FnMut(A2AStatus),
 ) -> io::Result<()> {
+    let checkpoint = directory
+        .map(|directory| crate::checkpoint::save_worker(directory, run, report))
+        .transpose()?;
     let digest = if let Some(task) = &report.task {
         Some(hash(&serde_json::to_string(&task.artifacts)?))
     } else if let Some(message) = &report.message {
@@ -975,7 +1000,7 @@ fn finish(
     } else {
         None
     };
-    journal.record(Some(&report.worker),"finished",json!({"outcome":report.outcome,"stop":report.stop,"taskState":report.task.as_ref().map(|t|&t.status.state),"responseBytes":report.response_bytes,"reportedTokens":report.reported_tokens,"resultSha256":digest}))?;
+    journal.record(Some(&report.worker),"finished",json!({"outcome":report.outcome,"stop":report.stop,"taskState":report.task.as_ref().map(|t|&t.status.state),"responseBytes":report.response_bytes,"reportedTokens":report.reported_tokens,"resultSha256":digest,"checkpointSha256":checkpoint}))?;
     observe(A2AStatus {
         worker: report.worker.clone(),
         state: format!("{:?}", report.outcome).to_ascii_lowercase(),

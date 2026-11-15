@@ -39,3 +39,6 @@ pub mod workspace_jobs;
 
 #[cfg(feature = "core")]
 pub mod a2a_run;
+
+#[cfg(feature = "core")]
+mod checkpoint;

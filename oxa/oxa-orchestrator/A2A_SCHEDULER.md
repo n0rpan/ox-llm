@@ -19,9 +19,10 @@ Unknown task identities and refused cleanup retain an unconfirmed stop outcome.
 Observed usage caps require the native usage extension and final valid usage.
 
 Results remain caller-owned data. Only hashes/status/identity/accounting enter
-the private create-only journal; raw result persistence, checkpoints, inspection
-of remote journals, reconciliation/resume, registration loading and CLI hooks
-remain later slices. Existing native inspection rejects this journal transport.
+the private create-only journal. Explicit `persist_results` consent now enables
+private worker checkpoints; see [WORKER_CHECKPOINTS.md](WORKER_CHECKPOINTS.md).
+Inspection of remote journals, reconciliation/resume, registration loading and
+CLI hooks remain later slices. Existing native inspection rejects this journal transport.
 Local acceptance: 88 ordinary crate tests pass, including eight scheduler tests
 using authenticated loopback mocks, partial fan-in, lost IDs/no replay, direct
 messages, cleanup budget transfer, paused-task deadlines, slow steering and

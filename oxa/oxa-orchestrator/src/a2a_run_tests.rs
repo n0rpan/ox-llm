@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 fn settings(env: &TestEnv, name: &str) -> A2ARunSettings {
     A2ARunSettings {
         id: name.into(),
+        persist_results: false,
         directory: env.root().join(name),
         parallelism: 2,
         wall_time: Duration::from_secs(5),
@@ -430,4 +431,79 @@ fn bounded_public_controls_cannot_starve_cancellation_or_replay_delivery() {
         controller.cancel("one".into()).unwrap_err().kind(),
         io::ErrorKind::BrokenPipe
     );
+}
+
+#[test]
+fn checkpoints_require_consent_roundtrip_results_and_match_journal_digest() {
+    for consent in [false, true] {
+        let env = TestEnv::new();
+        let mock = MockAgent::start(Behavior::Complete).unwrap();
+        let mut config = settings(&env, "checkpoint");
+        config.persist_results = consent;
+        let (_tx, rx) = mpsc::sync_channel(1);
+        let report = run_a2a(
+            config,
+            vec![spec(mock.client(Limits::default()).unwrap(), "one")],
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        assert!(report.succeeded());
+        let path = env.root().join("checkpoint/worker-one.json");
+        assert_eq!(path.exists(), consent);
+        let rows: Vec<serde_json::Value> =
+            std::fs::read_to_string(env.root().join("checkpoint/transcript.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+        assert_eq!(rows[0]["details"]["persistResults"], consent);
+        let finished = rows.iter().find(|r| r["event"] == "finished").unwrap();
+        if consent {
+            use std::os::unix::fs::MetadataExt;
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(std::fs::metadata(path).unwrap().mode() & 0o777, 0o600);
+            let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(envelope["version"], 1);
+            assert_eq!(envelope["run"], "checkpoint");
+            let retained: A2AWorkerReport = serde_json::from_value(envelope["report"].clone()).unwrap();
+            assert_eq!(retained.worker, "one");
+            assert_eq!(retained.task.unwrap(), report.workers[0].task.clone().unwrap());
+            assert_eq!(
+                finished["details"]["checkpointSha256"],
+                format!("{:x}", Sha256::digest(&bytes))
+            );
+        } else {
+            assert!(finished["details"]["checkpointSha256"].is_null());
+        }
+    }
+}
+#[test]
+fn checkpoint_obstruction_preserves_existing_data_and_does_not_replay_send() {
+    let env = TestEnv::new();
+    let backend = Uncooperative::new(true, false);
+    let server = Server::start(backend.clone(), ServerLimits::default()).unwrap();
+    let mut config = settings(&env, "obstructed");
+    config.persist_results = true;
+    let checkpoint = config.directory.join("worker-one.json");
+    let (_tx, rx) = mpsc::sync_channel(1);
+    let result = run_a2a(
+        config,
+        vec![spec(server.client(Limits::default()).unwrap(), "one")],
+        rx,
+        Arc::new(AtomicBool::new(false)),
+        |s| {
+            if s.state == "queued" {
+                std::fs::write(&checkpoint, "retained").unwrap();
+            }
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(backend.sends.load(Ordering::Relaxed), 1);
+    assert_eq!(std::fs::read_to_string(checkpoint).unwrap(), "retained");
+    assert!(!env.root().join("obstructed/.worker-one.json.pending").exists());
+    let journal = std::fs::read_to_string(env.root().join("obstructed/transcript.jsonl")).unwrap();
+    assert!(!journal.contains("\"event\":\"finished\""));
+    assert!(!journal.contains("\"event\":\"run_finished\""));
 }
