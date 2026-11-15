@@ -4,6 +4,9 @@ import http.server
 import importlib.util
 import io
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import threading
@@ -117,9 +120,47 @@ class Smoke(unittest.TestCase):
 
 
 class Lifecycle(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='oem-lifecycle-')
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        env = {'LOCAL_AI_UPDATE_STATE': str(root / 'update/state.json'),
+               'LOCAL_AI_STAGE_ROOTS': str(root / 'stages')}
+        for name in ('HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME',
+                     'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR'):
+            env[name] = str(root / name.lower())
+        isolated = patch.dict(os.environ, env)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+
     def test_missing_stage_and_rollback_keep_existing_refusal_guards(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(tool.release_update, '_run') as run:
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(tool.main(['install', str(Path(directory) / 'missing')]), 2)
                 self.assertEqual(tool.main(['rollback']), 2)
             run.assert_not_called()
+
+
+class SelectedFileIsolation(unittest.TestCase):
+    def test_lifecycle_does_not_mutate_inherited_update_state_or_stages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / 'inherited-update.json'
+            sentinel = '{"current": null, "history": [], "sentinel": "owned-state"}\n'
+            state.write_text(sentinel)
+            stages = root / 'inherited-stages'
+            stages.mkdir()
+            marker = stages / 'sentinel'
+            marker.write_text('owned-stage-root')
+            env = dict(os.environ, LOCAL_AI_UPDATE_STATE=str(state), LOCAL_AI_STAGE_ROOTS=str(stages),
+                       PYTHONPATH=str(ROOT / 'src') + os.pathsep + str(ROOT / 'tests'))
+            for name in ('HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME',
+                         'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR'):
+                env[name] = str(root / name.lower())
+            result = subprocess.run([sys.executable, '-m', 'unittest',
+                'test_oem_drills.Lifecycle.test_missing_stage_and_rollback_keep_existing_refusal_guards'],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(state.read_text(), sentinel)
+            self.assertEqual(marker.read_text(), 'owned-stage-root')
+            self.assertEqual(sorted(p.name for p in stages.iterdir()), ['sentinel'])
