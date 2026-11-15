@@ -285,6 +285,7 @@ jobs:
             tools/openai-contract/run.sh --mode both --server "$PWD/engine/target/release/oxe-server" --work "$root/work"
 
   fuzz-oxc:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Task 61: fast properties over the SSE translators, request normalisers and file readers.
     # The long hypothesis/libFuzzer runs stay local; this job only proves the targets still run.
     name: oxc fuzz smoke (x86_64)
