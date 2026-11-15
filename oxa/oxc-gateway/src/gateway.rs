@@ -1,4 +1,38 @@
 //! One shared Anthropic request path, used by in-process clients and test peers.
+//!
+//! Enable `anthropic-gateway` and retain one Gateway across requests. Trusted
+//! user configuration supplies the catalog and resolved private paths. Discovery
+//! reads no key bytes and opens no ledger or provider connection. Every chat
+//! reads the current file key, uses one admission hold, and settles before Done.
+//! Caller callbacks must be brief; Stop cancels delivery and settles the request.
+//!
+//! ```no_run
+//! use oxc_gateway::{
+//!     anthropic_client::{Cancellation, Control},
+//!     gateway::{Error, Event, Gateway},
+//!     ledger::Context,
+//!     runtime::{Options, Runtime},
+//! };
+//! use serde_json::Value;
+//! use std::path::PathBuf;
+//!
+//! async fn request(config: Value, key_file: PathBuf, ledger: PathBuf, payload: Value)
+//!     -> Result<(), Error>
+//! {
+//!     let runtime = Runtime::new(config, key_file, ledger, Options::default())
+//!         .map_err(Error::Refused)?;
+//!     let gateway = Gateway::new(runtime)?;
+//!     let cancel = Cancellation::default();
+//!     let mut chunks = Vec::new();
+//!     gateway.chat(&payload, Context::default(), &cancel, &mut |event| {
+//!         if let Event::Chunk(chunk) = event { chunks.push(chunk); }
+//!         Control::Continue
+//!     }).await?;
+//!     // chunks contain normalized, redacted stream data. Keep any returned
+//!     // opaque native blocks private; they are not user-visible diagnostics.
+//!     Ok(())
+//! }
+//! ```
 use crate::{
     accounting::Outcome,
     anthropic_client::{self, Cancellation, Chat, Client, Control},
