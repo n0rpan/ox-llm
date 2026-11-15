@@ -80,7 +80,7 @@ rows does not cite the internal work items.
 | KEY-011 | `app.clipboard.pasteImage` (ctrl+v) | pastes files and images into the session; an image is shown, the wire gets the placeholder |
 | KEY-013 | Models: `app.model.select` (ctrl+l), `cycleForward` (ctrl+p), `cycleBackward` (shift+ctrl+p), `app.models.save` (ctrl+s) | over engine models; a switch is a new epoch |
 | KEY-014 | Thinking: `app.thinking.cycle` (shift+tab), `app.thinking.save` (ctrl+s), `app.thinking.toggle` (ctrl+t) | boolean; shift+tab stays thinking |
-| KEY-015 | `app.mode.cycle` (alt+m) | oxa only: plan -> workspace -> ask |
+| KEY-015 | `app.mode.cycle` (alt+m) | oxa only: standard -> auto -> yolo |
 | KEY-020 | `app.models.toggleProvider` (ctrl+p) | toggles all models of one engine endpoint |
 
 ## ENV: Environment variables
