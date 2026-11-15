@@ -380,3 +380,24 @@ fn not_found_hint_lists_bare_ids_for_a_single_endpoint() {
         "available: anthropic/claude-haiku-5-5, flash-20b"
     );
 }
+
+/// #381: a near miss gets a "did you mean" with the id the user can paste back.
+#[test]
+fn not_found_hint_suggests_the_closest_model() {
+    let models = vec![
+        mr("oxe", "local-default"),
+        mr("oxe", "anthropic/claude-haiku-5-5"),
+    ];
+    for typo in ["claude-haiku-5-6", "local-defualt"] {
+        let hint = resolve_model(typo, None, &models)
+            .unwrap_err()
+            .hint
+            .expect("a hint");
+        assert!(hint.contains("did you mean"), "{typo}: {hint}");
+    }
+    let hint = resolve_model("local-defualt", None, &models)
+        .unwrap_err()
+        .hint
+        .unwrap();
+    assert!(hint.contains("did you mean local-default?"), "{hint}");
+}
