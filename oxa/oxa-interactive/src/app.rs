@@ -904,9 +904,13 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                         r.tokens_before, r.estimated_tokens_after
                     ),
                 );
+                // The rebase invalidates the cache: clear the CACHE meter.
+                vm.status.last_cached = None;
+                vm.status.last_prompt = None;
                 vm.blocks.push(Block::Compaction {
                     summary: r.summary.clone(),
                     tokens_before: r.tokens_before,
+                    tokens_after: Some(r.estimated_tokens_after),
                     expanded: false,
                 });
             }
@@ -1158,6 +1162,7 @@ pub fn blocks_from_entries(branch: &[Entry]) -> Vec<Block> {
             } => out.push(Block::Compaction {
                 summary: summary.clone(),
                 tokens_before: *tokens_before,
+                tokens_after: None,
                 expanded: false,
             }),
             EntryBody::BranchSummary { summary, .. } => out.push(Block::BranchSummary {
