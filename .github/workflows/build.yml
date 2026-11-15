@@ -190,7 +190,9 @@ jobs:
   oxa-test-build:
     if: inputs.heavy
     name: oxa test archive (x86_64)
-    runs-on: ubuntu-24.04
+    # Merge-queue and manual runs use the project's own x86_64 runner when the repository variable OXCI is 'on'
+    # (kill switch: set it to anything else and the job is back on the hosted image). Pull-request runs never use it.
+    runs-on: ${{ (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && vars.OXCI == 'on' && 'oxci' || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -262,7 +264,9 @@ jobs:
     if: inputs.heavy
     needs: oxa-test-build
     name: oxa tests shard ${{ matrix.shard }} (x86_64)
-    runs-on: ubuntu-24.04
+    # Merge-queue and manual runs use the project's own x86_64 runner when the repository variable OXCI is 'on'
+    # (kill switch: set it to anything else and the job is back on the hosted image). Pull-request runs never use it.
+    runs-on: ${{ (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && vars.OXCI == 'on' && 'oxci' || 'ubuntu-24.04' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false

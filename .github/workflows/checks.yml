@@ -226,7 +226,9 @@ jobs:
     # the model engine run here. Uses the hosted image's rustup (setup_toolchain.sh installs the
     # aarch64 rustup binary only).
     name: oxe-server --engine stub on x86_64 (build + server tests)
-    runs-on: ubuntu-latest
+    # Merge-queue and manual runs use the project's own x86_64 runner when the repository variable OXCI is 'on'
+    # (kill switch: set it to anything else and the job is back on the hosted image). Pull-request runs never use it.
+    runs-on: ${{ (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch') && vars.OXCI == 'on' && 'oxci' || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
