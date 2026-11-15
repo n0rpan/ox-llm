@@ -676,7 +676,13 @@ fn ext_026() {
         tool_then_text("c1", "read", r#"{"path":"../outside.txt"}"#, "ok"),
         &["--standard", "-p", "hi"],
     );
-    assert!(r.has("prompt_start"), "ui_prompt_start fires: {}", r.log);
+    assert!(
+        r.has("prompt_start"),
+        "ui_prompt_start fires: exit {:?}, stderr {}, log {}",
+        r.code,
+        r.err,
+        r.log
+    );
 }
 
 /// EXT-027 (P): `ui_prompt_end` fires when that prompt closes.
@@ -692,7 +698,13 @@ fn ext_027() {
         tool_then_text("c1", "read", r#"{"path":"../outside.txt"}"#, "ok"),
         &["--standard", "-p", "hi"],
     );
-    assert!(r.has("prompt_end"), "ui_prompt_end fires: {}", r.log);
+    assert!(
+        r.has("prompt_end"),
+        "ui_prompt_end fires: exit {:?}, stderr {}, log {}",
+        r.code,
+        r.err,
+        r.log
+    );
 }
 
 /// EXT-028 (P): `turn_start` fires at the start of each model turn.
