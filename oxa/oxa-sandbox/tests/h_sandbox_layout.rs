@@ -134,6 +134,9 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "--setenv",
         "MISE_STATE_DIR",
         "/tmp/mise-state",
+        "--setenv",
+        "XDG_CACHE_HOME",
+        "/tmp/xdg-cache",
         "--",
         "bash",
         "-c",
@@ -171,7 +174,13 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
     let names: Vec<&str> = l.env.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         names,
-        vec!["CARGO_HOME", "MISE_CACHE_DIR", "MISE_DATA_DIR", "MISE_STATE_DIR"],
+        vec![
+            "CARGO_HOME",
+            "MISE_CACHE_DIR",
+            "MISE_DATA_DIR",
+            "MISE_STATE_DIR",
+            "XDG_CACHE_HOME"
+        ],
         "no token, no key, nothing unlisted"
     );
 }
@@ -880,4 +889,35 @@ fn mise_cache_and_state_are_writable() {
     // Trust records stay unwritable: no writable bind may be, or contain, `trusted-configs`.
     let trusted = home.join(".local/state/mise/trusted-configs");
     assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
+}
+
+/// #362: `gh run view` creates `~/.cache/gh`; with a read-only home that fails. When the caller
+/// sets no `XDG_CACHE_HOME`, point it at the writable sandbox /tmp; a caller value is kept.
+#[test]
+fn xdg_cache_home_defaults_to_writable_tmp() {
+    let env = TestEnv::new();
+    let build = |e: Vec<(String, String)>| {
+        Layout::build(&LayoutInputs {
+            home: env.home(),
+            agent_dir: Some(env.agent_dir()),
+            path_var: "/usr/bin".into(),
+            env: e,
+            read_extra: Vec::new(),
+            write_extra: Vec::new(),
+            allow_home_write: false,
+        })
+    };
+    let l = build(Vec::new());
+    assert!(
+        l.env
+            .contains(&("XDG_CACHE_HOME".into(), "/tmp/xdg-cache".into())),
+        "{:?}",
+        l.env
+    );
+    let l = build(vec![("XDG_CACHE_HOME".into(), "/x/c".into())]);
+    assert!(
+        l.env.contains(&("XDG_CACHE_HOME".into(), "/x/c".into())),
+        "{:?}",
+        l.env
+    );
 }
