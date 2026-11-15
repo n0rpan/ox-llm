@@ -58,7 +58,7 @@ neither the server/collector nor aggregate-budget state. Enabling the feature
 still opens no socket until the caller explicitly constructs a client/server.
 The crate remains unlinked from the CLI; there are no installed listeners or
 worker launches. Ordinary tests use test-only self-feature unification so the
-32 wire/collector/loopback/host cases are included in the workspace inventory.
+34 wire/collector/loopback/host cases are included in the workspace inventory.
 
 Run `cargo test --locked -p oxa-a2a` from `oxa/`. The workspace registration
 adds this crate to ordinary hosted checks without linking it into `oxa`.

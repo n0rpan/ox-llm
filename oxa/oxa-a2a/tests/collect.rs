@@ -68,6 +68,7 @@ fn chunks_survive_reconciliation_and_pause_is_not_completion() {
 fn invalid_appends_identity_changes_and_post_final_events_fail_closed() {
     let mut missing = Collector::new(4096);
     assert!(missing.apply(chunk("missing", true, true)).is_err());
+    assert!(missing.task().is_none());
     let mut closed = Collector::new(4096);
     closed.apply(chunk("one", false, true)).unwrap();
     assert!(closed.apply(chunk("two", true, true)).is_err());
@@ -79,6 +80,7 @@ fn invalid_appends_identity_changes_and_post_final_events_fail_closed() {
     assert!(changed.reconcile(other).is_err());
     let mut terminal = Collector::new(4096);
     assert!(terminal.apply(status(TaskState::Completed, false)).is_err());
+    assert!(terminal.task().is_none());
     let mut final_task = Collector::new(4096);
     final_task.apply(Event::Task(task(TaskState::Completed))).unwrap();
     assert!(final_task.apply(chunk("late", false, true)).is_err());
