@@ -28,6 +28,14 @@ on:
         description: Run the oxa build (disabled only for draft PR checks)
         type: boolean
         default: true
+      engine:
+        description: The engine component changed (false only for a merge group that leaves engine/ alone)
+        type: boolean
+        default: true
+      oxa:
+        description: The oxa component changed (false only for a merge group that leaves oxa/ alone)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -41,14 +49,15 @@ defaults:
   run:
     shell: bash   # bash -eo pipefail
 
-# Runner choice for the x86_64 jobs (the expression in each `runs-on`): the project's own runner (label `oxci`, a rented
+# Runner choice for the x86_64 jobs (the expression in each `runs-on`): the project's own runners (label `oxci` for the merge queue,
+# main and manual runs; label `oxci-pr`, a separate low-priority pool, for pull requests; a rented
 # throwaway server with no secrets) when the repository variable OXCI is 'on'. Pull-request runs use it only when
 # OXCI_PR is also 'on' AND the pull request comes from a branch of this repository; a pull request from a fork always
 # runs on the hosted image, so outside code never reaches the runner. Any other value of OXCI sends every job back
 # to the hosted images (kill switch). The ARM jobs are always hosted.
 jobs:
   engine:
-    if: inputs.heavy
+    if: inputs.heavy && inputs.engine
     name: oxe-server (MoE) + oxi
     runs-on: ubuntu-24.04-arm
     container:
@@ -69,7 +78,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-moe engine
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -93,15 +102,44 @@ jobs:
           ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
           ./target/release/oxi > oxi.txt 2>&1 || true
           head -n 3 oxi.txt
-      - name: Model-free tests (workspace without the Flash crate)
+      - name: Pinned nextest
+        working-directory: ${{ github.workspace }}
+        run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
+      - name: Test inventory, cargo test vs nextest (no test may disappear)
+        # Same selection as the run below. Prints the count before (cargo test --list) and after
+        # (nextest list) and fails on any difference in names; ignored tests are counted too.
+        run: |
+          cargo test --release --locked --workspace --exclude qwen4exp -- --list --format terse > "$RUNNER_TEMP/libtest-list.txt"
+          cargo nextest list --release --locked --workspace --exclude qwen4exp --message-format json > "$RUNNER_TEMP/nextest-list.json"
+          python3 -I ../tools/ci/engine_test_count.py "$RUNNER_TEMP/libtest-list.txt" "$RUNNER_TEMP/nextest-list.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Model-free tests (workspace without the Flash crate; nextest)
         timeout-minutes: 40
         # the numerics golden is recorded for the qualified reference platforms, not for this
-        # hosted runner's kernel path: print its hash instead of failing
+        # hosted runner's kernel path: print its hash instead of failing.
+        # engine/.config/nextest.toml runs the wall-clock binaries (sched, server lib) alone.
         env:
           OXE_NUMERICS_GOLDEN_UNLISTED: print
         run: |
           ulimit -c 0  # no core dumps from the deliberate-abort tests (tests::panic_child)
-          cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp
+          start=$(date +%s)
+          cargo nextest run --release --locked --no-fail-fast --workspace --exclude qwen4exp \
+            --no-tests fail --failure-output immediate-final
+          echo "engine nextest run: $(( $(date +%s) - start )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Doc tests (nextest does not run them)
+        env:
+          OXE_NUMERICS_GOLDEN_UNLISTED: print
+        run: |
+          ulimit -c 0
+          cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp --doc
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - name: Package
         if: inputs.package
         env:
@@ -119,7 +157,7 @@ jobs:
           retention-days: 7
 
   flash:
-    if: inputs.heavy
+    if: inputs.heavy && inputs.engine
     name: oxe-server --features flash
     runs-on: ubuntu-24.04-arm
     container:
@@ -143,7 +181,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-flash engine
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -178,6 +216,15 @@ jobs:
           cargo test --release --locked --no-fail-fast -p qwen4exp
           ./target/release/flash-m3 selftest | tee selftest.txt
           ! grep -q FAIL selftest.txt
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - name: Package
         if: inputs.package
         env:
@@ -193,9 +240,9 @@ jobs:
           retention-days: 7
 
   oxa-test-build:
-    if: inputs.heavy
+    if: inputs.heavy && inputs.oxa
     name: oxa test archive (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -209,7 +256,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86-oxa-ci oxa
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -249,6 +296,15 @@ jobs:
             --archive-file "$RUNNER_TEMP/oxa-tests.tar.zst"
           cargo nextest list --archive-file "$RUNNER_TEMP/oxa-tests.tar.zst" \
             --message-format json > "$RUNNER_TEMP/oxa-test-list.json"
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: oxa-test-archive-x86
@@ -264,10 +320,10 @@ jobs:
           retention-days: 1
 
   oxa-test-shards:
-    if: inputs.heavy
+    if: inputs.heavy && inputs.oxa
     needs: oxa-test-build
     name: oxa tests shard ${{ matrix.shard }} (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -322,10 +378,10 @@ jobs:
 
   oxa-tests:
     # Preserve the required check name. A missing/failed build or shard cannot turn green.
-    if: always() && inputs.heavy
+    if: always() && inputs.heavy && inputs.oxa
     needs: [oxa-test-build, oxa-test-shards]
     name: oxa tests (bwrap sandbox required)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
       - name: Every archive and partition must pass
@@ -350,7 +406,7 @@ jobs:
             "$RUNNER_TEMP/oxa-reports/junit-1.xml" "$RUNNER_TEMP/oxa-reports/junit-2.xml"
 
   oxa:
-    if: inputs.build_oxa
+    if: inputs.build_oxa && inputs.oxa
     # oxa (the coding agent) is its own cargo workspace at oxa/. No model, no engine build: oxa
     # talks to the engine over HTTP only. Generic aarch64 code (no target-cpu flag).
     name: oxa
@@ -368,7 +424,7 @@ jobs:
         id: rust-key
         working-directory: ${{ github.workspace }}
         run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-oxa-release oxa
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: rust-cache
         with:
           path: |
@@ -388,6 +444,15 @@ jobs:
       - name: Build oxa
         working-directory: oxa
         run: cargo build --release --locked --bin oxa
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        # Only main seeds caches: queue and PR refs cannot share theirs (see the header).
+        if: github.ref == 'refs/heads/main' && github.event_name != 'merge_group' && steps.rust-cache.outputs.cache-matched-key != format('{0}main', steps.rust-key.outputs.prefix)
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.prefix }}main
       - name: Package
         if: inputs.package
         working-directory: oxa
