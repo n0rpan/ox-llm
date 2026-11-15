@@ -47,7 +47,7 @@ class RepoDetection(unittest.TestCase):
             (root / 'engine').mkdir(parents=True)
             (root / 'AGENTS.md').write_text('x')
             if with_lab:
-                (root / 'lab').mkdir()
+                (root / 'oxc').mkdir()
             with self.assertRaises(cloud.CloudError):
                 cloud.secrets_file({'cloud': {'secrets_file': str(root / 'k.json')}})
 

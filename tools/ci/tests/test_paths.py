@@ -13,10 +13,10 @@ spec.loader.exec_module(paths)
 
 class Paths(unittest.TestCase):
     def test_component_source_and_test_changes(self):
-        for component in ('engine', 'oxa', 'lab'):
+        for component, directory in (('engine', 'engine'), ('oxa', 'oxa'), ('lab', 'oxc')):
             for suffix in ('src/code.rs', 'tests/test_unit.py', 'Cargo.lock'):
                 with self.subTest(component=component, suffix=suffix):
-                    got = paths.classify([component + '/' + suffix])
+                    got = paths.classify([directory + '/' + suffix])
                     self.assertEqual({key for key in ('engine', 'oxa', 'lab') if got[key]}, {component})
                     self.assertFalse(got['full'])
 
@@ -38,7 +38,7 @@ class Paths(unittest.TestCase):
                 with self.subTest(name=name, full_event=full_event):
                     got = paths.classify([name], full_event)
                     self.assertFalse(got['docs'])
-                    self.assertTrue(got[name.split('/')[0]])
+                    self.assertTrue(got[{'oxc': 'lab'}.get(name.split('/')[0], name.split('/')[0])])
                     self.assertEqual(got['full'], full_event)
         got = paths.classify(['README.md', 'oxa/oxa-resources/builtin-skills/ox-llm/SKILL.md'], True)
         self.assertFalse(got['docs'])
@@ -89,7 +89,7 @@ class Paths(unittest.TestCase):
 class GitPaths(unittest.TestCase):
     def test_pr_uses_merge_base_and_nul_paths(self):
         event = {'pull_request': {'base': {'sha': 'a' * 40}, 'head': {'sha': 'b' * 40}}}
-        with patch.object(paths.subprocess, 'check_output', return_value=b'oxa/src/a.rs\0lab/docs/a.md\0') as run:
+        with patch.object(paths.subprocess, 'check_output', return_value=b'oxa/src/a.rs\0oxc/docs/a.md\0') as run:
             self.assertEqual(paths.changed_paths(event, 'pull_request'), ['oxa/src/a.rs', 'oxc/docs/a.md'])
         self.assertIn('a' * 40 + '...' + 'b' * 40, run.call_args.args[0])
 

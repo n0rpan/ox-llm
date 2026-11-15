@@ -55,7 +55,7 @@ Run these before saying a task is done, per area. oxa runs the checks in `.oxa/s
   - `cargo clippy -p <crate> -- -D warnings` for each touched crate
   - `cargo test -p <crate>` for each touched crate
   - UI/TUI change: build the real binary and drive it in tmux (live check). Unit tests alone are not enough; they have passed for changes that did nothing in the real TUI.
-- **lab** (Python controller): `cd lab && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
+- **lab** (Python controller): `cd oxc && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
 - **Bug fix:** show the new test failing before the fix.
 
 ## Hard rules (never break these)

@@ -22,7 +22,7 @@ Choose new source/build directories and the location of this complete repository
 
 ```sh
 FLASH_WORK=/absolute/path/to/new/flash-rebuild
-FLASH_LAB=/absolute/path/to/ox-llm/lab
+FLASH_LAB=/absolute/path/to/ox-llm/oxc
 mkdir -p "$FLASH_WORK"
 
 # Public HTTPS only: no inherited credential helper, headers, hooks or identity.

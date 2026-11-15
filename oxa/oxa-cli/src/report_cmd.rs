@@ -187,8 +187,8 @@ pub fn clean_notes(notes: &str, ctx: &ScrubCtx) -> String {
     scrub(&text, ctx)
 }
 
-/// The controller's CLI: `oxc` (v0.2.0), else the pre-rename `oxc`.
-const CONTROLLER_CLIS: [&str; 2] = ["oxc", "oxc"];
+/// The controller's CLI: `oxc` (v0.2.0), else the pre-rename `local-ai`.
+const CONTROLLER_CLIS: [&str; 2] = ["oxc", "local-ai"];
 
 /// Run `<controller> args`; the first CLI that runs wins.
 fn controller(runner: Runner<'_>, args: &[&str]) -> Option<String> {

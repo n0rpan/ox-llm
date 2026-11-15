@@ -44,7 +44,7 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 - **Build the engine:** `cd engine && cargo build --release --locked -p server --bin oxe-server`
   ([engine/README.md](engine/README.md)).
 - **Build oxa:** `cd oxa && cargo build --release --locked` ([oxa/README.md](oxa/README.md)).
-- **Run the lab tests:** `cd lab && ./tools/run_lab_tests.sh`.
+- **Run the lab tests:** `cd oxc && ./tools/run_lab_tests.sh`.
 
 ## The coding agent: oxa
 
