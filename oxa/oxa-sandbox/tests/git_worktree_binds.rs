@@ -207,7 +207,6 @@ fn worktree_binds_its_gitdir_and_common_dir() {
             canon(&w.main_git.join("config")),
             canon(&w.main_git).join("gitdir"),
             canon(&w.main_git).join("config.worktree"),
-            canon(&w.main_git).join("gitdir"),
             canon(&w.main_git.join("hooks")),
             canon(&w.main_git).join("info"),
             canon(&w.gitdir.join("commondir")),
