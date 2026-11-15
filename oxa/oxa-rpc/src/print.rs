@@ -137,7 +137,7 @@ impl EventSink for PrintSink<'_> {
                 let word = if result.is_error { "failed" } else { "ok" };
                 self.progress(&format!("[tool] {tool_name} {word} {secs:.1}s"));
             }
-            AgentEvent::Notice { text, .. } => self.notes.push(text.clone()),
+            AgentEvent::Notice { text, .. } => self.progress(text),
             AgentEvent::ExtensionError {
                 extension_path,
                 error,

@@ -65,7 +65,7 @@ pub fn chat_with_retry(
     }
     let mut retries: u32 = 0;
     // H (SET-054): `retry.provider.*`, the HTTP-level attempts inside each agent-level attempt
-    // (one HTTP layer in oxa). Same replay rule; silent like pi's provider retries.
+    // (one HTTP layer in oxa). Same replay rule and visible notices as agent retries.
     let provider = st.settings.provider_retry();
     let mut provider_retries: u32 = 0;
     let mut overflowed = false;
@@ -158,6 +158,7 @@ pub fn chat_with_retry(
             };
             if let Some(delay_ms) = delay_ms {
                 provider_retries += 1;
+                retry_notice(sink, provider_retries, delay_ms, &err);
                 reloaded |= matches!(
                     err.code,
                     codes::ENGINE_BUSY | codes::ENGINE_DOWN | codes::ENGINE_HTTP
@@ -202,6 +203,7 @@ pub fn chat_with_retry(
             delay_ms,
             error_message: err.to_string(),
         });
+        retry_notice(sink, retries, delay_ms, &err);
         match wait(st, delay_ms) {
             Wait::Elapsed => {}
             Wait::RetryCancelled => {
@@ -315,12 +317,29 @@ fn context_full(st: &SessionState, turn: &AssistantTurn) -> bool {
         && u64::from(turn.usage.prompt) + u64::from(turn.usage.completion) >= u64::from(st.info.n_ctx - 1)
 }
 
-/// Whether an error may be replayed. `stream_broken` only before the first data byte.
+fn retry_notice(sink: &mut dyn EventSink, attempt: u32, delay_ms: u64, error: &OxaError) {
+    sink.emit(&AgentEvent::Notice {
+        level: oxa_proto::Level::Info,
+        text: format!(
+            "retrying request in {delay_ms} ms (attempt {attempt}, {})",
+            error.code
+        ),
+    });
+}
+
+/// Retry transient refusals and transport failures only before output was observed.
 fn retryable(e: &OxaError, got_data: bool) -> bool {
+    if got_data {
+        return false;
+    }
     match e.code {
-        codes::ENGINE_DOWN | codes::ENGINE_BUSY => true,
+        codes::ENGINE_DOWN
+        | codes::ENGINE_BUSY
+        | codes::STREAM_BROKEN
+        | codes::TIMEOUT
+        | "cloud_credentials_unavailable"
+        | "cloud_ledger_unavailable" => true,
         codes::ENGINE_HTTP => matches!(http_status(&e.message), Some(s) if s >= 500 || s == 429),
-        codes::STREAM_BROKEN => !got_data,
         _ => false,
     }
 }
@@ -466,6 +485,20 @@ fn fresh_idem_key(st: &SessionState) -> String {
 #[cfg(test)]
 mod fit_tests {
     use super::*;
+
+    #[test]
+    fn transient_failures_after_output_are_never_replayed() {
+        for (class, message) in [
+            (codes::ENGINE_BUSY, "HTTP 503: busy"),
+            (codes::ENGINE_DOWN, "connection reset"),
+            (codes::ENGINE_HTTP, "HTTP 429: rate limited"),
+            (codes::TIMEOUT, "timed out"),
+            ("cloud_credentials_unavailable", "credentials unavailable"),
+            ("cloud_ledger_unavailable", "ledger unavailable"),
+        ] {
+            assert!(!retryable(&OxaError::new(class, message), true), "{class}");
+        }
+    }
 
     /// F3 / S2: `engine_busy` is retryable (also after nothing arrived), 4xx is final, and the
     /// wait named by `retry after <n> s` is read in milliseconds.
