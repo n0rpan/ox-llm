@@ -100,12 +100,6 @@ pub const ENV_TABLE: &[EnvVar] = &[
         supported: true,
     },
     EnvVar {
-        name: "OXA_PROFILE",
-        pi_name: None,
-        description: "oxa.profile override: pi or local; wins over the settings files",
-        supported: true,
-    },
-    EnvVar {
         name: "OXA_SESSION_DIR",
         pi_name: Some("PI_CODING_AGENT_SESSION_DIR"),
         description: "session storage; overridden by --session-dir",

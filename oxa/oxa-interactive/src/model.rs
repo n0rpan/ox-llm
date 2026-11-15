@@ -310,10 +310,9 @@ pub struct StatusModel {
     pub yolo_approved: u64,
 }
 
-/// The look of the interactive UI. `Pi` is pi's look, byte for byte (the default, and the
-/// only look of the `pi` profile unless `ui.skin` says otherwise). `Oxa` is OXA's own look
-/// (frames, HUD line, hint bar; OXA-UI-DESIGN.md); `OxaAscii` is the same with ASCII glyphs
-/// for terminals without UTF-8.
+/// The look of the interactive UI. `Oxa` is OXA's own look (frames, HUD line, hint bar;
+/// OXA-UI-DESIGN.md); `OxaAscii` is the same with ASCII glyphs for terminals without UTF-8.
+/// `Pi` is the plain look (the parity reference), reachable with `ui.skin = "pi"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Skin {
     #[default]
@@ -356,7 +355,7 @@ pub struct ViewSettings {
     /// Copy the selection to the clipboard when the mouse button is released.
     pub copy_on_select: bool,
     pub hyperlinks: bool,
-    /// The look (`ui.skin`, else by profile).
+    /// The look (`ui.skin` / `OXA_SKIN`, else OXA's).
     pub skin: Skin,
 }
 

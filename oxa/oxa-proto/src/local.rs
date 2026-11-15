@@ -1,4 +1,4 @@
-//! Local-first additions (wave H lane `local`, additive): the one user-facing problem shape
+//! Local-first additions (wave H, additive): the one user-facing problem shape
 //! (R6) and the process network policy (P3 / P4).
 //!
 //! **The problem shape (R6).** Every refusal or stop added for local-first use reads the same:

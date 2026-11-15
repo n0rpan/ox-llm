@@ -66,11 +66,11 @@ pub const RULES_DIET_OUTPUT: [&str; 5] = [
 /// V020-OPTIMIZE #10: added after [`RULES_DIET_OUTPUT`] only when a `subagent` tool is declared.
 pub const RULE_SUBAGENT: &str =
     "For a wide search or to read many files, delegate to a subagent and use its summary";
-/// L4-SUBVERIFY: added after [`RULE_SUBAGENT`] only under profile `local` with the output diet on,
+/// L4-SUBVERIFY: added after [`RULE_SUBAGENT`] only with the output diet on,
 /// and only when a `subagent` tool is declared (the parent checks what a child reports).
 pub const RULE_SUBAGENT_CHECK: &str =
     "A subagent's summary can be wrong: before you rely on a claim from it for an edit, read the cited lines yourself";
-/// L4-SUBVERIFY: added after [`RULES_DIET_OUTPUT`] only under profile `local` with the output diet
+/// L4-SUBVERIFY: added after [`RULES_DIET_OUTPUT`] only with the output diet
 /// on, and only in a subagent child (the child verifies what it reports).
 pub const RULE_CHILD_VERIFY: &str = "Before you answer, check every claim about the code with a tool; give path:line for each, and write \"not verified\" for anything you did not check";
 
@@ -95,22 +95,15 @@ pub fn valid_section_name(name: &str) -> bool {
 /// order; `guidelines` are the tools' guidelines in that order followed by extension
 /// guidelines. Rules are trimmed and de-duplicated, first occurrence wins.
 pub fn rules(tool_names: &[&str], guidelines: &[&str]) -> String {
-    rules_with(tool_names, guidelines, false, false, false)
+    rules_with(tool_names, guidelines, false, false)
 }
 
 /// [`rules`] with the output diet (V020-OPTIMIZE #1, #10) when `diet_output` is set: the
 /// [`RULES_DIET_OUTPUT`] rules (and [`RULE_SUBAGENT`] when `subagent` is declared) take the
 /// place of [`RULE_CONCISE`]. With `diet_output` false the text is [`rules`]'s.
-/// L4-SUBVERIFY: `local` (profile `local`) and `child` (a subagent child process) add
-/// [`RULE_SUBAGENT_CHECK`] and [`RULE_CHILD_VERIFY`], each only under `local` with the diet on.
-pub fn rules_with(
-    tool_names: &[&str],
-    guidelines: &[&str],
-    diet_output: bool,
-    local: bool,
-    child: bool,
-) -> String {
-    let local_diet = local && diet_output;
+/// L4-SUBVERIFY: `child` (a subagent child process) adds [`RULE_CHILD_VERIFY`] with the diet
+/// on; [`RULE_SUBAGENT_CHECK`] comes with the diet when `subagent` is declared.
+pub fn rules_with(tool_names: &[&str], guidelines: &[&str], diet_output: bool, child: bool) -> String {
     let mut out: Vec<&str> = Vec::new();
     let has = |n: &str| tool_names.contains(&n);
     if has("bash") && !has("grep") && !has("find") && !has("ls") {
@@ -127,13 +120,13 @@ pub fn rules_with(
     } else {
         vec![RULE_CONCISE]
     };
-    if local_diet && child {
+    if diet_output && child {
         fixed.push(RULE_CHILD_VERIFY);
     }
     if diet_output && has("subagent") {
         fixed.push(RULE_SUBAGENT);
     }
-    if local_diet && has("subagent") {
+    if diet_output && has("subagent") {
         fixed.push(RULE_SUBAGENT_CHECK);
     }
     fixed.push(RULE_SHOW_PATHS);
@@ -156,34 +149,30 @@ pub fn rules_with(
 /// pi's `<docs>` section (paths of the installed documentation) is added by
 /// [`docs_section`] only when oxa ships docs at a fixed path; W0 leaves it out.
 pub fn preamble(tools: &[(&str, &str)], guidelines: &[&str]) -> String {
-    preamble_with(tools, guidelines, false, false, false, false)
+    preamble_with(tools, guidelines, false, false, false)
 }
 
-/// [`preamble`] for profile `local` and the output diet (OXA-LOCAL-FIRST T-#6, V020-OPTIMIZE
+/// [`preamble`] with the output diet (OXA-LOCAL-FIRST T-#6, V020-OPTIMIZE
 /// #1). `omit_tools_section`: the `<tools>` section is left out (the chat template renders the
 /// tool list from the tool JSON); the text is then `PREAMBLE_LINE`, a blank line and `<rules>`.
-/// `diet_output`, `local` and `child`: see [`rules_with`]. All false = [`preamble`]'s text.
+/// `diet_output` and `child`: see [`rules_with`]. All false = [`preamble`]'s text.
 pub fn preamble_with(
     tools: &[(&str, &str)],
     guidelines: &[&str],
     omit_tools_section: bool,
     diet_output: bool,
-    local: bool,
     child: bool,
 ) -> String {
     let names: Vec<&str> = tools.iter().map(|(n, _)| *n).collect();
     if names.is_empty() {
-        let rules = rules_with(&names, guidelines, diet_output, local, child)
+        let rules = rules_with(&names, guidelines, diet_output, child)
             .lines()
             .filter(|l| !l.contains("tool call"))
             .collect::<Vec<_>>()
             .join("\n");
         return [PREAMBLE_LINE, NO_TOOLS_NOTICE, &tagged("rules", &rules)].join("\n\n");
     }
-    let rules_section = tagged(
-        "rules",
-        &rules_with(&names, guidelines, diet_output, local, child),
-    );
+    let rules_section = tagged("rules", &rules_with(&names, guidelines, diet_output, child));
     if omit_tools_section {
         return [PREAMBLE_LINE.to_string(), rules_section].join("\n\n");
     }
@@ -627,13 +616,13 @@ mod tests {
 
     #[test]
     fn no_tools_preamble_says_so_and_drops_tool_rules() {
-        for local in [false, true] {
-            let p = preamble_with(&[], &[], local, true, local, false);
+        for omit_tools_section in [false, true] {
+            let p = preamble_with(&[], &[], omit_tools_section, true, false);
             assert!(p.contains(NO_TOOLS_NOTICE), "{p}");
             assert!(!p.contains("Call tools directly"), "{p}");
             assert!(!p.contains("independent tool calls"), "{p}");
         }
-        let with = preamble_with(&[("read", "Read")], &[], false, true, false, false);
+        let with = preamble_with(&[("read", "Read")], &[], false, true, false);
         assert!(!with.contains(NO_TOOLS_NOTICE));
         assert!(with.contains("Call tools directly"));
     }

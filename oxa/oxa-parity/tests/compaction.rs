@@ -11,7 +11,7 @@
 //! (the H wave fixes it). Rows that are not testable here say so in their comment.
 
 use oxa_fake::{parse_script, FakeOpts, FakeServer, Recorded, TestEnv};
-use oxa_parity::{fixture, oxa_bin, profile, Profile};
+use oxa_parity::{fixture, oxa_bin};
 use oxa_proto::{Role, WireMsg};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -141,7 +141,7 @@ fn rpc(env: &TestEnv, url: &str, extra: &[&str], cmds: &[Value]) -> Run {
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(url))
-        .envs(oxa_parity::profile_env())
+        .envs(oxa_parity::note_off_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -863,48 +863,15 @@ fn cmp_014() {
         run.raw
     );
 
-    if profile() == Profile::Local {
-        // O-167 / R4: under `local` the cut summary is replaced by the mechanical one, so the
-        // compaction happens and `session_compact` fires; the extension still learns that the
-        // model summary failed, and why (`mechanical`, `summaryError`: pi's failure text).
-        let ext_local = r#"export default function (oxa) {
+    // O-167 / R4: under `local` the cut summary is replaced by the mechanical one, so the
+    // compaction happens and `session_compact` fires; the extension still learns that the
+    // model summary failed, and why (`mechanical`, `summaryError`: pi's failure text).
+    let ext_local = r#"export default function (oxa) {
   oxa.on("session_compact", (event, ctx) => { ctx.ui.notify("hook session_compact " + event.reason + " mechanical=" + event.mechanical + " error=" + event.summaryError, "info"); });
   oxa.on("session_compact_failed", (event, ctx) => { ctx.ui.notify("hook session_compact_failed " + event.reason, "info"); });
 }"#;
-        let env = env_with(json!({}));
-        let ext = env.write("work/hooks.js", ext_local);
-        let srv = engine(&[text("one"), text("two"), cut("partial summary")], opts());
-        let run = rpc(
-            &env,
-            &srv.url(),
-            &["-e", ext.to_str().unwrap()],
-            &[prompt("first"), prompt("second"), compact(None)],
-        );
-        let resp = run.response("compact");
-        assert_eq!(
-            resp["success"], true,
-            "local: the mechanical summary is used\n{}",
-            run.raw
-        );
-        assert_eq!(resp["data"]["details"]["mechanical"], true, "{}", run.raw);
-        let want = format!(
-            "hook session_compact manual mechanical=true error={}",
-            fixture_text("pi/compaction/cmp-016.txt")
-        );
-        assert!(
-            run.raw.contains(&want),
-            "session_compact fired with the failure:\n{}",
-            run.raw
-        );
-        assert!(
-            !run.raw.contains("hook session_compact_failed"),
-            "the wire was compacted, so session_compact_failed does not fire:\n{}",
-            run.raw
-        );
-        return;
-    }
     let env = env_with(json!({}));
-    let ext = env.write("work/hooks.js", ext_src);
+    let ext = env.write("work/hooks.js", ext_local);
     let srv = engine(&[text("one"), text("two"), cut("partial summary")], opts());
     let run = rpc(
         &env,
@@ -912,14 +879,25 @@ fn cmp_014() {
         &["-e", ext.to_str().unwrap()],
         &[prompt("first"), prompt("second"), compact(None)],
     );
+    let resp = run.response("compact");
     assert_eq!(
-        run.response("compact")["success"],
-        false,
-        "the length summary fails"
+        resp["success"], true,
+        "local: the mechanical summary is used\n{}",
+        run.raw
+    );
+    assert_eq!(resp["data"]["details"]["mechanical"], true, "{}", run.raw);
+    let want = format!(
+        "hook session_compact manual mechanical=true error={}",
+        fixture_text("pi/compaction/cmp-016.txt")
     );
     assert!(
-        run.raw.contains("hook session_compact_failed manual"),
-        "session_compact_failed fired:\n{}",
+        run.raw.contains(&want),
+        "session_compact fired with the failure:\n{}",
+        run.raw
+    );
+    assert!(
+        !run.raw.contains("hook session_compact_failed"),
+        "the wire was compacted, so session_compact_failed does not fire:\n{}",
         run.raw
     );
 }
@@ -963,39 +941,32 @@ fn cmp_016() {
         &[prompt("first"), prompt("second"), compact(None)],
     );
     let resp = run.response("compact");
-    if profile() == Profile::Local {
-        // O-167 / R4: under `local` the cut summary is never used either; the mechanical summary
-        // (the user's messages, without the model) replaces it, and the user is told pi's
-        // failure text in a warning.
-        assert_eq!(resp["success"], true, "{}", run.raw);
-        assert_eq!(resp["data"]["details"]["mechanical"], true, "{}", run.raw);
-        let summary = resp["data"]["summary"].as_str().unwrap_or_default();
-        assert!(
-            !summary.contains("partial summary"),
-            "the cut summary is not used: {summary}"
-        );
-        assert!(
-            summary.contains("1. first") && summary.contains("2. second"),
-            "the mechanical summary keeps the user's messages: {summary}"
-        );
-        let pi_text = fixture_text("pi/compaction/cmp-016.txt");
-        assert!(
-            run.of("notice").iter().any(|n| n["level"] == "warning"
-                && n["text"].as_str().unwrap_or_default().contains(pi_text.trim())),
-            "a warning carries pi's failure text:\n{}",
-            run.raw
-        );
-        let entries = run.entries("compaction");
-        assert_eq!(entries.len(), 1, "one compaction entry");
-        assert_eq!(entries[0]["details"]["mechanical"], true);
-        return;
-    }
-    assert_eq!(resp["success"], false, "{}", run.raw);
-    assert_eq!(resp["error"], fixture_text("pi/compaction/cmp-016.txt"));
+    // O-167 / R4: under `local` the cut summary is never used either; the mechanical summary
+    // (the user's messages, without the model) replaces it, and the user is told pi's
+    // failure text in a warning.
+    assert_eq!(resp["success"], true, "{}", run.raw);
+    assert_eq!(resp["data"]["details"]["mechanical"], true, "{}", run.raw);
+    let summary = resp["data"]["summary"].as_str().unwrap_or_default();
     assert!(
-        run.entries("compaction").is_empty(),
-        "no compaction entry is persisted"
+        !summary.contains("partial summary"),
+        "the cut summary is not used: {summary}"
     );
+    assert!(
+        summary.contains("1. first") && summary.contains("2. second"),
+        "the mechanical summary keeps the user's messages: {summary}"
+    );
+    let pi_text = fixture_text("pi/compaction/cmp-016.txt");
+    assert!(
+        run.of("notice")
+            .iter()
+            .any(|n| n["level"] == "warning"
+                && n["text"].as_str().unwrap_or_default().contains(pi_text.trim())),
+        "a warning carries pi's failure text:\n{}",
+        run.raw
+    );
+    let entries = run.entries("compaction");
+    assert_eq!(entries.len(), 1, "one compaction entry");
+    assert_eq!(entries[0]["details"]["mechanical"], true);
 }
 
 /// P: summarization retry events (fixture `cmp-017.txt`, pi `agent-session.ts`

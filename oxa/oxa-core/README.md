@@ -18,8 +18,7 @@ The agent loop, session runtime and SDK surface. Depends on proto, engine, sessi
 | `epoch.rs` | C8 | `open_epoch`, `reload`, `replay_prefix` |
 | `subagent.rs` | E11 | `SubagentHooks`, `discover_agents` |
 | `host.rs` | E4 | `CoreHost`, `serve_pending` |
-| `profile.rs` | lprof (wave H) | `declared_specs`, `profile_of_branch`, `PROFILE_ENTRY` (`oxa.profile` per epoch, T1) |
-| `think.rs` | lprof (wave H) | `ReplyKind`, `classify`, `thinking_for` (T5 `oxa.thinking.policy`) |
+| `think.rs` | T5 (wave H) | `ReplyKind`, `classify`, `thinking_for` (`oxa.thinking.policy`) |
 
 Doors (the only places these things may happen)
 - append an entry / push to the wire: `append_entry`

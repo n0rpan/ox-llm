@@ -392,13 +392,6 @@ fn prepare(
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<Prep, OxaError> {
     let mut notices: Vec<(Level, String)> = Vec::new();
-    // `OXA_PROFILE` over every settings layer, for every `Settings::load` of this process.
-    notices.extend(
-        oxa_config::set_env_overrides(env)
-            .into_iter()
-            .map(|d| (d.level, format!("{}: {}", d.source, d.message))),
-    );
-
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
