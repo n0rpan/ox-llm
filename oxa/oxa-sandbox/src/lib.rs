@@ -74,9 +74,6 @@ impl Bwrap {
     }
 }
 
-/// Startup persistence guidance; scratch is private to each command.
-pub const PERSISTENCE_NOTICE: &str = "Sandbox: workspace writes persist (except protected paths), as do configured writable binds, package caches and permitted git data. Other paths are read-only or hidden. /tmp is private scratch: writes there are discarded after each command, not saved on the host. Do not report scratch files as saved; put deliverables in the workspace.";
-
 impl Sandbox for Bwrap {
     fn persistence_notice(&self) -> Option<&str> {
         Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
