@@ -9,7 +9,7 @@ use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_engine::HttpEngine;
 use oxa_export::{default_output_name, export_html, write_export, ExportOpts, ExportTheme};
 use oxa_interactive::{
-    ask_trust_interactive, image_part, run as run_interactive, ClipImage, InteractiveOpts, Reopen,
+    ask_trust_interactive, image_part, run as run_interactive, ClipImage, InteractiveOpts, Reopen, ReopenFn,
     TrustChoice,
 };
 use oxa_perm::{
@@ -984,14 +984,25 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
     let settings = built.settings.clone();
     let store = built.store.clone();
     let base = built.clone();
-    let reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send> = Box::new(move |request| {
+    let reopen: ReopenFn = Box::new(move |request, carry| {
+        let mut deps = base.deps(None);
+        // `/new` keeps the model and thinking level of the session it leaves (a `/model`
+        // switch is present in the status bar but only as a `ModelChange` entry of the old
+        // session); `/resume`, fork and import restore the target session's own, and any
+        // startup `--model` choice in `base` is left untouched for them.
         let how = match request {
-            Reopen::New => Open::New,
+            Reopen::New => {
+                if let Some((model, thinking)) = carry {
+                    deps.model = Some(model);
+                    deps.thinking = Some(thinking);
+                }
+                Open::New
+            }
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
             Reopen::Import(path) => Open::Resume(import_session(&path, base.store.as_ref(), &base.cwd)?),
         };
-        Session::open(base.deps(None), how)
+        Session::open(deps, how)
     });
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
@@ -1105,8 +1116,8 @@ fn list_models(
                 id,
                 format_tokens(model_info.n_ctx as u64),
                 format_tokens(model_info.max_output as u64),
-                "yes".to_string(),
-                "no".to_string(),
+                model_info.thinking.map_or_else(|| "?".to_string(), bool_word),
+                model_info.images.map_or_else(|| "?".to_string(), bool_word),
             ])
         })
         .collect::<Result<_, OxaError>>()?;
@@ -1146,6 +1157,15 @@ fn list_models(
 }
 
 /// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
+/// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`.
+fn bool_word(b: bool) -> String {
+    if b {
+        "yes".to_string()
+    } else {
+        "no".to_string()
+    }
+}
+
 fn format_tokens(count: u64) -> String {
     let scaled = |div: f64, unit: &str| {
         let v = count as f64 / div;

@@ -97,7 +97,7 @@ fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
         notices: Vec::new(),
         env: Vec::new(),
         caps: Some(TermCaps::BASIC),
-        reopen: Box::new(|_| Err(OxaError::new(codes::INVALID, "no session switch in tests"))),
+        reopen: Box::new(|_, _| Err(OxaError::new(codes::INVALID, "no session switch in tests"))),
         open_picker: false,
         save_trust: None,
         gated: Vec::new(),

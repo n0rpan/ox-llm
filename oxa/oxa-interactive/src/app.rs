@@ -2,15 +2,15 @@
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts
 use crate::driver::Loop;
 use crate::{
-    render_block, Activity, Block, ImageRef, InteractiveOpts, Reopen, SessionCmd, SessionInfo, StatusModel,
-    ToolBlock, ToolState, UiProxy, UiRequest, ViewCx, ViewModel, ViewSettings, WorkerMsg,
+    render_block, Activity, Block, ImageRef, InteractiveOpts, Reopen, ReopenFn, SessionCmd, SessionInfo,
+    StatusModel, ToolBlock, ToolState, UiProxy, UiRequest, ViewCx, ViewModel, ViewSettings, WorkerMsg,
 };
 use oxa_config::Keymap;
 use oxa_core::{expand_input, Expanded, Handle, OverCap, Session, State, Stats, SwitchPlan};
 use oxa_export::{export_html, write_export, ExportOpts, ExportTheme};
 use oxa_proto::{
     codes, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Hooks, Level, MessageDelta,
-    OxaError, Part, Role, StopReason, ToolOutput, Ui, Value,
+    OxaError, Part, Role, StopReason, ThinkingLevel, ToolOutput, Ui, Value,
 };
 use oxa_tui::{
     appearance_from_colorfgbg, detect_caps, load_omarchy_palette, omarchy_colors_paths, oxa_builtin_palette,
@@ -184,12 +184,14 @@ pub fn run_session(
 
     let reopen = std::mem::replace(
         &mut opts.reopen,
-        Box::new(|_: Reopen| -> Result<Session, OxaError> {
-            Err(OxaError::new(
-                codes::INVALID,
-                "switching sessions is not available here",
-            ))
-        }),
+        Box::new(
+            |_: Reopen, _: Option<(String, ThinkingLevel)>| -> Result<Session, OxaError> {
+                Err(OxaError::new(
+                    codes::INVALID,
+                    "switching sessions is not available here",
+                ))
+            },
+        ),
     );
     let stop = WorkerStop::new();
     let worker_stop = stop.clone();
@@ -463,7 +465,7 @@ fn drive(
 /// could be opened), so the exit lines name the right session.
 pub fn worker_loop(
     session: Session,
-    reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send>,
+    reopen: ReopenFn,
     cmds: Receiver<SessionCmd>,
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
@@ -477,7 +479,7 @@ pub fn worker_loop(
 /// reaching the UI like a prompt's.
 pub fn worker_loop_with(
     session: Session,
-    mut reopen: Box<dyn FnMut(Reopen) -> Result<Session, OxaError> + Send>,
+    mut reopen: ReopenFn,
     cmds: Receiver<SessionCmd>,
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
@@ -522,6 +524,15 @@ pub fn worker_loop_with(
                 // The session to return to when the new one cannot be opened (a bad import
                 // path, an unreadable file): the old one is already shut down by then.
                 let back = session.as_ref().map(|s| s.inner().sref.clone());
+                // `/new` keeps the model and thinking level of the session it leaves (the
+                // status bar shows them); the other modes restore the target's own.
+                let carry = match &how {
+                    Reopen::New => session.as_ref().map(|s| {
+                        let st = s.state();
+                        (st.model.clone(), st.thinking)
+                    }),
+                    Reopen::Resume(_) | Reopen::Fork(_) | Reopen::Import(_) => None,
+                };
                 // pi's status line for the swap, shown at the top of the new transcript.
                 let status = match &how {
                     Reopen::New => "New session started".to_string(),
@@ -535,7 +546,7 @@ pub fn worker_loop_with(
                     // they are not shut down here (E-INT 4).
                     old.close(&mut ui_proxy);
                 }
-                match reopen(how) {
+                match reopen(how, carry) {
                     Ok(new) => {
                         stop.enter(new.handle());
                         session = Some(new);
@@ -547,8 +558,8 @@ pub fn worker_loop_with(
                             !r.path.as_os_str().is_empty() && !r.path.to_string_lossy().starts_with("mem:")
                         });
                         let again = match back {
-                            Some(sref) if file_backed => reopen(Reopen::Resume(sref)),
-                            _ => reopen(Reopen::New),
+                            Some(sref) if file_backed => reopen(Reopen::Resume(sref), None),
+                            _ => reopen(Reopen::New, None),
                         };
                         match again {
                             Ok(s) => {
