@@ -4,7 +4,9 @@ parsed or printed, nothing in the legacy directory is deleted."""
 import json
 import os
 import sys
+import shutil
 import stat
+import tempfile
 from pathlib import Path
 
 FILES = ('runtime.json', 'cloud-secrets.json')
@@ -43,15 +45,21 @@ def migrate(new=None, legacy=None):
     new, legacy = Path(new or default_dir()), Path(legacy or legacy_dir())
     if os.path.lexists(new) or not legacy.is_dir() or legacy.is_symlink():
         return []
-    new.mkdir(parents=True, mode=0o700)
-    copied = [name for name in FILES if _copy(legacy / name, new / name)]
+    new.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix='.migrate-', dir=new.parent))
+    try:
+        copied = [name for name in FILES if _copy(legacy / name, stage / name)]
+        os.rename(stage, new)
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
     runtime = new / 'runtime.json'
     if 'runtime.json' in copied:
         try:
             value = json.loads(runtime.read_text())
             cloud = value.get('cloud') if isinstance(value, dict) else None
             secrets = cloud.get('secrets_file') if isinstance(cloud, dict) else None
-            if isinstance(secrets, str) and Path(secrets).parent == legacy:
+            if isinstance(secrets, str) and Path(secrets).parent == legacy and Path(secrets).name in copied:
                 cloud['secrets_file'] = str(new / Path(secrets).name)
                 runtime.write_text(json.dumps(value, indent=2) + '\n')
         except (OSError, ValueError):
