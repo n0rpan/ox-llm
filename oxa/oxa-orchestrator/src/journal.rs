@@ -150,9 +150,6 @@ mod tests {
 
     #[test]
     fn explicit_records_are_private_ordered_and_bounded() {
-        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
-            return;
-        }
         let env = TestEnv::new();
         let path = private(&env).join("audit.jsonl");
         let mut journal = Journal::create(&path, 512).unwrap();
@@ -209,9 +206,6 @@ mod tests {
 
     #[test]
     fn private_parent_and_valid_limit_are_required_before_creation() {
-        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
-            return;
-        }
         let env = TestEnv::new();
         let directory = private(&env);
         let path = directory.join("audit");
@@ -235,9 +229,6 @@ mod tests {
 
     #[test]
     fn malformed_start_closes_admission_without_a_partial_record() {
-        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
-            return;
-        }
         let env = TestEnv::new();
         let path = private(&env).join("audit");
         let mut journal = Journal::create(&path, 512).unwrap();
@@ -248,9 +239,6 @@ mod tests {
 
     #[test]
     fn failed_audit_keeps_ownership_until_the_writer_is_dropped() {
-        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
-            return;
-        }
         let env = TestEnv::new();
         let path = private(&env).join("transcript.jsonl");
         let mut journal = Journal::create(&path, 512).unwrap();
@@ -277,9 +265,6 @@ mod tests {
 
     #[test]
     fn partial_storage_failure_poisoning_retains_lease_and_committed_prefix() {
-        if crate::namespace::skip_unmapped_ancestors(&std::env::temp_dir()) {
-            return;
-        }
         const CHILD: &str = "OXA_AUDIT_PARTIAL_IO_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())

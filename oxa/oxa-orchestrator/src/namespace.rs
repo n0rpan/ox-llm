@@ -77,26 +77,6 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-/// Test-only: true (with a printed reason) when an ancestor of `path` is owned by the overflow
-/// uid. Inside the oxa sandbox `/` and `/home` are unmapped host directories, so the
-/// production check correctly refuses them; tests that need a protected path skip there
-/// instead of the check being relaxed.
-#[cfg(test)]
-pub(crate) fn skip_unmapped_ancestors(path: &Path) -> bool {
-    let mut current = Some(path);
-    while let Some(dir) = current {
-        if std::fs::metadata(dir).map(|m| m.uid() == 65534).unwrap_or(false) {
-            eprintln!(
-                "skipped: {} is owned by the unmapped overflow uid (sandbox user namespace)",
-                dir.display()
-            );
-            return true;
-        }
-        current = dir.parent();
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
