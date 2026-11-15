@@ -31,7 +31,7 @@ Discovers what lives on disk and feeds the frozen prefix and the command list: c
   The system skills directory (Omarchy's) is `Dirs::system_skills_dir`, `None` in tests.
 - O-152: built-in skills are embedded and listed whether or not their files exist (the prefix
   never depends on install state); user skills of the same name win. The `ox-llm` skill names
-  the v0.2.0 `oxc` CLI, paths and units (O-153 rename) with a `oxc` fallback note.
+  the v0.2.0 `oxc` CLI, paths and units (O-153 rename) with a `local-ai` fallback note.
 - Subagent definitions (`agents/*.md`, E11) reuse `parse_frontmatter`.
 
 ## Acceptance
