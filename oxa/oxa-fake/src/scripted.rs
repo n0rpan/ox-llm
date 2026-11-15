@@ -144,6 +144,8 @@ impl Engine for ScriptedEngine {
                 preserve_thinking: self.preserve_thinking,
                 park_disk_only: false,
             },
+            thinking: None,
+            images: None,
         })
     }
 

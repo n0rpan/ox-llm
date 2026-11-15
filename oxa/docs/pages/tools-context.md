@@ -39,7 +39,7 @@ One limit applies because of the engine's parameter syntax: a line that is exact
 | Policy | Behaviour |
 |---|---|
 | `fixed` | every request carries the session's thinking level |
-| `auto` (default) | thinking is on for the first reply after each user prompt; it is off for tool follow-ups, for turns after an appended instruction, for summaries and for background requests |
+| `auto` (default) | thinking is on for the first reply after each user prompt; tool follow-ups follow `oxa.thinking.toolFollowups` (default `auto`: off for routine steps, on after a failed call, repeat note or several calls without progress; see [tools.md](tools.md#thinking-on-tool-follow-ups)); it is off for turns after an appended instruction, for summaries and for background requests |
 
 The thinking level `off` always wins: with `off` no request thinks, whatever the policy.
 

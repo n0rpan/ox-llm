@@ -69,7 +69,10 @@ pub const BASH: ToolText = ToolText {
     schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"}},"required":["command"]}"#,
     class: ToolClass::Exec,
     prompt_snippet: "Execute bash commands (ls, grep, find, etc.)",
-    guidelines: &["You can inspect OXA_* environment variables for current model and session details."],
+    guidelines: &[
+        "You can inspect OXA_* environment variables for current model and session details.",
+        "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is private scratch discarded after each command, even on success. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
+    ],
 };
 
 pub const EDIT: ToolText = ToolText {
@@ -260,6 +263,9 @@ pub mod errors {
     pub const BASH_NO_OUTPUT: &str = "(no output)";
     pub const BASH_ABORTED: &str = "Command aborted";
     pub const BASH_NO_EXIT_CODE: &str = "Command terminated without an exit code";
+    /// Appended to a result when the command looked backgrounded (a line ending in `&`, or `nohup`).
+    pub const BASH_BACKGROUND_STOPPED: &str =
+        "If this command started background processes (nohup or a trailing &), they were stopped when the call ended. Run long jobs in the foreground within the timeout.";
     pub const BASH_BAD_TIMEOUT: &str = "Invalid timeout: must be a finite number of seconds";
     pub fn bash_exit(code: i32) -> String {
         format!("Command exited with code {code}")

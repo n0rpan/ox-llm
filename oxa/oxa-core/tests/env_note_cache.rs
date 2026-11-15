@@ -159,6 +159,14 @@ fn generated_note_round_trips_and_only_it_is_stripped() {
         s.prompt(p.into(), Vec::new(), &mut sink, &mut ui)
             .expect("prompt");
     }
+    // `/resume` reads SessionStore::list, not the standalone meta_of helper.
+    let listed = store.list(Some(&env.work()));
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].first_message, typed[0]);
+    assert_eq!(
+        listed[0].all_text,
+        format!("{}\none\n{}\ntwo\n{}\nthree", typed[0], typed[1], typed[2])
+    );
     let users = stored_users(&s);
     assert_eq!(users.len(), 3);
     for ((content, parts, _), t) in users.iter().zip(typed) {

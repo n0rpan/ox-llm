@@ -656,6 +656,7 @@ impl<'a> Loop<'a> {
             WorkerMsg::Reopened { entries, status } => {
                 self.vm.blocks = blocks_from_entries(&entries);
                 refresh_status(&mut self.vm.status, status);
+                self.vm.status.degraded_context = false;
                 self.vm.status.activity = Activity::Idle;
                 self.vm.status.activity_ms = 0;
                 self.vm.status.steering.clear();

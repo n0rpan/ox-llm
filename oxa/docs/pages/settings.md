@@ -80,6 +80,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `defaultThinkingLevel` | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `medium` | thinking level of a new session |
 | `modelThinkingLevels` | object | `{}` | thinking level per model id, for example `{"your-model-id": "low"}` |
 | `oxa.thinking.policy` | `fixed` / `auto` | unset | when thinking is on; unset is `auto` ([tools-context.md](tools-context.md)) |
+| `oxa.thinking.toolFollowups` | `auto` / `on` / `off` | `auto` | thinking on the replies after tool results, when `oxa.thinking.policy` is `auto`. `off`: never. `on`: always. `auto`: off for routine steps, on while the run needs reasoning: after a failed call (non-zero exit, an edit that did not apply, a failing test or build), after a repeat notice, or after `oxa.thinking.escalation.fruitlessCalls` calls without progress. It goes back off after a successful edit or write or a passing test or build ([tools.md](tools.md#thinking-on-tool-follow-ups)). The level `off` always wins |
+| `oxa.thinking.escalation.fruitlessCalls` | number | `6` | under `oxa.thinking.toolFollowups: auto`, the calls without an edit or write since the prompt that turn thinking on (re-reads, repeated calls, commands; reading a new file or range is progress and not counted); `0` = never on this ground |
 | `cacheWarming` | `off` / `streaming` / `idle` | `idle` | `off` disables warm-up; `streaming` is accepted and behaves as `idle` |
 | `oxa.bootPreload` | bool | `true` | prefill the frozen prefix when oxa starts, if the engine supports it |
 | `oxa.prefill.paste` | bool | unset | while you type a message of at least 2000 bytes and stop for 0.7 seconds, with oxa idle, the engine prefills it so Enter starts sooner; only sent to an engine on this machine, and it needs an engine that supports prefill-only requests. Unset is on |
@@ -109,6 +111,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `codemode.mode` | `on` / `only` | `on` | `only` hides every other tool while codemode is on |
 | `codemode.toolSearch` | bool | `false` | the `tool_search` and `call_tool` tools |
 | `codemode.maxWorkers` | number | `0` | script workers alive at once; `0` is 2 |
+| `done` | string list | `[]` | shell commands oxa runs itself when a run that edited files (`edit`/`write` tools) is about to finish, in the project folder, in the sandbox (10 min limit, 4 KB of output each). A failure is sent back to the model as a message so it can fix it; after 2 automatic rounds the run stops and the failure stays in the transcript. Not re-run unless files were edited again; changes made through `bash` are not tracked. Project value wins and needs project trust |
 | `shellPath` | string | `null` | shell for bash and `!cmd`; it must be visible in the sandbox |
 | `shellCommandPrefix` | string | `null` | text placed before each bash command, on its own line |
 | `httpProxy` | string | `null` | proxy for MCP HTTP requests; user settings only |
