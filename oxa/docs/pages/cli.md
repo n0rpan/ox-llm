@@ -15,7 +15,7 @@ $ oxa -p "start the task"
 $ oxa -p --continue SESSION_ID "continue with this instruction"
 ```
 
-Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. The id is consumed as an option value and never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session; put a following prompt after `-p` to leave the id omitted, for example `oxa --continue -p "next instruction"`. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
+Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word after `--continue` is taken as the id only if a session with that id exists; otherwise it stays part of the prompt and the most recent session continues, as before. The id is never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
 
 Print, JSON and RPC runs write exactly one terminal JSON result on standard error, after diagnostics. For example:
 

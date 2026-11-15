@@ -83,3 +83,32 @@ fn no_session_keeps_print_runs_ephemeral() {
         .list(None)
         .is_empty());
 }
+
+#[test]
+fn a_prompt_word_after_long_continue_still_continues_the_latest_session() {
+    let env = TestEnv::new();
+    env.write("home/.oxa/agent/settings.json", r#"{"retry":{"enabled":false}}"#);
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text("one"),
+            ScriptTurn::text("two"),
+            ScriptTurn::text("three"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let first = run(&env, &server, &["-p", "--no-tools", "first instruction"]);
+    let id = announced_id(&first);
+    let one = run(&env, &server, &["-p", "--no-tools", "--continue", "fix"]);
+    assert_eq!(announced_id(&one), id);
+    let two = run(
+        &env,
+        &server,
+        &["--no-tools", "--continue", "summarize the diff", "-p"],
+    );
+    assert_eq!(announced_id(&two), id);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(format!("{:?}", requests[1].messages).contains("fix"));
+    assert!(format!("{:?}", requests[2].messages).contains("summarize the diff"));
+}

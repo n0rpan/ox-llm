@@ -71,6 +71,10 @@ pub struct Args {
     pub continue_: bool,
     /// Explicit session id supplied to `--continue`.
     pub continue_id: Option<String>,
+    /// The word after a bare `--continue`, and where it sat among the messages. It is a session
+    /// id only if a session with that id exists; otherwise it stays a prompt word
+    /// (`--continue fix` always continued the latest session with the prompt "fix").
+    pub continue_word: Option<(String, usize)>,
     /// `-r`, `--resume`.
     pub resume: bool,
     /// `--session <path|id>`.
@@ -431,7 +435,7 @@ fn check_tool_list(flag: &str, entries: &[String]) -> Result<(), OxaError> {
     Ok(())
 }
 
-fn valid_session_id(id: &str) -> bool {
+pub(crate) fn valid_session_id(id: &str) -> bool {
     let b = id.as_bytes();
     let alnum = |c: u8| c.is_ascii_alphanumeric();
     match (b.first(), b.last()) {
@@ -535,7 +539,12 @@ fn parse_flag(
         }
         "--continue" => {
             a.continue_ = true;
-            a.continue_id = optional_value(argv, i, inline);
+            match inline {
+                Some(v) => a.continue_id = Some(v.to_string()),
+                None => {
+                    a.continue_word = optional_value(argv, i, None).map(|w| (w, a.messages.len()));
+                }
+            }
         }
         "-r" | "--resume" => {
             no_value(inline, flag)?;
