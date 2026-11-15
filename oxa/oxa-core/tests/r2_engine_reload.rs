@@ -41,6 +41,7 @@ fn open(env: &TestEnv, server: &FakeServer) -> Session {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

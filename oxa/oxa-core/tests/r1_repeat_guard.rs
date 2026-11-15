@@ -126,6 +126,7 @@ fn state_for(
         host_rx: None,
         host_deferred: Vec::new(),
         compact_memo: Default::default(),
+        jobs: oxa_core::fresh_jobs(),
     };
     (st, eng)
 }

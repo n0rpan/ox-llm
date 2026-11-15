@@ -174,6 +174,7 @@ fn child_session(root: &Path) -> Session {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("the child session opens over the engine")
 }
