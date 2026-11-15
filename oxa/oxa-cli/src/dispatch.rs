@@ -955,6 +955,17 @@ fn run_headless(
     };
     notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
+    if mode == RunMode::Print {
+        // Printed before the run so a driver that kills a long task still knows what to resume.
+        let st = session.state();
+        if st.session_file.is_some() {
+            let _ = writeln!(
+                stderr,
+                "oxa: session {} (resume with --session {})",
+                st.session_id, st.session_id
+            );
+        }
+    }
     let result = match mode {
         RunMode::Json => run_json(&mut session, prompts, stdout, stderr),
         _ => run_print(&mut session, prompts, stdout, stderr),

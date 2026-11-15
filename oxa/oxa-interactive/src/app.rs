@@ -2034,11 +2034,13 @@ fn finish_assistant(vm: &mut ViewModel, message: &EventMessage) {
         }
         stop => {
             if stop == Some(StopReason::Length) {
-                push_notice(
-                    vm,
-                    Level::Warning,
-                    "Reply cut: the model reached its output token limit.".to_string(),
-                );
+                let mut text = "Reply cut: the model reached its output token limit.".to_string();
+                if vm.status.thinking.is_some_and(|l| l != ThinkingLevel::Off) {
+                    text.push_str(
+                        " Thinking may have used the output budget; try /thinking off or a lower level.",
+                    );
+                }
+                push_notice(vm, Level::Warning, text);
             }
             Block::Assistant {
                 text,

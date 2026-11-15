@@ -495,6 +495,20 @@ class LedgerFailClosed(CloudCase):
         self.assertEqual(json.loads(body)['error']['code'], 'cloud_ledger_unavailable')
         self.assertEqual(len(self.upstream.requests), 1)
 
+    def test_the_ledger_row_is_written_before_the_reply_is_sent(self):
+        self.start()
+        original = request_ledger.Entry.finish
+
+        def slow(led, *args, **kwargs):
+            time.sleep(0.4)  # the write lookup happens after the client already has its answer
+            return original(led, *args, **kwargs)
+        with patch.object(request_ledger.Entry, 'finish', slow):
+            with patch.object(request_ledger, 'write', return_value=False):
+                status, _ = self.chat()
+        self.assertEqual(status, 200)
+        status, body = self.chat()
+        self.assertEqual(status, 503, body)
+
 
 if __name__ == '__main__':
     unittest.main()
