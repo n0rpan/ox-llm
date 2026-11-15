@@ -56,7 +56,7 @@ fn check_namespace(directory: &File) -> io::Result<()> {
     // SAFETY: geteuid has no arguments or memory access side effects.
     let user = unsafe { libc::geteuid() };
     if !metadata.is_dir()
-        || (metadata.uid() != user && metadata.uid() != 0)
+        || !trusted_owner(metadata.uid(), user)
         || (metadata.mode() & 0o022 != 0 && metadata.mode() & libc::S_ISVTX == 0)
     {
         return Err(io::Error::new(
@@ -67,6 +67,39 @@ fn check_namespace(directory: &File) -> io::Result<()> {
     Ok(())
 }
 
+// Inside a user namespace (the oxa sandbox) host root shows up as the overflow uid
+// because it is unmapped; it is still root-controlled, so accept it there.
+fn trusted_owner(owner: u32, user: u32) -> bool {
+    owner == user || owner == 0 || (owner == overflow_uid() && in_user_namespace())
+}
+
+fn overflow_uid() -> u32 {
+    std::fs::read_to_string("/proc/sys/kernel/overflowuid")
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(65534)
+}
+
+fn in_user_namespace() -> bool {
+    std::fs::read_to_string("/proc/self/uid_map")
+        .map(|map| map.split_whitespace().collect::<Vec<_>>() != ["0", "0", "4294967295"])
+        .unwrap_or(false)
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unmapped_root_is_trusted_only_inside_a_user_namespace() {
+        let user = unsafe { libc::geteuid() };
+        assert!(trusted_owner(0, user));
+        assert!(trusted_owner(user, user));
+        assert_eq!(trusted_owner(overflow_uid(), user), in_user_namespace());
+        assert!(!trusted_owner(user.wrapping_add(12345), user));
+    }
 }
