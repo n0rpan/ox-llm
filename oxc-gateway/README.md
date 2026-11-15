@@ -66,3 +66,21 @@ stays exact. Two costs differ; the reservation-capped case agrees.
 
 Cancellation estimates are capped at the admission hold, but a known actual
 charge above that hold is always retained (#283).
+The secrets loop contract explicitly supports Python 3.12's generic refusal and
+3.13's symbolic-link refusal: it validates one of those two complete messages
+before normalizing only that wording. Native uses the symbolic-link message.
+The secrets subset passes both Python versions and native; every other error is
+compared exactly. Credential values and paths must never appear in errors.
+
+`secrets::KeyFile::prepare` validates the configured location once per config
+generation. Keep its Result and surface the static refusal after policy checks;
+repository/source-tree paths now have their own safe reason (#331/#266). Parent
+links bind to the approved canonical directory, so later retargeting cannot
+select a repository key. Reprepare when configuration/location changes. Every
+read still opens with no-follow and verifies regular-file type, owner, mode,
+size and fresh bytes. Key material is never cached; Debug omits the path.
+Two filesystem regressions cover parent retargeting, rotation, mode changes and
+final symlinks. The 34 source contracts stay unchanged; three native repo refusals
+intentionally use the requested specific diagnostic rather than Python's generic
+message. All other errors remain exact, except the already validated Python
+3.12/3.13 symlink-loop wording.
