@@ -67,6 +67,8 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
         "Reload keybindings, extensions, skills, prompts, themes, and context files",
         None,
     ),
+    ("help", "List the commands", None),
+    ("usage", "Show token usage of this session", None),
     ("quit", "Quit oxa", None),
 ];
 
