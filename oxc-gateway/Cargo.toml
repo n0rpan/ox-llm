@@ -8,9 +8,10 @@ publish = false
 [features]
 default = []
 policy = ["dep:serde_json"]
-pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
+pricing = ["policy", "dep:serde_json", "dep:bigdecimal", "dep:num-traits", "dep:nix"]
 
 [dependencies]
+nix = { version = "0.30", features = ["user"], optional = true }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
 bigdecimal = { version = "0.4", optional = true }
 num-traits = { version = "0.2", optional = true }
