@@ -8,7 +8,12 @@ autobins = false
 
 [features]
 default = []
-native-controller = []
+native-controller = ["dep:tokio", "dep:reqwest", "dep:serde_json"]
+
+[dependencies]
+tokio = { version = "1.54.1", features = ["rt", "net", "time", "process", "io-util"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"], optional = true }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"], optional = true }
 
 [[bin]]
 name = "oxc-native"

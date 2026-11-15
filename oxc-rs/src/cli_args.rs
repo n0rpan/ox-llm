@@ -70,9 +70,15 @@ pub struct Exit {
 pub struct Args {
     pub action: String,
     pub rest: Vec<String>,
-    flags: HashSet<String>,
-    values: HashMap<String, String>,
-    records: Vec<String>,
+    pub(crate) flags: HashSet<String>,
+    pub(crate) values: HashMap<String, String>,
+    pub(crate) records: Vec<String>,
+}
+
+impl Args {
+    pub(crate) fn value(&self, name: &str) -> Option<&str> {
+        self.values.get(name).map(String::as_str)
+    }
 }
 
 fn usage(help: &str) -> &str {
@@ -164,7 +170,7 @@ fn decimal(c: char) -> Option<u8> {
 // argparse's int conversion accepts Unicode decimal digits and single
 // underscores, with Python's default 4300-digit conversion limit. Saturating
 // the value is sufficient for the CLI's later 1..=200 ledger clamp.
-fn integer(value: &str) -> Option<i64> {
+pub(crate) fn integer(value: &str) -> Option<i64> {
     let text = value.trim();
     let negative = text.starts_with('-');
     let text = text.strip_prefix(['-', '+']).unwrap_or(text);

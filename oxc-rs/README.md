@@ -1,16 +1,21 @@
-# Experimental native controller: CLI grammar
+# Experimental native controller: CLI control requests
 
-This first Rust migration slice implements help, version and argument parsing
-only. Every valid command refuses execution with exit code 2. It never reads
-config/credentials, contacts a service, starts an engine or changes installation
-state. The crate uses only the Rust standard library and forbids unsafe code.
+This slice adds seven commands to the opt-in `oxc-native` binary: `load`,
+`unload`, `clear-cache`, `flash-cache`, `harness-prepare`, `harness-forget` and
+`storage-delete`. They use the existing loopback control API and user-service
+names. Other command execution still refuses with exit 2. Nothing installs the
+binary or changes existing Python entry points or services.
 
-The `oxc-native` binary requires an explicit `native-controller` feature;
-default builds produce no native executable. Nothing installs it or changes the
-existing Python entry points or services. The integration/proof branch remains
-in draft PR #28; later behavior lands in separate reviewable PRs. Cloud-only
-mode is the first complete runtime target, following #24 and its cloud-only
-stack on main. This parser slice does not provide that mode.
+The `native-controller` Cargo feature remains off by default. Dependencies are
+optional; default builds produce no native executable. The safe Rust client is
+separate from argument parsing, engine/daemon code, status projection, desktop
+launching, file readers and installers. No Python runtime fallback is present.
+
+The client retains the 64 KiB reply bound, per-command timeouts and the reference
+notification/failure behavior. The timeout measures a stalled read, including
+responses progressing beyond 15 seconds total. Legacy Python JSON constants in
+otherwise valid replies do not discard usable error fields; non-finite values
+are excluded from the client's numeric projections.
 
 ```sh
 cargo build --locked --release --manifest-path oxc-rs/Cargo.toml \
@@ -18,21 +23,19 @@ cargo build --locked --release --manifest-path oxc-rs/Cargo.toml \
 OXC_COMMAND=/tmp/oxc-native-target/release/oxc-native \
   python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
 python3 conformance/check_native_scaffold.py /tmp/oxc-native-target/release/oxc-native
-cargo fmt --manifest-path oxc-rs/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path oxc-rs/Cargo.toml \
   --features native-controller --all-targets -- -D warnings
 ```
 
-The 140 black-box parser scenarios use an isolated HOME and cleared environment
-and compare exit status, stdout and stderr to the unchanged Python reference.
-They include all action help/error paths, version precedence/abbreviations and
-retired-command behavior, explicit/clustered help, ambiguity order, Unicode
-integers/underscores and the interpreter digit limit. A generated table records
-68 public decimal-zero code points and 711 printability ranges from Python
-Unicode 15.0.0. Additional cases verify Python quoting and argument classification;
-all 280 isolated differential parser probes match the reference. Config and
-runtime semantics are outside this slice.
+The 140 parser scenarios and 33 control scenarios compare with the unmodified
+Python reference. Every control scenario runs in its own network/HOME namespace
+against owned HTTP and system-command peers. No engine/model or real service,
+notification, credentials or cloud request is used. The trickled-response case
+observes the unchanged 15-second stalled-read limit. Unsupported commands have
+separate capability-refusal checks.
 
-Release hold: keep this PR draft until v0.2.0 ships. Test locally and continue
-following main; do not request reviews or dispatch full CI. Post-release review
-is through the orchestrator and oxa.
+Stacked on the parser slice #177; #28 remains the integration/proof branch.
+Cloud-only is the first complete runtime target, following #24 and its stack on
+main. Keep all migration PRs draft until v0.2.0 ships; continue local work/main
+follow-up without waiting for reviews or requesting full CI. Post-release
+reviews are through the orchestrator (Fable) and oxa.
