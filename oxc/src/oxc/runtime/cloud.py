@@ -706,7 +706,7 @@ def secrets_file(value):
             # Worktree .git files count, as do exported product source trees without Git metadata.
             if ((parent / '.git').exists() or ((parent / 'AGENTS.md').is_file()
                     and (parent / 'engine').is_dir())):
-                raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable')
+                _secrets_refusal('the key file is inside a repository')
     except (OSError, RuntimeError, ValueError):
         raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable') from None
     return path
