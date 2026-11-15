@@ -138,3 +138,17 @@ budget integration and full-evening cloud acceptance remain outstanding.
 For current upstream GitHub capability transport and redaction in owned commands,
 see [UPSTREAM_INTEGRATION.md](UPSTREAM_INTEGRATION.md) and the optional
 [`oxa-owned-command`](../oxa-owned-command/README.md) preparation helper.
+
+## Release-mode native-job policy
+
+Coordinator decision: A2A sessions use only `background_command` for detached
+commands until v0.2.0 ships. The optional A2A augmentation wraps Bash to refuse
+native `background:true` starts and `job` reads before access and execution.
+Foreground Bash keeps its original policy and execution path. The release-path
+native JobRegistry is unchanged. Post-release integration is designed in
+[issue 258](https://github.com/oxstack/ox-llm/issues/258), labelled `post-0.2`.
+
+Run `python3 -I oxa-orchestrator/tools/native_jobs_policy_demo.py` from `oxa/` to
+verify both refusals and a successful foreground command in the actual TUI
+against owned fakes. This regression fails without the A2A guard. Existing
+background-command tests verify the supported detached path and its wakes.

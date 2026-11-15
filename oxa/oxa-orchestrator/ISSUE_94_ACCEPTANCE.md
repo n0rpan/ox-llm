@@ -1,6 +1,6 @@
 # Issue 94 acceptance and remaining gates
 
-Snapshot: integration `2b33683`, following main `c679898`. This is an acceptance
+Runtime baseline: integration `fc551b2`, following main `c679898`; coordinator policy and the one-shot live result are recorded below. This is an acceptance
 inventory, not a completion claim. The authoritative use case is
 [issue 94](https://github.com/oxstack/ox-llm/issues/94): a full working evening of
 reviews, fixes and merges through the queue, driven from oxa with cloud models
@@ -11,10 +11,10 @@ without an external coding-agent driver substituting for oxa's goal loop.
 | Requirement | Current evidence | What is still required |
 | --- | --- | --- |
 | Protocol/design foundation | [Design](../docs/design/a2a-orchestrator.md), attributed A2A text/data profile, authenticated bounded loopback transport; 32 protocol tests pass at this snapshot | This is the implemented profile, not a claim of complete A2A interoperability with arbitrary third-party agents |
-| Long-running goal per session/worker | [Goal ledger](SESSION_GOALS.md), cumulative token/time/turn budgets, DONE/blocked states, persistent native conversations; full orchestrator suite passes | Native Bash background work must participate in goal lifecycle; real model behavior remains unverified |
+| Long-running goal per session/worker | [Goal ledger](SESSION_GOALS.md), cumulative token/time/turn budgets, DONE/blocked states, persistent native conversations; full orchestrator suite passes | Native detached work is now refused in A2A sessions; use background_command until post-release issue #258. The live smoke failed as detailed below |
 | External client and TUI share one session | [Control API](SHARED_SESSION.md), two writers with revision admission, CLI status/events, steering, pause/resume and session rebinding; actual TUI demo passes | Observe this during the real working session, including recovery from a disconnected control client |
-| Background work and completion wakes | [Owned background manager](BACKGROUND_TASKS.md), same-parent wakes, unread-result guard, cancellation/deadline/reaping tests pass | Native `bash` jobs use a separate registry; the [diagnostic](NATIVE_JOBS_DEMO.md) still reaches DONE while its heartbeat continues |
-| Worker roles/models/budgets, steering, results and status | [Worker lanes](WORKER_LANES.md), fixed private grants, native/A2A collection, result verification after reap; actual mixed-provider mock review passes | Real GPT-author/Sonnet-reviewer judgment and a working project lane have not been exercised |
+| Background work and completion wakes | [Owned background manager](BACKGROUND_TASKS.md), same-parent wakes, unread-result guard, cancellation/deadline/reaping tests pass | Native registry integration is deferred to issue #258. The A2A-only guard refuses native starts/reads and preserves foreground Bash; [policy regression](tools/native_jobs_policy_demo.py) passes |
+| Worker roles/models/budgets, steering, results and status | [Worker lanes](WORKER_LANES.md), fixed private grants, native/A2A collection, result verification after reap; actual mixed-provider mock review passes | The approved Sonnet-parent/two-Haiku-worker smoke ran once; both workers failed and no verified edit/review handoff completed |
 | Long cloud reliability | [Continuation/compaction demo](CLOUD_GATEWAY_DEMO.md), separate session accounting, tier/cache reconciliation; 150 cloud tests pass in the recorded run | Real provider costs, continuation longevity and cancellation/billing reconciliation remain unproven |
 | Esc stops owned inference | [Cancellation](CLOUD_CANCELLATION.md): real TUI closes owned OpenAI and native Anthropic mock transports; unknown usage retains a reservation; repeated interruption preserves cleanup | Provider-side cancellation/billing evidence; transport EOF alone is insufficient |
 | GitHub in online Workspace mode | [Private capability integration](UPSTREAM_INTEGRATION.md) passes synthetic sandbox/redaction tests | Authenticated `gh` executed by oxa under its actual Workspace sandbox; this agent's GitHub connector reads do not prove that path |
@@ -39,68 +39,94 @@ do not qualify those records. Their checks remain intact; no receipt or checksum
 is refreshed automatically to make the draft pass. This is introduced packaging
 drift, not one of the baseline scanner findings.
 
-## Coordinator decisions
+## Coordinator decisions and release policy
 
-1. Choose how native Bash jobs join A2A ownership, DONE guards, cancellation and
-   completion wakes. The existing question is pending. Main's progress counters
-   and bounded job reads do not establish that ownership.
-2. Obtain the owner's explicit go and concrete route/credential/budget scope for
-   a live experiment. No live credentials have been read for this work. Paid
-   experiments remain outside tests and CI.
-3. The full evening's real PR writes and queue operations need the owner's scope
-   and an operator who is allowed to perform them. This worker's standing brief
-   forbids merges. A cloud-smoke go does not change that rule.
-4. Choose the release-compatible packaging/qualification route for the optional
-   SDK module. The implementation and inventory addition are preserved in the
-   draft; the frozen bootstrap inputs require separate qualification handling.
+The coordinator selected **background_command only** for detached work in A2A
+sessions until v0.2.0 ships. The new guard lives in the A2A crate and rejects
+native Bash `background:true` starts and `job` reads at both access and execution
+boundaries. Foreground Bash delegates to the original tool. Normal sessions are
+unchanged, and `oxa-tools::JobRegistry` has not been modified.
 
-Release mode keeps exactly four rolling drafts: protocol #22, core #88,
-background/goals #129 and assembled CLI/TUI #176. The latter preserves the full
-integrated implementation. Superseded drafts are closed with replacement links;
-source branches are retained. No reviews are requested or awaited before release,
-and no CI polling is part of this acceptance work.
+The finding and post-release bridge design are tracked in
+[issue 258](https://github.com/oxstack/ox-llm/issues/258), labelled `post-0.2`.
+The historical heartbeat reproduction remains evidence for the integration gap;
+use the old integration snapshot for that diagnostic. The current
+[policy demo](tools/native_jobs_policy_demo.py) fails without the guard and passes
+with it: both native starts and reads are refused, no detached file is created,
+and a real foreground command succeeds in the same TUI session. Existing
+background_command wake/cancellation/reaping coverage remains in the full suite.
 
-## Proposed first live smoke, only after explicit go
+Packaging of the optional SDK bridge remains a separate coordinator decision:
+five frozen bootstrap input pins differ after its inventory addition. Those
+records and all checks remain intact. Reviews stay deferred until after release.
+The four rolling drafts remain #22, #88, #129 and assembled integration #176.
 
-This proposal is deliberately smaller than the final evening and cannot satisfy
-that acceptance on its own. It is concrete enough to approve or adjust before any
-credential is read or request is sent:
+## Approved single live smoke: executed, incomplete
 
-- Use a separate, owner-approved literal-loopback gateway instance and private
-  state/ledger/credential location on the development machine. Do not reuse or
-  alter an installed production service. The owner supplies the allowed parent,
-  author and reviewer model aliases and the gateway launch configuration.
-- Parent: ten-minute goal, 20,000 observed tokens and eight prompt turns. Two
-  fixed version-2 gateway worker profiles: five minutes, 10,000 observed tokens,
-  four prompt turns and a 60-second per-turn limit each. Worker lifetime totals:
-  20,000 tokens and 1 MiB captured output; each worker has a 512 KiB output cap.
-- Propose a gateway daily cap of USD 5 and 512 maximum output tokens per provider
-  request, subject to the owner's explicit approval. Admission must retain the
-  real context window and configured pricing; a conservative reservation that
-  exceeds the cap refuses the run. Never shrink metadata, discount unknown usage
-  or automatically increase a limit to make the experiment proceed. These are
-  local controls, not a claim of a hard provider billing ceiling.
-- Work only on a disposable copy of a small, owner-selected source file. The
-  author may propose an edit to that file; the reviewer receives the exact
-  collected bundle and no file or shell tools. Source application, PR writes,
-  commits, pushes and merges are outside this first smoke.
-- Use the existing private [gateway profiles](GATEWAY_WORKERS.md) and
-  [shared-session socket](SHARED_SESSION.md). An external observer records the
-  actual session ID, explicit goal budget and admission events, without issuing
-  substitute prompts for each autonomous turn. Do not repurpose mock demo
-  scripts by disabling their owned-endpoint or synthetic-key guards.
-- Exercise a completed author/reviewer handoff and, under a separately bounded
-  request, Esc cancellation. Check actual worker reaping, provider request
-  termination where observable, unknown-usage reservations and independent
-  ledger/provider cost evidence. If billing cannot be verified, record it as
-  unverified. Do not infer a zero charge from EOF or a local canceled state.
-- Retain only operator-approved, redacted evidence: source hashes, goal/worker
-  state transitions, admission IDs, usage/cost totals and stop evidence. Raw
-  credentials and provider transcripts do not go into the repository or PR.
+The coordinator authorized one run, a ten-minute parent goal with 20,000 observed
+tokens and eight turns, two workers with 10,000 tokens/four turns/five minutes
+each (60-second turn limits), and an independently enforced USD 5 cap. Worker
+output caps were 512 KiB each with a 1 MiB lifetime pool. The existing shared loopback gateway was used without restart or
+reconfiguration. Parent model: `anthropic/claude-sonnet-5-5`. Both author and
+reviewer models: `anthropic/claude-haiku-5-5`. Only the gateway handled provider
+credentials; no provider credential file was opened, copied or printed.
 
-Before starting, the coordinator must fill in the missing endpoint/model aliases,
-allowed credential source and approved monetary cap. The actual private profiles
-and request JSON can then be prepared and checked without making inference calls.
-A separate explicit authorization is required for the later full-evening scope,
-authenticated GitHub operations and queue actions. No authorization is implied by
-this document or by a passing mock suite.
+A private local relay forwarded only this run's inference to the approved gateway,
+retained actual context metadata, and capped each response at 512 output tokens.
+It stamped a unique nonsecret ledger client tag on each request. The monitor
+summed `cost_usd` only for those tags in the owner-designated request ledger,
+leaving other shared traffic out of the total. Before admission it included
+outstanding conservative full-context/cache-write reservations based on the
+nonsecret configured prices. Budget admission/attribution checks passed locally
+without inference before the run. A durable one-shot marker prevents automated
+re-execution. No rerun was made or scheduled.
+
+The shared gateway advertised USD 200/day in its live status, rather than the
+USD 10/day in the coordinator's description. It was left unchanged; the smoke's
+separate USD 5 cap did not rely on that shared setting.
+
+| Result | Observed value |
+| --- | --- |
+| Elapsed time including cleanup/settlement | 22.50 seconds |
+| Own requests / settled ledger rows | 10 / 10, all HTTP 200 and settled usage |
+| Parent requests / observed tokens / ledger cost | 7 / 26,770 / USD 0.062676 |
+| Combined worker requests / gateway tokens / ledger cost | 3 / 7,405 / USD 0.0058525 |
+| Individual worker gateway session token totals | 5,289 and 2,116, each below 10,000 |
+| Total attributed ledger cost | **USD 0.0685285** |
+| Maximum settled spend plus outstanding reservations | USD 1.2890125, below USD 5 |
+| Parent runtime outcome | budget_exhausted, after three goal turns |
+| Author and reviewer runtime outcomes | both blocked/native_runtime_failure, process cleanup confirmed |
+| Worker terminal usage in their runtime reports | unknown, despite settled gateway usage |
+| Original source | unchanged |
+| Verified author edit/reviewer handoff | not completed; collected author bundle was empty |
+| Additional cancellation phase | not attempted because the handoff prerequisite failed |
+
+The parent budget was configured at 20,000 observed tokens, but detection occurs
+after request usage arrives. The final parent request consumed 6,931 tokens and
+brought its total from 19,839 to 26,770; the runtime then exhausted the budget.
+This exposes the difference between an observed token threshold and a strict
+pre-request token ceiling. It is not reported as a successful 20,000-token run.
+The USD cap remained below its limit throughout the independently recorded
+ledger/reservation accounting.
+
+The author made one read/tool request, then a response reached the 512-token
+output cap with finish_reason=length. The reviewer response likewise reached
+512 tokens with finish_reason=length. Both native workers reported
+native_runtime_failure and unknown runtime usage. The parent inspected the failed
+results and described a proposed arithmetic diff, but the collected author bundle
+contained no applied edit and neither worker achieved runtime DONE. A narrative
+completion reply did not override the parent's runtime budget-exhausted verdict.
+These observations need an offline truncation/accounting regression before a
+future live attempt; they do not establish a fully diagnosed root cause.
+
+The run used a disposable arithmetic file and fixed private role/model/file grants.
+No source change was applied, no PR write or merge was attempted, and the shared
+gateway and its other goal loop were not restarted or reconfigured. Raw provider
+transcripts and private run artifacts are not committed here. The published result
+contains only aggregate numeric/accounting and lifecycle evidence.
+
+This single failed smoke does not satisfy issue 94's working-evening acceptance,
+prove real cancellation/billing termination, or exercise authenticated GitHub from
+oxa's Workspace sandbox. Any further paid attempt requires another explicit go;
+the original one-run authorization has been consumed. Real PR/queue operations
+remain separately scoped to the owner/operator permitted to perform them.

@@ -1,31 +1,43 @@
-# Native Bash job lifecycle diagnostic
+# Native Bash lifecycle finding and release guard
 
-Build the actual feature-enabled CLI and owned fake, then run from `oxa/`:
+The post-release lifecycle bridge is tracked in
+[issue 258](https://github.com/oxstack/ox-llm/issues/258), labelled `post-0.2`.
+Coordinator decision: until v0.2.0 ships, A2A sessions use only
+`background_command` for detached work. Do not change the native JobRegistry on
+the release path.
+
+## Current mitigation
+
+Build the feature-enabled CLI and fake, then run from `oxa/`:
 
 ```sh
 cargo build -p oxa-cli --features orchestrator -p oxa-fake
+python3 -I oxa-orchestrator/tools/native_jobs_policy_demo.py
+```
+
+The real TUI receives native Bash detached-start and job-read calls, both of
+which must be refused. A foreground Bash command must still complete normally,
+and the same goal reaches DONE without creating an unmanaged job. The test uses
+owned fakes, a private HOME and a cleared environment. It fails without the A2A
+policy adapter and passes with it. Existing background_command integration tests
+cover the supported detached path, result wakes, cancellation and reaping.
+
+## Historical reproduction
+
+With the CLI built from pre-policy integration `fc551b2`, run:
+
+```sh
 python3 -I oxa-orchestrator/tools/native_jobs_demo.py
 ```
 
-The tool uses a private HOME, a cleared TUI environment, an owned loopback engine,
-and the real `bash` tool with `background: true`. A bounded command writes a
-heartbeat. The model then declares the goal done. The diagnostic records the
-shared-session status, terminal frame and two heartbeat sizes. It exits nonzero
-if the goal reaches DONE while the heartbeat continues; a refused command cannot
-pass the check. Cleanup closes the isolated TUI and fake server. The heartbeat
-also expires independently after about eight seconds.
+The original diagnostic starts a bounded native Bash job that writes a heartbeat.
+The model declares DONE while the heartbeat keeps growing (observed 10 to 35
+bytes after DONE). The native registry lacks the goal ownership, completion/list
+and terminal-result acknowledgement hooks needed by the A2A owner. Its output
+progress counter is not terminal-result delivery acknowledgement.
 
-At integration `b9d8574`, this diagnostic fails: the native per-session job
-registry introduced by main is separate from the A2A `background_command` manager.
-A2A's pending-result guard, cancellation and completion wakes currently cover its
-own background commands and workers. They do not yet establish native Bash job
-ownership. A running native job can therefore coexist with a DONE goal. Do not
-interpret the passing A2A background suite as evidence for native-job lifecycle
-integration.
-
-The coordinator decision is pending: add a minimal default-off native-registry
-lifecycle bridge, or constrain the A2A tool policy until after release. This
-standalone diagnostic is deliberately outside automatic test discovery while
-that product decision is pending. Its failure must remain visible; there is no
-expected-failure switch. It uses no paid provider, credentials or production
-service, and proves no real billing behavior.
+The current mitigation prevents that diagnostic from starting its job; that is
+a refusal policy, not a completed lifecycle bridge. The issue specifies the
+post-release ownership, cancellation, completion/wake and unread-result design
+and its required race/cleanup tests. No paid provider or production service is
+used by either diagnostic.

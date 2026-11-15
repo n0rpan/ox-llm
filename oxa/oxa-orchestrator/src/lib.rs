@@ -20,6 +20,8 @@ pub mod lineage;
 #[cfg(feature = "interactive-control")]
 mod main_usage;
 mod namespace;
+#[cfg(feature = "interactive-control")]
+mod native_jobs_policy;
 mod ownership;
 mod process;
 pub mod recovery;

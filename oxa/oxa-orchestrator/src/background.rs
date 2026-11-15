@@ -486,6 +486,7 @@ impl Tool for CommandTool {
 }
 /// Default-off CLI hook before Session::open; normal policy and sandbox guards remain authoritative.
 pub fn augment(mut deps: Deps) -> Deps {
+    deps = crate::native_jobs_policy::augment(deps);
     deps = crate::usage::augment(deps);
     deps = crate::main_usage::augment(deps);
     deps = crate::worker_lanes::augment(deps);
