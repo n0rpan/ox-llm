@@ -120,3 +120,10 @@ this exact failure locally at the unchanged 60-second deadline. The fullscreen f
 the same read-only export fence before model/tree/new/resume transitions; all existing
 navigation, request-history and terminal assertions remain. All 18 daily-driver tests pass,
 with the gap retained. This failed composition run is not a successful timing sample.
+
+Final composition confirmation
+[43687789045](https://github.com/oxstack/ox-llm/actions/runs/43687789045) is **green**:
+all jobs succeeded, and the required aggregate verified **2,759 tests passed, zero runtime
+skips**, with the same three existing opt-in ignores. This run includes main's profile
+removal and the final fullscreen fence. It is additional validation, not a replacement of
+the three consistently inventoried timing samples above.
