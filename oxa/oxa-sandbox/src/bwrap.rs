@@ -203,6 +203,9 @@ pub(crate) fn bwrap_args_homes(
         .rw
         .iter()
         .filter(|p| !p.starts_with(cwd_path) && !cwd_path.starts_with(p))
+        // A git directory removed since the session began (`git worktree prune`) is skipped:
+        // bwrap fails every command on a missing source.
+        .filter(|p| std::fs::symlink_metadata(p).is_ok())
     {
         let p = p.to_string_lossy();
         push(&mut a, &[git_rw, &p, &p]);
