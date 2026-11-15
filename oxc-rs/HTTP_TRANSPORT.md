@@ -24,6 +24,9 @@ other transfer codings on HTTP/1.0 and invalid chunk-coding order close without
 emitting the malformed handler response.
 For `Expect: 100-continue`, permission is sent when the handler first reads the
 body. Admission can still return a final refusal without inviting an upload.
+Response lengths accept HTTP whitespace and are normalized; invalid or repeated
+lengths close before headers. Headers and each completed body item are flushed
+before awaiting more data, including when the connection buffers writes.
 
 ```sh
 cargo test --locked --manifest-path oxc-rs/Cargo.toml --all-features

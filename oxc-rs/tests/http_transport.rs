@@ -322,3 +322,95 @@ async fn rejected_expect_request_does_not_receive_permission_to_send_a_body() {
     assert!(response.starts_with(b"HTTP/1.1 401 Unauthorized\r\n"));
     assert!(!String::from_utf8_lossy(&response).contains("100 Continue"));
 }
+
+#[tokio::test]
+async fn padded_response_lengths_cannot_bypass_underflow_checks() {
+    for length in ["5 ", " 5\t"] {
+        let app = Router::new().fallback(move || async move {
+            Response::builder()
+                .header("content-length", length)
+                .body(Body::from("ok"))
+                .unwrap()
+        });
+        let response = exchange(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", app).await;
+        assert_eq!(
+            String::from_utf8_lossy(&response)
+                .matches("HTTP/1.1 200 OK")
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn invalid_or_duplicate_response_lengths_are_rejected_before_headers() {
+    for lengths in [
+        vec!["invalid"],
+        vec!["+2"],
+        vec!["-1"],
+        vec!["2, 2"],
+        vec!["18446744073709551616"],
+        vec!["2", "3"],
+    ] {
+        let app = Router::new().fallback(move || {
+            let lengths = lengths.clone();
+            async move {
+                let mut response = Response::builder();
+                for length in lengths {
+                    response = response.header("content-length", length);
+                }
+                response.body(Body::from("ok")).unwrap()
+            }
+        });
+        assert!(exchange(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            app
+        )
+        .await
+        .is_empty());
+    }
+}
+
+#[tokio::test]
+async fn buffered_connections_deliver_headers_and_each_sse_item_before_stream_end() {
+    for emit_item in [false, true] {
+        let app = Router::new().fallback(move || async move {
+            let items = if emit_item {
+                vec![Ok::<_, std::io::Error>("data: hello\n\n")]
+            } else {
+                vec![]
+            };
+            let stream = futures_util::StreamExt::chain(
+                futures_util::stream::iter(items),
+                futures_util::stream::pending(),
+            );
+            Response::builder()
+                .header("transfer-encoding", "chunked")
+                .body(Body::from_stream(stream))
+                .unwrap()
+        });
+        let (mut client, server) = tokio::io::duplex(8192);
+        let serving = tokio::spawn(transport::serve(tokio::io::BufStream::new(server), app));
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let marker: &[u8] = if emit_item {
+            b"data: hello\n\n"
+        } else {
+            b"\r\n\r\n"
+        };
+        let delivered = tokio::time::timeout(Duration::from_secs(1), async {
+            let mut received = Vec::new();
+            let mut bytes = [0; 1024];
+            while !received.windows(marker.len()).any(|s| s == marker) {
+                let count = client.read(&mut bytes).await.unwrap();
+                assert_ne!(count, 0);
+                received.extend_from_slice(&bytes[..count]);
+            }
+        })
+        .await;
+        serving.abort();
+        delivered.expect("incremental response remained buffered");
+    }
+}
