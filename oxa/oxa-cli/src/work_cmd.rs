@@ -6,6 +6,9 @@ pub(crate) fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dy
         let tasks = match args {
             [file] if !file.starts_with('-') => oxa_work::read_tasks(&cwd.join(file))?,
             [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
+                if oxa_proto::offline() {
+                    return Err("GitHub issue lookup is unavailable in offline mode".into());
+                }
                 vec![oxa_work::issue_task(
                     cwd,
                     number.parse().map_err(|_| "invalid issue number")?,
