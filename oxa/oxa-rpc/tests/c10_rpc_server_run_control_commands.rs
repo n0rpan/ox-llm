@@ -743,7 +743,10 @@ fn parse_error_response_keeps_running() {
     );
 
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(
+        code, 1,
+        "reader-side rejection is retained in the terminal outcome"
+    );
 }
 
 /// correlation id
@@ -805,7 +808,10 @@ fn prompt_while_busy_needs_streaming_behavior() {
     let idle = rpc.call("st2", json!({"type": "set_auto_retry", "enabled": false}));
     assert_eq!(idle["success"], true);
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(
+        code, 1,
+        "reader-side rejection is retained in the terminal outcome"
+    );
 }
 
 /// Unit check on the helpers the server exposes: the error envelope keeps the id.

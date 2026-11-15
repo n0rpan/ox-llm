@@ -38,9 +38,11 @@ The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. 
 | 8 | `blocked` | Other setup refusal, such as `cloud_sdk_unavailable` |
 | 130 | `interrupted` | The run was cooperatively cancelled, for example by RPC `abort` |
 
-For multiple prompts, the first unsuccessful outcome is retained even if a later prompt succeeds. RPC continues accepting commands after a run fails; the process reports its aggregate outcome when stdin closes. Each RPC `agent_settled` record also gains an additive `result` field with that prompt's result. A handled RPC command that starts no agent turn counts as completed work; a handled prompt that starts no turn counts as `nothing_to_do`.
+For multiple prompts, the first unsuccessful outcome is retained even if a later prompt succeeds. RPC continues accepting commands after a run fails; the process reports its aggregate outcome when stdin closes. Reader-side rejections and malformed commands count as failures, and a later valid command does not clear them. Each RPC `agent_settled` record also gains an additive `result` field with that prompt's result. A handled RPC command that starts no agent turn counts as completed work; a handled prompt that starts no turn counts as `nothing_to_do`.
 
 These results cover orderly returns, including startup refusals. A process killed before it can return cannot emit a terminal result. Help, version, export, model listing and standalone subcommands keep their existing output and status conventions (0 success, 1 runtime failure, 2 usage error).
+
+Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. Once output has streamed, a failure is returned without replaying the request. Print mode immediately flushes a one-line `retrying request in ... ms` notice to stderr; JSON and RPC modes emit it as a flushed `notice` record. Provider-level retries (`retry.provider.maxRetries`) are visible too. All attempts for a logical request reuse its idempotency key. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
 
 ## Commands
 
