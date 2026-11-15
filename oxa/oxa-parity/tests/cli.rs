@@ -10,7 +10,6 @@ use oxa_fake::{parse_script, FakeModel, FakeOpts, FakeServer, Recorded, TestEnv}
 use oxa_parity::oxa_bin;
 use oxa_proto::Role;
 use std::io::Write;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -41,9 +40,24 @@ fn fake_opts(script: &str, opts: FakeOpts) -> FakeServer {
 
 /// A URL where nothing listens.
 fn closed_url() -> String {
-    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = l.local_addr().expect("addr").port();
-    drop(l);
+    // A socket that is bound but never listening refuses connections, and holding it for the
+    // life of the test process keeps the kernel from handing the port to another test's
+    // server (a freed port can be reused at once, and the run would then reach that server).
+    // SAFETY: plain socket/bind/getsockname calls on a local zeroed sockaddr_in; the fd is
+    // deliberately kept open.
+    let port = unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        assert!(fd >= 0, "socket");
+        let mut addr: libc::sockaddr_in = std::mem::zeroed();
+        addr.sin_family = libc::AF_INET as libc::sa_family_t;
+        addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
+        let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let p = &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr;
+        assert_eq!(libc::bind(fd, p, len), 0, "bind");
+        let mut got = len;
+        assert_eq!(libc::getsockname(fd, p, &mut got), 0, "getsockname");
+        u16::from_be(addr.sin_port)
+    };
     format!("http://127.0.0.1:{port}")
 }
 
