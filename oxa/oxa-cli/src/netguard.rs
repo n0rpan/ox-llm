@@ -1,4 +1,4 @@
-//! Wave H lane `local`: the network decisions of the front end (O-167(b), P3, P4). Every
+//! Wave H: the network decisions of the front end (O-167(b), P3, P4). Every
 //! decision is here; `dispatch.rs` only calls in.
 use oxa_config::{dirs_from_env, Env, Settings};
 use oxa_proto::{Level, OxaError, Sandbox};
@@ -19,9 +19,59 @@ pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dy
 /// outside the sandbox, with a short timeout. Any failure (no `gh`, not logged in, slow) is
 /// `None`. The token is never logged.
 fn gh_token() -> Option<String> {
-    let exe = trusted_gh(std::env::var_os("PATH").as_deref(), std::env::current_dir().ok().as_deref())?;
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let exe = trusted_gh_for(
+        std::env::var_os("PATH").as_deref(),
+        std::env::current_dir().ok().as_deref(),
+        home.as_deref(),
+    )?;
     gh_token_from(&exe, GH_DEADLINE)
 }
+
+/// `trusted_gh` for a cwd that is the home directory (#122). The project rule cannot tell
+/// `~/.local/bin` from `~/project/bin` there, so under `~` only the user's conventional
+/// install directories (`USER_BIN`, including the mise shims) count; a `PATH` entry anywhere else below `~` (a writable
+/// project shim) is refused, as are those whose resolved target is. System paths are unchanged,
+/// and the writable-directory check of `trusted_gh` still applies.
+fn trusted_gh_for(
+    path: Option<&std::ffi::OsStr>,
+    cwd: Option<&Path>,
+    home: Option<&Path>,
+) -> Option<std::path::PathBuf> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let Some(h) = home.map(canon) else {
+        return trusted_gh(path, cwd);
+    };
+    if !cwd.is_some_and(|c| canon(c) == h) {
+        return trusted_gh(path, cwd);
+    }
+    let allowed: Vec<std::path::PathBuf> = USER_BIN.iter().map(|d| h.join(d)).collect();
+    // Allowed by where it resolves to, so a symlink from `~/.local/bin` into a project is refused.
+    let ok = |d: &Path| {
+        let dc = canon(d);
+        let under_home = |x: &Path| x.starts_with(&h) || x.starts_with(home.unwrap_or(&h));
+        !(under_home(d) || under_home(&dc)) || allowed.iter().any(|a| dc.starts_with(a))
+    };
+    // The final executable must resolve to an allowed place too; otherwise keep searching.
+    let file_ok = |f: &Path| {
+        let fc = canon(f);
+        let under_home = |x: &Path| x.starts_with(&h) || x.starts_with(home.unwrap_or(&h));
+        !(under_home(f) || under_home(&fc)) || allowed.iter().any(|a| fc.starts_with(a))
+    };
+    std::env::split_paths(path?)
+        .filter(|d| ok(d))
+        .filter_map(|d| trusted_gh(Some(d.as_os_str()), None))
+        .find(|f| file_ok(f))
+}
+
+/// The directories below `~` where a user installs their own tools.
+const USER_BIN: &[&str] = &[
+    ".local/bin",
+    "bin",
+    ".cargo/bin",
+    ".local/share/mise/shims",
+    ".local/share/mise/installs",
+];
 
 const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -80,7 +130,11 @@ fn trusted_gh(path: Option<&std::ffi::OsStr>, cwd: Option<&Path>) -> Option<std:
         })
         .map(|d| d.join("gh"))
         .find(|p| {
-            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            // The file's own resolved target must not lie in the project either.
+            let pc = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            !cwd.is_some_and(|c| pc.starts_with(c))
+                && !cwd_c.as_ref().is_some_and(|c| pc.starts_with(c))
+                && std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         })
 }
 
@@ -155,7 +209,11 @@ mod tests {
         let gh = script(&d, "gh", "(sleep 6 >&1 &)\necho SYNTH_TOKEN; exit 0");
         let t = std::time::Instant::now();
         let r = gh_token_from(&gh, std::time::Duration::from_millis(1500));
-        assert!(t.elapsed() < std::time::Duration::from_secs(3), "blocked {:?}", t.elapsed());
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(3),
+            "blocked {:?}",
+            t.elapsed()
+        );
         assert!(r.is_none() || r.as_deref() == Some("SYNTH_TOKEN"));
     }
 
@@ -166,6 +224,98 @@ mod tests {
         // A parallel test's fork can hold the script's write fd (ETXTBSY): retry the spawn.
         let got = (0..5).find_map(|_| gh_token_from(&gh, GH_DEADLINE));
         assert_eq!(got.as_deref(), Some("SYNTH_TOKEN"));
+    }
+
+    /// #122: with cwd = home, a `gh` in a user-owned directory under home (`~/.local/bin`)
+    /// is still found, so `GH_TOKEN` is injected the same as for a project cwd.
+    #[test]
+    fn cwd_home_still_finds_gh_under_home() {
+        let d = tmp("homecwd");
+        let home = d.join("home");
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        script(&bin, "gh", "echo GOOD");
+        let p = std::env::join_paths([bin.to_str().unwrap()]).unwrap();
+        assert_eq!(
+            trusted_gh_for(Some(&p), Some(&home), Some(&home)),
+            Some(bin.join("gh"))
+        );
+        // A project below home is still excluded.
+        let proj = home.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        let q = std::env::join_paths([proj.to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh_for(Some(&q), Some(&proj), Some(&home)), None);
+    }
+
+    /// #122 review: with cwd = home a writable project shim on PATH is still refused.
+    #[test]
+    fn cwd_home_refuses_a_project_shim_under_home() {
+        let d = tmp("homeshim");
+        let home = d.join("home");
+        let proj = home.join("project/bin");
+        std::fs::create_dir_all(&proj).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        let p = std::env::join_paths([proj.to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh_for(Some(&p), Some(&home), Some(&home)), None);
+        // ... also behind a symlink from an allowed directory.
+        let lb = home.join(".local");
+        std::fs::create_dir_all(&lb).unwrap();
+        std::os::unix::fs::symlink(&proj, lb.join("bin")).unwrap();
+        let q = std::env::join_paths([lb.join("bin").to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh_for(Some(&q), Some(&home), Some(&home)), None);
+    }
+
+    /// P1: the final executable is checked, not just its directory.
+    #[test]
+    fn cwd_home_refuses_a_gh_symlink_into_a_project_file() {
+        let d = tmp("ghlink");
+        let home = d.join("home");
+        let proj = home.join("project/bin");
+        let lb = home.join(".local/bin");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&lb).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        std::os::unix::fs::symlink(proj.join("gh"), lb.join("gh")).unwrap();
+        let p = std::env::join_paths([lb.to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh_for(Some(&p), Some(&home), Some(&home)), None);
+    }
+
+    /// Control: a real gh, and a symlink to another file inside the allowed dir, still work.
+    #[test]
+    fn cwd_home_accepts_a_real_gh_and_an_in_dir_symlink() {
+        let d = tmp("ghreal");
+        let home = d.join("home");
+        let lb = home.join(".local/bin");
+        std::fs::create_dir_all(&lb).unwrap();
+        script(&lb, "gh", "echo GOOD");
+        let p = std::env::join_paths([lb.to_str().unwrap()]).unwrap();
+        assert_eq!(
+            trusted_gh_for(Some(&p), Some(&home), Some(&home)),
+            Some(lb.join("gh"))
+        );
+        let lb2 = home.join(".cargo/bin");
+        std::fs::create_dir_all(&lb2).unwrap();
+        script(&lb2, "gh-real", "echo GOOD");
+        std::os::unix::fs::symlink(lb2.join("gh-real"), lb2.join("gh")).unwrap();
+        let q = std::env::join_paths([lb2.to_str().unwrap()]).unwrap();
+        assert_eq!(
+            trusted_gh_for(Some(&q), Some(&home), Some(&home)),
+            Some(lb2.join("gh"))
+        );
+    }
+
+    /// A `gh` symlink in a good directory that points into the project is refused too.
+    #[test]
+    fn a_gh_symlink_into_the_project_is_refused() {
+        let d = tmp("projlink");
+        let (proj, good) = (d.join("proj"), d.join("good"));
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        std::os::unix::fs::symlink(proj.join("gh"), good.join("gh")).unwrap();
+        let p = std::env::join_paths([good.to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh(Some(&p), Some(&proj)), None);
     }
 
     #[test]

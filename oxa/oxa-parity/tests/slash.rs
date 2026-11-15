@@ -22,11 +22,11 @@ mod tree_pty;
 
 use oxa_fake::{FakeModel, FakeOpts, Recorded, ScriptTurn, TestEnv};
 use oxa_parity::run_oxa;
-use rig::{editor_text, replies, session_files, session_lines, user_texts, Rig, RigOpts, Screen, WAIT};
+use rig::{editor_text, replies, session_lines, user_texts, Rig, RigOpts, Screen, WAIT};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tree_pty::{clear_editor, dialog_choice, navigated, open_tree, pick, select_listed};
+use tree_pty::{clear_editor, navigated, open_tree, pick, select_listed};
 
 /// This file, for the meta-checks below.
 const SELF_SRC: &str = include_str!("slash.rs");
@@ -129,7 +129,11 @@ fn parity_rows() -> Vec<ParityRow> {
             test: cells[5].trim_matches('`').to_string(),
         });
     }
-    assert_eq!(rows.len(), 30, "SLASH-001..SLASH-030 of PARITY.md");
+    assert_eq!(
+        rows.len(),
+        29,
+        "SLASH-001..SLASH-030 (minus SLASH-016) of PARITY.md"
+    );
     rows
 }
 
@@ -178,7 +182,7 @@ fn a_rows_name_their_invariant() {
         );
         n += 1;
     }
-    assert_eq!(n, 10, "A rows of SLASH (10)");
+    assert_eq!(n, 9, "A rows of SLASH (9)");
 }
 
 /// unsupported_in_oxa
@@ -616,63 +620,6 @@ fn slash_015() {
         &summary.messages[..prefix.len()],
         &prefix[..],
         "the summary request is a pure append to the wire"
-    );
-}
-
-/// `/import <path>`: a pi v3 session file is imported with its id and directory; cancel changes nothing.
-#[test]
-fn slash_016() {
-    // pi docs: slash-commands.md "/import <path>  Import a JSONL session, preserving its ID and
-    // working directory"
-    // invariant: pi v1-v3 files are migrated; their assistant entries lack the exact wire bytes,
-    // so the conversation is rebuilt on the wire (the cold start is asserted in ses_008).
-    let env = TestEnv::new();
-    let proj = env.root().join("proj");
-    std::fs::create_dir_all(&proj).unwrap();
-    let id = "0f6c2d9e-1111-4222-8333-944455556666";
-    let src = env.write(
-        "import/pi-session.jsonl",
-        &[
-            json!({"type":"session","version":3,"id":id,"timestamp":"2026-01-01T00:00:00.000Z","cwd":proj}),
-            json!({"type":"message","id":"a1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z",
-                   "message":{"role":"user","content":"imported question","timestamp":1}}),
-            json!({"type":"message","id":"a2","parentId":"a1","timestamp":"2026-01-01T00:00:02.000Z",
-                   "message":{"role":"assistant","content":[{"type":"text","text":"imported answer"}],
-                              "stopReason":"stop","timestamp":2}}),
-        ]
-        .iter()
-        .map(|v| format!("{v}\n"))
-        .collect::<String>(),
-    );
-    let rig = Rig::start_in(env, replies(1), RigOpts::default());
-    let cmd = format!("/import {}", src.display());
-    rig.slash(&cmd);
-    rig.pty.wait_for_text("Replace current session with").unwrap();
-    rig.pty.send_key("escape");
-    rig.pty.wait_for_text("Import cancelled").unwrap();
-    assert!(
-        !rig.screen().contains("imported question"),
-        "a cancel imports nothing"
-    );
-    rig.slash(&cmd);
-    rig.pty.wait_for_text("Replace current session with").unwrap();
-    rig.pty
-        .wait_for_named("Yes chosen", |s| dialog_choice(s) == "Yes", WAIT)
-        .unwrap();
-    rig.pty.send_key("enter");
-    let s = rig.pty.wait_for_text("imported answer").unwrap();
-    assert!(s.contains("imported question"), "{s:?}");
-    let files = session_files(&rig.env);
-    let imported = files
-        .iter()
-        .find(|f| header_of(f)["id"] == json!(id))
-        .unwrap_or_else(|| panic!("a session with id {id}: {files:?}"));
-    assert_eq!(header_of(imported)["cwd"], json!(proj), "the directory is kept");
-    rig.prompt("follow up", "reply 1");
-    assert_eq!(
-        user_texts(&rig.generating()[0]),
-        vec!["imported question", "follow up"],
-        "the next prompt continues the imported conversation"
     );
 }
 

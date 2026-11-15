@@ -1,4 +1,4 @@
-//! T2 / R6 (wave H lane `local`): the malformed-call repair counter in the footer and in the
+//! T2 / R6 (wave H): the malformed-call repair counter in the footer and in the
 //! status after a `tool_repair` event.
 
 use oxa_interactive::{render_footer, StatusModel, ViewModel};
@@ -46,7 +46,14 @@ fn degraded_context_shows_until_a_model_summary() {
     let mut vm = ViewModel::default();
     vm.status.model = "qwen".to_string();
     assert!(!render_footer(&vm, 120, &Theme::plain())[1].contains("no summary"));
+    vm.status.context_tokens = 10;
     apply_event(&mut vm, &end(serde_json::json!({"mechanical": true})));
+    assert_eq!(vm.status.context_tokens, 5);
+    assert!(vm.blocks.iter().any(|b| matches!(
+        b,
+        oxa_interactive::Block::Notice { text, .. }
+            if text == "Compacted from 10 to about 5 tokens"
+    )));
     assert!(render_footer(&vm, 120, &Theme::plain())[1].contains("no summary"));
     apply_event(&mut vm, &end(serde_json::json!({})));
     assert!(!render_footer(&vm, 120, &Theme::plain())[1].contains("no summary"));

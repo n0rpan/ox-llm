@@ -80,6 +80,11 @@ impl Step {
         self.until = Some(Box::new(cond));
         self
     }
+
+    /// Whether this step is ready to fire, given the text accumulated since the last step.
+    fn is_ready(&self, since: &str) -> bool {
+        self.wait.iter().all(|w| since.contains(w)) && self.until.as_ref().is_none_or(|f| f())
+    }
 }
 
 /// A `TestTerminal` whose input is a script of [`Step`]s. `poll` waits (it does not return a
@@ -154,10 +159,7 @@ impl Terminal for ScriptTerm {
     }
     fn poll(&mut self, timeout_ms: u64) -> Vec<InputEvent> {
         self.absorb();
-        let ready = match self.steps.front() {
-            Some(s) => s.wait.iter().all(|w| self.since.contains(w)) && s.until.as_ref().is_none_or(|f| f()),
-            None => false,
-        };
+        let ready = self.steps.front().is_some_and(|s| s.is_ready(&self.since));
         if ready {
             let s = self.steps.pop_front().expect("a step is ready");
             self.seen.push((s.name, std::mem::take(&mut self.since)));
@@ -281,17 +283,15 @@ impl World {
             initial_follow_ups: Vec::new(),
             theme: None,
             notices: Vec::new(),
-            // These tests exercise behaviour (streams, errors, keys), not the skin: pin the pi
-            // skin so the assertions on the plain header stay stable while the default profile
-            // (and therefore the OXA skin) moved to `local`.
+            // These tests exercise behaviour (streams, errors, keys), not the skin: pin the
+            // plain skin so the assertions on the header stay stable (OXA is the default).
             env: vec![("OXA_SKIN".to_string(), "pi".to_string())],
             caps: Some(TermCaps::BASIC),
-            reopen: Box::new(move |how| {
+            reopen: Box::new(move |how, _carry| {
                 let open = match how {
                     Reopen::New => Open::New,
                     Reopen::Resume(sref) => Open::Resume(sref),
                     Reopen::Fork(sref) => Open::Fork(sref),
-                    Reopen::Import(_) => return Err(OxaError::new("invalid", "no import in this test")),
                 };
                 let engine: Arc<dyn Engine> = Arc::new(HttpEngine::new(&url, None)?);
                 Session::open(deps_with(engine, store.clone(), &root, &work), open)
@@ -410,6 +410,10 @@ fn long_reply(tag: &str) -> String {
 // The daily-driver flow, fullscreen
 // ---------------------------------------------------------------------------------------------
 
+/// The strings the "tree open" step waits for: the transcript text that is already on screen
+/// *and* the overlay-only marker "Session Tree" rendered by `selectors/tree.rs`.
+const TREE_OPEN_WAIT: &[&str] = &["second question", "BETA answer.", "Session Tree"];
+
 /// open -> prompt -> tool call -> `/model` selector -> `/tree` navigate -> `/new` ->
 /// `/resume` picker -> fullscreen scroll + search -> exit, against the fake over HTTP.
 #[test]
@@ -452,11 +456,7 @@ fn fullscreen_daily_driver_flow() {
         ),
         step("second reply", &["BETA answer."], typed("/tree", &["enter"])),
         // The navigator opens on the leaf (the BETA reply); Up selects the user message.
-        step(
-            "tree open",
-            &["second question", "BETA answer."],
-            vec![key("up"), key("enter")],
-        ),
+        step("tree open", TREE_OPEN_WAIT, vec![key("up"), key("enter")]),
         // pi's question before the leaf moves; Enter = no summary.
         step(
             "summary question",
@@ -833,7 +833,7 @@ fn controls_are_rebound_to_the_new_session() {
         // The aborted reply is a Shown block (never sent); the text is in the editor again.
         step(
             "aborted",
-            &["not sent to the model", "steer me"],
+            &["the prompt stays in the conversation", "steer me"],
             vec![key("ctrl+c")],
         ),
         step("cleared", &[], vec![key("ctrl+d")]),
@@ -1026,7 +1026,7 @@ fn aborted_stream_is_shown_not_a_reply() {
         step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
         step(
             "aborted",
-            &["aborted: not sent to the model"],
+            &["aborted: cancelled; the prompt stays"],
             typed("/session", &["enter"]),
         ),
         // The Shown block is not counted as an assistant message.
@@ -1297,4 +1297,24 @@ fn quit_with_a_pending_rebind_stops_the_new_sessions_run() {
         oxa_proto::EntryBody::Shown { why, .. } => assert_eq!(why, "aborted"),
         other => panic!("the interrupted run ends in a Shown entry, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Step::is_ready unit tests
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn tree_open_not_ready_on_transcript_only() {
+    let s = step("tree open", TREE_OPEN_WAIT, vec![]);
+    // The transcript text is there but the overlay marker is missing.
+    let since = "second question\nBETA answer.\n";
+    assert!(!s.is_ready(since));
+}
+
+#[test]
+fn tree_open_ready_with_overlay() {
+    let s = step("tree open", TREE_OPEN_WAIT, vec![]);
+    // All three markers are present, including the overlay-only "Session Tree".
+    let since = "second question\nBETA answer.\n  Session Tree\n";
+    assert!(s.is_ready(since));
 }

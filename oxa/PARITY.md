@@ -20,13 +20,13 @@ Source of truth for "what pi does": the pi 1.5.2 documentation (`packages/coding
 - **A** adapted for the oxe engine. The test checks the adapted behaviour and names the invariant that forced it.
 - **O** omitted. Where a surface exists (flag, command, API call) the test asserts the clear `unsupported_in_oxa` error or the documented ignore-with-warning; otherwise the omission is recorded here.
 
-## Profiles
+## Defaults
 
-The suite runs under both `oxa.profile` values: `OXA_PARITY_PROFILE=pi` (default) and `=local`; every place that starts `oxa` passes it on (`oxa_parity::profile_env`). `local` changes formats and defaults only, never capability; a row that asserts pi-exact text branches on the profile and checks the same capability under `local` (TOOLS-006, TOOLS-007: the flat `edit` schema, several edits as several calls; TOOLS-002: the first page of `read`; TOOLS-014, TOOLS-017: the path-once and over-limit forms of `grep`; CMP-014, CMP-016, EXT-017: a failed summary is replaced by the mechanical record, so `session_compact` fires with `mechanical: true` and `summaryError` instead of `session_compact_failed`).
+The suite runs under oxa's single set of defaults (O-205). Every place that starts `oxa` adds `oxa_parity::note_off_env()` after `TestEnv::envs`, which turns the per-prompt environment note off: PARITY compares the user messages with pi's bytes. The defaults change formats only, never capability; a row whose pi text differs checks the same capability in the default form (TOOLS-006, TOOLS-007: the flat `edit` schema, several edits as several calls; TOOLS-002: the first page of `read`; TOOLS-014, TOOLS-017: the path-once and over-limit forms of `grep`; CMP-014, CMP-016, EXT-017: a failed summary is replaced by the mechanical record, so `session_compact` fires with `mechanical: true` and `summaryError` instead of `session_compact_failed`).
 
 ## Ship gate
 
-100% of the rows of the KEEP groups green under both profiles (`OXA_PARITY_PROFILE=pi` and `=local`, O-167): every P and A row has a green test, no row is unclassified, every O row is either tested (the clear `unsupported_in_oxa` error or the unknown-setting warning) or recorded as `omission`. pi features that are not part of oxa's scope (O-175: a small local agent tool) are O rows with the reason `pi-specific, not in oxa`. A row may be reclassified only by the architect, with the reason in the note.
+100% of the rows of the KEEP groups green under the defaults: every P and A row has a green test, no row is unclassified, every O row is either tested (the clear `unsupported_in_oxa` error or the unknown-setting warning) or recorded as `omission`. pi features that are not part of oxa's scope (O-175: a small local agent tool) are O rows with the reason `pi-specific, not in oxa`. A row may be reclassified only by the architect, with the reason in the note.
 
 ## CLI: Command line
 
@@ -86,7 +86,6 @@ pi page(s): cli.md. Tests: `oxa-parity/tests/cli.rs`.
 | CLI-050 | Mode choice by tty rules (TUI only when stdin and stdout are terminals) | P |  | `cli.rs::cli_050` |
 | CLI-051 | `pi install <source>` / `pi remove <source>` (`uninstall` alias) / `pi list` | A | `oxa install\|remove\|list`; git and local sources; `npm:` is refused (O-175) | `cli.rs::cli_051` |
 | CLI-052 | `pi config`: choose which package resources load | P | `oxa config` | `cli.rs::cli_052` |
-| CLI-053 | `oxa config --import-pi` | A | oxa only: one-time copy of skills/prompts/themes/keybindings/mcp.json from pi dirs; pi dirs are never read implicitly | `cli.rs::cli_053` |
 | CLI-054 | `pi update` (self), `--self`, `self`, `pi`, `--all`, `PI_SELF_UPDATE_COMMAND`, `selfUpdateCommand` | O | no self-update, no version check (no network unless asked) | `cli.rs::cli_054` |
 | CLI-055 | `pi update --extensions` / `pi update <source>` / `--extension <source>` | A | `oxa update` for git + local packages | `cli.rs::cli_055` |
 | CLI-056 | `pi update --models` | O | no model catalogs | `cli.rs::cli_056` |
@@ -310,7 +309,6 @@ pi page(s): slash-commands.md. Tests: `oxa-parity/tests/slash.rs`.
 | SLASH-013 | `/fork` | P |  | `slash.rs::slash_013` |
 | SLASH-014 | `/clone` | P |  | `slash.rs::slash_014` |
 | SLASH-015 | `/compact [instructions]` | A | W5 summary request | `slash.rs::slash_015` |
-| SLASH-016 | `/import <path>` | A | migrates pi v1-v3; cache cold | `slash.rs::slash_016` |
 | SLASH-017 | `/copy` | P |  | `slash.rs::slash_017` |
 | SLASH-018 | `/export [path]` HTML or JSONL | P |  | `slash.rs::slash_018` |
 | SLASH-019 | `/share` | O | no third-party upload from a local-first tool | `slash.rs::slash_019` |
@@ -339,7 +337,6 @@ pi page(s): sessions.md. Tests: `oxa-parity/tests/sessions.rs`.
 | SES-005 | `/new`, `/resume`, `/name`, `/session` | P |  | `sessions.rs::ses_005` |
 | SES-006 | `/fork` creates a new session file with a `parentSession` header | P |  | `sessions.rs::ses_006` |
 | SES-007 | `/clone` duplicates the session at its position | P |  | `sessions.rs::ses_007` |
-| SES-008 | `/import <path>` preserves id and cwd | A | pi v1-v3 migrated; assistant entries lack exact wire bytes, so the cache is cold | `sessions.rs::ses_008` |
 | SES-009 | `--no-session` keeps nothing on disk | P |  | `sessions.rs::ses_009` |
 | SES-010 | `sessionDir` / env / flag precedence | P |  | `sessions.rs::ses_010` |
 | SES-011 | Labels on entries (`/tree` Shift+L) | P |  | `sessions.rs::ses_011` |
@@ -373,7 +370,6 @@ pi page(s): session-format.md, message-types.md. Tests: `oxa-parity/tests/sessio
 | FMT-016 | `BashExecutionMessage` (`command`, `output`, `exitCode`, `cancelled`, `truncated`, `excludeFromContext`) | P |  | `format.rs::fmt_016` |
 | FMT-017 | Tree structure: `id`/`parentId`; the leaf is the last entry; context building walks leaf to root | P | the wire is a pure fold of the active branch (W1) | `format.rs::fmt_017` |
 | FMT-018 | Context building: compaction replaces entries before `firstKeptEntryId` | A | W5 rebase | `format.rs::fmt_018` |
-| FMT-019 | Session versions 1 and 2 are migrated on load | A | through `/import` | `format.rs::fmt_019` |
 | FMT-020 | `ImageContent` blocks in user messages | A | `Part::Image` stored; never serialised to the wire | `format.rs::fmt_020` |
 | FMT-021 | oxa entry types `shown` and `mode_change` | A | oxa only: aborted/failed/cut replies (W2) and mode changes; ignored by pi tooling | `format.rs::fmt_021` |
 
@@ -576,7 +572,6 @@ pi page(s): configuration.md. Tests: `oxa-parity/tests/resources.rs`.
 | CFG-005 | `SYSTEM.md` replaces and `APPEND_SYSTEM.md` appends to the system prompt; project over user | P |  | `resources.rs::cfg_005` |
 | CFG-006 | `.agents/skills` is read | P |  | `resources.rs::cfg_006` |
 | CFG-007 | `auth.json` | O | no credentials store | omission |
-| CFG-008 | pi directories are not read implicitly | A | oxa only: `oxa config --import-pi` | `resources.rs::cfg_008` |
 
 ## SKL: Skills
 

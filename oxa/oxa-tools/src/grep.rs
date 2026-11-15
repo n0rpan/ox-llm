@@ -21,7 +21,7 @@ pub struct GrepTool {
 impl GrepTool {
     pub fn new() -> GrepTool {
         GrepTool {
-            spec: crate::spec_of(&descriptions::GREP),
+            spec: crate::spec_of(&descriptions::builtin_specs::GREP_DEFAULT),
         }
     }
 }
@@ -185,7 +185,7 @@ impl Tool for GrepTool {
         if acc.matches == 0 {
             return ToolOutput::ok(errors::GREP_NO_MATCHES);
         }
-        if acc.extra && cx.tune.local {
+        if acc.extra {
             return over_limit(&files, &q, cx);
         }
 
@@ -208,7 +208,7 @@ impl Tool for GrepTool {
     }
 }
 
-/// Profile `local` (T8): the answer when matches exceed the limit. Counts every match of every
+/// T8: the answer when matches exceed the limit. Counts every match of every
 /// file (streamed, one line at a time), then gives the total and one count per file that has
 /// matches, in the order of the normal output.
 fn over_limit(files: &[(PathBuf, String)], q: &Query, cx: &ToolCtx) -> ToolOutput {

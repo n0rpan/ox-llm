@@ -1,4 +1,4 @@
-//! O-167(b) (wave H lane `local`): the bash network as a sandbox property.
+//! O-167(b) (wave H): the bash network as a sandbox property.
 //!
 //! The agent's tools get the internet by default; the harness itself never phones home.
 //! [`NetSandbox`] wraps the process sandbox and answers [`Sandbox::network`] from the setting
@@ -53,7 +53,10 @@ struct StreamRedactor<'a> {
 
 impl<'a> StreamRedactor<'a> {
     fn new(token: &'a str) -> Self {
-        StreamRedactor { token: token.as_bytes(), pending: Vec::new() }
+        StreamRedactor {
+            token: token.as_bytes(),
+            pending: Vec::new(),
+        }
     }
 
     /// Feed a chunk; returns the bytes now safe to show.
@@ -151,6 +154,9 @@ impl NetSandbox {
 }
 
 impl Sandbox for NetSandbox {
+    fn persistence_notice(&self) -> Option<&str> {
+        self.inner.persistence_notice()
+    }
     fn check(&self) -> Result<(), OxaError> {
         self.inner.check()
     }
@@ -278,7 +284,11 @@ mod tests {
             let out = b"a SYNTH_MARKER_TOKEN_42 b SYNTH_MARKER_TOKEN_42".to_vec();
             live(&out[..self.0]);
             live(&out[self.0..]);
-            ExecResult { output: out, exit: Some(0), timed_out: false }
+            ExecResult {
+                output: out,
+                exit: Some(0),
+                timed_out: false,
+            }
         }
     }
 
@@ -289,7 +299,9 @@ mod tests {
             let sb = NetSandbox::new(Arc::new(Split(at)), true, false)
                 .with_gh_token(Some("SYNTH_MARKER_TOKEN_42".into()));
             let mut live = Vec::new();
-            let r = sb.run(&spec(true), &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+            let r = sb.run(&spec(true), &CancelToken::new(), &mut |b| {
+                live.extend_from_slice(b)
+            });
             let live = String::from_utf8(live).unwrap();
             assert_eq!(live, "a [redacted] b [redacted]", "split at {at}");
             assert_eq!(String::from_utf8(r.output).unwrap(), live, "split at {at}");

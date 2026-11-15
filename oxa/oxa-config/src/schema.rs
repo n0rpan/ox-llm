@@ -91,6 +91,7 @@ const SCHEMA: &[KeyDef] = &[
         Kind::StringList,
         "[\"read\",\"bash\",\"edit\",\"write\",\"grep\",\"find\",\"ls\"]",
     ),
+    key("done", Kind::StringList, "[]"),
     key(
         "doubleEscapeAction",
         Kind::Enum(&["tree", "fork", "none"]),
@@ -135,26 +136,24 @@ const SCHEMA: &[KeyDef] = &[
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
-    // F5: seconds; unset = none under profile `pi`, 120 under `local`; 0 = none.
+    // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
-    // V020-OPTIMIZE #7: unset = off under profile `pi`, on under `local`.
+    // V020-OPTIMIZE #7: unset = on.
     key("oxa.compaction.idleSummary", Kind::Bool, "null"),
-    // L5 mid-run: unset = off under profile `pi`, on under `local`.
+    // L5 mid-run: unset = on.
     key("oxa.compaction.midRun", Kind::Bool, "null"),
     key("oxa.compaction.softTokens", Kind::Number, "null"),
-    // V020-OPTIMIZE #7: soft length target of a summary in tokens; unset = none under `pi`,
-    // 700 under `local`; 0 = none.
+    // V020-OPTIMIZE #7: soft length target of a summary in tokens; unset = 700; 0 = none.
     key("oxa.compaction.summaryTarget", Kind::Number, "null"),
-    // L5: unset = off under profile `pi`, on under `local`.
+    // L5: unset = on.
     key("oxa.compaction.turnStart", Kind::Bool, "null"),
-    // V020-OPTIMIZE #1 / #2: unset = off under profile `pi`, on under `local`.
+    // V020-OPTIMIZE #1 / #2: unset = on.
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
-    // The per-prompt environment note (date, time, runtime facts): unset = off under `pi`, on
-    // under `local`.
+    // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
     key(
         "oxa.mode",
@@ -162,12 +161,9 @@ const SCHEMA: &[KeyDef] = &[
         "\"workspace\"",
     ),
     key("oxa.offline", Kind::Bool, "false"),
-    // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = off under
-    // profile `pi`, on under `local`.
+    // V020-OPTIMIZE #13 / OXA-LOCAL-FIRST F1: timing only (bytes unchanged); unset = on.
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
-    // OXA-LOCAL-FIRST sec. 6; the default is `Profile::DEFAULT` (a test keeps them equal).
-    key("oxa.profile", Kind::Enum(&["pi", "local"]), "\"local\""),
     key("oxa.reportIssue.repo", Kind::String, "null"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).
     // `greedy` = W6 `temperature: 0` (MTP on); `model` = the model card's sampling (oxa-core
@@ -193,7 +189,7 @@ const SCHEMA: &[KeyDef] = &[
     // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
     // before thinking turns on; 0 = never on that ground.
     key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
-    // T5: unset = `fixed` under profile `pi`, `auto` under `local`.
+    // T5: unset = `auto`.
     key("oxa.thinking.policy", Kind::Enum(&["fixed", "auto"]), "null"),
     // Thinking on tool follow-ups under policy `auto` (oxa-core `think.rs`).
     key(
@@ -279,7 +275,7 @@ const SCHEMA: &[KeyDef] = &[
 
 /// Every key of pi's settings.md plus oxa's `oxa.*` keys (`oxa.toolOutputCap`,
 /// `oxa.compaction.softTokens`, `oxa.mode`, `oxa.subagent.*`, O-152's `oxa.bootPreload`,
-/// `oxa.builtinSkills`, `oxa.reportIssue.repo`; `oxa.profile`, `oxa.thinking.policy`; `ui.skin`), sorted by key.
+/// `oxa.builtinSkills`, `oxa.reportIssue.repo`, `oxa.thinking.policy`; `ui.skin`), sorted by key.
 pub fn schema() -> &'static [KeyDef] {
     SCHEMA
 }

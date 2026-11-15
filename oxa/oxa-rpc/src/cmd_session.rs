@@ -222,7 +222,6 @@ fn session_stats(cx: &RpcCx) -> Value {
         }),
     );
     m.insert("cost".to_string(), Value::from(0));
-    m.insert("profile".to_string(), Value::from(stats.profile.as_str()));
     let n_ctx = u64::from(state.n_ctx);
     if n_ctx > 0 {
         let tokens = u64::from(stats.context_tokens);

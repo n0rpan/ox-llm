@@ -1,7 +1,7 @@
 //! A7: the `edit` tool. Owner: task A7. Signatures below are frozen; bodies are yours.
 // ported from pi packages/coding-agent/src/core/tools/edit.ts
 use crate::descriptions::{self, errors};
-use crate::diff::{apply_edits, apply_edits_local, Edit};
+use crate::diff::{apply_edits_tolerant, Edit};
 use oxa_proto::{tool_errors, Access, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::fs::OpenOptions;
@@ -14,7 +14,8 @@ fn invalid_edit_item(index: usize) -> String {
     format!("Edit tool input is invalid. edits[{index}] must contain string oldText and newText.")
 }
 
-/// `edit {path, edits: [{oldText, newText}]}` (and pi's single-edit legacy arguments): exact replacements through `crate::apply_edits`. BOM and line endings of the file are preserved; lines the edit does not touch keep their endings. Errors use pi's texts (not found, not unique, overlap, no change). `ToolOutput::ui` = `{"diff": <unified diff>, "firstChangedLine": n}`; the text for the model is pi's success line.
+/// `edit {path, edits: [{oldText, newText}]}` (and pi's single-edit legacy arguments): exact replacements through `crate::apply_edits`,
+/// falling back to the indentation-tolerant match when the exact one cannot place an edit. BOM and line endings of the file are preserved; lines the edit does not touch keep their endings. Errors use pi's texts (not found, not unique, overlap, no change). `ToolOutput::ui` = `{"diff": <unified diff>, "firstChangedLine": n}`; the text for the model is pi's success line.
 #[derive(Debug, Clone)]
 pub struct EditTool {
     spec: ToolSpec,
@@ -23,7 +24,7 @@ pub struct EditTool {
 impl EditTool {
     pub fn new() -> EditTool {
         EditTool {
-            spec: crate::spec_of(&descriptions::EDIT),
+            spec: crate::spec_of(&descriptions::EDIT_FLAT),
         }
     }
 }
@@ -136,11 +137,7 @@ impl Tool for EditTool {
         }
 
         let raw = String::from_utf8_lossy(&bytes);
-        let matched = if cx.tune.local {
-            apply_edits_local(&raw, &edits, &path)
-        } else {
-            apply_edits(&raw, &edits, &path)
-        };
+        let matched = apply_edits_tolerant(&raw, &edits, &path);
         let outcome = match matched {
             Ok(outcome) => outcome,
             Err(text) => return ToolOutput::error(text),

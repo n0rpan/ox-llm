@@ -6,7 +6,9 @@ oxa [options] [--] [@files...] [messages...]
 
 With no message, `oxa` opens the interface ([usage.md](usage.md)). With a message and `-p`, it runs the prompts and exits. Each `message` after the first is its own prompt. `@file` arguments are attached to the first prompt, and piped standard input is added to it.
 
-Exit codes: 0 on success, 1 when a command finished with a reported failure (for example `oxa mcp list` with an invalid server entry), 2 for a usage error or an engine that cannot be reached.
+In `-p` mode, standard output holds only the final reply and a newline. Progress goes to standard error as the run goes, flushed per event: the text of each message that is followed by tool calls, and one line per tool call (`[tool] bash: <first 100 characters of the command>`, then `[tool] bash ok 1.2s` or `failed`). A reply that is followed by another turn (a failed `done` check, a steering message) is progress too. The final reply is written once, when the run ends, and not at all when the run failed or was aborted. `--mode json` prints no progress lines; it writes one flushed record per event.
+
+Exit codes: 0 on success, 1 when a command finished with a reported failure (for example `oxa mcp list` with an invalid server entry, or `-p` when the `done` checks still fail at the end), 2 for a usage error or an engine that cannot be reached.
 
 ## Commands
 
@@ -18,7 +20,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
-| `oxa config [-l] [--import-pi]` | print every setting with its value and where it comes from |
+| `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
@@ -28,7 +30,9 @@ Commands take the place of the message. They do not start a session.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
-`oxa config` lists the settings as oxa resolves them. Its `--import-pi` option copies skills, prompts, themes, `keybindings.json` and `mcp.json` from the agent directory of an earlier installation under your home directory. It runs once and never overwrites an existing file.
+`oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
+
+`oxa config` lists the settings as oxa resolves them.
 
 ### MCP commands
 
@@ -143,7 +147,6 @@ Variables that oxa reads. Variables marked *set* are set by oxa for the bash too
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
 | `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |
-| `OXA_PROFILE` | `pi` or `local`; wins over the settings files ([profile.md](profile.md)) |
 | `OXA_OFFLINE` | `1`, `true` or `yes` turns offline mode on, as `--offline` does |
 | `OXA_ALLOW_HOME_CWD` | `1`, `true` or `yes` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
 | `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search` |
@@ -160,7 +163,7 @@ Variables that oxa reads. Variables marked *set* are set by oxa for the bash too
 | `OXA_PROVIDER`, `OXA_MODEL`, `OXA_REASONING_LEVEL` | *set*: the provider (always `oxe`), the model id and the effective thinking level |
 | `OXA_CODING_AGENT`, `AI_AGENT` | *set*: process markers; `OXA_CODING_AGENT` is `true` and `AI_AGENT` is `oxa` in child processes |
 
-Some settings name the same things (`httpProxy`, `externalEditor`, `sessionDir`). `OXA_PROFILE` wins over the settings files, `OXA_SESSION_DIR` wins over `sessionDir`, and `BRAVE_SEARCH_API_KEY` wins over the key file. The rules for each setting are in [settings.md](settings.md).
+Some settings name the same things (`httpProxy`, `externalEditor`, `sessionDir`). `OXA_SESSION_DIR` wins over `sessionDir`, and `BRAVE_SEARCH_API_KEY` wins over the key file. The rules for each setting are in [settings.md](settings.md).
 
 ## Examples
 

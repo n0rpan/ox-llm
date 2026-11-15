@@ -282,7 +282,12 @@ fn the_real_account_home_is_denied_as_well_as_a_changed_home() {
     let env = TestEnv::new();
     // `real` stands for the passwd home; `$HOME` points elsewhere (env.home()).
     let real = env.work().join("real-account-home");
-    for rel in [".ssh/id_synth", ".aws/credentials", ".config/gh/hosts.yml", ".gnupg/k"] {
+    for rel in [
+        ".ssh/id_synth",
+        ".aws/credentials",
+        ".config/gh/hosts.yml",
+        ".gnupg/k",
+    ] {
         env.write(&format!("work/real-account-home/{rel}"), "SYNTH");
     }
     let guard = PathGuard::with_real_home(

@@ -102,6 +102,8 @@ const HEAD: &[&str] = &[
 
 fn tail(cwd: &str, path: &str) -> Vec<String> {
     strs(&[
+        "--remount-ro",
+        "<root>/home",
         "--chdir",
         cwd,
         "--clearenv",
@@ -552,8 +554,14 @@ fn real_parent_of_home_is_never_writable() {
     for cwd in [parent.clone(), PathBuf::from("/")] {
         let (exit, out) = run(&b, &format!("touch {}/planted", parent.display()), &cwd);
         assert_ne!(exit, Some(0), "{cwd:?}: {out}");
+        assert!(out.contains("Read-only file system"), "{cwd:?}: {out}");
         let (exit, out) = run(&b, "touch ~/project/planted", &cwd);
         assert_ne!(exit, Some(0), "{cwd:?}: {out}");
+        assert!(out.contains("Read-only file system"), "{cwd:?}: {out}");
+        // A harmless read works: setup must not fail (the home tmpfs is covered by the cwd bind).
+        let (exit, out) = run(&b, "cat /etc/hostname >/dev/null; echo marker-ok", &cwd);
+        assert_eq!(exit, Some(0), "{cwd:?}: {out}");
+        assert!(out.contains("marker-ok"), "{cwd:?}: {out}");
     }
     assert!(!parent.join("planted").exists());
     assert!(!env.home().join("project/planted").exists());
@@ -730,6 +738,80 @@ fn real_unresolvable_cwd_is_refused() {
     );
 }
 
+/// Masks come last: in the argv, every credential mask follows every bind that could cover it
+/// (the cwd bind of `/`, a parent of home, or home itself), and nothing is bound over home
+/// after the masks.
+#[test]
+fn golden_masks_come_after_every_bind_that_covers_them() {
+    let env = TestEnv::new();
+    plant_creds(&env);
+    let home = env.home();
+    let layout = Layout {
+        allow_home_write: true,
+        ..machine(&env)
+    };
+    for cwd in [PathBuf::from("/"), env.root().to_path_buf(), home.clone()] {
+        let a = bwrap_args_with(&spec("true", &cwd, true), &home, &layout);
+        let first_mask = a
+            .iter()
+            .position(|x| x == "--tmpfs" && a.iter().any(|y| y.ends_with("/.ssh")))
+            .and_then(|_| {
+                a.windows(2)
+                    .position(|w| w[0] == "--tmpfs" && w[1].ends_with("/.ssh"))
+            })
+            .expect("the .ssh mask");
+        let last_mask = a
+            .windows(3)
+            .rposition(|w| w[0] == "--ro-bind" && w[1] == "/dev/null")
+            .max(
+                a.windows(2)
+                    .rposition(|w| w[0] == "--tmpfs" && w[1].ends_with("/.ssh")),
+            )
+            .expect("masks");
+        for (i, w) in a.windows(3).enumerate() {
+            let covers = (w[0] == "--bind" || w[0] == "--ro-bind")
+                && w[1] != "/dev/null"
+                && w[1] == w[2]
+                && home.starts_with(Path::new(&w[1]));
+            if covers {
+                assert!(i < first_mask, "{cwd:?}: bind of {} after a mask: {a:?}", w[1]);
+            }
+        }
+        assert!(
+            !a.windows(2)
+                .skip(last_mask)
+                .any(|w| (w[0] == "--bind" || w[0] == "--ro-bind") && Path::new(&w[1]).starts_with(&home)),
+            "{cwd:?}: nothing binds home after the last mask: {a:?}"
+        );
+    }
+}
+
+/// With cwd = a parent of home (and `/`), the credentials in the real home stay hidden while an
+/// ordinary file in home is readable (P1 on ddbd025: a late bind of home exposed them).
+#[test]
+fn real_parent_cwd_hides_credentials_but_reads_ordinary_files() {
+    let env = TestEnv::new();
+    let l = Layout {
+        allow_home_write: true,
+        ..machine(&env)
+    };
+    plant_creds(&env);
+    env.write("home/ordinary.txt", "ORDINARY-SENTINEL");
+    let home = env.home();
+    let Some(b) = real(&env, l) else { return };
+    for cwd in [env.root().to_path_buf(), PathBuf::from("/")] {
+        let (exit, out) = run(&b, "cat ~/ordinary.txt", &cwd);
+        assert_eq!(exit, Some(0), "{cwd:?}: {out}");
+        assert!(out.contains("ORDINARY-SENTINEL"), "{cwd:?}: {out}");
+        // Absolute paths, expanded here: no shell tilde inside the helper's single quotes.
+        let abs: Vec<String> = CREDS
+            .iter()
+            .map(|(rel, _)| format!("{}/{rel}", home.display()))
+            .collect();
+        assert_creds_hidden(&b, &cwd, &home, &abs);
+    }
+}
+
 /// Live regression of the gh token-store mask: `hosts.yml` must stay a readable regular file
 /// (gh fails on an unreadable one) but its content (other hosts' tokens) must stay hidden, and
 /// the benign config stays readable.
@@ -738,7 +820,9 @@ fn real_gh_hosts_file_is_readable_empty_and_hides_the_token_store() {
     let env = TestEnv::new();
     env.write("home/.config/gh/hosts.yml", "SYNTH-HOST-TOKEN-SENTINEL");
     env.write("home/.config/gh/config.yml", "editor: synth-editor");
-    let Some(b) = real(&env, machine(&env)) else { return };
+    let Some(b) = real(&env, machine(&env)) else {
+        return;
+    };
     let mut sp = spec(
         "cat \"$HOME/.config/gh/hosts.yml\" && test -f \"$HOME/.config/gh/hosts.yml\" && echo REGULAR; cat \"$HOME/.config/gh/config.yml\"",
         &env.work(),
