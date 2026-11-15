@@ -65,6 +65,15 @@ impl ShellConfig {
     }
 }
 
+/// Cheap heuristic: some line of the command ends with a background `&` (not `&&`), or the command uses `nohup`.
+pub(crate) fn looks_backgrounded(command: &str) -> bool {
+    let backgrounded_line = command.lines().any(|line| {
+        let t = line.trim_end();
+        t.ends_with('&') && !t.ends_with("&&")
+    });
+    backgrounded_line || command.split_whitespace().any(|w| w == "nohup")
+}
+
 /// `s` as one POSIX shell word.
 fn single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -225,6 +234,16 @@ impl Tool for BashTool {
         // TOOL-DIET: the result text only; the raw bytes went to `live` above.
         let output = if cx.tune.diet {
             diet_output(&output)
+        } else {
+            output
+        };
+        // A trailing `&` or `nohup` means the shell's children were cut off at the end of the call.
+        let output = if looks_backgrounded(&a.command) {
+            if output.is_empty() {
+                errors::BASH_BACKGROUND_STOPPED.to_string()
+            } else {
+                format!("{output}\n\n{}", errors::BASH_BACKGROUND_STOPPED)
+            }
         } else {
             output
         };
@@ -417,6 +436,48 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert_eq!(out.text, "(no output)\n\nCommand exited with code 1");
+    }
+
+    #[test]
+    fn backgrounded_commands_get_the_stopped_notice() {
+        assert!(looks_backgrounded("nohup ./server &"));
+        assert!(looks_backgrounded("sleep 100 & "));
+        assert!(looks_backgrounded("nohup make > log 2>&1"));
+        assert!(!looks_backgrounded("make && make test"));
+        assert!(!looks_backgrounded("echo done"));
+        // Issue #127's exact multi-line example, and a line-ending `&` without nohup.
+        assert!(looks_backgrounded("nohup bash x.sh >/dev/null 2>&1 &\nsleep 60"));
+        assert!(looks_backgrounded("./server >/dev/null 2>&1 &\nsleep 60"));
+        assert!(!looks_backgrounded("make 2>&1\necho done"));
+        assert!(!looks_backgrounded("echo a &&\nmake"));
+
+        let sb = Fake::ok(b"started", Some(0));
+        let (out, _) = run_with(
+            &sb,
+            json!({"command": "nohup ./server &"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(
+            out.text.ends_with(descriptions::errors::BASH_BACKGROUND_STOPPED),
+            "{}",
+            out.text
+        );
+        // Conditional wording: a foreground `nohup make` must not be told its processes were stopped.
+        assert!(
+            descriptions::errors::BASH_BACKGROUND_STOPPED.starts_with(
+                "If this command started background processes (nohup or a trailing &), they were stopped when the call ended."
+            ),
+            "{}",
+            descriptions::errors::BASH_BACKGROUND_STOPPED
+        );
+        let (out, _) = run_with(
+            &sb,
+            json!({"command": "echo hi"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!out.text.contains("stopped"), "{}", out.text);
     }
 
     #[test]
