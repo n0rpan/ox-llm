@@ -144,7 +144,14 @@ fn run_inner(
         let looped = capture.looped;
         // Our own stop (degenerate repetition, #141), not a user abort: clear the flag we set.
         let res = match res {
-            Err(e) if looped && e.code == oxa_proto::codes::ABORTED => {
+            // The request may also have run to a clean end (finish and `[DONE]` in the same
+            // read as the threshold-crossing delta): `looped` is authoritative either way.
+            r if looped
+                && match &r {
+                    Ok(_) => true,
+                    Err(e) => e.code == oxa_proto::codes::ABORTED,
+                } =>
+            {
                 st.shared.cancel.reset();
                 Err(OxaError::new(
                     oxa_proto::codes::STREAM_BROKEN,
