@@ -1,0 +1,33 @@
+# Unattended work
+
+`oxa work tasks.json` opts into sequential tasks in separate git worktrees.
+Run it inside the project repository. The JSON file is an array:
+
+```json
+[{"id":"docs-fix","model":"your-model","branch":"agent/docs-fix","base":"main","prompt":"Fix documentation links."}]
+```
+
+`base` defaults to `main`. IDs contain letters, digits, hyphens or underscores.
+IDs and branches must be unique; branches must be new. For a GitHub issue use
+`oxa work --issue 123 --model your-model`. This explicitly invokes your installed,
+authenticated `gh` CLI to fetch the issue title and body.
+
+Each task runs a child `oxa -p` with its model. Normal agent permission, trust and
+sandbox rules apply. Configure project trust before unattended use. The runner
+executes the base version of `.oxa/settings.json`'s `done` commands outside the
+agent after it exits, even without edits. These are trusted project shell commands:
+invoking `work` authorizes their execution as your user. `in subdirectory: command`
+runs in that worktree subdirectory; escaping it with the directory is rejected.
+Agent-internal done checks may also run when the project is trusted.
+
+Failed acceptance output goes to one additional child run with the original prompt,
+then acceptance runs once more. JSON lines report `done`, `nothing_to_do` (no
+commits or file changes), `red` (checks still fail), or `blocked` (setup or agent
+execution failed). Exit codes are 0 for success, 1 if any task is red or blocked,
+and 2 for invalid input or runner errors.
+
+Worktrees and uncommitted changes remain under the common git directory's
+`oxa-work/<id>`. Result receipts are beside them at `<id>.json`. No automatic
+cleanup, commit, push, PR creation or continuation is implemented yet. Inspect
+retained work before removing it with `git worktree remove`. Review task prompts
+and bases before running them.

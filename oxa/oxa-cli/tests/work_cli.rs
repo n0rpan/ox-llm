@@ -1,0 +1,190 @@
+//! Real child oxa with fake engine and local bare git remote; no network.
+use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use std::{path::Path, process::Command};
+fn git(env: &TestEnv, dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+fn setup(env: &TestEnv, done: &str) {
+    git(env, &env.work(), &["init", "--bare", "remote.git"]);
+    git(env, &env.work(), &["init", "-b", "main", "project"]);
+    let project = env.work().join("project");
+    env.write(
+        "work/project/.oxa/settings.json",
+        &format!(r#"{{"done":{done}}}"#),
+    );
+    git(env, &project, &["add", "."]);
+    git(env, &project, &["commit", "-m", "fixture"]);
+    git(env, &project, &["remote", "add", "origin", "../remote.git"]);
+    git(env, &project, &["push", "origin", "main"]);
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task"}]"#,
+    );
+}
+fn run(env: &TestEnv, turns: Vec<ScriptTurn>) -> serde_json::Value {
+    run_args(env, turns, &["work", "../tasks.json"], None)
+}
+fn run_args(env: &TestEnv, turns: Vec<ScriptTurn>, args: &[&str], path: Option<String>) -> serde_json::Value {
+    let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    command
+        .args(args)
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()));
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tx.send(command.output().unwrap()).unwrap();
+    });
+    let out = rx
+        .recv_timeout(std::time::Duration::from_secs(90))
+        .expect("runner finished");
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "{e}: {} / {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    })
+}
+#[test]
+fn external_checks_run_without_edits_and_retain_worktree() {
+    let env = TestEnv::new();
+    setup(&env, r#"["printf checked > receipt"]"#);
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert_eq!(record["outcome"], "done", "{record}");
+    let tree = Path::new(record["worktree"].as_str().unwrap());
+    assert_eq!(std::fs::read_to_string(tree.join("receipt")).unwrap(), "checked");
+    assert!(env.work().join("project/.git/oxa-work/test.json").exists());
+}
+#[test]
+fn clean_task_is_nothing_to_do() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    assert_eq!(
+        run(&env, vec![ScriptTurn::text("nothing")])["outcome"],
+        "nothing_to_do"
+    );
+}
+#[test]
+fn failed_checks_get_exactly_one_retry() {
+    let env = TestEnv::new();
+    setup(
+        &env,
+        r#"["printf attempt >> attempts; echo external-check; exit 1"]"#,
+    );
+    let record = run(
+        &env,
+        vec![ScriptTurn::text("finished"), ScriptTurn::text("cannot repair")],
+    );
+    assert_eq!(record["outcome"], "red", "{record}");
+    assert!(record["detail"].as_str().unwrap().contains("external-check"));
+    let tree = Path::new(record["worktree"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(tree.join("attempts")).unwrap(),
+        "attemptattempt"
+    );
+}
+#[test]
+fn retry_can_make_acceptance_green() {
+    let env = TestEnv::new();
+    setup(
+        &env,
+        r#"["if test -f once; then true; else touch once; exit 1; fi"]"#,
+    );
+    let record = run(
+        &env,
+        vec![ScriptTurn::text("finished"), ScriptTurn::text("retry")],
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+}
+
+#[test]
+fn agent_edits_stay_in_worktree() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"always"}"#,
+    );
+    let record = run(
+        &env,
+        vec![
+            ScriptTurn::tool("edit", "write", r#"{"path":"answer.txt","content":"finished"}"#),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    let tree = Path::new(record["worktree"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(tree.join("answer.txt")).unwrap(),
+        "finished"
+    );
+    assert!(!env.work().join("project/answer.txt").exists());
+}
+#[test]
+fn invalid_task_file_is_rejected_before_creating_worktree() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"../escape","branch":"agent/test","model":"fake","prompt":"go"}]"#,
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!env.work().join("project/.git/oxa-work").exists());
+}
+
+#[test]
+fn github_issue_input_uses_mock_gh() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let gh = env.write(
+        "tmp/gh",
+        r##"#!/bin/sh
+[ "$*" = 'issue view 42 --json title,body' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
+"##,
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap());
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("done")],
+        &["work", "--issue", "42", "--model", "fake"],
+        Some(path),
+    );
+    assert_eq!(record["id"], "issue-42");
+    assert_eq!(record["branch"], "agent/42-work");
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+}
+#[test]
+fn setup_failure_records_blocked_and_keeps_existing_branch() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    git(&env, &env.work().join("project"), &["branch", "agent/test"]);
+    let record = run(&env, vec![]);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["detail"].as_str().unwrap().contains("already exists"));
+}

@@ -14,6 +14,8 @@ pub enum ModeArg {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    /// `oxa work <taskfile> | --issue N --model MODEL`.
+    Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
     Mcp(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
@@ -173,6 +175,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "oxa report-issue <draft|submit>",
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
+    ),
+    (
+        "oxa work <taskfile> | --issue N --model MODEL",
+        "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
         "oxa wipe --session <id> | --all [--yes] [--engine]",
@@ -340,6 +346,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
+        "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
         // pi's provider sign-in (`pi login [--api-key] [--no-browser]`, `pi logout`).
         "login" | "logout" => {
