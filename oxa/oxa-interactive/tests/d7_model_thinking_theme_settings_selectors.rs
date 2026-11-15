@@ -88,6 +88,53 @@ fn model_selector_search_and_select() {
     );
 }
 
+#[test]
+fn model_selector_cloud_descriptions() {
+    for id in [
+        "anthropic/claude-haiku-5-5",
+        "openai/gpt-6.1-sol",
+        "openrouter/deepseek-v4-pro",
+    ] {
+        for ctx in [None, Some(200000)] {
+            for loaded in [false, true] {
+                let mut sel = ModelSelector::new(vec![model(id, "oxe", ctx, loaded)], id, &[]);
+                let lines = sel.render(240, &Theme::plain());
+                let row = &lines[2];
+                assert!(row.contains("cloud"), "{row}");
+                assert!(!row.contains("loaded") && !row.contains("oxe"), "{row}");
+                assert_eq!(row.contains("ctx 200000"), ctx.is_some(), "{row}");
+            }
+        }
+    }
+    let mut sel = ModelSelector::new(catalogue(), "qwen3-8b", &[]);
+    let lines = sel.render(240, &Theme::plain());
+    assert!(lines[2].contains("laptop · ctx 32768 · loaded"));
+    assert!(lines[3].contains("lan · ctx 8192 · not loaded"));
+}
+
+#[test]
+fn model_selector_long_ids_use_available_width() {
+    let ids = [
+        "openrouter/deepseek-v4.1-flash-alpha",
+        "openrouter/deepseek-v4.1-flash-beta",
+    ];
+    let mut sel = ModelSelector::new(
+        ids.iter().map(|id| model(id, "oxe", None, false)).collect(),
+        "",
+        &[],
+    );
+    let lines = sel.render(240, &Theme::plain());
+    for (row, id) in lines[2..4].iter().zip(ids) {
+        assert!(row.contains(id), "{row}");
+    }
+    for width in [0, 8, 24, 41, 60] {
+        let lines = sel.render(width, &Theme::plain());
+        assert!(lines
+            .iter()
+            .all(|line| oxa_tui::visible_width(line) <= width as usize));
+    }
+}
+
 /// ctrl+p over scoped models
 #[test]
 fn model_cycle_scoped() {

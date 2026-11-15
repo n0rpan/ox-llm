@@ -1,4 +1,4 @@
-//! R1 (wave H lane `local`): resume after a crash mid-tool. A full session runs one tool loop
+//! R1 (wave H): resume after a crash mid-tool. A full session runs one tool loop
 //! (two parallel reads), then a second prompt; its file is cut at each of five points, the
 //! session is resumed and a prompt sent. Asserted: the request messages exactly (the request
 //! golden of this test: the system prompt carries the temp cwd, so the messages are compared
@@ -20,7 +20,11 @@ fn deps(env: &TestEnv, engine: Arc<ScriptedEngine>) -> Deps {
         hooks: Vec::new(),
         policy: Box::new(oxa_perm::ModePolicy::new()),
         sandbox: Arc::new(oxa_sandbox::NoSandbox),
-        settings: Settings::default(),
+        // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+        settings: Settings::from_values(
+            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({}),
+        ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),

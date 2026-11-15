@@ -23,6 +23,17 @@ def sha256(path):
     return value.hexdigest()
 
 
+def _executable_owner_mismatch():
+    """True when the wrapper will refuse sys.executable: it is not owned by root or the caller.
+
+    Inside a user namespace (for example oxa's bash sandbox) only the caller's uid is mapped,
+    so root-owned files such as /usr/bin/python3 show as uid 65534 and the wrapper's
+    ``st_uid in (0, os.getuid())`` check fails. That is an environment limitation, not a bug.
+    """
+    info = Path(sys.executable).resolve().lstat()
+    return info.st_uid not in (0, os.getuid())
+
+
 @unittest.skipUnless(sys.platform == 'linux' and Path('/proc/self/status').is_file(), 'Linux proc/prctl required')
 class ProcessTHPWrapper(unittest.TestCase):
     def test_exact_reviewed_bytes_and_import_do_not_execute_or_change_policy(self):
@@ -35,6 +46,11 @@ class ProcessTHPWrapper(unittest.TestCase):
         self.assertTrue(callable(module.main))
 
     def test_inheritance_and_process_identity_with_only_16mib_probe(self):
+        if _executable_owner_mismatch():
+            self.skipTest(
+                'sys.executable is not owned by root or the caller (uid 65534 in a user '
+                'namespace such as the oxa bash sandbox); the exec_no_thp wrapper correctly '
+                'refuses it, so this is an ownership/user-namespace environment, not a failure')
         libc = ctypes.CDLL(None)
         libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
         before = libc.prctl(42, 0, 0, 0, 0)  # Read only in this test parent.
@@ -66,6 +82,11 @@ print(json.dumps({'pid':os.getpid(),'ppid':os.getppid(),'pgid':os.getpgrp(),'THP
         self.assertEqual(libc.prctl(42, 0, 0, 0, 0), before)
 
     def test_hash_mismatch_refuses_before_executing_target(self):
+        if _executable_owner_mismatch():
+            # The ownership check would refuse first (also exit 78), so the hash check would go
+            # untested: skip instead of passing for the wrong reason.
+            self.skipTest('sys.executable is not owned by root or the caller (user namespace); '
+                          'the ownership refusal would hide the hash check')
         executable = Path(sys.executable).resolve()
         with tempfile.TemporaryDirectory() as temporary:
             marker = Path(temporary) / 'target-ran'

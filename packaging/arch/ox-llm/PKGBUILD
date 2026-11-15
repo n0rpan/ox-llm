@@ -1,0 +1,32 @@
+# All-zero defaults permit static linting; they cannot validate a source artifact.
+# Supply the exact source artifact and its checksum from an inspected workflow run.
+pkgname=ox-llm
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Local AI engine, controller and coding agent (CPU build)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/oxstack/ox-llm'
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'python' 'bubblewrap')
+makedepends=('cargo' 'cmake' 'ninja' 'git')
+options=('!lto' '!debug' '!strip')
+_commit=${OX_SOURCE_COMMIT:-0000000000000000000000000000000000000000}
+[[ $_commit =~ ^[0-9a-f]{40}$ ]] || return 1
+source=("ox-llm-${_commit}.tar.gz")
+sha256sums=("${OX_SOURCE_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}")
+
+build() {
+  cd "$srcdir/ox-llm-$_commit"
+  export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:?use the source commit timestamp}
+  bash packaging/release/build.sh
+  python -B packaging/release/stage.py "$srcdir/payload"
+}
+
+check() {
+  cd "$srcdir/ox-llm-$_commit"
+  bash packaging/release/check.sh
+}
+
+package() {
+  cp -a "$srcdir/payload/usr" "$pkgdir/"
+}

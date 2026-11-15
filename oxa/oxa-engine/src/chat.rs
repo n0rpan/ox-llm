@@ -363,6 +363,8 @@ pub struct HttpEngine {
     /// Capability-gated proposal (cancel-contract.md section 7): the engine advertised the cancel notice (`CANCEL_HINT`)
     /// in the last [`Engine::info`] of this endpoint. Shared by the clones of this engine.
     cancel_ok: Arc<AtomicBool>,
+    /// The handshake warning of the last [`Engine::info`] (see `handshake.rs`).
+    handshake: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl HttpEngine {
@@ -376,6 +378,7 @@ impl HttpEngine {
             opts: StreamOpts::default(),
             connect_retries: 2,
             cancel_ok: Arc::new(AtomicBool::new(false)),
+            handshake: Arc::default(),
         })
     }
     pub fn with_opts(mut self, opts: StreamOpts, connect_retries: u32) -> HttpEngine {
@@ -400,9 +403,13 @@ impl HttpEngine {
 
 impl Engine for HttpEngine {
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
-        let (info, cancel) = fetch_info_full(&self.url, self.api_key.as_deref(), target)?;
+        let (info, cancel, handshake) = fetch_info_full(&self.url, self.api_key.as_deref(), target)?;
         self.cancel_ok.store(cancel, Ordering::SeqCst);
+        *self.handshake.lock().unwrap_or_else(|p| p.into_inner()) = handshake;
         Ok(info)
+    }
+    fn handshake_warning(&self) -> Option<String> {
+        self.handshake.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
     fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
         count_tokens(&self.url, self.api_key.as_deref(), text)

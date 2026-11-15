@@ -91,7 +91,8 @@ fn open(env: &TestEnv, engine: Arc<dyn Engine>, settings: Settings) -> Session {
         hooks: Vec::new(),
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
-        settings,
+        // This fixture compares exact prompt/prefill bytes, with notes explicitly off.
+        settings: settings.with_override("oxa.envNote", serde_json::json!(false)),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),
@@ -271,18 +272,15 @@ fn edit_cancels_the_draft_prefill() {
     assert_eq!(s.stats().requests, 1);
 }
 
-/// Setting off (profile `pi`, unset): no request.
+/// Setting off: no request.
 #[test]
 fn setting_off_sends_nothing() {
     let env = TestEnv::new();
     let eng = Arc::new(ScriptedEngine::new(Vec::new()));
-    let pi = Settings::from_values(json!({"oxa": {"profile": "pi"}}), json!({}));
-    let mut s = open(&env, eng.clone(), pi);
+    let off = Settings::from_values(json!({"oxa": {"prefill": {"paste": false}}}), json!({}));
+    let mut s = open(&env, eng.clone(), off);
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
     assert!(!s.prefill_draft(&paste(5000), &[], &never, &mut sink, &mut ui));
-    let off = Settings::from_values(json!({"oxa": {"prefill": {"paste": false}}}), json!({}));
-    let mut s2 = open(&env, eng.clone(), off);
-    assert!(!s2.prefill_draft(&paste(5000), &[], &never, &mut sink, &mut ui));
     let warm_off = Settings::from_values(
         json!({"oxa": {"prefill": {"paste": true}}, "cacheWarming": "off"}),
         json!({}),

@@ -28,7 +28,6 @@ rows does not cite the internal work items.
 | CLI-035 | `-e`, `--extension <path>`: file, directory or `builtin:<name>`; repeatable | JavaScript in QuickJS; a `.ts` file is always rejected, with a hint to write JavaScript |
 | CLI-047 | `--offline` | hard switch: every connection of the harness to a host that is not loopback is refused with one error, the bash sandbox has no network, oxa's own git and `gh` calls refuse, `web_search` is not declared; the local engine keeps working. Keeps pi's meaning (no automatic network activity; oxa has none) |
 | CLI-051 | `oxa install <source>` / `oxa remove <source>` (`uninstall` alias) / `oxa list` | `oxa install\|remove\|list`; git and local sources; `npm:` is refused |
-| CLI-053 | `oxa config --import-pi` | oxa only: one-time copy of skills/prompts/themes/keybindings/mcp.json from pi dirs; pi dirs are never read implicitly |
 | CLI-055 | `oxa update --extensions` / `oxa update <source>` / `--extension <source>` | `oxa update` for git + local packages |
 | CLI-064 | No engine reachable: one-line error + hint, exit code 2 | oxa only: `engine_down` |
 
@@ -185,7 +184,6 @@ rows does not cite the internal work items.
 | SLASH-007 | `/llama` | `/engine`: status, load |
 | SLASH-012 | `/tree` | a leaf move is a rebase; optional branch summary |
 | SLASH-015 | `/compact [instructions]` | summary request |
-| SLASH-016 | `/import <path>` | migrates pi v1-v3; cache cold |
 | SLASH-020 | `/bug [description]` | writes a local redacted bundle; no upload |
 | SLASH-023 | `/reload` | unchanged resources = no new epoch; changed = one new `Prefix` entry + cost notice |
 | SLASH-027 | `/mode [plan\|workspace\|ask]` | oxa only |
@@ -205,7 +203,6 @@ rows does not cite the internal work items.
 
 | id | behaviour | how oxa differs |
 |---|---|---|
-| SES-008 | `/import <path>` preserves id and cwd | pi v1-v3 migrated; assistant entries lack exact wire bytes, so the cache is cold |
 | SES-012 | Automatic compaction keeps long sessions usable | automatic compaction at the context limit, in idle time when possible |
 | SES-015 | `/bug` prepares a report | local redacted bundle |
 | SES-016 | Torn last line of a session file is dropped on load | oxa only |
@@ -229,7 +226,6 @@ rows does not cite the internal work items.
 | FMT-009 | `CompactionEntry` (`summary`, `firstKeptEntryId`, `tokensBefore`, `details`, `fromHook`, `systemMessage`) | head after compaction is `[system, user:<summary>, tail]`; pi's `systemMessage` is not written, the epoch's prefix entry is the checkpoint |
 | FMT-010 | `ContextEditEntry` | oxa reads the entry type and applies a stored one when the session is loaded (replacement and omission reach the wire: a rebase); oxa itself never writes one |
 | FMT-018 | Context building: compaction replaces entries before `firstKeptEntryId` | rebase |
-| FMT-019 | Session versions 1 and 2 are migrated on load | through `/import` |
 | FMT-020 | `ImageContent` blocks in user messages | `Part:Image` stored; never serialised to the wire |
 | FMT-021 | oxa entry types `shown` and `mode_change` | oxa only: aborted/failed/cut replies and mode changes; ignored by pi tooling |
 
@@ -319,7 +315,6 @@ rows does not cite the internal work items.
 | id | behaviour | how oxa differs |
 |---|---|---|
 | CFG-003 | Context files `AGENTS.md` / `CLAUDE.md`: agent dir, then parents of cwd down to cwd | part of the frozen prefix; below HOME the upward walk ends at HOME (pi walks to `/`) |
-| CFG-008 | pi directories are not read implicitly | oxa only: `oxa config --import-pi` |
 
 ### Not in oxa
 

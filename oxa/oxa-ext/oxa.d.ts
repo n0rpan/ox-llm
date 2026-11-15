@@ -353,7 +353,7 @@ interface SessionCompactEvent extends EventBase<"session_compact"> {
   tokensBefore: number;
   fromExtension: boolean;
   willRetry: boolean;
-  /** Profile `local` only: the model summary failed and a mechanical record replaced it. */
+  /** The model summary failed and a mechanical record replaced it. */
   mechanical?: true;
   /** With `mechanical`: why the model summary failed. */
   summaryError?: string;
