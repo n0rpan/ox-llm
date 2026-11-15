@@ -362,6 +362,7 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
                     .headers()
                     .get(header::CONNECTION)
                     .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"keep-alive")));
+        let http10 = request.version() == Version::HTTP_10;
         let head_request = request.method() == axum::http::Method::HEAD;
         let handled = tokio::select! {response=app.clone().oneshot(request)=>response,_=peer.disconnected()=>break};
         let response = match handled {
@@ -377,10 +378,33 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
             break;
         }
         let (mut parts, body) = response.into_parts();
-        let chunked = parts
-            .headers
-            .get(header::TRANSFER_ENCODING)
-            .is_some_and(|v| v == "chunked");
+        let (has_transfer, mut chunked) = {
+            let mut codings = Vec::new();
+            for value in parts.headers.get_all(header::TRANSFER_ENCODING) {
+                let Ok(value) = value.to_str() else { return };
+                codings.extend(value.split(',').map(str::trim));
+            }
+            let chunked = codings
+                .last()
+                .is_some_and(|c| c.eq_ignore_ascii_case("chunked"));
+            // Invalid handler framing must not be copied to a reusable wire.
+            if codings.iter().enumerate().any(|(i, c)| {
+                c.is_empty() || (c.eq_ignore_ascii_case("chunked") && i + 1 != codings.len())
+            }) || (http10 && codings.iter().any(|c| !c.eq_ignore_ascii_case("chunked")))
+            {
+                return;
+            }
+            (!codings.is_empty(), chunked)
+        };
+        if has_transfer {
+            // Transfer-Encoding defines framing; emitting both is ambiguous.
+            parts.headers.remove(header::CONTENT_LENGTH);
+        }
+        if http10 && chunked {
+            // HTTP/1.0 has no chunked coding. Send the stream until close.
+            parts.headers.remove(header::TRANSFER_ENCODING);
+            chunked = false;
+        }
         let fixed_length = parts
             .headers
             .get(header::CONTENT_LENGTH)

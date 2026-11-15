@@ -232,3 +232,43 @@ async fn oversized_fixed_response_never_writes_past_its_declared_length() {
     .await;
     assert!(response.ends_with(b"\r\n\r\n"));
 }
+
+#[tokio::test]
+async fn transfer_codings_are_case_insensitive_and_override_content_length() {
+    for coding in ["Chunked", "gzip, CHUNKED"] {
+        let app = Router::new().fallback(move || async move {
+            Response::builder()
+                .header("transfer-encoding", coding)
+                .header("content-length", "123")
+                .body(Body::from("ok"))
+                .unwrap()
+        });
+        let response = String::from_utf8(
+            exchange(
+                b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                app,
+            )
+            .await,
+        )
+        .unwrap();
+        let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+        assert_eq!(body, "2\r\nok\r\n0\r\n\r\n");
+        assert!(!headers.contains("content-length:"), "{headers}");
+    }
+}
+
+#[tokio::test]
+async fn http10_streams_are_close_delimited_without_chunk_bytes() {
+    let app = Router::new().fallback(|| async {
+        Response::builder()
+            .header("transfer-encoding", "chunked")
+            .body(Body::from("ok"))
+            .unwrap()
+    });
+    let response = String::from_utf8(exchange(b"GET / HTTP/1.0\r\n\r\n", app).await).unwrap();
+    let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+    assert_eq!(body, "ok");
+    assert!(!headers.contains("transfer-encoding:"), "{headers}");
+    assert!(!headers.contains("content-length:"), "{headers}");
+    assert!(headers.contains("connection: close"));
+}
