@@ -103,10 +103,10 @@ pub struct Stats {
     pub last_snap_pos: Option<u32>,
     /// B6: the engine sent a reply without `cached_tokens` (the notice was shown).
     pub cached_unreported: bool,
-    /// The last round of `done` checks had a failure (no later round passed). Print mode reads
-    /// it at the end for its exit code.
+    /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
+    /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
-    /// Whether the last assistant reply stopped at its output token limit.
+    /// Whether the current agent operation's last reply stopped at its output token limit.
     pub output_truncated: bool,
     /// Terminal result of the last prompt or extension-triggered run.
     pub outcome: crate::RunOutcome,
@@ -307,8 +307,7 @@ impl Session {
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
             return self.run_command(&name, &args, sink, ui);
         }
-        self.st.stats.output_truncated = false;
-        let guard = self.begin()?;
+        let guard = self.begin_run()?;
         let result = oxa_proto::panic::contain(|| self.run_prompt(text, parts, sink, ui))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
         let mut aborted = matches!(result, Ok(Some(RunEnd::Aborted)));
@@ -362,7 +361,7 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<RunEnd>, OxaError> {
-        let guard = self.begin()?;
+        let guard = self.begin_run()?;
         let ran = oxa_proto::panic::contain(|| queued_run(&mut self.st, sink, ui, true))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
         let result = match ran {
@@ -594,7 +593,7 @@ impl Session {
             .find(|h| h.commands().iter().any(|c| c.name == name))
             .cloned();
         if let Some(hook) = owner {
-            let _guard = self.begin()?;
+            let _guard = self.begin_run()?;
             // E-INT 2: the handler runs beside the session thread, which serves what it asks
             // of the host. No run is in progress, so session-shape actions apply at once.
             let result = pumped(&mut self.st, Serve::Command, sink, ui, &mut |_| {}, |ui| {
@@ -831,7 +830,7 @@ impl Session {
         if !crate::host::host_pending(&mut self.st) {
             return Ok(());
         }
-        let guard = self.begin()?;
+        let guard = self.begin_run()?;
         let (result, settled) = settle_and_report(&mut self.st, sink, ui);
         drop(guard);
         emit_settled(sink, settled);
@@ -855,7 +854,7 @@ impl Session {
         let Some(hook) = owner else {
             return Ok(());
         };
-        let _guard = self.begin()?;
+        let _guard = self.begin_run()?;
         let result = pumped(&mut self.st, Serve::Command, sink, ui, &mut |_| {}, |ui| {
             contained_handler(|| hook.run_shortcut(key, ui))
         });
@@ -881,6 +880,14 @@ impl Session {
     /// Claim the session for one operation. Fails with `busy` when another one holds it. The
     /// cancel tokens are cleared only after the claim, so an abort aimed at the running prompt
     /// is never lost to a later reset.
+    /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
+    fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
+        let guard = self.begin()?;
+        self.st.stats.done_failed = false;
+        self.st.stats.output_truncated = false;
+        Ok(guard)
+    }
+
     fn begin(&self) -> Result<BusyGuard, OxaError> {
         let shared = self.st.shared.clone();
         if shared
