@@ -65,7 +65,15 @@ fn every_way_to_turn_offline_on_refuses_a_remote_engine_with_one_shape() {
     for (extra, words) in cases {
         let (code, _, err) = go(&env, remote, &extra, &words);
         assert_ne!(code, 0);
-        assert_eq!(err, OFFLINE_REMOTE_ENGINE, "{extra:?} {words:?}");
+        assert_eq!(code, 7);
+        assert_eq!(
+            err.lines().next().unwrap(),
+            OFFLINE_REMOTE_ENGINE.trim_end(),
+            "{extra:?} {words:?}"
+        );
+        let record: serde_json::Value = serde_json::from_str(err.lines().last().unwrap()).unwrap();
+        assert_eq!(record["outcome"], "blocked");
+        assert_eq!(record["error_class"], "offline");
     }
     env.write(
         "home/.oxa/agent/settings.json",
@@ -73,7 +81,12 @@ fn every_way_to_turn_offline_on_refuses_a_remote_engine_with_one_shape() {
     );
     let (code, _, err) = go(&env, remote, &[], &["-p", "--no-session", "x"]);
     assert_ne!(code, 0);
-    assert_eq!(err, OFFLINE_REMOTE_ENGINE, "oxa.offline");
+    assert_eq!(code, 7);
+    assert_eq!(
+        err.lines().next().unwrap(),
+        OFFLINE_REMOTE_ENGINE.trim_end(),
+        "oxa.offline"
+    );
 }
 
 #[test]

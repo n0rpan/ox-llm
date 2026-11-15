@@ -639,6 +639,30 @@ fn resolved_once_a_later_rewrite_of_dotgit_changes_nothing() {
     assert!(resolve_git_binds(&w.wt, &env.home(), Some(&env.agent_dir())).is_empty());
 }
 
+#[test]
+fn a_git_dir_that_vanishes_mid_session_is_not_bound() {
+    let env = TestEnv::new();
+    let w = build_worktree(&env);
+    let b = bwrap_value(&env).with_git_dirs(&w.wt);
+    let gitdir = canon(&w.gitdir);
+    let gd = gitdir.to_string_lossy().into_owned();
+    assert!(sandbox_args(&b, &w.wt, true).contains(&gd));
+    // `git worktree prune` (or a removed checkout) deletes it; bwrap would die on the source.
+    fs::remove_dir_all(&w.gitdir).expect("remove gitdir");
+    for writable in [true, false] {
+        let args = sandbox_args(&b, &w.wt, writable);
+        assert!(!args.contains(&gd), "missing source bound: {args:?}");
+        // The common dir must not stay writable: the gitdir could be recreated with a hostile
+        // config and hooks that run on the host later.
+        let cd = canon(&w.main_git).to_string_lossy().into_owned();
+        let i = args
+            .windows(3)
+            .position(|x| x[1] == cd && x[2] == cd && x[0].ends_with("bind"))
+            .expect("common dir bound");
+        assert_eq!(args[i], "--ro-bind", "common dir writable: {args:?}");
+    }
+}
+
 // ------------------------------------------------------------------- real bwrap
 
 fn shared_clone(env: &TestEnv) -> (PathBuf, PathBuf) {
@@ -890,4 +914,49 @@ fn issue_103_plain_clone_keeps_hooks_and_config_read_only() {
         assert_ne!(exit, Some(0), "{target}: {out}");
     }
     assert!(!plain.join(".git/hooks/x").exists());
+}
+
+/// #322: a git directory that vanished after the session started (worktree pruned or removed)
+/// must not make bwrap fail for every later command.
+#[test]
+fn vanished_git_dir_is_not_bound() {
+    let env = TestEnv::new();
+    let w = build_worktree(&env);
+    let b = bwrap_value(&env).with_git_dirs(&w.wt);
+    let g = w.gitdir.to_string_lossy().into_owned();
+    assert!(sandbox_args(&b, &w.wt, true).contains(&g), "bound while present");
+    std::fs::remove_dir_all(&w.gitdir).expect("remove gitdir");
+    let args = sandbox_args(&b, &w.wt, true);
+    assert!(!args.contains(&g), "a missing source must not be bound: {args:?}");
+}
+
+/// #322 review: with the gitdir gone, nothing under the surviving common dir may be writable
+/// (the vanished gitdir could be recreated with its own `commondir`/hooks), and a dangling
+/// symlink in its place is not bound either.
+#[test]
+fn vanished_git_dir_leaves_no_writable_bind_to_recreate_it() {
+    let env = TestEnv::new();
+    let w = build_worktree(&env);
+    let b = bwrap_value(&env).with_git_dirs(&w.wt);
+    std::fs::remove_dir_all(&w.gitdir).expect("remove gitdir");
+    let args = sandbox_args(&b, &w.wt, true);
+    let common = w.main_git.to_string_lossy().into_owned();
+    for (i, x) in args.iter().enumerate() {
+        if x == "--bind" || x == "--bind-try" {
+            let src = &args[i + 1];
+            assert!(
+                src != &common && !common.starts_with(&format!("{src}/")) || src == "/",
+                "writable bind over the common dir: {src}"
+            );
+        }
+    }
+    assert!(
+        args.windows(3)
+            .any(|t| t[0] == "--ro-bind" && t[1] == common && t[2] == common),
+        "common dir read-only: {args:?}"
+    );
+    // A dangling symlink in place of the gitdir is not bound.
+    std::os::unix::fs::symlink(env.root().join("nowhere"), &w.gitdir).expect("symlink");
+    let g = w.gitdir.to_string_lossy().into_owned();
+    assert!(!sandbox_args(&b, &w.wt, true).contains(&g));
 }

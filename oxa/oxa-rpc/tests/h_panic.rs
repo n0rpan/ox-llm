@@ -146,7 +146,7 @@ fn a_panicking_command_is_an_error_response_and_the_session_goes_on() {
     drop(send);
     drop(writer);
     let code = server.join().expect("the server thread").expect("serve returns");
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
     let records = records(&stdout);
     let response = |id: &str| {
         records
