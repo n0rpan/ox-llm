@@ -470,6 +470,8 @@ class CompletionStream:
             return raw + b'\n\n'
         if not isinstance(native, dict) or 'content' not in native:
             return raw + b'\n\n'  # an error event
+        if self.done:
+            return b''  # after the terminal frame no content/stop frame is emitted, split or coalesced
         text = native.get('content')
         text = text if isinstance(text, str) else ''
         if self.first:

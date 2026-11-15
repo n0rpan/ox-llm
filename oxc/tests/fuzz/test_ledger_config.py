@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from snapdragon_ai_lab.runtime import ctl_models, openai_api, request_ledger
+from oxc.runtime import ctl_models, openai_api, request_ledger
 
 
 class LedgerRows(unittest.TestCase):
@@ -32,7 +32,7 @@ class LedgerRows(unittest.TestCase):
                 b'{"status":200,"prompt_n":8,"prompt_ms":10,"queue_wait_ms":Infinity}',
             ]
             path.write_bytes(b'\n'.join(lines) + b'\n')
-            with mock.patch.dict(os.environ, {'LOCAL_AI_LEDGER_DIR': root}):
+            with mock.patch.dict(os.environ, {'OXC_LEDGER_DIR': root}):
                 value = request_ledger.recent()
             self.assertEqual(value['object'], 'list')
             self.assertTrue(value['available'])

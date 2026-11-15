@@ -9,7 +9,7 @@ import json
 import unittest
 from pathlib import Path
 
-from snapdragon_ai_lab.runtime import openai_api, openai_responses
+from oxc.runtime import openai_api, openai_responses
 
 try:  # the CI smoke installs hypothesis; the normal unittest suite skips these without it
     from hypothesis import HealthCheck, given, settings, strategies as st
@@ -89,6 +89,28 @@ class CompletionStreamFraming(unittest.TestCase):
         self.assertEqual(stream.finish(), b': bye\n\n')
 
 
+class TerminalState(unittest.TestCase):
+    STOP = b'data: {"content":"a","stop":true}\n\n'
+    MORE = b'data: {"content":"late"}\n\ndata: {"content":"x","stop":true}\n\n'
+
+    def test_nothing_after_the_terminal_frame(self):
+        stream = openai_api.CompletionStream(COMPLETION_META)
+        self.assertEqual(stream.feed(self.STOP).count(b'[DONE]'), 1)
+        self.assertEqual(stream.feed(self.MORE), b'')
+
+    def test_coalesced_input_stops_at_the_terminal_frame(self):
+        stream = openai_api.CompletionStream(COMPLETION_META)
+        out = stream.feed(self.STOP + self.MORE)
+        self.assertEqual(out.count(b'[DONE]'), 1)
+        self.assertNotIn(b'late', out)
+
+    def test_ordinary_stream_still_completes(self):
+        stream = openai_api.CompletionStream(COMPLETION_META)
+        out = stream.feed(b': hi\n\ndata: {"content":"a"}\n\n') + stream.feed(self.STOP)
+        self.assertIn(b': hi', out)
+        self.assertEqual(out.count(b'[DONE]'), 1)
+
+
 class MalformedChunks(unittest.TestCase):
     """A broken upstream chunk is ignored, not an exception on the controller thread."""
 
@@ -99,6 +121,20 @@ class MalformedChunks(unittest.TestCase):
         out = stream.feed(b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],'
                           b'"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n')
         self.assertIn(b'response.completed', out)
+
+    def test_tool_fragments_without_index_join_one_call(self):
+        stream = openai_responses.ResponseStream(META)
+        frames = [{'id': 'call_1', 'function': {'name': 'read', 'arguments': '{"path":'}},
+                  {'function': {'arguments': '"unit.txt"}'}}]
+        out = b''
+        for f in frames:
+            out += stream.feed(b'data: ' + json.dumps({'choices': [{'delta': {'tool_calls': [f]}}]}).encode() + b'\n\n')
+        out += stream.feed(b'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}],'
+                           b'"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n')
+        done = [json.loads(l[5:]) for l in out.split(b'\n') if l.startswith(b'data:') and b'output_item.done' in l]
+        calls = [d['item'] for d in done if d['item'].get('type') == 'function_call']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['arguments'], '{"path":"unit.txt"}')
 
     def test_unhashable_tool_call_index_is_treated_as_missing(self):
         stream = openai_responses.ResponseStream(META)

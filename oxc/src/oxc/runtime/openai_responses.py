@@ -428,9 +428,9 @@ class ResponseStream:
 
     def _tool_delta(self, delta):
         out = b''
-        index = delta.get('index')
-        if type(index) is not int or index < 0:  # JSON can put anything here; a missing index is the next slot
-            index = max(self.calls, default=-1) + 1
+        index = delta.get('index', 0)  # a missing index continues slot 0, as before
+        if type(index) is not int or index < 0:  # JSON can put anything here
+            index = 0
         state = self.calls.get(index)
         function = delta.get('function') if isinstance(delta.get('function'), dict) else {}
         if state is None:

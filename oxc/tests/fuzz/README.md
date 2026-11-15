@@ -4,7 +4,7 @@ Task 61, part A. These are the fast, deterministic checks that run on every pull
 same properties can be explored for longer locally:
 
 ```sh
-cd lab
+cd oxc
 python3 -m venv /tmp/oxc-fuzz
 /tmp/oxc-fuzz/bin/pip install -r tests/fuzz/requirements.txt
 PYTHONPATH=src /tmp/oxc-fuzz/bin/python -m unittest discover -s tests/fuzz -v
