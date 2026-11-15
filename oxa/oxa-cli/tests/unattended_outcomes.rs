@@ -296,3 +296,34 @@ fn unknown_rpc_commands_are_failed_outcomes() {
     assert_result(&output, 1, "failed", Some("invalid"));
     assert!(server.requests().is_empty());
 }
+
+#[test]
+fn reader_side_rpc_failures_are_included_in_the_terminal_outcome() {
+    for input in [
+        &b"{\"type\":\"get_state\"}\n{\"type\":\"prompt\"}\n"[..],
+        &b"{not json}\n"[..],
+        &b"{\"type\":\"steer\"}\n"[..],
+        &b"\xff\n"[..],
+    ] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+        let output = run(&env, &server, &["--mode", "rpc"], input);
+        assert_result(&output, 1, "failed", Some("invalid"));
+        assert!(server.requests().is_empty());
+    }
+}
+
+#[test]
+fn a_reader_rejection_does_not_replace_an_earlier_accepted_prompt_failure() {
+    let env = TestEnv::new();
+    let server=FakeServer::start(vec![ScriptTurn::fault(Fault::Http {
+        status:429,body:json!({"error":{"type":"cloud_error","code":"budget_exceeded","message":"Daily budget exhausted"}}).to_string(),
+    })],FakeOpts::default()).unwrap();
+    let output = run(
+        &env,
+        &server,
+        &["--mode", "rpc"],
+        b"{\"type\":\"prompt\",\"message\":\"first\"}\n{\"type\":\"prompt\"}\n",
+    );
+    assert_result(&output, 3, "blocked", Some("budget_exhausted"));
+}
