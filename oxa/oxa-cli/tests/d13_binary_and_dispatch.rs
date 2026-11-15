@@ -349,7 +349,7 @@ fn print_mode_announces_the_session_id_on_stderr() {
     let r = go_with(&envv, &env.work(), &["-p", "hi"], "", false, false);
     assert_eq!(r.code, 0, "stderr: {}", r.err);
     assert!(
-        r.err.contains("oxa: session ") && r.err.contains("--session "),
+        r.err.contains("oxa: session ") && r.err.contains("--continue "),
         "stderr: {}",
         r.err
     );
