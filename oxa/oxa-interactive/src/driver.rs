@@ -3218,4 +3218,27 @@ mod block_cache_tests {
         assert!(!c.content.iter().any(|l| l.contains("three")));
         assert!(c.content.iter().any(|l| l.contains("two")));
     }
+
+    /// A changed header shifts every block: everything is reassembled and the new header leads.
+    #[test]
+    fn a_header_change_rebuilds_everything() {
+        let vm = ViewModel {
+            blocks: vec![user("one"), user("two")],
+            ..Default::default()
+        };
+        let theme = oxa_tui::builtin_theme("dark", oxa_tui::ColorMode::Ansi256, None).unwrap();
+        let env = ViewEnv {
+            caps: TermCaps::BASIC,
+            hooks: &[],
+            keymap: None,
+        };
+        let mut c = BlockCache::default();
+        let s = ViewSettings::default();
+        assert!(c.update(&vm, &[], 80, &theme, 0, &s, &env));
+        let h = vec!["HEAD".to_string()];
+        assert!(c.update(&vm, &h, 80, &theme, 0, &s, &env));
+        assert_eq!(c.rebuilt_from, Some(0));
+        assert_eq!(c.content[0], "HEAD");
+        assert_eq!(c.starts[0], 1);
+    }
 }
