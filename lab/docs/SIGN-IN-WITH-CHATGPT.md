@@ -97,5 +97,5 @@ The interactive status bar keeps the D4b segment: `local` in green, or
 - A failed or expired sign-in never silently downgrades to another provider or reuses another
   app's credentials.
 - Implementation is blocked on the project's registration and on the program's documented
-  endpoints, scopes, redirect rules and limit fields. Until then, the API-key providers in
-  [CLOUD-MODELS.md](CLOUD-MODELS.md) are the supported remote path.
+  endpoints, scopes, redirect rules and limit fields. Until then, the API-key providers are
+  the supported remote path.
