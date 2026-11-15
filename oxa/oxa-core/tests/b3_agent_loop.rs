@@ -189,6 +189,7 @@ fn say(st: &mut SessionState, text: &str) {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user");
@@ -1013,6 +1014,7 @@ fn append_entry_failure_leaves_state() {
         EntryBody::Msg {
             wire: WireMsg::user("lost"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect_err("the store refuses the append");
@@ -1038,6 +1040,7 @@ fn append_entry_persists_and_folds() {
         EntryBody::Msg {
             wire: WireMsg::user("one"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();
@@ -1046,6 +1049,7 @@ fn append_entry_persists_and_folds() {
         EntryBody::Msg {
             wire: WireMsg::assistant("two"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();

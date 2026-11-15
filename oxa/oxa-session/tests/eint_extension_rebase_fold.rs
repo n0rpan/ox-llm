@@ -19,6 +19,7 @@ fn msg(id: &str, wire: WireMsg) -> Entry {
         EntryBody::Msg {
             wire,
             parts: Vec::new(),
+            tool: None,
         },
     )
 }
