@@ -263,6 +263,9 @@ pub mod errors {
     pub const BASH_NO_OUTPUT: &str = "(no output)";
     pub const BASH_ABORTED: &str = "Command aborted";
     pub const BASH_NO_EXIT_CODE: &str = "Command terminated without an exit code";
+    /// Appended to a result when the command looked backgrounded (a line ending in `&`, or `nohup`).
+    pub const BASH_BACKGROUND_STOPPED: &str =
+        "If this command started background processes (nohup or a trailing &), they were stopped when the call ended. Run long jobs in the foreground within the timeout.";
     pub const BASH_BAD_TIMEOUT: &str = "Invalid timeout: must be a finite number of seconds";
     pub fn bash_exit(code: i32) -> String {
         format!("Command exited with code {code}")

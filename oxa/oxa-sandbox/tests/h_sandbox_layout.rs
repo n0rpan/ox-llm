@@ -177,7 +177,8 @@ fn golden_project_cwd() {
     env.write("work/.git/config", "[core]\n");
     env.write("work/.git/hooks/pre-commit.sample", "");
     env.write("work/.oxa/settings.json", "{}");
-    let a = bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &l);
+    let a =
+        oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &l));
     let mut want = strs(HEAD);
     want.extend(strs(&[
         "--bind",
@@ -234,7 +235,7 @@ fn golden_home_cwd_is_read_only_and_masked() {
     let env = TestEnv::new();
     let l = machine(&env);
     let home = env.home();
-    let a = bwrap_args_with(&spec("true", &home, true), &home, &l);
+    let a = oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &home, true), &home, &l));
     let mut want = strs(HEAD);
     want.extend(strs(&["--ro-bind", "<root>/home", "<root>/home"]));
     // Every toolchain bind is inside the cwd: none is left out (they hold their own mode).
@@ -267,7 +268,7 @@ fn golden_home_cwd_is_read_only_and_masked() {
         allow_home_write: true,
         ..l
     };
-    let a = bwrap_args_with(&spec("true", &home, true), &home, &allowed);
+    let a = oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &home, true), &home, &allowed));
     let s = shown(&a, &env);
     assert_eq!(
         s[HEAD.len()..HEAD.len() + 9],
@@ -291,7 +292,7 @@ fn golden_home_cwd_is_read_only_and_masked() {
     );
     // Plan mode in the same layout: nothing writable.
     let ro = shown(
-        &bwrap_args_with(&spec("true", &home, false), &home, &allowed),
+        &oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &home, false), &home, &allowed)),
         &env,
     );
     assert!(!ro.iter().any(|x| x.ends_with("/home/project")), "{ro:?}");
@@ -809,4 +810,32 @@ fn real_parent_cwd_hides_credentials_but_reads_ordinary_files() {
             .collect();
         assert_creds_hidden(&b, &cwd, &home, &abs);
     }
+}
+
+/// Live regression of the gh token-store mask: `hosts.yml` must stay a readable regular file
+/// (gh fails on an unreadable one) but its content (other hosts' tokens) must stay hidden, and
+/// the benign config stays readable.
+#[test]
+fn real_gh_hosts_file_is_readable_empty_and_hides_the_token_store() {
+    let env = TestEnv::new();
+    env.write("home/.config/gh/hosts.yml", "SYNTH-HOST-TOKEN-SENTINEL");
+    env.write("home/.config/gh/config.yml", "editor: synth-editor");
+    let Some(b) = real(&env, machine(&env)) else {
+        return;
+    };
+    let mut sp = spec(
+        "cat \"$HOME/.config/gh/hosts.yml\" && test -f \"$HOME/.config/gh/hosts.yml\" && echo REGULAR; cat \"$HOME/.config/gh/config.yml\"",
+        &env.work(),
+        true,
+    );
+    sp.net = true;
+    let r = b.run(&sp, &CancelToken::new(), &mut |_| {});
+    let (exit, out) = (r.exit, String::from_utf8_lossy(&r.output).into_owned());
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("REGULAR") && out.contains("synth-editor"), "{out}");
+    assert!(!out.contains("SYNTH-HOST-TOKEN-SENTINEL"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(env.home().join(".config/gh/hosts.yml")).unwrap(),
+        "SYNTH-HOST-TOKEN-SENTINEL"
+    );
 }

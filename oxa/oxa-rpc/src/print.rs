@@ -84,6 +84,12 @@ pub fn run_print(
                 .map_err(|e| OxaError::io("cannot write the reply", &e))?;
             out.write_all(b"\n")
                 .map_err(|e| OxaError::io("cannot write the reply", &e))?;
+            if session.inner().active.direct.is_empty() && has_tool_markup(text) {
+                let _ = writeln!(
+                    err,
+                    "warning: the model answered with tool-call markup but no tools are available (--no-tools); the answer may be unusable"
+                );
+            }
         }
         if m.stop == Some(StopReason::Length) {
             let _ = writeln!(
@@ -96,6 +102,13 @@ pub fn run_print(
     out.flush()
         .map_err(|e| OxaError::io("cannot flush the reply", &e))?;
     Ok(code)
+}
+
+/// Whether `text` contains tool-call markup a model writes when it believes tools exist.
+fn has_tool_markup(text: &str) -> bool {
+    ["<tool_calls>", "<invoke name=", "<tool_call>", "<function="]
+        .iter()
+        .any(|m| text.contains(m))
 }
 
 /// `--mode json`: write the session header record, then every event as a record, for each
