@@ -13,7 +13,16 @@
 # also works.
 set -eu
 cd "$(dirname "$0")/.."
-root=$(mktemp -d "${TMPDIR:-/tmp}/local-ai-lab-tests-XXXXXX")
+# The cloud secrets guard refuses any path under a repository checkout, so the scratch root must
+# live outside it: a TMPDIR inside this tree falls back to /tmp.
+repo=$(cd .. && pwd -P)
+base=${TMPDIR:-/tmp}
+case "$(cd "$base" 2>/dev/null && pwd -P)/" in
+  "$repo"/*|"") base=/tmp ;;
+esac
+TMPDIR=$base
+export TMPDIR
+root=$(mktemp -d "$base/local-ai-lab-tests-XXXXXX")
 trap 'rm -rf "$root"' EXIT
 mkdir -m 700 "$root/home" "$root/config" "$root/state" "$root/data" "$root/cache" "$root/runtime"
 if [ -n "${LAB_TEST_SHARD:-}" ]; then set -- tools/ci_test_shard.py run "${LAB_TEST_SHARD#*/}" "${LAB_TEST_SHARD%/*}"
