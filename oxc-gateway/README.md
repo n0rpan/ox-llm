@@ -13,7 +13,7 @@ reasons. Nonblocking open also prevents a special file from hanging the reader.
 Parent symlinks follow main's policy. Reads are never cached.
 
 34 contracts match unmodified Python main
-`bbec7919fd54ddcce6de49c6c33264e50e9a7494`: file shape/ownership/modes/symlinks,
+`d7f70bb05ed7ef65ea377e8e6cdcee0dab4415aa`: file shape/ownership/modes/symlinks,
 source-tree refusal, size/key limits, UTF encodings, legacy numeric extras,
 rotation, escaped JSON and split/repeated/partial-stream redaction. Every case
 runs in private HOME/network/user namespaces under `/usr/bin/python3`. Synthetic
