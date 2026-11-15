@@ -891,3 +891,17 @@ fn issue_103_plain_clone_keeps_hooks_and_config_read_only() {
     }
     assert!(!plain.join(".git/hooks/x").exists());
 }
+
+/// #322: a git directory that vanished after the session started (worktree pruned or removed)
+/// must not make bwrap fail for every later command.
+#[test]
+fn vanished_git_dir_is_not_bound() {
+    let env = TestEnv::new();
+    let w = build_worktree(&env);
+    let b = bwrap_value(&env).with_git_dirs(&w.wt);
+    let g = w.gitdir.to_string_lossy().into_owned();
+    assert!(sandbox_args(&b, &w.wt, true).contains(&g), "bound while present");
+    std::fs::remove_dir_all(&w.gitdir).expect("remove gitdir");
+    let args = sandbox_args(&b, &w.wt, true);
+    assert!(!args.contains(&g), "a missing source must not be bound: {args:?}");
+}

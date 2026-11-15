@@ -203,6 +203,9 @@ pub(crate) fn bwrap_args_homes(
         .rw
         .iter()
         .filter(|p| !p.starts_with(cwd_path) && !cwd_path.starts_with(p))
+        // #322: a git dir removed since the session started (pruned worktree) would make
+        // bwrap fail for every command.
+        .filter(|p| std::fs::symlink_metadata(p).is_ok())
     {
         let p = p.to_string_lossy();
         push(&mut a, &[git_rw, &p, &p]);
