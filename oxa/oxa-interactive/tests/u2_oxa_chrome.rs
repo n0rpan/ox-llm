@@ -133,10 +133,10 @@ fn hud_is_one_line_that_fits_every_width() {
 }
 
 #[test]
-fn hud_snapshot_at_120_columns() {
+fn hud_snapshot_at_121_columns() {
     let st = full_status();
-    let line = strip_ansi(&hud(&st, 120, &colour()));
-    // The full line fits in 120 columns: no segment is dropped.
+    let line = strip_ansi(&hud(&st, 121, &colour()));
+    // The full line (121 columns with the location segment) fits: no segment is dropped.
     let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ workspace │ local";
     assert_eq!(line, expected);
 }
@@ -189,8 +189,8 @@ fn hud_segments_appear_monotonically_as_width_grows() {
 #[test]
 fn hud_drops_speed_first() {
     let st = full_status();
-    let at_120 = plain_hud(&st, 120);
-    assert!(at_120.contains("tok/s"), "the full line fits in 120: {at_120:?}");
+    let at_120 = plain_hud(&st, 121);
+    assert!(at_120.contains("tok/s"), "the full line fits in 121: {at_120:?}");
     let at_100 = plain_hud(&st, 100);
     assert!(!at_100.contains("tok/s"), "speed is the first drop: {at_100:?}");
     assert!(at_100.contains("CACHE 99%") || at_100.contains("CACHE █████ 99%"));
