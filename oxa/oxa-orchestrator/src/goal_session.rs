@@ -291,6 +291,8 @@ pub fn pursue(
                         } else {
                             "output_budget"
                         });
+                    } else if outcome == Outcome::Truncated {
+                        goal.runtime_blocked("native_response_truncated");
                     } else {
                         goal.runtime_blocked("native_runtime_failure");
                     }

@@ -62,6 +62,7 @@ pub struct LocalInference {
     model: String,
     local_only: bool,
     auto_compaction: bool,
+    response_tokens: Option<u32>,
 }
 
 impl LocalInference {
@@ -72,7 +73,17 @@ impl LocalInference {
             model,
             local_only: true,
             auto_compaction: false,
+            response_tokens: None,
         })
+    }
+    /// Operator-owned per-inference output limit, separate from lifetime usage
+    /// and retained output bytes. Never expands a smaller model/request limit.
+    pub fn with_response_tokens(mut self, tokens: u32) -> io::Result<Self> {
+        if tokens == 0 {
+            return Err(invalid("response token allowance must be positive"));
+        }
+        self.response_tokens = Some(tokens);
+        Ok(self)
     }
     pub(crate) fn validate_route(address: SocketAddr, model: &str) -> io::Result<()> {
         if !address.ip().is_loopback()
@@ -96,6 +107,7 @@ impl LocalInference {
             model,
             local_only: false,
             auto_compaction: false,
+            response_tokens: None,
         })
     }
     #[cfg(feature = "interactive-control")]
@@ -164,6 +176,7 @@ pub enum Control {
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Completed,
+    Truncated,
     Failed,
     Canceled,
     Deadline,
@@ -179,7 +192,7 @@ impl Outcome {
             Self::Completed => TaskState::Completed,
             Self::Canceled | Self::Deadline | Self::OutputBudget | Self::TokenBudget => TaskState::Canceled,
             Self::PolicyViolation => TaskState::Rejected,
-            Self::Failed => TaskState::Failed,
+            Self::Failed | Self::Truncated => TaskState::Failed,
             Self::Lost => TaskState::Unknown,
         }
     }
@@ -551,6 +564,7 @@ pub(crate) fn run_with_workspaces(
                 spec.budget.output_bytes,
                 workspace.as_ref(),
                 spec.inference.local_only,
+                spec.inference.response_tokens,
             ) {
                 Ok(mut process) => {
                     let queued = process.queue(&json!({"id":"check","type":"get_state"}));
@@ -787,6 +801,8 @@ impl Worker {
                 && (!self.meter.ready || self.meter.seen)
             {
                 Outcome::Completed
+            } else if self.last_stop.as_deref() == Some("length") && self.usage_seen {
+                Outcome::Truncated
             } else {
                 Outcome::Failed
             }));
@@ -817,6 +833,9 @@ impl Worker {
                 if let Err(error) = self.meter.consume(record) {
                     self.meter.unknown = true;
                     return Err(error);
+                }
+                if self.meter.ready && self.meter.response_tokens != self.spec.inference.response_tokens {
+                    return Ok(Some(Outcome::PolicyViolation));
                 }
                 if ended {
                     self.pending_tokens = None;
@@ -850,7 +869,10 @@ impl Worker {
                     return Ok(Some(Outcome::Failed));
                 }
                 if id == "check" && self.checking {
-                    if self.spec.inference.auto_compaction && !self.meter.ready {
+                    if (self.spec.inference.auto_compaction || self.spec.inference.response_tokens.is_some())
+                        && (!self.meter.ready
+                            || self.meter.response_tokens != self.spec.inference.response_tokens)
+                    {
                         return Ok(Some(Outcome::PolicyViolation));
                     }
                     if record["data"]["mode"].as_str() != Some(mode.as_str())
@@ -868,7 +890,7 @@ impl Worker {
                     journal.record(
                         Some(&self.spec.id),
                         "policy_verified",
-                        json!({"mode":mode,"offline":self.spec.inference.local_only,"usageMeter":self.meter.ready,"autoCompaction":self.spec.inference.auto_compaction,"toolPolicy":"explicit-per-worker-grants"}),
+                        json!({"mode":mode,"offline":self.spec.inference.local_only,"usageMeter":self.meter.ready,"autoCompaction":self.spec.inference.auto_compaction,"responseTokens":self.spec.inference.response_tokens,"toolPolicy":"explicit-per-worker-grants"}),
                     )?;
                 } else if self.configuration.remove(id) {
                     if self.configuration.is_empty() && !self.defer_prompt {
@@ -1013,6 +1035,7 @@ impl SessionWorker {
             spec.budget.output_bytes,
             workspace.as_ref(),
             spec.inference.local_only,
+            spec.inference.response_tokens,
         )?;
         process.queue(&json!({"id":"check","type":"get_state"}))?;
         journal.record(Some(&spec.id), "spawned", json!({"processId":process.pid()}))?;
@@ -1114,7 +1137,8 @@ impl SessionWorker {
     }
     pub(crate) fn final_usage_known(&self, outcome: &Outcome) -> bool {
         (!self.inner.meter.ready || self.inner.meter.settled())
-            && (*outcome == Outcome::Completed || (self.inner.defer_prompt && !self.inner.running))
+            && (matches!(outcome, Outcome::Completed | Outcome::Truncated)
+                || (self.inner.defer_prompt && !self.inner.running))
     }
     pub(crate) fn pid(&self) -> u32 {
         self.inner.process.pid()

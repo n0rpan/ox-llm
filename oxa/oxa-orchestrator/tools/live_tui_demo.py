@@ -140,7 +140,7 @@ class Demo:
                 "name": "author", "role": "fixed demo author",
                 "engine": worker_url.removeprefix("http://"), "model": "worker-model",
                 "budget": {"wall_ms": 10000, "tokens": 100000, "turns": 4},
-                "turn_ms": 8000, "output_bytes": 1048576,
+                "turn_ms": 8000, "output_bytes": 1048576, "response_tokens": 2048,
             }],
         }))
         profiles.chmod(0o600)
@@ -206,6 +206,7 @@ class Demo:
             and v["status"]["workers"][0].get("goal", {}).get("turns_started") == 1
             and bool(self.records(worker_record))
         ))
+        assert waiting["status"]["workers"][0]["response_tokens"] == 2048
         self.save_screen("worker-screen.txt", lambda s: any(
             "author · worker-model · working" in line for line in s.splitlines()[-3:]
         ))
@@ -278,7 +279,10 @@ class Demo:
             time.sleep(0.02)
         else:
             raise AssertionError("TUI did not exit after Ctrl-D")
+        worker_requests = [json.loads(r["body"]) for r in self.records(worker_record)]
+        assert worker_requests and all(r["max_tokens"] == 2048 for r in worker_requests)
         result = {
+            "worker_response_tokens": 2048,
             "shared_session_steer": True, "idle_escape_paused_parent": True,
             "worker_footer_verified": True, "worker_canceled_and_reaped": True,
             "worker_result_collected": True, "tui_session_rebound": True, "compacted_goal_turns": 3,

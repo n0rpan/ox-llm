@@ -35,6 +35,8 @@ pub(crate) struct Profile {
     pub route: Route,
     #[serde(default)]
     pub auto_compaction: bool,
+    #[serde(default)]
+    pub response_tokens: Option<u32>,
     pub budget: goals::Budget,
     pub turn_ms: u64,
     pub output_bytes: usize,
@@ -68,7 +70,11 @@ impl Profile {
             Route::Local => LocalInference::register_verified_local(self.engine, self.model.clone()),
             Route::CloudGateway => LocalInference::register_operator_gateway(self.engine, self.model.clone()),
         }?;
-        Ok(route.with_compaction(self.auto_compaction))
+        let route = route.with_compaction(self.auto_compaction);
+        match self.response_tokens {
+            Some(tokens) => route.with_response_tokens(tokens),
+            None => Ok(route),
+        }
     }
     pub fn check_policy(&self) -> io::Result<()> {
         if self.route == Route::CloudGateway && oxa_proto::offline() {
@@ -150,6 +156,7 @@ fn validate(config: Config) -> io::Result<Config> {
             || profile.role.len() > 4096
             || profile.role.contains('\0')
             || profile.model.len() > 256
+            || profile.response_tokens == Some(0)
             || profile.turn_ms == 0
             || profile.turn_ms > 600_000
             || profile.turn_ms > profile.budget.wall_ms
@@ -228,6 +235,21 @@ mod tests {
         assert!(load_private(&path, &agent, &env.work()).is_ok());
     }
     #[test]
+    fn response_allowance_is_optional_positive_operator_authority() {
+        let legacy: Config = serde_json::from_value(config()).unwrap();
+        assert_eq!(legacy.profiles[0].response_tokens, None);
+        let mut limited = config();
+        limited["profiles"][0]["response_tokens"] = json!(2048);
+        assert!(accepted(limited.clone()));
+        let profile: Config = serde_json::from_value(limited).unwrap();
+        assert!(profile.profiles[0].inference().is_ok());
+        for value in [json!(0), json!(-1), json!("512"), json!(u64::MAX)] {
+            let mut invalid = config();
+            invalid["profiles"][0]["response_tokens"] = value;
+            assert!(!accepted(invalid));
+        }
+    }
+    #[test]
     fn cloud_routes_require_explicit_versioned_operator_authorization() {
         let mut cloud = config();
         cloud["version"] = json!(2);
@@ -264,6 +286,7 @@ mod tests {
             ("engine", json!("8.8.8.8:8080")),
             ("model", json!("fake\nmodel")),
             ("turn_ms", json!(6000)),
+            ("response_tokens", json!(0)),
             ("reported_tokens", json!(999)),
             ("files", json!([".env"])),
             ("allow_new", json!(["new.rs"])),

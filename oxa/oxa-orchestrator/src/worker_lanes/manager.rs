@@ -34,6 +34,7 @@ struct Job {
     snapshot: Snapshot,
     profile: String,
     model: String,
+    response_tokens: Option<u32>,
     route: Route,
     child_goal: Option<goals::Snapshot>,
     last_control: Option<Value>,
@@ -189,7 +190,7 @@ impl Manager {
     }
     pub fn summaries(&self) -> Value {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        json!(state.jobs.values().map(|j|json!({"id":j.snapshot.id,"profile":j.profile,"model":j.model,"route":j.route,"state":j.snapshot.state,"goal":j.child_goal,"process_stopped":j.snapshot.process_stopped,"process_id":j.snapshot.process_id,"last_control":j.last_control})).collect::<Vec<_>>())
+        json!(state.jobs.values().map(|j|json!({"id":j.snapshot.id,"profile":j.profile,"model":j.model,"response_tokens":j.response_tokens,"route":j.route,"state":j.snapshot.state,"goal":j.child_goal,"process_stopped":j.snapshot.process_stopped,"process_id":j.snapshot.process_id,"last_control":j.last_control})).collect::<Vec<_>>())
     }
     pub fn completions(&self) -> (Vec<(Snapshot, bool)>, BTreeSet<String>) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -319,6 +320,7 @@ impl Manager {
                 snapshot: snapshot.clone(),
                 profile: profile.name.clone(),
                 model: profile.model.clone(),
+                response_tokens: profile.response_tokens,
                 route: profile.route,
                 child_goal: None,
                 last_control: None,
@@ -718,6 +720,7 @@ mod tests {
             "route",
             "allow_cloud_workers",
             "auto_compaction",
+            "response_tokens",
         ] {
             let mut args = start.clone();
             args[field] = json!("model-supplied replacement");

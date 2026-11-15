@@ -1873,6 +1873,7 @@ fn offline_parent_refuses_gateway_workers_before_contact() {
 }
 
 fn worker_goal_compacts_with_metered_usage(limit: u64, failure: bool, canceling: bool) -> u64 {
+    println!("worker compaction limit={limit} failure={failure} canceling={canceling}");
     let limited = limit > 0;
     let tokens = if limited { limit } else { 2000000 };
     use std::os::unix::fs::PermissionsExt;

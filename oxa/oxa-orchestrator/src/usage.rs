@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, io};
 #[derive(Default)]
 pub(crate) struct Ledger {
     pub ready: bool,
+    pub response_tokens: Option<u32>,
     last: u64,
     active: BTreeSet<u64>,
     pub unknown: bool,
@@ -15,9 +16,18 @@ pub(crate) struct Ledger {
 #[derive(Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
 enum Record {
-    Ready { version: u32 },
-    Start { id: u64 },
-    End { id: u64, tokens: Option<u64> },
+    Ready {
+        version: u32,
+        #[serde(default)]
+        response_tokens: Option<u32>,
+    },
+    Start {
+        id: u64,
+    },
+    End {
+        id: u64,
+        tokens: Option<u64>,
+    },
 }
 impl Ledger {
     pub fn consume(&mut self, mut value: Value) -> io::Result<()> {
@@ -31,7 +41,13 @@ impl Ledger {
         value.as_object_mut().ok_or_else(invalid)?.remove("type");
         let record: Record = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
         match record {
-            Record::Ready { version: 1 } if !self.ready => self.ready = true,
+            Record::Ready {
+                version: 1,
+                response_tokens,
+            } if !self.ready && response_tokens != Some(0) => {
+                self.ready = true;
+                self.response_tokens = response_tokens;
+            }
             Record::Start { id } if self.ready && id > self.last && self.active.len() < 8 => {
                 self.last = id;
                 self.active.insert(id);
@@ -75,10 +91,15 @@ mod native {
         next: Mutex<u64>,
         ready: bool,
         model: Option<String>,
+        response_tokens: Option<u32>,
     }
     impl Engine for Meter {
         fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
-            self.inner.info(target)
+            let mut info = self.inner.info(target)?;
+            if let Some(cap) = self.response_tokens {
+                info.max_output = info.max_output.min(cap);
+            }
+            Ok(info)
         }
         fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
             self.inner.count_tokens(text)
@@ -113,7 +134,11 @@ mod native {
                     .map_err(|_| failure())?;
                 id
             };
-            let result = self.inner.chat(r, cancel, on);
+            let mut bounded = *r;
+            if let Some(cap) = self.response_tokens {
+                bounded.max_tokens = bounded.max_tokens.min(cap);
+            }
+            let result = self.inner.chat(&bounded, cancel, on);
             let tokens = result
                 .as_ref()
                 .ok()
@@ -134,13 +159,19 @@ mod native {
             out.write_all(&line)?;
             out.flush()
         });
-        let ready = emit(json!({"type":"oxa_owned_inference","phase":"ready","version":1})).is_ok();
+        let response_tokens = match std::env::var("OXA_OWNED_WORKER_RESPONSE_TOKENS") {
+            Ok(value) if !value.is_empty() => value.parse::<u32>().ok().filter(|n| *n != 0).map(Some),
+            Ok(_) | Err(std::env::VarError::NotPresent) => Some(None),
+            Err(_) => None,
+        };
+        let ready = response_tokens.is_some() && emit(json!({"type":"oxa_owned_inference","phase":"ready","version":1,"response_tokens":response_tokens.flatten()})).is_ok();
         deps.engine = Arc::new(Meter {
             inner: deps.engine,
             emit,
             next: Mutex::new(1),
             ready,
             model: deps.model.clone(),
+            response_tokens: response_tokens.flatten(),
         });
         deps
     }
@@ -171,6 +202,7 @@ mod native {
                 next: Mutex::new(1),
                 ready: true,
                 model: Some("fake-model".into()),
+                response_tokens: None,
             };
             let prefix = FrozenPrefix {
                 sections: vec![("append".into(), "private-source-marker".into())],
@@ -239,6 +271,50 @@ mod native {
             assert!(!wire.contains("private-source-marker") && !wire.contains("private-task-marker"));
         }
         #[test]
+        fn response_allowance_clamps_each_kind_without_expanding_smaller_requests() {
+            let inner = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("ok"); 4]));
+            let meter = Meter {
+                inner: inner.clone(),
+                emit: Arc::new(|_| Ok(())),
+                next: Mutex::new(1),
+                ready: true,
+                model: Some("fake-model".into()),
+                response_tokens: Some(512),
+            };
+            let prefix = FrozenPrefix {
+                sections: vec![],
+                tools_json: "[]".into(),
+                sha256: [0; 32],
+            };
+            assert_eq!(meter.info(None).unwrap().max_output, 512);
+            let messages = vec![WireMsg::user("bounded response")];
+            for (kind, requested, expected) in [
+                (TurnKind::Chat, 4096, 512),
+                (TurnKind::Compaction, 2048, 512),
+                (TurnKind::Chat, 128, 128),
+                (TurnKind::Prefill, 0, 0),
+            ] {
+                let request = ChatRequest {
+                    prefix: &prefix,
+                    messages: &messages,
+                    model: "fake-model",
+                    max_tokens: requested,
+                    thinking: false,
+                    preserve_thinking: false,
+                    sampling: None,
+                    hints: Hints {
+                        session: "owned",
+                        idem_key: "",
+                        kind,
+                        background: kind != TurnKind::Chat,
+                        snapshot_keep: false,
+                    },
+                };
+                meter.chat(&request, &CancelToken::new(), &mut |_| {}).unwrap();
+                assert_eq!(inner.requests().last().unwrap().max_tokens, expected);
+            }
+        }
+        #[test]
         fn unavailable_accounting_refuses_before_inference() {
             let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("must not run")]));
             let meter = Meter {
@@ -247,6 +323,7 @@ mod native {
                 next: Mutex::new(1),
                 ready: true,
                 model: Some("fake-model".into()),
+                response_tokens: None,
             };
             let prefix = FrozenPrefix {
                 sections: vec![],
@@ -278,6 +355,7 @@ mod native {
                 next: Mutex::new(1),
                 ready: true,
                 model: Some("different-model".into()),
+                response_tokens: None,
             };
             assert_eq!(
                 fixed

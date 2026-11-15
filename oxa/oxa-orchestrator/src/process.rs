@@ -41,6 +41,7 @@ impl Process {
         byte_limit: usize,
         workspace: Option<&crate::workspace::WorkingCopy>,
         local_only: bool,
+        response_tokens: Option<u32>,
     ) -> io::Result<Self> {
         #[cfg(feature = "interactive-control")]
         if !local_only && oxa_proto::offline() {
@@ -50,6 +51,7 @@ impl Process {
         // Only the trusted runtime libraries and the explicitly chosen binary
         // are mounted. HOME is private; /work is empty or an approved private copy.
         let mut command = Command::new(bwrap);
+        let response_tokens = response_tokens.map(|n| n.to_string()).unwrap_or_default();
         command.args([
             "--unshare-all",
             "--hostname",
@@ -134,6 +136,9 @@ impl Process {
                 "--setenv",
                 "OXA_OWNED_WORKER_USAGE",
                 "1",
+                "--setenv",
+                "OXA_OWNED_WORKER_RESPONSE_TOKENS",
+                &response_tokens,
                 "--setenv",
                 "OXA_PROFILE",
                 "pi",

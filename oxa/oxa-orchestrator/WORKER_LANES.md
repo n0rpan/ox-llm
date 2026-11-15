@@ -131,3 +131,37 @@ The only additional existing-crate hooks in this milestone are feature-gated
 footer population and copying of the reserved `oxa.worker.` status rows in
 `oxa-interactive/src/app.rs`. Worker registration uses the existing optional
 session augmentation hook. All worker implementation lives in this new crate.
+
+## Per-response output allowance
+
+An operator profile may set `"response_tokens": 2048`. Omission preserves the
+model/request output limit; zero and invalid integer values are rejected. The
+library equivalent is `LocalInference::with_response_tokens`. This is separate
+from the lifetime `budget.tokens`, wall/turn deadlines and retained `output_bytes`.
+Model tool arguments cannot set or override it, and steering/retargeting does
+not replace the captured profile policy.
+
+The owned child receives this limit through its cleared private environment.
+Its in-process engine adapter clamps both published model output allowance and
+every inference request to the smaller existing allowance, including summaries;
+zero-output prefills remain zero. The parent requires the exact policy
+acknowledgement before dispatch. Missing/mismatched acknowledgement is a policy
+violation and triggers owned process cleanup. Shared worker status exposes
+`response_tokens`; the verified-policy journal records `responseTokens` without
+prompt or response contents. No external relay is responsible for enforcing it.
+
+A settled length-limited native reply is `truncated`, not DONE, and a goal stops
+blocked with reason `native_response_truncated`. Its settled usage remains in
+the cumulative goal ledger. Canceled, failed or unsettled inference does not
+become known usage. A truncated result cannot be published as an approved
+completed proposal, and no automatic retry or limit increase follows truncation.
+The allowance caps requested output; it does not guarantee provider billing or
+prevent lifetime observed-token threshold overshoot within an in-flight request.
+
+Local regressions demonstrate clamping for chat, compaction and prefill, unchanged
+smaller requests, profile/grant rejection, exact child acknowledgement and real
+sandboxed RPC workers. The same response truncates at 512 and completes at 2048;
+both retain observed usage and confirm owned process cleanup. The real goal
+regression fails before the usage fix: settled truncation was incorrectly
+reported as unknown. The real CLI/tmux demo also checks the 2048 limit in status
+and the owned fake gateway's actual request records. No paid provider is used.

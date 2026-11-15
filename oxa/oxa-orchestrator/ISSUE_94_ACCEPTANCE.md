@@ -150,3 +150,33 @@ not qualify input sent before the terminal is ready. See
 No native JobRegistry change, shared-gateway operation or paid request is part
 of this follow-up. The earlier one-shot live result and its remaining acceptance
 gaps are unchanged.
+
+## Native worker response allowance and truncated usage
+
+Operator worker profiles now accept an optional positive `response_tokens`
+allowance, enforced by the existing child engine adapter and acknowledged before
+parent dispatch. It never expands a smaller model/request limit. The profile
+and shared worker status expose it separately from lifetime token budgets and
+retained output bytes; model arguments cannot widen it.
+
+Owned native-worker regressions show the same synthetic reply truncating at
+512 and completing at 2048, with actual fake-gateway request limits, no silent
+retry and confirmed process cleanup. The goal wrapper previously discarded
+settled truncated usage because it recognized only successful completion as
+known; its regression fails before the fix and passes after it. Such a goal
+now stops blocked as `native_response_truncated` with its settled usage retained.
+Unknown/aborted requests remain unknown. See [worker policy](WORKER_LANES.md).
+
+This is offline regression evidence, not a diagnosis of every failure in the
+historical smoke. Its reported result and authorization remain unchanged. No
+external relay limit was raised, no live gateway operation was performed, and
+no paid rerun is made or authorized by this change. Lifetime token thresholds
+can still be exceeded by an in-flight request; strict pre-request total-token
+admission and real provider cancellation/billing remain separate gates.
+
+Local validation for this follow-up: the complete interactive-control
+orchestrator suite and real CLI/tmux demo pass. An earlier broad run timed out
+in the worker-compaction status wait while other acceptance work was running;
+all isolated compaction cases and a full sequential rerun pass with the original
+timeouts and assertions. The cause of that initial timing failure is not
+established, so this is not a claim that long-run timing reliability is solved.

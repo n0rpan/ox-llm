@@ -51,6 +51,88 @@ fn worker(server: &FakeServer, id: &str) -> WorkerSpec {
     }
 }
 
+fn native_response_allowance_and_truncation_keep_settled_usage() {
+    for (limit, completed) in [(512, false), (2048, true)] {
+        let env = TestEnv::new();
+        let text = "bounded response ".repeat(60);
+        let engine = FakeServer::start(vec![ScriptTurn::text(&text)], FakeOpts::default()).unwrap();
+        let mut spec = worker(&engine, "bounded");
+        spec.inference = spec.inference.with_response_tokens(limit).unwrap();
+        let settings = settings(&env, "response-bound");
+        let directory = settings.directory.clone();
+        let (_, controls) = mpsc::channel();
+        let report = run(settings, vec![spec], controls, |_| {}).unwrap();
+        assert_reaped(&report);
+        let worker = &report.workers[0];
+        assert_eq!(worker.outcome == Outcome::Completed, completed);
+        if !completed {
+            assert_eq!(serde_json::to_value(&worker.outcome).unwrap(), "truncated");
+        }
+        assert!(
+            worker.reported_tokens.is_some(),
+            "settled truncated usage must remain known"
+        );
+        let requests = engine.requests();
+        let chats: Vec<_> = requests.iter().filter(|r| r.max_tokens > 0).collect();
+        assert_eq!(chats.len(), 1, "no silent retry or continuation after length");
+        assert_eq!(chats[0].max_tokens, limit);
+        let journal = std::fs::read_to_string(directory.join("transcript.jsonl")).unwrap();
+        assert!(journal.contains(&format!("\"responseTokens\":{limit}")));
+    }
+}
+
+fn native_goal_truncation_is_blocked_with_known_usage() {
+    use oxa_orchestrator::{goal_session, goals};
+    let env = TestEnv::new();
+    let engine = FakeServer::start(
+        vec![ScriptTurn::text(&"partial ".repeat(200))],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let mut config = settings(&env, "truncated-goal");
+    config.parallelism = 1;
+    config.wall_time = Duration::from_secs(5);
+    let mut spec = worker(&engine, "goal");
+    spec.inference = spec.inference.with_response_tokens(512).unwrap();
+    let (_, controls) = mpsc::channel();
+    let report = goal_session::pursue(
+        config,
+        spec,
+        goals::Budget {
+            wall_ms: 5000,
+            tokens: Some(500_000),
+            turns: 3,
+        },
+        controls,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(report.runtime_outcome, Some(Outcome::Truncated));
+    assert_eq!(report.goal.state, goals::State::Blocked);
+    assert_eq!(report.goal.reason.as_deref(), Some("native_response_truncated"));
+    assert!(report.goal.reported_tokens.is_some_and(|n| n >= 512));
+    assert_eq!(report.goal.turns_started, 1);
+    assert!(report.process_stopped);
+    assert!(!Path::new(&format!("/proc/{}", report.process_id)).exists());
+    assert_eq!(engine.requests().iter().filter(|r| r.max_tokens > 0).count(), 1);
+}
+
+fn native_response_allowance_requires_exact_ack_before_dispatch() {
+    for kind in ["missing", "mismatch"] {
+        let env = TestEnv::new();
+        let engine = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+        let mut spec = worker(&engine, kind);
+        spec.role = format!("fixed role\nfixture-cap-{kind}");
+        spec.inference = spec.inference.with_response_tokens(512).unwrap();
+        let (_, controls) = mpsc::channel();
+        let report = run(settings(&env, "cap-ack"), vec![spec], controls, |_| {}).unwrap();
+        assert_eq!(report.workers[0].outcome, Outcome::PolicyViolation);
+        assert_reaped(&report);
+        assert!(engine.requests().is_empty());
+    }
+}
+
 fn assert_reaped(report: &RunReport) {
     for worker in &report.workers {
         if let Some(pid) = worker.process_id {
@@ -1031,6 +1113,12 @@ fn hostile_workers_and_run_deadline() {
 /// oxa implementation. These branches are not part of any production binary.
 fn hostile_fixture(args: &[String]) {
     let role = args.last().unwrap();
+    if role.ends_with("fixture-cap-mismatch") {
+        println!(
+            "{}",
+            serde_json::json!({"type":"oxa_owned_inference","phase":"ready","version":1,"response_tokens":4096})
+        );
+    }
     if role.ends_with("fixture-flood") {
         loop {
             println!("{}", serde_json::json!({"type":"notice","text":"x".repeat(4096)}));
@@ -3195,6 +3283,14 @@ fn main() {
         std::process::exit(code);
     }
     std::env::set_var("OXA_PARENT_PRIVATE_MARKER", "synthetic-parent-value");
+    native_response_allowance_and_truncation_keep_settled_usage();
+    native_response_allowance_requires_exact_ack_before_dispatch();
+    native_goal_truncation_is_blocked_with_known_usage();
+    println!("native per-response allowance preserves settled truncation usage ... ok");
+    if args.first().map(String::as_str) == Some("--response-cap-only") {
+        return;
+    }
+
     for (name, test) in [
         (
             "orchestrate CLI shared control attachment",
