@@ -10,8 +10,12 @@ settlement are separate work. Python remains the behavior reference.
 
 Build all examples with `cargo build --locked --manifest-path
 oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
-`/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v`; native
-checks set each present `OXC_*_CONTRACT` to its absolute example executable.
+`/usr/bin/python3 oxc-gateway/conformance/run.py --python`. Native checks use
+`/usr/bin/python3 oxc-gateway/conformance/run.py --native-dir /absolute/cargo-target/debug/examples`.
+Every `test_<name>.py` requires its executable `<name>_contract`; missing native
+drivers fail before the suite starts. Source mode clears inherited native
+overrides. Both modes run in the required gateway job, including catalog parity;
+the manual workflow uses the same commands.
 
 Source cases use private HOME/network namespaces and synthetic data. No real
 API, credential, SDK material or sign-in is used. Every opt-in module forbids
