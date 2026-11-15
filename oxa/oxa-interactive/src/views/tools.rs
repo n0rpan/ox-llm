@@ -283,7 +283,18 @@ pub fn tool_result_lines(
         "read" => highlight_code(text, language_from_path(path), theme),
         "write" => {
             let content = args.get("content").and_then(Value::as_str).unwrap_or(text);
-            highlight_code(content, language_from_path(path), theme)
+            // A summary line, then the content as added (`+`) lines, so a write does not
+            // look like the output of `cat`.
+            let n = content.lines().count();
+            let summary = format!(
+                "{n} line{}, {} bytes",
+                if n == 1 { "" } else { "s" },
+                content.len()
+            );
+            let diff: String = content.lines().map(|l| format!("+{l}\n")).collect();
+            let mut out = vec![theme.dim(&summary)];
+            out.extend(render_diff(&diff, cx.width, cx));
+            out
         }
         "edit" => match ui.get("diff").and_then(Value::as_str) {
             Some(diff) => render_diff(diff, cx.width, cx),
