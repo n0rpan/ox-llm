@@ -163,10 +163,12 @@ pub(crate) fn diet_output(text: &str) -> String {
     format!("{}{tail}", out.join("\n"))
 }
 
-/// A note for `No such file or directory` on a path under the real home that is outside the
-/// workspace: the sandbox hides unbound home paths, so the path may exist on the host.
+/// A hedged note for `No such file or directory` on a path under the real home that is outside
+/// the workspace. The sandbox may hide unbound home paths, but a missing file under a mounted
+/// directory (a read-only toolchain bind, a configured bind) is simply absent, so the note never
+/// claims the path is unmounted; it tells the reader to check the parent directory first.
 /// Only the workspace (`cwd`) counts as visible: neither `ToolCtx` nor `Sandbox` exposes the
-/// bound/extra paths, so a path under such a bind still gets the note.
+/// bound/extra paths, so no mount introspection is done here.
 pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Option<String> {
     let home = home.trim_end_matches('/');
     if home.is_empty() {
@@ -177,7 +179,7 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
         for tok in line.split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ':')) {
             if tok.starts_with(&prefix) && !Path::new(tok).starts_with(cwd) {
                 return Some(format!(
-                    "path outside the sandbox (not mounted): {tok}; only the workspace and listed binds are visible"
+                    "{tok}: not found. It may be hidden because the path is outside the sandbox mounts (only the workspace and listed binds are visible), or it may simply not exist; check whether its parent directory exists before concluding it is unmounted"
                 ));
             }
         }
@@ -398,7 +400,15 @@ echo '\''a'\'''"#
         let cwd = Path::new("/home/u/proj");
         let msg = "touch: cannot touch '/home/u/lab/probe': No such file or directory\n";
         let note = unmounted_home_note(msg, "/home/u", cwd).expect("note");
-        assert!(note.contains("path outside the sandbox (not mounted): /home/u/lab/probe"));
+        assert!(note.contains("/home/u/lab/probe: not found."));
+        assert!(note.contains("may"));
+        assert!(note.contains("parent directory"));
+        assert!(!note.contains("path outside the sandbox (not mounted)"));
+        let mounted_parent = "ls: cannot access '/home/u/.cargo/bin/nothing': No such file or directory\n";
+        let hedged = unmounted_home_note(mounted_parent, "/home/u", cwd).expect("note");
+        assert!(hedged.contains("may"));
+        assert!(hedged.contains("parent directory"));
+        assert!(!hedged.contains("path outside the sandbox (not mounted)"));
         let inside = "cat: /home/u/proj/x: No such file or directory\n";
         assert!(unmounted_home_note(inside, "/home/u", cwd).is_none());
         let other = "cat: /etc/x: No such file or directory\n";
