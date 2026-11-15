@@ -66,6 +66,7 @@ fn run(settings: Option<&str>, level: ThinkingLevel, opts: FakeOpts) -> Run {
             thinking: Some(level),
             mode: None,
             session_id: Some("t5".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

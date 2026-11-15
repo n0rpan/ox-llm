@@ -80,3 +80,9 @@ pub use think::{
 };
 pub use toolset::{resolve_toolset, MutationQueue, ToolSelection, Toolset};
 pub use user_bash::user_bash;
+
+/// A fresh background-job registry for a session (issue #127 (b)). Re-exported so tests
+/// and front ends can fill `Deps::jobs` without importing `oxa_tools` directly.
+pub fn fresh_jobs() -> std::sync::Arc<oxa_tools::JobRegistry> {
+    std::sync::Arc::new(oxa_tools::JobRegistry::new())
+}

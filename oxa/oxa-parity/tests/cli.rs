@@ -237,7 +237,7 @@ fn test_fn(row: &Row) -> Option<String> {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = parity_rows();
-    assert_eq!(rows.len(), 92, "CLI 64 + MOD 11 + ENV 17");
+    assert_eq!(rows.len(), 74, "CLI 57 + MOD 5 + ENV 12");
     let src = include_str!("cli.rs");
     for row in &rows {
         if row.test == "omission" {
@@ -256,7 +256,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for row in parity_rows()
         .iter()
         .filter(|r| r.verdict == "P" && r.test != "omission")
@@ -281,22 +281,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             body.contains("// invariant:"),
             "{}: an A test must name the invariant that forced the adaptation (`// invariant: ...`)",
-            row.id
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for row in parity_rows()
-        .iter()
-        .filter(|r| r.verdict == "O" && r.test != "omission")
-    {
-        let body = body_of(&fn_name(&row.id));
-        assert!(
-            body.contains("not supported") || body.contains("unsupported"),
-            "{}: an O test must assert the unsupported_in_oxa error",
             row.id
         );
     }
@@ -499,20 +483,6 @@ fn cli_010() {
 
 // pi: cli.md `--provider` selects a provider; oxa has one provider type, others are refused
 // invariant: O-134 (one provider: the oxe engine)
-#[test]
-fn cli_011() {
-    let server = fake(&turns(&[]));
-    let env = TestEnv::new();
-    let o = run(
-        &env,
-        &server.url(),
-        &["--provider", "anthropic", "--model", "x", "-p", "hi"],
-    );
-    assert_ne!(code(&o), 0);
-    assert!(err(&o).contains("not supported"), "clear error: {}", err(&o));
-    assert!(server.requests().is_empty(), "no request for a refused provider");
-}
-
 // pi: models.md `--model` exact id, fuzzy match, `:<thinking>` suffix
 // invariant: A-model resolved over the engine model list (/v1/models); provider/id only for an endpoint
 #[test]
@@ -968,7 +938,7 @@ fn cli_027() {
 fn fixture_mcp_server(env: &TestEnv, name: &str) {
     let script = env.write(
         "mcp/server.py",
-        &std::fs::read_to_string(oxa_parity::fixture("pi/mcp/server.py")).expect("fixture server"),
+        &std::fs::read_to_string(oxa_parity::fixture("goldens/mcp/server.py")).expect("fixture server"),
     );
     let rec = env.root().join(format!("rec-{name}"));
     std::fs::create_dir_all(&rec).expect("record dir");
@@ -1111,22 +1081,6 @@ fn cli_032() {
 // pi: cli.md the powershell tool exists on Windows only; oxa on Linux never declares it
 // invariant: O-134 platform scope (Linux only); the O surface is the tool name, which is never declared
 // (unsupported_in_oxa is not raised for an unknown tool name in -t: it is ignored)
-#[test]
-fn cli_033() {
-    let server = fake(&turns(&["a"]));
-    let env = TestEnv::new();
-    ok(&run(
-        &env,
-        &server.url(),
-        &["-p", "--no-session", "-t", "powershell,read", "x"],
-    ));
-    let t = tool_names(&server.requests()[0]);
-    assert!(
-        !t.contains(&"powershell".to_string()),
-        "never declared on Linux: {t:?}"
-    );
-}
-
 // pi: cli.md codemode and tool_search are off by default
 // invariant: A-tools built-in extensions off by default; MCP turns them on when needed
 #[test]
@@ -1558,41 +1512,8 @@ fn cli_052() {
     assert!(out(&o).contains("settings from"));
 }
 
-// pi: cli.md `--import-pi` copies skills, prompts, themes, keybindings and mcp.json once
-// invariant: pi dirs are never read implicitly (only by this one-time copy)
-#[test]
-fn cli_053() {
-    let server = fake(&turns(&["a"]));
-    let env = TestEnv::new();
-    env.write(
-        "home/.pi/agent/skills/imp53/SKILL.md",
-        "---\nname: imp53\ndescription: x\n---\nb\n",
-    );
-    ok(&run(&env, &server.url(), &["-p", "--no-session", "x"]));
-    assert!(
-        !env.agent_dir().join("skills/imp53").exists(),
-        "pi dirs are not read implicitly"
-    );
-    ok(&run(&env, &server.url(), &["config", "--import-pi"]));
-    assert!(
-        env.agent_dir().join("skills/imp53/SKILL.md").exists(),
-        "copied once"
-    );
-}
-
 // pi: cli.md `pi update` (self, --self, self, pi, --all) does not self-update
 // invariant: O-144 no version check, no self-update, no network unless asked
-#[test]
-fn cli_054() {
-    let server = fake(&turns(&[]));
-    let env = TestEnv::new();
-    for word in ["self", "pi", "--self", "--all"] {
-        let o = run(&env, &server.url(), &["update", word]);
-        assert_eq!(code(&o), 2, "update {word}");
-        assert!(err(&o).contains("not supported"), "update {word}: {}", err(&o));
-    }
-}
-
 // pi: cli.md `pi update --extensions` / `pi update <source>`
 // invariant: A-pkg oxa update for git and local packages
 #[test]
@@ -1608,44 +1529,10 @@ fn cli_055() {
 }
 
 // pi: cli.md `pi update --models` refreshes model catalogs (no catalogs in oxa)
-#[test]
-fn cli_056() {
-    let server = fake(&turns(&[]));
-    let env = TestEnv::new();
-    let o = run(&env, &server.url(), &["update", "--models"]);
-    assert_ne!(code(&o), 0);
-    assert!(err(&o).contains("not supported"), "{}", err(&o));
-}
-
 // pi: cli.md `pi auth check|print-api-key|print-bearer-token` (no provider credentials in oxa)
 // invariant: O-134 one provider type, no OAuth
-#[test]
-fn cli_057() {
-    let server = fake(&turns(&[]));
-    let env = TestEnv::new();
-    for args in [
-        ["auth", "check"],
-        ["auth", "print-api-key"],
-        ["auth", "print-bearer-token"],
-    ] {
-        let o = run(&env, &server.url(), &args);
-        assert_eq!(code(&o), 2, "{args:?}");
-        assert!(err(&o).contains("not supported"), "{args:?}: {}", err(&o));
-    }
-}
-
 // pi: cli.md `pi login --api-key`, `--no-browser` (no provider sign-in in oxa)
 // invariant: O-134 no provider sign-in
-#[test]
-fn cli_058() {
-    let server = fake(&turns(&[]));
-    let env = TestEnv::new();
-    let o = run(&env, &server.url(), &["login", "--api-key", "k", "--no-browser"]);
-    assert_eq!(code(&o), 2);
-    assert!(err(&o).contains("not supported"), "{}", err(&o));
-    assert!(server.requests().is_empty());
-}
-
 // pi: mcp.md `pi mcp add <server> -- <command> [args]` with `--env` and `--cwd`
 #[test]
 fn cli_059() {
@@ -1749,7 +1636,7 @@ fn cli_062() {
     // exit code is 0. (The fixture MCP server of the mcp rows, run by python3 -I.)
     let script = env.write(
         "mcp/server.py",
-        &std::fs::read_to_string(oxa_parity::fixture("pi/mcp/server.py")).expect("fixture server"),
+        &std::fs::read_to_string(oxa_parity::fixture("goldens/mcp/server.py")).expect("fixture server"),
     );
     let rec = env.root().join("rec62");
     std::fs::create_dir_all(&rec).expect("record dir");

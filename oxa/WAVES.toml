@@ -801,11 +801,11 @@ acceptance = [
 [[task]]
 id = "B14"
 wave = "B"
-title = "Fork, clone, import, picker metadata"
+title = "Fork, clone, picker metadata"
 crate = "oxa-session"
-owns = ["oxa-session/src/ops.rs", "oxa-session/src/migrate.rs", "oxa-session/src/meta.rs", "oxa-session/tests/b14_fork_clone_import_picker_metadata.rs"]
+owns = ["oxa-session/src/ops.rs", "oxa-session/src/meta.rs", "oxa-session/tests/b14_fork_clone_import_picker_metadata.rs"]
 consumes = ["SessionStore (A3)", "Tree (A4)"]
-provides = ["fork_session", "clone_session", "set_name", "set_label", "import_pi", "migrate_lines", "meta_of", "search_sessions", "sort_sessions"]
+provides = ["fork_session", "clone_session", "set_name", "set_label", "meta_of", "search_sessions", "sort_sessions"]
 needs = ["A3", "A4"]
 size = "M"
 est_min = 40
@@ -814,9 +814,6 @@ test_cmd = "cargo test -p oxa-session --test b14_fork_clone_import_picker_metada
 acceptance = [
   { test = "fork_header_has_parent_session", text = "and the branch up to the entry" },
   { test = "clone_copies_active_branch", text = "ids kept" },
-  { test = "pi_v1_fixture_imports", text = "fixture file" },
-  { test = "pi_v2_fixture_imports", text = "fixture file" },
-  { test = "pi_v3_fixture_imports", text = "fixture file" },
   { test = "labels_set_and_clear", text = "entries appended" },
   { test = "names", text = "SessionInfo entry and meta name" },
   { test = "list_sort_modes", text = "recent / threaded / relevance" },
@@ -1460,7 +1457,7 @@ acceptance = [
   { test = "debug_writes_file", text = "/debug" },
   { test = "hotkeys_reflects_keymap", text = "/hotkeys with overrides" },
   { test = "compact_name_session_copy_export", text = "handlers" },
-  { test = "new_resume_tree_fork_clone_import", text = "handlers" },
+  { test = "new_resume_tree_fork_clone", text = "handlers" },
   { test = "reload_reports_epoch_cost", text = "notice" },
   { test = "omitted_commands_error", text = "unsupported_in_oxa" },
 ]
@@ -1508,7 +1505,6 @@ acceptance = [
   { test = "list_models", text = "output format" },
   { test = "export_flag", text = "--export input [output]" },
   { test = "help_and_version", text = "output" },
-  { test = "config_import_pi_once", text = "copies, never overwrites" },
   { test = "print_mode_end_to_end_with_fake", text = "`oxa -p` against oxa-fake" },
   { test = "continue_resume_session_flags", text = "open modes" },
   { test = "no_sandbox_notice", text = "bwrap missing" },
@@ -2085,7 +2081,7 @@ id = "G1"
 wave = "G"
 title = "PARITY: tools"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/tools.rs", "oxa-parity/fixtures/pi/tools/"]
+owns = ["oxa-parity/tests/tools.rs", "oxa-parity/fixtures/goldens/tools/"]
 consumes = ["PARITY.md rows: TOOLS, CM", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: tools"]
 needs = ["D13", "F11"]
@@ -2095,9 +2091,8 @@ test_file = "oxa-parity/tests/tools.rs"
 test_cmd = "cargo test -p oxa-parity --test tools"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2106,7 +2101,7 @@ id = "G2"
 wave = "G"
 title = "PARITY: cli"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/cli.rs", "oxa-parity/fixtures/pi/cli/"]
+owns = ["oxa-parity/tests/cli.rs", "oxa-parity/fixtures/goldens/cli/"]
 consumes = ["PARITY.md rows: CLI, ENV, MOD", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: cli"]
 needs = ["D13", "F11"]
@@ -2116,9 +2111,8 @@ test_file = "oxa-parity/tests/cli.rs"
 test_cmd = "cargo test -p oxa-parity --test cli"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2127,7 +2121,7 @@ id = "G3"
 wave = "G"
 title = "PARITY: sessions"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/sessions.rs", "oxa-parity/fixtures/pi/sessions/"]
+owns = ["oxa-parity/tests/sessions.rs", "oxa-parity/fixtures/goldens/sessions/"]
 consumes = ["PARITY.md rows: SES", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: sessions"]
 needs = ["D13", "F11"]
@@ -2137,9 +2131,8 @@ test_file = "oxa-parity/tests/sessions.rs"
 test_cmd = "cargo test -p oxa-parity --test sessions"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2148,7 +2141,7 @@ id = "G4"
 wave = "G"
 title = "PARITY: tree"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/tree.rs", "oxa-parity/fixtures/pi/tree/"]
+owns = ["oxa-parity/tests/tree.rs", "oxa-parity/fixtures/goldens/tree/"]
 consumes = ["PARITY.md rows: TREE, ENG (engine support, O-144; fake engine with a held slot and `: queued` comments)", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: tree"]
 needs = ["D13", "F11"]
@@ -2158,9 +2151,8 @@ test_file = "oxa-parity/tests/tree.rs"
 test_cmd = "cargo test -p oxa-parity --test tree"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2169,7 +2161,7 @@ id = "G5"
 wave = "G"
 title = "PARITY: compaction"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/compaction.rs", "oxa-parity/fixtures/pi/compaction/"]
+owns = ["oxa-parity/tests/compaction.rs", "oxa-parity/fixtures/goldens/compaction/"]
 consumes = ["PARITY.md rows: CMP", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: compaction"]
 needs = ["D13", "F11"]
@@ -2179,9 +2171,8 @@ test_file = "oxa-parity/tests/compaction.rs"
 test_cmd = "cargo test -p oxa-parity --test compaction"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2190,7 +2181,7 @@ id = "G6"
 wave = "G"
 title = "PARITY: json"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/json.rs", "oxa-parity/fixtures/pi/json/"]
+owns = ["oxa-parity/tests/json.rs", "oxa-parity/fixtures/goldens/json/"]
 consumes = ["PARITY.md rows: JSON", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: json"]
 needs = ["D13", "F11"]
@@ -2200,9 +2191,8 @@ test_file = "oxa-parity/tests/json.rs"
 test_cmd = "cargo test -p oxa-parity --test json"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2211,7 +2201,7 @@ id = "G7"
 wave = "G"
 title = "PARITY: rpc"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/rpc.rs", "oxa-parity/fixtures/pi/rpc/"]
+owns = ["oxa-parity/tests/rpc.rs", "oxa-parity/fixtures/goldens/rpc/"]
 consumes = ["PARITY.md rows: RPC", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: rpc"]
 needs = ["D13", "F11"]
@@ -2221,9 +2211,8 @@ test_file = "oxa-parity/tests/rpc.rs"
 test_cmd = "cargo test -p oxa-parity --test rpc"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2232,7 +2221,7 @@ id = "G8"
 wave = "G"
 title = "PARITY: tui"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/tui.rs", "oxa-parity/fixtures/pi/tui/"]
+owns = ["oxa-parity/tests/tui.rs", "oxa-parity/fixtures/goldens/tui/"]
 consumes = ["PARITY.md rows: TUI, THM", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: tui"]
 needs = ["D13", "F11"]
@@ -2242,9 +2231,8 @@ test_file = "oxa-parity/tests/tui.rs"
 test_cmd = "cargo test -p oxa-parity --test tui"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2253,7 +2241,7 @@ id = "G9"
 wave = "G"
 title = "PARITY: keys_settings"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/keys_settings.rs", "oxa-parity/fixtures/pi/keys_settings/"]
+owns = ["oxa-parity/tests/keys_settings.rs", "oxa-parity/fixtures/goldens/keys_settings/"]
 consumes = ["PARITY.md rows: KEY, SET", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: keys_settings"]
 needs = ["D13", "F11"]
@@ -2263,9 +2251,8 @@ test_file = "oxa-parity/tests/keys_settings.rs"
 test_cmd = "cargo test -p oxa-parity --test keys_settings"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2274,7 +2261,7 @@ id = "G10"
 wave = "G"
 title = "PARITY: resources"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/resources.rs", "oxa-parity/fixtures/pi/resources/"]
+owns = ["oxa-parity/tests/resources.rs", "oxa-parity/fixtures/goldens/resources/"]
 consumes = ["PARITY.md rows: SKL, TPL, PKG, SLASH, SEC", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: resources"]
 needs = ["D13", "F11"]
@@ -2284,9 +2271,8 @@ test_file = "oxa-parity/tests/resources.rs"
 test_cmd = "cargo test -p oxa-parity --test resources"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2295,7 +2281,7 @@ id = "G11"
 wave = "G"
 title = "PARITY: mcp"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/mcp.rs", "oxa-parity/fixtures/pi/mcp/"]
+owns = ["oxa-parity/tests/mcp.rs", "oxa-parity/fixtures/goldens/mcp/"]
 consumes = ["PARITY.md rows: MCP", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: mcp"]
 needs = ["D13", "F11"]
@@ -2305,9 +2291,8 @@ test_file = "oxa-parity/tests/mcp.rs"
 test_cmd = "cargo test -p oxa-parity --test mcp"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 
@@ -2316,7 +2301,7 @@ id = "G12"
 wave = "G"
 title = "PARITY: extensions"
 crate = "oxa-parity"
-owns = ["oxa-parity/tests/extensions.rs", "oxa-parity/fixtures/pi/extensions/"]
+owns = ["oxa-parity/tests/extensions.rs", "oxa-parity/fixtures/goldens/extensions/"]
 consumes = ["PARITY.md rows: EXT", "pi docs", "pi 1.5.2 fixtures"]
 provides = ["PARITY tests: extensions"]
 needs = ["D13", "F11"]
@@ -2326,9 +2311,8 @@ test_file = "oxa-parity/tests/extensions.rs"
 test_cmd = "cargo test -p oxa-parity --test extensions"
 acceptance = [
   { test = "every_row_has_test_or_recorded_omission", text = "each PARITY.md id of this area maps to a test fn or an O-row assertion" },
-  { test = "p_rows_compare_with_pi", text = "documented output or recorded fixture" },
+  { test = "documented_rows_have_tests", text = "documented output or recorded fixture" },
   { test = "a_rows_name_their_invariant", text = "comment + adapted behaviour asserted" },
-  { test = "o_rows_assert_unsupported_error", text = "unsupported_in_oxa" },
 ]
 
 

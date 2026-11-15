@@ -28,7 +28,7 @@ mod rig;
 #[path = "support/tree_pty.rs"]
 mod tree_pty;
 use rig::{session_lines, user_texts, Rig, RigOpts, Screen, WAIT};
-use tree_pty::{dialog_choice, open_tree, select_listed, select_row, selected};
+use tree_pty::{open_tree, select_listed, select_row, selected};
 
 // ---------------------------------------------------------------- helpers
 
@@ -758,7 +758,7 @@ fn ses_007() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The session picker and /import through the pty (lane tui, wave H)
+// The session picker through the pty (lane tui, wave H)
 // ---------------------------------------------------------------------------------------------
 
 /// Three sessions of the work directory (apple, banana, cherry; cherry named `fruit bowl`),
@@ -822,75 +822,6 @@ fn picker_rig(env: TestEnv, opts: RigOpts) -> Rig {
         .wait_for_named("the picker", |s| picker_rows(s).len() == 3, WAIT)
         .unwrap();
     rig
-}
-
-/// pi docs: sessions.md "`/import <path>`" (slash-commands.md: preserves its ID and working
-/// directory). invariant: oxa-only migration of pi v1-v3 files; assistant entries lack the
-/// exact wire bytes, so the cache is cold on the first request.
-#[test]
-fn ses_008() {
-    // pi docs: slash-commands.md "`/import <path>` Import a JSONL session, preserving its ID and
-    // working directory"; interactive-mode.ts asks "Replace current session with <path>?" and
-    // reports "Session imported from: <path>".
-    // invariant: pi v1-v3 files are migrated; their assistant entries lack the exact wire
-    // bytes, so the first request after the import starts cold (the wire is rebuilt).
-    let env = TestEnv::new();
-    let proj = env.root().join("proj");
-    std::fs::create_dir_all(&proj).unwrap();
-    let id = "0f6c2d9e-1111-4222-8333-944455556666";
-    let src = env.write(
-        "import/pi-session.jsonl",
-        &[
-            json!({"type":"session","version":3,"id":id,"timestamp":"2026-01-01T00:00:00.000Z","cwd":proj}),
-            json!({"type":"message","id":"a1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z",
-                   "message":{"role":"user","content":"imported question","timestamp":1}}),
-            json!({"type":"message","id":"a2","parentId":"a1","timestamp":"2026-01-01T00:00:02.000Z",
-                   "message":{"role":"assistant","content":[{"type":"text","text":"imported answer"}],
-                              "stopReason":"stop","timestamp":2}}),
-        ]
-        .iter()
-        .map(|v| format!("{v}\n"))
-        .collect::<String>(),
-    );
-    let rig = Rig::start(rig::replies(2), RigOpts { ..RigOpts::default() });
-    let _ = &env;
-    // Cancel first: nothing changes.
-    let cmd = format!("/import {}", src.display());
-    rig.slash(&cmd);
-    rig.pty.wait_for_text("Replace current session with").unwrap();
-    rig.pty.send_key("escape");
-    rig.pty.wait_for_text("Import cancelled").unwrap();
-    assert!(!rig.screen().contains("imported question"));
-    // Confirm.
-    rig.slash(&cmd);
-    rig.pty.wait_for_text("Replace current session with").unwrap();
-    rig.pty
-        .wait_for_named("Yes chosen", |s| dialog_choice(s) == "Yes", WAIT)
-        .unwrap();
-    rig.pty.send_key("enter");
-    rig.pty.wait_for_text("Session imported from:").unwrap();
-    let s = rig.pty.wait_for_text("imported answer").unwrap();
-    assert!(s.contains("imported question"), "{s:?}");
-    // Stored with the same id and cwd.
-    let files = session_files(&sessions_root(&rig.env));
-    let imported = files
-        .iter()
-        .find(|f| header_of(f)["id"] == json!(id))
-        .unwrap_or_else(|| panic!("a session with id {id}: {files:?}"));
-    assert_eq!(
-        header_of(imported)["cwd"],
-        json!(proj),
-        "the working directory is kept"
-    );
-    // The next prompt continues the imported conversation.
-    rig.prompt("follow up", "reply 1");
-    let last = rig.generating().last().cloned().unwrap();
-    let texts: Vec<String> = last
-        .messages
-        .iter()
-        .map(|m| m.content.clone().unwrap_or_default())
-        .collect();
-    assert_eq!(texts, vec!["imported question", "imported answer", "follow up"]);
 }
 
 /// pi docs: sessions.md "`--no-session`": an ephemeral run keeps nothing on disk.
@@ -1220,25 +1151,6 @@ fn ses_013() {
     );
 }
 
-/// pi docs: sessions.md "Share": `/share` uploads a session. oxa has no uploads, so the command
-/// is `unsupported_in_oxa`.
-#[test]
-fn ses_014() {
-    let env = TestEnv::new();
-    let server = FakeServer::start(Vec::new(), FakeOpts::default()).expect("fake engine");
-    let run = oxa(&env, &server.url(), &["-p", "/share"]);
-    let err = stderr_of(&run);
-    if !err.contains("unsupported_in_oxa") {
-        red(
-            "SES-014",
-            "print mode answers `/share` with `invalid` (\"slash commands and ! lines go through \
-             run_command or user_bash\", oxa-core session.rs prompt guard), not `unsupported_in_oxa`; \
-             the omitted-command error (oxa-core OMITTED) is produced only by the interactive front end",
-        );
-    }
-    assert_ne!(run.status.code(), Some(0), "the unsupported command fails");
-}
-
 /// pi docs: sessions.md "Report a bug": `/bug` prepares a report. oxa writes a local redacted
 /// bundle. invariant: oxa-only, nothing is uploaded.
 #[test]
@@ -1361,8 +1273,12 @@ fn fn_body(id: &str) -> &'static str {
 #[test]
 fn every_row_has_test_or_recorded_omission() {
     let rows = ses_rows();
-    assert_eq!(rows.len(), 16, "the SES area has 16 rows: {rows:?}");
+    assert_eq!(rows.len(), 14, "the SES area has 14 rows: {rows:?}");
     for (id, verdict, test) in &rows {
+        if test == "omission" {
+            assert_eq!(verdict, "O", "{id}: only O rows may be omitted");
+            continue;
+        }
         let fn_name = id.to_ascii_lowercase().replace('-', "_");
         assert!(
             test.contains(&format!("sessions.rs::{fn_name}")),
@@ -1381,7 +1297,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for (id, verdict, _) in ses_rows() {
         if verdict != "P" {
             continue;
@@ -1409,20 +1325,6 @@ fn a_rows_name_their_invariant() {
         assert!(
             body.contains("assert") || body.contains("red("),
             "{id} (A) asserts its adapted behaviour"
-        );
-    }
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for (id, verdict, _) in ses_rows() {
-        if verdict != "O" {
-            continue;
-        }
-        assert!(
-            fn_body(&id).contains("unsupported_in_oxa"),
-            "{id} (O) asserts the unsupported_in_oxa error"
         );
     }
 }

@@ -101,6 +101,7 @@ fn open(env: &TestEnv, eng: Arc<ScriptedEngine>, tools: Vec<Arc<dyn Tool>>, sett
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("open")
 }

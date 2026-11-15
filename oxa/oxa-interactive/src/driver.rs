@@ -101,11 +101,6 @@ enum Ask {
         target: String,
         refill: Option<String>,
     },
-    /// pi `/import`: "Replace current session with <path>?"
-    Import {
-        rx: Receiver<Option<bool>>,
-        path: PathBuf,
-    },
 }
 
 /// Rendered lines per block, kept between frames (fullscreen draws the whole transcript, and
@@ -867,13 +862,6 @@ impl<'a> Loop<'a> {
                     }
                     Err(TryRecvError::Disconnected) => {}
                     Err(TryRecvError::Empty) => open.push(Ask::Summary { rx, target, refill }),
-                },
-                Ask::Import { rx, path } => match rx.try_recv() {
-                    Ok(Some(true)) => self.send(SessionCmd::Reopen(Reopen::Import(path))),
-                    Ok(_) | Err(TryRecvError::Disconnected) => {
-                        self.push_notice(Level::Info, "Import cancelled".to_string());
-                    }
-                    Err(TryRecvError::Empty) => open.push(Ask::Import { rx, path }),
                 },
                 Ask::SummaryFocus { rx, target, refill } => match rx.try_recv() {
                     Ok(Some(text)) => {
@@ -2229,18 +2217,6 @@ impl<'a> Loop<'a> {
         self.dirty = true;
         match action {
             AppAction::None => {}
-            // pi asks before `/import` replaces the current session.
-            AppAction::Session(SessionCmd::Reopen(Reopen::Import(path))) => {
-                let (tx, rx) = mpsc::channel();
-                let req = UiRequest::Confirm {
-                    title: "Import session".to_string(),
-                    body: format!("Replace current session with {}?", path.display()),
-                    timeout_ms: None,
-                    reply: tx,
-                };
-                self.dialogs.handle(req, &mut self.vm, now_ms());
-                self.asks.push(Ask::Import { rx, path });
-            }
             AppAction::Session(cmd) => self.send(cmd),
             AppAction::Open(kind) => self.open_selector(kind),
             AppAction::Notify { level, text } => self.push_notice(level, text),

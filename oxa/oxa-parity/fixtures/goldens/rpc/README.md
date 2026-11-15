@@ -1,4 +1,4 @@
-# fixtures/pi/rpc
+# fixtures/goldens/rpc
 
 `documented.json` holds one entry per P row of the RPC area (`RPC-0nn`): the example or rule from pi 1.5.2's
 `packages/coding-agent/docs/rpc.md`, `rpc-commands.md`, `rpc-extension-ui.md` and `json.md` (commit 47e9d74). These are the

@@ -199,6 +199,7 @@ fn deps(engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, root: &Path, work
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     }
 }
 
@@ -275,7 +276,6 @@ fn run_on(
                 Reopen::New => Open::New,
                 Reopen::Resume(sref) => Open::Resume(sref),
                 Reopen::Fork(sref) => Open::Fork(sref),
-                Reopen::Import(_) => return Err(OxaError::new("invalid", "no import in this test")),
             };
             let engine: Arc<dyn Engine> = Arc::new(HttpEngine::new(&url, None)?);
             Session::open(deps(engine, store2.clone(), &root, &work), open)

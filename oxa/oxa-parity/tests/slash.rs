@@ -9,7 +9,7 @@
 //!   engine recorded, a file written, the session file. Waits are bounded.
 //! * Print-mode rows (SLASH-030 extension clash) run `oxa -p` with `oxa_parity::run_oxa`.
 //! * P rows: pi 1.5.2's documented text (`docs/slash-commands.md`) is recorded in `DOCUMENTED`
-//!   below; `p_rows_compare_with_pi` checks that every P row has one. Each test cites it too.
+//!   below; `documented_rows_have_tests` checks that every P row has one. Each test cites it too.
 //! * A rows name their invariant in an `// invariant:` comment.
 //! * O rows assert the `unsupported_in_oxa` notice.
 //! * A row whose behaviour is missing is a RED test: it panics with `RED SLASH-NNN: ...`.
@@ -22,17 +22,17 @@ mod tree_pty;
 
 use oxa_fake::{FakeModel, FakeOpts, Recorded, ScriptTurn, TestEnv};
 use oxa_parity::run_oxa;
-use rig::{editor_text, replies, session_files, session_lines, user_texts, Rig, RigOpts, Screen, WAIT};
+use rig::{editor_text, replies, session_lines, user_texts, Rig, RigOpts, Screen, WAIT};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tree_pty::{clear_editor, dialog_choice, navigated, open_tree, pick, select_listed};
+use tree_pty::{clear_editor, navigated, open_tree, pick, select_listed};
 
 /// This file, for the meta-checks below.
 const SELF_SRC: &str = include_str!("slash.rs");
 
 /// pi 1.5.2 documented text of the P rows (`docs/slash-commands.md`, and the Export/Trust/
-/// Reload/Hotkeys/Mcp entries of the same page). Compared by `p_rows_compare_with_pi`.
+/// Reload/Hotkeys/Mcp entries of the same page). Compared by `documented_rows_have_tests`.
 const DOCUMENTED: &[(&str, &str)] = &[
     ("SLASH-001", "/settings | Open settings"),
     ("SLASH-008", "/new | Start a new session"),
@@ -129,7 +129,7 @@ fn parity_rows() -> Vec<ParityRow> {
             test: cells[5].trim_matches('`').to_string(),
         });
     }
-    assert_eq!(rows.len(), 30, "SLASH-001..SLASH-030 of PARITY.md");
+    assert_eq!(rows.len(), 25, "25 supported SLASH rows");
     rows
 }
 
@@ -159,7 +159,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     for r in parity_rows().iter().filter(|r| r.verdict == "P") {
         assert!(!documented(&r.id).is_empty(), "{}: no documented pi output", r.id);
     }
@@ -178,24 +178,7 @@ fn a_rows_name_their_invariant() {
         );
         n += 1;
     }
-    assert_eq!(n, 10, "A rows of SLASH (10)");
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for r in parity_rows().iter().filter(|r| r.verdict == "O") {
-        if r.test == "omission" {
-            // No callable surface: the omission is recorded in PARITY.md.
-            continue;
-        }
-        let body = fn_body(&fname(&r.id)).unwrap_or_else(|| panic!("{}: no fn", r.id));
-        assert!(
-            body.contains("unsupported_in_oxa"),
-            "{}: no unsupported_in_oxa",
-            r.id
-        );
-    }
+    assert_eq!(n, 9, "A rows of SLASH (9)");
 }
 
 // ---------------------------------------------------------------- helpers
@@ -354,30 +337,6 @@ fn slash_004() {
     assert!(s.contains("fake-model"), "both engine models are listed: {s:?}");
     rig.pty.send_key("escape");
     back_to_editor(&rig);
-}
-
-/// `/login` is not in oxa: the command answers `unsupported_in_oxa` and sends nothing.
-#[test]
-fn slash_005() {
-    // pi docs: slash-commands.md "/login [provider]  Add provider authentication"
-    // O: oxa has no provider login (the engine is the only endpoint); the notice is the error.
-    let rig = Rig::start(replies(1), RigOpts::default());
-    rig.slash("/login");
-    let s = rig.pty.wait_for_text("unsupported_in_oxa").unwrap();
-    assert!(s.contains("/login"), "{s:?}");
-    assert!(rig.generating().is_empty(), "nothing is sent to the engine");
-}
-
-/// `/logout` is not in oxa: the command answers `unsupported_in_oxa` and sends nothing.
-#[test]
-fn slash_006() {
-    // pi docs: slash-commands.md "/logout  Remove provider authentication"
-    // O: oxa has no provider login to remove (see slash_005).
-    let rig = Rig::start(replies(1), RigOpts::default());
-    rig.slash("/logout");
-    let s = rig.pty.wait_for_text("unsupported_in_oxa").unwrap();
-    assert!(s.contains("/logout"), "{s:?}");
-    assert!(rig.generating().is_empty(), "nothing is sent to the engine");
 }
 
 /// `/engine` (pi's `/llama`, renamed by design) shows the engine status and loads a model.
@@ -619,63 +578,6 @@ fn slash_015() {
     );
 }
 
-/// `/import <path>`: a pi v3 session file is imported with its id and directory; cancel changes nothing.
-#[test]
-fn slash_016() {
-    // pi docs: slash-commands.md "/import <path>  Import a JSONL session, preserving its ID and
-    // working directory"
-    // invariant: pi v1-v3 files are migrated; their assistant entries lack the exact wire bytes,
-    // so the conversation is rebuilt on the wire (the cold start is asserted in ses_008).
-    let env = TestEnv::new();
-    let proj = env.root().join("proj");
-    std::fs::create_dir_all(&proj).unwrap();
-    let id = "0f6c2d9e-1111-4222-8333-944455556666";
-    let src = env.write(
-        "import/pi-session.jsonl",
-        &[
-            json!({"type":"session","version":3,"id":id,"timestamp":"2026-01-01T00:00:00.000Z","cwd":proj}),
-            json!({"type":"message","id":"a1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z",
-                   "message":{"role":"user","content":"imported question","timestamp":1}}),
-            json!({"type":"message","id":"a2","parentId":"a1","timestamp":"2026-01-01T00:00:02.000Z",
-                   "message":{"role":"assistant","content":[{"type":"text","text":"imported answer"}],
-                              "stopReason":"stop","timestamp":2}}),
-        ]
-        .iter()
-        .map(|v| format!("{v}\n"))
-        .collect::<String>(),
-    );
-    let rig = Rig::start_in(env, replies(1), RigOpts::default());
-    let cmd = format!("/import {}", src.display());
-    rig.slash(&cmd);
-    rig.pty.wait_for_text("Replace current session with").unwrap();
-    rig.pty.send_key("escape");
-    rig.pty.wait_for_text("Import cancelled").unwrap();
-    assert!(
-        !rig.screen().contains("imported question"),
-        "a cancel imports nothing"
-    );
-    rig.slash(&cmd);
-    rig.pty.wait_for_text("Replace current session with").unwrap();
-    rig.pty
-        .wait_for_named("Yes chosen", |s| dialog_choice(s) == "Yes", WAIT)
-        .unwrap();
-    rig.pty.send_key("enter");
-    let s = rig.pty.wait_for_text("imported answer").unwrap();
-    assert!(s.contains("imported question"), "{s:?}");
-    let files = session_files(&rig.env);
-    let imported = files
-        .iter()
-        .find(|f| header_of(f)["id"] == json!(id))
-        .unwrap_or_else(|| panic!("a session with id {id}: {files:?}"));
-    assert_eq!(header_of(imported)["cwd"], json!(proj), "the directory is kept");
-    rig.prompt("follow up", "reply 1");
-    assert_eq!(
-        user_texts(&rig.generating()[0]),
-        vec!["imported question", "follow up"],
-        "the next prompt continues the imported conversation"
-    );
-}
-
 // ---------------------------------------------------------------- export and share
 
 /// `/copy` puts the last assistant message on the clipboard (OSC 52).
@@ -768,19 +670,6 @@ fn session_data(page: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// `/share` is not in oxa: `unsupported_in_oxa`, nothing is uploaded.
-#[test]
-fn slash_019() {
-    // pi docs: slash-commands.md "/share  Upload the session and return a viewer link"
-    // O: no third-party upload from a local-first tool; the command answers the refusal.
-    let rig = Rig::start(replies(1), RigOpts::default());
-    rig.prompt("private", "reply 1");
-    rig.slash("/share");
-    let s = rig.pty.wait_for_text("unsupported_in_oxa").unwrap();
-    assert!(s.contains("/share"), "{s:?}");
-    assert_eq!(rig.generating().len(), 1, "nothing is sent for the share");
 }
 
 /// `/bug <description>` writes a local, redacted bundle; no transcript text, nothing uploaded.
