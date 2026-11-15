@@ -28,8 +28,7 @@ fn main() {
                             .unwrap()
                             .iter()
                             .map(|part| {
-                                String::from_utf8(stream.feed(part.as_str().unwrap().as_bytes()))
-                                    .unwrap()
+                                String::from_utf8(stream.feed(part.as_str().unwrap().as_bytes())).unwrap()
                             })
                             .collect::<Vec<_>>();
                         chunks.push(String::from_utf8(stream.finish()).unwrap());

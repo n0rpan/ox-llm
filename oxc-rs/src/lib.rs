@@ -1,4 +1,7 @@
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "upstream-anthropic-request")]
-pub mod anthropic_request;
+pub use oxc_gateway::anthropic_request;
+
+#[cfg(feature = "upstream-anthropic-stream")]
+pub use oxc_gateway::anthropic_stream;

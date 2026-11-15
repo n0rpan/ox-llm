@@ -5,6 +5,9 @@ and `translate_with_blocks`. No feature is enabled by default; these library
 functions do not enable the native controller, read keys, send HTTP, or account
 for spend. The gateway supplies the validated upstream model and catalog limit.
 Errors contain fixed field names, never request contents.
+The implementation lives in the shared `oxa/oxc-gateway` crate; oxc forwards the
+feature and exposes that same module. In-process callers use the shared crate
+directly, so the gateway never needs a dependency back on the controller.
 
 `translate_with_blocks` lets the gateway restore native thinking blocks for the
 exact assistant prefix. The caller must partition that lookup by upstream, model

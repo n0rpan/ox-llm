@@ -16,6 +16,7 @@ members = [
     "oxa-cli",
     "oxa-fake", "oxa-parity",
 ]
+exclude = ["oxc-gateway"]
 
 [workspace.package]
 version = "0.2.0"

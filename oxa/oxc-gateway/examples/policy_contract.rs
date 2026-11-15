@@ -36,8 +36,5 @@ fn main() {
         Err(error) => json!({"status":error.status,"body":error.body()}),
         Ok(()) => Value::Null,
     };
-    println!(
-        "{}",
-        serde_json::to_string(&output).expect("contract output")
-    );
+    println!("{}", serde_json::to_string(&output).expect("contract output"));
 }

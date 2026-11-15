@@ -1,0 +1,56 @@
+[package]
+name = "oxc-gateway"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[features]
+default = []
+pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
+accounting = ["policy", "pricing", "dep:nix"]
+ledger = ["accounting", "secrets", "dep:chrono", "dep:getrandom", "dep:hmac", "dep:sha2"]
+runtime = ["cloud-only", "ledger"]
+cloud-only = ["dep:serde_json", "dep:url"]
+policy = ["dep:serde_json"]
+secrets = ["dep:serde_json", "dep:nix"]
+upstream-anthropic-request = ["dep:serde_json"]
+upstream-anthropic-stream = ["dep:serde_json"]
+transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
+anthropic-client = ["transport", "secrets", "upstream-anthropic-request", "upstream-anthropic-stream"]
+anthropic-gateway = ["anthropic-client", "runtime"]
+
+[dependencies]
+bigdecimal = { version = "0.4", optional = true }
+num-traits = { version = "0.2", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
+getrandom = { version = "0.3", optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
+nix = { version = "0.30", features = ["user"], optional = true }
+url = { version = "2", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
+futures-util = { version = "0.3", optional = true }
+
+[[example]]
+name = "catalog_contract"
+required-features = ["cloud-only"]
+
+[[example]]
+name = "policy_contract"
+required-features = ["policy"]
+
+[[example]]
+name = "secrets_contract"
+required-features = ["secrets"]
+
+[[example]]
+name = "pricing_contract"
+required-features = ["accounting"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[workspace]
