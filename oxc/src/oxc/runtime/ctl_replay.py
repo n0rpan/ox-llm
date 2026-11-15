@@ -233,7 +233,9 @@ def cancel_explicit(session, idem=None):
     """POST /_local/cancel: the client deliberately cancelled. Every live or cut entry of this session (and
     idempotency key, when given) ends now: the engine socket is closed and the grace is over. Returns the
     number cancelled; an unknown request is 0 (idempotent)."""
-    wanted = {'h:' + session, 'i:' + (idem or session)}
+    wanted = {'h:' + session}
+    if idem:
+        wanted.add('i:' + idem)
     with STORE.lock:
         found = [e for e in STORE.entries.values() if e.session in wanted and (idem is None or e.idem == idem)
                  and e.state in ('live', 'cut')]

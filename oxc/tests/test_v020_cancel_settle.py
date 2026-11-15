@@ -87,6 +87,38 @@ class CancelSettle(pre.PreemptOverHttp):
         self.assertIn('cancel', ctl_env.CAPABILITIES)
 
 
+class CancelScope(unittest.TestCase):
+    def _store(self, *sessions):
+        from oxc.runtime import ctl_replay as r
+        store = r.Store()
+        for n, sess in enumerate(sessions):
+            e = r.Entry(r.Identity('k%d' % n, 'body', 'lane', session=sess))
+            e.state = 'cut'
+            store.entries[e.key] = e
+        return r, store
+
+    def test_session_only_does_not_cancel_an_idempotency_key_of_the_same_text(self):
+        r, store = self._store('i:X', 'h:X', 'h:other')
+        with patch.object(r, 'STORE', store):
+            self.assertEqual(r.cancel_explicit('X'), 1)
+        self.assertEqual(sorted(e.session for e in store.entries.values()), ['h:other', 'i:X'])
+
+    def test_unrelated_sessions_survive(self):
+        r, store = self._store('h:A', 'h:B')
+        with patch.object(r, 'STORE', store):
+            self.assertEqual(r.cancel_explicit('nobody'), 0)
+        self.assertEqual(len(store.entries), 2)
+
+
+class StandaloneImport(unittest.TestCase):
+    def test_ctl_routes_imports_ctl_replay_without_a_package(self):
+        import subprocess
+        runtime = str(__import__('pathlib').Path(__file__).resolve().parents[1] / 'src' / 'oxc' / 'runtime')
+        out = subprocess.run([sys.executable, '-c', 'import ctl_routes; print(ctl_routes.ctl_replay.__name__)'],
+                             cwd=runtime, capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
 
