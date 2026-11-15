@@ -11,18 +11,21 @@ use std::sync::Arc;
 pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
     let on = sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
-    let token = if on
+    // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the first
+    // bash command that has the network, never at startup.
+    let lookup = on
         && !offline
         && !test_isolated(
             std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
                 .ok()
                 .as_deref(),
-        ) {
-        gh_token()
+        );
+    let ns = NetSandbox::new(sandbox, on, offline);
+    Arc::new(if lookup {
+        ns.with_gh_token_lazy(gh_token)
     } else {
-        None
-    };
-    Arc::new(NetSandbox::new(sandbox, on, offline).with_gh_token(token))
+        ns
+    })
 }
 
 /// Under test isolation (`OXA_TEST_ISOLATION=1`) the host's `gh` login is never consulted: a

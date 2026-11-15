@@ -351,36 +351,65 @@ def _ledger_error():
                       503, 'cloud_ledger_unavailable')
 
 
-def _read_spend(path):
-    total = 0.0
+_spend_cache = {}  # path -> (inode, offset, total, tail bytes before offset)
+
+
+def _row_cost(line):
     try:
-        stream = open(path, encoding='utf-8')
-    except FileNotFoundError:
+        row = json.loads(line)
+    except ValueError:
+        raise _ledger_error() from None
+    if not isinstance(row, dict):
+        raise _ledger_error()
+    if row.get('remote') is not True:
         return 0.0
-    except (OSError, UnicodeError):
-        raise _ledger_error() from None
+    usd = row.get('cost_usd')
+    if type(usd) not in (int, float) or not math.isfinite(usd) or usd < 0:
+        # A remote row without a settled cost under-counts the cap: fail closed.
+        raise _ledger_error()
+    return usd
+
+
+_spend_lock = threading.Lock()
+
+
+def _read_spend(path):
+    with _spend_lock:
+        return _read_spend_locked(path)
+
+
+def _read_spend_locked(path):
+    """Sum remote cost.  Complete lines already summed are not re-read: the ledger is
+    append-only, so only the bytes after the cached offset are parsed."""
+    key = str(path)
     try:
-        with stream:
-            for line in stream:
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    raise _ledger_error() from None
-                if not isinstance(row, dict):
-                    raise _ledger_error() from None
-                if row.get('remote') is not True:
-                    continue
-                usd = row.get('cost_usd')
-                if type(usd) not in (int, float) or not math.isfinite(usd) or usd < 0:
-                    # A remote row without a settled cost under-counts the cap: fail closed.
-                    raise _ledger_error() from None
-                total += usd
-    except CloudError:
-        raise
-    except (OSError, UnicodeError):
+        with open(path, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            ino, offset, total, tail = _spend_cache.get(key, (None, 0, 0.0, b''))
+            if ino != info.st_ino or offset > info.st_size:
+                offset, total, tail = 0, 0.0, b''
+            elif offset:
+                stream.seek(max(0, offset - len(tail)))
+                if stream.read(len(tail)) != tail:  # rewritten, not appended
+                    offset, total, tail = 0, 0.0, b''
+            stream.seek(offset)
+            data = stream.read()
+    except FileNotFoundError:
+        _spend_cache.pop(key, None)
+        return 0.0
+    except OSError:
         raise _ledger_error() from None
+    consumed = data.rfind(b'\n') + 1
+    try:
+        for line in data[:consumed].splitlines():
+            if line.strip():
+                total += _row_cost(line.decode('utf-8'))
+        # Bytes after the last newline are a row still being appended: not counted yet,
+        # picked up by the next read once its newline is written.
+    except UnicodeError:
+        raise _ledger_error() from None
+    if consumed:
+        _spend_cache[key] = (info.st_ino, offset + consumed, total, data[max(0, consumed - 64):consumed])
     return round(total, 8)
 
 
@@ -547,6 +576,7 @@ class BudgetHold:
         self.output_tokens = output_tokens
         self.started = monotonic() if started is None else started
         self.settled = False
+        self.accounted = False  # A completed accounting attempt, distinct from releasing admission.
 
     def settle(self):
         with _budget_lock:
@@ -885,9 +915,18 @@ class SSEDecoder:
         return event, data
 
 
+def cache_pricing(item):
+    """How cache tokens are priced: explicit catalog rates, provider default or conservative."""
+    price = pricing(item) or {}
+    levels = price['tiers'] if 'tiers' in price else [price]
+    if all('cache_read_per_million' in level and 'cache_write_per_million' in level for level in levels):
+        return 'explicit'
+    return 'provider_default' if item['provider'] == 'anthropic' else 'conservative'
+
+
 def capabilities(item):
     """The Wave D per-model capability block for a remote catalog entry."""
-    return {'remote': True, 'remote_provider': item['provider'], 'echo': False,
+    return {'cache_pricing': cache_pricing(item), 'remote': True, 'remote_provider': item['provider'], 'echo': False,
             'cache_hints': False, 'cancel': item['provider'] != 'openai', 'prefill': False,
             'preserve_thinking': False, 'context_window': item['context_window']}
 

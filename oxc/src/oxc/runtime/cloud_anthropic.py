@@ -574,13 +574,19 @@ def _has_usage(message):
 def _close(st, status, error=None):
     if st.led is None:
         return
-    st.led.finish(status, error)
+    try:
+        st.led.finish(status, error)
+    except Exception:
+        cloud.mark_ledger_failure()
+        return  # Do not retry a potentially completed append.
     if getattr(st.led, 'written', True) is False:
         cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
 
 
 def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_final=False,
             refused=False):
+    if hold is not None and hold.accounted:
+        return
     row = _row(item)
     if isinstance(usage, dict):
         _usage_row(row, usage, item)
@@ -595,6 +601,7 @@ def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_
         st.led.row.update(row)
     _close(st, status, error)
     if hold is not None:
+        hold.accounted = True
         hold.settle()
 
 
@@ -643,9 +650,10 @@ def forward(self, st, item, key):
             data = cloud.redact(json.dumps(reply, ensure_ascii=False).encode(), key)
             if st.led is not None:
                 st.led.observe(data)
-            self.reply(200, data, 'application/json')
             _close(st, 200)
+            hold.accounted = True
             hold.settle()
+            self.reply(200, data, 'application/json')
             return
         stream = client.messages.create(**params)
         self.send_response(200)
