@@ -735,13 +735,24 @@ fn probe(bwrap: &Path) -> Result<(), OxaError> {
     .iter()
     .map(|x| (*x).to_string())
     .collect();
-    let r = run_argv(
-        &argv,
-        &[],
-        Some(PROBE_TIMEOUT_S),
-        &CancelToken::new(),
-        &mut |_| {},
-    );
+    // ETXTBSY ("Text file busy") is transient: a fork in another thread can briefly hold the
+    // write fd of a just-installed bwrap. Retry a few times before calling it unusable.
+    let mut attempt = 0;
+    let r = loop {
+        let r = run_argv(
+            &argv,
+            &[],
+            Some(PROBE_TIMEOUT_S),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        attempt += 1;
+        let busy = r.exit != Some(0) && String::from_utf8_lossy(&r.output).contains("Text file busy");
+        if !busy || attempt >= 10 {
+            break r;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     if r.exit == Some(0) {
         return Ok(());
     }
