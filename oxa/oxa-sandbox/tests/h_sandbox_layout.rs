@@ -126,8 +126,14 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "CARGO_HOME",
         "<root>/home/.cargo",
         "--setenv",
+        "MISE_CACHE_DIR",
+        "/tmp/mise-cache",
+        "--setenv",
         "MISE_DATA_DIR",
         "<root>/home/.local/share/mise",
+        "--setenv",
+        "MISE_STATE_DIR",
+        "/tmp/mise-state",
         "--",
         "bash",
         "-c",
@@ -165,7 +171,7 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
     let names: Vec<&str> = l.env.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         names,
-        vec!["CARGO_HOME", "MISE_DATA_DIR"],
+        vec!["CARGO_HOME", "MISE_CACHE_DIR", "MISE_DATA_DIR", "MISE_STATE_DIR"],
         "no token, no key, nothing unlisted"
     );
 }
@@ -208,6 +214,13 @@ fn golden_project_cwd() {
         "--ro-bind",
         "<root>/work/.git/config",
         "<root>/work/.git/config",
+        // #201: a missing commondir / gitdir is masked after the protected binds.
+        "--ro-bind",
+        "/dev/null",
+        "<root>/work/.git/commondir",
+        "--ro-bind",
+        "/dev/null",
+        "<root>/work/.git/gitdir",
     ]));
     want.extend(tail("<root>/work", PATH_IN));
     assert_eq!(shown(&a, &env), want);

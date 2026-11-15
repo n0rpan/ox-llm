@@ -453,6 +453,62 @@ class BudgetRace(CloudCase):
         self.assertTrue(row['usage_missing'])
 
 
+class SpendIncremental(CloudCase):
+    def test_spend_only_parses_rows_appended_since_the_last_read(self):
+        directory = self.tmp / 'ledger3'
+        directory.mkdir()
+        path = directory / 'requests-20260102.jsonl'
+        row = json.dumps({'remote': True, 'cost_usd': 0.5}) + '\n'
+        path.write_text(row * 50)
+        with patch.dict(os.environ, {'OXC_LEDGER_DIR': str(directory)}):
+            self.assertEqual(cloud.spend_today(day='20260102'), 25.0)
+            with open(path, 'a') as f:
+                f.write(row)
+            real = json.loads
+            with patch.object(cloud.json, 'loads', side_effect=real) as loads:
+                self.assertEqual(cloud.spend_today(day='20260102'), 25.5)
+            self.assertEqual(loads.call_count, 1)
+            path.write_text(json.dumps({'remote': True, 'cost_usd': 0.1}) * 1 + '\n')
+            self.assertEqual(cloud.spend_today(day='20260102'), 0.1)
+
+    def test_a_row_being_appended_is_neither_parsed_nor_counted(self):
+        directory = self.tmp / 'ledger4'
+        directory.mkdir()
+        path = directory / 'requests-20260103.jsonl'
+        row = json.dumps({'remote': True, 'cost_usd': 1.0})
+        stop = threading.Event()
+        errors = []
+
+        def writer():
+            with open(path, 'ab', buffering=0) as f:
+                for _ in range(150):
+                    f.write(row[:10].encode())
+                    f.write(row[10:].encode())
+                    time.sleep(0.001)
+                    f.write(b'\n')
+            stop.set()
+
+        def reader():
+            last = 0.0
+            while not stop.is_set():
+                try:
+                    value = cloud.spend_today(day='20260103')
+                    assert value >= last and value == int(value)
+                    last = value
+                except Exception as exc:
+                    errors.append(exc)
+                    return
+
+        with patch.dict(os.environ, {'OXC_LEDGER_DIR': str(directory)}):
+            threads = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(30)
+            self.assertEqual(errors, [])
+            self.assertEqual(cloud.spend_today(day='20260103'), 150.0)
+
+
 class LedgerFailClosed(CloudCase):
     def _today(self):
         return self.ledger / ('requests-%s.jsonl' % time.strftime('%Y%m%d'))
@@ -564,6 +620,20 @@ class LedgerFailClosed(CloudCase):
         self.assertEqual(status, 503)
         self.assertEqual(json.loads(body)['error']['code'], 'cloud_ledger_unavailable')
         self.assertEqual(len(self.upstream.requests), 1)
+
+    def test_the_ledger_row_is_written_before_the_reply_is_sent(self):
+        self.start()
+        original = request_ledger.Entry.finish
+
+        def slow(led, *args, **kwargs):
+            time.sleep(0.4)  # the write lookup happens after the client already has its answer
+            return original(led, *args, **kwargs)
+        with patch.object(request_ledger.Entry, 'finish', slow):
+            with patch.object(request_ledger, 'write', return_value=False):
+                status, _ = self.chat()
+        self.assertEqual(status, 200)
+        status, body = self.chat()
+        self.assertEqual(status, 503, body)
 
 
 if __name__ == '__main__':

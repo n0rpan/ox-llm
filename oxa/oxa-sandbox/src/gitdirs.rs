@@ -23,9 +23,12 @@
 //! Anything that fails is dropped: git then fails as it does today, and bash keeps working.
 //!
 //! sbx-hooks: the entries that git runs or reads outside the sandbox later
-//! (issue #103: in a worktree also `info` of the common dir and `hooks` of the worktree's gitdir,
-//! [`worktree_entries`]; [`protected_entries`]: `hooks` and `config` of the common dir, `config.worktree` of the
-//! common dir and of a worktree's gitdir when `extensions.worktreeConfig` may be on) stay as
+//! ([`protected_entries`]: `hooks` and `config` of the common dir, `config.worktree` of the
+//! common dir and of a worktree's gitdir when `extensions.worktreeConfig` may be on, and (#201)
+//! `commondir` and `gitdir` of every git directory, which name where git takes hooks and
+//! config from; a missing `commondir` is created holding "." (the directory itself: git dies
+//! on an empty one), a missing `gitdir` empty; issue #103: in a worktree also `info` of the
+//! common dir and `hooks` of the worktree's gitdir, [`worktree_entries`]) stay as
 //! they are in a writable sandbox, also when they do not exist yet. An existing entry is bound
 //! read-only; a missing `hooks` is masked with an empty read-only tmpfs, and a missing file is
 //! created empty on the host just before the command and bound read-only (a `/dev/null` mask
@@ -60,8 +63,10 @@
 //! refuses to run commands in that repository (`bwrap.rs`).
 use crate::layout::{is_home_or_above, sensitive_paths};
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -96,6 +101,10 @@ pub struct GitBinds {
     /// sbx-gitsym: the repository's git directories (the gitdir and the common dir, canonical,
     /// also when they lie in the cwd), for the per-command alias check. Binds nothing.
     pub dirs: Vec<PathBuf>,
+    /// sbx-hooks: the worktree root (the directory that holds the `.git` entry), canonical. Git
+    /// resolves a relative `core.hooksPath` from here, not from the session cwd, which may be a
+    /// nested directory. `None` when the cwd is not in a repository.
+    pub worktree: Option<PathBuf>,
 }
 
 impl GitBinds {
@@ -127,6 +136,9 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
     let Some((gitdir, common)) = locate(&dotgit, &ctx) else {
         return GitBinds::default();
     };
+    // The worktree root is the directory holding the `.git` entry, also when the session cwd
+    // is a nested directory below it. Git resolves a relative `core.hooksPath` from here.
+    let worktree = dotgit.parent().map(Path::to_path_buf);
     let objects = common.join("objects");
     let mut alternates = Vec::new();
     let mut seen = BTreeSet::new();
@@ -160,7 +172,7 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
     }
     let mut protect: Vec<PathBuf> = Vec::new();
     for d in &rw {
-        for rel in ["config", "config.worktree", "hooks"] {
+        for rel in ["commondir", "config", "config.worktree", "gitdir", "hooks"] {
             let p = d.join(rel);
             if fs::symlink_metadata(&p).is_ok_and(|m| !m.file_type().is_symlink()) {
                 protect.push(p);
@@ -184,6 +196,7 @@ pub fn resolve(cwd: &Path, home: &Path, agent_dir: Option<&Path>) -> GitBinds {
         protect,
         notes,
         dirs,
+        worktree,
     }
 }
 
@@ -216,6 +229,20 @@ pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
             Err(why) => return Some(why),
         }
     }
+    // #201: git follows `commondir` (and `git worktree` the `gitdir` back-pointer); a link
+    // there could be redirected through another name.
+    for name in ["commondir", "gitdir"] {
+        let p = dir.join(name);
+        match fs::symlink_metadata(&p) {
+            Ok(m) => {
+                if let Some(why) = not_plain_file(&p, &m) {
+                    return Some(why);
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Some(format!("{} cannot be checked ({e})", p.display())),
+        }
+    }
     let hooks = dir.join("hooks");
     match fs::symlink_metadata(&hooks) {
         Err(e) if e.kind() == ErrorKind::NotFound => None,
@@ -226,12 +253,22 @@ pub(crate) fn unsafe_reason(dir: &Path) -> Option<String> {
     }
 }
 
+/// `dir` has a `commondir` that links to another directory. The "." the sandbox leaves behind
+/// as a mask (#201) names the directory itself and does not make it a worktree gitdir.
+fn has_commondir_link(dir: &Path) -> bool {
+    let p = dir.join("commondir");
+    match read_trim(&p) {
+        Some(c) => c != ".",
+        None => p.exists(),
+    }
+}
+
 /// A common dir whose `info` (`exclude`, `attributes`) is a symlink: [`worktree_entries`] cannot
 /// protect a symlink, so the replaceable link would stay writable. Unsafe (fail closed). A
 /// real `info` must hold only plain files (no symlink, no hard link: an alias into the worktree
 /// would stay writable); a missing `info` is fine; a gitdir that is not a common dir has none.
 fn symlinked_info(dir: &Path) -> Option<String> {
-    if dir.join("commondir").exists() {
+    if has_commondir_link(dir) {
         return None;
     }
     let info = dir.join("info");
@@ -300,7 +337,8 @@ pub(crate) fn protected_entries(dir: &Path, common: &Path) -> Vec<PathBuf> {
     if !is_real_dir(dir) {
         return Vec::new();
     }
-    let mut names: Vec<&str> = Vec::new();
+    // #201: `commondir` and `gitdir` name the directory git takes hooks and config from.
+    let mut names: Vec<&str> = vec!["commondir", "gitdir"];
     if dir == common {
         names.extend(["config", "hooks"]);
     }
@@ -415,7 +453,7 @@ fn locate(dotgit: &Path, ctx: &Ctx) -> Option<(PathBuf, PathBuf)> {
     if meta.is_dir() {
         // A plain repository: `.git` is its own gitdir and common dir.
         let gitdir = canon(dotgit)?;
-        if gitdir.join("commondir").exists() || !is_gitdir(&gitdir, &gitdir) {
+        if has_commondir_link(&gitdir) || !is_gitdir(&gitdir, &gitdir) {
             return None;
         }
         return usable_pair(&gitdir, &gitdir, ctx);
@@ -543,6 +581,10 @@ fn canon(p: &Path) -> Option<PathBuf> {
 pub(crate) struct Includes {
     pub header: bool,
     pub paths: Vec<Vec<u8>>,
+    /// Every `core.hooksPath` value, in file order (git uses the last one). The sandbox
+    /// protects the directory a repository config names: git runs the hooks there outside
+    /// the sandbox later.
+    pub hooks_paths: Vec<Vec<u8>>,
 }
 
 /// A byte stream with git's `get_next_char`: CR LF reads as LF.
@@ -627,6 +669,12 @@ pub(crate) fn parse_includes(bytes: &[u8]) -> Result<Includes, String> {
             match value {
                 Some(v) if !v.is_empty() => out.paths.push(v),
                 _ => return Err("an include path without a value".into()),
+            }
+        } else if section == b"core" && key == b"hookspath" {
+            if let Some(v) = value {
+                if !v.is_empty() {
+                    out.hooks_paths.push(v);
+                }
             }
         }
     }
@@ -755,6 +803,60 @@ fn config_includes(p: &Path, repo: &Path) -> Result<Includes, String> {
     Ok(inc)
 }
 
+/// sbx-hooks: the `core.hooksPath` values of `dir`'s config and `config.worktree`, including
+/// the values in files they include (all `includeIf` conditions count: this only protects
+/// more). A value is returned as git wrote it; the caller resolves it against the worktree
+/// root. Unreadable or unparsable files are skipped here: [`unsafe_reason`] and
+/// [`alias_refusal`] already refuse a git directory whose config cannot be checked.
+pub(crate) fn configured_hooks_paths(dir: &Path, home: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for name in ["config", "config.worktree"] {
+        read_hooks_paths(&dir.join(name), home, 0, &mut seen, &mut out);
+    }
+    out
+}
+
+fn read_hooks_paths(
+    path: &Path,
+    home: &Path,
+    depth: usize,
+    seen: &mut BTreeSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+) {
+    if depth > MAX_INCLUDE_DEPTH {
+        return;
+    }
+    let Ok(real) = fs::canonicalize(path) else {
+        return;
+    };
+    if !seen.insert(real.clone()) {
+        return;
+    }
+    let Ok(bytes) = fs::read(&real) else {
+        return;
+    };
+    let Ok(inc) = parse_includes(&bytes) else {
+        return;
+    };
+    for raw in inc.hooks_paths {
+        out.push(PathBuf::from(OsString::from_vec(raw)));
+    }
+    for raw in inc.paths {
+        let raw = PathBuf::from(OsString::from_vec(raw));
+        let p = if raw == Path::new("~") {
+            home.to_path_buf()
+        } else if let Some(rest) = raw.to_str().and_then(|s| s.strip_prefix("~/")) {
+            home.join(rest)
+        } else if raw.is_absolute() {
+            raw
+        } else {
+            real.parent().unwrap_or(Path::new(".")).join(raw)
+        };
+        read_hooks_paths(&p, home, depth + 1, seen, out);
+    }
+}
+
 /// sbx-gitsym: how long the `git config` cross-check may take.
 const GIT_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -770,6 +872,8 @@ pub(crate) struct GitCheckGate {
     cooldown: std::time::Duration,
     state: std::sync::Mutex<GateState>,
 }
+
+const STILL_RUNNING: &str = "a git config check of this repository is still running";
 
 #[derive(Default)]
 struct GateState {
@@ -796,9 +900,25 @@ impl GitCheckGate {
             s.until.remove(repo);
         }
         if !s.running.insert(repo.to_path_buf()) {
-            return Err("a git config check of this repository is still running".into());
+            return Err(STILL_RUNNING.into());
         }
         Ok(())
+    }
+
+    /// [`begin`](Self::begin), but a check of `repo` that is still running is waited for (at
+    /// most `max_wait`) instead of refused: two commands at once in one repository both get
+    /// their check. A cooldown still refuses at once.
+    pub(crate) fn begin_waiting(&self, repo: &Path, max_wait: std::time::Duration) -> Result<(), String> {
+        let give_up = std::time::Instant::now() + max_wait;
+        loop {
+            let now = std::time::Instant::now();
+            match self.begin(repo, now) {
+                Err(why) if why == STILL_RUNNING && now < give_up => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
     }
 
     /// The check of `repo` that began ended at `now`; a timeout starts the cooldown.
@@ -828,7 +948,7 @@ fn common_of(dir: &Path) -> PathBuf {
 /// [`run_git_config`] for a config file of the repository `repo`, through [`git_gate`].
 fn git_include_values(p: &Path, repo: &Path) -> Option<Result<Vec<Vec<u8>>, String>> {
     let gate = git_gate();
-    if let Err(why) = gate.begin(repo, std::time::Instant::now()) {
+    if let Err(why) = gate.begin_waiting(repo, GIT_CHECK_TIMEOUT * 2) {
         return Some(Err(why));
     }
     let r = run_git_config(p);
@@ -949,7 +1069,7 @@ impl Mounts {
     /// The command can change `q` (a physical path): its deepest mount is read-write and `q`
     /// lies below it, or is that mount and is the final target (its content is writable; a
     /// mount point itself cannot be renamed). A read-only mount wins a tie.
-    fn writable(&self, q: &Path, last: bool) -> bool {
+    pub(crate) fn writable(&self, q: &Path, last: bool) -> bool {
         let deepest = |xs: &[PathBuf]| {
             xs.iter()
                 .filter(|m| q.starts_with(m))
@@ -1060,6 +1180,19 @@ pub(crate) fn alias_refusal(dirs: &[PathBuf], m: &Mounts, home: &Path) -> Option
         }
     }
     None
+}
+
+/// A configured hooks tree uses the same bounded alias checks as the default git hooks.
+/// A missing directory is masked by the caller; a non-directory cannot contain a git hook.
+pub(crate) fn hooks_alias_refusal(hooks: &Path, mounts: &Mounts) -> Option<String> {
+    match fs::symlink_metadata(hooks) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return None,
+        Ok(m) if !m.is_dir() && !m.file_type().is_symlink() => return None,
+        _ => {}
+    }
+    walk_alias(hooks, mounts)
+        .and_then(|real| check_tree(hooks, &real, mounts))
+        .err()
 }
 
 /// The config file `p` (and what it includes) is safe from the command.
@@ -1264,6 +1397,26 @@ mod include_tests {
         gate.end(a, t0 + Duration::from_secs(61), false);
         gate.begin(a, t0 + Duration::from_secs(62))
             .expect("and normal again");
+    }
+
+    #[test]
+    fn a_second_check_waits_for_the_running_one() {
+        use std::time::{Duration, Instant};
+        let gate = std::sync::Arc::new(GitCheckGate::new(Duration::from_secs(60)));
+        let a = Path::new("/repo-a/.git");
+        gate.begin(a, Instant::now()).expect("first");
+        let g2 = gate.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            g2.end(Path::new("/repo-a/.git"), Instant::now(), false);
+        });
+        gate.begin_waiting(a, Duration::from_secs(5)).expect("waited");
+        t.join().expect("thread");
+        // A check that never ends is given up on after the wait.
+        let err = gate
+            .begin_waiting(a, Duration::from_millis(50))
+            .expect_err("still running");
+        assert!(err.contains("still running"), "{err}");
     }
 
     #[test]

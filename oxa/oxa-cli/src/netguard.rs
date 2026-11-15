@@ -11,8 +11,28 @@ use std::sync::Arc;
 pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
     let on = sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
-    let token = if on && !offline { gh_token() } else { None };
-    Arc::new(NetSandbox::new(sandbox, on, offline).with_gh_token(token))
+    // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the first
+    // bash command that has the network, never at startup.
+    let lookup = on
+        && !offline
+        && !test_isolated(
+            std::env::var(oxa_proto::names::ENV_TEST_ISOLATION)
+                .ok()
+                .as_deref(),
+        );
+    let ns = NetSandbox::new(sandbox, on, offline);
+    Arc::new(if lookup {
+        ns.with_gh_token_lazy(gh_token)
+    } else {
+        ns
+    })
+}
+
+/// Under test isolation (`OXA_TEST_ISOLATION=1`) the host's `gh` login is never consulted: a
+/// test must not read real credentials, and a slow `gh` (up to `GH_DEADLINE`) must not delay
+/// startup and skew timing tests.
+fn test_isolated(v: Option<&str>) -> bool {
+    v == Some("1")
 }
 
 /// #52: the GitHub CLI token for the networked sandbox, from `gh auth token` run once here,
@@ -187,6 +207,13 @@ pub(crate) fn endpoint_notice(base_url: &str) -> Option<(Level, String)> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn test_isolation_skips_the_host_gh_login() {
+        assert!(test_isolated(Some("1")));
+        assert!(!test_isolated(None));
+        assert!(!test_isolated(Some("0")));
+    }
 
     fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
         let p = dir.join(name);

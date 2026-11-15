@@ -68,6 +68,13 @@ pub fn render_markdown(src: &str, width: u16, theme: &Theme, opts: &MarkdownOpts
         .replace("\r\n", "\n")
         .replace('\r', "\n")
         .replace('\t', "    ");
+    // Untrusted model output is text, not control: a raw ESC/BEL/C1 byte would otherwise reach
+    // the terminal (cursor movement, title, clipboard) both as literal text and inside an
+    // autolink URL. Keep the line break the block parser needs; SGR/OSC is added by the theme.
+    let normalized: String = normalized
+        .chars()
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect();
     let lines: Vec<&str> = normalized.split('\n').collect();
     let blocks = parse_blocks(&lines, 0);
     let cx = Cx { theme, opts };

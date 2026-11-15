@@ -355,3 +355,17 @@ fn not_found_hint_lists_ids_without_a_leading_slash_for_an_empty_endpoint() {
     let hint = err.hint.expect("a hint");
     assert_eq!(hint, "available: local-default, anthropic/claude-haiku-5-5");
 }
+
+/// #50: an oxc model id with a slash (`anthropic/...`) is a model id, not an oxa provider.
+#[test]
+fn slash_model_id_is_not_taken_as_a_provider() {
+    let available = vec![ModelRef {
+        endpoint: "oxe".to_string(),
+        model: "anthropic/claude-sonnet-5-5".to_string(),
+        thinking: None,
+    }];
+    let got = resolve_model("anthropic/claude-sonnet-5-5", None, &available).unwrap();
+    assert_eq!(got.model, "anthropic/claude-sonnet-5-5");
+    let got = resolve_model("anthropic/claude-sonnet-5-5:high", None, &available).unwrap();
+    assert_eq!(got.model, "anthropic/claude-sonnet-5-5");
+}
