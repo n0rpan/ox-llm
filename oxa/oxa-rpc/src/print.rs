@@ -192,7 +192,7 @@ pub fn run_print_outcome(
             }
         };
         if let Some(e) = sink.io_error.take() {
-            return Err(e);
+            return output_failure(outcome, e, sink.err);
         }
         if let Some(mut lines) = lines {
             outcome.include(RunOutcome::Done);
@@ -202,9 +202,13 @@ pub fn run_print_outcome(
                 lines.extend(take_info(&mut ui));
             }
             for l in lines {
-                sink.out
-                    .write_all(format!("{l}\n").as_bytes())
-                    .map_err(|e| OxaError::io("cannot write the command output", &e))?;
+                if let Err(error) = sink.out.write_all(format!("{l}\n").as_bytes()) {
+                    return output_failure(
+                        outcome,
+                        OxaError::io("cannot write the command output", &error),
+                        sink.err,
+                    );
+                }
             }
         }
         failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err);
@@ -214,7 +218,7 @@ pub fn run_print_outcome(
             if let Some(t) = sink.final_text.clone() {
                 sink.write_reply(&t);
                 if let Some(e) = sink.io_error.take() {
-                    return Err(e);
+                    return output_failure(outcome, e, sink.err);
                 }
             }
         }
@@ -243,9 +247,17 @@ pub fn run_print_outcome(
             }
         }
     }
-    sink.out
-        .flush()
-        .map_err(|e| OxaError::io("cannot flush the reply", &e))?;
+    if let Err(error) = sink.out.flush() {
+        return output_failure(outcome, OxaError::io("cannot flush the reply", &error), sink.err);
+    }
+    Ok(outcome)
+}
+
+fn output_failure(outcome: RunOutcome, error: OxaError, err: &mut dyn Write) -> Result<RunOutcome, OxaError> {
+    if matches!(outcome, RunOutcome::Done | RunOutcome::NothingToDo) {
+        return Err(error);
+    }
+    let _ = writeln!(err, "{error}");
     Ok(outcome)
 }
 
