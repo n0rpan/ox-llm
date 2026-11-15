@@ -54,21 +54,27 @@ impl PathGuard {
         }
         deny.sort();
         deny.dedup();
+        let mut home_protected = home_protected_paths(home);
+        if let Some(r) = real_home.filter(|r| *r != home) {
+            home_protected.extend(home_protected_paths(r));
+        }
         PathGuard {
             deny,
             allow: vec![tmp_dir.to_path_buf()],
             home: home.to_path_buf(),
-            home_protected: home_protected_paths(home),
+            home_protected,
         }
     }
 
-    /// A write to `p` (absolute) that runs or configures something outside the sandbox later,
-    /// with `cwd` the home directory or above it.
+    /// A write to `p` (absolute) that runs or configures something outside the sandbox later:
+    /// with `cwd` the home directory or above it, and (#201) for every write outside the cwd
+    /// wherever the cwd is, so a grant never covers these files.
     fn protects_home_file(&self, p: &Path, cwd: &Path) -> bool {
         !self.home_protected.is_empty()
-            && (is_home_or_above(cwd, &self.home)
-                || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
             && self.home_protected.iter().any(|d| is_inside(p, d))
+            && (!is_inside(p, cwd)
+                || is_home_or_above(cwd, &self.home)
+                || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
     }
 
     /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
@@ -81,13 +87,57 @@ impl PathGuard {
 /// `Some(false)` = only after the user confirms, `None` = not protected.
 fn protected_write(p: &Path, cwd: &Path) -> Option<bool> {
     let hit = |list: &[&str]| list.iter().any(|rel| is_inside(p, &cwd.join(rel)));
-    if hit(GIT_PROTECTED_IN_CWD) {
+    if hit(GIT_PROTECTED_IN_CWD) || in_linked_git_dirs(p, cwd) {
         Some(true)
     } else if hit(PROTECTED_IN_CWD) {
         Some(false)
     } else {
         None
     }
+}
+
+fn is_regular_file(p: &Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| m.is_file())
+}
+
+/// A worktree's `.git` is a file pointing at its gitdir, whose `commondir` holds the real hooks
+/// and config. `true` when `p` is a hooks dir or config file of either, outside the cwd.
+fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
+    let Some(start) = resolve_real(cwd) else {
+        return false;
+    };
+    let Some(dotgit) = start.ancestors().map(|a| a.join(".git")).find(|d| d.exists()) else {
+        return false;
+    };
+    // Only a regular file: a FIFO or device would block the read on every write check.
+    if !is_regular_file(&dotgit) {
+        return false; // a normal repository: the cwd table covers it
+    }
+    let Ok(text) = std::fs::read_to_string(&dotgit) else {
+        return false;
+    };
+    let Some(raw) = text.trim().strip_prefix("gitdir:") else {
+        return false;
+    };
+    let base = dotgit.parent().unwrap_or(cwd);
+    let gitdir = base.join(raw.trim());
+    // The pointer itself decides which dirs are protected, so rewriting it is never allowed.
+    if is_inside(p, &dotgit) {
+        return true;
+    }
+    let mut dirs = vec![gitdir.clone()];
+    let common = gitdir.join("commondir");
+    if is_regular_file(&common) {
+        if let Ok(c) = std::fs::read_to_string(&common) {
+            dirs.push(gitdir.join(c.trim()));
+        }
+    }
+    dirs.iter().any(|d| {
+        let d = resolve_real(d).unwrap_or_else(|| d.clone());
+        ["hooks", "config", "config.worktree", "commondir", "gitdir"]
+            .iter()
+            .any(|rel| is_inside(p, &d.join(rel)))
+    })
 }
 
 /// The policy of the crate docs' table, with per-session grants.

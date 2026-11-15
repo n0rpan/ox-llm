@@ -283,7 +283,10 @@ def _cache_rates(item, price):
     anthropic = (item['provider'] == 'anthropic'
                  or item.get('upstream_model', '').startswith('anthropic/'))
     write = price.get('cache_write_per_million', base * (2 if anthropic else 1))
-    return price.get('cache_read_per_million', base), write
+    # Anthropic documents cache hits at 0.1x the base input price.
+    read = price.get('cache_read_per_million',
+                     base * 0.1 if item['provider'] == 'anthropic' else base)
+    return read, write
 
 
 def cost(entry_value, prompt_tokens, completion_tokens, *, cache_read=0, cache_write=0):
