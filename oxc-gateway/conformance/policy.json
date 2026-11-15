@@ -1,0 +1,113 @@
+{
+  "accepted": null,
+  "bad-budget": {
+    "body": {
+      "error": {
+        "code": "budget_not_configured",
+        "message": "Cloud models need a per-day USD budget (`cloud.daily_budget_usd`).",
+        "param": "model",
+        "type": "permission_error"
+      }
+    },
+    "status": 403
+  },
+  "bad-ledger": {
+    "body": {
+      "error": {
+        "code": "cloud_ledger_unavailable",
+        "message": "The request ledger is unreadable; cloud calls are blocked until it is repaired.",
+        "param": "model",
+        "type": "cloud_error"
+      }
+    },
+    "status": 503
+  },
+  "disabled-ledger": {
+    "body": {
+      "error": {
+        "code": "cloud_ledger_unavailable",
+        "message": "The request ledger is disabled; cloud calls are blocked until it is enabled.",
+        "param": "model",
+        "type": "cloud_error"
+      }
+    },
+    "status": 503
+  },
+  "exhausted": {
+    "body": {
+      "error": {
+        "code": "budget_exceeded",
+        "message": "The daily cloud budget is exhausted.",
+        "param": "model",
+        "type": "rate_limit_error"
+      }
+    },
+    "status": 429
+  },
+  "guest": {
+    "body": {
+      "error": {
+        "code": "cloud_not_shared",
+        "message": "Cloud models are not available to LAN-share requests.",
+        "param": "model",
+        "type": "permission_error"
+      }
+    },
+    "status": 403
+  },
+  "no-budget": {
+    "body": {
+      "error": {
+        "code": "budget_not_configured",
+        "message": "Cloud models need a per-day USD budget (`cloud.daily_budget_usd`).",
+        "param": "model",
+        "type": "permission_error"
+      }
+    },
+    "status": 403
+  },
+  "no-key": {
+    "body": {
+      "error": {
+        "code": "cloud_credentials_unavailable",
+        "message": "Cloud credentials are not configured.",
+        "param": "model",
+        "type": "cloud_error"
+      }
+    },
+    "status": 503
+  },
+  "no-key-no-budget": {
+    "body": {
+      "error": {
+        "code": "cloud_credentials_unavailable",
+        "message": "Cloud credentials are not configured.",
+        "param": "model",
+        "type": "cloud_error"
+      }
+    },
+    "status": 503
+  },
+  "no-price": {
+    "body": {
+      "error": {
+        "code": "cloud_pricing_unavailable",
+        "message": "Cloud models need catalog pricing or explicit free: true.",
+        "param": "pricing",
+        "type": "cloud_error"
+      }
+    },
+    "status": 400
+  },
+  "offline": {
+    "body": {
+      "error": {
+        "code": "offline",
+        "message": "Cloud models are unavailable in offline mode.",
+        "param": "model",
+        "type": "permission_error"
+      }
+    },
+    "status": 403
+  }
+}
