@@ -9,7 +9,9 @@ Cloud-only mode is the first complete runtime target. See the
 [merge plan](MERGE_PLAN.md) for separate review slices; the first parser slice is
 draft [#177](https://github.com/oxstack/ox-llm/pull/177). The integration branch
 remains in draft #28. The next independent control-client slice is draft
-[#186](https://github.com/oxstack/ox-llm/pull/186), stacked on #177. Capture cloud gateway contracts after #24 lands on main,
+[#186](https://github.com/oxstack/ox-llm/pull/186), stacked on #177. The read-only
+ledger CLI is draft [#197](https://github.com/oxstack/ox-llm/pull/197), stacked on
+#186, with 12 file/limit cases and only its minimal reader helpers. Capture cloud gateway contracts after #24 lands on main,
 then port them and the cloud-only stack. Hardware A/B waits until cloud-only
 conformance is green.
 

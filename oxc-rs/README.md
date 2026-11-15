@@ -14,7 +14,10 @@ after they land on main. Hardware A/B waits for that suite to be green. See the
 [reviewable merge plan](../conformance/MERGE_PLAN.md); draft
 [#177](https://github.com/oxstack/ox-llm/pull/177) extracts only the opt-in parser
 binary. Draft [#186](https://github.com/oxstack/ox-llm/pull/186) adds the independent
-bounded control client on top. This integration branch stays draft #28.
+bounded control client on top. Draft
+[#197](https://github.com/oxstack/ox-llm/pull/197) adds only the read-only ledger
+CLI and its minimal helpers, with a separate file-reader conformance subset.
+This integration branch stays draft #28.
 
 Build locally, keeping generated binaries outside the source checkout:
 
