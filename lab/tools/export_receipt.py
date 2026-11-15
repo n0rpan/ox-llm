@@ -142,6 +142,20 @@ def scan_text(text, deny_words=None, allow_exact=()):
     return hits
 
 
+def _parse_context(path, no, parts):
+    """One four-column context line -> (glob, rule, compiled_regex, reason), or ValueError."""
+    glob, rule, reason, pattern = (part.strip() for part in parts)
+    if not all((glob, rule, reason, pattern)):
+        raise ValueError("%s:%d: expected GLOB<TAB>RULE<TAB>REASON<TAB>CONTEXT" % (Path(path).name, no))
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError("%s:%d: invalid CONTEXT regex: %s" % (Path(path).name, no, exc))
+    if "owner" not in rx.groupindex:
+        raise ValueError("%s:%d: CONTEXT regex must name an 'owner' group" % (Path(path).name, no))
+    return glob, rule, rx, reason
+
+
 def load_allow_file(path):
     """Read exemptions: one per line, 'GLOB<TAB>RULE<TAB>REASON'. A reason is mandatory.
 
@@ -153,7 +167,8 @@ def load_allow_file(path):
             continue
         parts = line.split("\t")
         if len(parts) == 4:
-            continue  # context exemptions, handled by load_allow_contexts
+            _parse_context(path, no, parts)  # validated here, used by load_allow_contexts
+            continue
         if len(parts) != 3 or not all(part.strip() for part in parts):
             raise ValueError("%s:%d: expected GLOB<TAB>RULE<TAB>REASON" % (Path(path).name, no))
         if parts[0].strip() == "!allow-exact":
@@ -179,16 +194,7 @@ def load_allow_contexts(path):
         parts = line.split("\t")
         if len(parts) != 4:
             continue
-        glob, rule, reason, pattern = (part.strip() for part in parts)
-        if not all((glob, rule, reason, pattern)):
-            raise ValueError("%s:%d: expected GLOB<TAB>RULE<TAB>REASON<TAB>CONTEXT" % (Path(path).name, no))
-        try:
-            rx = re.compile(pattern)
-        except re.error as exc:
-            raise ValueError("%s:%d: invalid CONTEXT regex: %s" % (Path(path).name, no, exc))
-        if "owner" not in rx.groupindex:
-            raise ValueError("%s:%d: CONTEXT regex must name an 'owner' group" % (Path(path).name, no))
-        contexts.append((glob, rule, rx, reason))
+        contexts.append(_parse_context(path, no, parts))
     return contexts
 
 

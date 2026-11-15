@@ -230,6 +230,16 @@ class Scan(unittest.TestCase):
             with self.assertRaises(ValueError):
                 er.load_allow_file(allow)
 
+    def test_allow_file_never_drops_a_malformed_four_field_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            allow = Path(tmp) / "a.allow"
+            allow.write_text("a/*\tuser-name\tr\t(?P<owner>x)\n")
+            self.assertEqual(er.load_allow_file(allow)[0], [])
+            for bad in ("a/*\tuser-name\tr\t(x)\n", "a/*\tuser-name\t\t(?P<owner>x)\n"):
+                allow.write_text(bad)
+                with self.assertRaises(ValueError):
+                    er.load_allow_file(allow)
+
     def test_deny_words_are_whole_words_case_insensitive(self):
         self.assertIn("user-name", self.rules("run by Quentin today", DENY))
         self.assertIn("host-name", self.rules('"x": "yogabox"', DENY))

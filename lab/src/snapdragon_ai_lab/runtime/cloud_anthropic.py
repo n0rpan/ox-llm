@@ -682,7 +682,7 @@ def forward(self, st, item, key):
         st.client_write_failed = True
         _record(st, item, hold, translator.usage if translator else None, False, 499, 'cancelled',
                 cancelled=(len(json.dumps(params, ensure_ascii=False).encode()),
-                           st.cloud_streamed))
+                           st.cloud_streamed, cloud.elapsed_since(hold)))
         self.close_connection = True
     except Exception as error:  # the SDK's own status/connection errors, redacted
         status = getattr(error, 'status_code', None) or 503

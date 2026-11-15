@@ -17,6 +17,7 @@ import re
 import ssl
 import stat
 import threading
+import time
 import urllib.parse
 
 if __package__:
@@ -398,12 +399,23 @@ def worst_case_cost(item, payload):
     return math.inf if usd is None else usd
 
 
+def monotonic():
+    """The clock for cancel accounting; tests replace it."""
+    return time.monotonic()
+
+
+def elapsed_since(hold):
+    return 0.0 if hold is None else max(0.0, monotonic() - hold.started)
+
+
 class BudgetHold:
     """One admission reservation.  ``settle`` is idempotent and must always run."""
 
-    def __init__(self, day, reserved):
+    def __init__(self, day, reserved, output_tokens=0, started=None):
         self.day = day
         self.reserved = reserved
+        self.output_tokens = output_tokens
+        self.started = monotonic() if started is None else started
         self.settled = False
 
     def settle(self):
@@ -450,7 +462,7 @@ def reserve(value, item, payload):
         if spent + already + worst > cap + COST_EPSILON:
             raise CloudError('The daily cloud budget is exhausted.', 429, 'budget_exceeded')
         _reserved[day] = already + worst
-    return BudgetHold(day, worst)
+    return BudgetHold(day, worst, _max_tokens(payload, item))
 
 
 def spend_day():
@@ -478,7 +490,10 @@ def conservative_cost(row, hold, failed=False):
     return row
 
 
-def cancelled_cost(row, hold, item, request_bytes, streamed_bytes):
+GENERATION_TOKENS_PER_SECOND = 300  # generous upper bound on generation speed
+
+
+def cancelled_cost(row, hold, item, request_bytes, streamed_bytes, elapsed=0.0):
     """Settle a stream the client cancelled.
 
     Provider-reported usage wins.  Otherwise charge an estimate of what was actually sent and
@@ -491,8 +506,10 @@ def cancelled_cost(row, hold, item, request_bytes, streamed_bytes):
             and row.get('cost_usd') is not None):
         row['settled'] = 'usage'
         return row
-    estimate = cost(item, max(request_bytes, row.get('prompt_tokens') or 0),
-                    max(streamed_bytes, row.get('completion_tokens') or 0))
+    # Hidden reasoning tokens are never streamed: bound output by elapsed time, within the reservation.
+    output = min(hold.output_tokens, max(streamed_bytes, row.get('completion_tokens') or 0,
+                                         int(max(0.0, elapsed) * GENERATION_TOKENS_PER_SECOND)))
+    estimate = cost(item, max(request_bytes, row.get('prompt_tokens') or 0), output)
     if estimate is None or not math.isfinite(estimate):
         estimate = hold.reserved
     row['cost_usd'] = min(hold.reserved, max(estimate, row.get('cost_usd') or 0))
@@ -513,7 +530,7 @@ def secrets_file(value):
             # Check the configured path, independently of source/versioned/flat module layout.
             # Worktree .git files count, as do exported product source trees without Git metadata.
             if ((parent / '.git').exists() or ((parent / 'AGENTS.md').is_file()
-                    and (parent / 'lab').is_dir() and (parent / 'engine').is_dir())):
+                    and (parent / 'engine').is_dir())):
                 raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable')
     except (OSError, RuntimeError, ValueError):
         raise CloudError('Cloud credentials are not configured.', 503, 'cloud_credentials_unavailable') from None

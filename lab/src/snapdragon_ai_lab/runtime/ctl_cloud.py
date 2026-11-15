@@ -181,7 +181,7 @@ def forward(self, st):
                 st.request_error = 'client_disconnected'
                 self.close_connection = True
                 _finish(self, st, item, meter, 499, 'cancelled', hold, key,
-                        cancelled=(len(data), sent[0]))
+                        cancelled=(len(data), sent[0], cloud.elapsed_since(hold)))
                 return
             _finish(self, st, item, meter, response.status, st.request_error, hold, key,
                     failed=st.request_error is not None)
