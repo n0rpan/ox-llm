@@ -231,26 +231,6 @@ fn reload_extension_paths(
     paths
 }
 
-#[cfg(test)]
-mod reload_paths_tests {
-    use super::reload_extension_paths;
-
-    #[test]
-    fn untrusted_reload_drops_earlier_project_extensions() {
-        let d = std::env::temp_dir().join(format!("oxa-rp-{}", std::process::id()));
-        let ext = d.join(".oxa/extensions");
-        std::fs::create_dir_all(&ext).unwrap();
-        let proj = ext.join("x.js");
-        let other = d.join("flag.js");
-        std::fs::write(&proj, "1").unwrap();
-        std::fs::write(&other, "1").unwrap();
-        let both = vec![proj.clone(), other.clone()];
-        assert_eq!(reload_extension_paths(&[], &both, &d, false), vec![other.clone()]);
-        assert_eq!(reload_extension_paths(&[], &both, &d, true), both);
-        std::fs::remove_dir_all(&d).ok();
-    }
-}
-
 /// `/reload`: re-read settings and resources, fire `ResourcesDiscover`, shut down and reload
 /// hook sets, then [`open_epoch`]. No change in the prefix bytes = no new epoch, returns false.
 pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<bool, OxaError> {
@@ -311,4 +291,24 @@ pub fn replay_prefix(branch: &[&Entry]) -> Option<FrozenPrefix> {
         EntryBody::Prefix(p) => Some(p.clone()),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod reload_paths_tests {
+    use super::reload_extension_paths;
+
+    #[test]
+    fn untrusted_reload_drops_earlier_project_extensions() {
+        let d = std::env::temp_dir().join(format!("oxa-rp-{}", std::process::id()));
+        let ext = d.join(".oxa/extensions");
+        std::fs::create_dir_all(&ext).unwrap();
+        let proj = ext.join("x.js");
+        let other = d.join("flag.js");
+        std::fs::write(&proj, "1").unwrap();
+        std::fs::write(&other, "1").unwrap();
+        let both = vec![proj.clone(), other.clone()];
+        assert_eq!(reload_extension_paths(&[], &both, &d, false), vec![other.clone()]);
+        assert_eq!(reload_extension_paths(&[], &both, &d, true), both);
+        std::fs::remove_dir_all(&d).ok();
+    }
 }
