@@ -2,6 +2,11 @@
 use oxc::anthropic_request::{translate, translate_with_blocks};
 use serde_json::{json, Value};
 
+fn canonical(mut value: Value) -> Vec<u8> {
+    value.sort_all_objects();
+    serde_json::to_vec(&value).unwrap()
+}
+
 #[test]
 fn python_mock_upstream_contracts() {
     for row in include_str!("fixtures/anthropic_requests.jsonl").lines() {
@@ -15,8 +20,8 @@ fn python_mock_upstream_contracts() {
             assert_eq!(result.unwrap_err().param, param, "{}", row["name"]);
         } else {
             assert_eq!(
-                serde_json::to_vec(&result.unwrap()).unwrap(),
-                serde_json::to_vec(&row["expected"]).unwrap(),
+                canonical(result.unwrap()),
+                canonical(row["expected"].clone()),
                 "{}",
                 row["name"]
             );

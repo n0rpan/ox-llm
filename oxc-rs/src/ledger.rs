@@ -9,7 +9,7 @@ use std::{
 };
 
 pub fn directory() -> std::path::PathBuf {
-    std::env::var_os("LOCAL_AI_LEDGER_DIR")
+    std::env::var_os("OXC_LEDGER_DIR")
         .map(|value| {
             std::path::PathBuf::from(if value.is_empty() {
                 std::ffi::OsStr::new(".")
@@ -134,58 +134,115 @@ fn row(value: &Value) -> Option<Value> {
     Some(Value::Object(out))
 }
 
+fn read_day(path: std::path::PathBuf, limit: usize) -> Vec<Value> {
+    let Ok(mut file) = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+    else {
+        return Vec::new();
+    };
+    let Ok(info) = file.metadata() else {
+        return Vec::new();
+    };
+    if !info.is_file() {
+        return Vec::new();
+    }
+    let start = info.len().saturating_sub(512 * 1024);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut data = Vec::new();
+    if file.take(512 * 1024).read_to_end(&mut data).is_err() {
+        return Vec::new();
+    }
+    let data = if start != 0 {
+        match data.iter().position(|v| *v == b'\n') {
+            Some(index) => &data[index + 1..],
+            None => &[],
+        }
+    } else {
+        &data
+    };
+    String::from_utf8_lossy(data)
+        .lines()
+        .rev()
+        .filter_map(|line| {
+            serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|value| row(&value))
+        })
+        .take(limit)
+        .collect()
+}
+
 pub fn recent(limit: usize) -> Value {
     let directory = directory();
     if !directory.is_dir() {
         return json!({"ledger_available":false,"rows":[]});
     }
+    let limit = limit.clamp(1, 200);
     let mut rows = Vec::new();
     let now = Local::now();
     for date in [now, now - Duration::days(1)] {
-        let path = directory.join(format!("requests-{}.jsonl", date.format("%Y%m%d")));
-        let Ok(mut file) = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)
-        else {
-            continue;
-        };
-        let Ok(info) = file.metadata() else {
-            continue;
-        };
-        if !info.is_file() {
-            continue;
-        }
-        let start = info.len().saturating_sub(512 * 1024);
-        if file.seek(SeekFrom::Start(start)).is_err() {
-            continue;
-        }
-        let mut data = Vec::new();
-        if file.take(512 * 1024).read_to_end(&mut data).is_err() {
-            continue;
-        }
-        let data = if start != 0 {
-            match data.iter().position(|v| *v == b'\n') {
-                Some(index) => &data[index + 1..],
-                None => &[],
-            }
-        } else {
-            &data
-        };
-        let text = String::from_utf8_lossy(data);
-        for line in text.lines().rev() {
-            if rows.len() >= limit.clamp(1, 200) {
-                break;
-            }
-            if let Ok(value) = serde_json::from_str::<Value>(line) {
-                if let Some(row) = row(&value) {
-                    rows.push(row);
-                }
-            }
-        }
-        if rows.len() >= limit.clamp(1, 200) {
+        rows.extend(read_day(
+            directory.join(format!("requests-{}.jsonl", date.format("%Y%m%d"))),
+            limit - rows.len(),
+        ));
+        if rows.len() >= limit {
             break;
         }
     }
     json!({"ledger_available":true,"rows":rows})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn named_pipe_is_refused_without_waiting_for_a_writer() {
+        use std::{
+            os::unix::fs::DirBuilderExt,
+            sync::mpsc,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "oxc-ledger-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let path = directory.join("synthetic-fifo");
+        nix::unistd::mkfifo(
+            &path,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let read_path = path.clone();
+        let worker = std::thread::spawn(move || sender.send(read_day(read_path, 1)).unwrap());
+        let refused = receiver
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_ok_and(|rows| rows.is_empty());
+        if !refused {
+            // Unblock the pre-fix reader so the failing regression cleans up too.
+            drop(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&path)
+                    .unwrap(),
+            );
+        }
+        worker.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(refused, "ledger reader blocked opening a FIFO");
+    }
 }
