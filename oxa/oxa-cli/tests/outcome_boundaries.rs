@@ -144,6 +144,65 @@ fn a_read_only_prompt_after_failed_done_checks_reports_its_own_success() {
 }
 
 #[test]
+fn successful_builtins_are_done_in_every_headless_mode() {
+    for mode in ["print", "json", "rpc"] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+        command
+            .current_dir(env.work())
+            .env_clear()
+            .envs(env.envs(&server.url()));
+        match mode {
+            "print" => {
+                command.args(["-p", "/session"]);
+            }
+            "json" => {
+                command.args(["--mode", "json", "/session"]);
+            }
+            _ => {
+                command.args(["--mode", "rpc"]);
+            }
+        }
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if mode == "rpc" {
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"{\"type\":\"prompt\",\"message\":\"/session\"}\n")
+                .unwrap();
+        }
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{mode}: {err}");
+        let results: Vec<Value> = err
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|value| value["type"] == "oxa_result")
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["outcome"], "done");
+        assert!(server.requests().is_empty());
+        if mode == "rpc" {
+            let records: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            assert!(records.iter().any(|record| record["type"] == "response"
+                && record["success"] == true
+                && record["data"]["disposition"] == "handled"));
+        }
+    }
+}
+
+#[test]
 fn reader_handled_rpc_controls_count_as_done_and_keep_earlier_failures() {
     for control in [
         serde_json::json!({"type":"clear_queue"}),
