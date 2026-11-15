@@ -210,6 +210,11 @@ impl Layout {
         self.write.iter().any(|w| p.starts_with(w))
     }
 
+    /// Whether some writable mount lies strictly inside `p`.
+    pub fn has_writable_inside(&self, p: &Path) -> bool {
+        self.write.iter().any(|w| w != p && w.starts_with(p))
+    }
+
     /// Build the layout from the user's environment and settings (see the module docs).
     pub fn build(i: &LayoutInputs) -> Layout {
         let deny = sensitive_paths(&i.home, i.agent_dir.as_deref());
@@ -234,9 +239,7 @@ impl Layout {
         read.extend(i.read_extra.iter().cloned());
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
-        let keep = |p: &PathBuf| {
-            p.is_absolute() && p.exists() && !denied(p, &deny) && p != &i.home && p != Path::new("/")
-        };
+        let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
         read.retain(keep);
         write.retain(keep);
         read.sort();

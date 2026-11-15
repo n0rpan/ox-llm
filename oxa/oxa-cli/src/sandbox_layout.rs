@@ -82,8 +82,20 @@ pub(crate) fn layout(
         Layout::keeps_extra(&dirs.home, Some(&dirs.agent_dir), p)
             && built.read.iter().chain(&built.write).any(|m| p.starts_with(m))
     });
-    let (writable, readonly): (Vec<&&std::path::PathBuf>, Vec<&&std::path::PathBuf>) =
+    let (writable, rest): (Vec<&&std::path::PathBuf>, Vec<&&std::path::PathBuf>) =
         mounted.iter().partition(|p| built.is_writable(p));
+    let (partly, readonly): (Vec<&&std::path::PathBuf>, Vec<&&std::path::PathBuf>) =
+        rest.into_iter().partition(|p| built.has_writable_inside(p));
+    if !partly.is_empty() {
+        let list: Vec<_> = partly.iter().map(|p| p.display().to_string()).collect();
+        notices.push((
+            Level::Info,
+            format!(
+                "bash can also read (read-only, except writable paths inside it): {} ({SETTING_READ_PATHS})",
+                list.join(", ")
+            ),
+        ));
+    }
     if !readonly.is_empty() {
         let list: Vec<_> = readonly.iter().map(|p| p.display().to_string()).collect();
         notices.push((
@@ -175,6 +187,34 @@ mod tests {
         let l = layout(&e, &dirs, &env.work(), true, &mut notices);
         assert!(!l.allow_home_write);
         assert!(notices.is_empty(), "{notices:?}");
+    }
+
+    #[test]
+    fn read_path_with_writable_child_is_not_called_never_write() {
+        let env = TestEnv::new();
+        env.write("data/out/x", "x");
+        let r = |p: &str| env.root().join(p).display().to_string();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &format!(
+                r#"{{"oxa":{{"sandbox":{{"readPaths":["{}"],"writePaths":["{}"]}}}}}}"#,
+                r("data"),
+                r("data/out")
+            ),
+        );
+        let (e, dirs) = setup(&env);
+        let mut notices = Vec::new();
+        layout(&e, &dirs, &env.work(), false, &mut notices);
+        assert!(
+            !notices.iter().any(|(_, t)| t.contains("(never write)")),
+            "{notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|(_, t)| t.contains("except writable paths inside")),
+            "{notices:?}"
+        );
     }
 
     #[test]
