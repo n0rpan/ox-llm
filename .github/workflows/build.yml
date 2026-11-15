@@ -203,7 +203,7 @@ jobs:
   oxa-test-build:
     if: inputs.heavy && inputs.oxa
     name: oxa test archive (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
@@ -275,7 +275,7 @@ jobs:
     if: inputs.heavy && inputs.oxa
     needs: oxa-test-build
     name: oxa tests shard ${{ matrix.shard }} (x86_64)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -333,7 +333,7 @@ jobs:
     if: always() && inputs.heavy && inputs.oxa
     needs: [oxa-test-build, oxa-test-shards]
     name: oxa tests (bwrap sandbox required)
-    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-24.04' }}
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository)) && 'oxci' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Every archive and partition must pass
