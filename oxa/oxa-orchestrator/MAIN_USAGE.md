@@ -91,3 +91,6 @@ No real gateway, provider keys or paid calls were used. This does not verify
 provider billing/cancellation, Responses continuation recovery (#64), gateway
 settlement (#47/#48/#71), upstream #60 integration or the full working-evening
 acceptance. Coordinator and T2/T3 reviews remain outstanding.
+
+For a real feature-binary terminal check, see the reproducible
+[live tmux demo and condensed log](LIVE_TUI_DEMO.md).
