@@ -1,7 +1,7 @@
 //! X3 regression tests: a model switch and `/reload` refresh the engine metadata and the
 //! compaction policy, and the runtime auto-compaction switch takes effect. Model-free: a fake
 //! controller serves two models with different limits and loads whichever model a chat request
-//! names (as the local-ai controller does). With `publish`, its status carries per-model limits
+//! names (as the oxc controller does). With `publish`, its status carries per-model limits
 //! (the controller's `model_limits`), so `Engine::info(Some(target))` describes a target that
 //! is not loaded; without it, `info` describes the loaded model only (an older controller).
 
@@ -87,6 +87,8 @@ impl Engine for TwoModels {
             compact_at,
             prefill_only: loaded == MOE.0,
             caps: oxa_proto::EngineCaps::default(),
+            thinking: None,
+            images: None,
         })
     }
     fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
@@ -150,6 +152,7 @@ fn open_with(env: &TestEnv, engine: Arc<TwoModels>, model: Option<&str>) -> Sess
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
@@ -388,7 +391,7 @@ fn reload_applies_changed_compaction_settings() {
 #[test]
 fn runtime_auto_compaction_overrides_the_setting() {
     let env = TestEnv::new();
-    // `local` turns on turn-start compaction; this test is about the runtime switch, so keep
+    // Turn-start compaction is on by default; this test is about the runtime switch, so keep
     // the after-reply compaction the only Threshold per prompt.
     let off = r#"{"compaction": {"enabled": false, "reserveTokens": 1024, "keepRecentTokens": 1}, "oxa": {"compaction": {"softTokens": 50, "turnStart": false}}}"#;
     write_settings(&env, off);

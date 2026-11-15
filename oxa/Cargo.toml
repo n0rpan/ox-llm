@@ -4,6 +4,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "oxa-a2a",
     "oxa-proto",
     "oxa-engine", "oxa-session", "oxa-tools", "oxa-sandbox", "oxa-perm",
     "oxa-compact", "oxa-config", "oxa-resources", "oxa-script",
@@ -18,7 +19,7 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.89"
 license = "MIT"
 publish = false
 
@@ -79,3 +80,11 @@ codegen-units = 4
 # `oxa-cli/tests/h_panic_binary.rs`.
 panic = "unwind"
 strip = true
+
+# Model-free CI tests link hundreds of harnesses; production release settings stay above.
+[profile.ci]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+incremental = false

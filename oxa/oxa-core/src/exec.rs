@@ -57,6 +57,9 @@ pub fn request(
     // tool runs, e.g. the park before a subagent) ends first: one request in flight at a time.
     // Nothing is sent while it is still registered (deferred, then `engine_busy`).
     await_tool_prefill(st, opts.background, sink)?;
+    if st.info.caps.remote && oxa_proto::offline() {
+        return Err(oxa_proto::offline_error(&format!("the cloud model {}", st.model)));
+    }
     let _gate = st.shared.enter_request()?;
     guard_hooks(st, HookPoint::Context, sink, ui)?;
     guard_hooks(st, HookPoint::ContextWithSystem, sink, ui)?;
@@ -536,7 +539,7 @@ fn start_tool_prefill(
 ) -> bool {
     if i == 0
         || !matches!(prepared[i].plan, Plan::Run { .. })
-        || !st.settings.prefill_tools(st.stats.profile)
+        || !st.settings.prefill_tools()
         || !st.info.prefill_only
         || st.settings.string("cacheWarming").as_deref() == Some("off")
         || st.shared.cancel.is_cancelled()

@@ -1,4 +1,4 @@
-//! P3 (wave H lane `local`): the engine URL guard at startup, in process. The tests share the
+//! P3 (wave H): the engine URL guard at startup, in process. The tests share the
 //! process network policy, so they hold one lock each.
 
 use oxa_cli::{run, Stdio};

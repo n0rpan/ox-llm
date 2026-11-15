@@ -30,6 +30,7 @@ fn open(env: &TestEnv, store: Arc<dyn SessionStore>) -> Session {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("open")
 }
@@ -97,4 +98,44 @@ fn a_write_error_after_adoption_keeps_the_target_locked() {
         LOCKED
     );
     fs(&env).acquire(&a).expect("A was released when B was adopted");
+}
+
+#[test]
+fn in_session_fork_and_clone_transfer_the_writer_lock() {
+    for clone in [false, true] {
+        let env = TestEnv::new();
+        let store = fs(&env);
+        let mut session = open(&env, Arc::new(store.clone()));
+        let original = store.list(None).pop().unwrap().sref;
+        // An empty scripted engine still records the user turn before returning its error.
+        let _ = session.prompt(
+            "synthetic fork point".into(),
+            Vec::new(),
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        );
+        let leaf = store.load(&original).unwrap().into_iter().find(|entry| {
+            matches!(&entry.body, oxa_proto::EntryBody::Msg { wire, .. } if wire.role == oxa_proto::Role::User)
+        }).expect("recorded user entry").id;
+        let destination = if clone {
+            session.clone_session().unwrap()
+        } else {
+            session.fork(&leaf).unwrap()
+        };
+        assert_eq!(
+            fs(&env)
+                .acquire(&destination)
+                .expect_err("active fork must be locked")
+                .code,
+            LOCKED
+        );
+        fs(&env)
+            .acquire(&original)
+            .expect("the departed session must be unlocked");
+        drop(session);
+        drop(store);
+        fs(&env)
+            .acquire(&destination)
+            .expect("dropping the session releases its active fork");
+    }
 }

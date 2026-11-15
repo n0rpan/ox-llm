@@ -237,3 +237,45 @@ fn malformed_trust_json_is_empty_and_never_clobbered() {
     assert!(store.save(&file, &env.work(), true).is_err());
     assert_eq!(std::fs::read_to_string(&file).expect("read"), "[not, an, object");
 }
+
+/// #211: `save` waits for another process that holds the trust file's lock.
+#[test]
+fn save_waits_for_the_trust_file_lock() {
+    let env = TestEnv::new();
+    let work = env.work();
+    std::fs::create_dir_all(&work).expect("mkdir");
+    let file = env.agent_dir().join("trust.json");
+    std::fs::create_dir_all(env.agent_dir()).expect("mkdir agent");
+    let lock = std::fs::File::create(env.agent_dir().join("trust.json.lock")).expect("lock file");
+    lock.lock().expect("flock");
+    let (f2, w2) = (file.clone(), work.clone());
+    let handle = std::thread::spawn(move || TrustStore::default().save(&f2, &w2, true));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!handle.is_finished(), "save must wait for the lock");
+    drop(lock);
+    handle.join().expect("thread").expect("save");
+    assert_eq!(TrustStore::load(&file).lookup(&work), Some(true));
+}
+
+/// #261 review: a very deep skill file is still approved (the skill loader finds it too), and
+/// the walk does not overflow the stack.
+#[test]
+fn approval_walk_covers_deep_trees() {
+    let env = TestEnv::new();
+    let work = env.work();
+    let mut deep = work.join(".oxa").join("skills");
+    for _ in 0..100 {
+        deep.push("d");
+    }
+    std::fs::create_dir_all(&deep).expect("mkdir deep");
+    std::fs::write(deep.join("SKILL.md"), "x").expect("write deep");
+    let shallow = work.join(".oxa").join("skills").join("ok");
+    std::fs::create_dir_all(&shallow).expect("mkdir");
+    std::fs::write(shallow.join("SKILL.md"), "x").expect("write");
+    let files = oxa_perm::approval_files(&work);
+    assert!(files.contains(&shallow.join("SKILL.md")));
+    assert!(
+        files.contains(&deep.join("SKILL.md")),
+        "deep skill must be approved"
+    );
+}

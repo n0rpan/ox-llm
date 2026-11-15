@@ -58,6 +58,16 @@ fn state_for(
     settings: Settings,
     model: &str,
 ) -> (SessionState, Arc<ScriptedEngine>) {
+    state_with(env, turns, settings, model, tools())
+}
+
+fn state_with(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    settings: Settings,
+    model: &str,
+    tools: Vec<Arc<dyn Tool>>,
+) -> (SessionState, Arc<ScriptedEngine>) {
     let eng = Arc::new(ScriptedEngine::new(turns));
     let engine: Arc<dyn Engine> = eng.clone();
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
@@ -82,7 +92,6 @@ fn state_for(
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
     });
-    let tools = tools();
     let st = SessionState {
         engine,
         store,
@@ -126,6 +135,7 @@ fn state_for(
         host_rx: None,
         host_deferred: Vec::new(),
         compact_memo: Default::default(),
+        jobs: oxa_core::fresh_jobs(),
     };
     (st, eng)
 }
@@ -317,14 +327,13 @@ fn sampling_is_greedy_unless_the_model_mode_is_set() {
     run(&mut st, "read");
     assert!(eng.requests().iter().all(|r| r.temperature == 0.0));
     // `model`: the card's values by thinking state (thinking on for the prompt reply, off for the
-    // tool follow-up under the `auto` policy of profile `local`).
+    // tool follow-up under the default `auto` policy).
     let env = TestEnv::new();
     let on = Settings::from_values(
-        serde_json::json!({"oxa": {"profile": "local", "sampling": {"mode": "model", "seed": 7}}}),
+        serde_json::json!({"oxa": {"sampling": {"mode": "model", "seed": 7}}}),
         Value::Null,
     );
     let (mut st, eng) = state_for(&env, turns(), on.clone(), "ornith-35b-a3b-local");
-    st.stats.profile = oxa_proto::Profile::Local;
     run(&mut st, "read");
     let reqs = eng.requests();
     assert_eq!(reqs.len(), 2);
@@ -535,4 +544,60 @@ fn identical_suffix_after_a_different_call_in_one_batch_counts() {
     assert_eq!(res.len(), LIMIT as usize + 2, "{res:#?}");
     assert!(res[..=LIMIT as usize].iter().all(|r| !is_notice(r)), "{res:#?}");
     assert!(is_notice(&res[LIMIT as usize + 1]), "{}", res[LIMIT as usize + 1]);
+}
+
+/// #150 (1): a background job that prints nothing and runs on until cancelled.
+struct Hold;
+impl Sandbox for Hold {
+    fn check(&self) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+        Vec::new()
+    }
+    fn run(&self, _s: &ExecSpec, c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        while !c.is_cancelled() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        ExecResult {
+            output: Vec::new(),
+            exit: None,
+            timed_out: false,
+        }
+    }
+}
+
+/// #150 (1): a job's identical polls (same state, same output) are a stuck loop and trip the
+/// guard exactly like any identical call, with the same notices and stop.
+#[test]
+fn identical_job_polls_trip_the_guard() {
+    let env = TestEnv::new();
+    let jobs = Arc::new(oxa_tools::JobRegistry::new());
+    jobs.set_sandbox(Arc::new(Hold));
+    let mut t = oxa_tools::builtin_tools_with_shell_and_jobs(oxa_tools::ShellConfig::default(), jobs.clone());
+    t.sort_by(|a, b| a.spec().name.cmp(&b.spec().name));
+    let mut turns = vec![ScriptTurn::tool(
+        "s",
+        "bash",
+        r#"{"command":"sleep 100","background":true}"#,
+    )];
+    turns.extend((0..20).map(|i| ScriptTurn::tool(&format!("p{i}"), "bash", r#"{"job":"job-1"}"#)));
+    let (mut st, _eng) = state_with(&env, turns, Settings::default(), "fake-model", t);
+    let (end, _) = run(&mut st, "run it in the background and poll it");
+    jobs.kill_all();
+    assert_eq!(end, RunEnd::Stopped);
+    let res = results(&st);
+    let polls = &res[1..];
+    assert_eq!(
+        res.len(),
+        1 + (LIMIT + NOTICES_BEFORE_STOP + 1) as usize,
+        "{res:#?}"
+    );
+    assert!(res[0].starts_with("Started background job job-1"), "{}", res[0]);
+    for r in &polls[..LIMIT as usize] {
+        assert!(r.starts_with("Job job-1: running") && !is_notice(r), "{r}");
+    }
+    for r in &polls[LIMIT as usize..] {
+        assert!(is_notice(r) && r.contains("(bash {"), "{r}");
+    }
 }

@@ -33,14 +33,15 @@
 mod agent_loop;
 mod commands;
 mod compaction;
+mod done;
 pub mod envnote;
 mod epoch;
 mod exec;
 mod fire;
 mod host;
+pub mod loopguard;
 mod navigate;
 mod prefix;
-mod profile;
 pub mod prompt;
 mod queue;
 pub mod reload;
@@ -68,8 +69,7 @@ pub use exec::{execute_calls, request, RequestOpts, EXTENSION_REBASE_ENTRY, TOOL
 pub use host::{serve_host, serve_pending, CoreHost, HostRequest};
 pub use navigate::{clone_current, fork_at, fork_from, navigate, ForkPosition, Forked};
 pub use prefix::{build_prefix, build_prefix_with, tools_json, PrefixOpts};
-pub use profile::{declared_specs, profile_of_branch, PROFILE_ENTRY};
-pub use queue::{Gate, Handle, Queue, Shared};
+pub use queue::{Gate, Handle, Queue, Shared, SwapRequest};
 pub use retry::{backoff_ms, chat_with_retry, RetryPolicy};
 pub use session::{prefill_estimate_secs, Deps, Open, OverCap, Session, State, Stats, SwitchPlan};
 pub use state::SessionState;
@@ -80,3 +80,9 @@ pub use think::{
 };
 pub use toolset::{resolve_toolset, MutationQueue, ToolSelection, Toolset};
 pub use user_bash::user_bash;
+
+/// A fresh background-job registry for a session (issue #127 (b)). Re-exported so tests
+/// and front ends can fill `Deps::jobs` without importing `oxa_tools` directly.
+pub fn fresh_jobs() -> std::sync::Arc<oxa_tools::JobRegistry> {
+    std::sync::Arc::new(oxa_tools::JobRegistry::new())
+}

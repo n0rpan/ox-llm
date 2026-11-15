@@ -40,6 +40,10 @@ pub struct FakeOpts {
     /// engine's capabilities when `hints`, and without a `capabilities` block otherwise (an
     /// older controller).
     pub models: Vec<FakeModel>,
+    /// Omit the `thinking` and `vision` fields of every `model_limits[].capabilities` block,
+    /// modelling a controller that publishes no input-modality or thinking field (oxstack/ox-llm
+    /// #67). `false` (default) = the fields are present.
+    pub omit_modality: bool,
     /// `/props` answers 503 "no model loaded" (the controller with nothing loaded). Also
     /// switchable at run time ([`FakeServer::set_props_unloaded`]).
     pub props_unloaded: bool,
@@ -70,6 +74,12 @@ pub struct FakeOpts {
     /// B6: the usage leaves out `prompt_tokens_details.cached_tokens` (a server that does not
     /// report it). Default `false` (the oxe engine always reports it, 0 included).
     pub omit_cached_tokens: bool,
+    /// Wave D D4: publish every `model_limits` row as a cloud model of this provider
+    /// (`openrouter` / `anthropic`), with the canonical remote capability block. Default `None`.
+    pub remote: Option<&'static str>,
+    /// A cloud-only controller: the status carries `engine_mode: "none"` (no local engine) while
+    /// `model` still names the default local alias. Default `false`.
+    pub no_engine: bool,
 }
 
 /// When one chat request ran on the fake (ENG-001 / ENG-002): milliseconds since the server
@@ -202,6 +212,7 @@ impl Default for FakeOpts {
             drop_at: None,
             hints: true,
             status_cancel: false,
+            omit_modality: false,
             models: Vec::new(),
             props_unloaded: false,
             loading: false,
@@ -211,6 +222,8 @@ impl Default for FakeOpts {
             rewrite_resume_block: None,
             drop_reasoning: false,
             omit_cached_tokens: false,
+            remote: None,
+            no_engine: false,
         }
     }
 }
@@ -502,6 +515,14 @@ fn handle(mut stream: TcpStream, sh: &Shared) -> io::Result<()> {
 /// output limit: the controller publishes none, so neither does the fake (`max_output` is
 /// never reported).
 fn controller_status(o: &FakeOpts) -> Value {
+    let mut status = controller_status_base(o);
+    if o.no_engine {
+        status["engine_mode"] = json!("none");
+    }
+    status
+}
+
+fn controller_status_base(o: &FakeOpts) -> Value {
     json!({
         "state": "ready", "validated": true, "download_state": "ready",
         "model": o.model, "selected_model": o.model, "selection_error": null,
@@ -569,12 +590,40 @@ fn model_limits(o: &FakeOpts) -> Value {
     for r in model_rows(o) {
         let mut row = json!({"cap": r.cap, "mode": null, "modes": [], "max_output": r.max_output});
         if let Some(c) = &r.caps {
-            row["capabilities"] = json!({
+            let mut caps = json!({
                 "prefill_only": c.prefill_only, "snapshot_hint": c.snapshot_hint,
-                "turn_kind": c.prefill_only, "hint_clear": c.hint_clear, "thinking": "toggle",
+                "turn_kind": c.prefill_only, "hint_clear": c.hint_clear,
                 "preserve_thinking": c.preserve_thinking, "mtp": null, "max_context": r.cap,
-                "vision": false, "slots": 1, "park": c.park,
+                "slots": 1, "park": c.park,
+                "remote": false, "remote_provider": null, "echo": c.prefill_only,
+                "cache_hints": c.hint_clear, "cancel": true, "prefill": c.prefill_only,
+                "context_window": r.cap,
             });
+            if !o.omit_modality {
+                caps["thinking"] = json!("toggle");
+                caps["vision"] = json!(false);
+            }
+            row["capabilities"] = caps;
+        }
+        if let Some(provider) = o.remote {
+            row["context_window"] = json!(r.cap);
+            if !row["capabilities"].is_object() {
+                row["capabilities"] = json!({
+                    "prefill_only": false, "snapshot_hint": 0, "turn_kind": false,
+                    "hint_clear": false, "thinking": "effort", "preserve_thinking": false,
+                    "mtp": false, "max_context": r.cap, "vision": false, "slots": 1,
+                    "park": "none",
+                });
+            }
+            let caps = row["capabilities"].as_object_mut().expect("capabilities object");
+            caps.insert("remote".to_string(), json!(true));
+            caps.insert("remote_provider".to_string(), json!(provider));
+            caps.insert("echo".to_string(), json!(false));
+            caps.insert("cache_hints".to_string(), json!(false));
+            caps.insert("cancel".to_string(), json!(true));
+            caps.insert("prefill".to_string(), json!(false));
+            caps.insert("preserve_thinking".to_string(), json!(false));
+            caps.insert("context_window".to_string(), json!(r.cap));
         }
         out.insert(r.alias, row);
     }

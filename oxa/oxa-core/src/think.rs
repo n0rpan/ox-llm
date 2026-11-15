@@ -1,8 +1,7 @@
 //! T5 (OXA-LOCAL-FIRST): `enable_thinking` by turn kind, `oxa.thinking.policy`.
 //!
-//! * `fixed` (pi, the default under profile `pi`): every request carries the session level
-//!   (`off` = false, any other level = true), exactly as before the policy existed.
-//! * `auto` (the default under profile `local`): thinking on for the first reply after a user
+//! * `fixed`: every request carries the session level (`off` = false, any other level = true).
+//! * `auto` (the default): thinking on for the first reply after a user
 //!   prompt; off for tool follow-ups, turns after an appended non-user instruction (an extension
 //!   message, a branch summary, a repair message), compaction and branch summaries, prefills and
 //!   every other background request. The level `off` always wins: the policy never turns
@@ -20,7 +19,6 @@
 //! (`EngineCaps::preserve_thinking == Some(false)`, the Flash engine), until the engine
 //! advertises a toggle-safe template itself.
 //!
-//! The profile that picks the default is the epoch's (`Stats::profile`, read once per epoch).
 //!
 //! ## Tool follow-ups under `auto`: adaptive escalation
 //!
@@ -152,10 +150,10 @@ impl ReplyKind {
     }
 }
 
-/// The policy in force: the setting, else the default of the epoch's profile; `auto` acts as
-/// `fixed` where a toggle is not cache-safe (see the module docs).
+/// The policy in force: the setting, else [`ThinkingPolicy::Auto`]; `auto` acts as `fixed`
+/// where a toggle is not cache-safe (see the module docs).
 pub fn policy(st: &SessionState) -> ThinkingPolicy {
-    match st.settings.thinking_policy(st.stats.profile) {
+    match st.settings.thinking_policy() {
         ThinkingPolicy::Auto if !toggle_safe(st) => ThinkingPolicy::Fixed,
         p => p,
     }

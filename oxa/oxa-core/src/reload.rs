@@ -1,4 +1,4 @@
-//! R2 (wave H lane `local`, FIT F4): the engine reloads the model mid-session.
+//! R2 (wave H, FIT F4): the engine reloads the model mid-session.
 //!
 //! After an idle or pressure unload the next request pays a model load (37-43 s on the
 //! target machine) or meets a restarting engine. What oxa does:

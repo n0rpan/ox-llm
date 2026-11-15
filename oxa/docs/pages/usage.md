@@ -140,7 +140,6 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/name [name]` | set the session's display name |
 | `/session` | show session info and stats |
 | `/export [path]` | export the session to HTML (or `.jsonl`) |
-| `/import <path>` | import a JSONL session, keeping its id and working directory |
 | `/copy` | copy the last assistant message to the clipboard |
 | `/hotkeys` | show the key bindings in force |
 | `/mcp` | list the MCP servers and their state |
@@ -163,6 +162,22 @@ The footer has two lines:
 - Line 2, right: the model and the thinking level.
 
 The permission mode is shown on the footer as well. A notice reports each cache miss when `showCacheMissNotices` is on ([compaction.md](compaction.md#cache-misses)).
+
+### The HUD (oxa skin)
+
+With the default `oxa` skin the footer is a single-line HUD instead of two lines. It shows the same status, laid out left to right:
+
+- `OXA` — the brand, always.
+- YOLO badge — a flame and the count of auto-approved questions, only when YOLO is on.
+- The model, with the thinking level and the thinking note.
+- `CTX` — a meter and the percentage of the window used, and `used/n_ctx` when the window is known.
+- `CACHE` — a meter and the percentage of the last request, when a cache hit is known.
+- Decode speed (`tok/s`), only while the engine reports timings.
+- The activity badge, always present; `READY` when idle.
+- `repairs N` and `no summary`, only when they apply.
+- The permission mode and the profile word, only when set.
+
+Parts with no data are hidden, and on a narrow terminal parts are dropped in this order until the line fits: the profile word, the decode speed, the cache meter, the `used/n_ctx` figures, `repairs N` / `no summary`, then the context meter shrinks to 5 cells, then the thinking note, the whole `CACHE` part, the thinking level and finally the permission mode. The model name, the `CTX` percentage, the activity badge and `OXA` are kept; the model name is only cut when nothing else is left.
 
 ## Selectors
 

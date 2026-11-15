@@ -1,0 +1,19 @@
+[package]
+name = "oxc"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+publish = false
+autobins = false
+
+[features]
+default = []
+native-controller = []
+
+[[bin]]
+name = "oxc-native"
+path = "src/main.rs"
+required-features = ["native-controller"]
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -755,11 +755,21 @@ fn apply(
             crate::compact_now(st, instructions.as_deref(), CompactReason::Manual, sink, ui)?;
             Ok(Value::Null)
         }
-        HostAction::NewSession | HostAction::SwitchSession { .. } => Err(OxaError::new(
-            codes::UNSUPPORTED_IN_OXA,
-            "newSession and switchSession from an extension are not supported in oxa",
-        )
-        .with_hint("use /new or /resume")),
+        action @ (HostAction::NewSession | HostAction::SwitchSession { .. }) => {
+            if !st.shared.gate.swap_enabled.load(Ordering::SeqCst) {
+                return Err(OxaError::new(
+                    codes::UNSUPPORTED_IN_OXA,
+                    "newSession and switchSession from an extension are not supported in oxa",
+                )
+                .with_hint("use /new or /resume"));
+            }
+            let req = match action {
+                HostAction::SwitchSession { path } => crate::SwapRequest::Switch(path),
+                _ => crate::SwapRequest::New,
+            };
+            *st.shared.gate.swap.lock().unwrap_or_else(|p| p.into_inner()) = Some(req);
+            Ok(Value::Null)
+        }
         HostAction::Fork { entry } => {
             let r = crate::fork_at(st, &entry, ui)?;
             Ok(json!({ "id": r.id }))
@@ -816,8 +826,7 @@ fn apply(
             // inputs. Read-only either way (W3).
             if st.prefix.sections.is_empty() {
                 let (specs, extra) = crate::epoch_inputs(st);
-                let profile = st.settings.profile();
-                let opts = crate::epoch::prefix_opts(st, profile);
+                let opts = crate::epoch::prefix_opts(st);
                 let prefix = crate::build_prefix_with(&st.cwd, &st.resources, &specs, &extra, &opts);
                 return Ok(Value::String(prefix.system_text()));
             }
@@ -1309,6 +1318,7 @@ mod tests {
             host_rx: None,
             host_deferred: Vec::new(),
             compact_memo: Default::default(),
+            jobs: crate::fresh_jobs(),
         };
         Fixture { env, st, host, rx }
     }

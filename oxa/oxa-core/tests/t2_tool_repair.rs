@@ -1,4 +1,4 @@
-//! T2 (wave H lane `local`): the append-only repair turn for malformed tool calls.
+//! T2 (wave H): the append-only repair turn for malformed tool calls.
 //! Content shapes follow the engine's lenient final parse (`chat/src/parser.rs`): a call it
 //! cannot parse comes back as content, glued to the prose before it.
 //! Goldens: `tests/golden/t2_*.txt` (request hashes; `OXA_UPDATE_GOLDEN=1` rewrites them).
@@ -94,6 +94,7 @@ fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionS
         host_rx: None,
         host_deferred: Vec::new(),
         compact_memo: Default::default(),
+        jobs: oxa_core::fresh_jobs(),
     };
     (st, eng)
 }
@@ -248,7 +249,7 @@ fn wrong_type() {
         "wrong_type",
         WRONG_TYPE,
         repair_cause::WRONG_TYPE,
-        prompt::repair_wrong_type("read", "limit", "number"),
+        prompt::repair_wrong_type("read", "limit", "integer"),
     );
 }
 
@@ -418,6 +419,24 @@ fn classify_edges() {
     );
     let block = "<tool_call>\n<function=t>\n<parameter=path>\nx\n";
     assert_eq!(c(block), Cause::Unclosed { tag: "</parameter>" });
+}
+
+#[test]
+fn bash_job_only_call_is_not_missing_required() {
+    // Issue #127 (b): `command` is no longer required in the bash schema (a `job` read has no
+    // command). The repair classifier reads the schema's `required` set, so a job-only call
+    // must not be flagged as `MissingRequired` before it reaches `BashTool::parse`.
+    let tools = [Declared {
+        name: "bash",
+        schema_json: oxa_tools::descriptions::BASH.schema_json,
+    }];
+    let block =
+        "<tool_call>\n<function=bash>\n<parameter=job>\njob-1\n</parameter>\n</function>\n</tool_call>";
+    assert_eq!(classify(block, &tools), Cause::Format);
+    // A call with neither `command` nor `job` is still a format problem here (the tool's own
+    // `parse` reports the exact-one error), not a schema-level missing-required.
+    let block = "<tool_call>\n<function=bash>\n</function>\n</tool_call>";
+    assert_eq!(classify(block, &tools), Cause::Format);
 }
 
 #[test]

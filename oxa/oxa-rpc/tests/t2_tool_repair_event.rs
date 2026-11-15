@@ -1,4 +1,4 @@
-//! T2 (wave H lane `local`): the `tool_repair` event record of the JSON / RPC modes.
+//! T2 (wave H): the `tool_repair` event record of the JSON / RPC modes.
 
 use oxa_proto::{repair_cause, AgentEvent};
 use oxa_rpc::event_to_json;
