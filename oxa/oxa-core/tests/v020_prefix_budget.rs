@@ -24,8 +24,8 @@ use std::sync::Arc;
 /// tools' folders are data, not instructions); the pi tool texts are unchanged.
 /// 2026-11-15: issue #127 (b) added `background`/`job` to the `bash` schema and dropped its
 /// `required: ["command"]` (a `job` read has no command), so the pi tools JSON changed.
-const PI_STABLE_SHA: &str = "5122e200fde1a43c332af0be6e583aa01e44e1399599f3edfe4e2b3e47123dd1";
-const PI_STABLE_SHA_SUBAGENT: &str = "bfb735421dbef23245bb094199818f4334c53411142858aa7f89568005a0f691";
+const PI_STABLE_SHA: &str = "6860f9795504d2d532de6790593530b2d1de72e5df28463b27e32ac6bd9d6857";
+const PI_STABLE_SHA_SUBAGENT: &str = "66fa72c480e900b2d4b272b83fd15f5ee656e48480a14f7fd1b5648b60e18077";
 
 /// Pinned: the `local` diet-on prefix is at least this many bytes smaller than the `pi` one, with
 /// and without the subagent tool. Measured 2355 (default) and 2344 (with subagent) on 2026-11-13;
