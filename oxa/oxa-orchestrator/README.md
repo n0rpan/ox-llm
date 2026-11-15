@@ -101,3 +101,34 @@ deadline/protocol/admission cleanup, closed runtime stdout with a live wrapper,
 and an inherited
 socket lease closing after a setsid descendant is terminated. Process ownership
 is not a scheduler, token-accounting policy or proof of provider billing stop.
+
+## RPC policy, settlement and observed usage
+
+With `core`, `rpc::RpcSession` is a pure state machine for the tool-free profile.
+It performs no I/O. The owner sends its initial get_state, admits returned
+commands through the bounded pipe queue and drives process/deadline ownership.
+Policy verification checks model/plan/idle state, disables retries/compaction,
+then reads state again before releasing the prompt. Command identities and
+pending steering acknowledgements are bounded. Admission is not model delivery.
+
+Assistant updates and final messages contribute observed input/output/cache
+usage across the worker lifetime. Progress is replaced by final usage rather
+than counted twice. Missing, decreasing or overflowing usage cannot establish
+success. Values are last valid observations, not a complete ledger settlement
+or hard pre-request token/monetary ceiling. A threshold overrun is retained and
+attributed as TokenBudget, never silently clamped to the configured allowance.
+
+A completed reply requires prompt acknowledgement, settlement, valid final usage
+and a normal stop. A length stop is Truncated with retained partial text and
+observed usage; an unfinished assistant cannot reuse a previous message's stop.
+Validation is staged, preserving the prior valid partial on rejection. Tool/UI
+requests and policy changes fail closed. Records/events and serialized outgoing
+prompt/steer commands are bounded; escaped JSON cannot bypass input admission.
+No transcript is automatically logged. The owner must stop/reap the process on
+an error or terminal outcome before publishing a finished worker.
+
+This makes truncation explicit, but does not fix the live smoke's configured
+512-token response ceiling. The owning worker/request-budget integration must
+still expose and enforce a per-response allowance. No external driver ceiling
+is raised here. The integrated test uses an owned mock runtime in real bwrap;
+it proves policy/accounting/cleanup wiring, not production inference or billing.

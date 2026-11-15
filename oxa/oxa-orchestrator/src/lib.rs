@@ -18,3 +18,6 @@ pub mod pipes;
 
 #[cfg(feature = "core")]
 pub mod native;
+
+#[cfg(feature = "core")]
+pub mod rpc;
