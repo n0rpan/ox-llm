@@ -24,6 +24,7 @@ mod dispatch;
 mod home_cwd;
 mod hooks;
 mod identity_cmd;
+mod in_process;
 mod mcp_cmd;
 mod netguard;
 mod pkg_cmd;
@@ -34,9 +35,10 @@ mod wipe_cmd;
 
 pub use args::{parse_args, usage_text, ApiKey, Args, ModeArg, Subcommand};
 pub use config_cmd::run_config;
-pub use dispatch::{choose_mode, run, RunMode, Stdio};
+pub use dispatch::{choose_mode, run, run_with_in_process_factory, RunMode, Stdio};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
 pub use identity_cmd::{identity_facts, run_identity, write_identity};
+pub use in_process::{InProcessEngineFactory, SETTING_IN_PROCESS_CLOUD};
 pub use mcp_cmd::run_mcp;
 pub use pkg_cmd::run_pkg;
 pub use report_cmd::{

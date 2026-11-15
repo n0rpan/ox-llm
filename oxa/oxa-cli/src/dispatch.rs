@@ -81,6 +81,25 @@ pub(crate) const USAGE_HINT: &str = "Run `oxa --help` for the list of options.";
 /// per the session flags -> the chosen mode. Piped stdin text is prepended to the first
 /// prompt; `@file` text is included as pi does and images become `Part::Image`.
 pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
+    run_inner(argv, env, io, None)
+}
+
+/// Compose the CLI with a lazily opened in-process cloud engine.
+pub fn run_with_in_process_factory(
+    argv: &[String],
+    env: &Env,
+    io: Stdio,
+    factory: &dyn crate::InProcessEngineFactory,
+) -> i32 {
+    run_inner(argv, env, io, Some(factory))
+}
+
+fn run_inner(
+    argv: &[String],
+    env: &Env,
+    io: Stdio,
+    factory: Option<&dyn crate::InProcessEngineFactory>,
+) -> i32 {
     let Stdio {
         mut stdin,
         mut stdout,
@@ -174,10 +193,12 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(ep) => with_api_key(ep, &a),
             Err(e) => return report(&mut *stderr, &e),
         };
-        let engine = match engine_for(&endpoint) {
-            Ok(e) => e,
-            Err(e) => return report(&mut *stderr, &e),
-        };
+        let user = Settings::load(&dirs, &cwd, false);
+        let engine =
+            match crate::in_process::select_engine(&user, env, &dirs, factory, || engine_for(&endpoint)) {
+                Ok(e) => e,
+                Err(e) => return report(&mut *stderr, &e),
+            };
         let result = list_models(
             engine.as_ref(),
             &endpoint.name,
@@ -225,6 +246,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             stdin_is_tty,
             stdout_is_tty,
             &mut confirm,
+            factory,
         )
     };
     let prep = match prepared {
@@ -398,6 +420,7 @@ fn prepare(
     stdin_is_tty: bool,
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
+    factory: Option<&dyn crate::InProcessEngineFactory>,
 ) -> Result<Prep, OxaError> {
     let mut notices: Vec<(Level, String)> = Vec::new();
     let (models, diags) = ModelsConfig::load(dirs, env);
@@ -409,11 +432,12 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
-    notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
-
     // Trust: the user's own settings decide the default; project settings load only when the
     // project is trusted.
     let user_settings = Settings::load(dirs, cwd, false);
+    if !user_settings.bool(crate::SETTING_IN_PROCESS_CLOUD, false) {
+        notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    }
     let default = match user_settings.string("defaultProjectTrust").as_deref() {
         Some("always") => DefaultTrust::Trust,
         Some("never") => DefaultTrust::Untrusted,
@@ -552,7 +576,13 @@ fn prepare(
     let dirs = &session_dirs;
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let engine = child.wrap(engine_with_settings(&endpoint, &settings)?);
+    let engine = child.wrap(crate::in_process::select_engine(
+        &user_settings,
+        env,
+        dirs,
+        factory,
+        || engine_with_settings(&endpoint, &settings),
+    )?);
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only
