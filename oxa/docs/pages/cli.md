@@ -101,8 +101,10 @@ See [tools.md](tools.md) for the tool names.
 
 | Option | Meaning |
 |---|---|
-| `--permission-mode <mode>` | `plan`, `workspace` (default) or `ask` |
-| `--yolo` | no permission prompts: every question is auto-approved; the sandbox and the deny-list stay on ([security.md](security.md#yolo-no-prompts)) |
+| `--permission-mode <mode>` | `standard`, `auto`, `yolo`, `plan`, or the table modes `workspace` and `ask`; default: the `permissions.defaultMode` setting, else `auto` |
+| `--standard` | permission mode standard: the permission table asks you |
+| `--auto` | permission mode auto: no prompts; the sandbox and the deny-list stay on |
+| `--yolo` | permission mode yolo, full access: no prompts, bash runs without the sandbox and the file tools ignore the deny-list ([security.md](security.md#standard-auto-and-yolo)) |
 | `--approve`, `-a` | trust the project's configuration and resources for this run |
 | `--no-approve`, `-na` | ignore the project's configuration and resources for this run |
 | `--offline` | offline mode: oxa's own non-local connections are refused, bash has no network, `web_search` is off, and `!cmd` and stdio MCP servers run without network. What it does not cover is in [security.md](security.md#offline-mode) |

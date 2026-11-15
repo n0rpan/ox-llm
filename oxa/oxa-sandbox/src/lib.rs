@@ -8,11 +8,13 @@
 //! directory hidden (tmpfs) except the session cwd; a private `/tmp`; no network unless
 //! `ExecSpec::net` (`--share-net`). `ExecSpec::writable == false` binds cwd read-only (plan
 //! mode). No bwrap = [`Bwrap::detect`] fails with `no_sandbox` and bash refuses: there is no
-//! unsandboxed fallback for tools. `!cmd` (the user's own command) uses [`run_unsandboxed`].
+//! unsandboxed fallback for tools, except full access (`yolo`, [`FullAccess`], #202), which the
+//! user turns on explicitly. `!cmd` (the user's own command) uses [`run_unsandboxed`].
 //! Timeout and cancel kill the whole process group; a background writer that keeps the pipe
 //! open must not hang `run` (acceptance: "background writer case").
 
 mod bwrap;
+mod full;
 mod gitdirs;
 mod layout;
 mod net;
@@ -20,6 +22,7 @@ mod offline;
 mod run;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
+pub use full::FullAccess;
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
 pub use layout::{
     expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_secret_name, protected_paths,

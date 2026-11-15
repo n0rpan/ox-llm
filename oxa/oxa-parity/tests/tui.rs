@@ -637,7 +637,7 @@ fn use_012() {
     assert!(l2.contains("%/"), "context percent: {l2:?}");
     assert!(l2.contains("fake-model • medium"), "model and thinking: {l2:?}");
     assert!(
-        l2.contains("cache ") && l2.contains("workspace"),
+        l2.contains("cache ") && l2.contains("auto"),
         "cache and mode: {l2:?}"
     );
 }
@@ -1475,11 +1475,11 @@ fn tui_026() {
     let (_, l2) = footer(&rig.screen());
     let last = rig.generating().pop().unwrap();
     assert!(l2.contains("cache "), "cache hit: {l2:?}");
-    assert!(l2.contains("workspace"), "mode: {l2:?}");
+    assert!(l2.contains("auto"), "mode: {l2:?}");
     // Alt+M cycles the mode; the footer follows.
     rig.pty.send_key("alt+m");
     rig.pty
-        .wait_for_named("mode changed", |s| !footer(s).1.contains("workspace"), WAIT)
+        .wait_for_named("mode changed", |s| !footer(s).1.contains("auto"), WAIT)
         .unwrap();
     // Prefill progress and speed come from the engine's comments and timings (the fake sends
     // neither for a chat request): the footer renders them from the status.

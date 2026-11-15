@@ -121,6 +121,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `skills` | list | `[]` | skill files and directories to load |
 | `prompts` | list | `[]` | prompt template files and directories to load |
 | `packages` | list | `[]` | installed package sources; `oxa install` edits this |
+| `permissions.defaultMode` | `standard` / `auto` / `yolo` / `plan` | `auto` | permission mode at start ([security.md](security.md#standard-auto-and-yolo)); command-line flags win for one run; a project may lower it, never raise it |
 
 ### Sessions and compaction
 
@@ -158,7 +159,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
-| `oxa.mode` | `plan` / `workspace` / `ask` | `workspace` | permission mode at start |
+| `oxa.mode` | `plan` / `workspace` / `ask` | `workspace` | table mode at start |
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |

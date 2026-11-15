@@ -1347,6 +1347,7 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         degraded_context: prev.degraded_context,
         yolo: prev.yolo,
         yolo_approved: prev.yolo_approved,
+        autonomy: prev.autonomy,
     }
 }
 

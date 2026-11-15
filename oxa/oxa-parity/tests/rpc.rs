@@ -1561,7 +1561,7 @@ fn rpc_051() {
             ScriptTurn::tool("c1", "write", r#"{"path": "made.txt", "content": "hi\n"}"#),
             ScriptTurn::text("done"),
         ],
-        &["--no-session"],
+        &["--no-session", "--standard"],
     );
     assert_eq!(
         r.cmd(json!({"id": "m", "type": "set_mode", "mode": "ask"}))["success"],

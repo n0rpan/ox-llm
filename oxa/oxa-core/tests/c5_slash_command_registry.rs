@@ -527,7 +527,10 @@ fn engine_and_mode_have_argument_hints() {
     let engine = cmds.iter().find(|c| c.name == "engine").expect("engine");
     assert!(engine.argument_hint.as_deref().unwrap_or("").contains("load"));
     let mode = cmds.iter().find(|c| c.name == "mode").expect("mode");
-    assert_eq!(mode.argument_hint.as_deref(), Some("<plan|workspace|ask>"));
+    assert_eq!(
+        mode.argument_hint.as_deref(),
+        Some("<standard|auto|yolo|plan|workspace|ask> [--save]")
+    );
 }
 
 #[test]

@@ -283,7 +283,7 @@ fn run_on(
         open_picker: false,
         save_trust: None,
         gated: Vec::new(),
-        yolo: Some(oxa_proto::YoloSwitch::new(false)),
+        yolo: Some(oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard)),
     };
     let mut term = ScriptTerm::new(size.0, size.1, steps);
     // A test-only variable: this terminal answers the graphics query.
@@ -454,7 +454,7 @@ fn resize_redraws_the_chrome_for_the_new_width() {
             step("start", &["READY"], typed("look at notes.txt", &["enter"])),
             narrow,
             wide,
-            step("quit", &["part of ox-llm", "workspace"], vec![key("ctrl+d")]),
+            step("quit", &["part of ox-llm", "standard"], vec![key("ctrl+d")]),
         ],
         write_notes,
     );
@@ -624,18 +624,22 @@ fn yolo_toggle_shows_the_flame_the_banner_and_goes_away() {
         (120, 30),
         vec![
             step("start", &["READY"], typed("/yolo", &["enter"])),
-            step("on", &["YOLO MODE", "🔥  YOLO  0"], typed("/yolo", &["enter"])),
-            step("off", &["YOLO off"], vec![key("ctrl+d")]),
+            step(
+                "on",
+                &["YOLO MODE", "🔥  YOLO full access  0"],
+                typed("/yolo", &["enter"]),
+            ),
+            step("off", &["Mode: standard"], vec![key("ctrl+d")]),
         ],
         |_| {},
     );
     let text = term.all_text();
     assert!(
-        text.contains("the sandbox and the deny-list stay on"),
+        text.contains("bash runs without the sandbox, no deny-list for the file tools"),
         "the banner says what stays"
     );
     assert!(
-        text.contains("YOLO on: no permission prompts"),
+        text.contains("YOLO full access: no prompts"),
         "a notice stays in the transcript"
     );
     // Nothing drawn after it was switched off carries the flame.
@@ -654,7 +658,11 @@ fn yolo_key_toggles_and_no_color_shows_a_text_badge() {
         (120, 30),
         vec![
             step("start", &["READY"], vec![key("ctrl+alt+o")]),
-            step("on", &["[YOLO MODE]", "[YOLO] 0"], vec![key("ctrl+d")]),
+            step(
+                "on",
+                &["[YOLO MODE]", "[YOLO full access] 0"],
+                vec![key("ctrl+d")],
+            ),
         ],
         |_| {},
     );
@@ -678,7 +686,11 @@ fn yolo_under_the_plain_look_is_a_footer_status() {
         (100, 30),
         vec![
             step("start", &["oxa v"], typed("/yolo", &["enter"])),
-            step("on", &["YOLO on", "YOLO"], vec![key("ctrl+d")]),
+            step(
+                "on",
+                &["YOLO full access: no prompts", "yolo"],
+                vec![key("ctrl+d")],
+            ),
         ],
         |_| {},
     );
@@ -704,13 +716,13 @@ fn hud_counts_auto_approved_actions_and_reduced_motion_stills_the_flames() {
         assert!(visible_width(&line) <= width as usize);
         if width >= 40 {
             assert!(
-                strip_ansi(&line).contains("YOLO  12"),
+                strip_ansi(&line).contains("YOLO full access  12"),
                 "the count is never dropped ({width})"
             );
         }
     }
     let ascii = oxa_hud(&st, 100, &oxa_tui::Theme::plain(), Skin::OxaAscii);
-    assert!(ascii.contains("^ [YOLO] 12") && ascii.is_ascii());
+    assert!(ascii.contains("^ [YOLO full access] 12") && ascii.is_ascii());
     let claude = StatusModel {
         model: "anthropic/claude-haiku-5-5".to_string(),
         thinking: Some(oxa_proto::ThinkingLevel::Off),

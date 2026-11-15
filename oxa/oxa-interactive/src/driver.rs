@@ -28,7 +28,7 @@ use crate::{
 use oxa_config::Keymap;
 use oxa_core::Handle;
 use oxa_export::default_output_name;
-use oxa_proto::{AgentEvent, Level, Mode, OxaError, Part, ThinkingLevel, Value};
+use oxa_proto::{AgentEvent, Autonomy, Level, Mode, OxaError, Part, PermissionMode, ThinkingLevel, Value};
 use oxa_session::{SessionMeta, SessionRef, Tree};
 use oxa_tui::{
     detect_caps, list_themes, resolve_theme, title_sequence, CombinedProvider, Component, CursorPos, Editor,
@@ -75,6 +75,7 @@ enum Overlay {
     Model(ModelSelector),
     Scoped(ScopedModelsSelector),
     Thinking(ThinkingSelector),
+    Mode(crate::ModeSelector),
     Theme(ThemeSelector),
     Settings(SettingsSelector),
     Sessions(SessionPicker),
@@ -279,7 +280,10 @@ pub(crate) struct Loop<'a> {
     /// O-182: the theme as loaded; `theme` is its hot variant while YOLO is on (OXA's look).
     cool_theme: Theme,
     /// O-182: what the screen last showed of the YOLO switch, and until when its banner shows.
-    yolo_shown: bool,
+    yolo_shown: Option<Autonomy>,
+    /// #202: the level `/yolo off` and Ctrl+Alt+O return to; the full-access notice was shown.
+    yolo_prev: Autonomy,
+    yolo_noticed: bool,
     yolo_banner_since: u64,
     yolo_banner_until: u64,
     /// What was last written as the window title.
@@ -405,7 +409,9 @@ impl<'a> Loop<'a> {
             gfx_out: String::new(),
             gfx_reset: false,
             cool_theme: Theme::plain(),
-            yolo_shown: false,
+            yolo_shown: None,
+            yolo_prev: Autonomy::Auto,
+            yolo_noticed: false,
             yolo_banner_since: 0,
             yolo_banner_until: 0,
             sent_title: None,
@@ -483,7 +489,13 @@ impl<'a> Loop<'a> {
 
     /// O-182: is YOLO on (the process's switch).
     fn yolo_on(&self) -> bool {
-        self.opts.yolo.as_ref().is_some_and(|y| y.is_on())
+        self.opts.yolo.as_ref().is_some_and(|y| y.full())
+    }
+
+    /// #202: the permission mode now: the session mode with the process's autonomy level.
+    fn permission_mode(&self) -> PermissionMode {
+        let level = self.opts.yolo.as_ref().map_or(Autonomy::Standard, |y| y.level());
+        PermissionMode::of(self.vm.status.mode.unwrap_or(Mode::Workspace), level)
     }
 
     /// Install a freshly loaded theme: it is the cool one; the shown one is hot under YOLO.
@@ -513,66 +525,122 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// O-182: bring the screen in line with the YOLO switch: the status the HUD reads, the hot
-    /// or cool theme, and (when it was just switched on) the banner and a notice that stays
-    /// in the transcript.
+    /// O-182, #202: bring the screen in line with the autonomy switch: the status the HUD
+    /// reads, the hot or cool theme, and (the first time yolo is switched on in the session)
+    /// the banner and a notice that stays in the transcript.
     fn sync_yolo(&mut self) {
         let Some(switch) = self.opts.yolo.clone() else {
             return;
         };
-        let on = switch.is_on();
+        let level = switch.level();
         let approved = switch.approved();
         if self.vm.status.yolo_approved != approved {
             self.vm.status.yolo_approved = approved;
             self.dirty = true;
         }
-        if on == self.yolo_shown {
+        if self.yolo_shown == Some(level) {
             return;
         }
-        self.yolo_shown = on;
-        self.vm.status.yolo = on;
+        let was_full = self.yolo_shown == Some(Autonomy::Yolo);
+        self.yolo_shown = Some(level);
+        let full = level == Autonomy::Yolo;
+        self.vm.status.autonomy = level;
+        self.dirty = true;
+        if full == was_full && self.vm.status.yolo == full {
+            return;
+        }
+        self.vm.status.yolo = full;
         let cool = self.cool_theme.clone();
         self.install_theme(cool);
-        if on {
+        if full {
             self.yolo_banner_since = now_ms();
             self.yolo_banner_until = now_ms() + 2500;
-            self.push_notice(
-                Level::Warning,
-                "YOLO on: no permission prompts, every action is auto-approved. The sandbox and the \
-                 deny-list stay on; writes to .oxa still ask. /yolo switches it off."
-                    .to_string(),
-            );
+            if !self.yolo_noticed {
+                self.yolo_noticed = true;
+                self.push_notice(
+                    Level::Warning,
+                    "YOLO full access: no prompts, bash runs without the sandbox, the file tools \
+                     ignore the deny-list. /mode auto or Ctrl+Alt+O turns it off."
+                        .to_string(),
+                );
+            }
         } else {
             self.yolo_banner_until = 0;
-            self.push_notice(
-                Level::Info,
-                format!("YOLO off: prompts are back ({approved} auto-approved in this run)."),
-            );
         }
         // pi's look has no HUD: the state is an extension-style status entry in its footer.
         if !self.view.skin.is_oxa() {
-            if on {
+            if full {
                 self.vm
                     .status
                     .ext_status
-                    .insert("yolo".to_string(), "YOLO".to_string());
+                    .insert("yolo".to_string(), "YOLO full access".to_string());
             } else {
                 self.vm.status.ext_status.remove("yolo");
             }
         }
     }
 
-    /// O-182: `/yolo`, the `app.yolo.toggle` key.
+    /// O-182: `/yolo`, the `app.yolo.toggle` key. Off returns to the level before yolo.
     fn set_yolo(&mut self, want: Option<bool>) {
-        match self.opts.yolo.clone() {
-            Some(switch) => {
-                switch.set(want.unwrap_or(!switch.is_on()));
-                self.sync_yolo();
-            }
-            None => self.push_notice(
+        let on = self.opts.yolo.as_ref().is_some_and(|y| y.full());
+        let target = if want.unwrap_or(!on) {
+            PermissionMode::Yolo
+        } else if on {
+            PermissionMode::of(Mode::Workspace, self.yolo_prev)
+        } else {
+            return self.push_notice(Level::Info, format!("Mode: {}", self.permission_mode().as_str()));
+        };
+        self.set_permission_mode(target, false);
+    }
+
+    /// #202: switch the permission mode (`/mode`, `/auto`, `/yolo`, the mode key, the picker);
+    /// `save` also writes it as `permissions.defaultMode`.
+    fn set_permission_mode(&mut self, mode: PermissionMode, save: bool) {
+        let Some(switch) = self.opts.yolo.clone() else {
+            return self.push_notice(
                 Level::Warning,
-                "YOLO cannot be switched in this session.".to_string(),
-            ),
+                "The permission mode cannot be switched in this session.".to_string(),
+            );
+        };
+        let current = self.vm.status.mode.unwrap_or(Mode::Workspace);
+        if mode == PermissionMode::Plan {
+            if current != Mode::Plan {
+                self.send(SessionCmd::SetMode(Mode::Plan));
+            }
+        } else {
+            let before = switch.level();
+            if before != Autonomy::Yolo {
+                self.yolo_prev = before;
+            }
+            switch.set_level(mode.autonomy());
+            if current != Mode::Workspace {
+                self.send(SessionCmd::SetMode(Mode::Workspace));
+            }
+        }
+        // The status shows the new mode at once; the session confirms it with its next state.
+        self.vm.status.mode = Some(if mode == PermissionMode::Plan {
+            Mode::Plan
+        } else {
+            Mode::Workspace
+        });
+        self.sync_yolo();
+        if !(mode == PermissionMode::Yolo && self.yolo_noticed && self.yolo_banner_until > now_ms()) {
+            self.push_notice(
+                Level::Info,
+                format!("Mode: {} ({})", mode.as_str(), mode.describe()),
+            );
+        }
+        if save {
+            let cwd = self.cwd();
+            let value = Value::String(mode.as_str().to_string());
+            match self
+                .opts
+                .settings
+                .set(&self.opts.dirs, &cwd, "permissions.defaultMode", value, false)
+            {
+                Ok(()) => self.push_notice(Level::Info, format!("Default mode saved: {}", mode.as_str())),
+                Err(e) => self.push_notice(Level::Error, e.to_string()),
+            }
         }
     }
 
@@ -736,7 +804,11 @@ impl<'a> Loop<'a> {
             ("theme", "Select the colour theme"),
             (
                 "yolo",
-                "Toggle YOLO: no permission prompts (the sandbox stays on)",
+                "Toggle yolo: full access, no prompts, bash without the sandbox",
+            ),
+            (
+                "auto",
+                "Auto mode: no prompts; the sandbox and the deny-list stay on",
             ),
             ("debug", "Write a debug dump"),
             ("exit", "Quit oxa"),
@@ -1047,7 +1119,11 @@ impl<'a> Loop<'a> {
                 Overlay::Settings(s) => s.paste(text),
                 Overlay::Sessions(s) => s.paste(text),
                 Overlay::Tree(s) => s.paste(text),
-                Overlay::Thinking(_) | Overlay::Theme(_) | Overlay::Fork(_) | Overlay::Mcp(_) => {}
+                Overlay::Thinking(_)
+                | Overlay::Mode(_)
+                | Overlay::Theme(_)
+                | Overlay::Fork(_)
+                | Overlay::Mcp(_) => {}
             }
             return;
         }
@@ -1255,8 +1331,8 @@ impl<'a> Loop<'a> {
             return;
         }
         if has("app.mode.cycle") {
-            let next = self.vm.status.mode.unwrap_or(Mode::Workspace).next();
-            self.send(SessionCmd::SetMode(next));
+            let next = self.permission_mode().next();
+            self.set_permission_mode(next, false);
             return;
         }
         if has("app.editor.external") {
@@ -1775,6 +1851,10 @@ impl<'a> Loop<'a> {
                 let sel = ThinkingSelector::new(&ThinkingLevel::ALL, current, note.as_deref());
                 self.overlay = Some(Overlay::Thinking(sel));
             }
+            SelectorKind::Mode => {
+                let sel = crate::ModeSelector::new(self.permission_mode());
+                self.overlay = Some(Overlay::Mode(sel));
+            }
             SelectorKind::Theme => {
                 let mut themes = list_themes(&[self.opts.dirs.agent_dir.join("themes")]);
                 // OXA's own themes are offered with OXA's look (pi's list is pi's).
@@ -1888,6 +1968,14 @@ impl<'a> Loop<'a> {
                         });
                     }
                     actions.push(AppAction::Session(SessionCmd::SetThinking(level)));
+                }
+                Outcome::Cancelled => keep = false,
+                _ => {}
+            },
+            Overlay::Mode(sel) => match sel.key(key, &km) {
+                Outcome::Done((mode, save)) => {
+                    keep = false;
+                    actions.push(AppAction::SetPermissionMode { mode, save });
                 }
                 Outcome::Cancelled => keep = false,
                 _ => {}
@@ -2216,6 +2304,7 @@ impl<'a> Loop<'a> {
             AppAction::Open(kind) => self.open_selector(kind),
             AppAction::Notify { level, text } => self.push_notice(level, text),
             AppAction::Yolo(want) => self.set_yolo(want),
+            AppAction::SetPermissionMode { mode, save } => self.set_permission_mode(mode, save),
             AppAction::ShowLines(lines) => {
                 for line in lines {
                     self.push_notice(Level::Info, line);
@@ -2573,6 +2662,7 @@ impl<'a> Loop<'a> {
                 Overlay::Model(s) => s.render(width, theme),
                 Overlay::Scoped(s) => s.render(width, theme),
                 Overlay::Thinking(s) => s.render(width, theme),
+                Overlay::Mode(s) => s.render(width, theme),
                 Overlay::Theme(s) => s.render(width, theme),
                 Overlay::Settings(s) => s.render(width, theme),
                 Overlay::Sessions(s) => s.render(width, theme),

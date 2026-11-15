@@ -132,11 +132,12 @@ impl ModePolicy {
         self.guard = guard;
         self
     }
-    /// O-182 (YOLO): while `switch` is on, every `Decision::Ask` of the mode table becomes
-    /// `Decision::Allow` and is counted on the switch. The safety floor is not part of the
-    /// table and is unchanged: the deny-list (B3) and git's files (B4) stay `Deny`, plan
-    /// mode's `Deny`s stand, and a write to the project's protected configuration (`.oxa`,
-    /// B4: it is loaded outside the sandbox later) still asks.
+    /// O-182, #202: at `Autonomy::Auto` every `Decision::Ask` of the mode table becomes
+    /// `Decision::Allow` and is counted on the switch; the safety floor is unchanged: the
+    /// deny-list (B3) and git's files (B4) stay `Deny`, plan mode's `Deny`s stand, and a write
+    /// to the project's protected configuration (`.oxa`) still asks. At `Autonomy::Yolo` (full
+    /// access) everything is allowed outside plan mode, the floor included; in plan mode it
+    /// answers as `Auto`.
     pub fn with_yolo(mut self, switch: YoloSwitch) -> ModePolicy {
         self.yolo = Some(switch);
         self
@@ -233,8 +234,10 @@ fn table(mode: Mode, a: &Access, cwd: &Path) -> Decision {
     }
 }
 
-impl Policy for ModePolicy {
-    fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
+impl ModePolicy {
+    /// The decision of every level but full access: the deny-list and the protected paths,
+    /// then the table, the grants and the `auto` answer.
+    fn decide_floor(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
         if let Access::Read(p) | Access::Write(p) = a {
             let abs = crate::paths::normalize(p, cwd);
             // B3: the deny-list beats the mode, the cwd and every grant.
@@ -265,6 +268,21 @@ impl Policy for ModePolicy {
             },
             d => d,
         }
+    }
+}
+
+impl Policy for ModePolicy {
+    fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
+        // #202: full access (yolo) outside plan mode: no prompt, no deny-list, no protected
+        // path. What would not have been allowed is counted as auto-approved.
+        if let Some(switch) = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan) {
+            // The floor counts what its table asked (the `auto` answer); the rest is counted here.
+            if self.decide_floor(mode, a, cwd) != Decision::Allow {
+                switch.count();
+            }
+            return Decision::Allow;
+        }
+        self.decide_floor(mode, a, cwd)
     }
 
     fn remember(&mut self, a: &Access) {

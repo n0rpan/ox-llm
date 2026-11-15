@@ -489,12 +489,12 @@ const ACTIONS: &[ActionDef] = &[
     ActionDef {
         id: "app.mode.cycle",
         default_keys: &["alt+m"],
-        description: "Cycle the permission mode",
+        description: "Cycle the permission mode: standard, auto, yolo",
     },
     ActionDef {
         id: "app.yolo.toggle",
         default_keys: &["ctrl+alt+o"],
-        description: "Toggle YOLO (no permission prompts; the sandbox stays on)",
+        description: "Toggle yolo (full access: no prompts, bash without the sandbox)",
     },
 ];
 

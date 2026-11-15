@@ -1,5 +1,7 @@
-//! O-182: `oxa --yolo`, end to end with the real binary against the fake engine. YOLO removes
-//! the permission prompts; the deny-list and the sandbox are still enforced.
+//! O-182, #202: the permission modes end to end with the real binary against the fake engine.
+//! `auto` (the default) removes the prompts and keeps the deny-list and the sandbox; `yolo` is
+//! full access: no prompts, bash without the sandbox, file tools without the deny-list;
+//! `standard` asks (and print mode, with nobody to ask, refuses).
 
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
 use oxa_parity::run_oxa;
@@ -34,72 +36,129 @@ fn run(env: &TestEnv, turn: ScriptTurn, args: &[&str]) -> (std::process::Output,
     (out, reqs)
 }
 
-/// A write outside the work tree asks in `workspace` mode. Print mode has nobody to ask, so
-/// it is refused; with `--yolo` it is auto-approved.
+/// A write outside the work tree asks in `standard`; print mode has nobody to ask, so it is
+/// refused. The default (`auto`), `--auto` and `--yolo` approve it without a prompt.
 #[test]
-fn yolo_auto_approves_what_would_have_asked() {
+fn standard_refuses_auto_and_yolo_approve_what_would_have_asked() {
     let env = TestEnv::new();
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("out.txt");
 
-    let (out, reqs) = run(&env, write_call(&target), &["-p", "write it"]);
+    let (out, reqs) = run(&env, write_call(&target), &["-p", "--standard", "write it"]);
     assert!(out.status.success());
     assert!(
         !target.exists(),
-        "without --yolo the write outside the work tree is not approved"
+        "--standard does not approve the write outside the work tree"
     );
     assert!(!tool_result(&reqs).is_empty());
 
-    let (out, _) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(
-        std::fs::read_to_string(&target).ok().as_deref(),
-        Some("x"),
-        "--yolo approves the write without a prompt"
-    );
+    for args in [
+        &["-p", "write it"][..],
+        &["-p", "--auto", "write it"],
+        &["-p", "--yolo", "write it"],
+    ] {
+        let _ = std::fs::remove_file(&target);
+        let (out, _) = run(&env, write_call(&target), args);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(
+            std::fs::read_to_string(&target).ok().as_deref(),
+            Some("x"),
+            "{args:?} approves the write without a prompt"
+        );
+    }
 }
 
-/// The negative: under `--yolo` a write to `~/.ssh` is still blocked by the deny-list.
+/// `permissions.defaultMode` in the user's settings sets the mode at start; a flag wins.
 #[test]
-fn yolo_does_not_open_the_deny_list() {
+fn the_saved_default_mode_applies_and_a_flag_wins() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"permissions": {"defaultMode": "standard"}}"#,
+    );
+    let outside = env.root().join("elsewhere");
+    std::fs::create_dir_all(&outside).expect("dir");
+    let target = outside.join("out.txt");
+
+    let (out, _) = run(&env, write_call(&target), &["-p", "write it"]);
+    assert!(out.status.success());
+    assert!(
+        !target.exists(),
+        "the saved standard mode asks, so print mode refuses"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("permission mode standard"),
+        "the mode is logged on stderr: {err}"
+    );
+
+    let (out, _) = run(&env, write_call(&target), &["-p", "--auto", "write it"]);
+    assert!(out.status.success());
+    assert!(target.exists(), "--auto wins over the saved default for one run");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("permission mode auto"));
+}
+
+/// `auto` keeps the deny-list: a write to `~/.ssh` is refused. `yolo` lifts it.
+#[test]
+fn auto_keeps_the_deny_list_and_yolo_lifts_it() {
     let env = TestEnv::new();
     let ssh = env.home().join(".ssh");
     std::fs::create_dir_all(&ssh).expect("dir");
     for target in [ssh.join("authorized_keys"), env.home().join(".config/oxc/token")] {
-        let (out, reqs) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
+        let (out, reqs) = run(&env, write_call(&target), &["-p", "--auto", "write it"]);
         assert!(out.status.success());
-        assert!(!target.exists(), "{target:?} must not be written under --yolo");
+        assert!(!target.exists(), "{target:?} must not be written under --auto");
         let result = tool_result(&reqs);
         assert!(
             result.contains("keys, tokens or agent state"),
             "the refusal names the deny-list: {result:?}"
         );
     }
+    let target = ssh.join("authorized_keys");
+    let (out, _) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        target.exists(),
+        "--yolo is full access: the deny-list does not apply"
+    );
 }
 
-/// The sandbox stays on: bash under `--yolo` still cannot write outside the work tree.
+/// `auto` keeps bash in the sandbox; `yolo` runs it without the sandbox.
 #[test]
-fn yolo_keeps_bash_in_the_sandbox() {
+fn auto_keeps_bash_in_the_sandbox_and_yolo_does_not() {
     let env = TestEnv::new();
     let escaped = env.root().join("elsewhere-escaped.txt");
-    let turn = ScriptTurn::tool(
-        "c1",
-        "bash",
-        &format!("{{\"command\": \"echo leaked > '{}'\"}}", escaped.display()),
-    );
-    let (out, _) = run(&env, turn, &["-p", "--yolo", "run it"]);
+    let turn = || {
+        ScriptTurn::tool(
+            "c1",
+            "bash",
+            &format!("{{\"command\": \"echo leaked > '{}'\"}}", escaped.display()),
+        )
+    };
+    let (out, _) = run(&env, turn(), &["-p", "--auto", "run it"]);
     assert!(out.status.success());
-    assert!(!escaped.exists(), "bash wrote outside the work tree under --yolo");
+    assert!(!escaped.exists(), "bash wrote outside the work tree under --auto");
+
+    let (out, _) = run(&env, turn(), &["-p", "--yolo", "run it"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        std::fs::read_to_string(&escaped).ok().as_deref(),
+        Some("leaked\n"),
+        "--yolo runs bash without the sandbox"
+    );
 }
 
 #[test]
-fn help_lists_yolo_and_there_is_no_sandbox_off_switch() {
+fn help_lists_the_modes_and_there_is_no_separate_sandbox_off_switch() {
     let env = TestEnv::new();
     let out = run_oxa(&env, "http://127.0.0.1:9", &["--help"], "");
     let help = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(help.contains("--yolo"));
-    assert!(help.contains("the sandbox and the deny-list stay on"));
+    for flag in ["--standard", "--auto", "--yolo"] {
+        assert!(help.contains(flag), "{flag}");
+    }
+    assert!(help.contains("the bash sandbox and the deny-list stay on"));
+    assert!(help.contains("bash runs without the sandbox"));
     assert!(!help.contains("--no-sandbox"));
     let out = run_oxa(
         &env,
@@ -159,10 +218,11 @@ fn child_tool_result(reqs: &[Recorded]) -> String {
         .unwrap_or_default()
 }
 
-/// O-182, subagents: a child started by a `--yolo` parent writes outside the project without a
-/// prompt. Without `--yolo` the same child is refused (print mode has nobody to ask).
+/// Subagents inherit the mode: a child of a `--yolo` parent writes outside the project; a
+/// child of a `--standard` parent is refused (print mode has nobody to ask), even though the
+/// child's own default would be `auto`.
 #[test]
-fn yolo_child_writes_without_a_prompt() {
+fn child_inherits_the_parents_mode() {
     let env = TestEnv::new();
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
@@ -185,40 +245,45 @@ fn yolo_child_writes_without_a_prompt() {
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("child.txt");
-    let (out, reqs) = subagent_run(&env, "write", write_call(&target), &["-p", "delegate it"]);
+    let (out, reqs) = subagent_run(
+        &env,
+        "write",
+        write_call(&target),
+        &["-p", "--standard", "delegate it"],
+    );
     assert!(out.status.success());
     assert!(
         !target.exists(),
-        "without --yolo the child's write is not approved"
+        "under --standard the child's write is not approved"
     );
     assert!(child_tool_result(&reqs).contains("Permission denied"));
 }
 
-/// O-182, subagents: under `--yolo` the child's write to the project's `.oxa` configuration
-/// still asks, and a child cannot answer a question, so it is refused.
+/// Under `auto` the child's write to the project's `.oxa` configuration still asks, and a
+/// child cannot answer a question, so it is refused.
 #[test]
-fn yolo_child_still_asks_for_the_project_oxa_config() {
+fn auto_child_still_asks_for_the_project_oxa_config() {
     let env = TestEnv::new();
     let target = env.work().join(".oxa/settings.json");
     let (out, reqs) = subagent_run(
         &env,
         "write",
         write_call(&target),
-        &["-p", "--yolo", "delegate it"],
+        &["-p", "--auto", "delegate it"],
     );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(
         !target.exists(),
-        "the child's write to .oxa is not approved under --yolo"
+        "the child's write to .oxa is not approved under --auto"
     );
     let result = child_tool_result(&reqs);
     assert!(result.contains("Permission denied"), "{result:?}");
 }
 
-/// O-182, subagents: a child started by a `--yolo` parent runs bash in the sandbox, so a write
-/// outside the project does not land.
+/// A child of an `--auto` parent runs bash in the sandbox, so a write outside the project does
+/// not land.
 #[test]
-fn yolo_child_bash_stays_in_the_sandbox() {
+fn auto_child_bash_stays_in_the_sandbox() {
     let env = TestEnv::new();
     let escaped = env.root().join("elsewhere-child-escaped.txt");
     let turn = ScriptTurn::tool(
@@ -226,7 +291,7 @@ fn yolo_child_bash_stays_in_the_sandbox() {
         "bash",
         &format!("{{\"command\": \"echo leaked > '{}'\"}}", escaped.display()),
     );
-    let (out, reqs) = subagent_run(&env, "bash", turn, &["-p", "--yolo", "delegate it"]);
+    let (out, reqs) = subagent_run(&env, "bash", turn, &["-p", "--auto", "delegate it"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(
         !child_tool_result(&reqs).is_empty(),
@@ -234,6 +299,6 @@ fn yolo_child_bash_stays_in_the_sandbox() {
     );
     assert!(
         !escaped.exists(),
-        "a child's bash wrote outside the work tree under --yolo"
+        "a child's bash wrote outside the work tree under --auto"
     );
 }

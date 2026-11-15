@@ -236,7 +236,7 @@ fn started_in_home_the_startup_files_ask_and_the_folders_are_the_workspace() {
     env.write("home/project/keep", "");
     env.write("home/.config/systemd/user/a.service", "");
     let home = env.home();
-    let switch = oxa_proto::YoloSwitch::new(true);
+    let switch = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Auto);
     for p in [guarded(&env), guarded(&env).with_yolo(switch)] {
         for rel in [
             ".bashrc",

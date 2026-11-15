@@ -809,8 +809,6 @@ fn slash_027() {
     // in the footer and a value outside the three is refused with the usage line.
     let rig = Rig::start(replies(1), RigOpts::default());
     rig.prompt("hi", "reply 1");
-    rig.slash("/mode");
-    rig.pty.wait_for_text("Mode: workspace").unwrap();
     rig.slash("/mode plan");
     rig.pty
         .wait_for_named("the plan footer", |s| footer_last(s).contains("plan"), WAIT)
@@ -821,7 +819,11 @@ fn slash_027() {
         .unwrap();
     rig.slash("/mode yolo");
     rig.pty
-        .wait_for_text("Usage: /mode [plan|workspace|ask]")
+        .wait_for_named("the yolo footer", |s| footer_last(s).contains("yolo"), WAIT)
+        .unwrap();
+    rig.slash("/mode root");
+    rig.pty
+        .wait_for_text("Usage: /mode [standard|auto|yolo|plan|workspace|ask] [--save]")
         .unwrap();
 }
 

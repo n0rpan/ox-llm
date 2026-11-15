@@ -135,7 +135,7 @@ fn hud_snapshot_at_120_columns() {
     let st = full_status();
     let line = strip_ansi(&hud(&st, 120, &colour()));
     // The full line fits in 120 columns: no segment is dropped.
-    let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ workspace";
+    let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ standard";
     assert_eq!(line, expected);
 }
 
@@ -154,7 +154,7 @@ fn hud_drop_order_keeps_title_and_state_down_to_40() {
 fn hud_segments_appear_monotonically_as_width_grows() {
     // A segment that shows at some width shows at every wider width (the drop order is fixed).
     let st = full_status();
-    let markers = ["tok/s", "CACHE", "15k/33k", "medium", "workspace"];
+    let markers = ["tok/s", "CACHE", "15k/33k", "medium", "standard"];
     for marker in markers {
         let mut seen = false;
         for width in 20..=200u16 {

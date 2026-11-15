@@ -2,7 +2,6 @@
 //! Owner: task U2. Signatures below are frozen; bodies are yours. Spec: OXA-UI-DESIGN.md sec. 4.
 use crate::{Activity, HeaderInfo, Skin, StatusModel, ViewModel};
 use oxa_config::Keymap;
-use oxa_proto::Mode;
 use oxa_tui::{truncate_to_width, visible_width, Theme};
 
 use super::{badge, glyphs, left_right, meter, sprite_frame, Glyphs, Sprite};
@@ -144,7 +143,7 @@ struct HudParts {
     /// What the level reads as (`adaptive • low` for Claude 5.5); the token colours it.
     level_text: Option<String>,
     note: Option<String>,
-    mode: Option<Mode>,
+    mode: Option<(&'static str, &'static str)>,
     /// Badge word and colour token of the activity; `None` when idle.
     state: Option<(&'static str, &'static str)>,
     spinner: &'static str,
@@ -189,7 +188,7 @@ impl HudParts {
             level: st.thinking.map(|level| level.as_str()),
             level_text: st.thinking_label_with(g.mid),
             note: clean_opt(st.thinking_note.as_deref()),
-            mode: st.mode,
+            mode: st.mode_label(),
             state: activity_style(&st.activity),
             // The HUD does not animate: the activity line holds the one moving sprite, so a
             // frame changes a handful of cells and nothing else on the screen.
@@ -212,7 +211,7 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
         segs.push(format!(
             "{} {} {}",
             g.flame,
-            badge("YOLO", "error", theme),
+            badge("YOLO full access", "error", theme),
             theme.fg("warning", &approved.to_string())
         ));
     }
@@ -287,11 +286,9 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
         segs.push(theme.fg("warning", "no summary"));
     }
 
-    // 8: permission mode.
-    if shown(10) {
-        if let Some(mode) = p.mode {
-            segs.push(theme.fg(mode_token(mode), mode.as_str()));
-        }
+    // 8: permission mode (#202: never dropped).
+    if let Some((label, token)) = p.mode {
+        segs.push(theme.fg(token, label));
     }
 
     format!(" {}", segs.join(&sep))
@@ -679,7 +676,7 @@ pub fn oxa_footer(
 /// the badge and the text.
 pub fn oxa_yolo_banner(ms: u64, motion: bool, width: u16, theme: &Theme, skin: Skin) -> String {
     let g = glyphs(skin);
-    let what = "prompts off, every action is auto-approved; the sandbox and the deny-list stay on";
+    let what = "full access: no prompts, bash runs without the sandbox, no deny-list for the file tools";
     let label = badge("YOLO MODE", "error", theme);
     let line = if motion && !theme.is_plain() && !g.flames.is_empty() {
         let frame = g.flames[(ms / 120) as usize % g.flames.len()];
@@ -745,15 +742,6 @@ fn cache_token(pct: u64) -> &'static str {
         "warning"
     } else {
         "error"
-    }
-}
-
-/// The theme token of a permission mode.
-fn mode_token(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Plan => "modePlan",
-        Mode::Workspace => "modeWorkspace",
-        Mode::Ask => "modeAsk",
     }
 }
 

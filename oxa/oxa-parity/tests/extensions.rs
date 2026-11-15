@@ -673,7 +673,7 @@ fn ext_026() {
             "oxa.on('ui_prompt_start', (e, ctx) => note(ctx, 'prompt_start'));",
         )],
         tool_then_text("c1", "read", r#"{"path":"../outside.txt"}"#, "ok"),
-        &["-p", "hi"],
+        &["--standard", "-p", "hi"],
     );
     assert!(r.has("prompt_start"), "ui_prompt_start fires: {}", r.log);
 }
@@ -689,7 +689,7 @@ fn ext_027() {
             "oxa.on('ui_prompt_end', (e, ctx) => note(ctx, 'prompt_end'));",
         )],
         tool_then_text("c1", "read", r#"{"path":"../outside.txt"}"#, "ok"),
-        &["-p", "hi"],
+        &["--standard", "-p", "hi"],
     );
     assert!(r.has("prompt_end"), "ui_prompt_end fires: {}", r.log);
 }
