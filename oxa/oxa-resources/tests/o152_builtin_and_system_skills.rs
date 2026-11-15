@@ -30,7 +30,10 @@ fn find<'a>(skills: &'a [Skill], name: &str) -> &'a Skill {
 #[test]
 fn builtin_skills_are_valid_and_listed() {
     let names: Vec<&str> = BUILTIN_SKILLS.iter().map(|(n, _)| *n).collect();
-    assert_eq!(names, vec!["ox-llm", "oxa-extend", "report-issue"]);
+    assert_eq!(
+        names,
+        vec!["ox-llm", "oxa-extend", "pull-request", "report-issue"]
+    );
     let env = TestEnv::new();
     let dirs = Dirs::under(env.root());
     let (skills, diags) = discover_skills(
@@ -149,6 +152,7 @@ fn omarchy_system_dir_is_the_lowest_precedence_fallback() {
             "omarchy",
             "ox-llm",
             "oxa-extend",
+            "pull-request",
             "report-issue",
             "shared"
         ],

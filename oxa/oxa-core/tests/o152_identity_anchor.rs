@@ -182,7 +182,7 @@ fn anchor_bytes_are_identical_across_cwd_date_and_session() {
     assert!(
         anchor.contains("Snapdragon X Elite (X1E80100)") && anchor.contains("  - moe: context 131072 tokens")
     );
-    for skill in ["deploy", "ox-llm", "oxa-extend", "report-issue"] {
+    for skill in ["deploy", "ox-llm", "oxa-extend", "pull-request", "report-issue"] {
         assert!(
             anchor.contains(&format!("<name>{skill}</name>")),
             "{skill} indexed"
