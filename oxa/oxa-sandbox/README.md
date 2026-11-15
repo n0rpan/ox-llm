@@ -28,7 +28,7 @@ masks are sorted by path.
 | `~/go/bin`, `~/.local/share/pipx`, `~/.local/pipx`, `~/.local/share/uv`, `~/.pyenv`, `~/.rbenv` | read-only | go binaries, pipx / uv tools and pythons, pyenv / rbenv |
 | `~/.gitconfig`, `~/.config/git` | read-only | the user's git identity for commits |
 | `~/.cargo/registry`, `~/.cargo/git` | read-write | cargo must download and unpack crates; without it every call re-downloads into a throwaway home |
-| `~/.cache/{pip,uv,go-build,yarn,pnpm,deno,node-gyp}`, `~/.npm`, `~/.bun/install/cache`, `~/go/pkg/mod` | read-write | the package caches of pip, uv, go, yarn, pnpm, deno, node-gyp, npm, bun |
+| `~/.cache/{pip,uv,go-build,sccache,yarn,pnpm,deno,node-gyp}`, `~/.npm`, `~/.bun/install/cache`, `~/go/pkg/mod` | read-write | the package caches of pip, uv, go, sccache (or `$SCCACHE_DIR` when set, judged by its resolved path: only if it lies under `~/.cache`, or entirely outside the home and not in a system directory such as `/`, `/etc`, `/usr` or `/var`, nor a parent of the home; anything else in the home, e.g. `~/.config/sccache`, is never made writable), yarn, pnpm, deno, node-gyp, npm, bun |
 | `oxa.sandbox.readPaths` / `oxa.sandbox.writePaths` (user settings, `~/` expanded) | read-only / read-write | anything else a user's toolchain needs |
 | Toolchain variables (`CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOMODCACHE`, `NVM_DIR`, `npm_config_cache`, `UV_CACHE_DIR`, `MISE_*`, `XDG_*`, ...) | passed when set | they say where the binds above are |
 | Any variable whose name holds `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` | never passed | credentials stay outside |
@@ -39,7 +39,7 @@ masks are sorted by path.
 | The deny-list: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh`, `~/.config/hub`, `~/.config/oxc`, `~/.local/state/oxc`, the agent directory (`~/.oxa/agent`), `~/.pi/agent`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials{,.toml}`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`, `~/.password-store`, `~/.local/share/keyrings`, `~/.config/op`, `~/.config/Bitwarden`, `~/.pki`, browser profiles (`~/.mozilla`, `~/.thunderbird`, `~/.config/{google-chrome,chromium,BraveSoftware,microsoft-edge,vivaldi,opera}`) | masked after every bind: an empty read-only tmpfs over a directory, `/dev/null` over a file | keys, tokens, trust, other projects' sessions; neither readable nor writable whatever the cwd or the settings. The file tools obey the same list (`oxa-perm` `PathGuard`) |
 
 A writable cache is shared with the user's own builds: what the model writes there (an unpacked
-crate under `~/.cargo/registry/src`, a module under `~/go/pkg/mod`) is what the next build of
+crate under `~/.cargo/registry/src`, a module under `~/go/pkg/mod`, a compiled object in `~/.cache/sccache`) is what the next build of
 the user reads. Clear a cache after a session you do not trust; a setting that binds the caches
 read-only is a follow-up.
 
