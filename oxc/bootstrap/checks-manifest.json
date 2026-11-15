@@ -8,7 +8,7 @@
     "src/oxc/bootstrap_jobs.py": "ff8a9a3b2cb1bc98afef0624226d0f77f647de021130e82834ddb337b9321958",
     "src/oxc/bootstrap.py": "b04b85eec966b753674803d0746eb5576ef08f540529609d07fa72773134d162",
     "src/oxc/power.py": "a453ebd095a2347ccc49bbb1be0086e18cf5bc5fa9773654b179cab72f38d4f5",
-    "bootstrap/build-manifest.json": "11306da4e7e0a00104633d5f8c8f3e6a5a4c9bf5a798fcc5759819a1bc4e8999"
+    "bootstrap/build-manifest.json": "bdb19c4b38b81d407091b320f1c78d031620e5c5254c2a53192166567262a1e6"
   },
   "build_manifest_sha256": "11c039212789b28d53058ae1c4838153c10d8962e0af11ec2199c99dce6a5375",
   "synthetic_tests_passed": 3,
