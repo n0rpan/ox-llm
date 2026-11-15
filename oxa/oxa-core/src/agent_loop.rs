@@ -750,6 +750,11 @@ fn miss_cause_for(st: &SessionState, first: bool) -> &'static str {
 /// #456: a stream that broke after output (not our own loop stop) is resent while the retry
 /// policy allows it. A refusal after output (budget, settlement) is never resent. A break before output is already retried inside `chat_with_retry`.
 fn replayable(st: &SessionState, e: &OxaError, got_data: bool, looped: bool, replays: u32) -> bool {
+    // A failed request yields to the final turn once a soft stop is pending.
+    // The final attempt itself must not be replayed either.
+    if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+        return false;
+    }
     let r = st.settings.retry();
     e.code == oxa_proto::codes::STREAM_BROKEN
         && got_data
