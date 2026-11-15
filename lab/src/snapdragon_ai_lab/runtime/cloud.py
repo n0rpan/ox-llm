@@ -312,8 +312,8 @@ def estimate_prompt_tokens(payload):
 
 
 def worst_case_cost(item, payload):
-    """The most one request can cost: the prompt estimate plus max_tokens at the output price."""
-    prompt = item['context_window'] if item['provider'] == 'openai' else estimate_prompt_tokens(payload)
+    """Reserve the catalog input window; byte estimates cannot bound tokenization or images."""
+    prompt = item['context_window']
     usd = cost(item, prompt, _max_tokens(payload, item))
     return math.inf if usd is None else usd
 
@@ -339,6 +339,10 @@ class BudgetHold:
 
 
 def validate_remote_request(payload, item):
+    try:
+        json.dumps(payload, ensure_ascii=False, allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError, UnicodeError):
+        raise CloudError('Invalid cloud request encoding.', 400, 'invalid_request') from None
     n = payload.get('n') if isinstance(payload, dict) else None
     if n is not None and (type(n) is not int or n != 1):
         raise CloudError('Cloud requests support one completion.', 400, 'invalid_value', 'n')
@@ -631,6 +635,15 @@ def remote_payload(payload, item):
         raise CloudError('Invalid cloud request.', 400, 'invalid_request')
     body = dict(payload)
     body['model'] = item['upstream_model']
+    maximum = item.get('max_output') or 4096
+    field = 'max_completion_tokens' if 'max_completion_tokens' in body else 'max_tokens'
+    limit = body.get(field, body.get('n_predict', maximum))
+    if type(limit) is not int or limit <= 0:
+        raise CloudError('The output token limit must be a positive integer.',
+                         400, 'invalid_value', field)
+    body.pop('max_tokens', None)
+    body.pop('max_completion_tokens', None)
+    body[field] = min(limit, maximum)
     for field in ('cache_prompt', 'n_predict', 'id_slot', 'slot',
                   'ignore_eos', 'typical_p', 'min_p', 'repeat_penalty', 'top_k'):
         body.pop(field, None)

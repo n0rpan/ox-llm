@@ -219,7 +219,9 @@ class Budget(CloudCase):
     def test_the_daily_cap_refuses_the_next_request_and_records_cost(self):
         upstream = MockOpenRouter(usage={'prompt_tokens': 1000, 'completion_tokens': 1000, 'total_tokens': 2000})
         self.addCleanup(upstream.close)
-        self.start(budget=0.005, mock=upstream)
+        models = profiles()
+        models[REMOTE].update(context_window=2000, max_output=2000)
+        self.start(budget=0.005, mock=upstream, models=models)
         self.assertEqual(self.chat()[0], 200)
         rows = self.ledger_rows()
         self.assertEqual(rows[-1]['cost_usd'], 0.002)
@@ -331,7 +333,9 @@ class BudgetRace(CloudCase):
 
         upstream = MockOpenRouter(hook=hold)
         self.addCleanup(upstream.close)
-        self.start(budget=0.0015, mock=upstream)
+        models = profiles()
+        models[REMOTE]['context_window'] = 100
+        self.start(budget=0.0015, mock=upstream, models=models)
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(self.chat, max_tokens=1000) for _ in range(4)]
             deadline = time.monotonic() + 5
@@ -425,3 +429,45 @@ class LedgerFailClosed(CloudCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReviewBoundaries(CloudCase):
+    def test_admission_covers_the_catalog_input_window(self):
+        self.start(budget=0.02)
+        status, _ = self.chat(max_tokens=1, text='a' * 40000)
+        self.assertEqual(status, 429)
+        self.assertEqual(self.upstream.requests, [])
+
+    def test_missing_output_limit_is_enforced_upstream(self):
+        self.start()
+        status, _ = self.chat()
+        self.assertEqual(status, 200)
+        self.assertEqual(self.upstream.requests[0]['body']['max_tokens'], 4096)
+
+    def test_split_escaped_key_is_redacted_semantically(self):
+        fragments = [KEY[:12], KEY[12:]]
+        chunks = []
+        for fragment in fragments:
+            event = {'choices': [{'index': 0, 'delta': {'content': fragment},
+                                  'finish_reason': None}]}
+            raw = json.dumps(event).replace('synthetic', '\\u0073ynthetic').encode()
+            chunks.append(b'data: ' + raw + b'\n\n')
+        upstream = MockOpenRouter(stream_chunks=chunks + [b'data: [DONE]\n\n'])
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        status, body = self.chat(stream=True)
+        self.assertEqual(status, 200)
+        content = ''.join(json.loads(line[6:])['choices'][0]['delta'].get('content', '')
+                          for line in body.splitlines() if line.startswith(b'data: {')
+                          and json.loads(line[6:]).get('choices'))
+        self.assertNotIn(KEY, content)
+        self.assertIn('[redacted]', content)
+
+    def test_invalid_unicode_is_rejected_without_a_budget_hold(self):
+        self.start()
+        status, body = self.chat(text='bad\ud800')
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)['error']['code'], 'invalid_request')
+        self.assertEqual(self.upstream.requests, [])
+        self.assertFalse(cloud._reserved)
+        self.assertEqual(self.ledger_rows()[-1]['cost_usd'], 0)

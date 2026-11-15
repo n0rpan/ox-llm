@@ -68,7 +68,7 @@ echoes the key is redacted before it reaches the client.
   offline.
 - `cloud.daily_budget_usd` is a positive USD cap per local day. A missing or non-positive cap
   fails closed (`budget_not_configured`). Admission atomically reserves the worst case
-  (`prompt estimate + max_tokens` at the model price) before forwarding, so concurrent
+  (`catalog context_window + bounded output limit` at the model price) before forwarding, so concurrent
   requests cannot all spend the same budget; the actual cost settles after the ledger row is
   written. A request that would exceed `spent + reserved` gets `429` with code
   `budget_exceeded`.
@@ -209,6 +209,15 @@ entry using the model's published limits and your account's prices. No prices or
 model limits are supplied implicitly. The per-model capabilities disable echo,
 cache hints, cancellation and prefill; oxa shows `cloud · openai` in its footer
 and start banner.
+
+OpenRouter and generic compatible requests always carry an output limit, bounded by
+catalog `max_output` (4096 when omitted). Admission reserves the entire catalog input
+window because text-byte estimates cannot bound tokenization or image costs.
+
+An expired active Responses tool continuation returns a clear `409`; it is never
+retried automatically. A fresh user turn can replay completed public tool history
+after expiry or compaction, without attaching opaque reasoning from another prefix.
+Unresolved tool calls still require the original continuation state.
 
 The endpoint is selected by an explicit model contract:
 

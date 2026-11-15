@@ -389,7 +389,7 @@ fn footer_and_header_show_the_model_location() {
     theme.colors.insert("accent".to_string(), Color::Indexed(6));
     let local_colour = render_footer(&vm_with(base_status()), 120, &theme)[1].clone();
     assert!(
-        local_colour.contains("\x1b[38;5;2m"),
+        local_colour.contains(&theme.fg("success", "local")),
         "local is green: {local_colour}"
     );
     let cloud_colour = render_footer(
@@ -403,9 +403,10 @@ fn footer_and_header_show_the_model_location() {
     )[1]
     .clone();
     assert!(
-        cloud_colour.contains("\x1b[38;5;6m"),
+        cloud_colour.contains(&theme.fg("accent", "cloud · anthropic")),
         "cloud is its own colour: {cloud_colour}"
     );
+    assert_ne!(theme.fg("success", "location"), theme.fg("accent", "location"));
     assert!(cloud_colour.contains("cloud · anthropic"), "{cloud_colour}");
 
     let keymap = Keymap::defaults();
@@ -422,6 +423,8 @@ fn footer_and_header_show_the_model_location() {
     let local_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
     assert!(local_header.contains("local"), "{local_header}");
     info.model_remote = true;
+    let generic = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
+    assert!(generic.contains("cloud · remote"), "{generic}");
     info.model_provider = Some("openrouter");
     let cloud_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
     assert!(cloud_header.contains("cloud · openrouter"), "{cloud_header}");
@@ -439,7 +442,10 @@ fn footer_and_header_show_the_model_location() {
     )[1]
     .clone();
     assert!(openai_footer.contains("cloud · openai"), "{openai_footer}");
-    assert!(openai_footer.contains("\x1b[38;5;6m"), "{openai_footer}");
+    assert!(
+        openai_footer.contains(&theme.fg("accent", "cloud · openai")),
+        "{openai_footer}"
+    );
 }
 
 /// Issue #51: Claude 5.5 cannot disable thinking; the footer shows what oxc sends upstream.

@@ -10,7 +10,9 @@ from test_cloud_anthropic import anthropic_models
 
 class SharedAdmission(CloudCase):
     def test_multiple_choices_refused_before_upstream_under_small_budget(self):
-        self.start(budget=0.0015)
+        models = profiles()
+        models[REMOTE]['context_window'] = 100
+        self.start(budget=0.0015, models=models)
         status, body = self.chat(n=4, max_tokens=1000)
         self.assertEqual(status, 400, body)
         self.assertEqual(json.loads(body)['error']['param'], 'n')

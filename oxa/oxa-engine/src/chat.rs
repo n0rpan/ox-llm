@@ -178,14 +178,14 @@ impl ReplyAssembler {
                         self.calls[slot].id = id.to_string();
                     }
                     if let Some(name) = name {
-                        self.calls[slot].name = name.to_string();
+                        self.calls[slot].name.push_str(name);
                     }
                     self.calls[slot].args_raw.push_str(args);
                     if id.is_some() || name.is_some() || !args.is_empty() {
                         events.push(StreamEvent::ToolArgs {
                             index,
                             id: id.map(str::to_string),
-                            name: name.map(str::to_string),
+                            name: name.map(|_| self.calls[slot].name.clone()),
                             delta: args.to_string(),
                         });
                     }
@@ -440,7 +440,6 @@ impl Engine for HttpEngine {
         let mut remote = self.remote_models.lock().unwrap_or_else(|p| p.into_inner());
         if info.caps.remote {
             remote.insert(key.to_string());
-            remote.insert(info.model.clone());
         } else {
             remote.remove(key);
         }

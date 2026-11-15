@@ -6,6 +6,13 @@ use std::sync::Mutex;
 
 static NET_POLICY: Mutex<()> = Mutex::new(());
 
+struct PolicyReset;
+impl Drop for PolicyReset {
+    fn drop(&mut self) {
+        oxa_proto::set_net_policy(false, false);
+    }
+}
+
 fn prefix() -> FrozenPrefix {
     FrozenPrefix {
         sections: vec![("preamble".to_string(), "SYS".to_string())],
@@ -82,6 +89,7 @@ fn a_remote_row_publishes_its_capabilities_and_context_window() {
 fn offline_refuses_a_remote_model_before_any_connect() {
     let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
     let models = json!({"data": [{"id": "local-model"}, {"id": "cloud-model"}]});
+    let _reset = PolicyReset;
     oxa_proto::set_net_policy(true, false);
     let error = parse_info_for(
         "http://127.0.0.1:8092",
@@ -134,8 +142,115 @@ fn openai_location_and_offline_policy_come_from_model_capabilities() {
     assert_eq!(info.caps.remote_provider, Some("openai"));
     assert_eq!(info.n_ctx, 200000);
     assert!(!info.caps.cancel);
+    let _reset = PolicyReset;
     oxa_proto::set_net_policy(true, false);
     let result = parse_info_for("http://127.0.0.1:8092", &models, &status, Some("cloud-model"));
     oxa_proto::set_net_policy(false, false);
     assert_eq!(result.expect_err("offline refusal").code, codes::OFFLINE);
+}
+
+#[test]
+fn requesting_cloud_info_does_not_classify_the_loaded_local_model_as_remote() {
+    use oxa_engine::HttpEngine;
+    use oxa_fake::{FakeModel, FakeOpts, FakeServer};
+    use oxa_proto::Engine;
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let server = FakeServer::start(
+        Vec::new(),
+        FakeOpts {
+            model: "local-model".to_string(),
+            remote: Some("openai"),
+            models: vec![FakeModel {
+                alias: "cloud-model".to_string(),
+                cap: 64000,
+                max_output: Some(4096),
+                caps: None,
+            }],
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let engine = HttpEngine::new(&server.url(), None).unwrap();
+    let info = engine.info(Some("cloud-model")).unwrap();
+    assert_eq!(info.model, "local-model");
+    assert_eq!(info.limits_for, "cloud-model");
+    assert!(info.caps.remote);
+    let p = prefix();
+    let messages = vec![WireMsg::user("synthetic prompt")];
+    assert_eq!(
+        engine
+            .count_prompt(&request(&p, &messages, "cloud-model"))
+            .unwrap(),
+        None
+    );
+    assert!(
+        engine
+            .count_prompt(&request(&p, &messages, "local-model"))
+            .unwrap()
+            .is_some(),
+        "the unrelated loaded model must retain its local prompt-count endpoint"
+    );
+}
+
+#[test]
+fn unknown_provider_is_still_remote_and_refused_offline() {
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let _reset = PolicyReset;
+    let models = json!({"data": [{"id": "cloud-model"}]});
+    let mut status = cloud_status(64000, 64000);
+    status["model_limits"]["cloud-model"]["capabilities"]["remote_provider"] = json!("future-provider");
+    let info = parse_info_for("http://127.0.0.1:8092", &models, &status, Some("cloud-model")).unwrap();
+    assert!(info.caps.remote);
+    assert_eq!(info.caps.remote_provider, None);
+    oxa_proto::set_net_policy(true, false);
+    assert_eq!(
+        parse_info_for("http://127.0.0.1:8092", &models, &status, Some("cloud-model"))
+            .unwrap_err()
+            .code,
+        codes::OFFLINE
+    );
+}
+
+#[test]
+fn openai_http_chat_omits_local_cache_echo_and_prefill_controls() {
+    use oxa_engine::HttpEngine;
+    use oxa_fake::{FakeOpts, FakeServer, ScriptTurn};
+    use oxa_proto::{CancelToken, Engine};
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("reply")],
+        FakeOpts {
+            remote: Some("openai"),
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let engine = HttpEngine::new(&server.url(), None).unwrap();
+    let info = engine.info(None).unwrap();
+    assert!(info.caps.remote);
+    let p = prefix();
+    let messages = [WireMsg::user("hi")];
+    engine
+        .chat(
+            &request(&p, &messages, &info.model),
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    let seen = server.requests();
+    assert_eq!(seen.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&seen[0].body).unwrap();
+    for field in [
+        "cache_prompt",
+        "chat_template_kwargs",
+        "echo",
+        "prefill_only",
+        "snapshot_keep",
+    ] {
+        assert!(
+            body.get(field).is_none(),
+            "unexpected local field {field}: {body}"
+        );
+    }
+    assert_eq!(body["reasoning_effort"], "high");
 }

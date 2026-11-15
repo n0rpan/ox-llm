@@ -431,6 +431,77 @@ class Responses(CloudCase):
         self.assertNotIn('synthetic-encrypted-reasoning', self.ledger_text(minimum=2))
         self.assertNotIn('synthetic result', self.ledger_text(minimum=2))
 
+    def test_expired_closed_tool_history_recovers_on_a_new_turn_after_compaction(self):
+        native = {'id': 'resp_directory', 'status': 'completed', 'output': [
+            {'type': 'reasoning', 'id': 'rs_directory', 'summary': [],
+             'encrypted_content': 'synthetic-private-reasoning'},
+            {'type': 'function_call', 'call_id': 'call_directory', 'name': 'ls',
+             'arguments': '{"path":"oxa"}'}],
+            'usage': {'input_tokens': 12, 'output_tokens': 8}}
+        upstream = MockOpenAIResponses(response=native)
+        self.addCleanup(upstream.close)
+        self.start(mock=upstream)
+        history = [{'role': 'user', 'content': 'inspect the synthetic directory'}]
+        status, body = self.call('POST', '/v1/chat/completions', {'model': REMOTE, 'messages': history})
+        self.assertEqual(status, 200)
+        history.extend([json.loads(body)['choices'][0]['message'],
+                        {'role': 'tool', 'tool_call_id': 'call_directory', 'content': 'synthetic listing'}])
+        with cloud_openai._HISTORY_LOCK:
+            cloud_openai._HISTORY.clear()
+        # An active tool continuation still needs its opaque state: no unsafe paid retry.
+        self.assertEqual(self.call('POST', '/v1/chat/completions', {
+            'model': REMOTE, 'messages': history})[0], 409)
+        self.assertEqual(len(upstream.requests), 1)
+        history.insert(0, {'role': 'system', 'content': 'Synthetic compacted context.'})
+        unresolved = history[:-1] + [{'role': 'user', 'content': 'A fresh turn cannot close a pending tool.'}]
+        self.assertEqual(self.call('POST', '/v1/chat/completions', {
+            'model': REMOTE, 'messages': unresolved})[0], 409)
+        self.assertEqual(len(upstream.requests), 1)
+        history.append({'role': 'user', 'content': 'Continue from the completed tool result.'})
+        for _ in range(2):
+            status, body = self.call('POST', '/v1/chat/completions', {'model': REMOTE, 'messages': history})
+            self.assertEqual(status, 200, body)
+        sent = upstream.requests[-1]['body']['input']
+        call = next(part for part in sent if part.get('type') == 'function_call')
+        self.assertEqual(call['name'], 'ls')
+        self.assertEqual(call['call_id'], 'call_directory')
+        self.assertTrue(any(part.get('type') == 'function_call_output' and
+                            part['output'] == 'synthetic listing' for part in sent))
+        self.assertNotIn('synthetic-private-reasoning', json.dumps(sent))
+        self.assertNotIn('previous_response_id', upstream.requests[-1]['body'])
+
+    def test_sol_and_luna_directory_name_fragments_continue_with_the_same_history(self):
+        for model in ('gpt-6.1-sol', 'gpt-6-luna'):
+            native = {'id': 'resp_directory', 'status': 'completed', 'output': [{
+                'type': 'function_call', 'call_id': 'call_directory', 'name': 'ls',
+                'arguments': '{"path":"oxa"}'}], 'usage': {'input_tokens': 12, 'output_tokens': 8}}
+            events = [{'type': 'response.output_item.added', 'output_index': 0, 'item': {
+                'type': 'function_call', 'call_id': 'call_directory', 'name': 'ls', 'arguments': ''}},
+                {'type': 'response.function_call_arguments.delta', 'output_index': 0,
+                 'delta': '{"path":"oxa"}'}, {'type': 'response.completed', 'response': native}]
+            upstream = MockOpenAIResponses(events=events)
+            self.addCleanup(upstream.close)
+            self.start(mock=upstream, models=models(model))
+            history = [{'role': 'user', 'content': 'list the synthetic directory'}]
+            status, body = self.call('POST', '/v1/chat/completions', {
+                'model': REMOTE, 'messages': history, 'stream': True})
+            self.assertEqual(status, 200)
+            chunks = [json.loads(line[5:]) for line in body.decode().splitlines()
+                      if line.startswith('data:') and line[5:].strip() != '[DONE]']
+            calls = [call for chunk in chunks for choice in chunk['choices']
+                     for call in choice['delta'].get('tool_calls', [])]
+            name = ''.join(call['function'].get('name', '') for call in calls)
+            self.assertEqual(name, 'ls')
+            args = ''.join(call['function'].get('arguments', '') for call in calls)
+            history.extend([{'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'call_directory', 'type': 'function', 'function': {'name': name, 'arguments': args}}]},
+                {'role': 'tool', 'tool_call_id': 'call_directory', 'content': 'synthetic listing'}])
+            self.assertEqual(self.call('POST', '/v1/chat/completions', {
+                'model': REMOTE, 'messages': history})[0], 200)
+            self.assertEqual(len(upstream.requests), 2)
+            self.stack.close()
+            self.stack = None
+
     def test_interrupted_stream_charges_reservation_and_ends_without_done(self):
         upstream = MockOpenAIResponses(events=[{'type': 'response.output_text.delta', 'delta': 'partial'}])
         self.addCleanup(upstream.close)
