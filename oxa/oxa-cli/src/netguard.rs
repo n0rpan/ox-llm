@@ -19,11 +19,26 @@ pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dy
 /// outside the sandbox, with a short timeout. Any failure (no `gh`, not logged in, slow) is
 /// `None`. The token is never logged.
 fn gh_token() -> Option<String> {
-    let exe = trusted_gh(
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let exe = trusted_gh_for(
         std::env::var_os("PATH").as_deref(),
         std::env::current_dir().ok().as_deref(),
+        home.as_deref(),
     )?;
     gh_token_from(&exe, GH_DEADLINE)
+}
+
+/// `trusted_gh` with the project rule off when the project is the home directory itself (#122):
+/// everything on `PATH` under `~` (`~/.local/bin`) would otherwise count as "inside the
+/// project" and no token would be injected. The writable-directory check still applies.
+fn trusted_gh_for(
+    path: Option<&std::ffi::OsStr>,
+    cwd: Option<&Path>,
+    home: Option<&Path>,
+) -> Option<std::path::PathBuf> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let cwd = cwd.filter(|c| home.is_none_or(|h| canon(c) != canon(h)));
+    trusted_gh(path, cwd)
 }
 
 const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
@@ -171,6 +186,28 @@ mod tests {
         // A parallel test's fork can hold the script's write fd (ETXTBSY): retry the spawn.
         let got = (0..5).find_map(|_| gh_token_from(&gh, GH_DEADLINE));
         assert_eq!(got.as_deref(), Some("SYNTH_TOKEN"));
+    }
+
+    /// #122: with cwd = home, a `gh` in a user-owned directory under home (`~/.local/bin`)
+    /// is still found, so `GH_TOKEN` is injected the same as for a project cwd.
+    #[test]
+    fn cwd_home_still_finds_gh_under_home() {
+        let d = tmp("homecwd");
+        let home = d.join("home");
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        script(&bin, "gh", "echo GOOD");
+        let p = std::env::join_paths([bin.to_str().unwrap()]).unwrap();
+        assert_eq!(
+            trusted_gh_for(Some(&p), Some(&home), Some(&home)),
+            Some(bin.join("gh"))
+        );
+        // A project below home is still excluded.
+        let proj = home.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        script(&proj, "gh", "echo EVIL");
+        let q = std::env::join_paths([proj.to_str().unwrap()]).unwrap();
+        assert_eq!(trusted_gh_for(Some(&q), Some(&proj), Some(&home)), None);
     }
 
     #[test]
