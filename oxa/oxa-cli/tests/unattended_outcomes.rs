@@ -261,3 +261,36 @@ fn offline_startup_refusals_report_blocked_in_every_mode() {
         assert!(server.requests().is_empty());
     }
 }
+
+#[test]
+fn a_later_command_error_keeps_the_first_unsuccessful_outcome() {
+    for mode in ["print", "json"] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(vec![ScriptTurn::fault(Fault::Http {
+            status:429,
+            body:json!({"error":{"type":"cloud_error","code":"budget_exceeded","message":"Daily budget exhausted"}}).to_string(),
+        })],FakeOpts::default()).unwrap();
+        let args = if mode == "print" {
+            vec!["-p", "first", "/share"]
+        } else {
+            vec!["--mode", "json", "first", "/share"]
+        };
+        let output = run(&env, &server, &args, b"");
+        assert_result(&output, 3, "blocked", Some("budget_exhausted"));
+        assert_eq!(server.requests().len(), 1);
+    }
+}
+
+#[test]
+fn unknown_rpc_commands_are_failed_outcomes() {
+    let env = TestEnv::new();
+    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let output = run(
+        &env,
+        &server,
+        &["--mode", "rpc"],
+        b"{\"type\":\"no_such_command\"}\n",
+    );
+    assert_result(&output, 1, "failed", Some("invalid"));
+    assert!(server.requests().is_empty());
+}

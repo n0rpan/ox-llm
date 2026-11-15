@@ -187,7 +187,8 @@ pub fn run_print_outcome(
             Ok(Message::Command(lines)) => Some(lines),
             Err(e) => {
                 let _ = writeln!(sink.err, "{}", command_error(&e));
-                return Ok(RunOutcome::from_error(&e));
+                outcome.include(RunOutcome::from_error(&e));
+                return Ok(outcome);
             }
         };
         if let Some(e) = sink.io_error.take() {
@@ -288,12 +289,14 @@ pub fn run_json_outcome(
             }
             Err(e) => {
                 let _ = writeln!(err, "{}", command_error(&e));
-                return Ok(RunOutcome::from_error(&e));
+                outcome.include(RunOutcome::from_error(&e));
+                return Ok(outcome);
             }
         }
         if let Some(e) = sink.error.take() {
             let _ = writeln!(err, "{e}");
-            return Ok(RunOutcome::from_error(&e));
+            outcome.include(RunOutcome::from_error(&e));
+            return Ok(outcome);
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
         outcome.include(*session.outcome());

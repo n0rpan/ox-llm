@@ -413,6 +413,7 @@ fn session_loop(
         }
         let current = match &result {
             Some(Err(error)) => RunOutcome::from_error(error),
+            None => RunOutcome::Failed(codes::INVALID),
             Some(Ok(_)) if cmd.kind != "prompt" && settled.is_empty() => RunOutcome::Done,
             _ => *cx.session.outcome(),
         };
