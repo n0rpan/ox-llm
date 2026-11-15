@@ -1,0 +1,36 @@
+usage: export_receipt.py scan [-h] [--skip-rule SKIP_RULE] [--summary]
+                              [--profile {receipt,tree}]
+                              [--allow-exact ALLOW_EXACT]
+                              [--allow-file ALLOW_FILE] [--base BASE]
+                              [--deny-word DENY_WORD] [--deny-file DENY_FILE]
+                              [--allow-word ALLOW_WORD] [--no-system-denylist]
+                              paths [paths ...]
+
+positional arguments:
+  paths
+
+options:
+  -h, --help            show this help message and exit
+  --skip-rule SKIP_RULE
+                        rule name to ignore (repeatable)
+  --summary             print counts per rule and per file only
+  --profile {receipt,tree}
+                        tree: for source and documentation; skips abs-path,
+                        tilde-path, price, binary-file
+  --allow-exact ALLOW_EXACT
+                        exact spelling exempt from the per-machine word rules,
+                        e.g. a name in prose (repeatable)
+  --allow-file ALLOW_FILE
+                        exemptions, one per line: GLOB<TAB>RULE<TAB>REASON
+  --base BASE           directory the globs in --allow-file are relative to
+                        (default: current directory)
+  --deny-word DENY_WORD
+                        extra word that must not appear (repeatable)
+  --deny-file DENY_FILE
+                        file with one forbidden word per line
+  --allow-word ALLOW_WORD
+                        exempt one machine identifier that is also an ordinary
+                        public word, for example a host named after the laptop
+                        model (repeatable; use sparingly)
+  --no-system-denylist  do not add this machine's user, host and device
+                        identifiers (tests only)

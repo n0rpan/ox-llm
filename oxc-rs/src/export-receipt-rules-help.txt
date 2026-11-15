@@ -1,0 +1,4 @@
+usage: export_receipt.py rules [-h]
+
+options:
+  -h, --help  show this help message and exit

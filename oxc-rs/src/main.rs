@@ -16,6 +16,7 @@ mod models;
 mod paths;
 mod prefix_store;
 mod proxy;
+mod receipt_tools;
 mod release_files;
 mod release_update;
 mod request_ledger;
@@ -31,6 +32,11 @@ mod uninstall;
 
 fn main() {
     let words: Vec<String> = std::env::args().skip(1).collect();
+    match words.first().map(String::as_str) {
+        Some("__export_receipt") => std::process::exit(receipt_tools::export_cli(&words[1..])),
+        Some("__scrub_receipts") => std::process::exit(receipt_tools::scrub_cli(&words[1..])),
+        _ => {}
+    }
     if words.first().map(String::as_str) == Some("__desktop_exec") {
         use nix::fcntl::{fcntl, FcntlArg, FdFlag};
         use std::{io::Write, os::unix::process::CommandExt};

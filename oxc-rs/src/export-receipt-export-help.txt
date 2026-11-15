@@ -1,0 +1,55 @@
+usage: export_receipt.py export [-h] --out OUT [--ticket TICKET]
+                                [--title TITLE] [--engine-name ENGINE_NAME]
+                                [--engine-commit ENGINE_COMMIT]
+                                [--binary-sha256 BINARY_SHA256]
+                                [--model-name MODEL_NAME] [--quant QUANT]
+                                [--model-file NAME=SHA256]
+                                [--evidence-class {M,S,E}] [--n N]
+                                [--quality-class {lossless,reorder,lossy}]
+                                [--note NOTE] [--hardware HARDWARE]
+                                [--allow-text-key ALLOW_TEXT_KEY]
+                                [--no-prompt-hash] [--no-source-hash]
+                                [--private-report PRIVATE_REPORT]
+                                [--deny-word DENY_WORD]
+                                [--deny-file DENY_FILE]
+                                [--allow-word ALLOW_WORD]
+                                [--no-system-denylist]
+                                inputs [inputs ...]
+
+positional arguments:
+  inputs
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT
+  --ticket TICKET
+  --title TITLE
+  --engine-name ENGINE_NAME
+  --engine-commit ENGINE_COMMIT
+  --binary-sha256 BINARY_SHA256
+  --model-name MODEL_NAME
+  --quant QUANT
+  --model-file NAME=SHA256
+  --evidence-class {M,S,E}
+  --n N                 runs per arm
+  --quality-class {lossless,reorder,lossy}
+  --note NOTE
+  --hardware HARDWARE   JSON file with the public hardware description
+  --allow-text-key ALLOW_TEXT_KEY
+                        also keep short safe text under this key (still
+                        scanned)
+  --no-prompt-hash
+  --no-source-hash
+  --private-report PRIVATE_REPORT
+                        write the list of dropped members (key names only) to
+                        this PRIVATE file
+  --deny-word DENY_WORD
+                        extra word that must not appear (repeatable)
+  --deny-file DENY_FILE
+                        file with one forbidden word per line
+  --allow-word ALLOW_WORD
+                        exempt one machine identifier that is also an ordinary
+                        public word, for example a host named after the laptop
+                        model (repeatable; use sparingly)
+  --no-system-denylist  do not add this machine's user, host and device
+                        identifiers (tests only)

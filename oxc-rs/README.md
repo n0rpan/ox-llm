@@ -27,8 +27,16 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 546 passing scenarios in 76
+suite covers 573 scenarios in 76
 unittest methods.
+
+Thirty-eight receipt-tool cases cover the native scanner, exporter and scrubber:
+reference rules/order, machine identifiers and explicit exemptions, Unicode line
+limits, generated trees, argv/environment redaction, prompt/token hashes, numeric
+and non-finite values, directory inputs, refusal before writing, helper help and
+layout-preserving rewrites. The complete public serialization is scanned before
+writing. Model-weight inputs discovered in directories are counted without being
+read. Existing mandatory repository scanners and exemptions are unchanged.
 
 Twenty-seven digest CLI cases cover numeric/enum aggregation, origin/text filtering,
 stored days, trend and soak thresholds, private atomic writes, stale status, dates,

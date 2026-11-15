@@ -65,7 +65,11 @@ The following gaps remain visible rather than being represented by skipped tests
   records, hashes/owner edits, dry-run/apply, positive stop/restoration, default
   model retention, explicit model deletion, symlinks/parent escapes, home
   validation and partial failures. Systemd peers remain synthetic.
-- Receipt scans: additional scanner rule inputs. Never add real secrets or SDK
+- Receipt scans: more malformed inputs and filesystem cases. Thirty-eight native
+  cases now pass for exact rules/order, machine words/exemptions, Unicode limits,
+  generated trees, argv/environment redaction, hashes, numeric/non-finite values,
+  directory inputs, refusal before writing and layout-preserving scrubbing.
+  Never add real secrets or SDK
   content, split strings to evade scanners, or weaken existing scans/exclusions.
 - Installation units: Python ExecStart must become a native entry point while
   preserving names/paths/resource and hardening controls. Document the necessary
@@ -89,7 +93,7 @@ run/review, mark ready deliberately or dispatch checks.yml once for the branch.
 The merge queue runs full integration CI again. If waiting is needed, use one
 blocking gh pr checks --watch; never poll CI status.
 
-Next implementation step: native bootstrap/install and receipt tools. Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
+Next implementation step: native bootstrap/install and generated materialization. Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
 filtering, stored days, private writes, trend/soak thresholds, stale status, dates,
 installed versions and file interoperability. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise

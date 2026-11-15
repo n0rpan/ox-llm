@@ -1,0 +1,13 @@
+usage: export_receipt.py [-h] {export,scan,rules} ...
+
+Turn private run receipts into PUBLIC-SAFE receipts, and scan files for
+private data.
+
+positional arguments:
+  {export,scan,rules}
+    export             private receipts -> one public-safe receipt
+    scan               scan files or directories; exit 1 on hits
+    rules              list scan rules
+
+options:
+  -h, --help           show this help message and exit

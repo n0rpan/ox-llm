@@ -1,0 +1,14 @@
+usage: scrub_receipts.py [-h] [--check] [--home HOME] [--user USER]
+                         paths [paths ...]
+
+Rewrite private machine details in tracked receipt files into portable forms,
+in place.
+
+positional arguments:
+  paths
+
+options:
+  -h, --help   show this help message and exit
+  --check      change nothing; exit 1 if anything would change
+  --home HOME
+  --user USER

@@ -1,7 +1,1017 @@
 {
+  "export-allow-text": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": null,
+        "threads": null,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "path": 1
+        },
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 1
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "custom_note": "synthetic safe note"
+          },
+          "name": "receipt.json",
+          "private_file_sha256": "1b9735b58c650c23ac4d8f55f8af14c10e5550115572967da68d16bd24786629"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 1 values; dropped: path=1\nwrote public.json\n",
+    "stdout": ""
+  },
   "export-bad-digest": {
     "exit": 2,
     "stderr": "export refused: binary sha256 must be a hex digest\n",
+    "stdout": ""
+  },
+  "export-directories": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": 8192,
+        "threads": 2,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": "abcdef123456",
+        "name": null
+      },
+      "evidence": {
+        "class": "S",
+        "n": 3,
+        "quality_class": "lossless"
+      },
+      "export": {
+        "dropped": {
+          "not-json": 1
+        },
+        "files_not_read": {
+          ".gguf": 1
+        },
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 12
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": "synthetic-model",
+        "quant": "Q4"
+      },
+      "notes": [
+        "synthetic note"
+      ],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "engine_commit": "abcdef1",
+            "model": "synthetic-model",
+            "n_ctx": 8192,
+            "quant": "Q4",
+            "threads": 2
+          },
+          "name": "a.json",
+          "private_file_sha256": "f903a2f8b5b2ef71c289a90976b0af99441812537f4d0e79baa1b18caf1bfb14"
+        },
+        {
+          "data": {
+            "engine_commit": "abcdef123456",
+            "threads": 2
+          },
+          "name": "b.json",
+          "private_file_sha256": "fca7c79b53c2aaac6956fc227a5c712c4d96be5fc46b9c5a86e7035fd4bfe3c1"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": "synthetic report"
+    },
+    "stderr": "kept 12 values; dropped: not-json=1\nwrote public.json\n",
+    "stdout": ""
+  },
+  "export-generated-trees": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": null,
+        "threads": null,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "denied-text-key": 15,
+          "environment": 20,
+          "free-text": 12,
+          "path": 46,
+          "prompt": 5,
+          "scan-rule": 35,
+          "unsafe-key": 16
+        },
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 165
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": [
+            [
+              {
+                "argv": {
+                  "command": [],
+                  "meta": []
+                },
+                "config": {
+                  "env": {},
+                  "items": [
+                    "ok",
+                    8
+                  ]
+                },
+                "title": {
+                  "token_ids": {},
+                  "x": {}
+                },
+                "x": {
+                  "data": {
+                    "command": [
+                      "ok"
+                    ],
+                    "model": 1,
+                    "output": 0
+                  },
+                  "label": {},
+                  "run": {}
+                }
+              },
+              {
+                "x": {
+                  "run": 1,
+                  "status": [
+                    0
+                  ]
+                }
+              },
+              {
+                "argv": [
+                  "synthetic-private"
+                ],
+                "command": [],
+                "run": 0.0448938699006014
+              }
+            ],
+            {
+              "name": {
+                "argv": [
+                  "synthetic-private"
+                ],
+                "config": 1,
+                "label": {
+                  "args": [],
+                  "x": {
+                    "environment": true
+                  }
+                }
+              }
+            },
+            [
+              true
+            ],
+            [],
+            {
+              "data": [],
+              "environment": {}
+            },
+            [
+              {
+                "run": {
+                  "x": {
+                    "meta": null,
+                    "name": "ok"
+                  }
+                },
+                "verdict": {
+                  "env": {}
+                }
+              },
+              {}
+            ],
+            {},
+            {
+              "config": {
+                "note": {
+                  "kind": {
+                    "args": true,
+                    "data": null,
+                    "kind": true
+                  },
+                  "status": {
+                    "model_path": 1
+                  }
+                },
+                "verdict": {
+                  "env": {},
+                  "kind": {},
+                  "model": {
+                    "command": [
+                      "ok"
+                    ],
+                    "env": true,
+                    "status": null
+                  }
+                }
+              },
+              "verdict": {
+                "argv": [
+                  "13",
+                  "checks,",
+                  "44.1",
+                  "<text>",
+                  "<text>",
+                  "<text>"
+                ],
+                "command": {
+                  "name": {},
+                  "note": [
+                    null,
+                    1,
+                    true
+                  ]
+                },
+                "items": {},
+                "label": {
+                  "data": {},
+                  "kind": null
+                },
+                "verdict": {
+                  "status": true
+                }
+              }
+            },
+            [],
+            [
+              {
+                "args": {},
+                "label": {},
+                "note": [
+                  {
+                    "args": 0.1159622401872813,
+                    "label": "13/13 checks, 44.1 tok/s (108 GB/s)",
+                    "model": "13/13 checks, 44.1 tok/s (108 GB/s)"
+                  },
+                  0,
+                  {
+                    "argv": [
+                      "12345"
+                    ],
+                    "token_ids": null
+                  },
+                  {
+                    "prompt": null
+                  }
+                ],
+                "title": 0.6333621647797517
+              },
+              [
+                [
+                  {
+                    "model": 0.295362200089621,
+                    "run": 2
+                  },
+                  [
+                    0.8212225942666165,
+                    true,
+                    true
+                  ]
+                ]
+              ],
+              [
+                {
+                  "label": {
+                    "env": 0.04259657414755014,
+                    "kind": true,
+                    "token_ids": 0.6447324586159802,
+                    "verdict": 0.7385008347619115
+                  },
+                  "meta": [
+                    1
+                  ]
+                },
+                [
+                  2,
+                  [],
+                  {
+                    "argv": 0,
+                    "environment": 0.22508117296829755,
+                    "name": 1
+                  },
+                  {}
+                ],
+                0
+              ]
+            ],
+            {
+              "environment": {}
+            },
+            1,
+            [
+              [
+                0,
+                {
+                  "environment": 0,
+                  "status": {
+                    "kind": 1,
+                    "model": null
+                  }
+                },
+                "ok"
+              ],
+              {},
+              {
+                "argv": null
+              }
+            ],
+            true,
+            [
+              {
+                "title": {
+                  "label": {
+                    "command": 3
+                  },
+                  "model": 0.4767197488791075,
+                  "run": 0
+                }
+              },
+              {
+                "env": [
+                  [
+                    "ok"
+                  ],
+                  []
+                ],
+                "kind": [
+                  [
+                    "13/13 checks, 44.1 tok/s (108 GB/s)",
+                    0.4683844824507445,
+                    "13/13 checks, 44.1 tok/s (108 GB/s)"
+                  ],
+                  {
+                    "kind": "ok",
+                    "output": true
+                  },
+                  {},
+                  {
+                    "args": 0.15720260821941445,
+                    "command": [
+                      "ok"
+                    ]
+                  }
+                ],
+                "meta": {
+                  "prompt_redacted": {
+                    "bytes": 2,
+                    "redacted": "prompt",
+                    "sha256": "2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
+                  }
+                }
+              }
+            ],
+            {
+              "argv": [
+                "<text>",
+                "<text>",
+                "<text>"
+              ]
+            },
+            {
+              "config": {
+                "run": 0,
+                "x": {
+                  "items": {
+                    "verdict": 0.11952867832797898
+                  },
+                  "output": 0
+                }
+              },
+              "status": [
+                [
+                  {},
+                  {
+                    "items": 7
+                  },
+                  "ok",
+                  {
+                    "command": 1,
+                    "status": "ok",
+                    "title": "13/13 checks, 44.1 tok/s (108 GB/s)",
+                    "verdict": 1,
+                    "x": 1
+                  }
+                ]
+              ]
+            },
+            0,
+            {
+              "data": {
+                "config": {
+                  "name": 1
+                },
+                "status": {
+                  "kind": {
+                    "prompt_redacted": {
+                      "bytes": 2,
+                      "redacted": "prompt",
+                      "sha256": "2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
+                    }
+                  },
+                  "status": [
+                    0.024877832630843644,
+                    "ok",
+                    0.6570935959247339
+                  ]
+                }
+              },
+              "environment": 0,
+              "label": {
+                "config": [
+                  {},
+                  {
+                    "model": "ok"
+                  },
+                  true,
+                  [
+                    0,
+                    true
+                  ]
+                ],
+                "environment": {},
+                "kind": {
+                  "token_ids": "ok"
+                }
+              }
+            },
+            {
+              "model_path": 0.5318475134534059,
+              "output": true,
+              "prompt_redacted": {
+                "bytes": 109,
+                "count": 3,
+                "redacted": "prompt",
+                "sha256": "f658a6c6741e99c10f1e78309f8c262cefa2c55b82bde457bde81ea9e8f24432"
+              },
+              "token_ids": {
+                "command": [
+                  "pre",
+                  "<text>",
+                  "post"
+                ],
+                "data": [
+                  {
+                    "config": "ok",
+                    "data": "ok"
+                  },
+                  {}
+                ],
+                "kind": 7,
+                "title": [
+                  {
+                    "verdict": "ok"
+                  },
+                  {
+                    "label": 1,
+                    "x": 0
+                  },
+                  {
+                    "model": 1,
+                    "verdict": "13/13 checks, 44.1 tok/s (108 GB/s)"
+                  }
+                ]
+              },
+              "x": []
+            },
+            null,
+            {
+              "argv": [],
+              "model_path": 1
+            },
+            [],
+            {
+              "args": [
+                "synthetic-private"
+              ],
+              "env": {},
+              "meta": [
+                {
+                  "args": {
+                    "run": true
+                  },
+                  "items": [
+                    "ok"
+                  ],
+                  "kind": [],
+                  "verdict": {
+                    "argv": [
+                      "12345"
+                    ],
+                    "note": "13/13 checks, 44.1 tok/s (108 GB/s)",
+                    "prompt_redacted": {
+                      "bytes": 35,
+                      "redacted": "prompt",
+                      "sha256": "0893258a72055150cf235fc657e4a71f91fd42e4e0c16024fcdf04f0d7f8a2c2"
+                    }
+                  }
+                },
+                {}
+              ],
+              "model": {}
+            },
+            [],
+            [
+              {
+                "env": {},
+                "name": {
+                  "argv": {
+                    "command": [
+                      "ok"
+                    ],
+                    "config": 1,
+                    "meta": 0,
+                    "x": true
+                  },
+                  "command": {
+                    "environment": 1
+                  },
+                  "env": [
+                    "ok",
+                    null,
+                    "ok"
+                  ],
+                  "meta": null
+                },
+                "verdict": {}
+              },
+              {},
+              {
+                "argv": [
+                  "13",
+                  "checks,",
+                  "44.1",
+                  "<text>",
+                  "<text>",
+                  "<text>"
+                ]
+              },
+              {}
+            ],
+            {
+              "args": null
+            },
+            0,
+            {},
+            {
+              "items": [
+                [
+                  6,
+                  {
+                    "label": "13/13 checks, 44.1 tok/s (108 GB/s)",
+                    "verdict": 3
+                  }
+                ]
+              ],
+              "label": true,
+              "title": [
+                [
+                  [
+                    1,
+                    5
+                  ],
+                  [
+                    1
+                  ],
+                  {
+                    "argv": [
+                      "synthetic-private"
+                    ]
+                  }
+                ]
+              ],
+              "token_ids": {
+                "config": {
+                  "argv": null,
+                  "env": {},
+                  "environment": {},
+                  "kind": {}
+                },
+                "environment": {},
+                "verdict": {}
+              }
+            },
+            [
+              [
+                {
+                  "args": {},
+                  "label": {},
+                  "status": []
+                }
+              ],
+              {
+                "args": 9,
+                "argv": [
+                  "<text>",
+                  "ok",
+                  "<text>",
+                  "<text>"
+                ],
+                "data": null,
+                "meta": {
+                  "token_ids": "ok"
+                }
+              }
+            ],
+            {
+              "config": [
+                {
+                  "items": {},
+                  "meta": null
+                }
+              ]
+            },
+            1,
+            [],
+            [
+              {}
+            ],
+            [
+              [
+                3,
+                [
+                  [
+                    0
+                  ],
+                  [
+                    "ok",
+                    true,
+                    1
+                  ],
+                  1
+                ],
+                {
+                  "args": {
+                    "argv": 0.4768822749899887
+                  },
+                  "kind": true,
+                  "model_path": 1
+                }
+              ],
+              {
+                "command": {},
+                "env": {},
+                "model": []
+              }
+            ],
+            {
+              "env": {},
+              "name": [
+                {
+                  "kind": {
+                    "environment": true
+                  }
+                },
+                0.99794298007994,
+                {
+                  "command": {},
+                  "kind": [
+                    1,
+                    true
+                  ],
+                  "verdict": [
+                    0
+                  ]
+                },
+                []
+              ]
+            },
+            true,
+            0,
+            {},
+            [
+              [
+                {
+                  "items": {
+                    "prompt_redacted": {
+                      "bytes": 35,
+                      "redacted": "prompt",
+                      "sha256": "0893258a72055150cf235fc657e4a71f91fd42e4e0c16024fcdf04f0d7f8a2c2"
+                    }
+                  },
+                  "meta": [
+                    "ok",
+                    8
+                  ],
+                  "title": true
+                },
+                {
+                  "label": {
+                    "meta": 0
+                  },
+                  "verdict": {}
+                },
+                {
+                  "argv": {},
+                  "data": 1,
+                  "environment": null,
+                  "x": []
+                }
+              ],
+              0,
+              0
+            ]
+          ],
+          "name": "receipt.json",
+          "private_file_sha256": "a85dbd6d4921b5f2503e96cb00835b9ba618adac91c99e16f1615af834c60fa9"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 165 values; dropped: denied-text-key=15, environment=20, free-text=12, path=46, prompt=5, scan-rule=35, unsafe-key=16\nwrote public.json\n",
+    "stdout": ""
+  },
+  "export-hardware": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": 32768,
+        "threads": 1,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "free-text": 1,
+          "prompt": 1
+        },
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 4
+      },
+      "hardware": {
+        "chip": "synthetic chip",
+        "memory_gb": 16
+      },
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "max_rss_kib": 1024,
+            "n_ctx": 32768,
+            "prompt_redacted": {
+              "bytes": 25,
+              "redacted": "prompt",
+              "sha256": "f5940c3f24234d8ad6787850e84c089104359ac0f651c605f26c5e0df4a8a501"
+            },
+            "threads": 1,
+            "tokens_per_second": 2.5
+          },
+          "name": "receipt.json",
+          "private_file_sha256": "f8ef2f7b84caf7b6b87c06e62c9823562385f3a1d675f5fc6470c1f8c8cb945c"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 6 values; dropped: denied-key=1, free-text=1, prompt=1, scan-rule=1\nwrote public.json\n",
+    "stdout": ""
+  },
+  "export-help": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "usage: export_receipt.py export [-h] --out OUT [--ticket TICKET]\n                                [--title TITLE] [--engine-name ENGINE_NAME]\n                                [--engine-commit ENGINE_COMMIT]\n                                [--binary-sha256 BINARY_SHA256]\n                                [--model-name MODEL_NAME] [--quant QUANT]\n                                [--model-file NAME=SHA256]\n                                [--evidence-class {M,S,E}] [--n N]\n                                [--quality-class {lossless,reorder,lossy}]\n                                [--note NOTE] [--hardware HARDWARE]\n                                [--allow-text-key ALLOW_TEXT_KEY]\n                                [--no-prompt-hash] [--no-source-hash]\n                                [--private-report PRIVATE_REPORT]\n                                [--deny-word DENY_WORD]\n                                [--deny-file DENY_FILE]\n                                [--allow-word ALLOW_WORD]\n                                [--no-system-denylist]\n                                inputs [inputs ...]\n\npositional arguments:\n  inputs\n\noptions:\n  -h, --help            show this help message and exit\n  --out OUT\n  --ticket TICKET\n  --title TITLE\n  --engine-name ENGINE_NAME\n  --engine-commit ENGINE_COMMIT\n  --binary-sha256 BINARY_SHA256\n  --model-name MODEL_NAME\n  --quant QUANT\n  --model-file NAME=SHA256\n  --evidence-class {M,S,E}\n  --n N                 runs per arm\n  --quality-class {lossless,reorder,lossy}\n  --note NOTE\n  --hardware HARDWARE   JSON file with the public hardware description\n  --allow-text-key ALLOW_TEXT_KEY\n                        also keep short safe text under this key (still\n                        scanned)\n  --no-prompt-hash\n  --no-source-hash\n  --private-report PRIVATE_REPORT\n                        write the list of dropped members (key names only) to\n                        this PRIVATE file\n  --deny-word DENY_WORD\n                        extra word that must not appear (repeatable)\n  --deny-file DENY_FILE\n                        file with one forbidden word per line\n  --allow-word ALLOW_WORD\n                        exempt one machine identifier that is also an ordinary\n                        public word, for example a host named after the laptop\n                        model (repeatable; use sparingly)\n  --no-system-denylist  do not add this machine's user, host and device\n                        identifiers (tests only)\n"
+  },
+  "export-no-hashes": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": 32768,
+        "threads": 1,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "free-text": 1,
+          "prompt": 1
+        },
+        "files_not_read": {},
+        "prompt_hashes": false,
+        "scanner": "export_receipt/1",
+        "values_kept": 4
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "max_rss_kib": 1024,
+            "n_ctx": 32768,
+            "prompt_redacted": {
+              "bytes": 25,
+              "redacted": "prompt"
+            },
+            "threads": 1,
+            "tokens_per_second": 2.5
+          },
+          "name": "receipt.json"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 4 values; dropped: free-text=1, prompt=1\nwrote public.json\n",
+    "stdout": ""
+  },
+  "export-numbers": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": null,
+        "threads": null,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "non-finite-number": 2,
+          "prompt": 1
+        },
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 6
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "big_integer": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+            "count": true,
+            "environment": {
+              "OMP_BOOLEAN": "True"
+            },
+            "finite": 1e-07,
+            "large_float": 1e+17,
+            "prompt_redacted": {
+              "bytes": 13,
+              "count": 3,
+              "redacted": "prompt",
+              "sha256": "84978db6b248b03945dfc673cfb3cb1fd78c0b34cb53c58e80fad93dd5f6a11f"
+            },
+            "thermal_summary": {
+              "max_c": 65.0,
+              "min_c": 1.2,
+              "sensors": 2
+            }
+          },
+          "name": "receipt.json",
+          "private_file_sha256": "144f119c580df686fdfcecc36d26ae922b5ee6f0dd9d54e07273042b128d9de2"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 6 values; dropped: non-finite-number=2, prompt=1\nwrote public.json\n",
     "stdout": ""
   },
   "export-private-fields": {
@@ -69,10 +1079,316 @@
     "stderr": "kept 4 values; dropped: free-text=1, prompt=1\nwrote public.json\n",
     "stdout": ""
   },
+  "export-refusal": {
+    "exit": 3,
+    "stderr": "kept 4 values; dropped: free-text=1, prompt=1\nexport REFUSED, nothing written. Scan rules hit: deny-word (output lines 31)\n",
+    "stdout": ""
+  },
+  "export-shell-argv": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": null,
+        "threads": null,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {},
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 1
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "command": [
+              "OMP_NUM_THREADS=2",
+              "synthetic-engine",
+              "--prompt",
+              "<prompt bytes=24 sha256=66161d36dc1e04315b3fb52475fc3ae19153612a78a1ce937ffd5b8df13ebc96>",
+              "--threads=4",
+              "-n",
+              "-1",
+              "--api-key=<redacted>"
+            ]
+          },
+          "name": "receipt.json",
+          "private_file_sha256": "fa4edcda6adea629f6ce6d23db4dcc6141d6844e01c20d9d264a6b69b0ae12f3"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 1 values; dropped: nothing\nwrote public.json\n",
+    "stdout": ""
+  },
+  "export-structured": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": 8192,
+        "threads": 4,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "denied-key": 1,
+          "denied-text-key": 1,
+          "environment": 1,
+          "token-ids": 1
+        },
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 7
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "argv": [
+              "synthetic-engine",
+              "--threads",
+              "4",
+              "--prompt",
+              "<prompt bytes=24 sha256=80ebd96f9f0857f182daa0c3853c18350416adad848e1e573aad274b459c330c>",
+              "--api-key",
+              "<redacted>"
+            ],
+            "engine_path": "synthetic-engine",
+            "environment": {
+              "OMP_NUM_THREADS": "4"
+            },
+            "model_path": "synthetic-model.gguf",
+            "n_ctx": 8192,
+            "thermal_summary": {
+              "max_c": 65.0,
+              "min_c": 55.0,
+              "sensors": 2
+            },
+            "threads": 4,
+            "token_ids_redacted": {
+              "bytes": 9,
+              "count": 3,
+              "redacted": "token-ids",
+              "sha256": "a36b1f2c3f84522dd1005145646617d7054c0851e97c72a039c0bdfac9fa07f3"
+            }
+          },
+          "name": "receipt.json",
+          "private_file_sha256": "<validated:private-file-sha256>"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 7 values; dropped: denied-key=1, denied-text-key=1, environment=1, token-ids=1\nwrote public.json\n",
+    "stdout": ""
+  },
+  "export-terminal-newline": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": null,
+        "threads": null,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "path": 1
+        },
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 3
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "command": [
+              "synthetic-engine\n",
+              "<text>",
+              "4"
+            ],
+            "other": "ok\n",
+            "x": "123\n"
+          },
+          "name": "receipt.json",
+          "private_file_sha256": "d9799efd9cc4f0b32b4b2cfd91a016ba61328b3a94a31a370eb90db572bb9e91"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 3 values; dropped: path=1\nwrote public.json\n",
+    "stdout": ""
+  },
+  "export-virtual-numbers": {
+    "exit": 0,
+    "exported": {
+      "config": {
+        "n_ctx": null,
+        "threads": null,
+        "threads_batch": null
+      },
+      "created_utc": "<current:utc-seconds>",
+      "engine": {
+        "binary_sha256": null,
+        "commit": null,
+        "name": null
+      },
+      "evidence": {
+        "class": null,
+        "n": null,
+        "quality_class": null
+      },
+      "export": {
+        "dropped": {
+          "non-finite-number": 3,
+          "token-ids": 1
+        },
+        "files_not_read": {},
+        "prompt_hashes": true,
+        "scanner": "export_receipt/1",
+        "values_kept": 7
+      },
+      "hardware": null,
+      "kind": "runq-export",
+      "model": {
+        "files": [],
+        "name": null,
+        "quant": null
+      },
+      "notes": [],
+      "public_safe": {
+        "hits": 0,
+        "scanner": "export_receipt/1"
+      },
+      "schema": "snapdragon-local-ai-lab/receipt/v1",
+      "sources": [
+        {
+          "data": {
+            "argv": [
+              Infinity,
+              "<text>",
+              "<text>"
+            ],
+            "environment": {
+              "OMP_VALUE": "nan"
+            },
+            "negative_zero": -0.0,
+            "nested": [
+              null,
+              2.0
+            ],
+            "prompt_ids_redacted": {
+              "bytes": 106,
+              "count": 2,
+              "redacted": "token-ids",
+              "sha256": "a18018724ea7e594de9f7e771f343c432504028696235fc1188634c8c62b76c8"
+            },
+            "thermal_summary": {
+              "max_c": 1.0,
+              "min_c": 1.0,
+              "sensors": 1
+            },
+            "underflow": 1e-200
+          },
+          "name": "receipt.json",
+          "private_file_sha256": "a872f4f91ce66525ab01821367f1e8168fd9dc708c5a23c1f5da2743cbb0bf50"
+        }
+      ],
+      "ticket": "synthetic",
+      "title": null
+    },
+    "stderr": "kept 7 values; dropped: non-finite-number=3, token-ids=1\nwrote public.json\n",
+    "stdout": ""
+  },
   "rules": {
     "exit": 0,
     "stderr": "",
     "stdout": "home-path\ntilde-path\nabs-path\nuser-slice\nmac-address\ndevice-serial\nuuid\nemail\nmount-path\nprivate-ip\nprivate-key\napi-key\nsecret-assignment\nprice\nplus per-machine words: user-name, real-name, host-name, machine-id, device-serial-value, disk-serial-value, mac-address-value, deny-word\n"
+  },
+  "scan-allow-file": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": ""
+  },
+  "scan-allow-summary": {
+    "exit": 1,
+    "stderr": "unused exemption: missing.json abs-path\n",
+    "stdout": "     1  tilde-path\n1 hits in 1 files\n"
   },
   "scan-binary": {
     "exit": 1,
@@ -89,10 +1405,45 @@
     "stderr": "",
     "stdout": "<HOME>/receipt.json:1: deny-word\n"
   },
+  "scan-deny-file": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:1: deny-word\n"
+  },
+  "scan-exact-word": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": ""
+  },
+  "scan-help": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "usage: export_receipt.py scan [-h] [--skip-rule SKIP_RULE] [--summary]\n                              [--profile {receipt,tree}]\n                              [--allow-exact ALLOW_EXACT]\n                              [--allow-file ALLOW_FILE] [--base BASE]\n                              [--deny-word DENY_WORD] [--deny-file DENY_FILE]\n                              [--allow-word ALLOW_WORD] [--no-system-denylist]\n                              paths [paths ...]\n\npositional arguments:\n  paths\n\noptions:\n  -h, --help            show this help message and exit\n  --skip-rule SKIP_RULE\n                        rule name to ignore (repeatable)\n  --summary             print counts per rule and per file only\n  --profile {receipt,tree}\n                        tree: for source and documentation; skips abs-path,\n                        tilde-path, price, binary-file\n  --allow-exact ALLOW_EXACT\n                        exact spelling exempt from the per-machine word rules,\n                        e.g. a name in prose (repeatable)\n  --allow-file ALLOW_FILE\n                        exemptions, one per line: GLOB<TAB>RULE<TAB>REASON\n  --base BASE           directory the globs in --allow-file are relative to\n                        (default: current directory)\n  --deny-word DENY_WORD\n                        extra word that must not appear (repeatable)\n  --deny-file DENY_FILE\n                        file with one forbidden word per line\n  --allow-word ALLOW_WORD\n                        exempt one machine identifier that is also an ordinary\n                        public word, for example a host named after the laptop\n                        model (repeatable; use sparingly)\n  --no-system-denylist  do not add this machine's user, host and device\n                        identifiers (tests only)\n"
+  },
+  "scan-line-limit": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:2: tilde-path\n"
+  },
   "scan-receipt-path": {
     "exit": 1,
     "stderr": "",
     "stdout": "<HOME>/receipt.json:1: abs-path\n"
+  },
+  "scan-rule-corpus": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:1: home-path\n<HOME>/receipt.json:2: tilde-path\n<HOME>/receipt.json:3: abs-path\n<HOME>/receipt.json:4: abs-path\n<HOME>/receipt.json:4: user-slice\n<HOME>/receipt.json:5: mac-address\n<HOME>/receipt.json:6: device-serial\n<HOME>/receipt.json:7: uuid\n<HOME>/receipt.json:8: email\n<HOME>/receipt.json:9: mount-path\n<HOME>/receipt.json:10: private-ip\n<HOME>/receipt.json:11: private-key\n<HOME>/receipt.json:12: api-key\n<HOME>/receipt.json:13: secret-assignment\n<HOME>/receipt.json:14: price\n"
+  },
+  "scan-system-numeric-word": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:1: user-name\n"
+  },
+  "scan-system-word": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:1: deny-word\n"
   },
   "scan-tree-binary": {
     "exit": 0,
@@ -104,16 +1455,48 @@
     "stderr": "",
     "stdout": ""
   },
+  "scan-trivial-mac": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": ""
+  },
+  "scan-unicode-boundaries": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:1: device-serial\n<HOME>/receipt.json:2: secret-assignment\n<HOME>/receipt.json:3: api-key\n<HOME>/receipt.json:4: secret-assignment\n<HOME>/receipt.json:5: tilde-path\n<HOME>/receipt.json:6: user-slice\n"
+  },
+  "scan-unicode-deny": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "<HOME>/receipt.json:1: deny-word\n"
+  },
   "scrub-apply": {
     "exit": 0,
     "source_after": "synthetic path: $HOME/private\n",
     "stderr": "",
     "stdout": "changed 1 files; replacements: home-path=1\n"
   },
+  "scrub-binary": {
+    "exit": 0,
+    "source_after": "\u0000synthetic unchanged binary fixture\n",
+    "stderr": "",
+    "stdout": "changed 0 files; replacements: nothing\n"
+  },
   "scrub-check": {
     "exit": 1,
     "source_after": "synthetic path: <HOME>/private\n",
     "stderr": "",
     "stdout": "would change 1 files; replacements: home-path=1\n"
+  },
+  "scrub-help": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "usage: scrub_receipts.py [-h] [--check] [--home HOME] [--user USER]\n                         paths [paths ...]\n\nRewrite private machine details in tracked receipt files into portable forms,\nin place.\n\npositional arguments:\n  paths\n\noptions:\n  -h, --help   show this help message and exit\n  --check      change nothing; exit 1 if anything would change\n  --home HOME\n  --user USER\n"
+  },
+  "scrub-layout": {
+    "exit": 0,
+    "source_after": "$LAB_ROOT\r\n$AI_STACK\r\n$LOCAL_AI_STATE\r\n$XDG_RUNTIME_DIR user-UID.slice user@UID.service\r\n<redacted-uuid>\r\nnumbers 1.25 32768\r\n",
+    "stderr": "",
+    "stdout": "changed 1 files; replacements: home-path=3, user-slice=3, uuid=1\n"
   }
 }

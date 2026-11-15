@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `2e8209c9b276b767d4603d6822f902ddd0537b19`.
-The current suite passes 546 scenarios in 76 unittest methods. This remains a
+The current suite covers 573 scenarios in 76 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -61,7 +61,7 @@ python3 -m unittest discover -s conformance -v
 
 Those two overrides exercise the controller and runtime CLI. Bootstrap/install
 and receipt tools have separate command overrides; leaving them unset runs the
-Python reference for those components. To check the unfinished native helper
+Python reference for those components. To check the native helper
 entry points explicitly, also set:
 
 ```sh
@@ -74,8 +74,8 @@ OXC_SCRUB_RECEIPTS_COMMAND='/absolute/path/to/oxc __scrub_receipts' \
 python3 -m unittest discover -s conformance -v
 ```
 
-These helper entry points are still pending; all four bootstrap scenarios and
-all eleven receipt-tool cases fail with those explicit native overrides.
+The native receipt helpers pass all 38 cases. Bootstrap/install remains pending;
+its four scenarios still fail with explicit native overrides.
 
 The daemon command must use the existing `LOCAL_LLM_PORT`, `LOCAL_LLM_CONFIG`,
 `LOCAL_AI_LEASE` and XDG settings. `serve` above is illustrative; its final public
@@ -160,7 +160,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Bootstrap/install | PASS, 4 scenarios | Not implemented | Transfer/build/install-journal edge cases |
 | Staged update/rollback | PASS, 15 scenarios / 22 CLI goldens | PASS: generic manifest transactions, sealed/bound hashes, exact restore, created/removed files, private state, receipts, positive identity, agent refresh and owner-edit refusal/recovery | Generated runtime materialization, interruptions and more filesystem races |
 | Uninstall | PASS, 27 cases plus original empty-install CLI cases | PASS: exact journal/stage records, hash/owner-edit protection, dry-run/apply, positive stops/restoration, models kept by default, explicit model deletion, symlinks/parent escape, private-home refusal and partial failures | More concurrent record/filesystem changes and filesystem failure cases |
-| Shipped scans | PASS, 11 cases | Not implemented | More secret/SDK rule inputs (no real secrets or SDK material) |
+| Shipped scans | PASS, 38 cases | PASS: rules/order, machine words, exemptions, Unicode limits, generated trees, structured redaction/hashes, numeric values, directories, refusal before writing and layout-preserving scrubbing | More malformed inputs and filesystem races |
 | Fake engine benchmark | Python baseline recorded | Not implemented | Repeat identical measurement with Rust |
 
 No hardware calls or real cloud API calls are part of this suite. Hardware A/B
