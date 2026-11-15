@@ -20,6 +20,13 @@ def documentation(path):
         'README.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'AGENTS.md', 'SECURITY.md')
 
 
+# Top-level directories per component; the controller component keeps the job id `lab`.
+COMPONENTS = {'engine': 'engine', 'oxa': 'oxa', 'oxc': 'lab', 'oxc-gateway': 'lab', 'oxc-rs': 'lab',
+              'conformance': 'lab'}
+FUZZ = {'fuzz/oxa': 'oxa', 'fuzz/oxe': 'engine'}
+# Anything else (.github/, tools/, packaging/, root files, new directories) marks every component.
+
+
 def classify(paths, full_event=False):
     paths = list(paths)
     docs = bool(paths) and all(documentation(path) for path in paths)
@@ -27,8 +34,8 @@ def classify(paths, full_event=False):
     for path in paths:
         if documentation(path):
             continue
-        component = {'oxc': 'lab'}.get(path.split('/', 1)[0], path.split('/', 1)[0])  # dir oxc/ is the lab component (job id kept)
-        if component in changed:
+        component = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
+        if component:
             changed[component] = True
         else:
             changed = dict.fromkeys(changed, True)
@@ -38,9 +45,15 @@ def classify(paths, full_event=False):
 def changed_paths(event, name):
     if event.get('deleted'):
         return []
-    if name in ('schedule', 'workflow_dispatch', 'merge_group'):
+    if name in ('schedule', 'workflow_dispatch'):
         return subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')[:-1]
-    if name == 'pull_request':
+    if name == 'merge_group':
+        # Only what the group changes on top of its base; an empty diff cannot be classified,
+        # so it conservatively counts as every file.
+        group = event.get('merge_group') or {}
+        base, head = group.get('base_sha'), group.get('head_sha')
+        triple = False
+    elif name == 'pull_request':
         base, head = event['pull_request']['base']['sha'], event['pull_request']['head']['sha']
         triple = True
     else:
@@ -53,7 +66,10 @@ def changed_paths(event, name):
         if base == head:
             return subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')[:-1]
     span = base + ('...' if triple else '..') + head
-    return subprocess.check_output(['git', 'diff', '--name-only', '-z', span, '--']).decode().split('\0')[:-1]
+    changed = subprocess.check_output(['git', 'diff', '--name-only', '-z', span, '--']).decode().split('\0')[:-1]
+    if name == 'merge_group' and not changed:
+        return subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')[:-1]
+    return changed
 
 
 def full_gate(name, ref):
