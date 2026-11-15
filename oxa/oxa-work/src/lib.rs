@@ -249,6 +249,9 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bo
             );
             let failures = acceptance(&tree, &commands)?;
             if !failures.is_empty() {
+                if let Err(error) = repair_agent {
+                    return Err(format!("{error}\nAcceptance checks:\n{failures}"));
+                }
                 record.detail = failures;
                 return Ok(Outcome::Red);
             }
