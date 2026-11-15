@@ -36,6 +36,7 @@ fn msg(wire: WireMsg) -> EntryBody {
     EntryBody::Msg {
         wire,
         parts: Vec::new(),
+        tool: None,
     }
 }
 
