@@ -1,7 +1,7 @@
 """Experimental ChatGPT subscription provider (#252), opt-in.
 
-UNDOCUMENTED UPSTREAM: this signs in with the public PKCE client of OpenAI's own command-line
-agent and calls the ChatGPT subscription Responses backend.  OpenAI does not document this
+UNDOCUMENTED UPSTREAM: this signs in only with the OAuth client registered for ox-llm
+(``cloud.chatgpt.client_id``; no other app's client identity is ever used) and calls the ChatGPT subscription Responses backend.  OpenAI does not document this
 route; it is tolerated and may break without notice.  The official "Sign in with ChatGPT"
 program (#247) replaces it.
 
