@@ -173,7 +173,8 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
         &root,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ))?;
-    let storage = PathBuf::from(common).join("oxa-work");
+    let common = PathBuf::from(common);
+    let storage = common.join("oxa-work");
     fs::create_dir_all(&storage).map_err(|e| e.to_string())?;
     let lock_path = storage.join(format!("{}.lock", task.id));
     let _lock_file = fs::OpenOptions::new()
@@ -186,7 +187,20 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
     if receipt.exists() {
         return Err("task already has a receipt; retained for inspection".into());
     }
-    let tree = storage.join(&task.id);
+    // The common git directory must not be an ancestor of the child cwd: the sandbox
+    // deliberately refuses writable git binds with that layout.
+    let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("git directory has no parent")?
+    } else {
+        &common
+    };
+    let parent = repo_dir
+        .parent()
+        .ok_or("repository has no parent for worktrees")?;
+    let name = repo_dir.file_name().ok_or("repository has no directory name")?;
+    let trees = parent.join(".oxa-worktrees").join(name);
+    fs::create_dir_all(&trees).map_err(|e| e.to_string())?;
+    let tree = trees.join(&task.id);
     let mut record = Record {
         id: task.id.clone(),
         branch: task.branch.clone(),

@@ -10,7 +10,8 @@ Run it inside the project repository. The JSON file is an array:
 `base` defaults to `main`. IDs contain letters, digits, hyphens or underscores.
 IDs and branches must be unique; branches must be new. For a GitHub issue use
 `oxa work --issue 123 --model your-model`. This explicitly invokes your installed,
-authenticated `gh` CLI to fetch the issue title and body.
+authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
+when the environment or user settings enable offline mode.
 
 Each task runs a child `oxa -p` with its model. Normal agent permission, trust and
 sandbox rules apply. Configure project trust before unattended use. The runner
@@ -26,8 +27,10 @@ commits or file changes), `red` (checks still fail), or `blocked` (setup or agen
 execution failed). Exit codes are 0 for success, 1 if any task is red or blocked,
 and 2 for invalid input or runner errors.
 
-Worktrees and uncommitted changes remain under the common git directory's
-`oxa-work/<id>`. Result receipts are beside them at `<id>.json`. No automatic
+Worktrees and uncommitted changes remain in `.oxa-worktrees/<repository>/<id>`
+beside the repository (or the separate git directory). Result receipts live inside
+the common git directory at `oxa-work/<id>.json`. Worktrees stay outside that git
+directory so the normal sandbox can bind git objects and refs for commits. No automatic
 cleanup, commit, push, PR creation or continuation is implemented yet. Inspect
 retained work before removing it with `git worktree remove`. Review task prompts
 and bases before running them.

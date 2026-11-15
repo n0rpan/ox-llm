@@ -188,3 +188,83 @@ fn setup_failure_records_blocked_and_keeps_existing_branch() {
     assert_eq!(record["outcome"], "blocked", "{record}");
     assert!(record["detail"].as_str().unwrap().contains("already exists"));
 }
+
+#[test]
+fn child_can_create_a_commit_with_the_real_sandbox() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"always"}"#,
+    );
+    let record = run(
+        &env,
+        vec![
+            ScriptTurn::tool("write", "write", r#"{"path":"answer.txt","content":"committed"}"#),
+            ScriptTurn::tool(
+                "commit",
+                "bash",
+                r#"{"command":"git add answer.txt && git -c user.name=Test -c user.email=test@example.invalid commit -m task"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    let tree = Path::new(record["worktree"].as_str().unwrap());
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(tree)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    assert!(
+        status.stdout.is_empty(),
+        "commit must persist: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+    let subject = Command::new("git")
+        .args(["log", "-1", "--format=%s"])
+        .current_dir(tree)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&subject.stdout).trim(), "task");
+}
+#[test]
+fn offline_issue_input_never_spawns_gh() {
+    use std::os::unix::fs::PermissionsExt;
+    for setting in [false, true] {
+        let env = TestEnv::new();
+        setup(&env, "[]");
+        let gh = env.write(
+            "tmp/gh",
+            "#!/bin/sh\nprintf invoked > \"$HOME/gh-invoked\"\nexit 7\n",
+        );
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if setting {
+            env.write("home/.oxa/agent/settings.json", r#"{"oxa":{"offline":true}}"#);
+        }
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
+        cmd.args(["work", "--issue", "42", "--model", "fake"])
+            .current_dir(env.work().join("project"))
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:1"))
+            .env(
+                "PATH",
+                format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
+            );
+        if !setting {
+            cmd.env("OXA_OFFLINE", "1");
+        }
+        let out = cmd.output().unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(
+            !env.home().join("gh-invoked").exists(),
+            "offline lookup ran gh, setting={setting}"
+        );
+        assert!(String::from_utf8_lossy(&out.stderr).contains("offline"));
+    }
+}
