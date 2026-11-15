@@ -287,6 +287,27 @@ fn cancellation_stops_delivery_and_cannot_commit_a_partial_reply() {
 }
 
 #[test]
+fn cancellation_during_the_final_buffer_flush_never_returns_a_turn() {
+    let _policy = POLICY.lock().unwrap();
+    let prefix = prefix();
+    let events = vec![
+        data(json!({"choices":[{"delta":{"content":"<thi"}}]})),
+        data(json!({"choices":[{"finish_reason":"stop","delta":{}}],
+            "usage":{"prompt_tokens":1,"completion_tokens":1}})),
+        SseEvent::Done,
+    ];
+    let (engine, _) = engine(events, None);
+    let cancel = CancelToken::new();
+    let mut delivered = Vec::new();
+    let result = engine.chat(&request(&prefix, &[]), &cancel, &mut |event| {
+        delivered.push(event);
+        cancel.cancel();
+    });
+    assert_eq!(delivered, vec![StreamEvent::Text("<thi".into())]);
+    assert_eq!(result.unwrap_err().code, codes::ABORTED);
+}
+
+#[test]
 fn offline_refuses_before_gateway_calls_or_credential_access() {
     let _policy = POLICY.lock().unwrap();
     struct Reset;

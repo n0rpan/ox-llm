@@ -175,7 +175,13 @@ impl Engine for EmbeddedEngine {
             return Err(broken("the gateway closed the stream before [DONE]"));
         }
         for event in assembler.flush() {
+            if cancel.is_cancelled() {
+                return Err(aborted());
+            }
             on(event);
+        }
+        if cancel.is_cancelled() {
+            return Err(aborted());
         }
         let level = if request.thinking {
             ThinkingLevel::Medium
@@ -185,6 +191,9 @@ impl Engine for EmbeddedEngine {
         let mut turn = assembler.finish(level)?;
         if turn.model.is_empty() {
             turn.model = request.model.to_string();
+        }
+        if cancel.is_cancelled() {
+            return Err(aborted());
         }
         Ok(turn)
     }
