@@ -222,13 +222,24 @@ impl ProcessTerminal {
                     return true;
                 }
             }
+            if paste_open && self.paste_scan.stall_left(now).is_some_and(|d| d.is_zero()) {
+                out.extend(flush_pending(&self.pending));
+                self.pending.clear();
+                self.pending_since = None;
+                return true;
+            }
             let esc_left = self.pending_since.map(|since| {
                 (since + Duration::from_millis(crate::ESC_TIMEOUT_MS)).saturating_duration_since(now)
             });
-            let wait = match esc_left {
+            let mut wait = match esc_left {
                 Some(left) if esc_limited && left < remaining => left,
                 _ => remaining,
             };
+            if paste_open {
+                if let Some(left) = self.paste_scan.stall_left(now) {
+                    wait = wait.min(left);
+                }
+            }
             match poll_stdin(wait) {
                 Polled::Ready => match read_stdin() {
                     Some(bytes) => self.pending.extend_from_slice(&bytes),
@@ -630,13 +641,19 @@ fn term_size() -> (u16, u16) {
 #[derive(Default)]
 struct PasteScan {
     scanned: usize,
+    /// When the open paste last grew (None while no paste is open).
+    grew: Option<Instant>,
 }
+
+/// An open paste that receives no byte for this long is flushed as text (lost end marker).
+const PASTE_STALL: Duration = Duration::from_secs(5);
 
 impl PasteScan {
     /// True while `buf` starts a paste whose end marker has not arrived yet.
     fn open(&mut self, buf: &[u8]) -> bool {
         if !buf.starts_with(PASTE_START) {
             self.scanned = 0;
+            self.grew = None;
             return false;
         }
         let from = self
@@ -646,16 +663,35 @@ impl PasteScan {
             .min(buf.len());
         if buf[from..].windows(PASTE_END.len()).any(|w| w == PASTE_END) {
             self.scanned = 0;
+            self.grew = None;
             return false;
+        }
+        if buf.len() != self.scanned || self.grew.is_none() {
+            self.grew = Some(Instant::now());
         }
         self.scanned = buf.len();
         true
+    }
+
+    /// Time left before the open paste counts as unterminated.
+    fn stall_left(&self, now: Instant) -> Option<Duration> {
+        self.grew
+            .map(|t| (t + PASTE_STALL).saturating_duration_since(now))
     }
 }
 
 #[cfg(test)]
 mod paste_scan_tests {
     use super::*;
+
+    #[test]
+    fn stalled_paste_runs_out_of_time() {
+        let mut s = PasteScan::default();
+        let buf = b"\x1b[200~abc".to_vec();
+        assert!(s.open(&buf));
+        assert!(s.stall_left(Instant::now()).unwrap() > Duration::from_secs(4));
+        assert!(s.stall_left(Instant::now() + PASTE_STALL).unwrap().is_zero());
+    }
 
     #[test]
     fn marker_split_across_chunks_is_found() {
