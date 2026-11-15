@@ -19,7 +19,7 @@ class LedgerSaltTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.dir = self.tmp / 'ledger'
-        self.env = patch.dict(os.environ, {'LOCAL_AI_LEDGER_DIR': str(self.dir), 'LOCAL_AI_LEDGER': '1'})
+        self.env = patch.dict(os.environ, {'OXC_LEDGER_DIR': str(self.dir), 'OXC_LEDGER': '1'})
         self.env.start()
         restart()
 
@@ -28,7 +28,7 @@ class LedgerSaltTests(unittest.TestCase):
         self.env.stop()
 
     def key(self, on):
-        os.environ['LOCAL_AI_LEDGER'] = '1' if on else '0'
+        os.environ['OXC_LEDGER'] = '1' if on else '0'
         return rl.session_key(HEADERS, {})
 
     def test_off_writes_nothing(self):
