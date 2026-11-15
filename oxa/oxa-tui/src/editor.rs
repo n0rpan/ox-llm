@@ -208,6 +208,18 @@ impl Editor {
     pub fn expanded_text(&self) -> String {
         expand(&self.text(), &self.pastes)
     }
+    /// Put `prefix` in front of the current content, keeping paste contents.
+    pub fn prepend_text(&mut self, prefix: &str) {
+        let current = self.text();
+        if current.is_empty() {
+            self.set_text(prefix);
+            return;
+        }
+        let (pastes, counter) = (self.pastes.clone(), self.paste_counter);
+        self.set_text(&format!("{prefix}\n\n{current}"));
+        self.pastes = pastes;
+        self.paste_counter = counter;
+    }
     /// Replace the content (one undo step); cursor to the end.
     pub fn set_text(&mut self, text: &str) {
         self.suggest = None;
