@@ -1118,7 +1118,7 @@ fn aborted_stream_is_shown_not_a_reply() {
         step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
         step(
             "aborted",
-            &["ABORTED", "your prompt is kept"],
+            &["aborted", "your prompt is kept"],
             typed("/session", &["enter"]),
         ),
         // The Shown block is not counted as an assistant message.
