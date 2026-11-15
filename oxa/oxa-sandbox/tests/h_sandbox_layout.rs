@@ -185,6 +185,32 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
     );
 }
 
+/// #280 / review of #302: no bash command, git included, may write the project's `.oxa` or
+/// `.agents/skills`: git can be made to run programs or check out content the model wrote.
+#[test]
+fn git_commands_keep_oxa_and_skills_read_only() {
+    let env = TestEnv::new();
+    let l = machine(&env);
+    env.write("work/.oxa/settings.json", "{}");
+    env.write("work/.agents/skills/x/SKILL.md", "");
+    for cmd in [
+        "git pull",
+        "git pull --upload-pack=./p.sh .",
+        "git merge -s evil main",
+        "git checkout abc123 -- .oxa/extensions/x.js",
+        "git rebase --exec evil main",
+    ] {
+        let a = bwrap_args_with(&spec(cmd, &env.work(), true), &env.home(), &l);
+        for p in [".oxa", ".agents/skills"] {
+            let want = env.work().join(p).display().to_string();
+            assert!(
+                a.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == want),
+                "{cmd}: {p}"
+            );
+        }
+    }
+}
+
 #[test]
 fn golden_project_cwd() {
     let env = TestEnv::new();
