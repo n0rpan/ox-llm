@@ -1578,7 +1578,7 @@ fn run_prompt(
         if let Some(EntryBody::Shown { why, .. }) = tree.get(&leaf).map(|e| &e.body) {
             // A refused request has no reply on screen: say so instead of "shown".
             let text = if *why == shown_why::FAILED {
-                Some("The request failed; no reply was received. Ask again to retry.")
+                Some("The request failed; no reply was received; ask again to retry.")
             } else if *why == shown_why::CUT {
                 Some("The reply did not finish. It is shown but was not sent; ask again to retry.")
             } else {
