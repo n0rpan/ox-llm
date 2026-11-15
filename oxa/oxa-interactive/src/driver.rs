@@ -115,6 +115,8 @@ struct BlockCache {
     /// The assembled content and the first line of every block.
     content: Vec<String>,
     starts: Vec<usize>,
+    /// The block index the last `update` assembled `content` from (`None`: nothing changed).
+    rebuilt_from: Option<usize>,
 }
 
 impl BlockCache {
@@ -130,6 +132,9 @@ impl BlockCache {
         env: &ViewEnv,
     ) -> bool {
         let mut changed = false;
+        // The first block whose lines changed; `0` also when the header or layout changed.
+        let mut first: usize = usize::MAX;
+        self.rebuilt_from = None;
         if self.width != width || self.theme_epoch != theme_epoch || self.settings.as_ref() != Some(settings)
         {
             self.width = width;
@@ -137,14 +142,17 @@ impl BlockCache {
             self.settings = Some(settings.clone());
             self.entries.clear();
             changed = true;
+            first = 0;
         }
         if self.header != header {
             self.header = header.to_vec();
             changed = true;
+            first = 0;
         }
         if self.entries.len() > vm.blocks.len() {
             self.entries.truncate(vm.blocks.len());
             changed = true;
+            first = first.min(self.entries.len());
         }
         let cx = ViewCx {
             width,
@@ -162,18 +170,28 @@ impl BlockCache {
                 Some(slot) => {
                     *slot = (block.clone(), render_block(block, &cx));
                     changed = true;
+                    first = first.min(i);
                 }
                 None => {
                     self.entries.push((block.clone(), render_block(block, &cx)));
                     changed = true;
+                    first = first.min(i);
                 }
             }
         }
         if changed {
-            self.content.clear();
-            self.starts.clear();
-            self.content.extend(self.header.iter().cloned());
-            for (_, lines) in &self.entries {
+            // Keep the lines of the blocks before the first changed one.
+            let first = first.min(self.entries.len());
+            if first == 0 {
+                self.content.clear();
+                self.starts.clear();
+                self.content.extend(self.header.iter().cloned());
+            } else if first < self.starts.len() {
+                self.content.truncate(self.starts[first]);
+                self.starts.truncate(first);
+            }
+            self.rebuilt_from = Some(first);
+            for (_, lines) in self.entries.iter().skip(self.starts.len()) {
                 self.starts.push(self.content.len());
                 if lines.is_empty() {
                     continue;
@@ -3141,5 +3159,43 @@ mod editor_layout_tests {
             wheel_accel(&s(json!({ "fullscreenWheelScrollLines": "auto" })), &env(&[])).next(1, 0),
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod block_cache_tests {
+    use super::*;
+
+    fn run(cache: &mut BlockCache, vm: &ViewModel) -> bool {
+        let theme = oxa_tui::builtin_theme("dark", oxa_tui::ColorMode::Ansi256, None).unwrap();
+        let env = ViewEnv {
+            caps: TermCaps::BASIC,
+            hooks: &[],
+            keymap: None,
+        };
+        cache.update(vm, &[], 80, &theme, 0, &ViewSettings::default(), &env)
+    }
+
+    fn user(t: &str) -> Block {
+        Block::User {
+            text: t.into(),
+            images: Vec::new(),
+        }
+    }
+
+    /// A streamed delta in the last block must not reassemble the lines of the blocks before it.
+    #[test]
+    fn a_change_in_the_last_block_rebuilds_only_from_that_block() {
+        let mut vm = ViewModel::default();
+        vm.blocks = vec![user("one"), user("two"), user("three")];
+        let mut c = BlockCache::default();
+        assert!(run(&mut c, &vm));
+        vm.blocks[2] = user("three!");
+        let before = c.content.clone();
+        assert!(run(&mut c, &vm));
+        assert_eq!(c.rebuilt_from, Some(2));
+        assert_eq!(c.content[..c.starts[2]], before[..c.starts[2]]);
+        assert!(c.content.iter().any(|l| l.contains("three!")));
+        assert!(!run(&mut c, &vm));
     }
 }

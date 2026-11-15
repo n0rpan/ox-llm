@@ -1952,7 +1952,10 @@ fn apply_delta(vm: &mut ViewModel, d: &MessageDelta) {
                 .find(|b| matches!(b, Block::Tool(t) if t.state == ToolState::Streaming))
             {
                 t.args_raw.push_str(delta);
-                t.args = parse_args(&t.args_raw);
+                // A partial JSON object never parses: skip the quadratic re-parse until it closes.
+                if t.args_raw.trim_end().ends_with('}') {
+                    t.args = parse_args(&t.args_raw);
+                }
             }
         }
         MessageDelta::ToolcallEnd { call, .. } => match tool_index(vm, &call.id) {
