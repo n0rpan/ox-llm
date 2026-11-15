@@ -747,7 +747,7 @@ pi page(s): none (oxa only). Source: `OXA-ENGINE-SUPPORT.md`. Every oxa feature 
 | ENG-016 | The tool result is each child's final assistant text only, capped at `oxa.subagent.resultCap` (6 KiB) with a note naming the spill file | A | the result is prefilled at the parent's depth (no timings) | `subagent.rs::eng_016` |
 | ENG-017 | The tool is not declared on a model whose context is below 32000 unless `oxa.subagent.smallContext`; re-evaluated at a model switch | A | Flash: 16K context, disk parks only | `subagent.rs::eng_017` |
 | ENG-018 | Before the first child of a call the parent is parked: one zero-token request with `X-Oxe-Snapshot: keep` (skipped when the engine does not advertise it); the parent's next request reuses exactly the parked tokens. After every child, also a failed or aborted one, its engine state is cleared by its hint; the parent's state and shared blocks stay | A | the park and the hint clear use the snapshot and clear-by-hint requests | `subagent.rs::eng_018` |
-| ENG-019 | Abort or shutdown kills the child's process group (TERM, then KILL after 2 s) and starts no further task; the closed connection cancels the child's engine request | A | cancel propagation | `subagent.rs::eng_019` |
+| ENG-019 | Explicit abort cancels the child's process group (TERM, then KILL after 2 s); forced parent shutdown cancels its engine request and starts no further task. The first SIGTERM lets the active child finish before cooperative wrap-up | A | cancel propagation and cooperative wrap-up | `subagent.rs::eng_019`, `subagent.rs::sigterm_finishes_the_active_subagent_before_wrap_up` |
 
 ## OUT: Out-of-scope pages
 
