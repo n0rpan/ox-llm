@@ -176,7 +176,7 @@ fn python_json(value: &Value) -> String {
         _ => value.to_string(),
     }
 }
-fn calls(value: &mut Value) {
+fn calls(value: &mut Value, key: Option<&Key>) {
     let Some(calls) = value.as_array_mut() else {
         return;
     };
@@ -189,6 +189,11 @@ fn calls(value: &mut Value) {
         if let Some(function) = call.get_mut("function").and_then(Value::as_object_mut) {
             let args = function.entry("arguments").or_insert(Value::Null);
             if args.is_object() || args.is_array() {
+                // Encoding first would hide quotes/backslashes from decoded
+                // redactors and expose the key when the client parses JSON.
+                if let Some(key) = key {
+                    redaction::value(args, key);
+                }
                 *args = json!(python_json(args));
             } else if args.is_null() {
                 *args = json!("");
@@ -196,7 +201,7 @@ fn calls(value: &mut Value) {
         }
     }
 }
-fn message(value: &mut Value) {
+fn message(value: &mut Value, key: Option<&Key>) {
     if !value.is_object() {
         return;
     }
@@ -204,7 +209,7 @@ fn message(value: &mut Value) {
         value["reasoning_content"] = value["reasoning"].clone();
     }
     if let Some(value) = value.get_mut("tool_calls") {
-        calls(value);
+        calls(value, key);
     }
 }
 fn reasoning(message: &Value, total: &Value) -> i64 {
@@ -237,7 +242,7 @@ pub fn response(mut value: Value, alias: &str, key: Option<&Key>) -> Value {
     if let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) {
         for choice in choices {
             if let Some(value) = choice.get_mut("message") {
-                message(value);
+                message(value, key);
                 if first.is_null() {
                     first = value.clone();
                 }
@@ -443,7 +448,7 @@ impl<'a> Stream<'a> {
                         self.reasoning += 1;
                     }
                     if let Some(calls_value) = delta.get_mut("tool_calls") {
-                        calls(calls_value);
+                        calls(calls_value, self.key);
                     }
                     if self.key.is_some() {
                         for field in ["content", "reasoning_content", "refusal"] {
@@ -495,7 +500,7 @@ impl<'a> Stream<'a> {
                     }
                 }
                 if let Some(value) = choice.get_mut("message") {
-                    message(value);
+                    message(value, self.key);
                 }
             }
         }

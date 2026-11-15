@@ -193,6 +193,52 @@ fn escaped_credentials_in_scalar_frames_and_tail_metadata_are_redacted() {
     }
 }
 #[test]
+fn structured_tool_arguments_redact_decoded_keys_before_json_escaping() {
+    let home = Home::new();
+    let secret = "synthetic\"router\\key";
+    let path = home.0.join("structured.json");
+    fs::write(&path, json!({"openrouter":{"api_key":secret}}).to_string()).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let key = secrets::read(&path, "openrouter").unwrap();
+    for part in ["delta", "message"] {
+        for (arguments, expected) in [
+            (
+                json!({"echo":secret, secret:[secret], "safe":7}),
+                json!({"echo":"[redacted]", "[redacted]":["[redacted]"], "safe":7}),
+            ),
+            (
+                json!([secret, {"nested":secret}, 7]),
+                json!(["[redacted]", {"nested":"[redacted]"}, 7]),
+            ),
+        ] {
+            let input = frame(json!({"choices":[{"index":0, part:{"tool_calls":[
+                {"index":0,"function":{"name":"lookup","arguments":arguments}}]},
+                "finish_reason":"tool_calls"}]}));
+            for width in [1, 7, input.len()] {
+                let mut stream = Stream::new("synthetic-cloud", Some(&key));
+                let mut output = Vec::new();
+                for bytes in input.chunks(width) {
+                    output.extend(stream.feed(bytes));
+                }
+                output.extend(stream.finish());
+                let arguments: String = events(&output)
+                    .iter()
+                    .flat_map(|value| {
+                        [
+                            &value["choices"][0]["delta"],
+                            &value["choices"][0]["message"],
+                        ]
+                    })
+                    .filter_map(|value| value["tool_calls"][0]["function"]["arguments"].as_str())
+                    .collect();
+                let actual: Value = serde_json::from_str(&arguments).unwrap();
+                assert_eq!(actual, expected, "part={part}, width={width}");
+            }
+        }
+    }
+}
+
+#[test]
 fn changing_a_tool_name_mid_stream_cannot_reassemble_a_credential() {
     let home = Home::new();
     let key = home.key();
