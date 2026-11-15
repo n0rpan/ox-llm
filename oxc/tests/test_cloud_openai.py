@@ -302,6 +302,22 @@ class OpenAI(CloudCase):
         self.assertEqual(self.chat()[0], 503)
         self.assertEqual(len(self.upstream.requests), 1)
 
+    def test_client_hangup_before_the_reply_writes_one_row(self):
+        from oxc.runtime import ctl_http
+        self.start()
+        def hung_up(*args, **kwargs):
+            raise BrokenPipeError()
+        with patch.object(ctl_http.Handler, 'reply', hung_up):
+            try:
+                self.chat()
+            except Exception:
+                pass
+            time.sleep(0.5)
+        rows = self.ledger_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['status'], 200)
+        self.assertNotEqual(rows[0]['settled'], 'reserved')
+
     def test_error_and_success_redaction(self):
         for status in (200, 500):
             upstream = MockOpenRouter(status=status, error=KEY, reply=KEY)

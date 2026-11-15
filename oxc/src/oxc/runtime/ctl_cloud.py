@@ -213,7 +213,10 @@ def forward(self, st):
             st.led.observe(payload)
         # Account before the client sees the reply, so its next request already sees a failed write.
         _finish(self, st, item, meter, response.status, hold=hold, secret=key)
-        self.reply(response.status, payload, 'application/json')
+        try:
+            self.reply(response.status, payload, 'application/json')
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True  # already accounted; never charge the worst case twice
     except cloud.CloudError as error:
         _finish(self, st, item, meter, error.status, error.code, hold, key, failed=True)
         if started:
