@@ -213,3 +213,42 @@ fn changing_branch_cannot_report_green_for_task_branch() {
     assert_eq!(record["outcome"], "blocked", "{record}");
     assert!(record["detail"].as_str().unwrap().contains("different branch"));
 }
+
+#[test]
+fn resumed_old_merge_is_told_to_integrate_the_newly_captured_base() {
+    let env = TestEnv::new();
+    diverge(&env, true);
+    trust(&env);
+    let first = run(&env, vec![ScriptTurn::text("blocked")]);
+    assert_eq!(first["outcome"], "blocked", "{first}");
+    let old_base = git(&env, &project(&env), &["rev-parse", "main"]);
+    commit_file(&env, "new-base.txt", "new base commit\n");
+    let new_base = git(&env, &project(&env), &["rev-parse", "main"]);
+    let mut turns = resolve_turns();
+    turns.insert(
+        2,
+        ScriptTurn::tool(
+            "latest",
+            "bash",
+            &serde_json::json!({"command": format!("git merge --no-edit {new_base}")}).to_string(),
+        ),
+    );
+    let (record, requests) = run_observed(&env, turns, &["work", "../tasks.json"], None);
+    assert_eq!(record["outcome"], "done", "{record}");
+    let messages = requests
+        .iter()
+        .flat_map(|r| &r.messages)
+        .filter_map(|m| m.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        messages.contains(&old_base) && messages.contains(&format!("git merge --no-edit {new_base}")),
+        "{messages}"
+    );
+    assert!(tree(&record).join("new-base.txt").exists());
+    git(
+        &env,
+        &project(&env),
+        &["merge-base", "--is-ancestor", &new_base, "agent/test"],
+    );
+}

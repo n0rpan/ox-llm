@@ -18,9 +18,10 @@ fn git_path(tree: &Path, name: &str) -> Result<PathBuf> {
 fn merging(tree: &Path) -> Result<bool> {
     Ok(git_path(tree, "MERGE_HEAD")?.exists())
 }
-fn merge_prompt(tree: &Path, task: &Task, output: &str) -> Result<String> {
+fn merge_prompt(tree: &Path, task: &Task, base: &str, output: &str) -> Result<String> {
     let paths = checked(git(tree, &["diff", "--name-only", "--diff-filter=U"]))?;
-    Ok(format!("{}\n\nThere is a merge in progress from base {}. Resolve the conflicts, stage the resolutions, and finish the merge commit before completing the task. Preserve the task's existing work.\nConflicted paths:\n{paths}\nMerge output:\n{output}", task.prompt, task.base))
+    let pending = checked(git(tree, &["rev-parse", "MERGE_HEAD"]))?;
+    Ok(format!("{}\n\nThere is a merge in progress from base {} at commit {pending}. The current base for this run is {base}. Resolve the conflicts, stage the resolutions, and finish the merge commit before completing the task. Then run `git merge --no-edit {base}` to integrate the captured current base as well, resolving and committing any further conflicts. Preserve the task's existing work.\nConflicted paths:\n{paths}\nMerge output:\n{output}", task.prompt, task.base))
 }
 pub(crate) fn prepare(repo: &Path, tree: &Path, task: &Task) -> Result<Prepared> {
     let base = checked(git(
@@ -70,8 +71,8 @@ pub(crate) fn prepare(repo: &Path, tree: &Path, task: &Task) -> Result<Prepared>
     if merging(tree)? {
         return Ok(Prepared {
             initial,
-            base,
-            prompt: merge_prompt(tree, task, "Resuming the retained merge.")?,
+            base: base.clone(),
+            prompt: merge_prompt(tree, task, &base, "Resuming the retained merge.")?,
         });
     }
     if !checked(git(tree, &["status", "--porcelain"]))?.is_empty() {
@@ -88,10 +89,11 @@ pub(crate) fn prepare(repo: &Path, tree: &Path, task: &Task) -> Result<Prepared>
         }
         return Ok(Prepared {
             initial,
-            base,
+            base: base.clone(),
             prompt: merge_prompt(
                 tree,
                 task,
+                &base,
                 &format!(
                     "{}\n{}",
                     String::from_utf8_lossy(&merged.stdout),
