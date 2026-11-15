@@ -59,8 +59,8 @@ fn events(wire: &[u8]) -> Vec<Value> {
 fn tool_names_are_redacted_in_place_and_emitted_whole_before_any_finish() {
     let home = Home::new();
     let key = home.key();
-    let mut stream = Stream::new("synthetic-cloud", Some(&key));
     for name in ["lookups", key.expose()] {
+        let mut stream = Stream::new("synthetic-cloud", Some(&key));
         let out = stream.feed(&frame(json!({"choices":[{"index":0,"delta":{"tool_calls":[
             {"function":{"name":name,"arguments":"{}"}}]},"finish_reason":null}]})));
         let values = events(&out);
@@ -73,12 +73,12 @@ fn tool_names_are_redacted_in_place_and_emitted_whole_before_any_finish() {
                 "[redacted]"
             }
         );
+        let end = stream.feed(b"data: [DONE]\n\n");
+        assert!(
+            events(&end).is_empty(),
+            "no later name fragment may be dispatched"
+        );
     }
-    let end = stream.feed(b"data: [DONE]\n\n");
-    assert!(
-        events(&end).is_empty(),
-        "no later name fragment may be dispatched"
-    );
 }
 #[test]
 fn split_secret_arguments_and_parallel_choices_are_independent_of_network_chunks() {
@@ -142,4 +142,81 @@ fn held_content_precedes_the_single_terminal_usage_notification() {
             .count(),
         1
     );
+}
+#[test]
+fn eof_flushes_content_and_arguments_without_done_or_a_finish_reason() {
+    let home = Home::new();
+    let key = home.key();
+    let mut stream = Stream::new("synthetic-cloud", Some(&key));
+    let mut out = stream.feed(&frame(
+        json!({"choices":[{"index":0,"delta":{"content":"syn",
+        "tool_calls":[{"index":0,"function":{"name":"lookup","arguments":"syn"}}]}}]}),
+    ));
+    out.extend(stream.finish());
+    let values = events(&out);
+    assert_eq!(
+        values
+            .iter()
+            .filter_map(|v| v["choices"][0]["delta"]["content"].as_str())
+            .collect::<String>(),
+        "syn"
+    );
+    assert_eq!(
+        values
+            .iter()
+            .filter_map(
+                |v| v["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()
+            )
+            .collect::<String>(),
+        "syn"
+    );
+    assert!(stream.finish().is_empty());
+}
+#[test]
+fn escaped_credentials_in_scalar_frames_and_tail_metadata_are_redacted() {
+    let home = Home::new();
+    let secret = "synthetic\"router\\key";
+    let path = home.0.join("escaped.json");
+    fs::write(&path, json!({"openrouter":{"api_key":secret}}).to_string()).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let key = secrets::read(&path, "openrouter").unwrap();
+    let mut stream = Stream::new("synthetic-cloud", Some(&key));
+    let out = stream.feed(&frame(json!(secret)));
+    assert_eq!(events(&out), vec![json!("[redacted]")]);
+    let mut out = stream.feed(&frame(
+        json!({"choices":[{"index":secret,"delta":{"content":"syn"},"finish_reason":"stop"}]}),
+    ));
+    out.extend(stream.feed(b"data: [DONE]\n\n"));
+    out.extend(stream.finish());
+    for value in events(&out) {
+        assert_eq!(value["choices"][0]["index"], "[redacted]");
+    }
+}
+#[test]
+fn changing_a_tool_name_mid_stream_cannot_reassemble_a_credential() {
+    let home = Home::new();
+    let key = home.key();
+    let mut stream = Stream::new("synthetic-cloud", Some(&key));
+    let mut out = Vec::new();
+    for name in ["synthetic-", "router-key"] {
+        out.extend(
+            stream.feed(&frame(json!({"choices":[{"index":0,"delta":{"tool_calls":[
+            {"index":0,"function":{"name":name,"arguments":""}}]}}]}))),
+        );
+    }
+    out.extend(stream.finish());
+    let values = events(&out);
+    let names = values
+        .iter()
+        .filter_map(|v| v["choices"][0]["delta"]["tool_calls"][0]["function"]["name"].as_str())
+        .collect::<String>();
+    assert!(
+        !names.contains(key.expose()),
+        "fragmented name exposed the synthetic credential"
+    );
+    assert_eq!(
+        values.last().unwrap()["error"]["code"],
+        "cloud_invalid_response"
+    );
+    assert!(stream.is_failed());
 }

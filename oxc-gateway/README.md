@@ -36,8 +36,14 @@ This intentionally avoids the current reference's name hold-back defect.
 
 Thirty-four Python/native protocol cases use private HOME/network namespaces and
 synthetic data, including byte-at-a-time UTF-8/SSE, tools and interleaved choices.
-Three native regressions cover whole names before finish, every two-way split of
+Six native regressions cover whole names before finish, every two-way split of
 a secret-bearing tool flow, and ordering of held content before terminal usage.
 No HTTP client, paid retry, cancellation or budget/private-metadata composition
 is provided by this protocol-only slice; transport follows separately. For a
 native run also set `OXC_OPENROUTER_CONTRACT` to the absolute built example path.
+
+EOF flushes held content and arguments even without a finish marker. Keyed
+streams require one whole name per choice/tool slot: identical metadata repeats
+are suppressed; changing/fragmented names emit a static terminal error instead
+of assembling a credential. `is_failed()` requires transport cancellation and
+failed settlement. Scalar frames and tail metadata receive decoded redaction.

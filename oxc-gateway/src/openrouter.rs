@@ -343,6 +343,8 @@ pub struct Stream<'a> {
     fields: Vec<Field>,
     raw: Option<redaction::Stream>,
     reasoning: i64,
+    names: Vec<(Value, Value, String)>,
+    failed: bool,
 }
 impl<'a> Stream<'a> {
     pub fn new(alias: &str, key: Option<&'a Key>) -> Self {
@@ -353,6 +355,8 @@ impl<'a> Stream<'a> {
             fields: Vec::new(),
             raw: key.map(redaction::Stream::new),
             reasoning: 0,
+            names: Vec::new(),
+            failed: false,
         }
     }
     fn fragment(&mut self, choice: &Value, name: &str, slot: Option<Value>, text: &str) -> String {
@@ -396,8 +400,11 @@ impl<'a> Stream<'a> {
             } else {
                 delta.insert(field.name.clone(), json!(text));
             }
-            let value = json!({"model":self.alias,"object":"chat.completion.chunk",
+            let mut value = json!({"model":self.alias,"object":"chat.completion.chunk",
                 "choices":[{"index":field.choice,"delta":delta,"finish_reason":null}]});
+            if let Some(key) = self.key {
+                redaction::value(&mut value, key);
+            }
             out.extend(wire(None, value.to_string().as_bytes()));
         }
         out
@@ -415,6 +422,10 @@ impl<'a> Stream<'a> {
             return wire(name, data);
         };
         if !value.is_object() {
+            if let Some(key) = self.key {
+                redaction::value(&mut value, key);
+                return wire(name, value.to_string().as_bytes());
+            }
             return wire(name, data);
         }
         value["model"] = json!(self.alias);
@@ -449,6 +460,25 @@ impl<'a> Stream<'a> {
                                 if let Some(function) =
                                     call.get_mut("function").filter(|v| v.is_object())
                                 {
+                                    if let Some(name) = function["name"].as_str() {
+                                        if let Some((_, _, prior)) =
+                                            self.names.iter().find(|(choice, number, _)| {
+                                                choice == &index && number == &slot
+                                            })
+                                        {
+                                            if prior != name {
+                                                self.failed = true;
+                                                return wire(None, br#"{"error":{"message":"The cloud provider changed a tool identifier mid-stream.","type":"cloud_error","code":"cloud_invalid_response"}}"#);
+                                            }
+                                            function.as_object_mut().unwrap().remove("name");
+                                        } else if !name.is_empty() {
+                                            self.names.push((
+                                                index.clone(),
+                                                slot.clone(),
+                                                name.into(),
+                                            ));
+                                        }
+                                    }
                                     if let Some(text) = function["arguments"].as_str() {
                                         function["arguments"] = json!(self.fragment(
                                             &index,
@@ -473,6 +503,16 @@ impl<'a> Stream<'a> {
         if let Some(usage) = value.get_mut("usage").filter(|v| v.is_object()) {
             details(usage, self.reasoning, &timings);
         }
+        let indices = value["choices"]
+            .as_array()
+            .map(|choices| {
+                choices
+                    .iter()
+                    .filter(|c| c.get("finish_reason").is_some_and(|v| !v.is_null()))
+                    .map(|c| c.get("index").cloned().unwrap_or(json!(0)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         if let Some(key) = self.key {
             redaction::value(&mut value, key);
         }
@@ -486,10 +526,6 @@ impl<'a> Stream<'a> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let indices = finished
-            .iter()
-            .map(|c| c.get("index").cloned().unwrap_or(json!(0)))
-            .collect::<Vec<_>>();
         let tails = if finished.is_empty() {
             Vec::new()
         } else {
@@ -521,8 +557,16 @@ impl<'a> Stream<'a> {
     }
     fn process(&mut self, data: &[u8], final_chunk: bool) -> Vec<u8> {
         let mut out = Vec::new();
-        for (name, data) in self.parser.feed(data, final_chunk) {
-            out.extend(self.event(name.as_deref(), &data));
+        if !self.failed {
+            for (name, data) in self.parser.feed(data, final_chunk) {
+                out.extend(self.event(name.as_deref(), &data));
+                if self.failed {
+                    break;
+                }
+            }
+            if final_chunk && !self.failed {
+                out.extend(self.tails(None));
+            }
         }
         if let Some(raw) = &mut self.raw {
             let mut safe = raw.feed(&out);
@@ -539,5 +583,9 @@ impl<'a> Stream<'a> {
     }
     pub fn finish(&mut self) -> Vec<u8> {
         self.process(&[], true)
+    }
+    /// The transport must cancel upstream and settle failure after this flag.
+    pub fn is_failed(&self) -> bool {
+        self.failed
     }
 }
