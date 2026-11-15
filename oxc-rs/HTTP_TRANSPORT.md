@@ -22,6 +22,8 @@ Response transfer-coding tokens are case insensitive; Transfer-Encoding removes
 Content-Length. HTTP/1.0 streams use close delimiting without chunk framing;
 other transfer codings on HTTP/1.0 and invalid chunk-coding order close without
 emitting the malformed handler response.
+For `Expect: 100-continue`, permission is sent when the handler first reads the
+body. Admission can still return a final refusal without inviting an upload.
 
 ```sh
 cargo test --locked --manifest-path oxc-rs/Cargo.toml --all-features
