@@ -533,7 +533,13 @@ fn glob_match(pat: &[char], s: &[char]) -> bool {
 }
 
 fn list_hint(available: &[ModelRef]) -> String {
-    let names: Vec<String> = available.iter().take(20).map(qualified).collect();
+    // One endpoint: bare ids, as the picker and `--model` show them.
+    let single = available.windows(2).all(|w| w[0].endpoint == w[1].endpoint);
+    let names: Vec<String> = available
+        .iter()
+        .take(20)
+        .map(|m| if single { m.model.clone() } else { qualified(m) })
+        .collect();
     if names.is_empty() {
         "no models are available from the engine yet; check that it is running".to_string()
     } else {

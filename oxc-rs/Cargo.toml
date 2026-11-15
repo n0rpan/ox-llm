@@ -9,6 +9,7 @@ autobins = false
 [features]
 default = []
 native-controller = ["dep:tokio", "dep:reqwest", "dep:serde_json"]
+upstream-anthropic-request = ["dep:serde_json"]
 
 [dependencies]
 tokio = { version = "1.54.1", features = ["rt", "net", "time", "process", "io-util"], optional = true }
