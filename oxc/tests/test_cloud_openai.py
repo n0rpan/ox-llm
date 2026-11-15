@@ -1,6 +1,7 @@
 """D8: real gateway + loopback OpenAI mock; no SDK credentials or paid calls."""
 import json
 import os
+import time
 from unittest.mock import patch
 
 from oxc.runtime import cloud, cloud_openai, request_ledger
@@ -293,7 +294,10 @@ class OpenAI(CloudCase):
         self.stack.close()
         self.stack = None
         self.start()
-        with patch.object(request_ledger, 'write', return_value=False):
+        def slow_failed_write(*args, **kwargs):
+            time.sleep(0.5)  # the row is written while the client already has its reply
+            return False
+        with patch.object(request_ledger, 'write', side_effect=slow_failed_write):
             self.assertEqual(self.chat()[0], 200)
         self.assertEqual(self.chat()[0], 503)
         self.assertEqual(len(self.upstream.requests), 1)

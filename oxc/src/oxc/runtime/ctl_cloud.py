@@ -211,8 +211,9 @@ def forward(self, st):
         payload = cloud.redact(payload, key)
         if st.led is not None:
             st.led.observe(payload)
-        self.reply(response.status, payload, 'application/json')
+        # Account before the client sees the reply, so its next request already sees a failed write.
         _finish(self, st, item, meter, response.status, hold=hold, secret=key)
+        self.reply(response.status, payload, 'application/json')
     except cloud.CloudError as error:
         _finish(self, st, item, meter, error.status, error.code, hold, key, failed=True)
         if started:
