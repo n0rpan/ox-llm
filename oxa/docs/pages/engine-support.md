@@ -8,7 +8,7 @@ of those kinds become a fixed placeholder line. Thinking can be turned on or off
 request. Context window, compaction threshold and maximum output come from the engine,
 per model, as the engine reports its limits. The small Flash model has reduced features:
 a 16K context, no preserved thinking, and no subagent tool unless it is enabled for it.
-The table is generated from `PARITY.md` by `ci/gen_docs.py`. Each row has an id in the first
+The table records supported engine behavior from `PARITY.md`. Each row has an id in the first
 column, of the form `AREA-NNN`: the row's key in oxa's internal parity table, shown so that a row can be referred
 to. The text of the rows does not cite the internal work items.
 

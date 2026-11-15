@@ -240,7 +240,6 @@ const SCHEMA: &[KeyDef] = &[
     key("terminal.showImages", Kind::Bool, "true"),
     key("theme", Kind::String, "\"system\""),
     key("themes", Kind::StringList, "[]"),
-    verdict_o("thinkingBudgets", Kind::Object, "{}"),
     verdict_o(
         "transport",
         Kind::Enum(&["auto", "sse", "websocket", "websocket-cached"]),
@@ -268,7 +267,7 @@ const SCHEMA: &[KeyDef] = &[
         "null",
     ),
     key("ui.reducedMotion", Kind::Bool, "false"),
-    key("ui.skin", Kind::Enum(&["auto", "pi", "oxa"]), "\"auto\""),
+    key("ui.skin", Kind::Enum(&["auto", "pi", "oxa", "ascii"]), "\"auto\""),
     verdict_o("warnings.anthropicExtraUsage", Kind::Bool, "true"),
     verdict_o("websocketConnectTimeoutMs", Kind::Any, "15000"),
 ];

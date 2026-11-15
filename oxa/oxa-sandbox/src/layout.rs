@@ -78,6 +78,9 @@ pub const TOOLCHAIN_READ: &[&str] = &[
 pub const CACHE_WRITE: &[&str] = &[
     ".cargo/registry",
     ".cargo/git",
+    ".cache/mise",
+    // Only `tracked-configs`: `trusted-configs` (trust records) must stay read-only.
+    ".local/state/mise/tracked-configs",
     ".cache/pip",
     ".cache/uv",
     ".cache/go-build",
@@ -165,6 +168,10 @@ pub struct Layout {
     /// sbx-git: the git data of the cwd outside it (a worktree's gitdir and common dir, shared
     /// alternates), resolved once by `Bwrap::with_git_dirs`. Empty until then.
     pub git: GitBinds,
+    /// sbx-ipc: mask the host runtime sockets (`/run/user/<uid>`, the buses, Docker/Podman,
+    /// systemd-resolved) in the argv. Set by the front end ([`Bwrap::detect`] and the CLI's
+    /// layout); off in the pure-argv tests, whose `Layout::default()` is not a sandbox.
+    pub mask_runtime_ipc: bool,
 }
 
 /// The inputs of [`Layout::build`].
@@ -180,6 +187,12 @@ pub struct LayoutInputs {
     pub read_extra: Vec<PathBuf>,
     pub write_extra: Vec<PathBuf>,
     pub allow_home_write: bool,
+    /// The running oxa binary: exposed read-only (when under `$HOME`, which is hidden) and
+    /// named by `OXA_RUNNING_BIN`, so an agent can start the TUI in tmux from inside the sandbox.
+    pub exe: Option<PathBuf>,
+    /// The binary already lies inside the writable workspace: name it, but do not bind it
+    /// (a bind makes the file a mount point, so a rebuild could not replace it).
+    pub exe_in_workspace: bool,
 }
 
 /// `~` / `~/x` -> `$HOME` / `$HOME/x`; other paths unchanged.
@@ -198,6 +211,18 @@ fn denied(p: &Path, deny: &[PathBuf]) -> bool {
 }
 
 impl Layout {
+    /// Whether `build` keeps an extra path (the same checks it applies to every configured
+    /// path: absolute, existing, not a credential path, not the home itself or `/`).
+    pub fn keeps_extra(home: &Path, agent_dir: Option<&Path>, p: &Path) -> bool {
+        let deny = sensitive_paths(home, agent_dir);
+        p.is_absolute() && p.exists() && !denied(p, &deny) && p != home && p != Path::new("/")
+    }
+
+    /// Whether some writable mount lies strictly inside `p`.
+    pub fn has_writable_inside(&self, p: &Path) -> bool {
+        self.write.iter().any(|w| w != p && w.starts_with(p))
+    }
+
     /// Build the layout from the user's environment and settings (see the module docs).
     pub fn build(i: &LayoutInputs) -> Layout {
         let deny = sensitive_paths(&i.home, i.agent_dir.as_deref());
@@ -220,11 +245,12 @@ impl Layout {
         }
         read.extend(TOOLCHAIN_READ.iter().map(|r| i.home.join(r)));
         read.extend(i.read_extra.iter().cloned());
+        if !i.exe_in_workspace {
+            read.extend(i.exe.iter().cloned());
+        }
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
-        let keep = |p: &PathBuf| {
-            p.is_absolute() && p.exists() && !denied(p, &deny) && p != &i.home && p != Path::new("/")
-        };
+        let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
         read.retain(keep);
         write.retain(keep);
         read.sort();
@@ -268,6 +294,25 @@ impl Layout {
             })
             .cloned()
             .collect();
+        // Version-manager shims (mise) write cache/state under the read-only home and warn on
+        // every call; point them at the sandbox /tmp unless the caller set them.
+        for (k, v) in [
+            ("MISE_CACHE_DIR", "/tmp/mise-cache"),
+            ("MISE_STATE_DIR", "/tmp/mise-state"),
+        ] {
+            if !env.iter().any(|(n, _)| n == k) {
+                env.push((k.to_string(), v.to_string()));
+            }
+        }
+        if let Some(exe) = i
+            .exe
+            .as_ref()
+            .filter(|e| e.is_absolute() && e.is_file() && !denied(e, &deny))
+        {
+            if !env.iter().any(|(n, _)| n == "OXA_RUNNING_BIN") {
+                env.push(("OXA_RUNNING_BIN".to_string(), exe.display().to_string()));
+            }
+        }
         env.sort();
         env.dedup_by(|a, b| a.0 == b.0);
         Layout {
@@ -278,6 +323,7 @@ impl Layout {
             env,
             allow_home_write: i.allow_home_write,
             git: GitBinds::default(),
+            mask_runtime_ipc: false,
         }
     }
 
@@ -294,6 +340,42 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_running_binary_is_bound_and_named() {
+        let d = std::env::temp_dir().join(format!("oxa-exe-{}", std::process::id()));
+        let bin = d.join("home/.oxa/bin/oxa");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "x").unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: d.join("home"),
+            exe: Some(bin.clone()),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(l.read.contains(&bin), "{:?}", l.read);
+        assert!(l
+            .env
+            .contains(&("OXA_RUNNING_BIN".into(), bin.display().to_string())));
+    }
+
+    #[test]
+    fn a_binary_in_the_workspace_is_named_not_bound() {
+        let d = std::env::temp_dir().join(format!("oxa-exew-{}", std::process::id()));
+        let bin = d.join("home/ws/target/release/oxa");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "x").unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: d.join("home"),
+            exe: Some(bin.clone()),
+            exe_in_workspace: true,
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!l.read.contains(&bin), "{:?}", l.read);
+        assert!(l.env.iter().any(|(k, _)| k == "OXA_RUNNING_BIN"));
+        assert!(!l.env.iter().any(|(k, _)| k == "OXA_BIN"));
+    }
 
     #[test]
     fn secret_names_are_recognised() {

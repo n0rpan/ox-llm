@@ -26,7 +26,12 @@ def _close_row(st, status, error=None):
     """Finish the ledger row and remember a write failure so cloud admission fails closed."""
     if st.led is None:
         return
-    st.led.finish(status, error)
+    try:
+        st.led.finish(status, error)
+    except Exception:
+        # An append may have happened before an exception; never retry an ambiguous write.
+        cloud.mark_ledger_failure()
+        return
     if getattr(st.led, 'written', True) is False:
         cloud.mark_ledger_failure()
 
@@ -48,6 +53,8 @@ def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, f
 
     ``cancelled`` = (request_bytes, streamed_bytes) for a client cancel: settled at actual usage
     or an estimate of what was streamed."""
+    if hold is not None and hold.accounted:
+        return  # Accounting was attempted; any failure already closed cloud admission.
     row = meter.row(item, secret)
     if cancelled is not None:
         # OpenAI/OpenRouter report usage only in the closing chunk, so any usage seen is final.
@@ -58,6 +65,7 @@ def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, f
         st.led.row.update(row)
         _close_row(st, status, error)
     if hold is not None:
+        hold.accounted = True
         hold.settle()
 
 
@@ -211,8 +219,14 @@ def forward(self, st):
         payload = cloud.redact(payload, key)
         if st.led is not None:
             st.led.observe(payload)
-        self.reply(response.status, payload, 'application/json')
+        # the row is written before the reply goes out, so a client that sees the answer can rely on
+        # the next request already being gated by a failed ledger write
         _finish(self, st, item, meter, response.status, hold=hold, secret=key)
+        try:
+            self.reply(response.status, payload, 'application/json')
+        except (BrokenPipeError, ConnectionResetError):
+            st.client_write_failed = True
+            self.close_connection = True
     except cloud.CloudError as error:
         _finish(self, st, item, meter, error.status, error.code, hold, key, failed=True)
         if started:

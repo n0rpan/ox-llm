@@ -125,3 +125,34 @@ fn response_size_limit_is_enforced_before_allocation() {
         .unwrap();
     assert!(client.card().is_err());
 }
+
+#[test]
+fn shared_response_allowance_cannot_be_overspent_by_concurrent_clients() {
+    use oxa_a2a::loopback::ResponseBudget;
+    let mock = MockAgent::start(Behavior::Complete).unwrap();
+    let client = mock.client(Limits::default()).unwrap();
+    let budget = ResponseBudget::new(900);
+    let first = client.fork(Limits::default(), budget.clone()).unwrap();
+    let second = client.fork(Limits::default(), budget.clone()).unwrap();
+    let a = std::thread::spawn(move || first.card().is_ok());
+    let b = std::thread::spawn(move || second.card().is_ok());
+    let successes = usize::from(a.join().unwrap()) + usize::from(b.join().unwrap());
+    assert!(successes <= 1);
+    assert!(budget.used() <= 900);
+}
+
+#[test]
+fn unused_observation_allowance_can_fund_cleanup_without_widening_the_budget() {
+    use oxa_a2a::loopback::ResponseBudget;
+    let mock = MockAgent::start(Behavior::Complete).unwrap();
+    let client = mock.client(Limits::default()).unwrap();
+    let read = ResponseBudget::new(4096);
+    let stop = ResponseBudget::new(512);
+    let observed = client.fork(Limits::default(), read.clone()).unwrap();
+    observed.card().unwrap();
+    assert!(read.transfer_remaining_to(&stop).unwrap() > 0);
+    assert_eq!(read.remaining(), 0);
+    let cleanup = client.fork(Limits::default(), stop.clone()).unwrap();
+    cleanup.card().unwrap();
+    assert_eq!(read.used() + stop.used() + stop.remaining(), 4096 + 512);
+}

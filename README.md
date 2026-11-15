@@ -1,7 +1,7 @@
 # ox-llm
 
 Local large language models, a coding agent and image generation on **Snapdragon X laptops under
-Linux** (Omarchy), on the CPU. Nothing leaves the machine. Every speed number links its receipt.
+Linux** (Omarchy), on the CPU. Local inference runs on the machine. Every speed number links its receipt.
 Failed attempts are kept too.
 
 ox-llm is one release with three parts. Each part is its own build unit:
@@ -32,11 +32,14 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 
 ## Quick start
 
-- **Install:** [oxc/README.md](oxc/README.md#quick-start) covers the engine tarball, its verification
-  and the controller. Bootstrap: [oxc/docs/BOOTSTRAP-INSTALL.md](oxc/docs/BOOTSTRAP-INSTALL.md).
+- **Start here:** [oxc/README.md](oxc/README.md#quick-start) covers engine downloads and verification.
+  The controller bootstrap installs source into an explicit sandbox HOME; see its
+  [installation status and limits](oxc/docs/BOOTSTRAP-INSTALL.md).
+- **Prebuilt, any Linux:** each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
+  `ox-llm-<version>-linux-x86_64.tar.gz` (oxc, oxa, oxe, licences) with SBOMs, `SHA256SUMS` and build provenance.
 - **Cloud only, no local engine:** [oxc/docs/CLOUD-ONLY-QUICKSTART.md](oxc/docs/CLOUD-ONLY-QUICKSTART.md)
   (any Linux, x86_64 or arm64; cloud models through oxc, plus oxa).
-- **Code:** run `oxc code` in a project directory, or press the code button in the widget. Both
+- **Code (installed runtime):** run `oxc code` in a project directory, or press the code button in the widget. Both
   start oxa against the controller.
 - **Other clients:** any OpenAI-compatible client can use `http://127.0.0.1:8092/v1`. See
   [oxc/docs/OTHER-CLIENTS.md](oxc/docs/OTHER-CLIENTS.md).
@@ -53,21 +56,7 @@ oxa is the default coding client. `oxc code` and the widget's code button start 
 endpoint from `OXA_ENGINE_URL` or from `~/.oxa/agent/models.json`.
 
 oxa's bash tool runs inside a bubblewrap (`bwrap`) sandbox; without `bwrap` the bash tool refuses
-to run. `oxc doctor` checks that `bwrap` is installed.
-
-### Migrating from OpenCode
-
-Earlier releases launched OpenCode. ox-llm v0.2.0 removes that launcher: the code button and
-`oxc code` start oxa only.
-
-- **Your own OpenCode install and config are never touched.** ox-llm does not delete or rewrite
-  `~/.config/opencode` or OpenCode itself. OpenCode sessions are not imported.
-- **Config an earlier release wrote for you** (for example
-  `~/.config/opencode/oxc-bootstrap.fragment.json`, or the oxc entries an earlier install
-  pinned in the global `opencode.json`) is left in place; the upgrade prints a one-time note about it.
-  Remove those entries yourself if you no longer use OpenCode with ox-llm.
-- **To keep using OpenCode** (or pi, or another client) against ox-llm, point it at the controller
-  yourself: [oxc/docs/OTHER-CLIENTS.md](oxc/docs/OTHER-CLIENTS.md).
+to run. From `oxc/`, `PYTHONPATH=src python3 -B -m oxc doctor` reports prerequisites.
 
 ## Flash: the expert sidecar on an unencrypted partition
 
