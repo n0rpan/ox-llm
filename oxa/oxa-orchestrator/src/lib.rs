@@ -30,3 +30,6 @@ pub mod recovery;
 
 #[cfg(feature = "core")]
 pub mod rpc_agent;
+
+#[cfg(feature = "core")]
+pub mod workspace;
