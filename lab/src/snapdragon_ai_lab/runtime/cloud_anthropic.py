@@ -364,6 +364,7 @@ class _Stream:
         self.model = item['id']
         self.finish = None
         self.usage = None
+        self.usage_final = False
         self.raw_usage = {}
         self.tool_slots = {}
         self.blocks = []
@@ -483,6 +484,7 @@ class _Stream:
             if value.get('usage') is not None:
                 self.raw_usage.update(_dump(value['usage']))
                 self.usage = _usage(self.raw_usage) if _valid_usage(self.raw_usage) else None
+                self.usage_final = self.usage is not None
         elif kind == 'message_stop':
             self.stopped = True
             self._remember()
@@ -561,7 +563,7 @@ def _close(st, status, error=None):
         cloud.mark_ledger_failure()
 
 
-def _record(st, item, hold, usage, failed, status, error, cancelled=None):
+def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_final=False):
     row = _row(item)
     if isinstance(usage, dict):
         _usage_row(row, usage, item)
@@ -569,7 +571,7 @@ def _record(st, item, hold, usage, failed, status, error, cancelled=None):
         row.setdefault('cost_usd', 0.0)
         row.setdefault('settled', 'not_forwarded')
     elif cancelled is not None:
-        cloud.cancelled_cost(row, hold, item, *cancelled)
+        cloud.cancelled_cost(row, hold, item, *cancelled, usage_final=usage_final)
     else:
         cloud.conservative_cost(row, hold, failed=failed)
     if st.led is not None:
@@ -682,7 +684,8 @@ def forward(self, st, item, key):
         st.client_write_failed = True
         _record(st, item, hold, translator.usage if translator else None, False, 499, 'cancelled',
                 cancelled=(len(json.dumps(params, ensure_ascii=False).encode()),
-                           st.cloud_streamed, cloud.elapsed_since(hold)))
+                           st.cloud_streamed, cloud.elapsed_since(hold)),
+                usage_final=bool(translator and translator.usage_final))
         self.close_connection = True
     except Exception as error:  # the SDK's own status/connection errors, redacted
         status = getattr(error, 'status_code', None) or 503

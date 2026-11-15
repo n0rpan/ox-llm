@@ -10,9 +10,9 @@ ITEM = {'id': 'm', 'provider': 'openai', 'context_window': 1000, 'max_output': 4
         'pricing': {'input_per_million': 1.0, 'output_per_million': 10.0}}
 
 
-def settle(row, elapsed, streamed=10, output=4096, hold_usd=1.0):
+def settle(row, elapsed, streamed=10, output=4096, hold_usd=1.0, final=False):
     hold = cloud.BudgetHold('d', hold_usd, output, started=0.0)
-    return cloud.cancelled_cost(row, hold, ITEM, 100, streamed, elapsed)
+    return cloud.cancelled_cost(row, hold, ITEM, 100, streamed, elapsed, usage_final=final)
 
 
 class CancelCost(unittest.TestCase):
@@ -25,9 +25,14 @@ class CancelCost(unittest.TestCase):
         self.assertAlmostEqual(row['cost_usd'], cloud.cost(ITEM, 100, 4096))
 
     def test_reported_usage_wins(self):
-        row = settle({'prompt_tokens': 5, 'completion_tokens': 7, 'cost_usd': 0.0001}, 3600.0)
+        row = settle({'prompt_tokens': 5, 'completion_tokens': 7, 'cost_usd': 0.0001}, 3600.0, final=True)
         self.assertEqual(row['cost_usd'], 0.0001)
         self.assertEqual(row['settled'], 'usage')
+
+    def test_start_of_stream_usage_is_bounded_not_final(self):
+        row = settle({'prompt_tokens': 5, 'completion_tokens': 0, 'cost_usd': 0.000005}, 2.0)
+        self.assertEqual(row['settled'], 'estimated')
+        self.assertAlmostEqual(row['cost_usd'], cloud.cost(ITEM, 5, 600))
 
     def test_elapsed_uses_injectable_clock(self):
         hold = cloud.BudgetHold('d', 1.0, 10, started=5.0)

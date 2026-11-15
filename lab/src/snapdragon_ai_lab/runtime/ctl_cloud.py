@@ -50,7 +50,8 @@ def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, f
     or an estimate of what was streamed."""
     row = meter.row(item, secret)
     if cancelled is not None:
-        cloud.cancelled_cost(row, hold, item, *cancelled)
+        # OpenAI/OpenRouter report usage only in the closing chunk, so any usage seen is final.
+        cloud.cancelled_cost(row, hold, item, *cancelled, usage_final=True)
     else:
         cloud.conservative_cost(row, hold, failed=failed)
     if st.led is not None:

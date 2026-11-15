@@ -106,6 +106,29 @@ class AnthropicCancel(Mixin, AnthropicBase):
         self.start(budget=5.0)
         self.check('anthropic/claude-sonnet-5-5', 200000 * 3e-6)
 
+    def test_cancel_after_message_start_only_charges_output_bound(self):
+        self.upstream = SlowAnthropic(stream_events=anthropic_events())
+        self.addCleanup(self.upstream.close)
+        self.start(budget=5.0)
+        cancel_after_first_chunk(self, 'anthropic/claude-sonnet-5-5')
+        row = self.ledger_rows()[-1]
+        self.assertEqual(row['settled'], 'estimated', row)
+        self.assertEqual(row['prompt_tokens'], 12)
+        self.assertGreater(row['cost_usd'], 12 * 3e-6 + 1e-6)  # output is charged, not zero
+
+    def test_cancel_after_final_usage_is_usage(self):
+        events = anthropic_events(0)  # final usage arrives before the first streamed text
+        events.append(('message_delta', {'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'},
+                                         'usage': {'output_tokens': 7}}))
+        events += anthropic_events(60)[2:]
+        self.upstream = SlowAnthropic(stream_events=events)
+        self.addCleanup(self.upstream.close)
+        self.start(budget=5.0)
+        cancel_after_first_chunk(self, 'anthropic/claude-sonnet-5-5')
+        row = self.ledger_rows()[-1]
+        self.assertEqual(row['settled'], 'usage', row)
+        self.assertEqual(row['completion_tokens'], 7)
+
     def test_later_request_still_sees_full_budget_fail_closed(self):
         self.upstream = SlowAnthropic(stream_events=anthropic_events())
         self.addCleanup(self.upstream.close)

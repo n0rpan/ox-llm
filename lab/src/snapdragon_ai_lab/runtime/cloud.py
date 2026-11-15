@@ -493,23 +493,24 @@ def conservative_cost(row, hold, failed=False):
 GENERATION_TOKENS_PER_SECOND = 300  # generous upper bound on generation speed
 
 
-def cancelled_cost(row, hold, item, request_bytes, streamed_bytes, elapsed=0.0):
+def cancelled_cost(row, hold, item, request_bytes, streamed_bytes, elapsed=0.0, usage_final=False):
     """Settle a stream the client cancelled.
 
-    Provider-reported usage wins.  Otherwise charge an estimate of what was actually sent and
+    Provider-reported usage wins only when it is FINAL (the stream's closing usage).  Start-of-stream
+    usage (e.g. Anthropic message_start) only sets the prompt count and a floor for output.  Otherwise charge an estimate of what was actually sent and
     streamed (one token per byte is an upper bound for text), never above the reservation; with
     no known price the full reservation stays charged.  Fail-closed accounting is unchanged.
     """
     if hold is None:
         return row
-    if (row.get('prompt_tokens') is not None and row.get('completion_tokens') is not None
+    if (usage_final and row.get('prompt_tokens') is not None and row.get('completion_tokens') is not None
             and row.get('cost_usd') is not None):
         row['settled'] = 'usage'
         return row
     # Hidden reasoning tokens are never streamed: bound output by elapsed time, within the reservation.
     output = min(hold.output_tokens, max(streamed_bytes, row.get('completion_tokens') or 0,
                                          int(max(0.0, elapsed) * GENERATION_TOKENS_PER_SECOND)))
-    estimate = cost(item, max(request_bytes, row.get('prompt_tokens') or 0), output)
+    estimate = cost(item, row['prompt_tokens'] if row.get('prompt_tokens') is not None else request_bytes, output)
     if estimate is None or not math.isfinite(estimate):
         estimate = hold.reserved
     row['cost_usd'] = min(hold.reserved, max(estimate, row.get('cost_usd') or 0))
