@@ -866,7 +866,27 @@ case "$last" in *one*) sleep 0.3;; esac
         words("sess.s3")
     );
     assert!(o.notes.is_empty(), "{:?}", o.notes);
-    assert_eq!(host.clears().len(), 3);
+    // Remote children hold no engine state: nothing to clear.
+    assert_eq!(host.clears().len(), 0);
+}
+
+/// A local child under a remote lead still gets its engine state cleared.
+#[test]
+fn local_child_of_remote_lead_is_cleared() {
+    let env = TestEnv::new();
+    let mut l = limits("sess", 200_000, None);
+    l["model"] = json!("cloud-lead");
+    l["remote"] = json!(true);
+    let host = MockHost::with(&env, l, json!({"parked": false}), false);
+    let h = hooks_with(
+        child_script(&env, OK_BODY),
+        vec![agent("scout", Some("local-child"))],
+        Value::Null,
+        &host,
+    );
+    let o = run(&env, &h, json!({"agent": "scout", "task": "one"}));
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert_eq!(host.clears(), vec!["sess.s1".to_string()]);
 }
 
 /// child soft limit = min(`oxa.subagent.softTokens`, the parent's `compactAt`), below the cap

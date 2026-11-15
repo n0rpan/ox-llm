@@ -950,7 +950,8 @@ fn clear_engine_hint(st: &mut SessionState, hint: &str) -> Result<Value, OxaErro
             format!("{hint} is not a child session of this session"),
         ));
     }
-    if !st.info.caps.hint_clear {
+    // A remote parent may run a local child (#458), whose state the parent's caps don't describe.
+    if !st.info.caps.hint_clear && !st.info.caps.remote {
         return Ok(serde_json::json!({ "cleared": false }));
     }
     let end = std::time::Instant::now() + std::time::Duration::from_secs(3);

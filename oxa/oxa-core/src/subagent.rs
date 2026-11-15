@@ -1250,7 +1250,14 @@ impl Run<'_, '_> {
     /// After a child: clear its engine state (EG5, whatever the outcome) and record it.
     fn cleanup(&mut self, k: usize, p: &Prepared, mut r: ChildResult) -> ChildResult {
         r.hint = Some(p.hint.clone());
-        if let Err(e) = self.host.call(HostAction::ClearEngineHint(p.hint.clone())) {
+        // A remote child holds no engine state; a local child under a remote parent does, and
+        // the host clears it whatever the parent's own capabilities say.
+        let cleared = if p.remote {
+            Ok(Value::Null)
+        } else {
+            self.host.call(HostAction::ClearEngineHint(p.hint.clone()))
+        };
+        if let Err(e) = cleared {
             let text = NOTICE_CLEAR_FAILED
                 .replace("{hint}", &p.hint)
                 .replace("{error}", &e.message);
