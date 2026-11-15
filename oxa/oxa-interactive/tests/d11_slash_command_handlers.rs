@@ -130,9 +130,17 @@ fn unknown_slash_is_local_error_and_help_usage_exist() {
         }
         _ => panic!("/help shows lines"),
     }
-    for n in ["/usage", "/cost"] {
-        assert!(matches!(expect_some(n, fx.run(n)), AppAction::ShowLines(_)));
-    }
+    assert!(matches!(
+        expect_some("/usage", fx.run("/usage")),
+        AppAction::ShowLines(_)
+    ));
+    // `/cost` shows no cost, so it is not a built-in: it is an unknown command.
+    let (level, _) = notice(expect_some("/cost", fx.run("/cost")));
+    assert_eq!(level, Level::Error);
+    // A dotless single-component name that is not a command and does not exist on disk
+    // is rejected locally (a typo), not sent to the model.
+    let (level, _) = notice(expect_some("/zz-nope-qq", fx.run("/zz-nope-qq go")));
+    assert_eq!(level, Level::Error);
     // A template or skill command of the session still goes to the core.
     let mut fx = Fx::new();
     fx.commands.push(CommandSpec {
@@ -142,6 +150,26 @@ fn unknown_slash_is_local_error_and_help_usage_exist() {
         source: Source::Extension("x".to_string()),
     });
     assert!(fx.run("/skill:demo go").is_none());
+    // An extension command named like a name that is not built in reaches the core.
+    fx.commands.push(CommandSpec {
+        name: "deploy".to_string(),
+        description: "d".to_string(),
+        argument_hint: None,
+        source: Source::Extension("x".to_string()),
+    });
+    assert!(fx.run("/deploy now").is_none());
+    // A template or extension named `help` / `usage` overrides the built-in handler.
+    for n in ["help", "usage"] {
+        let mut fx = Fx::new();
+        fx.commands.retain(|c| c.name != n);
+        fx.commands.push(CommandSpec {
+            name: n.to_string(),
+            description: "mine".to_string(),
+            argument_hint: None,
+            source: Source::Extension("x".to_string()),
+        });
+        assert!(fx.run(&format!("/{n} x")).is_none(), "/{n} override");
+    }
 }
 
 /// /engine status and load

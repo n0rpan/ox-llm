@@ -36,7 +36,7 @@ pub struct SlashCx<'a> {
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
 /// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
 /// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 32] = [
+pub const INTERACTIVE_COMMANDS: [&str; 31] = [
     "settings",
     "model",
     "scoped-models",
@@ -68,12 +68,14 @@ pub const INTERACTIVE_COMMANDS: [&str; 32] = [
     "share",
     "help",
     "usage",
-    "cost",
 ];
 
 /// pi commands oxa omits (verdict O). A hook command, template or skill with the same name
 /// still runs first, as in `oxa_core::expand_input`.
 const OMITTED: [&str; 3] = ["login", "logout", "share"];
+
+/// Names added after pi: a template, skill or extension command with the same name wins.
+const OVERRIDABLE: [&str; 2] = ["help", "usage"];
 
 /// Dispatch one submitted editor line.
 ///
@@ -114,6 +116,15 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
             Level::Error,
             format!("Unknown command /{name}. Type /help for the list of commands."),
         ));
+    }
+
+    if OVERRIDABLE.contains(&name)
+        && cx
+            .commands
+            .iter()
+            .any(|c| c.name == name && c.source != Source::Builtin)
+    {
+        return None;
     }
 
     if OMITTED.contains(&name) {
@@ -189,7 +200,7 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
                 AppAction::Session(SessionCmd::SetName(args.to_string()))
             }
         }
-        "session" | "usage" | "cost" => AppAction::ShowLines(session_info_lines(cx)),
+        "session" | "usage" => AppAction::ShowLines(session_info_lines(cx)),
         "help" => AppAction::ShowLines(help_lines(cx)),
         "hotkeys" => AppAction::ShowLines(hotkeys_lines(cx.keymap)),
         "fork" => AppAction::Open(SelectorKind::ForkPoint),
