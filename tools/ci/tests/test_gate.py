@@ -59,5 +59,54 @@ class Gate(unittest.TestCase):
                              len(re.findall(r'actions/cache/restore@', text)), path.name)
 
 
+class LabShards(unittest.TestCase):
+    def setUp(self):
+        self.checks = (WORKFLOWS / 'checks.yml').read_text()
+
+    def test_three_shards_and_an_aggregate_with_the_old_name(self):
+        shards = job_block(self.checks, 'lab-shards')
+        self.assertRegex(shards, r'(?m)^        shard: \[1, 2, 3\]$')
+        self.assertIn('name: lab tests shard ${{ matrix.shard }}', shards)
+        # ci_test_shard.py numbers shards from 0; the check names count from 1
+        self.assertIn('LAB_TEST_SHARD="$((${{ matrix.shard }} - 1))/3"', shards)
+        self.assertIn('fail-fast: false', shards)
+        lab = job_block(self.checks, 'lab')
+        self.assertIn('name: lab tests, CLI, receipt scrub (x86_64)', lab)
+        self.assertRegex(lab, r'(?m)^    needs: \[changes, lab-shards\]$')
+        self.assertRegex(lab, r"(?m)^    if: always\(\) && needs\.changes\.outputs\.lab == 'true'")
+        self.assertIn("test '${{ needs.lab-shards.result }}' = success", lab)
+
+    def test_non_unit_steps_run_once(self):
+        shards, lab = job_block(self.checks, 'lab-shards'), job_block(self.checks, 'lab')
+        for step in ('CLI help (isolated HOME)', 'Report skipped tests'):
+            self.assertEqual((shards + lab).count(f'name: {step}'), 1, step)
+        self.assertIn('name: Report skipped tests', lab)
+        self.assertRegex(shards, r'(?m)CLI help.*\n        if: matrix\.shard == 1$')
+        self.assertRegex(shards, r"actions/cache/save@.*\n(?:\s+#.*\n)?\s+if: .*matrix\.shard == 1")
+
+
+class EngineNextest(unittest.TestCase):
+    def setUp(self):
+        self.engine = job_block((WORKFLOWS / 'build.yml').read_text(), 'engine')
+        self.config = (WORKFLOWS.parents[1] / 'engine' / '.config' / 'nextest.toml').read_text()
+
+    def test_engine_job_runs_nextest_doctests_and_counts(self):
+        self.assertIn('tools/ci/install_nextest.sh', self.engine)
+        self.assertIn('cargo nextest run --release --locked --no-fail-fast --workspace --exclude qwen4exp',
+                      self.engine)
+        self.assertIn('cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp --doc',
+                      self.engine)
+        self.assertIn('tools/ci/engine_test_count.py', self.engine)
+        self.assertNotRegex(self.engine, r'cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp\s*$')
+
+    def test_wall_clock_binaries_run_alone(self):
+        self.assertRegex(self.config, r'(?m)^\[test-groups\.wall-clock\]\nmax-threads = 1$')
+        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = '(.*)'\ntest-group = 'wall-clock'\n"
+                             r"threads-required = 'num-test-threads'", self.config)
+        self.assertIsNotNone(override)
+        for binary in ('binary_id(sched)', 'binary_id(server)'):
+            self.assertIn(binary, override.group(1))
+
+
 if __name__ == '__main__':
     unittest.main()
