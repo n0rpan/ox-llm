@@ -2,6 +2,9 @@
 #![cfg(all(feature = "policy", feature = "transport"))]
 #[path = "common/anthropic.rs"]
 mod anthropic;
+#[cfg(feature = "secrets")]
+#[path = "common/skeleton.rs"]
+mod skeleton;
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -91,5 +94,37 @@ async fn a_gated_request_does_not_block_another_upstream_connection() {
         .await
         .unwrap()
         .contains("message_stop"));
+    mock.assert_healthy();
+}
+
+#[cfg(feature = "secrets")]
+#[test]
+fn runtime_fixture_uses_a_real_owner_only_key_file_outside_the_repository() {
+    use std::os::unix::fs::PermissionsExt;
+    let mock = MockAnthropic::start(vec![]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let key = oxc_gateway::secrets::read(&fixture.key_path, "anthropic").unwrap();
+    assert_eq!(key.expose(), CREDENTIAL);
+    assert!(!format!("{key:?}").contains(CREDENTIAL));
+    assert_eq!(
+        std::fs::metadata(&fixture.key_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(&fixture.ledger_dir)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let model = &fixture.config["cloud"]["models"][skeleton::MODEL];
+    assert_eq!(model["upstream_model"], skeleton::UPSTREAM);
+    assert_eq!(model["base_url"], mock.base_url());
+    assert!(mock.requests().is_empty());
     mock.assert_healthy();
 }
