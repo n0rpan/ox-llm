@@ -1,4 +1,4 @@
-//! D5: tool call and result views. Owner: task D5. Signatures below are frozen; bodies are yours.
+//! D5: tool call and result views.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{tool-execution.ts,diff.ts,visual-truncate.ts} and the per-tool renderers in src/core/tools/*.ts
 use crate::{ToolBlock, ToolState, ViewCx};
 use oxa_proto::{RenderKind, Value};

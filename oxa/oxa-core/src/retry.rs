@@ -1,4 +1,4 @@
-//! C2: auto-retry and overflow recovery. Owner: task C2. Signatures below are frozen; bodies are yours.
+//! C2: auto-retry and overflow recovery.
 // ported from pi packages/coding-agent/src/core/agent-session.ts (auto retry, overflow recovery)
 use crate::agent_loop::persist;
 use crate::compaction::compact_now;

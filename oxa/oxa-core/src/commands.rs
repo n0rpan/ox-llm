@@ -1,4 +1,4 @@
-//! C5: the slash-command registry and input expansion. Owner: task C5. Signatures below are frozen; bodies are yours.
+//! C5: the slash-command registry and input expansion.
 // ported from pi packages/coding-agent/src/core/slash-commands.ts and prompt-templates.ts (expansion)
 use crate::SessionState;
 use oxa_proto::{CommandSpec, Source};

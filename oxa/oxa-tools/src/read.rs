@@ -1,4 +1,4 @@
-//! A6: the `read` tool. Owner: task A6. Signatures below are frozen; bodies are yours.
+//! A6: the `read` tool.
 // ported from pi packages/coding-agent/src/core/tools/read.ts
 use crate::descriptions::{self, diet, errors, limits};
 use oxa_proto::{image_placeholder, Access, Tool, ToolCtx, ToolOutput, ToolSpec, ToolTune, Value};

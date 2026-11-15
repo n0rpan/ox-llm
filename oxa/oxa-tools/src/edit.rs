@@ -1,4 +1,4 @@
-//! A7: the `edit` tool. Owner: task A7. Signatures below are frozen; bodies are yours.
+//! A7: the `edit` tool.
 // ported from pi packages/coding-agent/src/core/tools/edit.ts
 use crate::descriptions::{self, errors};
 use crate::diff::{apply_edits_tolerant, Edit};

@@ -1,4 +1,4 @@
-//! C13: editor autocompletion: slash commands, `@` fuzzy files, Tab paths. Owner: task C13. Signatures below are frozen; bodies are yours.
+//! C13: editor autocompletion: slash commands, `@` fuzzy files, Tab paths.
 // ported from pi packages/tui/src/autocomplete.ts
 use std::path::{Path, PathBuf};
 

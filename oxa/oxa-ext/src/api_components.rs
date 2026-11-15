@@ -1,4 +1,4 @@
-//! F2: custom UI components, overlays, the custom editor, and the pi-tui class shim. Owner: task F2. Signatures below are frozen; bodies are yours.
+//! F2: custom UI components, overlays, the custom editor, and the pi-tui class shim.
 // ported from pi packages/coding-agent/src/core/extensions/types.ts (ctx.ui.custom) and
 // packages/tui/src/tui.ts (Component: render(width) -> string[], handleInput(data))
 //

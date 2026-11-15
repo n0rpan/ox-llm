@@ -1,4 +1,4 @@
-//! B3: the agent loop. Owner: task B3. Signatures below are frozen; bodies are yours.
+//! B3: the agent loop.
 // ported from pi packages/agent/src/agent-loop.ts
 use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
 use crate::host::observe_hooks;

@@ -1,4 +1,4 @@
-//! B12: Loader, the working spinner line. Owner: task B12. Signatures below are frozen; bodies are yours.
+//! B12: Loader, the working spinner line.
 // ported from pi packages/tui/src/components/loader.ts and cancellable-loader.ts
 use crate::{truncate_to_width, Component, Theme};
 

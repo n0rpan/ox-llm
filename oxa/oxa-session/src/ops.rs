@@ -1,4 +1,4 @@
-//! B14: fork, clone, names and labels. Owner: task B14. Signatures below are frozen; bodies are yours.
+//! B14: fork, clone, names and labels.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (createBranchedSession, fork)
 use crate::{new_entry_id, SessionRef, SessionStore, Tree};
 use oxa_proto::{codes, Entry, EntryBody, OxaError};
