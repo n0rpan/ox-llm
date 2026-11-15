@@ -113,6 +113,48 @@ fn stalled_headers_are_bounded_by_the_absolute_deadline() {
     handle.join().unwrap();
 }
 
+#[test]
+fn close_delimited_sse_requires_explicit_framing_and_protocol_completion() {
+    let message = "data: {\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"message\",\"messageId\":\"m\",\"role\":\"agent\",\"parts\":[{\"kind\":\"text\",\"text\":\"synthetic\"}]}}\n\n";
+    let framed =
+        format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{message}");
+    with_server(framed.into_bytes(), |client| {
+        let mut stream = client.stream(params()).unwrap();
+        assert!(matches!(stream.next_event().unwrap(), Some(Event::Message(_))));
+        assert!(stream.next_event().unwrap().is_none());
+    });
+    for head in [
+        "Content-Type: text/event-stream\r\n",
+        "Content-Type: text/event-stream\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n",
+    ] {
+        with_server(
+            format!("HTTP/1.1 200 OK\r\n{head}\r\n{message}").into_bytes(),
+            |client| assert!(client.stream(params()).is_err()),
+        );
+    }
+    with_server(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: incomplete"
+            .to_vec(),
+        |client| {
+            let mut stream = client.stream(params()).unwrap();
+            assert!(stream.next_event().is_err());
+        },
+    );
+}
+
+#[test]
+fn aggregate_wire_budget_counts_ignored_response_fields_and_http_headers() {
+    use oxa_a2a::loopback::{Limits, ResponseBudget};
+    let body=serde_json::json!({"jsonrpc":"2.0","id":"1","result":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"small"}],"metadata":{"ignored":"x".repeat(2048)}}}).to_string();
+    let budget = ResponseBudget::new(512);
+    with_server(response("application/json", &body), |client| {
+        let mut limited = client.fork(Limits::default(), budget.clone()).unwrap();
+        assert!(limited.send(params()).is_err());
+    });
+    assert_eq!(budget.used(), 512);
+    assert_eq!(budget.remaining(), 0);
+}
+
 fn continuation(task: Option<&str>, context: Option<&str>) -> SendParams {
     let mut params = params();
     let MessageObject::Message(message) = &mut params.message;
