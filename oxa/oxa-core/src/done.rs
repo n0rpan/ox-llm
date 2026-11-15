@@ -1,5 +1,5 @@
 //! `done` setting (issue #104): shell commands oxa runs itself before it reports completion.
-//! A run that edited files (`edit` / `write` succeeded; `bash` changes are not tracked) and is
+//! A run that edited files (`edit` / `write` succeeded, or a `bash` call changed the git tree) and is
 //! about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
 //! of the session folder, instead of in the session folder itself.
@@ -21,6 +21,74 @@ pub(crate) struct DoneState {
     /// A file tool succeeded since the last check.
     dirty: bool,
     rounds: u32,
+    /// `git` fingerprint of the work folder at the last look (`None`: not a git repo).
+    tree: Option<u64>,
+}
+
+/// Seconds a git probe may run before the fingerprint gives up (`None`: checks stay as they were).
+const PROBE_TIMEOUT_S: u64 = 20;
+
+/// Hash of the work folder's git file list (index entries and untracked files) with each file's
+/// size and modification time; `None` outside a git repo, without git, or on a timeout.
+/// The probes run on the host, so they only list files (`ls-files`): nothing that can start a
+/// repository-configured program (`status` and `diff` run clean filters, textconv, external
+/// diff). Files are stat-ed here instead of diffed by git.
+fn tree_fingerprint(cwd: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    use std::os::unix::ffi::OsStrExt;
+    let git = |args: &[&str]| -> Option<Vec<u8>> {
+        let mut child = std::process::Command::new("git")
+            .args(["-c", "core.fsmonitor=false"])
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        let mut out = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut out, &mut v);
+            v
+        });
+        let t0 = std::time::Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait().ok()? {
+                break s;
+            }
+            if t0.elapsed().as_secs() >= PROBE_TIMEOUT_S {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let v = reader.join().ok()?;
+        status.success().then_some(v)
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // `-s`: mode, object id and stage of every index entry (staging changes the hash).
+    git(&["ls-files", "-z", "-s"])?.hash(&mut h);
+    let files = git(&["ls-files", "-z", "--cached", "--others", "--exclude-standard"])?;
+    for name in files.split(|b| *b == 0).filter(|n| !n.is_empty()) {
+        let path = cwd.join(std::ffi::OsStr::from_bytes(name));
+        name.hash(&mut h);
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) => {
+                m.len().hash(&mut h);
+                m.modified().ok().hash(&mut h);
+                // Small untracked-or-not files: contents too, so an edit that keeps size and
+                // time (coarse clocks) is still seen.
+                if m.is_file() && m.len() <= (1 << 20) {
+                    std::fs::read(&path).ok().hash(&mut h);
+                }
+            }
+            Err(_) => 0u8.hash(&mut h),
+        }
+    }
+    Some(h.finish())
 }
 
 impl DoneState {
@@ -30,6 +98,25 @@ impl DoneState {
             .any(|r| !r.is_error && (r.tool_name == "edit" || r.tool_name == "write"))
         {
             self.dirty = true;
+        }
+    }
+
+    /// Start of a run: remember the tree, so a later `bash` change can be told apart.
+    pub(crate) fn begin(&mut self, st: &SessionState) {
+        if !st.settings.done_commands().is_empty() {
+            self.tree = tree_fingerprint(&st.cwd);
+        }
+    }
+
+    /// After a batch with a `bash` call: a changed git tree counts as an edit.
+    pub(crate) fn note_bash(&mut self, st: &SessionState, results: &[CallResult]) {
+        if self.tree.is_none() || !results.iter().any(|r| r.tool_name == "bash") {
+            return;
+        }
+        let now = tree_fingerprint(&st.cwd);
+        if now != self.tree {
+            self.dirty = true;
+            self.tree = now;
         }
     }
 }
@@ -78,6 +165,10 @@ pub(crate) fn check(
             failed.push_str(&text);
             failed.push_str("\n\n");
         }
+    }
+    // A check may rewrite files (formatters, generators): that is not a model edit.
+    if state.tree.is_some() {
+        state.tree = tree_fingerprint(&st.cwd);
     }
     // What print mode reads at the end: the last check round failed and nothing fixed it.
     st.stats.done_failed = !failed.is_empty();

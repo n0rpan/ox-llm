@@ -1,4 +1,4 @@
-//! C1: `Session`, the SDK object. Owner: task C1. Signatures below are frozen; bodies are yours.
+//! C1: `Session`, the SDK object.
 // ported from pi packages/coding-agent/src/core/agent-session.ts
 use crate::agent_loop::{persist, run_loop, RunEnd};
 use crate::host::{attach_hosts, first_reply, observe_hooks, pumped, serve_host, serve_idle, Serve};

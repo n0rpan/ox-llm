@@ -1,4 +1,4 @@
-//! D7: model selector and scoped-models editor. Owner: task D7. Signatures below are frozen; bodies are yours.
+//! D7: model selector and scoped-models editor.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{model-selector.ts,scoped-models-selector.ts} and model-search.ts
 use crate::Outcome;
 use oxa_config::Keymap;

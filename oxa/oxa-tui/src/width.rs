@@ -1,4 +1,4 @@
-//! A13: column width, ANSI-aware wrapping, truncation and slicing. Owner: task A13. Signatures below are frozen; bodies are yours.
+//! A13: column width, ANSI-aware wrapping, truncation and slicing.
 // ported from pi packages/tui/src/utils.ts
 //
 // Common rules: escape sequences (CSI .. final byte, OSC .. BEL/ST, APC .. ST) have width 0 and

@@ -1,4 +1,4 @@
-//! A15: host-function binding, captured script functions, the runtime thread. Owner: task A15. Signatures below are frozen; bodies are yours.
+//! A15: host-function binding, captured script functions, the runtime thread.
 use crate::runtime::{call_ref, state_ref};
 use crate::{InterruptHandle, Limits, Runtime};
 use oxa_proto::{codes, OxaError, Value};

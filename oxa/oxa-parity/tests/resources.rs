@@ -1,4 +1,4 @@
-//! G10 PARITY tests (resources). Owner: task G10.
+//! G10 PARITY tests (resources).
 //! One test per PARITY.md row of this area, named after the row id (`CLI-012` -> `fn cli_012()`).
 //! Areas: SKL (skills), TPL (prompt templates), PKG (packages), SEC (security and project trust),
 //! THM (themes), CFG (configuration files). Rows with `omission` in the test column have no fn.

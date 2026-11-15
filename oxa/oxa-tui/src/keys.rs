@@ -1,4 +1,4 @@
-//! A12: key and input-event types and the terminal input parser. Owner: task A12. Signatures below are frozen; bodies are yours.
+//! A12: key and input-event types and the terminal input parser.
 // ported from pi packages/tui/src/keys.ts and stdin-buffer.ts
 use oxa_proto::KeyId;
 

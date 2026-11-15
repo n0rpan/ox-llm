@@ -1,4 +1,4 @@
-//! B7: context files and system prompt files. Owner: task B7. Signatures below are frozen; bodies are yours.
+//! B7: context files and system prompt files.
 // ported from pi packages/coding-agent/src/core/resource-loader.ts (context file discovery)
 use crate::{ContextFile, Diagnostic, DiscoverOpts};
 use oxa_config::Dirs;
