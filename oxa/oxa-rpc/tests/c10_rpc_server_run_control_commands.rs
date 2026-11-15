@@ -345,7 +345,7 @@ fn steer_and_follow_up_fixtures() {
     );
 
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
 }
 
 /// agent_settled aborted
@@ -382,7 +382,7 @@ fn abort_fixture() {
     );
 
     let (code, records) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(code, 130);
     assert!(has_settled(&records, true), "agent_settled with aborted true");
 }
 
@@ -633,7 +633,7 @@ fn model_commands_fixtures() {
     assert!(unknown["error"].as_str().unwrap().contains("Model not found"));
 
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
 }
 
 /// set/cycle/levels

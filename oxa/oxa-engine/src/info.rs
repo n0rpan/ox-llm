@@ -625,7 +625,11 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
             // queue, and a retry will not fix it. Show its own message. Every other 503
             // (transient or unknown `cloud_*` codes) keeps `HTTP 503` so the core retries it.
             return OxaError::new(
-                codes::ENGINE_HTTP,
+                match code {
+                    "cloud_credentials_unavailable" => "cloud_credentials_unavailable",
+                    "cloud_ledger_unavailable" => "cloud_ledger_unavailable",
+                    _ => "cloud_sdk_unavailable",
+                },
                 format!("the cloud gateway refused the request ({code}): {detail}"),
             );
         }
@@ -736,7 +740,7 @@ mod cloud_refusal_tests {
         for code in ["cloud_credentials_unavailable", "cloud_sdk_unavailable"] {
             let message = "The Anthropic SDK is not installed on this host.";
             let e = http_error_with(503, &body(code, message), None);
-            assert_eq!(e.code, codes::ENGINE_HTTP, "{code}");
+            assert_eq!(e.code, code, "{code}");
             assert!(
                 e.message.contains(message) && e.message.contains(code),
                 "{}",
