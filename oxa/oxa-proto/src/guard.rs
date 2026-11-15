@@ -24,6 +24,7 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".config/gh",
     ".config/hub",
     ".config/oxc",
+    ".config/oxc/llm/cloud-secrets.json",
     ".config/local-ai/llm/cloud-secrets.json",
     ".local/state/oxc",
     ".oxa/agent",
@@ -105,11 +106,15 @@ pub const PROTECTED_IN_CWD: &[&str] = &[
     ".git/hooks",
     ".git/config",
     ".git/config.worktree",
+    ".git/commondir",
+    ".git/gitdir",
 ];
 
 /// Of [`PROTECTED_IN_CWD`]: the ones the file tools never write (git runs them unsandboxed on
-/// the user's next git command); the others ask.
-pub const GIT_PROTECTED_IN_CWD: &[&str] = &[".git/hooks", ".git/config", ".git/config.worktree"];
+/// the user's next git command; `commondir` and `gitdir` name the directory git takes them from).
+pub const GIT_PROTECTED_IN_CWD: &[&str] = &[
+    ".git/hooks", ".git/config", ".git/config.worktree", ".git/commondir", ".git/gitdir",
+];
 
 /// The deny-list for `home` and the agent directory `agent_dir` (which may live outside
 /// `$HOME`), every entry whether or not it exists.
@@ -188,6 +193,23 @@ fn other_homes(home: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cloud_secrets_legacy_and_new_paths_are_both_denied() {
+        // #237: an installed build keeps its key at the legacy path; both paths must stay denied.
+        let home = std::path::Path::new("/home/u");
+        let deny = super::sensitive_paths(home, None);
+        for rel in [
+            ".config/oxc/llm/cloud-secrets.json",
+            ".config/local-ai/llm/cloud-secrets.json",
+        ] {
+            let p = home.join(rel);
+            assert!(
+                deny.iter().any(|d| p.starts_with(d)),
+                "{rel} is not denied: {deny:?}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

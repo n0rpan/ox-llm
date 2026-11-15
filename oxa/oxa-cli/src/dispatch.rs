@@ -420,10 +420,15 @@ fn prepare(
         _ => DefaultTrust::Ask,
     };
     let gated = gated_resources(cwd);
+    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
+    // an explicit `-na` still wins.
+    let approve = a
+        .approve
+        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
     let mut trust_store = TrustStore::load(&dirs.trust_file());
     // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
     // saved decision and the default (pi's `resolveProjectTrusted`).
-    let extension = if a.approve.is_none() && !gated.is_empty() {
+    let extension = if approve.is_none() && !gated.is_empty() {
         extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, &mut notices)
     } else {
         None
@@ -431,7 +436,7 @@ fn prepare(
     let interactive = mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty;
     let saved = trust_store.lookup(cwd);
     let outcome = resolve_trust(&TrustInputs {
-        flag: a.approve,
+        flag: approve,
         extension,
         saved,
         default,
@@ -480,7 +485,7 @@ fn prepare(
             dirs,
             cwd,
             store: &mut trust_store,
-            via_flag: a.approve == Some(true),
+            via_flag: approve == Some(true),
             via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
             asked_now,
             interactive,
@@ -489,6 +494,12 @@ fn prepare(
     } else {
         trusted
     };
+    // #201: a project trusted by a saved decision gets its approval baseline now (also with
+    // no project config yet), before any tool runs: `.oxa` / `.agents` content the session
+    // creates is then new at the next start and goes through the normal approval.
+    if trusted && saved == Some(true) {
+        trust_store.record_baseline(&dirs.trust_file(), cwd)?;
+    }
     if !trusted && !gated.is_empty() {
         notices.push((
             Level::Warning,
@@ -1099,6 +1110,16 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     Ok(Arc::new(engine))
 }
 
+/// The provider column: the controller's `remote_provider` (else `cloud`) for a cloud model,
+/// the endpoint name for a local one.
+fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
+    match (info.caps.remote, info.caps.remote_provider) {
+        (_, Some(p)) => p.to_string(),
+        (true, None) => "cloud".to_string(),
+        _ => endpoint.to_string(),
+    }
+}
+
 /// `--list-models [search]`: a table of the engine's models (pi's columns), sorted by id.
 fn list_models(
     engine: &dyn Engine,
@@ -1117,10 +1138,6 @@ fn list_models(
     let needle = search.map(|s| s.to_lowercase());
     let rows: Vec<[String; 6]> = ids
         .into_iter()
-        .filter(|id| match &needle {
-            Some(n) => format!("{provider} {id}").to_lowercase().contains(n.as_str()),
-            None => true,
-        })
         .map(|id| {
             let model_info = if id == info.limits_for {
                 Ok(info.clone())
@@ -1129,7 +1146,7 @@ fn list_models(
             };
             match model_info {
                 Ok(model_info) => [
-                    provider.to_string(),
+                    row_provider(provider, &model_info),
                     id,
                     format_tokens(model_info.n_ctx as u64),
                     format_tokens(model_info.max_output as u64),
@@ -1150,6 +1167,12 @@ fn list_models(
                     ]
                 }
             }
+        })
+        .filter(|row| match &needle {
+            Some(n) => format!("{} {}", row[0], row[1])
+                .to_lowercase()
+                .contains(n.as_str()),
+            None => true,
         })
         .collect();
     let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
@@ -1423,6 +1446,7 @@ fn finish(result: Result<i32, OxaError>, err: &mut dyn Write) -> i32 {
 fn exit_code(e: &OxaError) -> i32 {
     match e.code {
         codes::USAGE | codes::ENGINE_DOWN | codes::UNSUPPORTED_IN_OXA => 2,
+        codes::BUDGET_EXHAUSTED => oxa_proto::EXIT_BUDGET,
         _ => 1,
     }
 }
@@ -1544,7 +1568,9 @@ mod model_limits_tests {
                 serde_json::from_str(include_str!("../../oxa-engine/tests/fixtures/remote-models.json"))
                     .unwrap();
             let status = serde_json::json!({
-                "model": "local", "context_size": 131072, "max_output": 16384
+                "model": "local", "context_size": 131072, "max_output": 16384,
+                "model_limits": {"anthropic/claude-sonnet-5-5": {"capabilities":
+                    {"remote": true, "remote_provider": "anthropic"}}}
             });
             oxa_engine::parse_info_for("http://localhost:1234", &models, &status, target)
         }
@@ -1577,6 +1603,20 @@ mod model_limits_tests {
         let text = String::from_utf8(out).unwrap();
         let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
         assert_eq!(&row[1..4], &["local", "131.1K", "16.4K"]);
+    }
+
+    #[test]
+    fn list_models_shows_the_cloud_provider() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        list_models(&CatalogEngine, "oxe", None, &mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let col0 = |id: &str| {
+            let l = text.lines().find(|l| l.split_whitespace().nth(1) == Some(id));
+            l.unwrap().split_whitespace().next().unwrap().to_string()
+        };
+        assert_eq!(col0("anthropic/claude-sonnet-5-5"), "anthropic");
+        assert_eq!(col0("local"), "oxe");
     }
 
     /// A failing per-model `info(Some(id))` degrades only that row: '?' in the context,

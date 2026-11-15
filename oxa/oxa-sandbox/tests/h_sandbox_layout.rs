@@ -208,6 +208,13 @@ fn golden_project_cwd() {
         "--ro-bind",
         "<root>/work/.git/config",
         "<root>/work/.git/config",
+        // #201: a missing commondir / gitdir is masked after the protected binds.
+        "--ro-bind",
+        "/dev/null",
+        "<root>/work/.git/commondir",
+        "--ro-bind",
+        "/dev/null",
+        "<root>/work/.git/gitdir",
     ]));
     want.extend(tail("<root>/work", PATH_IN));
     assert_eq!(shown(&a, &env), want);

@@ -589,9 +589,9 @@ echo '\''a'\'''"#
     #[test]
     fn note_for_unmounted_home_path_only() {
         let cwd = Path::new("/home/u/proj");
-        let msg = "touch: cannot touch '/home/u/lab/probe': No such file or directory\n";
+        let msg = "touch: cannot touch '/home/u/oxc/probe': No such file or directory\n";
         let note = unmounted_home_note(msg, "/home/u", cwd).expect("note");
-        assert!(note.contains("/home/u/lab/probe: not found."));
+        assert!(note.contains("/home/u/oxc/probe: not found."));
         assert!(note.contains("may"));
         assert!(note.contains("parent directory"));
         assert!(!note.contains("path outside the sandbox (not mounted)"));
@@ -604,7 +604,7 @@ echo '\''a'\'''"#
         assert!(unmounted_home_note(inside, "/home/u", cwd).is_none());
         let other = "cat: /etc/x: No such file or directory\n";
         assert!(unmounted_home_note(other, "/home/u", cwd).is_none());
-        assert!(unmounted_home_note("/home/u/lab/p: Permission denied", "/home/u", cwd).is_none());
+        assert!(unmounted_home_note("/home/u/oxc/p: Permission denied", "/home/u", cwd).is_none());
     }
 
     #[test]

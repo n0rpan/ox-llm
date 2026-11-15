@@ -3,14 +3,14 @@
 #
 # Runs oxa's client code (oxa-engine, oxa-session, oxa-fake from an oxa checkout) against the REAL
 # `oxe-server --engine stub` (no weights: a synthetic GGUF with the committed Qwen3.6 tokenizer
-# fixture) and against the real lab controller in front of it with LOCAL_AI_QUEUE=1. The scenarios
+# fixture) and against the real lab controller in front of it with OXC_QUEUE=1. The scenarios
 # are in stub_contract.rs (next to this script); it is copied into a scratch copy of the oxa
 # checkout as oxa-core/tests/zz_stub_contract.rs, so the oxa checkout itself is never modified.
 #
 # usage: tools/oxa-contract/run.sh --oxa DIR --mode engine|controller|both [--server BIN] [--work DIR]
 #                                  [--xfail FILE | --strict] [--keep]
 #   --mode        engine: direct to oxe-server; controller: through the lab controller with the queue
-#                 ON (LOCAL_AI_QUEUE=1); both: every scenario against both
+#                 ON (OXC_QUEUE=1); both: every scenario against both
 #   --strict      no expected failures at all (the final import sha must pass this way)
 #   (default xfail list: xfail-<oxa sha>.<mode>.txt next to this script when --oxa is a git checkout
 #   and the file exists; else none)
@@ -85,7 +85,7 @@ wait_http() { # url, seconds
 }
 
 N_CTX=32768
-ALIAS=ornith-35b-a3b-local  # the controller stack's selected alias (lab/tests/openai_api_stack.py)
+ALIAS=ornith-35b-a3b-local  # the controller stack's selected alias (oxc/tests/openai_api_stack.py)
 mkdir -p "$work/home" "$work/logs"
 python3 -I "$repo/engine/tools/ci/synth_qwen36_model.py" --fixture "$repo/engine/tests/fixtures/qwen36-tokenizer.json.gz" \
   --out "$work/synth-qwen36.gguf" >"$work/logs/synth.log" 2>&1
@@ -100,8 +100,8 @@ wait_http "http://127.0.0.1:$eport/health" 60
 cport=
 if [ "$mode" != engine ]; then
 cport=$(free_port)
-HOME="$work/home" LOCAL_AI_QUEUE=1 LOCAL_AI_LEDGER_DIR="$work/ledger" PYTHONPATH="$repo/lab/src:$repo/lab/tests" \
-  python3 "$repo/lab/tests/openai_api_stack.py" --backend-port "$eport" --port "$cport" >"$work/logs/controller.log" 2>&1 &
+HOME="$work/home" OXC_QUEUE=1 OXC_LEDGER_DIR="$work/ledger" PYTHONPATH="$repo/oxc/src:$repo/oxc/tests" \
+  python3 "$repo/oxc/tests/openai_api_stack.py" --backend-port "$eport" --port "$cport" >"$work/logs/controller.log" 2>&1 &
 pids+=($!)
 wait_http "http://127.0.0.1:$cport/v1/models" 60
 fi

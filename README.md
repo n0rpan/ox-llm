@@ -9,7 +9,7 @@ ox-llm is one release with three parts. Each part is its own build unit:
 | Directory | Part | Language / build | What it is |
 |---|---|---|---|
 | [`engine/`](engine/README.md) | **oxe** | Rust, its own cargo workspace | Inference engines with an OpenAI-compatible HTTP API: `oxe-server` (35B mixture-of-experts models such as Ornith and Qwen3.6), Flash (a 125B MoE whose experts stream from the SSD) and the experimental `oxi` image engine (FLUX.2 klein) |
-| [`lab/`](lab/README.md) | **oxc** | Python package | The controller: one loopback OpenAI-compatible endpoint, model loading and unloading, memory admission, a request ledger. It also holds the `local-ai` CLI, the Omarchy panel widget, Studio (images), the installer, the benchmark and qualification tools, the receipts and the docs |
+| [`oxc/`](oxc/README.md) | **oxc** | Python package | The controller: one loopback OpenAI-compatible endpoint, model loading and unloading, memory admission, a request ledger. It also holds the `oxc` CLI, the Omarchy panel widget, Studio (images), the installer, the benchmark and qualification tools, the receipts and the docs |
 | [`oxa/`](oxa/README.md) | **oxa** | Rust, its own cargo workspace | The coding agent: a Rust port of the pi coding agent (MIT, Mario Zechner), tuned for this engine. It is the coding client that `oxc code` and the widget's code button start |
 
 ## How they fit
@@ -32,19 +32,19 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 
 ## Quick start
 
-- **Install:** [lab/README.md](lab/README.md#quick-start) covers the engine tarball, its verification
-  and the controller. Bootstrap: [lab/docs/BOOTSTRAP-INSTALL.md](lab/docs/BOOTSTRAP-INSTALL.md).
-- **Cloud only, no local engine:** [lab/docs/CLOUD-ONLY-QUICKSTART.md](lab/docs/CLOUD-ONLY-QUICKSTART.md)
+- **Install:** [oxc/README.md](oxc/README.md#quick-start) covers the engine tarball, its verification
+  and the controller. Bootstrap: [oxc/docs/BOOTSTRAP-INSTALL.md](oxc/docs/BOOTSTRAP-INSTALL.md).
+- **Cloud only, no local engine:** [oxc/docs/CLOUD-ONLY-QUICKSTART.md](oxc/docs/CLOUD-ONLY-QUICKSTART.md)
   (any Linux, x86_64 or arm64; cloud models through oxc, plus oxa).
 - **Code:** run `oxc code` in a project directory, or press the code button in the widget. Both
   start oxa against the controller.
 - **Other clients:** any OpenAI-compatible client can use `http://127.0.0.1:8092/v1`. See
-  [lab/docs/OTHER-CLIENTS.md](lab/docs/OTHER-CLIENTS.md).
-- **Reproduce:** [lab/docs/REPRODUCE.md](lab/docs/REPRODUCE.md).
+  [oxc/docs/OTHER-CLIENTS.md](oxc/docs/OTHER-CLIENTS.md).
+- **Reproduce:** [oxc/docs/REPRODUCE.md](oxc/docs/REPRODUCE.md).
 - **Build the engine:** `cd engine && cargo build --release --locked -p server --bin oxe-server`
   ([engine/README.md](engine/README.md)).
 - **Build oxa:** `cd oxa && cargo build --release --locked` ([oxa/README.md](oxa/README.md)).
-- **Run the lab tests:** `cd lab && ./tools/run_lab_tests.sh`.
+- **Run the lab tests:** `cd oxc && ./tools/run_lab_tests.sh`.
 
 ## The coding agent: oxa
 
@@ -63,11 +63,11 @@ Earlier releases launched OpenCode. ox-llm v0.2.0 removes that launcher: the cod
 - **Your own OpenCode install and config are never touched.** ox-llm does not delete or rewrite
   `~/.config/opencode` or OpenCode itself. OpenCode sessions are not imported.
 - **Config an earlier release wrote for you** (for example
-  `~/.config/opencode/local-ai-bootstrap.fragment.json`, or the local-ai entries an earlier install
+  `~/.config/opencode/oxc-bootstrap.fragment.json`, or the oxc entries an earlier install
   pinned in the global `opencode.json`) is left in place; the upgrade prints a one-time note about it.
   Remove those entries yourself if you no longer use OpenCode with ox-llm.
 - **To keep using OpenCode** (or pi, or another client) against ox-llm, point it at the controller
-  yourself: [lab/docs/OTHER-CLIENTS.md](lab/docs/OTHER-CLIENTS.md).
+  yourself: [oxc/docs/OTHER-CLIENTS.md](oxc/docs/OTHER-CLIENTS.md).
 
 ## Flash: the expert sidecar on an unencrypted partition
 
@@ -75,7 +75,7 @@ For reproduction, the Flash expert sidecar (public model weights only) may live 
 partition such as `/var/lib/local-ai-models/flash/`. SSD read latency is part of every decoded Flash
 token, and disk encryption adds to it. Prompts, sessions, KV and state caches, request ledgers, logs and
 receipts stay on the encrypted disk. Flash also works with the sidecar on an encrypted volume, more
-slowly. Setup, measurements and the fallback: [lab/docs/FLASH-STORAGE.md](lab/docs/FLASH-STORAGE.md).
+slowly. Setup, measurements and the fallback: [oxc/docs/FLASH-STORAGE.md](oxc/docs/FLASH-STORAGE.md).
 
 ## NPU (Hexagon): bring your own SDK
 
@@ -99,8 +99,8 @@ repository or in its releases. The CPU paths, which all published numbers use, w
 - [DECISIONS.md](DECISIONS.md): the decision record (ADR-style).
 - [KNOWN-ISSUES.md](KNOWN-ISSUES.md), [ROADMAP.md](ROADMAP.md), [CHANGELOG.md](CHANGELOG.md).
 - [CONTRIBUTING.md](CONTRIBUTING.md): measurement rules, privacy, tests and CI.
-- Results and method: [lab/docs/RESULTS.md](lab/docs/RESULTS.md). What did not work:
-  [lab/docs/FAILED-PATHS.md](lab/docs/FAILED-PATHS.md).
+- Results and method: [oxc/docs/RESULTS.md](oxc/docs/RESULTS.md). What did not work:
+  [oxc/docs/FAILED-PATHS.md](oxc/docs/FAILED-PATHS.md).
 
 ## Licence
 
