@@ -50,14 +50,19 @@ fn invalid() -> io::Error {
     io::Error::other("invalid private worker profiles; verified local routes and bounded grants are required")
 }
 pub(crate) fn load(path: &Path, deps: &Deps) -> io::Result<Config> {
+    load_private(path, &deps.dirs.agent_dir, &deps.cwd)
+}
+fn load_private(path: &Path, agent_dir: &Path, cwd: &Path) -> io::Result<Config> {
     if !path.is_absolute() {
         return Err(invalid());
     }
-    let parent = path.parent().ok_or_else(invalid)?.canonicalize()?;
-    let agent = deps.dirs.agent_dir.canonicalize()?;
-    if agent != deps.dirs.agent_dir
+    let parent_path = path.parent().ok_or_else(invalid)?;
+    let parent = parent_path.canonicalize()?;
+    let agent = agent_dir.canonicalize()?;
+    if parent != parent_path
+        || agent != agent_dir
         || !parent.starts_with(&agent)
-        || parent.starts_with(deps.cwd.canonicalize()?)
+        || parent.starts_with(cwd.canonicalize()?)
     {
         return Err(invalid());
     }
@@ -148,6 +153,37 @@ mod tests {
         serde_json::from_value(value)
             .ok()
             .is_some_and(|config| validate(config).is_ok())
+    }
+    #[test]
+    fn private_profile_authority_rejects_links_public_modes_and_workspace_paths() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let env = oxa_fake::TestEnv::new();
+        let agent = oxa_config::Dirs::under(env.root()).agent_dir;
+        let private = agent.join("profiles");
+        std::fs::create_dir_all(&private).unwrap();
+        let path = private.join("workers.json");
+        std::fs::write(&path, config().to_string()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(load_private(&path, &agent, &env.work()).is_ok());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_private(&path, &agent, &env.work()).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let hardlink = private.join("hardlink.json");
+        std::fs::hard_link(&path, &hardlink).unwrap();
+        assert!(load_private(&path, &agent, &env.work()).is_err());
+        std::fs::remove_file(&hardlink).unwrap();
+        let alias = private.join("alias.json");
+        symlink(&path, &alias).unwrap();
+        assert!(load_private(&alias, &agent, &env.work()).is_err());
+        let parent_alias = agent.join("alias");
+        symlink(&private, &parent_alias).unwrap();
+        assert!(load_private(&parent_alias.join("workers.json"), &agent, &env.work()).is_err());
+        assert!(load_private(&path, &agent, &agent).is_err());
+        let outside = env.work().join("workers.json");
+        std::fs::copy(&path, &outside).unwrap();
+        assert!(load_private(&outside, &agent, &env.work()).is_err());
+        assert!(load_private(Path::new("workers.json"), &agent, &env.work()).is_err());
+        assert!(load_private(&path, &agent, &env.work()).is_ok());
     }
     #[test]
     fn operator_routes_and_pool_bounds_are_validated_before_installation() {
