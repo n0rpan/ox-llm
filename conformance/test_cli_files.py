@@ -12,7 +12,8 @@ import unittest
 from environment import ROOT, isolated_env
 
 GOLDENS = Path(__file__).with_name('goldens') / 'cli-files.json'
-CASES = ('empty-directory', 'populated', 'limit-clamped', 'symlink-refused', 'bounded-tail', 'env-directory', 'number-spelling')
+CASES = ('empty-directory', 'populated', 'limit-clamped', 'symlink-refused', 'bounded-tail', 'env-directory', 'number-spelling',
+         'nonfinite-NaN', 'nonfinite-Infinity', 'nonfinite--Infinity')
 
 
 def invoke(name):
@@ -36,11 +37,15 @@ def invoke(name):
             target.write_text(json.dumps(row) + '\n')
             path.symlink_to(target)
         elif name != 'empty-directory':
+            if name.startswith('nonfinite-'):
+                row['client'] = 'NaN-Infinity/1'
             prefix = 'synthetic junk' * 50_000 + '\n' if name == 'bounded-tail' else ''
             irrelevant = {'path': '/v1/responses', 'prompt': 'Synthetic ignored value.'}
             encoded = json.dumps(row)
             if name == 'number-spelling':
                 encoded = encoded.replace('"wall_ms": 12.5', '"wall_ms": 0.0000001')
+            if name.startswith('nonfinite-'):
+                encoded = encoded.replace('"wall_ms": 12.5', '"wall_ms": ' + name.removeprefix('nonfinite-'))
             path.write_text(prefix + json.dumps(irrelevant) + '\n{invalid\n' + encoded + '\n' +
                             json.dumps({**row, 't': 2.0, 'model': 'not-allowed', 'wall_ms': -1}) + '\n')
             path.chmod(0o600)
