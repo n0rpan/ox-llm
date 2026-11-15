@@ -1154,7 +1154,10 @@ fn ensure_dir(p: &Path) -> Result<(), OxaError> {
         .recursive(true)
         .mode(0o700)
         .create(p)
-        .map_err(|e| OxaError::io(&format!("cannot create session directory {}", p.display()), &e))
+        .map_err(|e| {
+            OxaError::io(&format!("cannot create session directory {}", p.display()), &e)
+                .with_hint("to keep oxa's state elsewhere, set OXA_AGENT_DIR (or OXA_SESSION_DIR, or pass --session-dir) to a writable directory")
+        })
 }
 
 fn open_err(path: &Path, e: &io::Error) -> OxaError {
