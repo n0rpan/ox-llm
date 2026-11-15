@@ -27,8 +27,18 @@ const FAILED: &str = "done checks failed";
 
 /// Run `oxa <args>` in-process against a fake engine with `turns`; returns (code, stdout, stderr).
 fn go(env: &TestEnv, turns: Vec<ScriptTurn>, args: &[&str]) -> (i32, String, String) {
+    go_env(env, turns, args, &[])
+}
+
+fn go_env(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    extra: &[(&str, &str)],
+) -> (i32, String, String) {
     let server = FakeServer::start(turns, FakeOpts::default()).expect("fake engine");
-    let owned = env.envs(&server.url());
+    let mut owned = env.envs(&server.url());
+    owned.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let cwd = env.work();
     let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -131,4 +141,32 @@ fn no_notice_when_trusted_empty_or_absent() {
     let env = TestEnv::new();
     let (_, _, err) = go(&env, vec![ScriptTurn::text("hi")], &["-p", "go"]);
     assert!(!err.contains(NOTICE), "no settings file: {err}");
+}
+
+#[test]
+fn trust_project_env_runs_done_checks_without_a_saved_decision() {
+    let env = TestEnv::new();
+    project_done(&env, r#"["exit 1"]"#);
+    let (code, _, err) = go_env(
+        &env,
+        edits_then_stops(3),
+        &["-p", "go"],
+        &[("OXA_TRUST_PROJECT", "1")],
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains(FAILED) && !err.contains(NOTICE), "{err}");
+}
+
+#[test]
+fn trust_project_env_does_not_override_no_approve() {
+    let env = TestEnv::new();
+    project_done(&env, r#"["exit 1"]"#);
+    let (code, _, err) = go_env(
+        &env,
+        edits_then_stops(1),
+        &["-p", "-na", "go"],
+        &[("OXA_TRUST_PROJECT", "1")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains(NOTICE), "{err}");
 }

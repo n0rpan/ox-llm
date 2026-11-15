@@ -147,8 +147,9 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// 2026-11-14: the identity fallback text changed with the env note PR (#5).
 /// 2026-11-15: issue #127 (b) added `background`/`job` to the `bash` schema and dropped its
 /// `required: ["command"]` (a `job` read has no command), so the tools JSON changed.
-const DEFAULT_STABLE_SHA: &str = "4bb71318fcfb5c1969d2ad90b6c81b49f86aea7b44445d772dcc59ecd2321e91";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "62bab1ce91bb4d57b985949aec5ed8e42d64d88066f9be6513ff4124ecd19778";
+/// 2026-11-15: the built-in `pull-request` skill (#181) joined the skills section.
+const DEFAULT_STABLE_SHA: &str = "2b111da47c3af0ffe5af7e30178369dd2fa75fa219077092d59e769a21e3099b";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "468c2144693e7c16b991b46d034276bdbc24419964c082b1f52c542d5605e940";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {
