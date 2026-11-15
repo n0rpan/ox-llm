@@ -442,7 +442,7 @@ class Login(Base):
 
     def test_codex_route_is_the_built_in_default_with_pinned_sourced_constants(self):
         # Owner decision (#252): the Codex sign-in route ships its public client identifier the
-        # way OpenCode and pi do.  Each constant is pinned here, sits next to a comment naming
+        # way other open-source harnesses do.  Each constant is pinned here, sits next to a comment naming
         # its source file, and is documented with its source URL in docs/CHATGPT-SIGNIN.md.
         pinned = {'CLIENT_ID': 'app_EMoamEEZ73f0CkXaXp7hrann', 'AUTH_URL': 'https://auth.openai.com',
                   'REDIRECT_PORT': 1455, 'REDIRECT_PATH': '/auth/callback',
