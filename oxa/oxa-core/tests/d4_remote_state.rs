@@ -69,6 +69,7 @@ fn deps(env: &TestEnv, engine: Arc<dyn Engine>) -> Deps {
         hooks: Vec::new(),
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
+        jobs: oxa_core::fresh_jobs(),
         settings: Settings::from_values(
             serde_json::json!({"oxa": {"envNote": false}}),
             serde_json::json!({}),
