@@ -1,4 +1,4 @@
-//! P4 (wave H lane `local`): the offline switch from the front end: `--offline`, `OXA_OFFLINE`
+//! P4 (wave H): the offline switch from the front end: `--offline`, `OXA_OFFLINE`
 //! (pi's truthy values) and `oxa.offline`; `gh` for report-issue is refused before anything is
 //! asked or run. The tests share the process network policy, so they hold one lock each.
 

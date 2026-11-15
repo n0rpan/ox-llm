@@ -39,9 +39,9 @@ mod epoch;
 mod exec;
 mod fire;
 mod host;
+pub mod loopguard;
 mod navigate;
 mod prefix;
-mod profile;
 pub mod prompt;
 mod queue;
 pub mod reload;
@@ -69,7 +69,6 @@ pub use exec::{execute_calls, request, RequestOpts, EXTENSION_REBASE_ENTRY, TOOL
 pub use host::{serve_host, serve_pending, CoreHost, HostRequest};
 pub use navigate::{clone_current, fork_at, fork_from, navigate, ForkPosition, Forked};
 pub use prefix::{build_prefix, build_prefix_with, tools_json, PrefixOpts};
-pub use profile::{declared_specs, profile_of_branch, PROFILE_ENTRY};
 pub use queue::{Gate, Handle, Queue, Shared};
 pub use retry::{backoff_ms, chat_with_retry, RetryPolicy};
 pub use session::{prefill_estimate_secs, Deps, Open, OverCap, Session, State, Stats, SwitchPlan};

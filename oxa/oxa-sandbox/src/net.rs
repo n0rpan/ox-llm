@@ -1,4 +1,4 @@
-//! O-167(b) (wave H lane `local`): the bash network as a sandbox property.
+//! O-167(b) (wave H): the bash network as a sandbox property.
 //!
 //! The agent's tools get the internet by default; the harness itself never phones home.
 //! [`NetSandbox`] wraps the process sandbox and answers [`Sandbox::network`] from the setting

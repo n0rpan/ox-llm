@@ -1,4 +1,4 @@
-//! L4 (budget): under profile `local` no single result of a read-class tool is longer than the
+//! L4 (budget): no single result of a read-class tool is longer than the
 //! byte cap the tuning gives (the budget of the working size), and every cut names the way on:
 //! the next `offset` for `read`, the narrower search for `grep`, `find` and `ls`. A loop of
 //! `read` calls that follows the notices reads a 67,000-byte file in whole, page by page.
@@ -50,12 +50,11 @@ fn ok(tool: &dyn Tool, env: &TestEnv, args: Value, tune: ToolTune) -> String {
     out.text
 }
 
-/// Profile `local` with the given tool output cap, as `tune_for` makes it: the first page of
+/// The tuning with the given tool output cap, as `tune_for` makes it: the first page of
 /// `read` at most 8 KiB within the cap, every other cut at the cap.
-fn local(cap: u32) -> ToolTune {
+fn tuned(cap: u32) -> ToolTune {
     ToolTune {
         diet: true,
-        local: true,
         read_page_lines: 400,
         read_page_bytes: cap.min(8_192),
         bash_timeout_s: 120,
@@ -105,7 +104,7 @@ fn split_page(out: &str) -> (&str, Option<usize>) {
 /// Follow the notices from the first page to the end of `path`: every page within `cap`, the
 /// lines of all pages in order. Returns the pages' lengths and their lines.
 fn read_all(env: &TestEnv, path: &str, cap: u32) -> (Vec<usize>, Vec<String>) {
-    let tune = local(cap);
+    let tune = tuned(cap);
     let mut lens = Vec::new();
     let mut lines = Vec::new();
     let mut offset: Option<usize> = None;
@@ -135,10 +134,10 @@ fn read_all(env: &TestEnv, path: &str, cap: u32) -> (Vec<usize>, Vec<String>) {
 }
 
 #[test]
-fn read_first_page_under_local_is_cut_at_the_cap_and_names_the_next_offset() {
+fn read_first_page_is_cut_at_the_cap_and_names_the_next_offset() {
     let env = TestEnv::new();
     env.write("work/src.rs", &source_text());
-    let out = ok(&ReadTool::new(), &env, json!({"path": "src.rs"}), local(6_000));
+    let out = ok(&ReadTool::new(), &env, json!({"path": "src.rs"}), tuned(6_000));
     eprintln!(
         "read, no offset/limit, 67000 B file, cap 6000: returned {} bytes",
         out.len()
@@ -168,7 +167,7 @@ fn read_explicit_huge_limit_is_cut_at_the_cap_with_the_next_offset() {
     let env = TestEnv::new();
     env.write("work/src.rs", &source_text());
     let args = json!({"path": "src.rs", "offset": 1, "limit": 100_000});
-    let out = ok(&ReadTool::new(), &env, args, local(6_000));
+    let out = ok(&ReadTool::new(), &env, args, tuned(6_000));
     eprintln!(
         "read, offset 1 limit 100000, cap 6000: returned {} bytes",
         out.len()
@@ -240,7 +239,7 @@ fn grep_under_the_limit_larger_than_the_cap_is_cut_and_says_how_to_narrow() {
     write_tree(&env);
     // limit 1000: 300 matches, the normal form, about 17 KB: over a 2 KB cap.
     let args = json!({"pattern": "needle", "context": 2, "limit": 1000, "path": "project"});
-    let out = ok(&GrepTool::new(), &env, args, local(2_048));
+    let out = ok(&GrepTool::new(), &env, args, tuned(2_048));
     eprintln!("grep under limit, cap 2048: returned {} bytes", out.len());
     assert!(out.len() <= 2_048, "got {} bytes", out.len());
     assert!(
@@ -254,7 +253,7 @@ fn grep_over_the_limit_counts_fit_the_cap() {
     let env = TestEnv::new();
     write_tree(&env);
     let args = json!({"pattern": "needle", "context": 2, "path": "project"});
-    let out = ok(&GrepTool::new(), &env, args, local(2_048));
+    let out = ok(&GrepTool::new(), &env, args, tuned(2_048));
     eprintln!("grep over limit (counts), cap 2048: returned {} bytes", out.len());
     assert!(out.len() <= 2_048, "got {} bytes", out.len());
     assert!(
@@ -269,7 +268,7 @@ fn find_over_the_cap_is_cut_and_says_how_to_narrow() {
     write_tree(&env);
     // "*" lists the files and the directories: about 4 KB, over the 2 KB cap.
     let args = json!({"pattern": "*", "limit": 1000, "path": "project"});
-    let out = ok(&FindTool::new(), &env, args, local(2_048));
+    let out = ok(&FindTool::new(), &env, args, tuned(2_048));
     eprintln!("find, cap 2048: returned {} bytes", out.len());
     assert!(out.len() <= 2_048, "got {} bytes", out.len());
     assert!(
@@ -285,7 +284,7 @@ fn ls_over_the_cap_is_cut_and_says_how_to_narrow() {
         env.write(&format!("work/many/entry_with_a_long_name_{i:04}.txt"), "x");
     }
     let args = json!({"path": "many", "limit": 1000});
-    let out = ok(&LsTool::new(), &env, args, local(2_048));
+    let out = ok(&LsTool::new(), &env, args, tuned(2_048));
     eprintln!("ls, cap 2048: returned {} bytes", out.len());
     assert!(out.len() <= 2_048, "got {} bytes", out.len());
     assert!(
@@ -308,7 +307,7 @@ fn large_window_cuts_only_the_first_read_page_at_8_kib_and_the_rest_at_16_kib() 
     env.write("work/src.rs", &source_text());
     write_tree(&env);
     write_many(&env);
-    let tune = local(16_384);
+    let tune = tuned(16_384);
     let first = ok(&ReadTool::new(), &env, json!({"path": "src.rs"}), tune);
     assert!(
         first.len() > 7_000 && first.len() <= 8_192,
@@ -362,14 +361,14 @@ fn large_window_cuts_only_the_first_read_page_at_8_kib_and_the_rest_at_16_kib() 
 }
 
 #[test]
-fn without_an_output_cap_the_local_tools_cut_as_pi_does() {
+fn without_an_output_cap_the_tools_cut_as_pi_does() {
     // output_cap_bytes 0: grep, find, ls and an explicit read are pi's, byte for byte.
     let env = TestEnv::new();
     env.write("work/src.rs", &source_text());
     write_many(&env);
     let tune = ToolTune {
         output_cap_bytes: 0,
-        ..local(16_384)
+        ..tuned(16_384)
     };
     let pi = ToolTune::default();
     let cases = [
@@ -409,11 +408,11 @@ fn a_first_line_only_the_page_refuses_is_read_as_pi_reads_it_under_the_budget() 
         json!({"path": "wide.txt"}),
         ToolTune::default(),
     );
-    let got = ok(&ReadTool::new(), &env, json!({"path": "wide.txt"}), local(16_384));
+    let got = ok(&ReadTool::new(), &env, json!({"path": "wide.txt"}), tuned(16_384));
     assert_eq!(got, pi);
     // A first line within the page's cap but not its content room (8000 bytes) is shown too.
     env.write("work/edge.txt", &format!("{}\nb", "a".repeat(8_000)));
-    let out = ok(&ReadTool::new(), &env, json!({"path": "edge.txt"}), local(16_384));
+    let out = ok(&ReadTool::new(), &env, json!({"path": "edge.txt"}), tuned(16_384));
     assert!(out.starts_with(&"a".repeat(8_000)), "the line is shown");
 }
 
@@ -426,7 +425,7 @@ fn an_explicit_read_of_a_line_over_the_room_names_the_room_it_had() {
         &env,
         &env.work(),
         json!({"path": "long.txt", "offset": 1}),
-        local(6_000),
+        tuned(6_000),
     );
     // 6000 less the 256-byte room for the notice: 5744 bytes, the limit and the head -c.
     assert_eq!(

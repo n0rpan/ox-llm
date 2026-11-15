@@ -15,14 +15,14 @@ pub struct BashTool {
 impl BashTool {
     pub fn new() -> BashTool {
         BashTool {
-            spec: crate::spec_of(&descriptions::BASH),
+            spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell: ShellConfig::default(),
         }
     }
     /// H: the tool with pi's `shellPath` / `shellCommandPrefix` settings.
     pub fn with_shell(shell: ShellConfig) -> BashTool {
         BashTool {
-            spec: crate::spec_of(&descriptions::BASH),
+            spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
         }
     }

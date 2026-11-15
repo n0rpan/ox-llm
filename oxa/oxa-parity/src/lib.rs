@@ -31,7 +31,6 @@
 pub mod pty;
 
 use oxa_fake::TestEnv;
-pub use oxa_proto::Profile;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -58,32 +57,14 @@ pub fn fake_bin() -> PathBuf {
     sibling("oxa-fake", "OXA_FAKE_BIN")
 }
 
-/// The variable that selects the profile a PARITY run drives (`pi` when unset).
-pub const PARITY_PROFILE_ENV: &str = "OXA_PARITY_PROFILE";
-
-/// The `oxa.profile` this PARITY run drives: `$OXA_PARITY_PROFILE` (`pi` or `local`), `pi`
-/// when unset or empty. O-167: PARITY runs under both profiles; a row that asserts pi-exact
-/// text branches on this and checks the same capability under `local` in the same test.
-pub fn profile() -> Profile {
-    match std::env::var(PARITY_PROFILE_ENV) {
-        Ok(v) if !v.is_empty() => Profile::parse(&v)
-            .unwrap_or_else(|| panic!("{PARITY_PROFILE_ENV}={v:?}: expected \"pi\" or \"local\"")),
-        _ => Profile::Pi,
-    }
+/// The environment every PARITY `oxa` child gets after `TestEnv::envs`: the per-prompt
+/// environment note is off (`OXA_ENV_NOTE=0`). PARITY compares the user messages with pi's
+/// bytes; the note has its own tests (`oxa-core/tests/env_note_cache.rs`).
+pub fn note_off_env() -> Vec<(String, String)> {
+    vec![("OXA_ENV_NOTE".to_string(), "0".to_string())]
 }
 
-/// The environment that selects [`profile`] in a child `oxa` (`OXA_PROFILE`). Every place that
-/// starts `oxa` adds it after `TestEnv::envs` (which never sets a profile). The per-prompt
-/// environment note of profile `local` is off (`OXA_ENV_NOTE=0`): PARITY compares the user
-/// messages with pi's bytes; the note has its own tests (`oxa-core/tests/env_note_cache.rs`).
-pub fn profile_env() -> Vec<(String, String)> {
-    vec![
-        (Profile::ENV.to_string(), profile().as_str().to_string()),
-        ("OXA_ENV_NOTE".to_string(), "0".to_string()),
-    ]
-}
-
-/// Run `oxa <args>` in `env.work()` with only `env.envs(engine_url)` and [`profile_env`] as
+/// Run `oxa <args>` in `env.work()` with only `env.envs(engine_url)` and [`note_off_env`] as
 /// environment, feeding `stdin`, and return its output.
 pub fn run_oxa(env: &TestEnv, engine_url: &str, args: &[&str], stdin: &str) -> Output {
     use std::io::Write;
@@ -92,7 +73,7 @@ pub fn run_oxa(env: &TestEnv, engine_url: &str, args: &[&str], stdin: &str) -> O
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(engine_url))
-        .envs(profile_env())
+        .envs(crate::note_off_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

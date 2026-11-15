@@ -283,9 +283,8 @@ impl World {
             initial_follow_ups: Vec::new(),
             theme: None,
             notices: Vec::new(),
-            // These tests exercise behaviour (streams, errors, keys), not the skin: pin the pi
-            // skin so the assertions on the plain header stay stable while the default profile
-            // (and therefore the OXA skin) moved to `local`.
+            // These tests exercise behaviour (streams, errors, keys), not the skin: pin the
+            // plain skin so the assertions on the header stay stable (OXA is the default).
             env: vec![("OXA_SKIN".to_string(), "pi".to_string())],
             caps: Some(TermCaps::BASIC),
             reopen: Box::new(move |how, _carry| {
