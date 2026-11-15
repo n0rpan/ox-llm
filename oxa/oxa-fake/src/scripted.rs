@@ -26,6 +26,8 @@ pub struct ScriptedEngine {
     pub model: String,
     /// B6: `capabilities.preserve_thinking` as `info` reports it (`None` = not published).
     pub preserve_thinking: Option<bool>,
+    /// `info` reports a remote (cloud) model.
+    pub remote: bool,
     /// B6: the chat template drops the reasoning of the assistant turns at or before the last
     /// user message (a Qwen template with `preserve_thinking: false`): the cache model renders
     /// the history that way ([`crate::render_history`]), so the next user turn re-prefills
@@ -51,6 +53,7 @@ impl ScriptedEngine {
             max_output: 4096,
             model: "fake-model".to_string(),
             preserve_thinking: None,
+            remote: false,
             drop_reasoning: false,
             omit_cached: false,
             compact_at: None,
@@ -59,6 +62,11 @@ impl ScriptedEngine {
     /// L4: the engine publishes `compact_at` as its compaction point.
     pub fn with_compact_at(mut self, compact_at: u32) -> ScriptedEngine {
         self.compact_at = Some(compact_at);
+        self
+    }
+    /// A remote (cloud) model.
+    pub fn with_remote(mut self) -> ScriptedEngine {
+        self.remote = true;
         self
     }
     /// B6: a model whose capabilities say `preserve_thinking` (`Some(false)` = Flash) and whose
@@ -143,6 +151,7 @@ impl Engine for ScriptedEngine {
                 hint_clear: true,
                 preserve_thinking: self.preserve_thinking,
                 park_disk_only: false,
+                remote: self.remote,
                 cache_hints: true,
                 prefill: true,
                 ..oxa_proto::EngineCaps::default()
