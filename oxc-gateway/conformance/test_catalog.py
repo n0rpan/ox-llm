@@ -28,6 +28,10 @@ def config(name):
     model = {'kind': 'remote/' + provider, 'upstream_model': 'synthetic/upstream',
              'base_url': 'http://127.0.0.1:1/v1', 'context_window': 64000,
              'max_output': 512, 'name': 'Synthetic cloud model'}
+    if name == 'router':
+        model.update(context_window=64000.5, max_output=512.9)
+    if name == 'anthropic':
+        model.update(provider=0, upstream_model=0, upstream='synthetic/upstream')
     value = {'cloud_only': True, 'cloud': {'enabled': name != 'disabled',
              'daily_budget_usd': 1, 'models': {'synthetic-cloud': model}}}
     if name == 'default-off':
@@ -45,6 +49,7 @@ def config(name):
                        'url-credentials': {**model, 'base_url': 'https://synthetic@example.invalid/v1'},
                        'url-query': {**model, 'base_url': 'https://example.invalid/v1?x=1'},
                        'empty-model': {**model, 'upstream_model': ' '}, 'not-an-object': []})
+        models['non-string-upstream'] = {**model, 'upstream_model': 7, 'upstream': 'synthetic/upstream'}
     return value
 
 
@@ -160,6 +165,15 @@ def reference(name):
 
 
 class CatalogContract(unittest.TestCase):
+    def assert_json_types(self, actual, expected):
+        self.assertIs(type(actual), type(expected))
+        if isinstance(expected, dict):
+            for key in expected:
+                self.assert_json_types(actual[key], expected[key])
+        elif isinstance(expected, list):
+            for left, right in zip(actual, expected):
+                self.assert_json_types(left, right)
+
     def test_reference_or_opt_in_library(self):
         expected = json.loads(GOLDENS.read_text())
         self.assertEqual(set(expected), set(CASES))
@@ -176,6 +190,7 @@ class CatalogContract(unittest.TestCase):
                 else:
                     actual = reference(name)
                 self.assertEqual(actual, expected[name])
+                self.assert_json_types(actual, expected[name])
         if executable:
             done = subprocess.run([executable], input='{"config": {}}', text=True,
                                   capture_output=True, env={}, timeout=5)
