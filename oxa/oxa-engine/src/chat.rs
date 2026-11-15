@@ -618,8 +618,8 @@ impl Engine for HttpEngine {
                                 Err(e) => {
                                     // An error after reply data is a cut reply, never replayed
                                     // (the core retries `stream_broken` only before data).
-                                    failure = Some(if emitted && e.code != codes::STREAM_BROKEN {
-                                        broken(format!("the reply was cut: {}", e.message))
+                                    failure = Some(if emitted {
+                                        broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, e.message))
                                     } else {
                                         e
                                     });

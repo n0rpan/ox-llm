@@ -526,6 +526,38 @@ fn abort_mid_stream_nothing_on_wire() {
         .any(|m| m.role == oxa_proto::Role::Assistant));
 }
 
+/// #456: a stream cut at byte N after output is replayed (partial dropped from the wire, kept
+/// as `Shown { cut }`) and the run completes with the full reply.
+#[test]
+fn stream_cut_mid_output_is_replayed_and_completes() {
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text("a longer reply that is cut");
+    cut.chunk = 1;
+    cut.fault = Some(oxa_fake::Fault::DropAt { bytes: 5 });
+    let eng = Arc::new(ScriptedEngine::new(vec![cut, ScriptTurn::text("full reply")]));
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        Vec::new(),
+        Mode::Workspace,
+        Vec::new(),
+    );
+    say(&mut st, "hello");
+
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    assert_eq!(eng.requests().len(), 2, "replayed once");
+    let wire = st.transcript.wire();
+    assert_eq!(wire.len(), 2);
+    assert_eq!(wire[1].content.as_deref(), Some("full reply"));
+    assert!(st
+        .tree
+        .entries()
+        .iter()
+        .any(|e| matches!(&e.body, EntryBody::Shown { why, .. } if *why == shown_why::CUT)));
+}
+
 /// results pushed in call order
 #[test]
 fn parallel_reads_in_call_order() {
