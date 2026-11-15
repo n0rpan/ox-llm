@@ -2,7 +2,7 @@ name: cloud gateway
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
-    paths: ['oxa/oxc-gateway/**', 'oxa/oxa-engine/**', 'oxa/Cargo.toml', 'oxa/Cargo.lock', 'oxc/**', 'oxc-rs/tests/fixtures/**', '.github/workflows/cloud-gateway.yml']
+    paths: ['oxa/oxc-gateway/**', 'oxa/oxa-engine/**', 'oxa/oxa-core/**', 'oxa/Cargo.toml', 'oxa/Cargo.lock', 'oxc/**', 'oxc-rs/tests/fixtures/**', '.github/workflows/cloud-gateway.yml']
   merge_group:
   workflow_dispatch:
 permissions:
@@ -42,6 +42,7 @@ jobs:
       - run: cargo check --locked --manifest-path oxa/oxc-gateway/Cargo.toml --no-default-features
       - run: cargo clippy --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-targets --all-features -- -D warnings
       - run: cargo clippy --locked --manifest-path oxa/Cargo.toml -p oxa-engine --features in-process-gateway --all-targets -- -D warnings
+      - run: cargo clippy --locked --manifest-path oxa/Cargo.toml -p oxa-core --features in-process-gateway --all-targets -- -D warnings
       - name: Rust gateway tests with isolated environment
         run: |
           gateway_test_home=$(mktemp -d)
@@ -53,6 +54,9 @@ jobs:
           bwrap --unshare-user --unshare-net --cap-drop ALL --die-with-parent --new-session --bind / / --proc /proc --dev /dev -- \
             env -i PATH="$PATH" HOME="$gateway_test_home" CARGO_HOME="$gateway_cargo_home" RUSTUP_HOME="$gateway_rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxa-engine --features in-process-gateway
+          bwrap --unshare-user --unshare-net --cap-drop ALL --die-with-parent --new-session --bind / / --proc /proc --dev /dev -- \
+            env -i PATH="$PATH" HOME="$gateway_test_home" CARGO_HOME="$gateway_cargo_home" RUSTUP_HOME="$gateway_rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+            cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxa-core --features in-process-gateway
       - run: /usr/bin/python3 -I oxc-rs/tests/fixtures/record_anthropic_requests.py --check
       - run: /usr/bin/python3 -I oxa/oxc-gateway/tests/fixtures/record_anthropic_streams.py --check
       - run: cargo build --locked --manifest-path oxa/oxc-gateway/Cargo.toml --all-features --examples
