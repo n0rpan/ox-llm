@@ -146,6 +146,7 @@ fn run(st: &mut SessionState, prompt_text: &str) -> (RunEnd, Vec<AgentEvent>) {
         EntryBody::Msg {
             wire: WireMsg::user(prompt_text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();
@@ -600,4 +601,77 @@ fn identical_job_polls_trip_the_guard() {
     for r in &polls[LIMIT as usize..] {
         assert!(is_notice(r) && r.contains("(bash {"), "{r}");
     }
+}
+
+/// A repeat of an unchanged range is still a repeat when other read-only calls (another range)
+/// sit between the copies: the content is still in context (#463). An edit in between breaks it.
+#[test]
+fn identical_reads_interleaved_with_other_reads_trip_the_guard() {
+    let env = TestEnv::new();
+    let other = r#"{"path":"a.txt","offset":20,"limit":3}"#;
+    let mut turns = Vec::new();
+    for i in 0..=LIMIT {
+        turns.push(read(&format!("a{i}"), RANGE));
+        turns.push(read(&format!("b{i}"), other));
+    }
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "look");
+    let res = results(&st);
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+}
+
+fn call(id: &str, name: &str, args: &str) -> oxa_proto::ToolCall {
+    oxa_proto::ToolCall {
+        id: id.to_string(),
+        name: name.to_string(),
+        args_raw: args.to_string(),
+    }
+}
+
+/// Codex P2 on #471: interleaved reads inside ONE batch `[A, B, A, B, A, B, A]` are counted the
+/// same as when spread across turns: the fourth read of A gets the notice.
+#[test]
+fn identical_reads_interleaved_in_one_batch_trip_the_guard() {
+    let env = TestEnv::new();
+    let other = r#"{"path":"a.txt","offset":20,"limit":3}"#;
+    let mut batch = read("x0", RANGE);
+    for i in 0..LIMIT {
+        batch.tool_calls.push(call(&format!("o{i}"), "read", other));
+        batch.tool_calls.push(call(&format!("r{i}"), "read", RANGE));
+    }
+    let turns = vec![batch, ScriptTurn::text("done")];
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "look");
+    let res = results(&st);
+    assert_eq!(res.len(), 2 * LIMIT as usize + 1, "{res:#?}");
+    assert!(!is_notice(&res[2 * LIMIT as usize - 2]), "{res:#?}");
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+}
+
+/// An edit between identical reads (in the batch) ends the run even with read-only calls around it.
+#[test]
+fn an_edit_between_interleaved_batch_reads_breaks_the_run() {
+    let env = TestEnv::new();
+    let other = r#"{"path":"a.txt","offset":20,"limit":3}"#;
+    let edit = r#"{"path":"a.txt","oldText":"line 30\n","newText":"line 30 edited\n"}"#;
+    let mut batch = read("x0", RANGE);
+    for (i, (n, a)) in [
+        ("read", other),
+        ("read", RANGE),
+        ("read", RANGE),
+        ("edit", edit),
+        ("read", other),
+        ("read", RANGE),
+    ]
+    .iter()
+    .enumerate()
+    {
+        batch.tool_calls.push(call(&format!("y{i}"), n, a));
+    }
+    let turns = vec![batch, ScriptTurn::text("done")];
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "edit");
+    let res = results(&st);
+    assert!(res.iter().all(|r| !is_notice(r)), "{res:#?}");
 }

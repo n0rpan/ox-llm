@@ -115,6 +115,7 @@ fn say(st: &mut SessionState, text: &str) -> String {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user")
@@ -128,6 +129,7 @@ fn reply(st: &mut SessionState, text: &str) -> String {
         EntryBody::Msg {
             wire: WireMsg::assistant(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append assistant")

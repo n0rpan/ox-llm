@@ -677,6 +677,7 @@ mod tests {
         EntryBody::Msg {
             wire: w,
             parts: Vec::new(),
+            tool: None,
         }
     }
     fn prefix() -> EntryBody {
