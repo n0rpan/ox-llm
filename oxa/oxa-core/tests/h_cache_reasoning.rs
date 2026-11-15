@@ -73,6 +73,7 @@ fn open(env: &TestEnv, engine: Arc<ScriptedEngine>, settings: Settings) -> Sessi
         thinking: Some(ThinkingLevel::Medium),
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("open")
 }

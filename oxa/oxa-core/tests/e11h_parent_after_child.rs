@@ -111,6 +111,7 @@ fn scenario(last: ScriptTurn) -> (Vec<oxa_fake::Recorded>, VecSink, Arc<Parker>)
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

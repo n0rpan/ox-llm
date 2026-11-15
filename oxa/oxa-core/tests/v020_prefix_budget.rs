@@ -114,6 +114,7 @@ fn open(env: &TestEnv, cwd: &std::path::Path, settings: &str, subagent: bool) ->
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
@@ -144,8 +145,10 @@ fn stable_sha(p: &FrozenPrefix, root: &std::path::Path) -> String {
 /// session (the seven built-ins) and the same with a `subagent` tool. These are the default
 /// bytes: a prefix change is a PARITY event.
 /// 2026-11-14: the identity fallback text changed with the env note PR (#5).
-const DEFAULT_STABLE_SHA: &str = "523d7bd0e822e37a8c562df4216006b9b8717d14f995e6bd7231c54d577484d3";
-const DEFAULT_STABLE_SHA_SUBAGENT: &str = "10c03ff62015aa2c7d87bcdcf047d48c8932da6808829215c0c14275e1af364f";
+/// 2026-11-15: issue #127 (b) added `background`/`job` to the `bash` schema and dropped its
+/// `required: ["command"]` (a `job` read has no command), so the tools JSON changed.
+const DEFAULT_STABLE_SHA: &str = "4bb71318fcfb5c1969d2ad90b6c81b49f86aea7b44445d772dcc59ecd2321e91";
+const DEFAULT_STABLE_SHA_SUBAGENT: &str = "62bab1ce91bb4d57b985949aec5ed8e42d64d88066f9be6513ff4124ecd19778";
 
 /// A calendar date (`YYYY-MM-DD`) or an 8-digit run anywhere in `s`.
 fn has_date(s: &str) -> bool {

@@ -79,6 +79,7 @@ fn real_run(turns: Vec<ScriptTurn>, missing: Option<&str>) -> Vec<AgentEvent> {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     let mut s = Session::open(deps, Open::Ephemeral).expect("open the test session");
     let mut sink = oxa_proto::VecSink(Vec::new());

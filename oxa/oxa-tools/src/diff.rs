@@ -719,8 +719,7 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
     let runs = change_runs(old, new);
     let num = |n: usize| format!("{n:>width$}");
     let skip_marker = format!(" {} ...", " ".repeat(width));
-    let context_line = |n: usize, line: &str| format!(" {} {}", num(n), line);
-
+    let context_line = |new_no: usize, line: &str| format!(" {} {}", num(new_no), line);
     let mut out: Vec<String> = Vec::new();
     let mut old_no = 1usize;
     let mut new_no = 1usize;
@@ -748,13 +747,13 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
                 if last_was_change && next_is_change {
                     if n <= context * 2 {
                         for line in raw {
-                            out.push(context_line(old_no, line));
+                            out.push(context_line(new_no, line));
                             old_no += 1;
                             new_no += 1;
                         }
                     } else {
                         for line in &raw[..context] {
-                            out.push(context_line(old_no, line));
+                            out.push(context_line(new_no, line));
                             old_no += 1;
                             new_no += 1;
                         }
@@ -763,7 +762,7 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
                         old_no += skipped;
                         new_no += skipped;
                         for line in &raw[n - context..] {
-                            out.push(context_line(old_no, line));
+                            out.push(context_line(new_no, line));
                             old_no += 1;
                             new_no += 1;
                         }
@@ -771,7 +770,7 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
                 } else if last_was_change {
                     let shown = n.min(context);
                     for line in &raw[..shown] {
-                        out.push(context_line(old_no, line));
+                        out.push(context_line(new_no, line));
                         old_no += 1;
                         new_no += 1;
                     }
@@ -789,7 +788,7 @@ fn display_diff(old: &str, new: &str, context: usize) -> (String, Option<usize>)
                         new_no += skipped;
                     }
                     for line in &raw[skipped..] {
-                        out.push(context_line(old_no, line));
+                        out.push(context_line(new_no, line));
                         old_no += 1;
                         new_no += 1;
                     }
@@ -848,5 +847,39 @@ mod tests {
             diff,
             "    ...\n  8 l8\n  9 l9\n-10 l10\n+10 L10\n 11 l11\n 12 l12\n    ..."
         );
+    }
+
+    #[test]
+    fn context_lines_use_new_line_numbers() {
+        // Insertion: two lines inserted after line 33, the unchanged line 34 must be shown
+        // with its new-file number 36 (33 + 2 inserted + the original 33 stays 33).
+        let old: String = (1..=40).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l33\n", "l33\nNEW1\nNEW2\n");
+        let (diff, _) = display_diff(&old, &new, 1);
+        let lines: Vec<&str> = diff.lines().collect();
+        assert!(lines.contains(&"+34 NEW1"));
+        assert!(lines.contains(&"+35 NEW2"));
+        assert!(lines.contains(&" 36 l34"), "diff:\n{diff}");
+
+        // Deletion: deleting line 5 shifts the context line below it from 6 to 5.
+        let old: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l5\n", "");
+        let (diff, _) = display_diff(&old, &new, 1);
+        let lines: Vec<&str> = diff.lines().collect();
+        // Context lines are rendered as ` {number:>width} `, so check the trimmed number.
+        let ctx = |lines: &[&str], n: usize| {
+            lines
+                .iter()
+                .any(|l| l.trim_start().starts_with(&format!("{n} l")))
+        };
+        assert!(ctx(&lines, 5), "diff:\n{diff}");
+        assert!(!ctx(&lines, 6), "diff:\n{diff}");
+
+        // Replacement: a one-to-one change keeps numbers in sync (no shift).
+        let old: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l5\n", "L5\n");
+        let (diff, _) = display_diff(&old, &new, 1);
+        let lines: Vec<&str> = diff.lines().collect();
+        assert!(ctx(&lines, 6), "diff:\n{diff}");
     }
 }

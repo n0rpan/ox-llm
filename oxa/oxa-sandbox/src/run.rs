@@ -26,13 +26,26 @@ pub fn run_argv(
     cancel: &CancelToken,
     live: &mut dyn FnMut(&[u8]),
 ) -> ExecResult {
+    run_argv_capture(argv, env, timeout_s, cancel, live, true)
+}
+
+/// [`run_argv`] with a choice: `capture = false` streams to `live` only and leaves
+/// `ExecResult.output` empty, so a long-lived process never grows the heap.
+pub fn run_argv_capture(
+    argv: &[String],
+    env: &[(String, String)],
+    timeout_s: Option<u32>,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
     let Some((prog, args)) = argv.split_first() else {
         return spawn_failed("no command to run".to_string());
     };
     let mut cmd = Command::new(prog);
     cmd.args(args)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, prog, None, timeout_s, cancel, live)
+    execute(cmd, prog, None, timeout_s, cancel, live, capture)
 }
 
 /// [`run_argv`] with `stdin` written to the child's standard input and then closed. A child
@@ -51,18 +64,28 @@ pub fn run_argv_stdin(
     let mut cmd = Command::new(prog);
     cmd.args(args)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, prog, Some(stdin), timeout_s, cancel, live)
+    execute(cmd, prog, Some(stdin), timeout_s, cancel, live, true)
 }
 
 /// Run `bash -c <command>` with the user's own rights in `s.cwd` (for `!cmd` / `!!cmd`, pi's
 /// behaviour). `s.writable` and `s.net` are ignored.
 pub fn run_unsandboxed(s: &ExecSpec, cancel: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+    run_unsandboxed_capture(s, cancel, live, true)
+}
+
+/// [`run_unsandboxed`] with `capture = false`: chunks go only to `live`, `output` stays empty.
+pub fn run_unsandboxed_capture(
+    s: &ExecSpec,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(&s.command)
         .current_dir(&s.cwd)
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, "bash", None, s.timeout_s, cancel, live)
+    execute(cmd, "bash", None, s.timeout_s, cancel, live, capture)
 }
 
 fn spawn_failed(text: String) -> ExecResult {
@@ -92,6 +115,7 @@ fn execute(
     timeout_s: Option<u32>,
     cancel: &CancelToken,
     live: &mut dyn FnMut(&[u8]),
+    capture: bool,
 ) -> ExecResult {
     let (reader, writer) = match std::io::pipe() {
         Ok(p) => p,
@@ -158,7 +182,9 @@ fn execute(
         match rx.recv_timeout(POLL) {
             Ok(chunk) => {
                 live(&chunk);
-                out.extend_from_slice(&chunk);
+                if capture {
+                    out.extend_from_slice(&chunk);
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => eof = true,

@@ -156,6 +156,7 @@ fn open_with(
         thinking,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     let session =
         Session::open(deps, if persistent { Open::New } else { Open::Ephemeral }).expect("open session");

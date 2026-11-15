@@ -8,6 +8,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
   workflow_dispatch:
+    inputs:
+      nightly_oxa_arm:
+        description: Also run the nightly native ARM64 oxa workspace gate
+        type: boolean
+        default: false
   schedule:
     - cron: "17 3 * * *"
 
@@ -65,8 +70,56 @@ jobs:
       heavy: ${{ github.event_name != 'pull_request' && github.event_name != 'push' }}
       build_oxa: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
+  oxa-nightly-arm:
+    # Extra primary-platform coverage at night; manual opt-in validates this job before merge.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.nightly_oxa_arm)
+    name: oxa nightly tests (aarch64; bwrap required)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: bubblewrap + unprivileged user namespaces
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-all --ro-bind / / true
+      - name: Toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Compiler and source cache key
+        id: rust-key
+        run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-arm-oxa-ci oxa
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            oxa/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pinned nextest
+        run: tools/ci/install_nextest.sh "$RUNNER_TEMP/nextest"
+      - name: Whole ARM64 workspace, isolated HOME and mandatory bwrap
+        run: tools/ci/run_oxa_nightly.sh "$RUNNER_TEMP/oxa-arm-nightly"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: oxa-nightly-arm-reports
+          path: |
+            ${{ runner.temp }}/oxa-arm-nightly
+            oxa/target/nextest/ci/junit.xml
+          if-no-files-found: error
+          retention-days: 7
+
   rustfmt:
-    # oxa only: the engine tree predates rustfmt enforcement (formatting it is a separate change).
     name: rustfmt (oxa)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -81,9 +134,13 @@ jobs:
       - name: oxa
         working-directory: oxa
         run: cargo fmt --all -- --check
+      - name: engine
+        working-directory: engine
+        run: cargo fmt --all -- --check
 
   clippy:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: changes
+    if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true' || needs.changes.outputs.oxa == 'true'))
     # Compile errors fail the job; lint warnings are reported but do not fail it yet. Add
     # "-- -D warnings" once the warning count is known to be zero.
     name: clippy (engine, oxa; aarch64)
@@ -97,14 +154,39 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: engine/tools/ci/setup_toolchain.sh "$RUST_VERSION" clippy
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant fedora44-clippy engine oxa
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/target
+            oxa/target
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # A restored target/ may hold workspace crates built from OLDER sources. Checkout mtimes can be older
+        # than those artifacts, so cargo would treat stale crates as fresh. Touching the tracked sources
+        # forces workspace crates to rebuild; third-party dependencies stay cached.
+        working-directory: ${{ github.workspace }}
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - name: engine (model-free workspace, all targets)
+        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true'
         working-directory: engine
         run: cargo clippy --locked --workspace --exclude qwen4exp --all-targets
       - name: oxa (all targets)
+        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.oxa == 'true'
         working-directory: oxa
         run: cargo clippy --locked --workspace --all-targets
 
   x86-64-stub:
+    needs: changes
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # oxe-server builds on x86_64 with the stub engine only (kernels-sys compiles its kernels on
     # aarch64 only; the model engine refuses to load elsewhere). Its server tests that do not need
@@ -122,14 +204,27 @@ jobs:
           persist-credentials: false
       - name: Toolchain (rustup is preinstalled on the hosted image)
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Compiler and source cache key
+        id: rust-key
+        working-directory: ${{ github.workspace }}
+        run: python3 -I tools/ci/rust_cache_key.py --variant ubuntu24-x86-stub engine
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             engine/target
-          key: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-${{ github.sha }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-engine-${{ env.RUST_VERSION }}-${{ hashFiles('engine/Cargo.lock') }}-
+          key: ${{ steps.rust-key.outputs.key }}
+          restore-keys: ${{ steps.rust-key.outputs.prefix }}
+      - name: Mark sources newer than any restored build output
+        # A restored target/ may hold workspace crates built from OLDER sources. Checkout mtimes can be older
+        # than those artifacts, so cargo would treat stale crates as fresh. Touching the tracked sources
+        # forces workspace crates to rebuild; third-party dependencies stay cached.
+        working-directory: ${{ github.workspace }}
+        run: find engine oxa -path '*/target' -prune -o -type f -exec touch -c {} +
+      - name: Rust cache result
+        run: echo "Rust cache exact hit = ${{ steps.rust-cache.outputs.cache-hit }}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/pip
@@ -141,6 +236,7 @@ jobs:
         working-directory: engine
         run: ./target/release/oxe-server --help > help.txt && head -n 3 help.txt
       - name: Server tests (stub engine; model-engine tests are aarch64-only)
+        if: github.event_name != 'pull_request' || needs.changes.outputs.full == 'true' || needs.changes.outputs.engine == 'true'
         working-directory: engine
         timeout-minutes: 30
         run: |

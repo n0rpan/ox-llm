@@ -259,6 +259,7 @@ fn deps(
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     }
 }
 

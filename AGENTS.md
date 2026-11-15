@@ -30,13 +30,25 @@ maintainer, who says in the PR when a hardware check is needed.
   the fast set only: the queue already ran the full set on exactly the tree that lands, and the nightly
   run re-checks main in full.
   Only PR events cancel superseded runs; main and merge-group runs are not cancelled in progress.
+  On ready PRs, clippy checks changed Rust components and the stub library suite runs for engine
+  changes; unknown paths conservatively select every component. The oxa build, stub smoke and
+  loopback OpenAI contract remain fast checks for the rest. Full gates build one x86_64 nextest
+  archive and run two partitions with mandatory bwrap. The required oxa check verifies every
+  inventoried test ran exactly once, rejects runtime skips, and permits only the three existing
+  opt-in measurement/dump ignores. CI tests use the `ci` Cargo profile without LTO; production
+  ARM64 builds retain the release profile and engine flags.
+  The nightly schedule also runs the complete oxa workspace natively on hosted ARM64 with
+  mandatory bwrap, isolated HOME/XDG, doctests and the same inventory/report guard. The
+  daily-driver UI suite also runs ten stress rounds with four concurrent tests before the full gate. This extra
+  job is skipped on PRs, merge groups and main pushes; manual runs can opt in with
+  `nightly_oxa_arm: true`. Its cache is separate from x86 test and production ARM64 builds.
 - You can build and test x86_64 code locally: the Rust workspace `oxa/`, the Python controller `lab/`, and
   `oxe-server --engine stub` in `engine/`. The model engine is aarch64-only; rely on CI for those jobs.
 - **When a task is ambiguous,** open the PR as a draft with your question at the top instead of guessing.
 
 ## Definition of done
 
-Run these before saying a task is done, per area:
+Run these before saying a task is done, per area. oxa runs the checks in `.oxa/settings.json` (`done`) itself after an edit, for the same checks listed here:
 
 - **oxa** (Rust, run from `oxa/`):
   - `cargo fmt --check`
