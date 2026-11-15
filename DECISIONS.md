@@ -32,7 +32,7 @@ Each entry keeps its original O-number IDs so older private notes can cross-refe
 **Status:** active.
 
 ### ADR-06: One monorepo with three products (O-139, O-102; 2026-11-13)
-**Decision:** One repository with `engine/` and `oxa/` as separate Cargo workspaces and `lab/` as the Python package. The private development repository starts from fresh history; oxa starts there.
+**Decision:** One repository with `engine/` and `oxa/` as separate Cargo workspaces and `oxc/` as the Python package. The private development repository starts from fresh history; oxa starts there.
 **Why:** The three products ship together and share decisions and docs; separate build units keep their dependencies apart.
 **Status:** active.
 
