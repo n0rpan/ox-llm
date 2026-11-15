@@ -59,11 +59,11 @@ class CloudOnlyInstall(unittest.TestCase):
         launcher = (self.root / 'prefix/bin/oxc-controller').read_text()
         self.assertIn('LOCAL_LLM_PORT=18092', launcher)
         self.assertIn(str(self.root / 'config/runtime.json'), launcher)
-        self.assertIn('ExecStart=' + str(self.root / 'prefix/bin/oxc-controller'), unit)
+        self.assertIn('ExecStart="' + str(self.root / 'prefix/bin/oxc-controller') + '"', unit)
         self.assertNotIn('%h', unit)
         self.assertEqual([c[:3] for c in calls], [['systemctl', '--user', 'daemon-reload'],
                                                   ['systemctl', '--user', 'enable']])
-        self.assertIn('oxc-test.service', calls[1])
+        self.assertEqual(calls[1][4:], [str(self.root / 'units/oxc-test.service')])
         # no engine, no model, no Snapdragon artefact
         names = {p.name for p in (self.root / 'prefix').rglob('*')}
         self.assertFalse([n for n in names if n.endswith(('.gguf', '.bin')) or 'oxe-server' in n])
@@ -193,6 +193,109 @@ class CloudOnlyInstall(unittest.TestCase):
         self.assertEqual(body[0], 200)
         self.assertEqual([r['id'] for r in body[1]['data']], list(MODEL))
         self.assertFalse(list((self.root / 'home').rglob('*')), 'must not write outside the prefix/config')
+
+    def test_unit_encoding_pure(self):
+        self.assertEqual(cloud_install.exec_quote('/a b/%x/$y/"q"/\\z'), '"/a b/%%x/$$y/\\"q\\"/\\\\z"')
+        text = cloud_install.unit('n', Path('/a b/%x/oxc'), Path('/a b/%x'))
+        self.assertIn('\nExecStart="/a b/%%x/oxc"\n', text)
+        self.assertIn('\nWorkingDirectory=/a b/%%x\n', text)
+
+    def test_unit_verifies_with_space_and_percent_in_prefix(self):
+        import shutil
+        if not shutil.which('systemd-analyze'):
+            self.skipTest('no systemd-analyze')
+        prefix = self.root / 'my pre%fix'
+        runtime = self.root / 'rt'
+        runtime.mkdir(mode=0o700)
+        self.args[self.args.index('--prefix') + 1] = str(prefix)
+        self.assertEqual(self.run_install()[0], 0)
+        env = {**os.environ, 'XDG_RUNTIME_DIR': str(runtime)}
+        done = subprocess.run(['systemd-analyze', '--user', 'verify', str(self.root / 'units/oxc-test.service')],
+                              env=env, capture_output=True, text=True)
+        if 'Failed to initialize manager' in done.stderr:
+            self.skipTest('systemd user manager cannot be initialised here')
+        for bad in ('not executable', 'bad unit file setting', 'not absolute', 'Executable path'):
+            self.assertNotIn(bad, done.stderr)
+
+    def test_custom_unit_dir_enable_gets_absolute_path(self):
+        _, calls = self.run_install()
+        self.assertEqual(calls[0], ['systemctl', '--user', 'daemon-reload'])
+        self.assertEqual(calls[1], ['systemctl', '--user', 'enable', '--now', str(self.root / 'units/oxc-test.service')])
+        self.assertTrue(Path(calls[1][-1]).is_absolute() and Path(calls[1][-1]).is_file())
+
+    def test_default_unit_dir_enable_uses_absolute_path_too(self):
+        # decision: always the absolute path (correct for default and custom dirs alike)
+        del self.args[self.args.index('--unit-dir'):self.args.index('--unit-dir') + 2]
+        with patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'xdg')}):
+            _, calls = self.run_install()
+        self.assertEqual(calls[1][-1], str(self.root / 'xdg/systemd/user/oxc-test.service'))
+
+    def snapshot(self):
+        return sorted(str(p.relative_to(self.root)) for p in self.root.rglob('*'))
+
+    def refused(self, victim_setup, extra=()):
+        """Install once, replace one destination by a symlink to an outside file; a second install must refuse."""
+        outside = self.root / 'outside.txt'
+        outside.write_text('keep')
+        os.chmod(outside, 0o640)
+        victim_setup(outside)
+        before = self.snapshot()
+        code, calls = self.run_install(extra)
+        self.assertEqual(code, 1)
+        self.assertEqual((outside.read_text(), stat.S_IMODE(outside.stat().st_mode)), ('keep', 0o640))
+        self.assertEqual(calls, [])
+        self.assertEqual(self.snapshot(), before)
+
+    def link(self, path, target):
+        path.unlink()
+        path.symlink_to(target)
+
+    def test_dangling_runtime_json_symlink_refused(self):
+        (self.root / 'config').mkdir()
+        outside = self.root / 'elsewhere/created.json'
+        outside.parent.mkdir()
+        (self.root / 'config/runtime.json').symlink_to(outside)
+        for extra in ((), ('--force',)):
+            code, calls = self.run_install(extra)
+            self.assertEqual(code, 1)
+            self.assertFalse(os.path.lexists(outside))
+            self.assertFalse((self.root / 'prefix').exists())
+            self.assertFalse((self.root / 'units').exists())
+            self.assertEqual(calls, [])
+
+    def test_launcher_symlink_refused(self):
+        self.run_install(['--force'])
+        self.refused(lambda o: self.link(self.root / 'prefix/bin/oxc-controller', o), ['--force'])
+
+    def test_runtime_copy_symlink_refused(self):
+        self.run_install()
+        victim = next((self.root / 'prefix/share/oxc/runtime').glob('*.py'))
+        self.refused(lambda o: self.link(victim, o), ['--force'])
+
+    def test_oxa_binary_copy_symlink_refused(self):
+        binary = self.root / 'oxa-built'
+        binary.write_text('bin')
+        extra = ['--force', '--oxa-binary', str(binary)]
+        self.run_install(extra)
+        self.refused(lambda o: self.link(self.root / 'prefix/bin/oxa', o), extra)
+
+    def test_unit_file_symlink_refused(self):
+        self.run_install()
+        self.refused(lambda o: self.link(self.root / 'units/oxc-test.service', o), ['--force'])
+
+    def test_regular_files_and_symlinked_parent_dirs_still_work(self):
+        self.run_install(['--force'])
+        code, _ = self.run_install(['--force'])  # regular files are overwritten as before
+        self.assertEqual(code, 0)
+        real = self.root / 'real'
+        real.mkdir()
+        (self.root / 'linkdir').symlink_to(real)
+        self.args[self.args.index('--prefix') + 1] = str(self.root / 'linkdir/prefix')
+        self.args[self.args.index('--unit-dir') + 1] = str(self.root / 'linkdir/units')
+        code, _ = self.run_install(['--force'])
+        self.assertEqual(code, 0)
+        self.assertTrue((real / 'prefix/bin/oxc-controller').is_file())
+        self.assertTrue((real / 'units/oxc-test.service').is_file())
 
 
 if __name__ == '__main__':
