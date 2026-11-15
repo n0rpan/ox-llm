@@ -88,6 +88,8 @@ pub const CACHE_WRITE: &[&str] = &[
     ".cache/pnpm",
     ".cache/deno",
     ".cache/node-gyp",
+    // #362: `gh run view` creates `~/.cache/gh`.
+    ".cache/gh",
     ".npm",
     ".bun/install/cache",
     "go/pkg/mod",
@@ -290,8 +292,6 @@ impl Layout {
         for (k, v) in [
             ("MISE_CACHE_DIR", "/tmp/mise-cache"),
             ("MISE_STATE_DIR", "/tmp/mise-state"),
-            // #362: `gh` and other XDG tools create `~/.cache/<tool>`; the home is read-only.
-            ("XDG_CACHE_HOME", "/tmp/xdg-cache"),
         ] {
             if !env.iter().any(|(n, _)| n == k) {
                 env.push((k.to_string(), v.to_string()));

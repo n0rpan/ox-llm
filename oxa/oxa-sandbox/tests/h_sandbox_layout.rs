@@ -134,9 +134,6 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "--setenv",
         "MISE_STATE_DIR",
         "/tmp/mise-state",
-        "--setenv",
-        "XDG_CACHE_HOME",
-        "/tmp/xdg-cache",
         "--",
         "bash",
         "-c",
@@ -917,33 +914,25 @@ fn mise_cache_and_state_are_writable() {
     assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
 }
 
-/// #362: `gh run view` creates `~/.cache/gh`; with a read-only home that fails. When the caller
-/// sets no `XDG_CACHE_HOME`, point it at the writable sandbox /tmp; a caller value is kept.
+/// #362: `gh run view` creates `~/.cache/gh`; with a read-only home that fails. The directory is
+/// bound writable when it exists, and `XDG_CACHE_HOME` is NOT redirected to the throwaway /tmp
+/// (that would discard the pip/uv/go/pnpm caches bound in `CACHE_WRITE`).
 #[test]
-fn xdg_cache_home_defaults_to_writable_tmp() {
+fn gh_cache_writable_and_xdg_cache_not_redirected() {
     let env = TestEnv::new();
-    let build = |e: Vec<(String, String)>| {
-        Layout::build(&LayoutInputs {
-            home: env.home(),
-            agent_dir: Some(env.agent_dir()),
-            path_var: "/usr/bin".into(),
-            env: e,
-            read_extra: Vec::new(),
-            write_extra: Vec::new(),
-            allow_home_write: false,
-        })
-    };
-    let l = build(Vec::new());
-    assert!(
-        l.env
-            .contains(&("XDG_CACHE_HOME".into(), "/tmp/xdg-cache".into())),
-        "{:?}",
-        l.env
-    );
-    let l = build(vec![("XDG_CACHE_HOME".into(), "/x/c".into())]);
-    assert!(
-        l.env.contains(&("XDG_CACHE_HOME".into(), "/x/c".into())),
-        "{:?}",
-        l.env
-    );
+    env.write("home/.cache/gh/keep", "");
+    env.write("home/.cache/pip/keep", "");
+    let home = env.home();
+    let l = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin".into(),
+        env: Vec::new(),
+        read_extra: Vec::new(),
+        write_extra: Vec::new(),
+        allow_home_write: false,
+    });
+    assert!(l.write.contains(&home.join(".cache/gh")), "{:?}", l.write);
+    assert!(l.write.contains(&home.join(".cache/pip")), "{:?}", l.write);
+    assert!(!l.env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"), "{:?}", l.env);
 }
