@@ -104,17 +104,19 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
     }
     if !INTERACTIVE_COMMANDS.contains(&name) {
         // A template, skill or extension command goes to the core; a path (`/tmp/x`) is text.
-        // Anything else is rejected here, without a model call.
+        // A bare unknown name (`/bogus`) is a typo and is rejected here, without a model call.
+        // A name followed by text (`/src explain this`) is a prompt and reaches the model,
+        // so the outcome never depends on the host filesystem.
         if name.contains('/')
             || name.contains('.')
-            || std::path::Path::new(&format!("/{name}")).exists()
+            || !args.is_empty()
             || cx.commands.iter().any(|c| c.name == name)
         {
             return None;
         }
         return Some(notify(
             Level::Error,
-            format!("Unknown command /{name}. Type /help for the list of commands, or start the line with // to send it as text."),
+            format!("Unknown command /{name}. Type /help for the list of commands; add text after a name to send the line as a prompt."),
         ));
     }
 

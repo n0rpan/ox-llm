@@ -116,7 +116,7 @@ fn every_kept_command_has_handler() {
     assert!(fx.run("/README.md summarize this file").is_none());
 }
 
-/// #341: an unknown `/x` is rejected locally; `/help`, `/usage` and `/cost` answer locally.
+/// #341: an unknown `/x` is rejected locally; `/help` and `/usage` answer locally.
 #[test]
 fn unknown_slash_is_local_error_and_help_usage_exist() {
     let fx = Fx::new();
@@ -137,14 +137,12 @@ fn unknown_slash_is_local_error_and_help_usage_exist() {
     // `/cost` shows no cost, so it is not a built-in: it is an unknown command.
     let (level, _) = notice(expect_some("/cost", fx.run("/cost")));
     assert_eq!(level, Level::Error);
-    // A dotless single-component name that is not a command and does not exist on disk
-    // is rejected locally (a typo), not sent to the model.
-    let (level, _) = notice(expect_some("/zz-nope-qq", fx.run("/zz-nope-qq go")));
+    // A bare dotless unknown name is a typo: rejected locally.
+    let (level, _) = notice(expect_some("/zz-nope-qq", fx.run("/zz-nope-qq")));
     assert_eq!(level, Level::Error);
-    // The error says how to send the line as text, and that escape really reaches the core.
-    let (_, text) = notice(expect_some("/zz-nope-qq", fx.run("/zz-nope-qq go")));
-    assert!(text.contains("//"), "{text}");
-    assert!(fx.run("//zz-nope-qq go").is_none());
+    // With text after it, it is a prompt (host independent): it reaches the model.
+    assert!(fx.run("/zz-nope-qq go").is_none());
+    assert!(fx.run("/src explain this module").is_none());
     // A template or skill command of the session still goes to the core.
     let mut fx = Fx::new();
     fx.commands.push(CommandSpec {
