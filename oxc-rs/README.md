@@ -23,12 +23,14 @@ cargo clippy --locked --manifest-path oxc-rs/Cargo.toml \
   --features native-controller --all-targets -- -D warnings
 ```
 
-The 104 black-box parser scenarios use an isolated HOME and cleared environment
+The 140 black-box parser scenarios use an isolated HOME and cleared environment
 and compare exit status, stdout and stderr to the unchanged Python reference.
 They include all action help/error paths, version precedence/abbreviations and
 retired-command behavior, explicit/clustered help, ambiguity order, Unicode
 integers/underscores and the interpreter digit limit. A generated table records
-68 public decimal-zero code points from Python Unicode 15.0.0. Config and
+68 public decimal-zero code points and 711 printability ranges from Python
+Unicode 15.0.0. Additional cases verify Python quoting and argument classification;
+all 280 isolated differential parser probes match the reference. Config and
 runtime semantics are outside this slice.
 
 Release hold: keep this PR draft until v0.2.0 ships. Test locally and continue

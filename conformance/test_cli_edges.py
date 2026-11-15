@@ -51,6 +51,37 @@ CASES = {
 }
 
 
+# Error rendering must preserve Python repr rather than emit raw control bytes.
+for key, value in {
+    'single-quote': "a'b", 'both-quotes': 'a\'"b', 'backslash': 'a\\b',
+    'newline': 'a\nb', 'tab': '\t', 'control': '\x1c1',
+    'nonbreaking-space': '\u00a0', 'format-character': '\u200d',
+    'private-use': '\ue000', 'nonprintable-astral': '\U000e0001',
+}.items():
+    CASES['repr-limit-' + key] = ['--limit=' + value, '--version']
+    CASES['repr-help-' + key] = ['--help=' + value]
+CASES['repr-invalid-mode'] = ['--mode', "a'b", '--version']
+CASES['repr-invalid-action'] = ["a'b", '--version']
+
+
+CASES.update({
+    'space-negative-limit': ['--limit', '- 1', '--version'],
+    'space-negative-id': ['--id', '- 1', '--version'],
+    'space-negative-mode': ['--mode', '- 1', '--version'],
+    'space-negative-pref': ['--pref', '- 1', '--version'],
+    'space-negative-action': ['--check', '- 1', '--version'],
+    'negative-integer-action': ['--check', '-0', '--version'],
+    'negative-fraction-action': ['--check', '-.1', '--version'],
+    'known-option-with-space-remains-an-option': ['--id', '--help=hello world', '--version'],
+    'version-before-later-ambiguity': ['--version', '--h'],
+    'help-before-later-ambiguity': ['--help', '--s'],
+    'invalid-choice-before-later-ambiguity': ['--mode', 'invalid', '--h'],
+    'ambiguity-after-separator-is-positional': ['--version', '--', '--h'],
+    'uninstall-help-before-later-ambiguity': ['uninstall', '--help', '--r'],
+    'missing-value-before-later-ambiguity': ['--id', '--h'],
+})
+
+
 class CliEdgeContract(unittest.TestCase):
     def test_parser_edge_goldens(self):
         expected = json.loads(GOLDENS.read_text())

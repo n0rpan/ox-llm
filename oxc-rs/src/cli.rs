@@ -113,6 +113,47 @@ fn choices(values: &[&str]) -> String {
     values.join(", ")
 }
 
+fn repr(value: &str) -> String {
+    const PRINTABLE: &[[u32; 2]] = &include!("cli-printable-ranges.rs");
+    let quote = if value.contains('\'') && !value.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut result = String::new();
+    result.push(quote);
+    for c in value.chars() {
+        match c {
+            '\\' => result.push_str("\\\\"),
+            '\n' => result.push_str("\\n"),
+            '\r' => result.push_str("\\r"),
+            '\t' => result.push_str("\\t"),
+            _ if c == quote => {
+                result.push('\\');
+                result.push(c);
+            }
+            _ => {
+                let point = c as u32;
+                if (' '..='~').contains(&c)
+                    || PRINTABLE
+                        .iter()
+                        .any(|span| (span[0]..=span[1]).contains(&point))
+                {
+                    result.push(c);
+                } else if point < 256 {
+                    result.push_str(&format!("\\x{point:02x}"));
+                } else if point < 65536 {
+                    result.push_str(&format!("\\u{point:04x}"));
+                } else {
+                    result.push_str(&format!("\\U{point:08x}"));
+                }
+            }
+        }
+    }
+    result.push(quote);
+    result
+}
+
 fn decimal(c: char) -> Option<u8> {
     const ZEROES: &[u32] = &include!("cli-decimal-zeroes.rs");
     let point = c as u32;
@@ -154,12 +195,78 @@ fn negative_number(value: &str) -> bool {
     }
 }
 
+fn option_matches<'a>(
+    requested: &str,
+    flags: &'a [&'a str],
+    values: &'a [&'a str],
+) -> Vec<&'a str> {
+    let mut matches: Vec<&str> = flags
+        .iter()
+        .chain(values.iter())
+        .copied()
+        .chain(std::iter::once("--help"))
+        .filter(|name| {
+            **name == *requested || (requested.starts_with("--") && name.starts_with(requested))
+        })
+        .collect();
+    // argparse preserves option declaration order in ambiguity errors.
+    let order = [
+        "--help",
+        "--version",
+        "--rotate",
+        "--json",
+        "--id",
+        "--pref",
+        "--harness",
+        "--mode",
+        "--limit",
+        "--session",
+        "--all",
+        "--day",
+        "--write",
+        "--status",
+        "--soak",
+        "--check",
+        "--no-chat",
+        "--apply",
+        "--remove-models",
+        "--record",
+    ];
+    matches.sort_by_key(|name| order.iter().position(|item| item == name));
+    matches
+}
+
+fn option_like(word: &str, flags: &[&str], values: &[&str]) -> bool {
+    if !word.starts_with('-') || word == "-" {
+        return false;
+    }
+    let requested = word.split_once('=').map_or(word, |(name, _)| name);
+    if (word.starts_with("-h") && !word.starts_with("--"))
+        || !option_matches(requested, flags, values).is_empty()
+    {
+        return true;
+    }
+    !negative_number(word) && !word.contains(' ')
+}
+
 pub fn parse(words: &[String]) -> Result<Args, Exit> {
     if words.first().map(String::as_str) == Some("dense") {
         return Err(Exit {code:2, stdout:String::new(), stderr:"The dense Qwen3.8 27B model was retired in v0.1.2. Use `local-ai ornith` or `local-ai moe`.\n".into()});
     }
     let uninstall = words.first().map(String::as_str) == Some("uninstall");
     let input = if uninstall { &words[1..] } else { words };
+    let uninstall_flags = ["--apply", "--remove-models", "--json"];
+    let uninstall_values = ["--record"];
+    let flags = if uninstall {
+        uninstall_flags.as_slice()
+    } else {
+        FLAGS
+    };
+    let values = if uninstall {
+        uninstall_values.as_slice()
+    } else {
+        VALUES
+    };
     let mut result = Args {
         action: if uninstall { "uninstall" } else { "panel" }.into(),
         ..Args::default()
@@ -178,62 +285,20 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
         if !positional_only && word.starts_with("-h") && !word.starts_with("--") {
             if let Some(value) = word.strip_prefix("-h=") {
                 return Err(error(
-                    format!("argument -h/--help: ignored explicit argument '{value}'"),
+                    format!(
+                        "argument -h/--help: ignored explicit argument {}",
+                        repr(value)
+                    ),
                     uninstall,
                 ));
             }
             return Err(help(uninstall));
         }
-        if !positional_only && word.starts_with('-') && word != "-" {
+        if !positional_only && option_like(word, flags, values) {
             let (requested, explicit) = word
                 .split_once('=')
                 .map_or((word.as_str(), None), |(k, v)| (k, Some(v)));
-            let uninstall_flags = ["--apply", "--remove-models", "--json"];
-            let uninstall_values = ["--record"];
-            let flags = if uninstall {
-                uninstall_flags.as_slice()
-            } else {
-                FLAGS
-            };
-            let values = if uninstall {
-                uninstall_values.as_slice()
-            } else {
-                VALUES
-            };
-            let mut matches: Vec<&str> = flags
-                .iter()
-                .chain(values.iter())
-                .copied()
-                .chain(std::iter::once("--help"))
-                .filter(|name| {
-                    **name == *requested
-                        || (requested.starts_with("--") && name.starts_with(requested))
-                })
-                .collect();
-            // argparse preserves option declaration order in ambiguity errors.
-            let order = [
-                "--help",
-                "--version",
-                "--rotate",
-                "--json",
-                "--id",
-                "--pref",
-                "--harness",
-                "--mode",
-                "--limit",
-                "--session",
-                "--all",
-                "--day",
-                "--write",
-                "--status",
-                "--soak",
-                "--check",
-                "--no-chat",
-                "--apply",
-                "--remove-models",
-                "--record",
-            ];
-            matches.sort_by_key(|name| order.iter().position(|item| item == name));
+            let matches = option_matches(requested, flags, values);
             let name = if matches.contains(&requested) {
                 requested
             } else if matches.len() == 1 {
@@ -253,7 +318,10 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
             if name == "--help" {
                 if let Some(value) = explicit {
                     return Err(error(
-                        format!("argument -h/--help: ignored explicit argument '{value}'"),
+                        format!(
+                            "argument -h/--help: ignored explicit argument {}",
+                            repr(value)
+                        ),
                         uninstall,
                     ));
                 }
@@ -262,7 +330,7 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
             if flags.contains(&name) {
                 if let Some(value) = explicit {
                     return Err(error(
-                        format!("argument {name}: ignored explicit argument '{value}'"),
+                        format!("argument {name}: ignored explicit argument {}", repr(value)),
                         uninstall,
                     ));
                 }
@@ -285,7 +353,7 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                         uninstall,
                     ));
                 };
-                if value.starts_with('-') && !negative_number(value) {
+                if option_like(value, flags, values) {
                     return Err(error(
                         format!("argument {name}: expected one argument"),
                         uninstall,
@@ -303,7 +371,8 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
                 if !allowed.contains(&value.as_str()) {
                     return Err(error(
                         format!(
-                            "argument {name}: invalid choice: '{value}' (choose from {})",
+                            "argument {name}: invalid choice: {} (choose from {})",
+                            repr(&value),
                             choices(allowed)
                         ),
                         uninstall,
@@ -312,7 +381,7 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
             }
             if name == "--limit" && integer(&value).is_none() {
                 return Err(error(
-                    format!("argument --limit: invalid int value: '{value}'"),
+                    format!("argument --limit: invalid int value: {}", repr(&value)),
                     uninstall,
                 ));
             }
@@ -324,7 +393,8 @@ pub fn parse(words: &[String]) -> Result<Args, Exit> {
             if !ACTIONS.contains(&word.as_str()) {
                 return Err(error(
                     format!(
-                        "argument action: invalid choice: '{word}' (choose from {})",
+                        "argument action: invalid choice: {} (choose from {})",
+                        repr(word),
                         choices(ACTIONS)
                     ),
                     uninstall,
