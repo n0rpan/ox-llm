@@ -245,8 +245,14 @@ def forward(self, st):
         payload = cloud.redact(payload, key)
         if st.led is not None:
             st.led.observe(payload)
-        self.reply(response.status, payload, 'application/json')
+        # the row is written before the reply goes out, so a client that sees the answer can rely on
+        # the next request already being gated by a failed ledger write
         _finish(self, st, item, meter, response.status, hold=hold, secret=key)
+        try:
+            self.reply(response.status, payload, 'application/json')
+        except (BrokenPipeError, ConnectionResetError):
+            st.client_write_failed = True
+            self.close_connection = True
     except cloud.CloudError as error:
         _finish(self, st, item, meter, error.status, error.code, hold, key, failed=True)
         if started:

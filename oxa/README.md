@@ -1,17 +1,22 @@
 # oxa
 
-`oxa` is the terminal coding agent of ox-llm. Its model talks only to the local engine, `oxe`, which is reached through the `oxc` controller. The model's tools may use the network; see [docs/pages/security.md](docs/pages/security.md). It reads and edits your project with a small set of tools, runs bash in a `bubblewrap` sandbox, keeps sessions as trees, and compacts its context to fit the window of a local model. It has an interactive terminal interface, a print mode, a JSON event stream and an RPC mode, and it can be extended with skills, JavaScript extensions, MCP servers and a `web_search` tool.
+`oxa` is the terminal coding agent of ox-llm. It sends model requests to the OpenAI-compatible endpoint exposed by the `oxc` controller. The model's tools may use the network; see [docs/pages/security.md](docs/pages/security.md). It reads and edits your project with a small set of tools, runs bash in a `bubblewrap` sandbox, keeps sessions as trees, and compacts its context to fit the window of a local model. It has an interactive terminal interface, a print mode, a JSON event stream and an RPC mode, and it can be extended with skills, JavaScript extensions, MCP servers and a `web_search` tool.
 
 Status: v0.2.0, part of ox-llm. oxa is a Rust port of the pi coding agent (MIT). See `LICENSE` and `NOTICE` for the licence and the attribution.
 
 ## Quickstart
 
+Build from the `oxa/` directory of the checkout:
+
 ```console
-$ cargo build --release -p oxa-cli
+$ cargo build --release --locked -p oxa-cli
+$ export PATH="$PWD/target/release:$PATH"
 $ export OXA_ENGINE_URL=http://127.0.0.1:8092
-$ cd ~/src/my-project
-$ ./target/release/oxa
+$ cd ~/project
+$ oxa
 ```
+
+See [tools and context handling](docs/pages/tools-context.md) for the defaults.
 
 `OXA_ENGINE_URL` defaults to the controller on `http://127.0.0.1:8092`. Without a running engine oxa stops with an error that names the address. For one answer from a script, use print mode:
 
@@ -62,10 +67,9 @@ Twenty product crates and two test crates. The product crates have no async runt
 
 ## Files that steer the work
 
-- `WAVES.toml`: the task manifest, with the files each task owns and its acceptance tests. `ci/check_manifest.py` checks it against the tree.
-- `PARITY.md`: one row per documented behaviour of the earlier agent, with a verdict (P: the same behaviour, A: an addition or adaptation in oxa, O: omitted) and the test that checks it.
+- `PARITY.md`: oxa’s behavior regression contracts, retaining historical row IDs and pi provenance (P: inherited behavior; A: adapted behavior), with the tests that check them.
 - `docs/fake-script.md`: the script format of the fake engine.
-- `ci/oxa-ci.yml`: the CI workflow. `ci/check_net_surface.py` checks where the code connects to the network.
+- [Hosted checks](../.github/workflows/checks.yml) build and test the products. `ci/check_net_surface.py` checks where the code connects to the network.
 
 ## Build and test
 
