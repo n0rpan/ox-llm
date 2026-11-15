@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 
-mod cli_args;
+mod cli;
 mod cli_client;
 mod cli_control;
 
 fn main() {
-    let words: Vec<String> = std::env::args().skip(1).collect();
-    let code = match cli_args::parse(&words) {
+    let words = cli::words(std::env::args_os().skip(1));
+    let code = match cli::parse(&words) {
         Err(reply) => {
             print!("{}", reply.stdout);
             eprint!("{}", reply.stderr);

@@ -2,7 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 const HELP: &str = include_str!("help.txt");
 fn main_help() -> &'static str {
-    HELP
+    if std::env::args_os().next().is_some_and(|name| {
+        std::path::Path::new(&name)
+            .file_name()
+            .is_some_and(|name| name == "local-ai")
+    }) {
+        include_str!("legacy-help.txt")
+    } else {
+        HELP
+    }
 }
 const UNINSTALL_HELP: &str = include_str!("uninstall-help.txt");
 const ACTIONS: &[&str] = &[
@@ -82,7 +90,13 @@ fn error(message: String, uninstall: bool) -> Exit {
     } else {
         main_help()
     };
-    let program = if uninstall { "oxc uninstall" } else { "oxc" };
+    let program = if uninstall {
+        "oxc uninstall"
+    } else if main_help() == HELP {
+        "oxc"
+    } else {
+        "local-ai"
+    };
     Exit {
         code: 2,
         stdout: String::new(),
@@ -102,7 +116,45 @@ fn help(uninstall: bool) -> Exit {
     }
 }
 fn choices(values: &[&str]) -> String {
-    values.join(", ")
+    values
+        .iter()
+        .map(|v| repr(v))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// First of 128 code points in plane 16's private use area that stand for the bytes
+/// 0x80..=0xFF of an argument that is not valid UTF-8 (Python's lone surrogates U+DC80..U+DCFF).
+const RAW_BYTE_BASE: u32 = 0x10_FF00;
+
+/// Decode arguments like Python's `surrogateescape`: invalid bytes survive as stand-ins.
+pub fn words(args: impl Iterator<Item = std::ffi::OsString>) -> Vec<String> {
+    args.map(|arg| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let mut rest = arg.as_bytes();
+            let mut text = String::new();
+            while !rest.is_empty() {
+                match std::str::from_utf8(rest) {
+                    Ok(valid) => {
+                        text.push_str(valid);
+                        break;
+                    }
+                    Err(error) => {
+                        let (good, bad) = rest.split_at(error.valid_up_to());
+                        text.push_str(std::str::from_utf8(good).unwrap_or_default());
+                        text.push(char::from_u32(RAW_BYTE_BASE + u32::from(bad[0])).unwrap_or('?'));
+                        rest = &bad[1..];
+                    }
+                }
+            }
+            text
+        }
+        #[cfg(not(unix))]
+        arg.to_string_lossy().into_owned()
+    })
+    .collect()
 }
 
 fn repr(value: &str) -> String {
@@ -123,6 +175,9 @@ fn repr(value: &str) -> String {
             _ if c == quote => {
                 result.push('\\');
                 result.push(c);
+            }
+            _ if (RAW_BYTE_BASE + 0x80..=RAW_BYTE_BASE + 0xff).contains(&(c as u32)) => {
+                result.push_str(&format!("\\udc{:02x}", c as u32 - RAW_BYTE_BASE));
             }
             _ => {
                 let point = c as u32;
@@ -175,16 +230,12 @@ pub(crate) fn integer(value: &str) -> Option<i64> {
     (previous_digit && digits <= 4300).then_some(if negative { -number } else { number })
 }
 fn negative_number(value: &str) -> bool {
+    // argparse (3.14.8) uses re.match(r"-\.?\d"): a prefix match, not the whole word.
     let Some(text) = value.strip_prefix('-') else {
         return false;
     };
-    if let Some((whole, fractional)) = text.split_once('.') {
-        whole.chars().all(|c| decimal(c).is_some())
-            && !fractional.is_empty()
-            && fractional.chars().all(|c| decimal(c).is_some())
-    } else {
-        !text.is_empty() && text.chars().all(|c| decimal(c).is_some())
-    }
+    let text = text.strip_prefix('.').unwrap_or(text);
+    text.chars().next().is_some_and(|c| decimal(c).is_some())
 }
 
 fn option_matches<'a>(

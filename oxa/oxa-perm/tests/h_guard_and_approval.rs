@@ -305,3 +305,192 @@ fn the_real_account_home_is_denied_as_well_as_a_changed_home() {
         }
     }
 }
+
+/// #201 (2): one approved write to a file in the home still covers ordinary files of that
+/// directory (usability first), but never the home's startup files, user units or
+/// `~/.local/bin`, wherever the cwd is.
+#[test]
+fn a_grant_in_the_home_never_covers_its_startup_files_or_units() {
+    let env = TestEnv::new();
+    env.write("home/notes.txt", "n\n");
+    env.write("home/.bashrc", "# rc\n");
+    env.write("home/.config/systemd/user/a.service", "");
+    env.write("home/.config/other.conf", "");
+    let home = env.home();
+    let cwd = env.work();
+    let mut p = guarded(&env);
+    let first = Access::Write(home.join("notes.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &first, &cwd), Decision::Ask);
+    p.remember(&first);
+    // Another ordinary file in the same directory: allowed without asking.
+    let other = Access::Write(home.join("todo.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &other, &cwd), Decision::Allow);
+    for rel in [
+        ".bashrc",
+        ".profile",
+        ".zshrc",
+        ".config/systemd/user/a.service",
+        ".config/systemd/user/evil.service",
+        ".local/bin/tool",
+    ] {
+        let a = Access::Write(home.join(rel));
+        assert_eq!(p.decide(Mode::Workspace, &a, &cwd), Decision::Ask, "{rel}");
+    }
+    // A grant on the unit directory itself does not cover it either.
+    let unit = Access::Write(home.join(".config/systemd/user/a.service"));
+    p.remember(&unit);
+    assert_eq!(p.decide(Mode::Workspace, &unit, &cwd), Decision::Ask);
+    // An ordinary file under ~/.config after a grant there: still allowed.
+    let cfg = Access::Write(home.join(".config/other.conf"));
+    p.remember(&cfg);
+    assert_eq!(
+        p.decide(
+            Mode::Workspace,
+            &Access::Write(home.join(".config/new.conf")),
+            &cwd
+        ),
+        Decision::Allow
+    );
+}
+
+#[test]
+fn git_worktree_common_dir_hooks_and_config_are_never_written() {
+    let env = TestEnv::new();
+    let main = env.work().join("main");
+    let wt = env.work().join("wt");
+    let wtgit = main.join(".git/worktrees/wt");
+    std::fs::create_dir_all(main.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(&wtgit).unwrap();
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wtgit.display())).unwrap();
+    std::fs::write(wtgit.join("commondir"), "../..\n").unwrap();
+    let p = guarded(&env);
+    for f in [
+        main.join(".git/hooks/pre-commit"),
+        main.join(".git/config"),
+        wtgit.join("config.worktree"),
+        wtgit.join("hooks/pre-push"),
+        wtgit.join("commondir"),
+        wtgit.join("gitdir"),
+    ] {
+        for mode in [Mode::Workspace, Mode::Ask] {
+            assert_eq!(
+                p.decide(mode, &Access::Write(f.clone()), &wt),
+                Decision::Deny(deny_reasons::GIT_PROTECTED),
+                "{f:?} {mode:?}"
+            );
+        }
+    }
+    // Ordinary work in the worktree is unchanged.
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Write(wt.join("src/a.rs")), &wt),
+        Decision::Allow
+    );
+}
+
+/// #201 (1): `.git/commondir` and `.git/gitdir` point git at another directory's hooks and
+/// config, so the file tools never write them, like `.git/hooks` and `.git/config`.
+#[test]
+fn git_commondir_and_gitdir_are_refused_to_the_file_tools() {
+    let env = TestEnv::new();
+    let cwd = env.work();
+    let p = guarded(&env);
+    for rel in [".git/commondir", ".git/gitdir"] {
+        let a = Access::Write(cwd.join(rel));
+        for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+            assert_eq!(
+                p.decide(mode, &a, &cwd),
+                Decision::Deny(deny_reasons::GIT_PROTECTED),
+                "{rel} {mode:?}"
+            );
+        }
+    }
+    // Other files of `.git` are unchanged.
+    let a = Access::Write(cwd.join(".git/description"));
+    assert_eq!(p.decide(Mode::Workspace, &a, &cwd), Decision::Allow);
+}
+
+/// #201 (3): the baseline of a trusted project with no record yet, taken before tools run:
+/// `.oxa` and `.agents/skills` content created afterwards is new, not part of the first record.
+#[test]
+fn a_baseline_makes_later_project_config_new() {
+    let env = TestEnv::new();
+    let cwd = env.work();
+    let file = env.agent_dir().join("trust.json");
+    let mut store = TrustStore::load(&file);
+    store.save(&file, &cwd, true).unwrap();
+    assert_eq!(store.approval(&cwd), Approval::NoRecord);
+    assert!(store.record_baseline(&file, &cwd).unwrap(), "first record");
+    assert_eq!(TrustStore::load(&file).approval(&cwd), Approval::Matches);
+    // A second baseline never overwrites a record.
+    env.write("work/.oxa/settings.json", r#"{"done":["echo planted"]}"#);
+    env.write("work/.agents/skills/s/SKILL.md", "---\nname: s\n---\n");
+    let mut store = TrustStore::load(&file);
+    assert!(!store.record_baseline(&file, &cwd).unwrap());
+    let Approval::Changed(changed) = TrustStore::load(&file).approval(&cwd) else {
+        panic!("content created after the baseline needs the normal approval");
+    };
+    assert_eq!(changed.len(), 2, "{changed:?}");
+    assert!(changed.iter().all(|c| c.new));
+    assert!(!TrustStore::load(&file).trusted_as_approved(&cwd));
+}
+
+/// Review of #203: with `$HOME` overridden, a grant in the account's real home never covers
+/// that home's startup files either.
+#[test]
+fn a_grant_in_the_real_home_never_covers_its_startup_files() {
+    let env = TestEnv::new();
+    let real = env.work().join("real-account-home");
+    env.write("work/real-account-home/notes.txt", "n\n");
+    env.write("work/real-account-home/.bashrc", "# rc\n");
+    let guard = PathGuard::with_real_home(
+        &env.home(),
+        Some(&real),
+        &env.agent_dir(),
+        &env.agent_dir().join("tmp"),
+    );
+    let cwd = env.work().join("proj");
+    let mut p = ModePolicy::new().with_guard(guard);
+    let first = Access::Write(real.join("notes.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &first, &cwd), Decision::Ask);
+    p.remember(&first);
+    let rc = Access::Write(real.join(".bashrc"));
+    assert_eq!(p.decide(Mode::Workspace, &rc, &cwd), Decision::Ask);
+    let other = Access::Write(real.join("todo.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &other, &cwd), Decision::Allow);
+}
+
+#[test]
+fn git_worktree_pointer_cannot_be_rewritten_and_fifo_dotgit_does_not_hang() {
+    let env = TestEnv::new();
+    let main = env.work().join("main");
+    let wt = env.work().join("wt");
+    let wtgit = main.join(".git/worktrees/wt");
+    std::fs::create_dir_all(main.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(&wtgit).unwrap();
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), format!("gitdir: {}\n", wtgit.display())).unwrap();
+    let p = guarded(&env);
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Write(wt.join(".git")), &wt),
+        Decision::Deny(deny_reasons::GIT_PROTECTED)
+    );
+    // A `.git` FIFO must not block the check.
+    let fifo = env.work().join("ff");
+    std::fs::create_dir_all(&fifo).unwrap();
+    let st = std::process::Command::new("mkfifo")
+        .arg(fifo.join(".git"))
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (p2, f2) = (p.clone(), fifo.clone());
+    std::thread::spawn(move || {
+        let d = p2.decide(Mode::Workspace, &Access::Write(f2.join("a.rs")), &f2);
+        let _ = tx.send(d);
+    });
+    let d = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("hung on FIFO .git");
+    assert_eq!(d, Decision::Allow);
+}

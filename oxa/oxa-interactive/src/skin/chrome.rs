@@ -47,7 +47,11 @@ pub fn oxa_splash(
     if info.model_remote {
         second.push_str(&theme.fg(
             "accent",
-            &format!("cloud · {}", clean(info.model_provider.unwrap_or("remote"))),
+            &format!(
+                "cloud {} {}",
+                g.mid,
+                clean(info.model_provider.unwrap_or("remote"))
+            ),
         ));
         second.push_str(&theme.fg("muted", &format!(" {} ", g.mid)));
     } else if !model.is_empty() {
@@ -160,6 +164,9 @@ struct HudParts {
     spinner: &'static str,
     /// O-182: YOLO is on, with the count of auto-approved questions.
     yolo: Option<u64>,
+    /// D4b: where the model runs: `local`, or `cloud · <provider>`.
+    remote: Option<&'static str>,
+    is_remote: bool,
 }
 
 impl HudParts {
@@ -205,6 +212,8 @@ impl HudParts {
             // frame changes a handful of cells and nothing else on the screen.
             spinner: g.dot,
             yolo: st.yolo.then_some(st.yolo_approved),
+            remote: st.model_provider,
+            is_remote: st.model_remote,
         }
     }
 }
@@ -302,6 +311,18 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
         if let Some(mode) = p.mode {
             segs.push(theme.fg(mode_token(mode), mode.as_str()));
         }
+    }
+
+    // 9: where the model runs (D4b); goes with the mode.
+    if shown(10) {
+        segs.push(if p.is_remote {
+            theme.fg(
+                "accent",
+                &format!("cloud {} {}", g.mid, clean(p.remote.unwrap_or("remote"))),
+            )
+        } else {
+            theme.fg("success", "local")
+        });
     }
 
     format!(" {}", segs.join(&sep))

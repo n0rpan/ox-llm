@@ -300,3 +300,25 @@ fn synced_skills_under_agents_home_are_opt_in() {
         ["computer-use", "diagnose-crash", "docx", "omarchy", "pdf", "xlsx"]
     );
 }
+
+#[test]
+fn report_issue_skill_searches_for_duplicates_before_filing() {
+    let text = BUILTIN_SKILLS
+        .iter()
+        .find(|(n, _)| *n == "report-issue")
+        .map(|(_, t)| *t)
+        .unwrap();
+    let draft = text.find("report-issue draft").expect("draft step");
+    let search = text.find("gh issue list -R").expect("issue search");
+    let submit = text.find("report-issue submit").expect("submit step");
+    assert!(text.contains("gh pr list -R"), "searches open pull requests");
+    assert!(search < submit, "the search comes before posting");
+    assert!(
+        text.contains("gh issue comment"),
+        "a match gets a comment, not a new issue"
+    );
+    assert!(text.contains("local file"), "a failed search saves locally");
+    assert!(text.contains("link the related"), "related issues are linked");
+    assert!(text.contains("without prefixes"), "titles state the symptom");
+    let _ = draft;
+}

@@ -111,12 +111,12 @@
   },
   "invalid-mode": {
     "exit": 2,
-    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument --mode: invalid choice: 'invalid' (choose from fast, deep, max)\n",
+    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument --mode: invalid choice: 'invalid' (choose from 'fast', 'deep', 'max')\n",
     "stdout": ""
   },
   "invalid-pref": {
     "exit": 2,
-    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument --pref: invalid choice: 'invalid' (choose from auto, 20, 18, 16, 14)\n",
+    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument --pref: invalid choice: 'invalid' (choose from 'auto', '20', '18', '16', '14')\n",
     "stdout": ""
   },
   "ledger-help": {
@@ -191,7 +191,7 @@
   },
   "positional-version": {
     "exit": 2,
-    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument action: invalid choice: '--version' (choose from panel, status, ledger, storage, chat, code, plan, images, load, unload, moe, ornith, flash, clear-cache, storage-delete, harness-prepare, harness-forget, flash-cache, cache, mode, share, digest, update, rollback)\n",
+    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument action: invalid choice: '--version' (choose from 'panel', 'status', 'ledger', 'storage', 'chat', 'code', 'plan', 'images', 'load', 'unload', 'moe', 'ornith', 'flash', 'clear-cache', 'storage-delete', 'harness-prepare', 'harness-forget', 'flash-cache', 'cache', 'mode', 'share', 'digest', 'update', 'rollback')\n",
     "stdout": ""
   },
   "retired-version": {
@@ -266,7 +266,7 @@
   },
   "unknown-action": {
     "exit": 2,
-    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument action: invalid choice: 'not-an-action' (choose from panel, status, ledger, storage, chat, code, plan, images, load, unload, moe, ornith, flash, clear-cache, storage-delete, harness-prepare, harness-forget, flash-cache, cache, mode, share, digest, update, rollback)\n",
+    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument action: invalid choice: 'not-an-action' (choose from 'panel', 'status', 'ledger', 'storage', 'chat', 'code', 'plan', 'images', 'load', 'unload', 'moe', 'ornith', 'flash', 'clear-cache', 'storage-delete', 'harness-prepare', 'harness-forget', 'flash-cache', 'cache', 'mode', 'share', 'digest', 'update', 'rollback')\n",
     "stdout": ""
   },
   "unknown-option": {
@@ -311,7 +311,7 @@
   },
   "version-after-unknown": {
     "exit": 2,
-    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument action: invalid choice: 'not-an-action' (choose from panel, status, ledger, storage, chat, code, plan, images, load, unload, moe, ornith, flash, clear-cache, storage-delete, harness-prepare, harness-forget, flash-cache, cache, mode, share, digest, update, rollback)\n",
+    "stderr": "usage: oxc [-h] [--version] [--rotate] [--json] [--id ID]\n           [--pref {auto,20,18,16,14}] [--harness HARNESS]\n           [--mode {fast,deep,max}] [--limit LIMIT] [--session SESSION]\n           [--all] [--day DAY] [--write] [--status] [--soak] [--check]\n           [--no-chat]\n           [{panel,status,ledger,storage,chat,code,plan,images,load,unload,moe,ornith,flash,clear-cache,storage-delete,harness-prepare,harness-forget,flash-cache,cache,mode,share,digest,update,rollback}]\n           [rest ...]\noxc: error: argument action: invalid choice: 'not-an-action' (choose from 'panel', 'status', 'ledger', 'storage', 'chat', 'code', 'plan', 'images', 'load', 'unload', 'moe', 'ornith', 'flash', 'clear-cache', 'storage-delete', 'harness-prepare', 'harness-forget', 'flash-cache', 'cache', 'mode', 'share', 'digest', 'update', 'rollback')\n",
     "stdout": ""
   },
   "version-before-unknown": {
