@@ -115,8 +115,12 @@ class Client:
                 self.stopped.set()
 
     def shutdown(self, _how=None):
-        self.canceled.set()
         with self.lock:
+            # The watcher and request owner may both interrupt. Cancel only
+            # once so a second signal cannot abort the SDK's async cleanup.
+            if self.canceled.is_set():
+                return
+            self.canceled.set()
             if self.loop is not None and self.task is not None:
                 self.loop.call_soon_threadsafe(self.task.cancel)
 

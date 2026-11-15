@@ -125,6 +125,12 @@ cd lab
 sh tools/run_lab_tests.sh discover -s tests -p test_cloud_anthropic_disconnect.py
 ```
 
+An additional controlled async-resource regression covers the watcher and request
+owner interrupting the same request while SDK cleanup is pending. Shutdown is
+idempotent: the second interruption cannot cancel that cleanup. The regression
+fails before this guard and passes with it; the ten-test focused file contains
+nine loopback SDK tests and this separate lifecycle test.
+
 The actual TUI/GPT-author/native-reviewer scenario also has a cancellation mode:
 
 ```sh

@@ -1,16 +1,68 @@
 """Native SDK cancellation under the default-off orchestrator opt-in."""
 import json
+import asyncio
 import select
 import socket
 import threading
 import time
+import types
+import unittest
 from unittest.mock import patch
 
 from snapdragon_ai_lab.runtime import cloud_anthropic, controller
+from snapdragon_ai_lab.runtime.orchestrator_anthropic import Client, Canceled
 
 from mock_cloud import MockAnthropic
 from test_cloud_anthropic import AnthropicBase
 from test_cloud_remote import KEY
+
+
+class CancellationCleanup(unittest.TestCase):
+    def test_repeated_shutdown_does_not_interrupt_owned_resource_cleanup(self):
+        started, closing, release, closed = (threading.Event() for _ in range(4))
+
+        class OwnedSDK:
+            def __init__(self, **kwargs):
+                self.messages = self
+
+            async def __aenter__(self):
+                return self
+
+            async def create(self, **params):
+                started.set()
+                await asyncio.Future()
+
+            async def __aexit__(self, *args):
+                closing.set()
+                while not release.is_set():
+                    await asyncio.sleep(0.01)
+                closed.set()
+
+        errors = []
+        owner = Client({'base_url': 'http://127.0.0.1:1'}, KEY, 2)
+
+        def consume():
+            try:
+                owner.create(stream=True)
+            except Exception as error:
+                errors.append(error)
+
+        with patch.dict('sys.modules', {'anthropic': types.SimpleNamespace(AsyncAnthropic=OwnedSDK)}):
+            consumer = threading.Thread(target=consume)
+            consumer.start()
+            try:
+                self.assertTrue(started.wait(2))
+                owner.shutdown()  # downstream EOF observer
+                self.assertTrue(closing.wait(2))
+                owner.shutdown()  # request owner also observes the interruption
+            finally:
+                release.set()
+                owner.close()
+                consumer.join(timeout=2)
+        self.assertFalse(consumer.is_alive())
+        self.assertTrue(closed.is_set(), 'repeated cancellation interrupted resource cleanup')
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], Canceled)
 
 
 class QuietAnthropic(MockAnthropic):
