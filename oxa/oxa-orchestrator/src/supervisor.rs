@@ -2,6 +2,7 @@
 use crate::journal::Journal;
 use crate::native::{checked_program, Launch, NativeWorker, VerifiedLocal};
 use crate::rpc::{Outcome as RpcOutcome, RpcSession};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -33,7 +34,8 @@ pub struct Settings {
     pub output_reservation: usize,
     pub token_reservation: u64,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Completed,
     Failed,
@@ -42,6 +44,7 @@ pub enum Outcome {
     Deadline,
     OutputBudget,
     TokenBudget,
+    PolicyViolation,
     Lost,
 }
 impl Outcome {
@@ -54,11 +57,13 @@ impl Outcome {
             Self::Deadline => "deadline",
             Self::OutputBudget => "output_budget",
             Self::TokenBudget => "token_budget",
+            Self::PolicyViolation => "policy_violation",
             Self::Lost => "lost",
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Cleanup {
     NotStarted,
     Stopped,
@@ -182,7 +187,7 @@ pub fn run(
         .ok_or_else(|| invalid("invalid run deadline"))?;
     let order: BTreeMap<_, _> = plan.iter().enumerate().map(|(i, w)| (w.id.clone(), i)).collect();
     let mut journal = Journal::create(&settings.journal, settings.journal_bytes)?;
-    journal.record(None,"run_started",json!({"run":settings.id,"workers":plan.len(),"parallelism":settings.parallelism,"mode":"plan","offline":true,"toolPolicy":"none","profile":"tool-free-rpc-v1"}))?;
+    journal.record(None,"run_started",json!({"run":settings.id,"workers":plan.len(),"parallelism":settings.parallelism,"mode":"plan","offline":true,"toolPolicy":"none","profile":"tool-free-rpc-v2"}))?;
     for spec in &plan {
         journal.record(Some(&spec.id),"queued",json!({"roleSha256":hash(&spec.role),"taskSha256":hash(&spec.task),"route":"verified-local","reservedTokens":spec.tokens,"reservedBytes":spec.output_bytes,"tools":[]}))?;
         observe(status(spec, "queued", None, 0));
@@ -292,12 +297,21 @@ pub fn run(
                         forced,
                     });
                 }
-                Err(_) => publish(
-                    &mut journal,
-                    &mut observe,
-                    not_started(spec, Outcome::Failed),
-                    &mut reports,
-                )?,
+                Err(error) => {
+                    let mut report = not_started(spec, Outcome::Failed);
+                    if let Some((pid, stopped)) = crate::native::startup_evidence(&error) {
+                        journal.record(Some(&report.worker), "spawned", json!({"processId":pid}))?;
+                        report.cleanup = if stopped {
+                            Cleanup::Stopped
+                        } else {
+                            Cleanup::Unconfirmed
+                        };
+                        if !stopped {
+                            report.outcome = Outcome::Lost;
+                        }
+                    }
+                    publish(&mut journal, &mut observe, report, &mut reports)?;
+                }
             }
         }
         let mut index = 0;
@@ -479,7 +493,7 @@ fn publish(
     } else {
         "finished"
     };
-    journal.record(Some(&report.worker),event,json!({"outcome":report.outcome.as_str(),"reportedTokens":report.observed_tokens,"outputBytes":report.output_bytes,"processStopped":report.cleanup==Cleanup::Stopped,"resultSha256":hash(&report.result)}))?;
+    journal.record(Some(&report.worker),event,json!({"outcome":report.outcome.as_str(),"reportedTokens":report.observed_tokens,"outputBytes":report.output_bytes,"processStopped":report.cleanup==Cleanup::Stopped,"cleanup":report.cleanup,"resultSha256":hash(&report.result)}))?;
     observe(Status {
         worker: report.worker.clone(),
         state: if report.cleanup == Cleanup::Unconfirmed {
@@ -570,7 +584,7 @@ fn classify(error: &io::Error, process: &NativeWorker, spec: &WorkerSpec) -> Out
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use oxa_fake::TestEnv;
     use std::fs;
@@ -601,7 +615,7 @@ for line in sys.stdin:
   else:finish('reply:'+task)
  elif command=='steer':finish('steered:'+request['message'])
 "#;
-    fn fixture(tasks: &[&str]) -> (TestEnv, Settings, Vec<WorkerSpec>) {
+    pub(crate) fn fixture(tasks: &[&str]) -> (TestEnv, Settings, Vec<WorkerSpec>) {
         let env = TestEnv::new();
         let binary = env.write("runtime.py", RUNTIME);
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
