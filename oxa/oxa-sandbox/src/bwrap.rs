@@ -322,6 +322,15 @@ pub(crate) fn bwrap_args_homes(
             push(&mut a, &["--ro-bind", "/dev/null", &ps]);
         }
     }
+    // Mount points below the hidden home must be created before sealing its root.
+    // Child workspace/cache binds remain writable; unbound home writes now fail with EROFS.
+    // A cwd that is a strict ancestor of home (`/`, `/home`) is bound read-only above and covers
+    // the home tmpfs: home is then no mount of its own (bwrap's remount fails with EINVAL) and
+    // is read-only already. Nothing is bound over home here: a late bind of the host home would
+    // cover the masks above and expose the credentials.
+    if cwd_path.starts_with(&home_c) || !home_c.starts_with(cwd_path) {
+        push(&mut a, &["--remount-ro", &home_c.to_string_lossy()]);
+    }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
     push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
     push(&mut a, &["--setenv", "HOME", &home_s]);

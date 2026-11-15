@@ -892,3 +892,73 @@ fn json_sink_writes_records_and_keeps_going() {
         "{\"type\":\"agent_start\"}\n{\"type\":\"agent_settled\",\"aborted\":true}\n"
     );
 }
+
+/// A writer that records every write and flush in one shared, ordered log.
+struct Logged {
+    tag: &'static str,
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl std::io::Write for Logged {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}", self.tag, String::from_utf8_lossy(b)));
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.log.lock().unwrap().push(format!("{}:<flush>", self.tag));
+        Ok(())
+    }
+}
+
+/// Progress goes to stderr in order, flushed per event, before the final text on stdout.
+#[test]
+fn print_streams_progress_to_stderr_and_final_text_to_stdout() {
+    let env = TestEnv::new();
+    let turns = vec![
+        ScriptTurn {
+            text: Some("let me look".to_string()),
+            ..ScriptTurn::tool("c1", "bash", r#"{"command":"ls\n -la"}"#)
+        },
+        ScriptTurn::text("done"),
+    ];
+    let engine = Arc::new(ScriptedEngine::new(turns));
+    let mut session = open(&env, &engine);
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut out = Logged {
+        tag: "out",
+        log: log.clone(),
+    };
+    let mut err = Logged {
+        tag: "err",
+        log: log.clone(),
+    };
+    let code = run_print(&mut session, prompt("go"), &mut out, &mut err).unwrap();
+    assert_eq!(code, 0);
+    let log = log.lock().unwrap().clone();
+    let pos = |needle: &str| {
+        log.iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} missing in {log:?}"))
+    };
+    let (text, start, end, fin) = (
+        pos("err:let me look"),
+        pos("err:[tool] bash\n"),
+        pos("err:[tool] bash failed"),
+        pos("out:done"),
+    );
+    assert!(text < start && start < end && end < fin, "{log:?}");
+    // Each progress write is flushed right after it, and so is the reply.
+    for i in [text, start, end] {
+        assert_eq!(log[i + 1], "err:<flush>", "{log:?}");
+    }
+    assert_eq!(log[fin + 2], "out:<flush>", "{log:?}");
+    let stdout: String = log
+        .iter()
+        .filter_map(|l| l.strip_prefix("out:"))
+        .filter(|l| *l != "<flush>")
+        .collect();
+    assert_eq!(stdout, "done\n");
+}
