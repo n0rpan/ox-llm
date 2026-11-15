@@ -137,8 +137,26 @@ fn hud_snapshot_at_120_columns() {
     let st = full_status();
     let line = strip_ansi(&hud(&st, 120, &colour()));
     // The full line fits in 120 columns: no segment is dropped.
-    let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ workspace";
+    let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ workspace │ local";
     assert_eq!(line, expected);
+}
+
+/// #50: the OXA status bar names where the model runs (D4b), cloud with its provider.
+#[test]
+fn hud_shows_the_model_location() {
+    let remote = StatusModel {
+        model_remote: true,
+        model_provider: Some("anthropic"),
+        ..full_status()
+    };
+    let line = plain_hud(&remote, 160);
+    assert!(line.ends_with("workspace │ cloud · anthropic"), "{line:?}");
+    assert!(!line.contains("local"), "{line:?}");
+    let generic = StatusModel {
+        model_provider: None,
+        ..remote
+    };
+    assert!(plain_hud(&generic, 160).contains("cloud · remote"));
 }
 
 #[test]
