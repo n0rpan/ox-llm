@@ -134,8 +134,9 @@ impl Ledger {
     /// Explicit opt-in, dedicated directory outside source repositories.
     /// Keep one Ledger for the gateway lifetime; cloning preserves all holds.
     pub fn open(directory: &Path) -> io::Result<Self> {
-        KeyFile::prepare(&directory.join(".salt"))
-            .map_err(|_| io::Error::from(io::ErrorKind::PermissionDenied))?;
+        if !directory.is_absolute() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         fs::create_dir_all(directory)?;
         let info = fs::symlink_metadata(directory)?;
         if !info.is_dir() || info.uid() != nix::unistd::Uid::current().as_raw() {
@@ -143,6 +144,8 @@ impl Ledger {
         }
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
         let directory = fs::canonicalize(directory)?;
+        KeyFile::prepare(&directory.join(".salt"))
+            .map_err(|_| io::Error::from(io::ErrorKind::PermissionDenied))?;
         let salt = install_salt(&directory)?;
         Ok(Self(Arc::new(Inner {
             directory,

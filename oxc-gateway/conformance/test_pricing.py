@@ -19,7 +19,7 @@ CASES = ('router', 'openai', 'anthropic', 'anthropic-upstream', 'router-explicit
          'tier-bool-bound', 'prompt-bound', 'prompt-over', 'output-bound', 'output-over',
          'invalid-prompt', 'decimal', 'tiny-rate', 'cache-rate-defaults',
          'settle-usage', 'settle-missing', 'settle-failed', 'settle-cache',
-         'settle-invalid-sum', 'settle-invalid-type', 'settle-cancel-final',
+         'settle-invalid-sum', 'settle-invalid-type', 'settle-null-cache', 'settle-cancel-final',
          'settle-cancel-partial', 'settle-cancel-reasoning', 'settle-cancel-capped',
          'settle-reported', 'settle-repeated', 'settle-zero')
 CANCEL_ESTIMATES = ('settle-cancel-partial', 'settle-cancel-reasoning', 'settle-cancel-capped')
@@ -104,6 +104,8 @@ def inputs(name):
                 'cached_tokens': 999 if name == 'settle-invalid-sum' else
                                  True if name == 'settle-invalid-type' else 950,
                 'cache_write_tokens': 40})
+        elif name == 'settle-null-cache':
+            usage['prompt_tokens_details'] = {'cached_tokens': None, 'cache_write_tokens': None}
         elif name.startswith('settle-cancel-'):
             value['outcome'] = 'cancelled'
             if name == 'settle-cancel-final':
