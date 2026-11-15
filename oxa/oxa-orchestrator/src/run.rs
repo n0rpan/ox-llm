@@ -818,7 +818,7 @@ impl Worker {
                     journal.record(
                         Some(&self.spec.id),
                         "policy_verified",
-                        json!({"mode":mode,"offline":true,"toolPolicy":"explicit-per-worker-grants"}),
+                        json!({"mode":mode,"offline":self.spec.inference.local_only,"toolPolicy":"explicit-per-worker-grants"}),
                     )?;
                 } else if self.configuration.remove(id) {
                     if self.configuration.is_empty() && !self.defer_prompt {
