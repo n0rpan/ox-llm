@@ -5,6 +5,9 @@
 //! reads no key bytes and opens no ledger or provider connection. Every chat
 //! reads the current file key, uses one admission hold, and settles before Done.
 //! Caller callbacks must be brief; Stop cancels delivery and settles the request.
+//! Settled signed thinking blocks stay in a private LRU (4096 entries / 64 MiB),
+//! scoped to the exact history, alias, upstream, endpoint and credential. They
+//! are never written to the ledger or exposed as public stream diagnostics.
 //!
 //! ```no_run
 //! use oxc_gateway::{
@@ -36,6 +39,7 @@
 use crate::{
     accounting::Outcome,
     anthropic_client::{self, Cancellation, Chat, Client, Control},
+    anthropic_replay::{History, Replay},
     anthropic_stream::Completed,
     ledger::Context,
     policy::Refusal,
@@ -44,6 +48,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     fmt,
+    sync::Mutex,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -102,12 +107,14 @@ impl std::error::Error for Error {}
 pub struct Gateway {
     runtime: Runtime,
     client: Client,
+    replay: Mutex<Replay>,
 }
 impl Gateway {
     pub fn new(runtime: Runtime) -> Result<Self, Error> {
         Ok(Self {
             runtime,
             client: Client::new().map_err(Error::Upstream)?,
+            replay: Mutex::new(Replay::default()),
         })
     }
     pub fn discovery(&self) -> Discovery {
@@ -137,6 +144,7 @@ impl Gateway {
         let model = call.model().clone();
         let bounded = call.payload().clone();
         let key = call.key_handle();
+        let history = History::new(&model, key.expose(), &bounded);
         let request_bytes = serde_json::to_vec(&bounded).map_or(0, |v| v.len());
         let mut streamed_bytes = 0;
         let mut usage_final = false;
@@ -154,21 +162,30 @@ impl Gateway {
         };
         let result = self
             .client
-            .stream(request, &key, cancel, &mut |event| match event {
-                anthropic_client::Event::Sending => {
-                    if cancel.is_cancelled() {
-                        return Control::Stop;
+            .stream_with_blocks(
+                request,
+                &key,
+                cancel,
+                &mut |event| match event {
+                    anthropic_client::Event::Sending => {
+                        if cancel.is_cancelled() {
+                            return Control::Stop;
+                        }
+                        call.mark_forwarded();
+                        Control::Continue
                     }
-                    call.mark_forwarded();
-                    Control::Continue
-                }
-                anthropic_client::Event::Chunk(chunk) => {
-                    call.observe(&chunk);
-                    streamed_bytes += serde_json::to_vec(&chunk).map_or(0, |v| v.len());
-                    usage_final |= chunk["usage"].is_object();
-                    on(Event::Chunk(chunk))
-                }
-            })
+                    anthropic_client::Event::Chunk(chunk) => {
+                        call.observe(&chunk);
+                        streamed_bytes += serde_json::to_vec(&chunk).map_or(0, |v| v.len());
+                        usage_final |= chunk["usage"].is_object();
+                        on(Event::Chunk(chunk))
+                    }
+                },
+                |index| {
+                    let id = history.at(index)?;
+                    self.replay.lock().ok()?.restore(id)
+                },
+            )
             .await;
         let (outcome, status, code) = match &result {
             Ok(completed) => {
@@ -196,7 +213,17 @@ impl Gateway {
         };
         call.finish(outcome, status, code).map_err(Error::Refused)?;
         let completed = result.map_err(Error::Upstream)?;
-        if cancel.is_cancelled() || on(Event::Done) == Control::Stop {
+        if cancel.is_cancelled() {
+            return Err(Error::Upstream(anthropic_client::Error::Cancelled));
+        }
+        // Opaque signatures are bound to the exact safe assistant turn the
+        // client will echo. Keep them only after settlement, before Done lets
+        // another request continue the conversation. A miss never crosses a
+        // model/endpoint/credential/history boundary.
+        if let Ok(mut replay) = self.replay.lock() {
+            replay.remember(history.after(&completed.assistant), &completed.native_blocks);
+        }
+        if on(Event::Done) == Control::Stop {
             return Err(Error::Upstream(anthropic_client::Error::Cancelled));
         }
         Ok(completed)
