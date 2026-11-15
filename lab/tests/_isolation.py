@@ -8,6 +8,7 @@ real files did not change during the run.
 """
 import os
 import pwd
+import socket
 import tempfile
 from pathlib import Path
 
@@ -27,6 +28,13 @@ def stamp(path):
         return None
 
 
+def free_port():
+    """A loopback port that is free right now (the controller reads it at import time)."""
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
 def isolate():
     global ROOT
     if ROOT is not None:
@@ -40,6 +48,11 @@ def isolate():
                       XDG_CACHE_HOME=str(ROOT / 'cache'), XDG_RUNTIME_DIR=str(ROOT / 'runtime'))
     for name in ('LOCAL_LLM_CONFIG', 'LOCAL_AI_LEASE'):
         os.environ.pop(name, None)
+    # The live local-ai service holds the default engine/proxy ports (8092-8094). Tests that start
+    # a controller/manager must not collide with it, so point the controller at free ephemeral
+    # ports before any module reads ctl_env (which caches them at import time).
+    for name in ('LOCAL_LLM_PORT', 'LOCAL_LLM_BACKEND_PORT', 'LOCAL_FLASH_BACKEND_PORT'):
+        os.environ.setdefault(name, str(free_port()))
     return ROOT
 
 
