@@ -608,6 +608,28 @@ fn print_final_text_only() {
     assert_eq!(String::from_utf8(out).unwrap(), "final answer\n");
 }
 
+/// No tools declared and the final text is tool-call markup: one stderr warning, exit code 0.
+#[test]
+fn print_warns_on_tool_markup_without_tools() {
+    const WARNING: &str = "warning: the model answered with tool-call markup but no tools are available (--no-tools); the answer may be unusable\n";
+    let env = TestEnv::new();
+    let markup = "<tool_calls><invoke name=\"exec_command\"></invoke></tool_calls>";
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text(markup)]));
+    let mut session = open(&env, &engine);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = run_print(&mut session, prompt("review"), &mut out, &mut err).unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(String::from_utf8(out).unwrap(), format!("{markup}\n"));
+    assert_eq!(String::from_utf8(err).unwrap(), WARNING);
+
+    // Plain text: no warning.
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("fine")]));
+    let mut session = open(&env, &engine);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    run_print(&mut session, prompt("review"), &mut out, &mut err).unwrap();
+    assert!(err.is_empty());
+}
+
 /// piped text + prompt
 #[test]
 fn stdin_prepend() {
