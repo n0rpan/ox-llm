@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -383,6 +384,68 @@ class RepoAllowFileTests(unittest.TestCase):
             r = self.scan(word, f"hello {word} again\n")
             self.assertNotEqual(r.returncode, 0, (word, r.stdout, r.stderr))
             self.assertIn("deny-word", r.stdout + r.stderr)
+
+    # -- helpers -----------------------------------------------------------
+    def contexts(self):
+        return er.load_allow_contexts(self.ALLOW)
+
+    def owner_handle(self):
+        """The real repository owner handle, read from LICENSE (never a literal here)."""
+        match = re.search(r"Copyright \(c\) \d{4} [^\n]+ \((?P<owner>[^)\s]+)\)",
+                          (ROOT / "LICENSE").read_text(encoding="utf-8"))
+        self.assertIsNotNone(match)
+        return match.group("owner")
+
+    def scan_host_hits(self, text, deny, base, name="README.md"):
+        path = Path(base) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return [h for h in er.scan_paths([base], deny, (), self.contexts(), base) if h[1] == "host-name"]
+
+    # (a) the exemption is bound to the approved context, not to the file -------------
+    def test_context_exemption_stays_in_approved_contexts(self):
+        deny = {"hostlike-word": "host-name"}
+        with tempfile.TemporaryDirectory() as tmp:
+            # Plain prose still reports the host.
+            self.assertTrue(self.scan_host_hits("ssh to hostlike-word for the build\n", deny, tmp))
+            # A copyright-shaped line only exempts the word in the owner slot.
+            self.assertTrue(self.scan_host_hits(
+                "Copyright (c) 2026 hostlike-word Nordström (ownerword)\n", deny, tmp))
+            # The word outside the parentheses is still reported.
+            self.assertTrue(self.scan_host_hits(
+                "Copyright (c) 2026 Oscar Nordström (ownerword) then hostlike-word\n", deny, tmp))
+
+    # (b) the approved shapes are exempt when the owner handle is the denied word ---------
+    def test_context_exemption_approves_the_owner_positions(self):
+        handle = self.owner_handle()
+        deny = {handle: "host-name"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "README.md").write_text(
+                "Copyright (c) 2026 Oscar Nordström (%s)\n"
+                "download https://github.com/%s/ox-llm/releases\n"
+                "gh attestation verify x --repo %s/ox-llm\n"
+                "gh attestation verify x --signer-workflow %s/ox-llm/.github/workflows/release.yml\n"
+                % (handle, handle, handle, handle))
+            (root / "patches").mkdir()
+            (root / "patches" / "llama-x.patch").write_text(
+                "From: Oscar Nordstrom <13300531+%s@users.noreply.github.com>\n" % handle)
+            hits = [h for h in er.scan_paths([tmp], deny, (), self.contexts(), tmp) if h[1] == "host-name"]
+            self.assertEqual(hits, [])
+
+    # (c) the real files from the old whole-file entries scan clean for host-name ---------
+    def test_real_owner_files_scan_clean_for_host_name(self):
+        handle = self.owner_handle()
+        deny = {handle: "host-name"}
+        files = [ROOT / name for name in (
+            "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "docs/DEPENDENCIES.md",
+            "README.md", "docs/RELEASING.md", "docs/REPRODUCE.md")]
+        files += sorted((ROOT / "patches").glob("llama-*.patch"))
+        files = [p for p in files if p.is_file()]
+        self.assertTrue(files)
+        hits = [h for h in er.scan_paths([str(p) for p in files], deny, (), self.contexts(), str(ROOT))
+                if h[1] == "host-name"]
+        self.assertEqual(hits, [])
 
     def test_repo_allow_file_has_no_global_word_except_yoga(self):
         words = set()
