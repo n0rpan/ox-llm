@@ -9,6 +9,8 @@ publish = false
 default = []
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
+upstream-anthropic-request = ["dep:serde_json"]
+upstream-anthropic-stream = ["dep:serde_json"]
 transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
 
 [dependencies]
@@ -28,3 +30,5 @@ required-features = ["secrets"]
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[workspace]

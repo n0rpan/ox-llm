@@ -16,10 +16,7 @@ impl std::fmt::Display for RequestError {
 impl std::error::Error for RequestError {}
 
 fn thinking(block: &Value) -> bool {
-    matches!(
-        block["type"].as_str(),
-        Some("thinking" | "redacted_thinking")
-    )
+    matches!(block["type"].as_str(), Some("thinking" | "redacted_thinking"))
 }
 
 fn text_parts(content: &Value) -> Vec<Value> {
@@ -31,9 +28,7 @@ fn text_parts(content: &Value) -> Vec<Value> {
         .into_iter()
         .flatten()
         .filter_map(|part| match part["type"].as_str() {
-            Some("text") if part["text"].is_string() => {
-                Some(json!({"type":"text", "text":part["text"]}))
-            }
+            Some("text") if part["text"].is_string() => Some(json!({"type":"text", "text":part["text"]})),
             Some("image_url" | "input_image") => Some(json!({"type":"text",
                 "text":"[image omitted: the cloud text model reads text only]"})),
             _ => None,
@@ -97,12 +92,7 @@ pub fn translate_with_blocks(
     }
     let mut system = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
-    for (index, message) in payload["messages"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .enumerate()
-    {
+    for (index, message) in payload["messages"].as_array().into_iter().flatten().enumerate() {
         if !message.is_object() {
             continue;
         }
@@ -161,11 +151,7 @@ pub fn translate_with_blocks(
         if blocks.is_empty() {
             continue;
         }
-        let role = if role == "assistant" {
-            "assistant"
-        } else {
-            "user"
-        };
+        let role = if role == "assistant" { "assistant" } else { "user" };
         if let Some(previous) = messages.last_mut().filter(|m| m["role"] == role) {
             previous["content"].as_array_mut().unwrap().extend(blocks);
         } else {
@@ -208,9 +194,7 @@ pub fn translate_with_blocks(
                 .iter()
                 .any(|s| upstream_model.contains(s))
         {
-            return Err(RequestError {
-                param: "tool_choice",
-            });
+            return Err(RequestError { param: "tool_choice" });
         }
         if choice != "none" {
             body["tools"] = json!(tools);
@@ -226,12 +210,7 @@ pub fn translate_with_blocks(
     if let Some(stop) = payload["stop"].as_str() {
         body["stop_sequences"] = json!([stop]);
     } else if let Some(stops) = payload["stop"].as_array() {
-        body["stop_sequences"] = stops
-            .iter()
-            .filter(|s| s.is_string())
-            .take(16)
-            .cloned()
-            .collect();
+        body["stop_sequences"] = stops.iter().filter(|s| s.is_string()).take(16).cloned().collect();
     }
     let effort = match &payload["reasoning_effort"] {
         Value::Null => payload["chat_template_kwargs"]["enable_thinking"]

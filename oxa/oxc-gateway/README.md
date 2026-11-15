@@ -6,10 +6,11 @@ settlement are separate work. Python remains the behavior reference.
 
 - `policy`: policy contracts.
 - `secrets`: secrets contracts.
+- `upstream-anthropic-request`: the pure request translator shared with oxc.
 
 Build all examples with `cargo build --locked --manifest-path
-oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
-`/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v`; native
+oxa/oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
+`/usr/bin/python3 -m unittest discover -s oxa/oxc-gateway/conformance -v`; native
 checks set each present `OXC_*_CONTRACT` to its absolute example executable.
 
 Source cases use private HOME/network namespaces and synthetic data. No real
@@ -22,3 +23,11 @@ The secrets loop contract explicitly supports Python 3.12's generic refusal and
 before normalizing only that wording. Native uses the symbolic-link message.
 The secrets subset passes both Python versions and native; every other error is
 compared exactly. Credential values and paths must never appear in errors.
+
+This library lives inside oxa's product tree, so oxa can consume it in-process
+without a path dependency leaving that tree. It has its own workspace and lock,
+preserving independent gateway builds and feature checks. The native oxc
+controller can depend on the same source from its separate workspace. Both entry
+points retain the same policy, key and settlement implementation; transport
+adapters supply trusted caller metadata. Default features remain empty, and
+moving the library does not enable a listener or change the default engine.
