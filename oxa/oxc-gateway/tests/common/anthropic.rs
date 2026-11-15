@@ -58,6 +58,11 @@ impl Reply {
             json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":output}}),
             json!({"type":"message_stop"}),
         ];
+        Self::events(events.into())
+    }
+    /// Native events for provider-specific continuation regressions, using the
+    /// same bounded, fragmented loopback peer as the walking skeleton.
+    pub fn events(events: Vec<Value>) -> Self {
         let mut bytes = Vec::new();
         for event in events {
             bytes.extend_from_slice(
