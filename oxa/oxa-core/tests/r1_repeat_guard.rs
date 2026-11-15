@@ -601,3 +601,21 @@ fn identical_job_polls_trip_the_guard() {
         assert!(is_notice(r) && r.contains("(bash {"), "{r}");
     }
 }
+
+/// A repeat of an unchanged range is still a repeat when other read-only calls (another range)
+/// sit between the copies: the content is still in context (#463). An edit in between breaks it.
+#[test]
+fn identical_reads_interleaved_with_other_reads_trip_the_guard() {
+    let env = TestEnv::new();
+    let other = r#"{"path":"a.txt","offset":20,"limit":3}"#;
+    let mut turns = Vec::new();
+    for i in 0..=LIMIT {
+        turns.push(read(&format!("a{i}"), RANGE));
+        turns.push(read(&format!("b{i}"), other));
+    }
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "look");
+    let res = results(&st);
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+}
