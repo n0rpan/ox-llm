@@ -168,10 +168,9 @@ impl NetSandbox {
         let s = self.clamp_run(spec);
         // Injection is per command, but redaction covers every networked command once the
         // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
-        let Some(t) = self
-            .token_for(&s)
-            .or_else(|| self.gh_token.get().and_then(|o| o.as_ref()).filter(|_| s.net))
-        else {
+        // `self.token()` loads a lazy token here too: the first networked command may be
+        // `cat token.txt` from an earlier session.
+        let Some(t) = s.net.then(|| self.token()).flatten() else {
             return run(&s, live);
         };
         let mut sr = StreamRedactor::new(t);
@@ -227,6 +226,8 @@ impl Sandbox for NetSandbox {
 }
 
 /// True when `gh` or `git` appears as a command word (not inside `ghost` or `a-gh`).
+/// Best-effort exposure limiting, not a security control: `echo gh; printenv GH_TOKEN` still
+/// matches. The real protection is output redaction, which covers every networked command.
 fn mentions_gh(cmd: &str) -> bool {
     let ok = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
     ["gh", "git"].iter().any(|w| {
@@ -299,6 +300,35 @@ mod tests {
             }
         }
         let sb = NetSandbox::new(Arc::new(Leak), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        let mut sp = spec(true);
+        sp.command = "cat token.txt".into();
+        let mut live = Vec::new();
+        let r = sb.run(&sp, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+        assert_eq!(String::from_utf8(r.output).unwrap(), "[redacted]");
+        assert_eq!(String::from_utf8(live).unwrap(), "[redacted]");
+    }
+
+    #[test]
+    fn lazy_token_is_redacted_from_a_first_non_gh_networked_command() {
+        struct Leak;
+        impl Sandbox for Leak {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                l(b"ghp_LAZY123");
+                ExecResult {
+                    output: b"ghp_LAZY123".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let sb =
+            NetSandbox::new(Arc::new(Leak), true, false).with_gh_token_lazy(|| Some("ghp_LAZY123".into()));
         let mut sp = spec(true);
         sp.command = "cat token.txt".into();
         let mut live = Vec::new();
