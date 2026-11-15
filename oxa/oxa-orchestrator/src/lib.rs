@@ -54,3 +54,6 @@ pub mod resume;
 
 #[cfg(feature = "core")]
 pub mod lineage;
+
+#[cfg(feature = "core")]
+pub mod review;

@@ -147,6 +147,35 @@ impl Snapshot {
         )?);
         Ok(Self { files, manifest })
     }
+    /// Internal candidate builder; callers first verify disjoint changes against
+    /// this snapshot and the explicit new-file grant. No filesystem mutation.
+    pub(crate) fn with_changes(&self, changes: &[FileChange]) -> io::Result<Self> {
+        let mut files = self.files.clone();
+        for change in changes {
+            match &change.after {
+                Some(text) => {
+                    files.insert(change.path.clone(), text.clone());
+                }
+                None => {
+                    files.remove(&change.path);
+                }
+            }
+        }
+        if files.len() > MAX_FILES
+            || files.values().any(|t| t.len() > MAX_FILE)
+            || files.values().map(String::len).sum::<usize>() > MAX_TOTAL
+        {
+            return Err(limit("candidate workspace limit exceeded"));
+        }
+        validate_structure(files.keys())?;
+        let manifest = digest(&serde_json::to_vec(
+            &files
+                .iter()
+                .map(|(p, t)| (p.as_str(), digest(t.as_bytes())))
+                .collect::<Vec<_>>(),
+        )?);
+        Ok(Self { files, manifest })
+    }
     pub(crate) fn write_new(&self, directory: &Path, cancel: &AtomicBool) -> io::Result<()> {
         check_cancel(cancel)?;
         DirBuilder::new().mode(0o700).create(directory)?;
