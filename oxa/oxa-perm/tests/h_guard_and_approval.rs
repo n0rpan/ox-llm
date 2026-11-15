@@ -494,3 +494,24 @@ fn git_worktree_pointer_cannot_be_rewritten_and_fifo_dotgit_does_not_hang() {
         .expect("hung on FIFO .git");
     assert_eq!(d, Decision::Allow);
 }
+
+#[test]
+fn builtin_skills_are_readable_but_not_writable_by_tools() {
+    let env = TestEnv::new();
+    env.write("home/.oxa/agent/builtin-skills/pull-request/SKILL.md", "x");
+    let skill = env.agent_dir().join("builtin-skills/pull-request/SKILL.md");
+    let p = guarded(&env);
+    assert_ne!(
+        p.decide(Mode::Workspace, &Access::Read(skill.clone()), &env.work()),
+        SENSITIVE
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Write(skill), &env.work()),
+        SENSITIVE
+    );
+    let auth = env.agent_dir().join("auth.json");
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Read(auth), &env.work()),
+        SENSITIVE
+    );
+}

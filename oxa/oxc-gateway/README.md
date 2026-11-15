@@ -8,6 +8,10 @@ The controller is built for small footprint, local use and large tasks. Its
 tests protect requests/streams, admission budgets, private accounting, secret
 handling and clean refusals. Python wording and CLI compatibility are not goals.
 The existing `policy` and `secrets` features are independently selectable.
+The `pricing` and `accounting` features supply cache-aware charges and atomic
+per-process reservations. Share a daily Budget across requests and retain each
+hold until its writer callback commits the private settlement row. Failed writes
+block further spending. Cross-process admission is a later series step.
 
 ```sh
 cargo check --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --no-default-features

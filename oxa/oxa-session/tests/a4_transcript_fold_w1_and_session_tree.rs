@@ -31,6 +31,7 @@ fn msg(wire: WireMsg) -> EntryBody {
     EntryBody::Msg {
         wire,
         parts: Vec::new(),
+        tool: None,
     }
 }
 
@@ -100,6 +101,7 @@ fn random_body(rng: &mut Rng, ids: &[String], prefix_seen: bool) -> EntryBody {
         1 | 2 => EntryBody::Msg {
             wire: WireMsg::user(text(rng)),
             parts: Vec::new(),
+            tool: None,
         },
         3 => EntryBody::Msg {
             wire: WireMsg {
@@ -114,10 +116,12 @@ fn random_body(rng: &mut Rng, ids: &[String], prefix_seen: bool) -> EntryBody {
                 tool_call_id: None,
             },
             parts: Vec::new(),
+            tool: None,
         },
         4 => EntryBody::Msg {
             wire: WireMsg::tool_result("c1", text(rng)),
             parts: Vec::new(),
+            tool: None,
         },
         5 => bash("ls", &text(rng), Some(rng.below(3) as i32), rng.below(2) == 0),
         6 => EntryBody::Usage {

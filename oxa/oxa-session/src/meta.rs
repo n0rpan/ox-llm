@@ -57,7 +57,7 @@ pub fn meta_of(sref: &SessionRef, header: &SessionHeader, entries: &[Entry]) -> 
 /// Display/search text shared by the standalone metadata builder and both stores' listings.
 /// Without provenance, a trailing note-shaped block may be user-authored and is preserved.
 pub(crate) fn message_text(body: &EntryBody) -> &str {
-    let EntryBody::Msg { wire, parts } = body else {
+    let EntryBody::Msg { wire, parts, .. } = body else {
         return "";
     };
     let text = wire.content.as_deref().unwrap_or("");
