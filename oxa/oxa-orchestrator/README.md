@@ -1,8 +1,9 @@
 # Opt-in orchestrator foundations
 
 First independently testable slice of rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
-Private audit storage and explicit JSONL pipe transport are present here. No worker, listener, CLI command,
-recovery/replay operation, installed service or inference route is enabled.
+Private audit storage, JSONL pipe transport and an explicit tool-free native
+worker owner are present here. No worker, listener or CLI hook starts on import;
+no recovery/replay or installed service is enabled.
 
 The `core` feature exports `AuditJournal`. Its caller explicitly supplies a new
 journal path under an existing mode-0700 operator-owned directory and a byte
@@ -66,3 +67,37 @@ adds no native RPC launch profile, provider model selection or automatic retry.
 Tests use owned local subprocesses with cleared environments and kill/wait guards;
 there are no provider calls. The allowance-overflow regression fails before the
 accounting fix and passes afterward.
+
+## Explicit tool-free native process owner
+
+With `core`, `native::NativeWorker` launches only an operator-selected executable
+through an operator-selected bwrap executable. `VerifiedLocal` records the
+operator assertion that its literal loopback route cannot forward to paid/cloud
+inference. Address syntax and model validation cannot prove that assertion. This
+slice neither authorizes cloud inference nor reads provider credentials.
+
+The fresh filesystem exposes read-only runtime libraries and the chosen program,
+private HOME/tmp/work and a new PID/user namespace. Environment/configuration,
+source checkout, MCP/extensions/skills and tools are not inherited. The native
+profile uses current main's RPC/plan/offline flags and removes the obsolete
+OXA_PROFILE setting. Approved workspace mounts belong to a later integration.
+The supplied role must already be approved for delegation. It is passed directly
+to the trusted executable and is not journal metadata.
+
+The caller must drive `poll`/`queue` to enforce the monotonic wall deadline; there
+is no background watchdog. Transport/admission/deadline failure forces cleanup.
+`stop` permits at most one second of graceful abort, then bounded SIGKILL/reap
+observation. Confirmed child exit is retained explicitly; a failed cleanup is an
+error, never a process-stopped claim. Pipe EOF is not process completion. Group
+signals use only the retained unreaped Child; recorded PIDs are never adopted or
+signalled. PID-namespace teardown covers descendants that change process group.
+Drop attempts the same cleanup, but callers requiring evidence must call `stop`
+and check its result before dropping the owner.
+
+The real-bwrap fixtures use a trusted mock runtime, not the production oxa binary
+or a paid model. They verify flags, cleared/private environment, hidden source,
+read-only runtime mounts, a distinct PID namespace, RPC pipe roundtrip, grace,
+deadline/protocol/admission cleanup, closed runtime stdout with a live wrapper,
+and an inherited
+socket lease closing after a setsid descendant is terminated. Process ownership
+is not a scheduler, token-accounting policy or proof of provider billing stop.

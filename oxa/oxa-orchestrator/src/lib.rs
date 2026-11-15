@@ -15,3 +15,6 @@ pub use journal::Journal as AuditJournal;
 
 #[cfg(feature = "core")]
 pub mod pipes;
+
+#[cfg(feature = "core")]
+pub mod native;
