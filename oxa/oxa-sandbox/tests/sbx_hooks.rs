@@ -11,6 +11,10 @@
 //!
 //! Isolation: every path lives under `oxa_fake::TestEnv`; git runs with no global config.
 
+mod common {
+    pub mod host_watch;
+}
+use common::host_watch::HostWatch;
 use oxa_fake::TestEnv;
 use oxa_proto::{CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::{bwrap_args_with, resolve_git_binds, Bwrap, Layout};
@@ -91,8 +95,24 @@ fn args_of(b: &Bwrap, cwd: &Path, writable: bool, env: &TestEnv) -> Vec<String> 
     )
 }
 
-/// Every path a `/dev/null` bind or a tmpfs lands on.
+/// Every path a `/dev/null` bind or a tmpfs lands on, without the `commondir` / `gitdir` masks
+/// every writable git directory gets (#201; checked in their own tests).
 fn masked(args: &[String]) -> Vec<String> {
+    masked_all(args)
+        .into_iter()
+        .filter(|p| !p.ends_with("/commondir") && !p.ends_with("/gitdir"))
+        .collect()
+}
+
+/// `protect` without the `commondir` / `gitdir` entries (#201; checked in their own tests).
+fn no_pointers(v: Vec<PathBuf>) -> Vec<PathBuf> {
+    v.into_iter()
+        .filter(|p| !p.ends_with("commondir") && !p.ends_with("gitdir"))
+        .collect()
+}
+
+/// Every path a `/dev/null` bind or a tmpfs lands on.
+fn masked_all(args: &[String]) -> Vec<String> {
     args.windows(3)
         .filter_map(|w| {
             if w[0] == "--ro-bind" && w[1] == "/dev/null" {
@@ -223,6 +243,9 @@ fn existing_hooks_and_config_keep_the_argv_byte_for_byte() {
     want.extend(ro("<root>/work/full/.oxa"));
     want.extend(ro("<root>/work/full/.git/hooks"));
     want.extend(ro("<root>/work/full/.git/config"));
+    // #201: the missing commondir / gitdir are masked.
+    want.extend(null_mask("<root>/work/full/.git/commondir"));
+    want.extend(null_mask("<root>/work/full/.git/gitdir"));
     want.extend(strs(&[
         "--remount-ro",
         "<root>/home",
@@ -283,7 +306,7 @@ fn worktree_common_dir_without_hooks_masks_them() {
     let w = build_worktree(&env, "[core]\n");
     let got = resolve_git_binds(&w.wt, &env.home(), Some(&env.agent_dir()));
     assert_eq!(
-        got.protect,
+        no_pointers(got.protect),
         vec![
             canon(&w.main_git).join("config"),
             canon(&w.main_git).join("config.worktree"),
@@ -327,7 +350,7 @@ fn worktree_with_worktree_config_masks_both_config_worktree_files() {
         gd.join("hooks"),
     ];
     want.sort();
-    assert_eq!(got.protect, want);
+    assert_eq!(no_pointers(got.protect), want);
     let b = bwrap_value(&env).with_git_dirs(&w.wt);
     let args = args_of(&b, &w.wt, true, &env);
     assert_eq!(
@@ -352,7 +375,7 @@ fn worktree_with_existing_hooks_and_config_is_unchanged() {
     let mc = canon(&w.main_git);
     let gd = canon(&w.gitdir);
     assert_eq!(
-        got.protect,
+        no_pointers(got.protect),
         vec![
             mc.join("config"),
             mc.join("config.worktree"),
@@ -455,8 +478,14 @@ fn sandbox(env: &TestEnv, cwd: &Path) -> Option<Bwrap> {
     detect(env).map(|b| b.with_git_dirs(cwd))
 }
 
+/// Runs `command`; #318: no entry appears in (or vanishes from) the fake home or the cwd's
+/// ancestors on the host while it runs, also not for a moment.
 fn run(b: &Bwrap, command: &str, cwd: &Path, writable: bool) -> (Option<i32>, String) {
+    let root = b.home.parent().expect("home below the test root");
+    let watch = HostWatch::new(root, &b.home, cwd);
     let r = b.run(&spec(command, cwd, writable), &CancelToken::new(), &mut |_| {});
+    let changed = watch.finish();
+    assert!(changed.is_empty(), "`{command}` touched the host: {changed:?}");
     (r.exit, String::from_utf8_lossy(&r.output).into_owned())
 }
 
@@ -644,6 +673,9 @@ fn real_control_rename_of_dotgit_plants_a_hook_without_the_self_bind() {
     let env = TestEnv::new();
     let repo = env.work().join("plain");
     init_repo(&repo, &env);
+    // What the sandbox creates on the host before a writable command (#201's masks).
+    file(&repo.join(".git/commondir"), ".\n");
+    file(&repo.join(".git/gitdir"), "");
     let Some(sb) = detect(&env) else { return };
     let mut argv = bwrap_args_with(&spec(RENAME_ATTACK, &repo, true), &env.home(), &sb.layout);
     let dotgit = repo.join(".git").to_string_lossy().into_owned();
@@ -721,4 +753,97 @@ fn real_worktree_common_dir_cannot_be_renamed() {
     assert!(!common.join("hooks/pre-commit").exists());
     assert!(!Path::new(&format!("{m}.x")).exists());
     assert_git(&wt, &env, &["status", "--short"]);
+}
+
+// ------------------------------------------------------------------- #201: commondir, gitdir
+
+fn commit_env(s: &mut ExecSpec) {
+    s.env = [
+        ("GIT_AUTHOR_NAME", "Oxa Test"),
+        ("GIT_AUTHOR_EMAIL", "test@example.invalid"),
+        ("GIT_COMMITTER_NAME", "Oxa Test"),
+        ("GIT_COMMITTER_EMAIL", "test@example.invalid"),
+    ]
+    .iter()
+    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+    .collect();
+}
+
+fn git_work_inside(sb: &Bwrap, cwd: &Path) {
+    let mut s = spec(
+        "echo x >> f.txt && git status --short && git add f.txt && git commit -q -m inside",
+        cwd,
+        true,
+    );
+    commit_env(&mut s);
+    let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(0), "{}", String::from_utf8_lossy(&r.output));
+}
+
+#[test]
+fn plain_repo_masks_missing_commondir_and_gitdir() {
+    let env = TestEnv::new();
+    let repo = bare_plain(&env, "plain");
+    file(&repo.join(".git/config"), "[core]\n");
+    dir(&repo.join(".git/hooks"));
+    let args = args_of(&bwrap_value(&env), &repo, true, &env);
+    let m = masked_all(&args);
+    for name in ["commondir", "gitdir"] {
+        let p = format!("<root>/work/plain/.git/{name}");
+        assert!(m.contains(&p), "{name} masked: {args:?}");
+    }
+}
+
+#[test]
+fn real_plain_repo_cannot_get_a_commondir() {
+    let env = TestEnv::new();
+    let repo = env.work().join("plain");
+    init_repo(&repo, &env);
+    let evil = dir(&env.work().join("evil"));
+    let Some(sb) = sandbox(&env, &repo) else { return };
+    for cmd in [
+        format!("echo {} > .git/commondir", evil.display()),
+        format!("rm -f .git/commondir; echo {} > .git/commondir", evil.display()),
+        "mv .git/commondir .git/cd-old".to_string(),
+        "echo x > .git/gitdir".to_string(),
+    ] {
+        let (exit, out) = run(&sb, &cmd, &repo, true);
+        assert_ne!(exit, Some(0), "`{cmd}` must fail: {out}");
+    }
+    git_work_inside(&sb, &repo);
+    // The host: git still uses its own directory.
+    let o = git(&repo, &env, &["rev-parse", "--git-common-dir"]);
+    assert_eq!(
+        canon(Path::new(String::from_utf8_lossy(&o.stdout).trim())),
+        canon(&repo.join(".git"))
+    );
+    assert_git(&repo, &env, &["commit", "-q", "--allow-empty", "-m", "outside"]);
+    let log = git(&repo, &env, &["log", "--format=%s"]);
+    assert_eq!(String::from_utf8_lossy(&log.stdout), "outside\ninside\ninit\n");
+}
+
+#[test]
+fn real_worktree_cannot_change_its_commondir_or_gitdir() {
+    let env = TestEnv::new();
+    let main = env.work().join("main");
+    init_repo(&main, &env);
+    let wt = add_worktree(&main, &env);
+    let gitdir = main.join(".git/worktrees/wt");
+    let before_cd = fs::read(gitdir.join("commondir")).expect("commondir");
+    let before_gd = fs::read(gitdir.join("gitdir")).expect("gitdir");
+    let Some(sb) = sandbox(&env, &wt) else { return };
+    for cmd in [
+        format!("echo /tmp > {}/commondir", gitdir.display()),
+        format!("echo /tmp > {}/gitdir", gitdir.display()),
+        format!("echo /tmp > {}/.git/commondir", main.display()),
+    ] {
+        let (exit, out) = run(&sb, &cmd, &wt, true);
+        assert_ne!(exit, Some(0), "`{cmd}` must fail: {out}");
+    }
+    git_work_inside(&sb, &wt);
+    assert_eq!(fs::read(gitdir.join("commondir")).expect("commondir"), before_cd);
+    assert_eq!(fs::read(gitdir.join("gitdir")).expect("gitdir"), before_gd);
+    assert_git(&wt, &env, &["commit", "-q", "--allow-empty", "-m", "outside"]);
+    let log = git(&main, &env, &["log", "--format=%s", "feature"]);
+    assert_eq!(String::from_utf8_lossy(&log.stdout), "outside\ninside\ninit\n");
 }

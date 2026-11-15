@@ -18,7 +18,7 @@ pub fn parse_info(base_url: &str, models: &Value, status: &Value) -> Result<Engi
 /// Build [`EngineInfo`] from `/v1/models` (`data[].id`) and the status, with the limits of
 /// `target` when the status publishes them (X3).
 ///
-/// The status is the local-ai controller's `/_local/status` (`StatusMixin.status` in the lab's
+/// The status is the oxc controller's `/_local/status` (`StatusMixin.status` in the lab's
 /// `runtime/ctl_status.py`), or a plain llama-server / oxe `/props` when the controller is
 /// absent. Field mapping, first present wins:
 ///
@@ -146,7 +146,8 @@ pub fn parse_info_for(
         .filter(|n| *n > 0)
         .unwrap_or_else(|| DEFAULT_MAX_OUTPUT.min(n_ctx / 4).max(1));
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
-    let (prefill_only, caps) = capabilities(status, &limits_for);
+    let (prefill_only, mut caps) = capabilities(status, &limits_for);
+    caps.remote = caps.remote || remote.is_some();
     if caps.remote && oxa_proto::offline() {
         return Err(oxa_proto::offline_error(&format!("the cloud model {limits_for}")));
     }
@@ -581,10 +582,9 @@ pub(crate) fn http_error(status: u16, body: &[u8]) -> OxaError {
     http_error_with(status, body, None)
 }
 
-/// The gateway's 503 `cloud_error` codes that are configuration problems (lab runtime/cloud.py
-/// and cloud_anthropic.py). The transient ones (`cloud_unavailable`, `cloud_upstream_error`,
-/// `cloud_stream_error`, `cloud_interrupted`) are deliberately absent.
-const PERMANENT_CLOUD_REFUSALS: &[&str] = &[
+/// Gateway refusals whose classes must survive HTTP normalization. Credentials and ledger
+/// availability can recover; the core applies bounded retries. A missing SDK is permanent.
+const TYPED_CLOUD_REFUSALS: &[&str] = &[
     "cloud_credentials_unavailable",
     "cloud_sdk_unavailable",
     "cloud_ledger_unavailable",
@@ -605,17 +605,29 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
         .and_then(|e| e.get("message").and_then(Value::as_str))
         .map(str::to_string)
         .unwrap_or_else(|| text.trim().chars().take(300).collect());
+    if status == 429 && err.and_then(|e| e.get("code").and_then(Value::as_str)) == Some("budget_exceeded") {
+        return OxaError::new(
+            codes::BUDGET_EXHAUSTED,
+            format!("the cloud gateway refused the request (budget_exceeded): {detail}"),
+        )
+        .with_hint(
+            "raise cloud.daily_budget_usd in oxc, or wait for the next spend day; this is not retried",
+        );
+    }
     if status == 503 {
         if let Some(code) = err
             .filter(|e| e.get("type").and_then(Value::as_str) == Some("cloud_error"))
             .and_then(|e| e.get("code").and_then(Value::as_str))
-            .filter(|c| PERMANENT_CLOUD_REFUSALS.contains(c))
+            .filter(|c| TYPED_CLOUD_REFUSALS.contains(c))
         {
-            // A cloud gateway setup refusal (no key, no SDK, ledger unusable): not the engine's
-            // queue, and a retry will not fix it. Show its own message. Every other 503
-            // (transient or unknown `cloud_*` codes) keeps `HTTP 503` so the core retries it.
+            // Preserve the class for the retry policy and the terminal outcome. Unknown 503
+            // refusals retain their HTTP status and the ordinary transient-error policy.
             return OxaError::new(
-                codes::ENGINE_HTTP,
+                match code {
+                    "cloud_credentials_unavailable" => "cloud_credentials_unavailable",
+                    "cloud_ledger_unavailable" => "cloud_ledger_unavailable",
+                    _ => "cloud_sdk_unavailable",
+                },
                 format!("the cloud gateway refused the request ({code}): {detail}"),
             );
         }
@@ -700,14 +712,33 @@ mod cloud_refusal_tests {
             .into_bytes()
     }
 
-    /// A cloud gateway refusal that retrying cannot fix (no key, no SDK) shows the gateway's own
-    /// message; it is not the "engine is busy" text and carries no `HTTP 5xx` the core retries.
+    /// The daily budget refusal (429 `budget_exceeded`) is its own code: it is not retried
+    /// (the core retries 429 `engine_http`) and the exit code can tell it apart.
+    #[test]
+    fn a_budget_429_is_budget_exhausted_and_not_retried() {
+        let e = http_error_with(
+            429,
+            &body("budget_exceeded", "The daily cloud budget is exhausted."),
+            None,
+        );
+        assert_eq!(e.code, codes::BUDGET_EXHAUSTED);
+        assert!(
+            e.message.contains("daily cloud budget is exhausted"),
+            "{}",
+            e.message
+        );
+        let plain = http_error_with(429, br#"{"error":{"message":"slow down"}}"#, None);
+        assert_eq!(plain.code, codes::ENGINE_HTTP, "other 429s stay retryable");
+    }
+
+    /// A typed cloud refusal keeps the gateway's own message and class. Retry decisions use
+    /// that class rather than depending on the wording of its human-readable message.
     #[test]
     fn a_cloud_503_shows_the_servers_message_not_engine_busy() {
         for code in ["cloud_credentials_unavailable", "cloud_sdk_unavailable"] {
             let message = "The Anthropic SDK is not installed on this host.";
             let e = http_error_with(503, &body(code, message), None);
-            assert_eq!(e.code, codes::ENGINE_HTTP, "{code}");
+            assert_eq!(e.code, code, "{code}");
             assert!(
                 e.message.contains(message) && e.message.contains(code),
                 "{}",
@@ -742,8 +773,9 @@ mod cloud_refusal_tests {
     }
 
     #[test]
-    fn a_ledger_refusal_is_permanent() {
+    fn a_ledger_refusal_keeps_its_class() {
         let e = http_error_with(503, &body("cloud_ledger_unavailable", "m"), None);
+        assert_eq!(e.code, "cloud_ledger_unavailable");
         assert!(!e.message.contains("HTTP 503"), "{}", e.message);
     }
 

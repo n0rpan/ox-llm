@@ -315,26 +315,19 @@ fn parse(raw: &[u8], reader: Reader, monitor: bool) -> io::Result<(Request<Body>
 pub async fn serve<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(stream: S, app: Router) {
     serve_with_timeout(stream, app, None, true).await;
 }
-pub async fn serve_legacy<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
-    stream: S,
-    app: Router,
-) {
-    serve_inner(stream, app, None, true, true).await;
-}
 pub async fn serve_with_timeout<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     stream: S,
     app: Router,
     timeout: Option<Duration>,
     monitor: bool,
 ) {
-    serve_inner(stream, app, timeout, monitor, false).await;
+    serve_inner(stream, app, timeout, monitor).await;
 }
 async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     stream: S,
     app: Router,
     timeout: Option<Duration>,
     monitor: bool,
-    legacy: bool,
 ) {
     let (read, write) = tokio::io::split(stream);
     let read: Box<dyn AsyncRead + Send + Unpin> = Box::new(read);
@@ -352,11 +345,10 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
                 break;
             }
         };
-        let close = legacy
-            || request
-                .headers()
-                .get(header::CONNECTION)
-                .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"close"))
+        let close = request
+            .headers()
+            .get(header::CONNECTION)
+            .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"close"))
             || (request.version() == Version::HTTP_10
                 && !request
                     .headers()
@@ -402,7 +394,7 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         );
         let mut output = format!(
             "HTTP/1.{} {} {}\r\n",
-            if legacy { 0 } else { 1 },
+            1,
             parts.status.as_u16(),
             parts.status.canonical_reason().unwrap_or("")
         );

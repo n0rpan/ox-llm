@@ -1,11 +1,15 @@
 //! A9: the bwrap argv. Owner: task A9. Signatures below are frozen; bodies are yours.
-use crate::gitdirs::{alias_refusal, is_real_dir, protected_entries, unsafe_reason, Mounts};
+use crate::gitdirs::{
+    alias_refusal, configured_hooks_paths, hooks_alias_refusal, is_real_dir, protected_entries,
+    unsafe_reason, Mounts,
+};
 use crate::layout::{
     home_protected_paths, is_home_itself, is_home_or_above, protected_paths, sensitive_paths, Layout,
 };
 use crate::run::run_argv;
 use crate::Bwrap;
 use oxa_proto::{codes, CancelToken, ExecSpec, OxaError};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Fixed base environment inside the sandbox (the `PATH` is the layout's, B2).
@@ -112,15 +116,22 @@ pub(crate) fn bwrap_args_homes(
         let p = p.to_string_lossy();
         push(&mut a, &["--bind", &p, &p]);
     }
+    let hooks = configured_hook_paths(cwd_path, &home_c, layout);
+    let mounts = hooks_mounts(cwd_path, &home_c, layout, mode);
+    // Pins and layout mounts share parent-first order: a cache bind cannot hide a pin,
+    // and a pin cannot hide a read-only descendant. The cwd is already a mount point.
+    let hook_pins = hook_parent_pins(&hooks, &mounts);
     // B2: toolchains read-only, caches read-write, in path order (a parent before its child).
     let mut binds: Vec<(&Path, bool)> = layout
         .read
         .iter()
         .map(|p| (p.as_path(), false))
         .chain(layout.write.iter().map(|p| (p.as_path(), true)))
+        .chain(hook_pins.iter().map(|p| (p.as_path(), true)))
         .filter(|(p, _)| !cwd_path.starts_with(p) && !cwd_path.starts_with(canon(p)))
         .collect();
     binds.sort();
+    binds.dedup();
     for (p, rw) in &binds {
         let p = p.to_string_lossy();
         push(&mut a, &[if *rw { "--bind" } else { "--ro-bind" }, &p, &p]);
@@ -141,10 +152,6 @@ pub(crate) fn bwrap_args_homes(
         && gh_source_is_safe(&gh_src, &[home, &home_c], real_home, real_c.as_deref(), layout)
         && !std::fs::symlink_metadata(gh_src.join(GH_HOSTS)).is_ok_and(|m| m.file_type().is_symlink());
     if gh_open {
-        push(
-            &mut a,
-            &["--ro-bind", &gh_src.to_string_lossy(), &gh.to_string_lossy()],
-        );
         // An empty, readable regular file (gh fails on `/dev/null` here: permission denied).
         if let (true, Some(_)) = (gh_src.join(GH_HOSTS).exists(), &gh_empty) {
             // The empty-file masks are emitted late (after every bind that could cover them,
@@ -200,6 +207,26 @@ pub(crate) fn bwrap_args_homes(
         let p = p.to_string_lossy();
         push(&mut a, &[git_rw, &p, &p]);
     }
+    // Pin the git directory after ancestor/layout binds; unsafe git data stays read-only.
+    if writable {
+        let dotgit = cwd_path.join(".git");
+        if is_real_dir(&dotgit) {
+            let p = dotgit.to_string_lossy();
+            let bind = if unsafe_reason(&dotgit).is_none() {
+                "--bind"
+            } else {
+                "--ro-bind"
+            };
+            push(&mut a, &[bind, &p, &p]);
+        }
+    }
+    // This read-only configuration bind must also win over every writable ancestor pin.
+    if gh_open {
+        push(
+            &mut a,
+            &["--ro-bind", &gh_src.to_string_lossy(), &gh.to_string_lossy()],
+        );
+    }
     for p in layout
         .git
         .ro
@@ -218,18 +245,8 @@ pub(crate) fn bwrap_args_homes(
     // B4: what runs outside the sandbox later stays as it is.
     if writable {
         let dotgit = cwd_path.join(".git");
-        // sbx-hooks: the cwd's `.git` directory is a mount point (bound onto itself), so a
-        // command cannot rename it away and put a copy with writable hooks in its place
-        // (renaming an ancestor of a read-only mount is allowed, renaming a mount point is not).
-        // sbx-gitsym: a `.git` whose protected entries are not plain is bound read-only instead.
+        // The directory was pinned before all masks; unsafe git data stays read-only.
         let dotgit_writable = is_real_dir(&dotgit) && unsafe_reason(&dotgit).is_none();
-        if is_real_dir(&dotgit) {
-            let p = dotgit.to_string_lossy();
-            push(
-                &mut a,
-                &[if dotgit_writable { "--bind" } else { "--ro-bind" }, &p, &p],
-            );
-        }
         let protected = protected_paths(cwd_path);
         for p in &protected {
             if is_real(p) {
@@ -251,6 +268,39 @@ pub(crate) fn bwrap_args_homes(
         } else if std::fs::symlink_metadata(&dotgit).is_ok_and(|m| m.is_file()) {
             let p = dotgit.to_string_lossy();
             push(&mut a, &["--ro-bind", &p, &p]);
+        }
+    }
+    // sbx-hooks: git runs the hooks of `core.hooksPath` (a repository config may name a
+    // directory inside the project or a writable cache). Protect it even in plan mode: the
+    // layout's read-write binds are writable there.
+    protect_hooks_paths(&mut a, cwd_path, &home_c, layout, mode);
+    // Host runtime IPC is not part of the project and not a network socket, so the network
+    // namespace does not contain it. A command can otherwise reach the user's session bus
+    // (which starts processes outside the sandbox), the system bus and the Docker/Podman
+    // sockets, and systemd-resolved (DNS with the network unshared). Mask them after every
+    // bind, before the deny-list.
+    if layout.mask_runtime_ipc {
+        for p in runtime_ipc_paths(&home_c) {
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            let ps = p.to_string_lossy();
+            if meta.is_dir() {
+                push(&mut a, &["--tmpfs", &ps]);
+                if s.net && p == Path::new("/run/systemd/resolve") {
+                    // Preserve only DNS configuration online; all resolver IPC stays hidden.
+                    for name in ["resolv.conf", "stub-resolv.conf"] {
+                        let file = p.join(name);
+                        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                            let file = file.to_string_lossy();
+                            push(&mut a, &["--ro-bind", &file, &file]);
+                        }
+                    }
+                }
+                push(&mut a, &["--remount-ro", &ps]);
+            } else {
+                push(&mut a, &["--ro-bind", "/dev/null", &ps]);
+            }
         }
     }
     // #60: the gh token-store masks, after every bind that could cover them (the git data and the
@@ -531,7 +581,17 @@ pub(crate) fn create_missing_git_files_homes(
         if is_dir_entry(&p) || !p.parent().is_some_and(is_real_dir) {
             continue;
         }
-        let _ = std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
+        // #201: git dies on an empty `commondir`; "." names the git directory itself, which
+        // is what a missing one means.
+        let body: &[u8] = if p.file_name().is_some_and(|n| n == "commondir") {
+            b".\n"
+        } else {
+            b""
+        };
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+            use std::io::Write as _;
+            let _ = f.write_all(body);
+        }
     }
 }
 
@@ -552,10 +612,162 @@ cannot be checked; commands are not run",
         }
     }
     let cwd = canon(&s.cwd);
-    let mode = cwd_mode(s, home, layout);
+    let mode = effective_mode(s, home, layout, real_home().as_deref());
     let writable = mode == CwdMode::Writable;
-    let mut dirs = layout.git.dirs.clone();
     let dotgit = cwd.join(".git");
+    // sbx-hooks/sbx-gitsym: a `.git` that is not a real directory cannot be pinned and
+    // protected. A symlink can be repointed at a writable git directory, and a `.git` file
+    // can name one inside the cwd (a worktree in the project itself, or a forged `gitdir:`
+    // line): its `config` and `hooks` would stay writable while git outside the sandbox runs
+    // them. Both are refused rather than guessed at.
+    if let Ok(meta) = std::fs::symlink_metadata(&dotgit) {
+        if meta.file_type().is_symlink() {
+            return Some(format!(
+                "sandbox refused: {} is a symlink, so the git directory it names cannot be \
+protected; commands are not run here",
+                dotgit.display()
+            ));
+        }
+        if meta.is_dir() {
+            // A real `.git` can still move its common dir elsewhere (a linked-worktree
+            // layout). Git reads hooks and config from there.
+            if let Some(target) = commondir_target(&dotgit) {
+                let home_entries: Vec<PathBuf> = if mode == CwdMode::HomeWorkspace {
+                    home_workspace_entries(&canon(home), layout)
+                        .iter()
+                        .map(|p| canon(p))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let reachable = target.starts_with(&cwd)
+                    || layout.write.iter().any(|w| target.starts_with(canon(w)))
+                    || home_entries.iter().any(|e| target.starts_with(e));
+                if reachable {
+                    return Some(format!(
+                        "sandbox refused: {} names the common dir {}, which lies in what the \
+command can write; its hooks and config could be changed, so commands are not run here",
+                        dotgit.join("commondir").display(),
+                        target.display()
+                    ));
+                }
+                // A real `.git` with a common dir is not the plain repository layout the
+                // sandbox protects (a linked worktree has a `.git` file, not a dir). Its
+                // config is not read here, so a hooks path in it cannot be checked.
+                return Some(format!(
+                    "sandbox refused: {} names the common dir {}, which the sandbox does not \
+protect for a real .git directory; its hooks and config cannot be checked, so commands \
+are not run here",
+                    dotgit.join("commondir").display(),
+                    target.display()
+                ));
+            }
+        }
+        if meta.is_file() {
+            if let Some(target) = dotgit_file_target(&dotgit) {
+                let home_entries: Vec<PathBuf> = if mode == CwdMode::HomeWorkspace {
+                    home_workspace_entries(&canon(home), layout)
+                        .iter()
+                        .map(|p| canon(p))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let reachable = target.starts_with(&cwd)
+                    || layout.write.iter().any(|w| target.starts_with(canon(w)))
+                    || home_entries.iter().any(|e| target.starts_with(e));
+                // A `.git` file that `gitdirs::resolve` did not validate is not bound; its
+                // config could still name a hooks path inside this writable cwd, so it cannot
+                // be checked. Refuse rather than guess.
+                let validated = layout
+                    .git
+                    .dirs
+                    .iter()
+                    .any(|d| target == *d || target.starts_with(d));
+                if reachable || !validated {
+                    return Some(format!(
+                        "sandbox refused: the .git file names {}, which is not a git directory \
+the sandbox validated, or lies in what the command can write; its hooks and config cannot \
+be protected, so commands are not run here",
+                        target.display()
+                    ));
+                }
+            }
+        }
+    }
+    // A validated worktree can still name a common dir inside the cwd. The cwd bind exposes
+    // it, and only the plain `.git` directory layout is self-bound and protected. Refuse any
+    // worktree git dir (or common dir) that lies in what the command can write.
+    if !is_real_dir(&dotgit) {
+        let home_entries: Vec<PathBuf> = if mode == CwdMode::HomeWorkspace {
+            home_workspace_entries(&canon(home), layout)
+                .iter()
+                .map(|p| canon(p))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for d in &layout.git.dirs {
+            let reachable = d.starts_with(&cwd)
+                || layout.write.iter().any(|w| d.starts_with(canon(w)))
+                || home_entries.iter().any(|e| d.starts_with(e));
+            if reachable {
+                return Some(format!(
+                    "sandbox refused: the worktree's git directory {} lies in what the command \
+can write; its hooks and config cannot be protected, so commands are not run here",
+                    d.display()
+                ));
+            }
+        }
+    }
+    // sbx-hooks: a `core.hooksPath` inside what the command can write is protected by
+    // `protect_hooks_paths`. A symlink there, or a missing parent directory, cannot be
+    // pinned read-only; refuse rather than let a command replace it.
+    let home_c = canon(home);
+    let paths = configured_hook_paths(&cwd, &home_c, layout);
+    let mut mounts = hooks_mounts(&cwd, &home_c, layout, mode);
+    for p in &paths {
+        if p.to_str().is_none() {
+            return Some("sandbox refused: the repository's core.hooksPath is not valid UTF-8 and cannot be represented in the sandbox argv; commands are not run here".into());
+        }
+        if let Some(root) = under_any(p, &mounts.rw) {
+            let symlink = std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink());
+            if symlink || has_symlink_ancestor(p, root) {
+                return Some(format!(
+                    "sandbox refused: the repository's core.hooksPath {} is a symlink or lies below one, so its hooks cannot be pinned; commands are not run here",
+                    p.display()
+                ));
+            }
+            if std::fs::symlink_metadata(p).is_err() && !p.parent().is_some_and(is_real_dir) {
+                return Some(format!(
+                    "sandbox refused: the repository's core.hooksPath {} does not exist and its parent is not a real directory, so it cannot be masked; commands are not run here",
+                    p.display()
+                ));
+            }
+        } else if hook_path_exposed(p, &mounts) && canon(p) != *p {
+            return Some(format!("sandbox refused: the repository's core.hooksPath {} reaches a writable bind through an alias, so it cannot be pinned; commands are not run here", p.display()));
+        }
+    }
+    let masked: Vec<PathBuf> = paths
+        .iter()
+        .filter(|p| hook_path_exposed(p, &mounts))
+        .cloned()
+        .collect();
+    mounts.rw.extend(hook_parent_pins(&paths, &mounts));
+    // These directory masks are emitted after every writable bind. Their bind mounts hide
+    // earlier nested mounts, so none of those nested writable roots remains exposed.
+    mounts
+        .rw
+        .retain(|rw| !masked.iter().any(|p| rw != p && rw.starts_with(p)));
+    mounts.ro.extend(masked);
+    for p in paths {
+        if let Some(why) = hooks_alias_refusal(&p, &mounts) {
+            return Some(format!(
+                "sandbox refused: the repository's core.hooksPath: {why}; commands are not run here"
+            ));
+        }
+    }
+    let mut dirs = layout.git.dirs.clone();
     if is_real_dir(&dotgit) {
         dirs.push(canon(&dotgit));
     }
@@ -589,6 +801,263 @@ reaches what a command could change, so commands are not run here"
     })
 }
 
+/// sbx-ipc: the host runtime sockets a command must not reach. They live outside `$HOME`,
+/// so the deny-list does not cover them and `--unshare-net` does not either (a Unix socket is
+/// not a network socket).
+fn runtime_ipc_paths(home: &Path) -> Vec<PathBuf> {
+    let uid = std::fs::metadata(home)
+        .map(|m| m.uid())
+        .unwrap_or_else(|_| unsafe { libc::geteuid() });
+    [
+        format!("/run/user/{uid}"),
+        "/run/systemd/resolve".to_string(),
+        "/run/dbus/system_bus_socket".to_string(),
+        "/run/systemd/private".to_string(),
+        "/run/docker.sock".to_string(),
+        "/run/podman/podman.sock".to_string(),
+        "/run/containers".to_string(),
+        "/run/nscd/socket".to_string(),
+        "/run/avahi-daemon/socket".to_string(),
+        "/run/sssd".to_string(),
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .collect()
+}
+
+/// The writable roots of a command: the cwd (only when it is bound read-write), the layout's
+/// read-write binds and, for a home workspace, its plain entries.
+fn writable_roots(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if mode == CwdMode::Writable {
+        out.push(cwd.to_path_buf());
+    }
+    out.extend(layout.write.iter().map(|p| canon(p)));
+    if mode == CwdMode::HomeWorkspace {
+        out.extend(home_workspace_entries(home, layout).iter().map(|p| canon(p)));
+    }
+    out
+}
+
+/// The directory a configured `core.hooksPath` names, resolved as git resolves it: absolute
+/// as written, `~/` in the home directory, anything else from the worktree root (not the
+/// session cwd, which may be a nested directory).
+fn resolve_hooks_path(raw: &Path, home: &Path, worktree: &Path) -> PathBuf {
+    let p = if raw == Path::new("~") {
+        home.to_path_buf()
+    } else if let Some(rest) = raw.to_str().and_then(|s| s.strip_prefix("~/")) {
+        home.join(rest)
+    } else if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        worktree.join(raw)
+    };
+    lexical_normalize(&p)
+}
+
+/// Every `core.hooksPath` of the repository at `cwd`, from its git directories' configs.
+fn configured_hook_paths(cwd: &Path, home: &Path, layout: &Layout) -> Vec<PathBuf> {
+    let mut dirs = layout.git.dirs.clone();
+    let dotgit = cwd.join(".git");
+    if is_real_dir(&dotgit) {
+        dirs.push(canon(&dotgit));
+    }
+    dirs.sort();
+    dirs.dedup();
+    // A session may run in a nested directory of the worktree; git resolves a relative
+    // `core.hooksPath` from the worktree root, so the protection must too.
+    let worktree = layout.git.worktree.as_deref().unwrap_or(cwd);
+    let mut out: Vec<PathBuf> = dirs
+        .iter()
+        .flat_map(|d| configured_hooks_paths(d, home))
+        .map(|raw| resolve_hooks_path(&raw, home, worktree))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// `p` is inside one of `roots`, lexically or after resolving the existing part.
+fn under_any<'a>(p: &Path, roots: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    roots.iter().find(|r| p.starts_with(r) || canon(p).starts_with(r))
+}
+
+/// A symlink between `root` and `p`: a mount on `p` would not pin a directory the command can
+/// rename (the target of the link is what git opens).
+fn has_symlink_ancestor(p: &Path, root: &Path) -> bool {
+    let Ok(rel) = p.strip_prefix(root) else {
+        // under_any found the canonical target inside a writable root: the spelling reaches
+        // it through an alias outside that root, which cannot be pinned component by component.
+        return true;
+    };
+    let mut cur = root.to_path_buf();
+    for c in rel.components() {
+        cur.push(c.as_os_str());
+        if std::fs::symlink_metadata(&cur).is_ok_and(|m| m.file_type().is_symlink()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// sbx-hooks: bind a repository's `core.hooksPath` directory read-only (or mask it when it
+/// does not exist yet) so a command cannot plant a hook that git runs outside the sandbox.
+/// Only paths inside what the command can write are touched; a read-only or hidden path needs
+/// nothing. A symlink or a missing parent is refused by [`refusal`].
+fn protect_hooks_paths(a: &mut Vec<String>, cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) {
+    let mounts = hooks_mounts(cwd, home, layout, mode);
+    let protected = protected_paths(cwd);
+    for p in configured_hook_paths(cwd, home, layout) {
+        if !hook_path_exposed(&p, &mounts) {
+            continue;
+        }
+        if (mode == CwdMode::Writable && protected.contains(&p) && is_real(&p))
+            || under_any(&p, &mounts.rw).is_some_and(|root| has_symlink_ancestor(&p, root))
+        {
+            continue;
+        }
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => {}
+            Ok(m) if m.is_dir() || m.is_file() => {
+                let p = p.to_string_lossy();
+                push(a, &["--ro-bind", &p, &p]);
+            }
+            Ok(_) => {
+                let p = p.to_string_lossy();
+                push(a, &["--ro-bind", "/dev/null", &p]);
+            }
+            Err(_) if p.parent().is_some_and(is_real_dir) => {
+                let p = p.to_string_lossy();
+                push(a, &["--tmpfs", &p, "--remount-ro", &p]);
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// A hooks tree must be masked if writable itself or if it contains an explicit write bind.
+fn hook_path_exposed(path: &Path, mounts: &Mounts) -> bool {
+    under_any(path, &mounts.rw).is_some() || mounts.rw.iter().any(|rw| rw.starts_with(canon(path)))
+}
+
+/// The mount view used by both configured-hook checks and their ancestor pins.
+fn hooks_mounts(cwd: &Path, home: &Path, layout: &Layout, mode: CwdMode) -> Mounts {
+    let writable = mode == CwdMode::Writable;
+    let git_writable = writable && layout.git.rw.iter().all(|d| unsafe_reason(d).is_none());
+    let mut mounts = Mounts {
+        rw: writable_roots(cwd, home, layout, mode),
+        ro: layout.read.iter().map(|p| canon(p)).collect(),
+    };
+    for p in layout
+        .git
+        .rw
+        .iter()
+        .filter(|p| !p.starts_with(cwd) && !cwd.starts_with(p))
+    {
+        if git_writable {
+            mounts.rw.push(p.clone());
+        } else {
+            mounts.ro.push(p.clone());
+        }
+    }
+    mounts.ro.extend(layout.git.ro.iter().cloned());
+    mounts.ro.extend(
+        layout
+            .git
+            .protect
+            .iter()
+            .filter(|p| !p.starts_with(cwd) && !cwd.starts_with(p))
+            .cloned(),
+    );
+    if writable {
+        let dotgit = cwd.join(".git");
+        if is_real_dir(&dotgit) {
+            if unsafe_reason(&dotgit).is_none() {
+                mounts.rw.push(dotgit);
+            } else {
+                mounts.ro.push(dotgit);
+            }
+        }
+        mounts
+            .ro
+            .extend(protected_paths(cwd).into_iter().filter(|p| is_real(p)));
+    }
+    // GH config is read-only online and masked offline. Its late mount hides earlier
+    // writable binds below it; source aliases elsewhere keep their own mount permissions.
+    let gh = home.join(GH_CONFIG);
+    mounts.rw.retain(|p| !p.starts_with(&gh));
+    mounts.ro.push(gh);
+    mounts
+}
+
+/// Writable directories on the way to a hook mount must themselves be mount points.
+/// Self-binds retain ordinary writes but prevent moving a protected tree through an ancestor.
+fn hook_parent_pins(paths: &[PathBuf], mounts: &Mounts) -> Vec<PathBuf> {
+    let mut pins = std::collections::BTreeSet::new();
+    for path in paths {
+        for parent in path.ancestors().skip(1) {
+            if mounts.writable(parent, false) && is_real_dir(parent) {
+                pins.insert(parent.to_path_buf());
+            }
+        }
+    }
+    pins.into_iter().collect()
+}
+
+/// The canonical (or, when it does not exist yet, lexical) directory named by a `.git` file.
+/// `None` when the file is unreadable or names nothing; git then has no repository to use.
+fn dotgit_file_target(dotgit: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dotgit).ok()?;
+    let line = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("gitdir:"))?
+        .trim();
+    if line.is_empty() {
+        return None;
+    }
+    let p = Path::new(line);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        dotgit.parent()?.join(p)
+    };
+    // A missing target cannot be canonicalised; normalise it lexically so `..` cannot make a
+    // writable directory look outside the cwd (git would resolve it to the same place).
+    Some(std::fs::canonicalize(&abs).unwrap_or_else(|_| lexical_normalize(&abs)))
+}
+
+/// The directory a real `.git`'s `commondir` file names (canonical, or lexically normalised
+/// when it does not exist yet).
+fn commondir_target(dotgit: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dotgit.join("commondir")).ok()?;
+    let line = text.lines().next()?.trim();
+    if line.is_empty() || line == "." {
+        // Main creates this protected self-reference when masking a missing commondir.
+        return None;
+    }
+    let p = Path::new(line);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        dotgit.join(p)
+    };
+    Some(std::fs::canonicalize(&abs).unwrap_or_else(|_| lexical_normalize(&abs)))
+}
+
+/// `p` with `.` removed and `..` popped, without touching the file system.
+fn lexical_normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 /// How the cwd of a command is bound (B3, O-199).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CwdMode {
@@ -686,7 +1155,10 @@ pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaErro
     Ok(Bwrap {
         bwrap,
         home: home.to_path_buf(),
-        layout: Layout::default(),
+        layout: Layout {
+            mask_runtime_ipc: true,
+            ..Layout::default()
+        },
     })
 }
 
@@ -885,7 +1357,7 @@ mod tests {
         let env = TestEnv::new();
         let real = env.root().join("realhome");
         env.write("realhome/.ssh/id", "K");
-        env.write("realhome/.config/local-ai/llm/cloud-secrets.json", "{}");
+        env.write("realhome/.config/oxc/llm/cloud-secrets.json", "{}");
         let real_s = real.to_string_lossy().into_owned();
         for (writable, net) in [(true, true), (true, false), (false, true), (false, false)] {
             let mut sp = spec(&env.work(), net);

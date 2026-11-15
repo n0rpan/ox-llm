@@ -91,7 +91,7 @@ pi page(s): models.md, models-configuration.md, providers.md, llama-cpp.md. Test
 |---|---|---|---|---|
 | MOD-001 | Model selection: `/model`, Ctrl+L selector, Ctrl+P / Shift+Ctrl+P cycling over the scoped list | A | over the engine model list; a switch is a new epoch (W3) and prints its re-prefill cost | `cli.rs::mod_001` |
 | MOD-002 | `models.json` custom models | A | names engine endpoints (laptop, LAN) with an optional bearer key; other provider types are a clear error | `cli.rs::mod_002` |
-| MOD-003 | Thinking levels off..max with per-model clamping | A | W6: boolean on the wire; `thinkingBudgets` ignored with a warning | `cli.rs::mod_003` |
+| MOD-003 | Thinking levels off..max with per-model clamping | A | W6: boolean on the wire; `thinkingBudgets` is not a setting (generic unknown-key warning) | `cli.rs::mod_003` |
 | MOD-004 | Model without preserved thinking: thinking defaults to off, status line says why | A | W6 (oxa only) | `cli.rs::mod_004` |
 | MOD-010 | llama.cpp router management (`/llama`) | A | `/engine`: status and model load over `/_local/status` | `cli.rs::mod_010` |
 
@@ -692,7 +692,7 @@ pi page(s): extensions.md, sdk.md. Tests: `oxa-parity/tests/extensions.rs`.
 | EXT-058 | `ctx.getContextUsage()` | P | exact counts | `extensions.rs::ext_058` |
 | EXT-059 | `ctx.compact()` | A | W5 | `extensions.rs::ext_059` |
 | EXT-060 | `ctx.getSystemPrompt()` / `getSystemPromptOptions()` | A | returns the frozen prefix; read-only | `extensions.rs::ext_060` |
-| EXT-061 | `ctx.waitForIdle()`, `ctx.newSession()`, `ctx.fork()`, `ctx.navigateTree()`, `ctx.switchSession()`, `ctx.reload()` | A | session-shape actions requested mid-run apply when the run settles; `ctx.newSession()` / `ctx.switchSession()` answer `unsupported_in_oxa` (O-175; the user's `/new` and `/resume` do it) | `extensions.rs::ext_061` |
+| EXT-061 | `ctx.waitForIdle()`, `ctx.newSession()`, `ctx.fork()`, `ctx.navigateTree()`, `ctx.switchSession()`, `ctx.reload()` | A | session-shape actions requested mid-run apply when the run settles; `ctx.newSession()` / `ctx.switchSession()` are held as a swap request that the TUI and print mode apply between commands (RPC/SDK front ends that do not poll `Session::take_swap_request` get `unsupported_in_oxa`) | `extensions.rs::ext_061` |
 | EXT-062 | `pi.on(event, handler)` | P | `oxa.on` | `extensions.rs::ext_062` |
 | EXT-063 | `pi.registerTool(definition)` with parameter schema validation | A | JSON Schema objects (no TypeBox import); tools join the frozen list at the next epoch | `extensions.rs::ext_063` |
 | EXT-064 | `pi.sendMessage(message, {deliverAs, triggerTurn})` | P | always an append | `extensions.rs::ext_064` |

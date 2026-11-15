@@ -4,6 +4,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "oxa-a2a",
+    "oxa-orchestrator",
     "oxa-proto",
     "oxa-engine", "oxa-session", "oxa-tools", "oxa-sandbox", "oxa-perm",
     "oxa-compact", "oxa-config", "oxa-resources", "oxa-script",
@@ -18,7 +20,7 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.89"
 license = "MIT"
 publish = false
 

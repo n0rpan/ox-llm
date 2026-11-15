@@ -6,7 +6,7 @@ use oxa_proto::{codes, Level, OxaError, ThinkingLevel};
 
 /// The endpoint name oxa gives the local engine (`OXA_PROVIDER` is always this).
 pub(crate) const ENGINE_ENDPOINT: &str = "oxe";
-/// Used when neither models.json nor `OXA_ENGINE_URL` names an endpoint: the local-ai
+/// Used when neither models.json nor `OXA_ENGINE_URL` names an endpoint: the oxc
 /// controller on loopback (its OpenAI-compatible API, `/_local/status` with the per-model
 /// limits and capabilities, the queue). A bare engine (`oxe-server`, default port 8080) is
 /// reached by naming it in models.json or `OXA_ENGINE_URL`.
@@ -533,7 +533,13 @@ fn glob_match(pat: &[char], s: &[char]) -> bool {
 }
 
 fn list_hint(available: &[ModelRef]) -> String {
-    let names: Vec<String> = available.iter().take(20).map(qualified).collect();
+    // One endpoint: bare ids, as the picker and `--model` show them.
+    let single = available.windows(2).all(|w| w[0].endpoint == w[1].endpoint);
+    let names: Vec<String> = available
+        .iter()
+        .take(20)
+        .map(|m| if single { m.model.clone() } else { qualified(m) })
+        .collect();
     if names.is_empty() {
         "no models are available from the engine yet; check that it is running".to_string()
     } else {

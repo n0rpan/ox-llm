@@ -1,14 +1,12 @@
 #![forbid(unsafe_code)]
 
-mod cli_args;
-mod cli_client;
-mod cli_control;
+mod cli;
 mod ledger;
 mod paths;
 
 fn main() {
-    let words: Vec<String> = std::env::args().skip(1).collect();
-    let code = match cli_args::parse(&words) {
+    let words = cli::words(std::env::args_os().skip(1));
+    let code = match cli::parse(&words) {
         Err(reply) => {
             print!("{}", reply.stdout);
             eprint!("{}", reply.stderr);
@@ -17,7 +15,7 @@ fn main() {
         Ok(args) if args.action == "ledger" => {
             let limit = args
                 .value("--limit")
-                .and_then(cli_args::integer)
+                .and_then(cli::integer)
                 .unwrap_or(50)
                 .clamp(1, 200);
             let value = ledger::recent(limit as usize);
@@ -33,15 +31,10 @@ fn main() {
             }
             0
         }
-        Ok(args) if cli_control::supports(&args.action) => {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("CLI runtime");
-            runtime.block_on(cli_control::run(&args))
-        }
         Ok(_) => {
-            eprintln!("oxc-native: this command is unavailable in this experimental CLI build.");
+            eprintln!(
+                "oxc-native: command execution is unavailable in this experimental parser build."
+            );
             2
         }
     };

@@ -52,13 +52,13 @@ def invoke(args):
         # Fix argv[0] to the public executable name for argparse output. Using a
         # link also exercises Python's installed entry script without importing it.
         executable = home / 'oxc'
-        executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+        executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
         command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
         # Do not inherit credentials, proxy configuration, XDG paths or controller
         # overrides. These cases terminate in the parser before any HTTP request.
         env = {'HOME': str(home), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
                'LC_ALL': 'C.UTF-8', 'TERM': 'dumb', 'COLUMNS': '80',
-               'PYTHONPATH': str(ROOT / 'lab/src')}
+               'PYTHONPATH': str(ROOT / 'oxc/src')}
         for key, subdir in (('XDG_CONFIG_HOME', 'config'), ('XDG_STATE_HOME', 'state'),
                             ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')):
             env[key] = str(home / subdir)

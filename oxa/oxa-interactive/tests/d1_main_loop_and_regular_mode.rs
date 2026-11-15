@@ -579,6 +579,37 @@ fn length_cut_is_shown_with_notice() {
 }
 
 #[test]
+fn length_cut_with_thinking_on_names_the_thinking_budget() {
+    let notice = |level: oxa_proto::ThinkingLevel| {
+        let mut vm = ViewModel::default();
+        vm.status.thinking = Some(level);
+        apply_event(
+            &mut vm,
+            &AgentEvent::MessageStart {
+                message: assistant_msg("", None),
+            },
+        );
+        apply_event(
+            &mut vm,
+            &AgentEvent::MessageEnd {
+                message: assistant_msg("cut off", Some(StopReason::Length)),
+            },
+        );
+        vm.blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::Notice { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("a notice")
+    };
+    let on = notice(oxa_proto::ThinkingLevel::Medium);
+    assert!(on.contains("thinking") && on.contains("/thinking off"), "{on}");
+    let off = notice(oxa_proto::ThinkingLevel::Off);
+    assert!(!off.contains("thinking"), "{off}");
+}
+
+#[test]
 fn tool_lifecycle_moves_one_block() {
     let mut vm = ViewModel::default();
     apply_event(

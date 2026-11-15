@@ -137,7 +137,7 @@ impl EventSink for PrintSink<'_> {
                 let word = if result.is_error { "failed" } else { "ok" };
                 self.progress(&format!("[tool] {tool_name} {word} {secs:.1}s"));
             }
-            AgentEvent::Notice { text, .. } => self.notes.push(text.clone()),
+            AgentEvent::Notice { text, .. } => self.progress(text),
             AgentEvent::ExtensionError {
                 extension_path,
                 error,
@@ -174,6 +174,7 @@ pub fn run_print(
     };
     let mut ui = HeadlessUi::default();
     let mut failed = false;
+    let mut budget = false;
     let n = prompts.len();
     for (i, (text, parts)) in prompts.into_iter().enumerate() {
         sink.last = None;
@@ -204,7 +205,7 @@ pub fn run_print(
                     .map_err(|e| OxaError::io("cannot write the command output", &e))?;
             }
         }
-        failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err);
+        failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err, &mut budget);
         // A failed or aborted run prints no reply (only known after the run).
         if !failed {
             if let Some(t) = sink.final_text.clone() {
@@ -221,7 +222,7 @@ pub fn run_print(
         code = 1;
     }
     if failed {
-        code = 1;
+        code = if budget { oxa_proto::EXIT_BUDGET } else { 1 };
     } else if let Some(m) = sink.last.clone() {
         if let Some(text) = sink.final_text.take() {
             if session.inner().active.direct.is_empty() && has_tool_markup(&text) {
@@ -267,6 +268,7 @@ pub fn run_json(
         error: None,
     };
     let mut failed = false;
+    let mut budget = false;
     for (text, parts) in prompts {
         let before = session.inner().tree.leaf().to_string();
         match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
@@ -290,10 +292,13 @@ pub fn run_json(
             let _ = writeln!(err, "{e}");
             return Ok(1);
         }
-        failed = after_run(session, &before, &mut ui, &mut Vec::new(), err);
+        failed = after_run(session, &before, &mut ui, &mut Vec::new(), err, &mut budget);
     }
     let done = done_failed(session, err);
-    Ok(if failed || done { 1 } else { 0 })
+    Ok(match (failed, budget) {
+        (true, true) => oxa_proto::EXIT_BUDGET,
+        _ => i32::from(failed || done),
+    })
 }
 
 /// Whether the `done` checks still failed after the repair rounds; says so on `err` once.
@@ -342,7 +347,10 @@ fn prompt_or_command(
     sink: &mut dyn oxa_proto::EventSink,
     ui: &mut dyn oxa_proto::Ui,
 ) -> Result<Message, OxaError> {
-    match oxa_core::expand_input(session.inner(), &text) {
+    // Extension session switches are held until the message is over, whatever the message was
+    // (a command, or a prompt whose event handlers or tools asked for one).
+    session.enable_swap();
+    let message = match oxa_core::expand_input(session.inner(), &text) {
         oxa_core::Expanded::Hook { name, args } => session
             .run_command(&name, &args, sink, ui)
             .map(|_| Message::Extension),
@@ -350,7 +358,25 @@ fn prompt_or_command(
             oxa_core::run_builtin(session, &name, &args, sink, ui).map(Message::Command)
         }
         _ => session.prompt(text, parts, sink, ui).map(|_| Message::Prompt),
-    }
+    }?;
+    apply_swap(session, sink, ui)?;
+    Ok(message)
+}
+
+/// Apply the session swap an extension asked for, between two messages.
+fn apply_swap(
+    session: &mut Session,
+    sink: &mut dyn oxa_proto::EventSink,
+    ui: &mut dyn oxa_proto::Ui,
+) -> Result<(), OxaError> {
+    let how = match session.take_swap_request() {
+        None => return Ok(()),
+        Some(oxa_core::SwapRequest::New) => oxa_core::Open::New,
+        Some(oxa_core::SwapRequest::Switch(path)) => {
+            oxa_core::Open::Resume(session.inner().store.resolve(&path)?)
+        }
+    };
+    session.switch(how, sink, ui)
 }
 
 /// A failed message on stderr: the error code first for a coded refusal (`unsupported_in_oxa:
@@ -378,6 +404,7 @@ fn after_run(
     ui: &mut HeadlessUi,
     notes: &mut Vec<String>,
     err: &mut dyn Write,
+    budget: &mut bool,
 ) -> bool {
     for t in notes.drain(..) {
         let _ = writeln!(err, "{t}");
@@ -395,6 +422,7 @@ fn after_run(
             if matches!(*why, shown_why::ABORTED | shown_why::FAILED | shown_why::CUT) =>
         {
             let _ = writeln!(err, "{text}");
+            *budget = text.contains("(budget_exceeded)");
             true
         }
         _ => false,

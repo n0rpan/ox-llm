@@ -62,6 +62,36 @@ fn format_json(value: &serde_json::Value, ascii: bool, spaced: bool) -> String {
                 raw
             }
         }
+        Value::Number(number) => {
+            let raw = number.to_string();
+            if !raw.contains(['.', 'e', 'E']) {
+                return number.as_i64().map_or(raw, |n| n.to_string());
+            }
+            let Some(number) = number.as_f64().filter(|n| n.is_finite()) else {
+                return "null".into();
+            };
+            let scientific = format!("{number:e}");
+            let (mantissa, exponent) = scientific.split_once('e').expect("scientific float");
+            let exponent: i32 = exponent.parse().expect("float exponent");
+            if !(-4..16).contains(&exponent) {
+                return format!("{mantissa}e{exponent:+03}");
+            }
+            let negative = mantissa.starts_with('-');
+            let digits = mantissa.trim_start_matches('-').replace('.', "");
+            let point = exponent + 1;
+            let text = if point <= 0 {
+                format!("0.{}{}", "0".repeat((-point) as usize), digits)
+            } else if point as usize >= digits.len() {
+                format!("{}{}.0", digits, "0".repeat(point as usize - digits.len()))
+            } else {
+                format!(
+                    "{}.{}",
+                    &digits[..point as usize],
+                    &digits[point as usize..]
+                )
+            };
+            format!("{}{text}", if negative { "-" } else { "" })
+        }
         _ => value.to_string(),
     }
 }

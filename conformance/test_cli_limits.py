@@ -27,7 +27,7 @@ def capture(name):
     with tempfile.TemporaryDirectory(prefix='oxc-cli-limit-') as directory:
         home = Path(directory)
         env = isolated_env(home)
-        ledger = home / '.local/state/local-ai/ledger'
+        ledger = home / '.local/state/oxc/ledger'
         ledger.mkdir(parents=True, mode=0o700)
         path = ledger / ('requests-' + time.strftime('%Y%m%d') + '.jsonl')
         rows = [{'path': '/v1/chat/completions', 'model': PRIMARY, 't': index,
@@ -37,7 +37,7 @@ def capture(name):
         path.chmod(0o600)
         before = path.read_bytes()
         executable = home / 'oxc'
-        executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+        executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
         command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
         # Explicit form lets argparse distinguish a negative Unicode number
         # from an option, while still running its real type=int conversion.

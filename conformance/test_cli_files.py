@@ -12,14 +12,17 @@ import unittest
 from environment import ROOT, isolated_env
 
 GOLDENS = Path(__file__).with_name('goldens') / 'cli-files.json'
-CASES = ('empty-directory', 'populated', 'limit-clamped', 'symlink-refused', 'bounded-tail')
+CASES = ('empty-directory', 'populated', 'limit-clamped', 'symlink-refused', 'bounded-tail', 'env-directory', 'number-spelling')
 
 
 def invoke(name):
     with tempfile.TemporaryDirectory(prefix='oxc-cli-files-') as directory:
         home = Path(directory)
         env = isolated_env(home)
-        ledger = home / '.local/state/local-ai/ledger'
+        ledger = home / '.local/state/oxc/ledger'
+        if name == 'env-directory':
+            ledger = home / 'synthetic-ledger'
+            env['OXC_LEDGER_DIR'] = str(ledger)
         ledger.mkdir(parents=True, mode=0o700)
         path = ledger / ('requests-' + time.strftime('%Y%m%d') + '.jsonl')
         row = {'path': '/v1/chat/completions', 'model': 'ornith-35b-a3b-local',
@@ -35,11 +38,14 @@ def invoke(name):
         elif name != 'empty-directory':
             prefix = 'synthetic junk' * 50_000 + '\n' if name == 'bounded-tail' else ''
             irrelevant = {'path': '/v1/responses', 'prompt': 'Synthetic ignored value.'}
-            path.write_text(prefix + json.dumps(irrelevant) + '\n{invalid\n' + json.dumps(row) + '\n' +
+            encoded = json.dumps(row)
+            if name == 'number-spelling':
+                encoded = encoded.replace('"wall_ms": 12.5', '"wall_ms": 0.0000001')
+            path.write_text(prefix + json.dumps(irrelevant) + '\n{invalid\n' + encoded + '\n' +
                             json.dumps({**row, 't': 2.0, 'model': 'not-allowed', 'wall_ms': -1}) + '\n')
             path.chmod(0o600)
         executable = home / 'oxc'
-        executable.symlink_to(ROOT / 'lab/src/snapdragon_ai_lab/runtime/local-ai')
+        executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
         command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
         args = ['ledger', '--json'] + (['--limit', '0'] if name == 'limit-clamped' else [])
         result = subprocess.run(command + args, env=env, cwd=home, capture_output=True, text=True, timeout=5)

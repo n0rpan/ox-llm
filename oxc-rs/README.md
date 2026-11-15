@@ -1,53 +1,36 @@
-# Experimental native controller: HTTP transport and policy library
+# Experimental native controller
 
-This slice exposes the existing HTTP transport and policy as an opt-in Rust
-library: 972 lines in two modules, plus the library entry point. It includes
-bounded HTTP/1 framing, stalled-I/O/disconnect handling, reply/error formatting,
-Host/Origin/CORS/API-key gates and gzip decoding. It imports no engine, model
-catalog, daemon, upstream adapter or sharing runtime. A generic context lets a
-later runtime supply its own sharing admission state.
+The opt-in `oxc-native ledger` command reads the existing local JSONL ledger
+without modifying it. It follows `OXC_LEDGER_DIR` or the default state directory,
+reads at most 512 KiB from each of today's and yesterday's files, and returns up
+to 200 newest rows. Only public numeric fields and allowlisted labels are shown;
+prompts, replies and arbitrary labels are excluded. Symlinks and non-regular
+files are refused; opening a FIFO never waits for a writer.
 
-The existing CLI remains unchanged. There is no daemon command or installation
-switch in this slice. Without `native-controller` the library is empty and no
-native executable is built. All added dependencies are optional.
-
-Forty-nine frozen Python wire inputs exercise the actual Rust transport and gate
-functions. Refusals/preflight replies match the captured source responses. When
-source dispatch returns setup/unknown-local-route errors after passing its gates,
-the library test stops at an explicit admitted marker. This proves the policy
-boundary, not a complete controller or cloud-only mode. Every test worker has a
-fresh HOME and cleared environment; only synthetic keys and owned loopback peers
-are used. A separate lightweight reference runner reproduces all 49 complete
-source replies while holding a foreign inference lease. Two transport tests
-check cancellation versus finalization after a client disconnects.
-
-```sh
-python3 conformance/generate_http_policy_inputs.py
-python3 conformance/test_http_policy_reference.py -v
-cargo test --locked --manifest-path oxc-rs/Cargo.toml --features native-controller
-```
-
-The shared input module regenerates the Rust fixture; output goldens are unchanged
-copies of the integration captures. Both product modules differ from the tested
-integration code only in library visibility. Tier T3; all original CI/security
-controls remain, and the hosted x86_64/arm64 gate remains skipped on drafts.
-
-The inherited CLI subset has 140 parser cases, 33 control cases, twelve ledger
-cases and a hosted-checkout regression. Thirteen remaining command families
-still refuse execution. Run it against both Python and the opt-in native build:
+The parser and ledger CLI are independent of the pending control-command slice.
+Other command execution still refuses with exit 2. The native binary requires
+`native-controller`, off by default; no installation or Python entry point changes.
+Optional dependencies provide dates, safe file flags and public JSON formatting.
 
 ```sh
 cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --features native-controller
-python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
-OXC_COMMAND=/absolute/path/to/oxc-native python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
-python3 conformance/check_native_scaffold.py /absolute/path/to/oxc-native
+OXC_COMMAND="$PWD/oxc-rs/target/release/oxc-native" python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
+python3 conformance/check_native_scaffold.py "$PWD/oxc-rs/target/release/oxc-native"
+cargo check --locked --manifest-path oxc-rs/Cargo.toml --no-default-features
+cargo test --locked --manifest-path oxc-rs/Cargo.toml --all-features
+cargo clippy --locked --manifest-path oxc-rs/Cargo.toml --all-features --all-targets -- -D warnings
+cargo fmt --manifest-path oxc-rs/Cargo.toml --all -- --check
 ```
 
-Stacked on ledger #197, controls #186 and parser #177. #28 remains the integration
-branch. The cloud-only stack is now on main in #180; its complete runtime
-contracts are the next priority, followed by the gateway port. This library
-extracts only the front policy and transport.
+Use Python 3.14.8 for the frozen parser contracts (CI pins it); other interpreters
+can differ in argparse messages. The 140 parser and 14 ledger cases compare exact
+stdout, stderr and exit codes with Python under a private HOME and a cleared
+environment. Ledger cases cover private fields, corrupt rows, bounded tails,
+symlinks, directory override, number formatting and Unicode/large integer limits.
+The FIFO regression uses a synthetic pipe and cleans up even when the reader fails.
 
-Keep all migration PRs draft until v0.2.0 ships. Tests run locally; no review or
-full-CI dispatch is requested. Post-release reviews use the orchestrator (Fable)
-and oxa.
+The pure upstream translator remains a separate default-off library feature;
+see [UPSTREAMS.md](UPSTREAMS.md) for its API and fixture checks. Combining Cargo
+features preserves ledger JSON order while translator tests canonicalize object
+keys explicitly. Arrays and all text bytes remain exact. v0.2.0 is released;
+locally green slices proceed to ready status and automated review.
