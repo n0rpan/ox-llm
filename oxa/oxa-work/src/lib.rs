@@ -250,7 +250,7 @@ pub fn run_task_with_options(
         state.record.detail = error;
     }
     state::save(&receipt, &mut state, Step::Saving)?;
-    if let Err(error) = execute::save_work(&root, &state.record.worktree, task) {
+    if let Err(error) = execute::save_work(&root, &state.record.worktree, task, &lock) {
         state.record.outcome = Outcome::Blocked;
         if !state.record.detail.is_empty() {
             state.record.detail.push('\n');
@@ -289,7 +289,32 @@ pub fn status(repo: &Path) -> Result<Vec<Record>> {
     for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
         let path = entry.map_err(|e| e.to_string())?.path();
         if path.extension().is_some_and(|s| s == "json") {
-            records.push(state::read(&path)?.record);
+            let mut value = state::read(&path)?;
+            if value.record.step != Step::Finished {
+                let file = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(path.with_extension("lock"));
+                let busy = match file {
+                    Ok(file) => match file.try_lock() {
+                        Ok(()) => {
+                            value = state::read(&path)?;
+                            false
+                        }
+                        Err(std::fs::TryLockError::WouldBlock) => true,
+                        Err(error) => return Err(error.to_string()),
+                    },
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => return Err(error.to_string()),
+                };
+                if value.record.step != Step::Finished {
+                    value.record.outcome = if busy { Outcome::Running } else { Outcome::Blocked };
+                    if !busy {
+                        value.record.detail = "task was interrupted; rerun its task file to resume".into();
+                    }
+                }
+            }
+            records.push(value.record);
         }
     }
     records.sort_by(|a, b| a.id.cmp(&b.id));

@@ -101,23 +101,25 @@ pub(crate) fn execute(
     }
 }
 /// Save all staged, unstaged and untracked files. Conflicts are kept in progress for the agent.
-pub(crate) fn save_work(repo: &Path, tree: &Path, task: &Task) -> Result<()> {
+pub(crate) fn save_work(repo: &Path, tree: &Path, task: &Task, lock: &File) -> Result<()> {
     if !tree.exists() {
         return Ok(());
     }
     tree::validate(repo, tree, task)?;
-    if tree::merging(tree)? || !checked(git(tree, &["diff", "--name-only", "--diff-filter=U"]))?.is_empty() {
+    let run = |args: &[&str]| -> Result<String> {
+        let mut command = git(tree, args);
+        command.stdin(lock.try_clone().map_err(|e| e.to_string())?);
+        super::checked_output(command.output().map_err(|e| e.to_string())?)
+    };
+    if tree::merging(tree)? || !run(&["diff", "--name-only", "--diff-filter=U"])?.is_empty() {
         return Err("unresolved merge retained in progress; files were not discarded".into());
     }
-    if checked(git(tree, &["status", "--porcelain"]))?.is_empty() {
+    if run(&["status", "--porcelain"])?.is_empty() {
         return Ok(());
     }
-    checked(git(tree, &["add", "--all"]))?;
-    checked(git(
-        tree,
-        &["commit", "-m", &format!("oxa work: save task {}", task.id)],
-    ))?;
-    if !checked(git(tree, &["status", "--porcelain"]))?.is_empty() {
+    run(&["add", "--all"])?;
+    run(&["commit", "-m", &format!("oxa work: save task {}", task.id)])?;
+    if !run(&["status", "--porcelain"])?.is_empty() {
         return Err("uncommitted changes remain after saving; retained for inspection".into());
     }
     Ok(())

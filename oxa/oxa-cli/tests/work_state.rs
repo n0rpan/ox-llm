@@ -208,3 +208,83 @@ fn child_keeps_lock_after_runner_is_killed_then_task_restarts() {
     assert_eq!(restarted["outcome"], "nothing_to_do", "{restarted}");
     assert_eq!(restarted["step"], "finished");
 }
+
+#[test]
+fn saving_git_keeps_lock_after_runner_dies_during_commit_hook() {
+    use std::os::unix::fs::PermissionsExt;
+    struct Release(PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "release");
+        }
+    }
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    trust(&env);
+    let release = Release(env.home().join("release-hook"));
+    let hook = env.write(
+        "work/project/.git/hooks/pre-commit",
+        r#"#!/bin/sh
+touch "$HOME/hook-started"
+attempt=0
+while ! test -f "$HOME/release-hook"; do
+  attempt=$((attempt + 1))
+  if test "$attempt" -ge 500; then exit 9; fi
+  sleep 0.01
+done
+"#,
+    );
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let server =
+        FakeServer::start(vec![write_turn(), ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(project(&env))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    until(|| env.home().join("hook-started").exists());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let blocked = run(&env, vec![]);
+    assert!(
+        blocked["detail"].as_str().unwrap().contains("already running"),
+        "{blocked}"
+    );
+    assert_eq!(load(&env)["step"], "saving");
+    fs::write(&release.0, "release").unwrap();
+    let path = project(&env).join(".git/oxa-work/test.lock");
+    until(|| {
+        let file = fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        file.try_lock().is_ok()
+    });
+    let record = run(&env, vec![]);
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(git(&env, tree(&record), &["show", "HEAD:answer.txt"]), "retained");
+}
+#[test]
+fn status_reports_an_unlocked_interrupted_phase_as_blocked_without_mutating_state() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    run(&env, vec![ScriptTurn::text("done")]);
+    let mut state = load(&env);
+    state["step"] = "agent".into();
+    state["outcome"] = "running".into();
+    replace_state(&env, &state);
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--status"])
+        .current_dir(project(&env))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.starts_with("test blocked ") && text.trim().ends_with("agent"),
+        "{text}"
+    );
+    assert_eq!(load(&env), state);
+}

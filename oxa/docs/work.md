@@ -73,3 +73,6 @@ step. Reusing an ID with a different specification is refused; use a new ID.
 Restart continues the saved step. An agent or check interrupted within its step
 may run again; tasks and checks should tolerate that. Checkpoints after an agent
 step avoid replaying it when only acceptance or saving remains.
+
+Status probes the task lock. An interrupted phase with no surviving worker is shown
+as blocked; the checkpoint stays intact for the next task-file invocation.
