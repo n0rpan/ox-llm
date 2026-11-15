@@ -247,7 +247,10 @@ fn deps(
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
         // Keep only the newest message, so that a manual compaction always has a cut.
-        settings: Settings::from_values(json!({"compaction": {"keepRecentTokens": 1}}), json!({})),
+        settings: Settings::from_values(
+            json!({"compaction": {"keepRecentTokens": 1}, "oxa": {"envNote": false}}),
+            json!({}),
+        ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),

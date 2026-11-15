@@ -39,15 +39,25 @@ pub struct ModelSelector {
 
 /// `"ctx 32768 · loaded"`-style description of a row.
 fn describe(m: &ModelChoice) -> String {
-    let mut parts = vec![m.endpoint.clone()];
+    // Cloud ids use provider namespaces; they have no local engine load state.
+    let cloud = ["anthropic/", "openai/", "openrouter/"]
+        .iter()
+        .any(|prefix| m.id.starts_with(prefix));
+    let mut parts = vec![if cloud {
+        "cloud".to_string()
+    } else {
+        m.endpoint.clone()
+    }];
     if let Some(n) = m.n_ctx {
         parts.push(format!("ctx {n}"));
     }
-    parts.push(if m.loaded {
-        "loaded".to_string()
-    } else {
-        "not loaded".to_string()
-    });
+    if !cloud {
+        parts.push(if m.loaded {
+            "loaded".to_string()
+        } else {
+            "not loaded".to_string()
+        });
+    }
     parts.join(" · ")
 }
 

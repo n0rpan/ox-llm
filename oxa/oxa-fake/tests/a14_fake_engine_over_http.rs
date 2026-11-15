@@ -313,6 +313,7 @@ fn cache_model_matches_scripted_engine() {
             max_tokens,
             thinking: false,
             preserve_thinking: true,
+            sampling: None,
             hints: Hints {
                 session: "s",
                 idem_key: "",

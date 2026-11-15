@@ -47,6 +47,14 @@ struct Captured {
 /// Run the program in-process (stdin and stdout are not terminals, so the mode is print unless
 /// the words say otherwise), on its own thread, within [`LIMIT`].
 fn go(env: &TestEnv, engine_url: &str, words: &[&str]) -> Captured {
+    // Hook transformations below assert exact synthetic prompt bytes. Preserve all hook
+    // settings while selecting the supported note-off configuration for these fixtures.
+    let settings_path = env.agent_dir().join("settings.json");
+    let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
+        .map(|s| serde_json::from_str(&s).expect("fixture settings"))
+        .unwrap_or_else(|_| serde_json::json!({}));
+    settings["oxa"]["envNote"] = serde_json::json!(false);
+    write(&settings_path, &serde_json::to_string(&settings).unwrap());
     let owned = env.envs(engine_url);
     let cwd = env.work();
     let argv: Vec<String> = words.iter().map(|s| s.to_string()).collect();

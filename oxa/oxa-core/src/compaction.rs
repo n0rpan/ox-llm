@@ -475,7 +475,8 @@ pub(crate) enum Counted {
     /// `Engine::count_prompt`: the engine's own render, what a request would report.
     Exact,
     /// No exact count from the engine: [`prefix_tokens`] + [`messages_tokens`] (message content
-    /// only, no template framing: slightly low).
+    /// only, no template framing). This can over-count on cloud models, whose tokenizer differs
+    /// from the local one used for the estimate.
     Estimate,
 }
 
@@ -497,6 +498,7 @@ pub(crate) fn prompt_tokens(st: &SessionState, wire: &[WireMsg]) -> (u32, Counte
         max_tokens: st.info.max_output,
         thinking: st.thinking.enabled(),
         preserve_thinking: st.info.caps.preserve_thinking != Some(false),
+        sampling: None,
         hints,
     };
     match st.engine.count_prompt(&req) {
@@ -837,13 +839,20 @@ fn run_compaction(st: &mut SessionState, spec: &Spec, sink: &mut dyn EventSink, 
             }
             observe(st, HookPoint::SessionCompact, &payload, sink, ui);
             st.stats.compactions += 1;
-            st.stats.context_tokens = st.transcript.context();
-            let count = counter(st);
-            let estimated = a
-                .head
-                .iter()
-                .map(|m| count(m.content.as_deref().unwrap_or("")))
-                .fold(0u32, u32::saturating_add);
+            // Rebase clears transcript usage. Count the full request (including the
+            // frozen system/tools prefix), not just the surviving message content.
+            // The local estimate over-counts (about 2.5x on a small cloud session), so an
+            // estimated count never exceeds what the context was before compaction. But after a
+            // rebase without usage `tokens_before` is 0 (navigate::rebase_to_leaf), so capping
+            // then would force the estimate to 0 and CTX would show 0; keep the honest nonzero
+            // estimate in that case.
+            let (counted, how) = prompt_tokens(st, &a.head);
+            let estimated = if how == Counted::Exact || a.tokens_before == 0 {
+                counted
+            } else {
+                counted.min(a.tokens_before)
+            };
+            st.stats.context_tokens = estimated;
             sink.emit(&AgentEvent::CompactionEnd {
                 reason,
                 result: Some(CompactionResult {
@@ -1006,13 +1015,20 @@ fn compact_inner(
                     // R4: a summary that could not be made is replaced by the mechanical
                     // one, so the session never blocks on it.
                     Err(e) => {
+                        // Self-feedback: say how much memory this cost (the assistant and
+                        // tool turns are what the record leaves out) and that it is degraded.
+                        let dropped = st.transcript.wire()[..cut]
+                            .iter()
+                            .filter(|m| matches!(m.role, Role::Assistant | Role::Tool))
+                            .count();
                         sink.emit(&AgentEvent::Notice {
-                                level: Level::Warning,
-                                text: format!(
-                                    "compaction: no summary could be made ({}); an automatic record of the user's messages and files is used instead",
-                                    e.message
-                                ),
-                            });
+                            level: Level::Warning,
+                            text: format!(
+                                "context compacted without a model summary: {dropped} assistant/tool turns were dropped from memory ({}); an automatic record of the user's messages and files is used instead",
+                                e.message
+                            ),
+                        });
+                        details["droppedTurns"] = json!(dropped);
                         details["mechanical"] = json!(true);
                         summary_error = Some(e.message.clone());
                         let summary =

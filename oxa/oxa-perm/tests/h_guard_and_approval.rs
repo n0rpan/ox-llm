@@ -224,3 +224,84 @@ fn approval_follows_the_content() {
     assert!(v.get(APPROVED_KEY).is_some(), "save keeps the approvals");
     assert_eq!(TrustStore::load(&file).lookup(&cwd), Some(true));
 }
+
+/// O-199: with oxa started in `$HOME` (a home workspace), the file tools still ask before
+/// writing what runs or configures something outside the sandbox later (shell startup files,
+/// `~/.local/bin`, `~/.config/systemd`, `~/.oxa`, ...), also under YOLO; the home's folders
+/// are the workspace. Keys stay denied.
+#[test]
+fn started_in_home_the_startup_files_ask_and_the_folders_are_the_workspace() {
+    let env = TestEnv::new();
+    env.write("home/.bashrc", "# rc\n");
+    env.write("home/project/keep", "");
+    env.write("home/.config/systemd/user/a.service", "");
+    let home = env.home();
+    let switch = oxa_proto::YoloSwitch::new(true);
+    for p in [guarded(&env), guarded(&env).with_yolo(switch)] {
+        for rel in [
+            ".bashrc",
+            ".profile",
+            ".bash_profile",
+            ".zshrc",
+            ".local/bin/tool",
+            ".local/share/applications/a.desktop",
+            ".config/systemd/user/a.service",
+            ".config/autostart/a.desktop",
+            ".config/hypr/hyprland.conf",
+            ".oxa/settings.json",
+            ".claude/settings.json",
+            ".codex/config.toml",
+            ".dsh/profiles/x",
+            "bin/tool",
+        ] {
+            let a = Access::Write(home.join(rel));
+            assert_eq!(p.decide(Mode::Workspace, &a, &home), Decision::Ask, "{rel}");
+            assert_eq!(
+                p.decide(Mode::Plan, &a, &home),
+                Decision::Deny(deny_reasons::PLAN_WRITE),
+                "{rel}"
+            );
+        }
+        let a = Access::Write(home.join("project/x"));
+        assert_eq!(p.decide(Mode::Workspace, &a, &home), Decision::Allow);
+        let a = Access::Write(home.join(".ssh/authorized_keys"));
+        assert_eq!(p.decide(Mode::Workspace, &a, &home), SENSITIVE);
+        let a = Access::Read(home.join(".codex/auth.json"));
+        assert_eq!(p.decide(Mode::Workspace, &a, &home), SENSITIVE);
+    }
+    // A project of its own under `~/.config` is still the user's workspace there.
+    let p = guarded(&env);
+    let nvim = home.join(".config/nvim");
+    std::fs::create_dir_all(&nvim).unwrap();
+    let a = Access::Write(nvim.join("init.lua"));
+    assert_eq!(p.decide(Mode::Workspace, &a, &nvim), Decision::Allow);
+}
+
+#[test]
+fn the_real_account_home_is_denied_as_well_as_a_changed_home() {
+    let env = TestEnv::new();
+    // `real` stands for the passwd home; `$HOME` points elsewhere (env.home()).
+    let real = env.work().join("real-account-home");
+    for rel in [
+        ".ssh/id_synth",
+        ".aws/credentials",
+        ".config/gh/hosts.yml",
+        ".gnupg/k",
+    ] {
+        env.write(&format!("work/real-account-home/{rel}"), "SYNTH");
+    }
+    let guard = PathGuard::with_real_home(
+        &env.home(),
+        Some(&real),
+        &env.agent_dir(),
+        &env.agent_dir().join("tmp"),
+    );
+    let p = ModePolicy::new().with_guard(guard);
+    for home in [env.home(), real.clone()] {
+        for rel in [".ssh/id_synth", ".aws/credentials", ".gnupg/k"] {
+            for a in [Access::Read(home.join(rel)), Access::Write(home.join(rel))] {
+                assert_eq!(p.decide(Mode::Workspace, &a, &env.work()), SENSITIVE, "{a:?}");
+            }
+        }
+    }
+}

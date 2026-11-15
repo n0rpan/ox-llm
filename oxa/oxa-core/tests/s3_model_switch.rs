@@ -319,6 +319,7 @@ fn recorder_catches_an_oversized_target_request() {
         max_tokens: 1,
         thinking: false,
         preserve_thinking: false,
+        sampling: None,
         hints: oxa_proto::Hints {
             session: "s",
             idem_key: "",
@@ -451,4 +452,23 @@ fn model_select_hook_fires_before_the_epoch() {
         "epoch after the hook: {log:?}"
     );
     assert!(!log[..at].iter().any(|l| l == "tools"), "{log:?}");
+}
+
+/// A cloud model has no cold-prefill time estimate: the notice says the context is re-sent.
+#[test]
+fn cloud_switch_notice_has_no_time_estimate() {
+    let env = TestEnv::new();
+    let mut r = rig(&env, vec![ScriptTurn::text("one")], true);
+    prompt(&mut r.session, "small");
+    let mut sink = VecSink::default();
+    r.session
+        .set_model("anthropic/claude-sonnet-5-5", &mut sink)
+        .expect("switch");
+    let costs: Vec<String> = notices(&sink.0)
+        .into_iter()
+        .filter(|n| n.contains("tokens"))
+        .collect();
+    assert_eq!(costs.len(), 1, "{costs:?}");
+    assert!(costs[0].contains("re-sent"), "{}", costs[0]);
+    assert!(!costs[0].contains(" s)"), "{}", costs[0]);
 }

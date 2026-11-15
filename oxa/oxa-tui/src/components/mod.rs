@@ -9,6 +9,7 @@ mod input;
 mod loader;
 mod scrollbar;
 mod select_list;
+mod suggest_panel;
 mod text;
 
 pub use border::*;
@@ -17,6 +18,7 @@ pub use input::*;
 pub use loader::*;
 pub use scrollbar::*;
 pub use select_list::*;
+pub use suggest_panel::*;
 pub use text::*;
 
 /// `lines` empty lines.

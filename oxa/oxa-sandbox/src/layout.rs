@@ -13,9 +13,14 @@
 //!   over a directory, `/dev/null` over a file. Whatever the cwd or the settings, they are
 //!   neither readable nor writable inside. The file tools obey the same list
 //!   (`oxa-perm`'s `ModePolicy::with_guard`).
-//! * **Home as cwd (B3).** Started in `$HOME`, `/` or a parent of `$HOME`, bash gets no
-//!   writable directory (the cwd is bound read-only) unless the user settings say
-//!   `oxa.sandbox.allowHomeWrite: true`; the deny-list holds either way.
+//! * **Home as cwd (B3, O-199).** Started in `/` or a parent of `$HOME`, bash gets no writable
+//!   directory (the cwd is bound read-only), whatever the settings. Started in `$HOME` itself,
+//!   the same unless the home is a workspace ([`Layout::allow_home_write`]: the user confirmed
+//!   the interactive start there, or the user settings say `oxa.sandbox.allowHomeWrite: true`):
+//!   then the home root and every dot-entry stay read-only and the plain folders and files of
+//!   the home are writable (`bwrap::home_workspace_entries`, never `~/bin`, a symlink or a
+//!   dot-entry: `.bashrc`, `.profile`, `.config/*`, `.local/bin`, `.ssh`, `.oxa`, ...); the
+//!   deny-list holds either way.
 //! * **Protected project files (B4).** Inside the cwd, the files that later run outside the
 //!   sandbox ([`protected_paths`]: `.oxa`, `.agents/skills`, `.git/hooks`, `.git/config`) are
 //!   bound read-only when they exist. For git data (sbx-hooks, see `gitdirs.rs`) a missing
@@ -25,15 +30,17 @@
 //!
 //! The argv is deterministic: binds sorted by path, masks sorted by path.
 use crate::gitdirs::GitBinds;
-pub use oxa_proto::guard::{is_home_or_above, protected_paths, sensitive_paths};
+pub use oxa_proto::guard::{
+    home_protected_paths, is_home_itself, is_home_or_above, protected_paths, sensitive_paths,
+};
 use std::path::{Path, PathBuf};
 
 /// Setting: extra read-only binds (user settings only; `~/` expands to `$HOME`).
 pub const SETTING_READ_PATHS: &str = "oxa.sandbox.readPaths";
 /// Setting: extra read-write binds (user settings only).
 pub const SETTING_WRITE_PATHS: &str = "oxa.sandbox.writePaths";
-/// Setting: give bash a writable cwd when oxa runs in `$HOME`, `/` or a parent of `$HOME`
-/// (user settings only). The deny-list still holds.
+/// Setting: make `$HOME` a workspace when oxa runs in it (user settings only; see the module
+/// docs). Never for `/` or a parent of `$HOME`. The deny-list still holds.
 pub const SETTING_ALLOW_HOME_WRITE: &str = "oxa.sandbox.allowHomeWrite";
 
 /// Fixed base `PATH` (appended when the user's lacks it).
@@ -152,7 +159,8 @@ pub struct Layout {
     pub agent_dir: Option<PathBuf>,
     /// Passed-through environment, sorted by name.
     pub env: Vec<(String, String)>,
-    /// [`SETTING_ALLOW_HOME_WRITE`].
+    /// A home workspace when the cwd is `$HOME` itself (O-199): [`SETTING_ALLOW_HOME_WRITE`],
+    /// or the user confirmed the interactive start in `$HOME`. No effect elsewhere.
     pub allow_home_write: bool,
     /// sbx-git: the git data of the cwd outside it (a worktree's gitdir and common dir, shared
     /// alternates), resolved once by `Bwrap::with_git_dirs`. Empty until then.

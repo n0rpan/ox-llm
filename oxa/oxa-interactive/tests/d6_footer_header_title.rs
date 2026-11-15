@@ -341,3 +341,44 @@ fn loaded_resources_listing() {
         ]
     );
 }
+/// Issue #51: Claude 5.5 cannot disable thinking; the footer shows what oxc sends upstream.
+#[test]
+fn footer_claude_55_never_shows_off() {
+    let footer = |model: &str, level| {
+        let st = StatusModel {
+            model: model.to_string(),
+            thinking: Some(level),
+            ..base_status()
+        };
+        render_footer(&vm_with(st), 120, &Theme::plain())[1].clone()
+    };
+    let off = footer("anthropic/claude-sonnet-5-5", ThinkingLevel::Off);
+    assert!(off.contains("adaptive • low") && !off.contains("off"), "{off}");
+    let high = footer("anthropic/claude-sonnet-5-5", ThinkingLevel::High);
+    assert!(high.contains("adaptive • high"), "{high}");
+    assert!(footer("qwen", ThinkingLevel::Off).contains("qwen • off"));
+}
+
+/// Claude 5.5 footer over every level, and an ordinary model unchanged.
+#[test]
+fn footer_thinking_table_claude_55_and_ordinary() {
+    let footer = |model: &str, level| {
+        let st = StatusModel {
+            model: model.to_string(),
+            thinking: Some(level),
+            ..base_status()
+        };
+        render_footer(&vm_with(st), 120, &Theme::plain())[1].clone()
+    };
+    for level in ThinkingLevel::ALL {
+        let want = if level == ThinkingLevel::Off {
+            "adaptive • low"
+        } else {
+            "adaptive • high"
+        };
+        let line = footer("anthropic/claude-haiku-5-5", level);
+        assert!(line.contains(want), "5.5 {level:?}: {line}");
+        let plain = footer("qwen", level);
+        assert!(plain.contains(&format!("qwen • {}", level.as_str())), "{plain}");
+    }
+}
