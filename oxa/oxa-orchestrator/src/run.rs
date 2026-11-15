@@ -61,6 +61,7 @@ pub struct LocalInference {
     address: SocketAddr,
     model: String,
     local_only: bool,
+    auto_compaction: bool,
 }
 
 impl LocalInference {
@@ -70,6 +71,7 @@ impl LocalInference {
             address,
             model,
             local_only: true,
+            auto_compaction: false,
         })
     }
     pub(crate) fn validate_route(address: SocketAddr, model: &str) -> io::Result<()> {
@@ -93,7 +95,13 @@ impl LocalInference {
             address,
             model,
             local_only: false,
+            auto_compaction: false,
         })
+    }
+    #[cfg(feature = "interactive-control")]
+    pub(crate) fn with_compaction(mut self, enabled: bool) -> Self {
+        self.auto_compaction = enabled;
+        self
     }
 }
 
@@ -842,6 +850,9 @@ impl Worker {
                     return Ok(Some(Outcome::Failed));
                 }
                 if id == "check" && self.checking {
+                    if self.spec.inference.auto_compaction && !self.meter.ready {
+                        return Ok(Some(Outcome::PolicyViolation));
+                    }
                     if record["data"]["mode"].as_str() != Some(mode.as_str())
                         || record["data"]["model"]["id"].as_str() != Some(&self.spec.inference.model)
                         || record["data"]["isStreaming"].as_bool() != Some(false)
@@ -852,12 +863,12 @@ impl Worker {
                     for (id, command) in [("retry", "set_auto_retry"), ("compact", "set_auto_compaction")] {
                         self.configuration.insert(id.into());
                         self.process
-                            .queue(&json!({"id":id,"type":command,"enabled":false}))?;
+                            .queue(&json!({"id":id,"type":command,"enabled":id=="compact"&&self.spec.inference.auto_compaction}))?;
                     }
                     journal.record(
                         Some(&self.spec.id),
                         "policy_verified",
-                        json!({"mode":mode,"offline":self.spec.inference.local_only,"usageMeter":self.meter.ready,"toolPolicy":"explicit-per-worker-grants"}),
+                        json!({"mode":mode,"offline":self.spec.inference.local_only,"usageMeter":self.meter.ready,"autoCompaction":self.spec.inference.auto_compaction,"toolPolicy":"explicit-per-worker-grants"}),
                     )?;
                 } else if self.configuration.remove(id) {
                     if self.configuration.is_empty() && !self.defer_prompt {

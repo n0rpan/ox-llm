@@ -26,6 +26,10 @@ use std::{
     time::Duration,
 };
 static REGISTRY: OnceLock<Mutex<Vec<Weak<Manager>>>> = OnceLock::new();
+fn goal_preview(goal: &goals::Snapshot) -> Value {
+    json!({"id":goal.id,"state":goal.state,"revision":goal.revision,"budget":goal.budget,
+        "turns_started":goal.turns_started,"reported_tokens":goal.reported_tokens,"elapsed_ms":goal.elapsed_ms,"reason":goal.reason})
+}
 struct Job {
     snapshot: Snapshot,
     profile: String,
@@ -336,9 +340,9 @@ impl Manager {
                 let mut lane=LocalLane::start(settings,spec,profile.budget,cancel,move|event|{
                     let mut state=observed.state.lock().unwrap_or_else(|e|e.into_inner());
                     if let Some(job)=state.jobs.get_mut(&observed_id){
-                        let newly_blocked=event.goal.state==goals::State::Blocked && job.child_goal.as_ref().is_none_or(|g|g.revision!=event.goal.revision);
+                        let newly_blocked=event.kind=="turn_reply" && event.goal.state==goals::State::Blocked && job.child_goal.as_ref().is_none_or(|g|g.revision!=event.goal.revision);
                         job.snapshot.state=match event.goal.state{goals::State::Blocked=>"blocked",goals::State::Paused|goals::State::Pausing=>"paused",_=>"working"};
-                        job.snapshot.output=json!({"profile":job.profile,"model":job.model,"route":job.route,"goal":event.goal}).to_string();
+                        job.snapshot.output=json!({"profile":job.profile,"model":job.model,"route":job.route,"goal":goal_preview(&event.goal)}).to_string();
                         job.child_goal=Some(event.goal.clone());
                         if event.request_id.is_some(){job.last_control=Some(json!({"request_id":event.request_id,"kind":event.kind}));}
                         if newly_blocked && !state.completed.contains(&observed_id){state.completed.push_back(observed_id.clone());}
@@ -354,7 +358,7 @@ impl Manager {
             if let Some(job)=state.jobs.get_mut(&worker_id){
                 job.finished=true;
                 match result{
-                    Ok(report)=>{job.snapshot.state=match report.goal.state{goals::State::Done=>"completed",goals::State::Canceled=>"canceled",_=>"failed"};job.snapshot.process_id=Some(report.process_id);job.snapshot.process_stopped=report.process_stopped;job.snapshot.output=json!({"profile":job.profile,"model":job.model,"route":job.route,"goal":report.goal,"reply":report.last_reply,"review":report.review}).to_string();job.child_goal=Some(report.goal.clone());job.report=Some(report);}
+                    Ok(report)=>{job.snapshot.state=match report.goal.state{goals::State::Done=>"completed",goals::State::Canceled=>"canceled",_=>"failed"};job.snapshot.process_id=Some(report.process_id);job.snapshot.process_stopped=report.process_stopped;job.snapshot.output=json!({"profile":job.profile,"model":job.model,"route":job.route,"goal":goal_preview(&report.goal),"reply":report.last_reply,"review_available":report.review.is_some()}).to_string();job.child_goal=Some(report.goal.clone());job.report=Some(report);}
                     Err(_)=>{job.snapshot.state="failed";job.snapshot.reason=Some("worker result or cleanup could not be verified".into());}
                 }
             }
@@ -713,6 +717,7 @@ mod tests {
             "worker_binary",
             "route",
             "allow_cloud_workers",
+            "auto_compaction",
         ] {
             let mut args = start.clone();
             args[field] = json!("model-supplied replacement");
