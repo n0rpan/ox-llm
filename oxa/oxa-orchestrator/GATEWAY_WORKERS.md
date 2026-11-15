@@ -63,8 +63,8 @@ Token limits are observed after usage reports; they are not prepaid USD caps and
 can overshoot before usage is available. Time caps stop the owned runtime. The
 gateway's monetary controls and accurate upstream accounting require independent
 verification. Issues #47, #48 and #71 remain relevant; this change does not settle
-provider cost or fix gateway accounting. Native workers still disable automatic
-retries and compaction; long cloud sessions and continuation recovery (#64) need
+provider cost or fix gateway accounting. Automatic agent retries remain disabled; worker compaction requires an
+explicit [profile opt-in](WORKER_COMPACTION.md). Long cloud sessions and continuation recovery (#64) need
 further work before the working-evening acceptance run.
 
 ## Mock evidence
@@ -83,5 +83,5 @@ runtime or gateway generation. These tests verify client connection closure,
 not actual provider cancellation or billing behavior.
 
 For worker accounting across chat, summary and prefill requests, see
-[NATIVE_USAGE.md](NATIVE_USAGE.md). This accounting step leaves automatic
-compaction disabled and does not change gateway monetary settlement.
+[NATIVE_USAGE.md](NATIVE_USAGE.md). The source supports explicitly opted-in worker compaction and does not change
+gateway monetary settlement.

@@ -1808,6 +1808,259 @@ fn offline_parent_refuses_gateway_workers_before_contact() {
     std::env::remove_var("OXA_WORKER_PROFILES");
 }
 
+fn worker_goal_compacts_with_metered_usage(limit: u64, failure: bool, canceling: bool) -> u64 {
+    let limited = limit > 0;
+    let tokens = if limited { limit } else { 2000000 };
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    std::fs::create_dir_all(&agent).unwrap();
+    let directory = agent.join("control");
+    let socket = directory.join("session.sock");
+    std::env::set_var("OXA_SESSION_CONTROL_DIRECTORY", &directory);
+    let continue_turn = r#"{"state":"continue","summary":"one concrete step complete"}"#;
+    let done_turn = r#"{"state":"done","summary":"compaction-final","evidence":["three steps verified"]}"#;
+    let mut failed_summary = ScriptTurn::text("worker-summary-marker: previous steps retained");
+    if canceling {
+        failed_summary.fault = Some(oxa_fake::Fault::HoldHeaders { ms: 1500 });
+    }
+    if failure {
+        failed_summary.fault = Some(oxa_fake::Fault::Http {
+            status: 400,
+            body: "deliberate summary failure".into(),
+        });
+    }
+    let worker = Arc::new(
+        FakeServer::start(
+            vec![
+                ScriptTurn::text(continue_turn),
+                ScriptTurn::text(continue_turn),
+                failed_summary,
+                ScriptTurn::text(done_turn),
+                ScriptTurn::text("worker-summary-marker: final steps retained"),
+            ],
+            FakeOpts {
+                model: "compact-model".into(),
+                n_ctx: 50000,
+                models: vec![oxa_fake::FakeModel {
+                    alias: "compact-model".into(),
+                    cap: 50000,
+                    max_output: Some(1024),
+                    caps: Some(oxa_fake::FakeCaps::rust_moe()),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let profile = agent.join("workers.json");
+    std::fs::write(&profile,json!({"version":1,"verified_local_only":true,"parallel":1,"total_tokens":2000000,"total_output_bytes":4194304,"profiles":[{"name":"long-worker","role":"Retain verified context across compaction","engine":worker.url().trim_start_matches("http://"),"model":"compact-model","auto_compaction":true,"budget":{"wall_ms":12000,"tokens":tokens,"turns":8},"turn_ms":8000,"output_bytes":4194304}]}).to_string()).unwrap();
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::env::set_var("OXA_WORKER_PROFILES", &profile);
+    let args=json!({"operation":"start","profile":"long-worker","goal":format!("Verify all project steps. {}","x".repeat(14000))}).to_string();
+    let engine = Arc::new(
+        FakeServer::start(
+            vec![
+                ScriptTurn::tool("long-worker", "worker_lane", &args),
+                ScriptTurn::text(r#"{"state":"done","summary":"premature","evidence":["worker running"]}"#),
+                ScriptTurn::text(
+                    r#"{"state":"done","summary":"compaction-final","evidence":["worker result verified"]}"#,
+                ),
+            ],
+            FakeOpts::default(),
+        )
+        .unwrap(),
+    );
+    let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(Dirs::under(env.root()).sessions_dir));
+    let session = Session::open(
+        deps(&engine.url(), env.root(), &env.work(), store.clone()),
+        Open::New,
+    )
+    .unwrap();
+    let expected = session.state().session_id;
+    let done = Arc::new(AtomicBool::new(false));
+    let peer_done = done.clone();
+    let peer_worker = worker.clone();
+    let peer = std::thread::spawn(move || {
+        let initial = wait_status(&socket, |v| v["status"]["session"]["id"].is_string());
+        request(
+            &socket,
+            json!({"id":"goal","method":"set_goal","revision":revision(&initial),"text":"Run a long worker goal and collect its verified result","budget":{"wall_ms":15000,"tokens":500000,"turns":8}}),
+        );
+        let paused = wait_status(&socket, |v| {
+            v["status"]["goal"]["goal"] == "Run a long worker goal and collect its verified result"
+        });
+        mutation(&socket, "run", "resume", revision(&paused), None);
+        let mut canceled_parent = false;
+        if canceling {
+            let running = wait_status(&socket, |v| {
+                state(v) == "blocked" && peer_worker.requests().iter().any(|r| r.kind == "compaction")
+            });
+            mutation(&socket, "cancel-summary", "cancel", revision(&running), None);
+            canceled_parent = true;
+        }
+        if failure {
+            let blocked = wait_status(&socket, |v| {
+                v["status"]["workers"][0]["goal"]["state"] == "blocked"
+                    && v["status"]["workers"][0]["goal"]["reported_tokens"].is_null()
+                    && v["status"]["session"]["busy"] == false
+                    && (state(v) == "blocked" || state(v) == "done")
+            });
+            if blocked["status"]["workers"][0]["process_stopped"] != true {
+                mutation(&socket, "cancel-unknown", "cancel", revision(&blocked), None);
+                canceled_parent = true;
+            }
+        }
+        let finished = wait_status(&socket, |v| {
+            state(v) == if canceled_parent { "canceled" } else { "done" }
+                && v["status"]["workers"][0]["process_stopped"] == true
+        });
+        let goal = &finished["status"]["workers"][0]["goal"];
+        let requests = peer_worker.requests();
+        let expected: u64 = requests
+            .iter()
+            .filter_map(|r| r.usage.as_ref())
+            .map(|u| u64::from(u.prompt) + u64::from(u.completion))
+            .sum();
+        if failure || canceling {
+            assert!(goal["state"] == "blocked" || goal["state"] == "canceled");
+            assert!(goal["reported_tokens"].is_null());
+        } else {
+            assert_eq!(goal["state"], if limited { "budget_exhausted" } else { "done" });
+        }
+        assert_eq!(
+            goal["turns_started"],
+            if limited || failure || canceling { 2 } else { 3 }
+        );
+        if !limited && !failure && !canceling {
+            assert_eq!(goal["reported_tokens"].as_u64().unwrap(), expected);
+        }
+        assert_eq!(goal["budget"], json!({"wall_ms":12000,"tokens":tokens,"turns":8}));
+        let pid = finished["status"]["workers"][0]["process_id"].as_u64().unwrap();
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        peer_done.store(true, Ordering::Release);
+    });
+    let mut terminal = LiveTerm {
+        inner: TestTerminal::new(120, 30),
+        done,
+        typing: Arc::new(AtomicBool::new(false)),
+        typed: Arc::new(AtomicBool::new(false)),
+        deadline: Instant::now() + Duration::from_secs(20),
+        quit: false,
+        final_text: if canceling {
+            "premature"
+        } else {
+            "compaction-final"
+        },
+        escape: false,
+        swap_when: None,
+        swapped: false,
+        rejected: Arc::new(AtomicBool::new(false)),
+    };
+    let mut options = opts(&env, &engine.url(), store);
+    let (code, last) = run_session(&mut terminal, session, &mut options);
+    peer.join().unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(last.unwrap().id, expected);
+    std::env::remove_var("OXA_SESSION_CONTROL_DIRECTORY");
+    std::env::remove_var("OXA_WORKER_PROFILES");
+    let requests = worker.requests();
+    if canceling {
+        let summary = requests.iter().find(|r| r.kind == "compaction").unwrap().seq;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let _ = worker.in_flight();
+            if worker
+                .timings()
+                .iter()
+                .any(|t| t.seq == Some(summary) && t.client_closed)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "cancel must close summary inference");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.kind == "chat" && r.max_tokens > 0)
+                .count(),
+            2
+        );
+    }
+    assert!(
+        requests.iter().any(|r| r.kind == "compaction"),
+        "actual summary inference required: {:?}",
+        requests
+            .iter()
+            .map(|r| (&r.kind, r.max_tokens, r.usage))
+            .collect::<Vec<_>>()
+    );
+    if !limited && !failure && !canceling {
+        assert!(
+            requests
+                .iter()
+                .filter(|r| r.kind == "chat")
+                .any(|r| r.messages.iter().any(|m| m
+                    .content
+                    .as_deref()
+                    .is_some_and(|s| s.contains("worker-summary-marker")))),
+            "summary must appear in a later goal turn"
+        );
+    }
+    assert!(requests
+        .iter()
+        .all(|r| r.session == requests[0].session && r.model == "compact-model"));
+    let root = engine.requests();
+    if !limited && !failure && !canceling {
+        assert!(
+            root.iter()
+                .rfind(|r| r.max_tokens > 0)
+                .unwrap()
+                .messages
+                .iter()
+                .any(|m| m
+                    .content
+                    .as_deref()
+                    .is_some_and(|s| s.contains("compaction-final") && s.contains("untrusted data"))),
+            "long goal text must not crowd the result out of its wake event"
+        );
+    }
+    if failure {
+        assert_eq!(
+            requests.iter().filter(|r| r.kind == "compaction").count(),
+            1,
+            "failed summary must not silently retry"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.kind == "chat" && r.max_tokens > 0)
+                .count(),
+            2
+        );
+    }
+    if limited {
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.kind == "chat" && r.max_tokens > 0)
+                .count(),
+            2,
+            "summary must exhaust the cap before a third goal turn"
+        );
+    }
+    let mut before = 0;
+    for request in &requests {
+        if request.kind == "compaction" {
+            return before + 100;
+        }
+        let usage = request.usage.as_ref().unwrap();
+        before += u64::from(usage.prompt) + u64::from(usage.completion);
+    }
+    panic!("summary request missing");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--mode") {
@@ -1832,6 +2085,17 @@ fn main() {
             &oxa_config::Env::from_process(),
             oxa_cli::Stdio::real(),
         ));
+    }
+    let cap = worker_goal_compacts_with_metered_usage(0, false, false);
+    worker_goal_compacts_with_metered_usage(cap, false, false);
+    worker_goal_compacts_with_metered_usage(0, true, false);
+    worker_goal_compacts_with_metered_usage(0, false, true);
+    println!("cancel during summary closes inference and preserves unknown usage ... ok");
+    println!("failed summary keeps usage unknown and stops goal continuation ... ok");
+    println!("summary usage exhausts a worker cap before another goal turn ... ok");
+    println!("worker compaction preserves context and charges summaries/prefill to the same budget ... ok");
+    if args.first().map(String::as_str) == Some("--compaction-only") {
+        return;
     }
     for (steering, cancellation, name) in [
         (

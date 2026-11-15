@@ -3,8 +3,8 @@
 The feature-built CLI can meter every `Engine.chat` call in an owned native
 worker, independently of whether the core emits a chat reply, a compaction event,
 or no presentation event at all. This includes summary requests and zero-output
-prefill. It prepares budgeted long-running goals for compaction; this milestone
-does not enable automatic compaction or change the main TUI goal ledger.
+prefill. The main TUI goal ledger is separate. Worker compaction is an explicit
+operator opt-in described in [WORKER_COMPACTION.md](WORKER_COMPACTION.md).
 
 The existing optional dependency-augmentation hook installs a forwarding engine
 decorator only when the private child environment requests it. Ordinary CLI/RPC
@@ -66,5 +66,4 @@ the same augmentation hook as the actual feature-built binary.
 No new hooks in existing crates or public RPC changes are added. No production
 service, provider key, real gateway or paid model is used. Provider-reported
 monetary costs and gateway settlement remain separate; this source counts the
-SDK's reported inference tokens. Main-session engine-level accounting, safe
-automatic compaction, long cloud runs, and issues #47/#48/#64/#71 remain open.
+SDK's reported inference tokens. Main-session engine-level accounting and compaction, long cloud runs, and issues #47/#48/#64/#71 remain open.

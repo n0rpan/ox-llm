@@ -33,6 +33,8 @@ pub(crate) struct Profile {
     pub model: String,
     #[serde(default)]
     pub route: Route,
+    #[serde(default)]
+    pub auto_compaction: bool,
     pub budget: goals::Budget,
     pub turn_ms: u64,
     pub output_bytes: usize,
@@ -62,10 +64,11 @@ impl Route {
 }
 impl Profile {
     pub fn inference(&self) -> io::Result<LocalInference> {
-        match self.route {
+        let route = match self.route {
             Route::Local => LocalInference::register_verified_local(self.engine, self.model.clone()),
             Route::CloudGateway => LocalInference::register_operator_gateway(self.engine, self.model.clone()),
-        }
+        }?;
+        Ok(route.with_compaction(self.auto_compaction))
     }
     pub fn check_policy(&self) -> io::Result<()> {
         if self.route == Route::CloudGateway && oxa_proto::offline() {

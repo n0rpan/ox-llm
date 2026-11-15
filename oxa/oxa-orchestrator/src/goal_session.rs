@@ -283,9 +283,8 @@ pub fn pursue(
                     .map_err(|_| invalid("goal accounting rejected turn"))?;
                 }
                 active = false;
-                journal.record(None,"goal_turn_finished",json!({"turn":goal.snapshot().turns_started,"state":goal.state(),"reportedTokens":goal.snapshot().reported_tokens,"replySha256":digest(&last_reply)}))?;
-                emit(&goal, "turn_reply", Some(last_reply.clone()), &mut observe);
-                if !matches!(outcome, Outcome::Completed | Outcome::Canceled) {
+                let stopped = !matches!(outcome, Outcome::Completed | Outcome::Canceled);
+                if stopped {
                     if matches!(outcome, Outcome::TokenBudget | Outcome::OutputBudget) {
                         goal.runtime_budget(if outcome == Outcome::TokenBudget {
                             "token_budget"
@@ -296,6 +295,15 @@ pub fn pursue(
                         goal.runtime_blocked("native_runtime_failure");
                     }
                     runtime_outcome = Some(outcome);
+                }
+                journal.record(None,"goal_turn_finished",json!({"turn":goal.snapshot().turns_started,"state":goal.state(),"reportedTokens":goal.snapshot().reported_tokens,"replySha256":digest(&last_reply)}))?;
+                emit(
+                    &goal,
+                    if stopped { "turn_stopped" } else { "turn_reply" },
+                    Some(last_reply.clone()),
+                    &mut observe,
+                );
+                if stopped {
                     break;
                 }
                 if goal.state() == State::Done {
