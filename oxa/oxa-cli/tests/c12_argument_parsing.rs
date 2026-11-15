@@ -427,3 +427,24 @@ fn last_permission_flag_wins_over_an_earlier_yolo() {
     let a = parse(&["--permission-mode", "ask", "--yolo"]);
     assert_eq!(a.level, Some(PermissionMode::Yolo));
 }
+
+#[test]
+fn continue_consumes_an_explicit_id_and_leaves_the_new_instruction() {
+    let args = parse(&["--continue=session-123", "next instruction"]);
+    assert!(args.continue_);
+    assert_eq!(args.continue_id.as_deref(), Some("session-123"));
+    assert_eq!(args.messages, vec!["next instruction"]);
+    // The spaced form is settled against the session store at dispatch.
+    let args = parse(&["--continue", "session-123", "next instruction"]);
+    assert!(args.continue_);
+    assert_eq!(args.continue_id, None);
+    assert_eq!(args.continue_word, Some(("session-123".to_string(), 0)));
+    assert_eq!(args.messages, vec!["next instruction"]);
+    for words in [
+        vec!["--continue=session-123", "--no-session"],
+        vec!["--continue=session-123", "--session", "other"],
+        vec!["--continue=../escape"],
+    ] {
+        assert_eq!(parse_err(&words).code, codes::USAGE);
+    }
+}

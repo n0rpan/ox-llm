@@ -8,6 +8,15 @@ With no message, `oxa` opens the interface ([usage.md](usage.md)). With a messag
 
 In `-p` mode, standard output holds only the final reply and a newline. Progress goes to standard error as the run goes, flushed per event: the text of each message that is followed by tool calls, and one line per tool call (`[tool] bash: <first 100 characters of the command>`, then `[tool] bash ok 1.2s` or `failed`). A reply that is followed by another turn (a failed `done` check, a steering message) is progress too. The final reply is written once, when the run ends, and not at all when the run failed or was aborted. `--mode json` prints no progress lines; it writes one flushed record per event.
 
+Print mode saves a session by default and announces its id on stderr before starting the agent. Continue that exact session with a new instruction:
+
+```console
+$ oxa -p "start the task"
+$ oxa -p --continue SESSION_ID "continue with this instruction"
+```
+
+Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word after `--continue` is taken as the id only if a session with that id exists; otherwise it stays part of the prompt and the most recent session continues, as before. The id is never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
+
 Print, JSON and RPC runs write exactly one terminal JSON result on standard error, after diagnostics. For example:
 
 ```json
@@ -98,7 +107,7 @@ $ oxa mcp logout <name>
 
 | Option | Meaning |
 |---|---|
-| `--continue`, `-c` | continue the most recent session of the current directory |
+| `--continue [id]`, `-c` | continue the named session; without an id, continue the most recent session of the current directory |
 | `--resume`, `-r` | pick a session to resume |
 | `--session <path\|id>` | open a session by file path, or by full or partial id |
 | `--session-id <id>` | use the current directory's session with this id, creating it if needed |
