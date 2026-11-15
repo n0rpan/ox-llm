@@ -1,5 +1,7 @@
 //! Opt-in, engine-independent cloud gateway building blocks.
 #![forbid(unsafe_code)]
+#[cfg(feature = "upstream-anthropic-request")]
+pub mod anthropic_request;
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
 #[cfg(feature = "ledger")]

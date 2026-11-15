@@ -14,6 +14,7 @@ runtime = ["cloud-only", "ledger"]
 cloud-only = ["dep:serde_json", "dep:url"]
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
+upstream-anthropic-request = ["dep:serde_json"]
 transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
 
 [dependencies]
