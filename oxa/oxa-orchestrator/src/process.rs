@@ -127,7 +127,7 @@ impl Process {
                 "/home/worker/.oxa/agent",
                 "--setenv",
                 "OXA_OFFLINE",
-                "1",
+                if local_only { "1" } else { "0" },
                 "--setenv",
                 "OXA_SYSTEM_SKILLS_DIR",
                 "",

@@ -1655,6 +1655,29 @@ fn model_worker_lanes_wake_same_session(steering: bool, cancellation: &str, reco
             .as_deref()
             .is_some_and(|text| text.contains("worker-finished") && text.contains("untrusted data"))));
     }
+    if !canceling {
+        let mut verified = 0;
+        for directory in std::fs::read_dir(&agent).unwrap() {
+            let directory = directory.unwrap();
+            if !directory.file_name().to_string_lossy().starts_with("worker-") {
+                continue;
+            }
+            for line in std::fs::read_to_string(directory.path().join("goal.jsonl"))
+                .unwrap()
+                .lines()
+            {
+                let record: Value = serde_json::from_str(line).unwrap();
+                if record["event"] == "policy_verified" {
+                    verified += 1;
+                    assert_eq!(
+                        record["details"]["offline"], !gateway,
+                        "audit must match actual worker policy"
+                    );
+                }
+            }
+        }
+        assert_eq!(verified, 2);
+    }
     let screen = strip_ansi(&String::from_utf8_lossy(&terminal.inner.out));
     if gateway {
         assert!(screen.contains("(cloud)"), "paid route visible in footer");
@@ -1769,6 +1792,11 @@ fn main() {
             .is_some_and(|role| role.contains("fixed author role") || role.contains("fixed reviewer role"))
         {
             let gateway = args.last().unwrap().contains("[gateway-test]");
+            assert_eq!(
+                std::env::var("OXA_OFFLINE").as_deref(),
+                Ok(if gateway { "0" } else { "1" }),
+                "child environment must match its captured route"
+            );
             assert_eq!(
                 args.iter().any(|arg| arg == "--offline"),
                 !gateway,
