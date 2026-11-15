@@ -2,7 +2,6 @@
 // ported from pi packages/agent/src/agent-loop.ts
 use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
 use crate::host::observe_hooks;
-use crate::retry::chat_with_retry;
 use crate::SessionState;
 use oxa_proto::{
     miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
@@ -147,7 +146,7 @@ fn run_inner(
             if opts.idem_key.is_empty() {
                 opts.idem_key = crate::retry::fresh_idem_key(st);
             }
-            let res = chat_with_retry(st, &opts, &mut capture, ui);
+            let res = crate::retry::chat_with_retry_keyed(st, &mut opts, &mut capture, ui);
             let partial = std::mem::take(&mut capture.text);
             let got_data = capture.got_data;
             let looped = capture.looped;

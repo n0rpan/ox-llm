@@ -747,3 +747,38 @@ fn looping_reply_ends_failed_with_notice_and_is_not_sent_back() {
             && !m.content.as_deref().unwrap_or("").contains("word0 ")
     ));
 }
+
+/// A replay after a mid-output cut that follows an overflow compaction keeps the key of the
+/// compacted request (not the pre-compaction one).
+#[test]
+fn replay_after_overflow_compaction_keeps_the_new_key() {
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text("a longer reply that is cut");
+    cut.chunk = 1;
+    cut.fault = Some(Fault::DropAt { bytes: 5 });
+    let (mut st, eng) = state(
+        &env,
+        vec![
+            ScriptTurn::fault(Fault::Overflow),
+            ScriptTurn::text("summary of the session"),
+            cut,
+            ScriptTurn::text("full reply"),
+        ],
+        json!({}),
+    );
+    earlier_exchange(&mut st);
+    say(&mut st, "a long prompt");
+    let end = run_loop(&mut st, &mut VecSink::default(), &mut HeadlessUi::default()).expect("run_loop");
+    assert_eq!(end, RunEnd::Stopped);
+    let reqs = eng.requests();
+    let kinds: Vec<&str> = reqs.iter().map(|r| r.kind.as_str()).collect();
+    assert_eq!(kinds, vec!["chat", "compaction", "chat", "chat"]);
+    assert_ne!(
+        reqs[0].idem_key, reqs[2].idem_key,
+        "compaction makes a new request"
+    );
+    assert_eq!(
+        reqs[2].idem_key, reqs[3].idem_key,
+        "the replay reuses the effective key"
+    );
+}

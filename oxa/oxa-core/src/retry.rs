@@ -54,12 +54,22 @@ pub fn chat_with_retry(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<AssistantTurn, OxaError> {
+    chat_with_retry_keyed(st, &mut opts.clone(), sink, ui)
+}
+
+/// As `chat_with_retry`, but the effective idempotency key (fresh after an overflow
+/// compaction) is left in `opts`, so a later replay of the same request reuses it.
+pub(crate) fn chat_with_retry_keyed(
+    st: &mut SessionState,
+    opts: &mut RequestOpts,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<AssistantTurn, OxaError> {
     let policy = retry_policy(st);
     // A `abort_retry` only means something during a wait of this call; a stale one from an
     // earlier call must not cancel this call's wait.
     st.shared.cancel_retry.reset();
 
-    let mut opts = opts.clone();
     if opts.idem_key.is_empty() {
         opts.idem_key = fresh_idem_key(st);
     }

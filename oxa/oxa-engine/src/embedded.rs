@@ -145,7 +145,13 @@ impl Engine for EmbeddedEngine {
                         }
                     }
                     Err(error) => {
-                        failure = Some(error);
+                        // A malformed chunk or refusal after reply data is a cut reply that
+                        // must never be replayed.
+                        failure = Some(if emitted {
+                            broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, error.message))
+                        } else {
+                            error
+                        });
                         return Flow::Stop;
                     }
                 },
@@ -165,11 +171,16 @@ impl Engine for EmbeddedEngine {
         if let Some(error) = failure.or_else(|| outcome.err()) {
             // As with HTTP, a refusal after visible reply data is a cut stream;
             // it must never invite replay of an already visible tool or answer.
-            return Err(if emitted && error.code != codes::STREAM_BROKEN {
-                broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, error.message))
-            } else {
-                error
-            });
+            return Err(
+                if emitted
+                    && error.code != codes::STREAM_BROKEN
+                    && !error.message.starts_with(oxa_proto::CUT_BY_REFUSAL)
+                {
+                    broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, error.message))
+                } else {
+                    error
+                },
+            );
         }
         if !done {
             return Err(broken("the gateway closed the stream before [DONE]"));
