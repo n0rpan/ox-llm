@@ -1161,7 +1161,7 @@ class CloudStream:
                             # _normalize_calls fills a missing arguments with '': only real
                             # argument text proves the name is complete.
                             if function['arguments'] and slot in self.names:
-                                function['name'] = self.names.pop(slot)
+                                function['name'] = redact_value(self.names.pop(slot), self.key)
                             function['arguments'] = self._fragment(index, 'arguments', function['arguments'],
                                                                    call.get('index', 0))
             _normalize_message(choice.get('message'))

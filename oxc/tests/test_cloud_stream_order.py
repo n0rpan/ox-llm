@@ -36,6 +36,18 @@ class StreamOrder(unittest.TestCase):
         self.assertNotIn('sk-synthetic', ''.join(names))
         self.assertEqual(len(names), 1)
 
+    def test_tool_name_key_released_by_arguments_is_redacted(self):
+        events = [{'choices': [{'index': 0, 'delta': {'tool_calls': [
+            {'index': 0, 'id': 'c1', 'function': {'name': piece}}]}, 'finish_reason': None}]}
+            for piece in ('sk-syn', 'thetic')]
+        events.append({'choices': [{'index': 0, 'delta': {'tool_calls': [
+            {'index': 0, 'function': {'arguments': '{"a":1}'}}]}, 'finish_reason': None}]})
+        frames = self.transcode(events, 'sk-synthetic')
+        names = [call['function']['name'] for frame in frames for choice in frame.get('choices', [])
+                 for call in choice.get('delta', {}).get('tool_calls', []) if 'name' in call['function']]
+        self.assertEqual(len(names), 1)
+        self.assertNotIn('sk-synthetic', names[0])
+
     def test_final_delta_precedes_its_buffered_suffix_and_finish(self):
         for field, text, key in (('content', 'hello S', 'SYNTHETIC_KEY'),
                                   ('reasoning_content', 'think S', 'SYNTHETIC_KEY'),
