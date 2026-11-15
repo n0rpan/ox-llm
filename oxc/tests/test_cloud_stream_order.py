@@ -25,6 +25,17 @@ class StreamOrder(unittest.TestCase):
                  for call in choice.get('delta', {}).get('tool_calls', []) if 'name' in call['function']]
         self.assertEqual(names, ['ls'])
 
+    def test_tool_name_key_split_across_deltas_is_redacted(self):
+        events = [{'choices': [{'index': 0, 'delta': {'tool_calls': [
+            {'index': 0, 'id': 'c1', 'function': {'name': piece}}]}, 'finish_reason': None}]}
+            for piece in ('sk-syn', 'thetic')]
+        events.append({'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]})
+        frames = self.transcode(events, 'sk-synthetic')
+        names = [call['function']['name'] for frame in frames for choice in frame.get('choices', [])
+                 for call in choice.get('delta', {}).get('tool_calls', []) if 'name' in call['function']]
+        self.assertNotIn('sk-synthetic', ''.join(names))
+        self.assertEqual(len(names), 1)
+
     def test_final_delta_precedes_its_buffered_suffix_and_finish(self):
         for field, text, key in (('content', 'hello S', 'SYNTHETIC_KEY'),
                                   ('reasoning_content', 'think S', 'SYNTHETIC_KEY'),
