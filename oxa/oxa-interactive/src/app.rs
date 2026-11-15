@@ -1576,11 +1576,18 @@ fn run_prompt(
     let leaf = tree.leaf().to_string();
     if leaf != before {
         if let Some(EntryBody::Shown { why, .. }) = tree.get(&leaf).map(|e| &e.body) {
-            if *why == shown_why::FAILED || *why == shown_why::CUT {
+            // A refused request has no reply on screen: say so instead of "shown".
+            let text = if *why == shown_why::FAILED {
+                Some("The request failed; no reply was received. Ask again to retry.")
+            } else if *why == shown_why::CUT {
+                Some("The reply did not finish. It is shown but was not sent; ask again to retry.")
+            } else {
+                None
+            };
+            if let Some(text) = text {
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Warning,
-                    text: "The reply did not finish. It is shown but was not sent; ask again to retry."
-                        .to_string(),
+                    text: text.to_string(),
                 });
             }
         }
