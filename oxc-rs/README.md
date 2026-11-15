@@ -252,3 +252,11 @@ Six model-free configuration contracts compare exact file bytes and identity.
 Native config rewrites now use Python ASCII escaping, preserve unknown fields
 and mode bits, atomically replace the target and leave symlink chains intact.
 Both Unicode regressions were reproduced before the fix.
+
+HTTP replies, error normalization, Host/Origin/CORS/auth checks and bounded gzip
+decoding now live in a separate 415-line policy module. It depends on no engine,
+model catalog, upstream proxy or sharing runtime. The daemon supplies its
+sharing admission state through a generic context. Host checks still precede
+configuration refresh, followed by Origin/auth checks in the original order.
+This prepares a separate transport/policy slice without extracting the whole
+daemon or porting an older cloud gateway.

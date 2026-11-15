@@ -1,17 +1,15 @@
 use crate::{engine, models, paths};
 use axum::{
     extract::{Request, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode},
+    http::{Method, StatusCode},
     response::{IntoResponse, Response},
     Router,
 };
 use serde_json::{json, Value};
 use std::{
-    io::Read,
     net::Ipv4Addr,
     sync::{Arc, Mutex},
 };
-use subtle::ConstantTimeEq;
 
 struct App {
     port: u16,
@@ -19,209 +17,8 @@ struct App {
     engine: Arc<engine::Manager>,
     sharing: Arc<crate::share_runtime::Manager>,
 }
-#[derive(Clone)]
-pub(crate) struct Context {
-    path: String,
-    head: bool,
-    id: String,
-    cors: Option<String>,
-    pub started: std::time::Instant,
-    pub remote: Option<Arc<crate::share_runtime::Remote>>,
-}
-
-fn random_id() -> Result<String, getrandom::Error> {
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes)?;
-    Ok(format!(
-        "req_{}",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    ))
-}
-impl Context {
-    pub(crate) fn reply(&self, code: u16, value: Value) -> Response {
-        let value = if code >= 400
-            && (self.path.starts_with("/v1/")
-                || ["/models", "/chat/completions"].contains(&self.path.as_str()))
-        {
-            crate::proxy::normalize_error(code, value)
-        } else {
-            value
-        };
-        let raw = paths::python_json(&value);
-        let length = raw.len();
-        let mut response = (
-            StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            [
-                ("content-type", "application/json"),
-                ("cache-control", "no-store"),
-            ],
-            if self.head { String::new() } else { raw },
-        )
-            .into_response();
-        response
-            .headers_mut()
-            .insert("content-length", HeaderValue::from(length));
-        response.headers_mut().insert(
-            "x-request-id",
-            HeaderValue::from_str(&self.id).expect("generated request id"),
-        );
-        if matches!(code, 429 | 503) {
-            response
-                .headers_mut()
-                .insert("retry-after", HeaderValue::from_static("5"));
-        }
-        self.cors_headers(&mut response);
-        response
-    }
-    fn cors_headers(&self, response: &mut Response) {
-        if let Some(origin) = &self.cors {
-            if let Ok(value) = HeaderValue::from_str(origin) {
-                response
-                    .headers_mut()
-                    .insert("access-control-allow-origin", value);
-            }
-            response
-                .headers_mut()
-                .insert("vary", HeaderValue::from_static("Origin"));
-        }
-    }
-    pub(crate) fn error(
-        &self,
-        code: u16,
-        message: &str,
-        kind: &str,
-        label: &str,
-        param: Option<&str>,
-    ) -> Response {
-        let value = if self.path.starts_with("/_local/") {
-            json!({"error":message})
-        } else {
-            json!({"error":{"message":message,"type":kind,"param":param,"code":label}})
-        };
-        let mut response = self.reply(code, value);
-        if matches!(code, 401 | 403 | 411 | 413) || message == "Invalid content length." {
-            response
-                .extensions_mut()
-                .insert(crate::transport::CloseConnection);
-        }
-        response
-    }
-    pub(crate) fn stream(&self, body: axum::body::Body) -> Response {
-        let mut response = body.into_response();
-        for (name, value) in [
-            ("content-type", "text/event-stream"),
-            ("cache-control", "no-store"),
-            ("transfer-encoding", "chunked"),
-        ] {
-            response
-                .headers_mut()
-                .insert(name, HeaderValue::from_static(value));
-        }
-        response.headers_mut().insert(
-            "x-request-id",
-            HeaderValue::from_str(&self.id).expect("generated request id"),
-        );
-        self.cors_headers(&mut response);
-        response
-    }
-}
-fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    let mut values = headers.get_all(name).iter();
-    let first = values.next()?.to_str().ok()?;
-    values.next().is_none().then_some(first)
-}
-fn has_one_or_none(headers: &HeaderMap, name: &str) -> bool {
-    headers.get_all(name).iter().count() <= 1
-}
-fn loopback_origin(origin: &str, port: u16) -> bool {
-    [
-        format!("http://127.0.0.1:{port}"),
-        format!("http://localhost:{port}"),
-        format!("http://[::1]:{port}"),
-    ]
-    .contains(&origin.to_owned())
-}
-// None means authentication is disabled. An empty key means configured but
-// unreadable/empty, and is deliberately impossible to authenticate with.
-fn api_key(config: &Value) -> Option<Vec<u8>> {
-    if let Ok(value) = std::env::var("LOCAL_AI_API_KEY") {
-        if !value.trim().is_empty() {
-            return Some(value.trim().as_bytes().to_vec());
-        }
-    }
-    let path = config["openai_api"].get("api_key_file")?;
-    let Some(path) = path
-        .as_str()
-        .filter(|path| std::path::Path::new(path).is_absolute())
-    else {
-        return Some(Vec::new());
-    };
-    let mut bytes = Vec::new();
-    let Ok(file) = std::fs::File::open(path) else {
-        return Some(Vec::new());
-    };
-    if file.take(4 * 4097).read_to_end(&mut bytes).is_err() {
-        return Some(Vec::new());
-    }
-    let Ok(text) = std::str::from_utf8(&bytes) else {
-        return Some(Vec::new());
-    };
-    let first = text
-        .lines()
-        .next()
-        .unwrap_or("")
-        .chars()
-        .take(4097)
-        .collect::<String>();
-    Some(first.trim().as_bytes().to_vec())
-}
-fn decompress_gzip(mut input: &[u8]) -> std::io::Result<Vec<u8>> {
-    const LIMIT: usize = 16 * 1024 * 1024;
-    let mut output = Vec::new();
-    while !input.is_empty() {
-        // A bufread decoder stops precisely after one member, so subsequent
-        // members and their checksums are not silently discarded. Python also
-        // accepts zero padding after/between members, but never before the first.
-        let mut decoder = flate2::bufread::GzDecoder::new(input);
-        decoder
-            .by_ref()
-            .take((LIMIT + 1 - output.len()) as u64)
-            .read_to_end(&mut output)?;
-        if output.len() > LIMIT {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        }
-        let rest = decoder.into_inner();
-        if rest.len() >= input.len() {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        }
-        input = rest;
-        while input.first() == Some(&0) {
-            input = &input[1..];
-        }
-    }
-    Ok(output)
-}
-pub(crate) fn presented_key(headers: &HeaderMap) -> Option<&str> {
-    if let Some(value) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
-        if value
-            .get(..7)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bearer "))
-        {
-            return Some(value[7..].trim());
-        }
-    }
-    for name in ["x-api-key", "api-key"] {
-        if let Some(value) = headers
-            .get(name)
-            .and_then(|h| h.to_str().ok())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return Some(value);
-        }
-    }
-    None
-}
+pub(crate) type Context = crate::http_gate::Context<Arc<crate::share_runtime::Remote>>;
+pub(crate) use crate::http_gate::presented_key;
 
 fn after_load(
     mut response: Response,
@@ -253,7 +50,7 @@ async fn handle(State(app): State<Arc<App>>, mut request: Request) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().trim_end_matches('/');
     let path = if path.is_empty() { "/" } else { path }.to_owned();
-    let Ok(id) = random_id() else {
+    let Ok(id) = crate::http_gate::random_id() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let mut context = Context {
@@ -293,33 +90,8 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
     let path = context.path.clone();
     let headers = request.headers();
     let request_headers = headers.clone();
-    let host = single_header(headers, "host").map(|s| s.trim().to_ascii_lowercase());
-    let allowed = [
-        format!("127.0.0.1:{}", app.port),
-        format!("localhost:{}", app.port),
-        format!("[::1]:{}", app.port),
-    ];
-    if !(if context.remote.is_some() {
-        headers.get_all("host").iter().count() == 1
-    } else {
-        host.is_some_and(|s| allowed.contains(&s))
-    }) {
-        return context.error(
-            403,
-            "Host not allowed: use 127.0.0.1, localhost or [::1] with this port.",
-            "permission_error",
-            "forbidden",
-            None,
-        );
-    }
-    if !target.starts_with('/') || target.starts_with("//") {
-        return context.error(
-            404,
-            "Unknown route.",
-            "invalid_request_error",
-            "not_found",
-            None,
-        );
+    if let Some(response) = crate::http_gate::target(app.port, &request, &context) {
+        return response;
     }
     let fresh = paths::read_config();
     let config = {
@@ -332,87 +104,10 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
         }
         last.clone()
     };
-    let key = api_key(&config);
-    let origin = single_header(headers, "origin");
-    if !path.starts_with("/_local/") {
-        if let (Some(origin), Some(allowed)) =
-            (origin, config["openai_api"]["cors_origins"].as_array())
-        {
-            if ((origin != "*" && origin != "null") && allowed.iter().any(|v| v == origin))
-                || (key.is_some() && allowed.iter().any(|v| v == "*"))
-            {
-                context.cors = Some(origin.to_owned());
-            }
-        }
-    }
-    let navigation = origin.is_none()
-        && [Method::GET, Method::HEAD].contains(&method)
-        && path == "/"
-        && [
-            ("sec-fetch-mode", "navigate"),
-            ("sec-fetch-dest", "document"),
-            ("sec-fetch-user", "?1"),
-        ]
-        .iter()
-        .all(|(k, v)| single_header(headers, k) == Some(v));
-    let site = single_header(headers, "sec-fetch-site");
-    let same_origin = has_one_or_none(headers, "origin")
-        && has_one_or_none(headers, "sec-fetch-site")
-        && (navigation
-            || (site.is_none_or(|s| s == "same-origin" || s == "none")
-                && origin.is_none_or(|origin| loopback_origin(origin, app.port))));
-    if context.cors.is_none() && !same_origin {
-        return context.error(
-            403,
-            "Cross-origin local AI request refused.",
-            "permission_error",
-            "forbidden",
-            None,
-        );
-    }
-    if context.cors.is_some() && method == Method::OPTIONS {
-        // Bug-for-bug: Python preflight does not include x-request-id.
-        let mut reply = StatusCode::NO_CONTENT.into_response();
-        context.cors_headers(&mut reply);
-        reply.headers_mut().insert(
-            "access-control-allow-methods",
-            HeaderValue::from_static("GET, POST, OPTIONS"),
-        );
-        reply.headers_mut().insert(
-            "access-control-allow-headers",
-            headers
-                .get("access-control-request-headers")
-                .cloned()
-                .unwrap_or(HeaderValue::from_static("authorization, content-type")),
-        );
-        reply
-            .headers_mut()
-            .insert("access-control-max-age", HeaderValue::from_static("600"));
-        if headers
-            .get("access-control-request-private-network")
-            .is_some_and(|v| v == "true")
-        {
-            reply.headers_mut().insert(
-                "access-control-allow-private-network",
-                HeaderValue::from_static("true"),
-            );
-        }
-        return reply;
-    }
-    if let Some(key) = key
-        .filter(|_| context.remote.is_none() && path != "/health" && !path.starts_with("/_local/"))
+    if let Some(response) =
+        crate::http_gate::authorize(&mut context, app.port, headers, method.clone(), &config)
     {
-        let authorized = !key.is_empty()
-            && presented_key(headers).is_some_and(|value| bool::from(value.as_bytes().ct_eq(&key)));
-        if !authorized {
-            return context.error(
-                401,
-                "Missing or wrong API key. Send \"Authorization: Bearer <key>\".",
-                "authentication_error",
-                "invalid_api_key",
-                None,
-            );
-        }
+        return response;
     }
     if [Method::GET, Method::HEAD].contains(&method)
         && (path == "/v1/models"
@@ -860,7 +555,7 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
         ]
         .contains(&path.as_str());
     let raw = if model_body && encoding == "gzip" {
-        match decompress_gzip(raw.as_ref()) {
+        match crate::http_gate::decompress_gzip(raw.as_ref()) {
             Ok(value) => value,
             Err(_) => {
                 return context.error(

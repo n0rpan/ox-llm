@@ -900,77 +900,7 @@ impl StreamShim {
         }
     }
 }
-pub(crate) fn normalize_error(status: u16, mut value: Value) -> Value {
-    let Some(error) = value.get_mut("error") else {
-        return value;
-    };
-    if !error.is_object() {
-        *error = json!({"message":error.as_str().map(str::to_owned).unwrap_or_else(||error.to_string())});
-    }
-    let message = error["message"].as_str().unwrap_or("").to_owned();
-    let lower = message.to_lowercase();
-    let kind = error["type"].as_str().unwrap_or("").to_owned();
-    let code = error["code"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            {
-                if ["exceed_context_size_error", "context_length_exceeded"].contains(&kind.as_str())
-                    || [
-                        "context size",
-                        "context length",
-                        "exceeds the available context",
-                    ]
-                    .iter()
-                    .any(|s| lower.contains(s))
-                {
-                    "context_length_exceeded"
-                } else if status == 404 && lower.contains("model") {
-                    "model_not_found"
-                } else {
-                    match status {
-                        400 => "invalid_request",
-                        401 => "invalid_api_key",
-                        403 => "forbidden",
-                        404 => "not_found",
-                        411 => "length_required",
-                        413 => "request_too_large",
-                        429 => "rate_limit_exceeded",
-                        503 => "service_unavailable",
-                        _ if status >= 500 => "server_error",
-                        _ => "invalid_request",
-                    }
-                }
-            }
-            .into()
-        });
-    let fallback = match code.as_str() {
-        "context_length_exceeded" => json!("messages"),
-        "model_not_found" => json!("model"),
-        _ => Value::Null,
-    };
-    let param = error["param"]
-        .as_str()
-        .map(|v| json!(v))
-        .unwrap_or(fallback);
-    error["message"] = json!(message);
-    error["type"] = json!(if kind.is_empty() {
-        match status {
-            400 | 411 | 413 => "invalid_request_error",
-            401 => "authentication_error",
-            403 => "permission_error",
-            404 => "invalid_request_error",
-            429 => "rate_limit_error",
-            _ => "server_error",
-        }
-    } else {
-        &kind
-    });
-    error["code"] = json!(code);
-    error["param"] = param;
-    value
-}
+use crate::http_gate::normalize_error;
 
 fn preempt_error() -> Value {
     json!({"error":{"message":"Preempted by local use on the host; retry later.","type":"preempted","code":"preempted_by_local_use"}})
