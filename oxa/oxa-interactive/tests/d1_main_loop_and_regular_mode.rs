@@ -77,6 +77,7 @@ fn session_with(env: &TestEnv, turns: Vec<oxa_fake::ScriptTurn>) -> Session {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::Ephemeral).expect("open the test session")
 }

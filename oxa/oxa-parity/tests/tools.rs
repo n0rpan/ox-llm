@@ -594,12 +594,15 @@ fn tools_009() {
 fn tools_010() {
     let env = TestEnv::new();
     let s = schema_of(&drive(&env, vec![ScriptTurn::text("ok")], &[]), "bash");
-    assert_eq!(
-        s["required"],
-        serde_json::json!(["command"]),
-        "pi: bash requires command"
-    );
+    // Issue #127 (b): `command` is no longer required (a `job` read has no command); the
+    // schema declares `background` and `job` alongside `command` and `timeout`.
+    assert!(s["required"].is_null() || s["required"].as_array().is_some_and(|a| a.is_empty()));
     assert!(s["properties"].get("timeout").is_some(), "pi: bash has timeout");
+    assert!(
+        s["properties"].get("background").is_some(),
+        "pi: bash has background"
+    );
+    assert!(s["properties"].get("job").is_some(), "pi: bash has job");
     let r = run_one(
         &env,
         "bash",

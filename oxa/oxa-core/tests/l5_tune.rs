@@ -55,6 +55,7 @@ fn open_with(
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         how,
     )

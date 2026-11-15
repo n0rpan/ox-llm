@@ -341,14 +341,21 @@ struct Built {
 impl Built {
     /// Fresh `Deps` (the policy and built-in tools are not `Clone`).
     fn deps(&self, session_id: Option<String>) -> Deps {
+        // Issue #127 (b): one background-job registry per session, sharing the session's
+        // sandbox. The session kills its jobs on close/shutdown.
+        let jobs = Arc::new(oxa_tools::JobRegistry::new());
+        jobs.set_sandbox(self.sandbox.clone());
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
             // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_shell(oxa_tools::ShellConfig {
-                shell_path: self.settings.shell_path(&self.dirs.home),
-                command_prefix: self.settings.shell_command_prefix(),
-            }),
+            tools: oxa_tools::builtin_tools_with_shell_and_jobs(
+                oxa_tools::ShellConfig {
+                    shell_path: self.settings.shell_path(&self.dirs.home),
+                    command_prefix: self.settings.shell_command_prefix(),
+                },
+                jobs.clone(),
+            ),
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
@@ -374,6 +381,7 @@ impl Built {
             thinking: self.thinking,
             mode: self.mode,
             session_id,
+            jobs,
         }
     }
 }

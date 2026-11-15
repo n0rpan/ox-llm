@@ -123,6 +123,7 @@ fn open(env: &TestEnv, url: &str) -> Session {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("open")
 }

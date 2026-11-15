@@ -51,6 +51,7 @@ fn queued_request_streams_engine_queue_records() {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
