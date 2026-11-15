@@ -178,6 +178,8 @@ jobs:
           python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
           OXC_COMMAND="$GITHUB_WORKSPACE/oxc-rs/target/release/oxc-native" python3 -m unittest discover -s conformance -p 'test_cli*.py' -v
           python3 conformance/check_native_scaffold.py "$GITHUB_WORKSPACE/oxc-rs/target/release/oxc-native"
+          python3 conformance/test_http_policy_reference.py -v
+          cargo test --locked --manifest-path oxc-rs/Cargo.toml --features native-controller
 
   clippy:
     needs: changes

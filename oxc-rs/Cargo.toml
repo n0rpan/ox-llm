@@ -8,18 +8,31 @@ autobins = false
 
 [features]
 default = []
-native-controller = ["dep:tokio", "dep:reqwest", "dep:serde_json", "dep:chrono", "dep:nix"]
+native-controller = ["dep:tokio", "dep:reqwest", "dep:serde_json", "dep:chrono", "dep:nix", "dep:axum", "dep:getrandom", "dep:subtle", "dep:flate2", "dep:futures-util", "dep:httparse", "dep:httpdate", "dep:tower"]
 
 [dependencies]
-tokio = { version = "1.54.1", features = ["rt", "net", "time", "process", "io-util"], optional = true }
+tokio = { version = "1.54.1", features = ["rt", "net", "time", "process", "io-util", "macros", "sync"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"], optional = true }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 nix = { version = "0.30", features = ["fs", "user"], optional = true }
+axum = { version = "0.8", optional = true }
+getrandom = { version = "0.3", optional = true }
+subtle = { version = "2", optional = true }
+flate2 = { version = "1", optional = true }
+futures-util = { version = "0.3", optional = true }
+httparse = { version = "1", optional = true }
+httpdate = { version = "1", optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 
 [[bin]]
 name = "oxc-native"
 path = "src/main.rs"
+required-features = ["native-controller"]
+
+[[test]]
+name = "http_policy"
+path = "tests/http_policy.rs"
 required-features = ["native-controller"]
 
 [lints.rust]
