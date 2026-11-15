@@ -15,3 +15,6 @@ pub use journal::Journal as AuditJournal;
 
 #[cfg(feature = "core")]
 pub mod workspace;
+
+#[cfg(feature = "core")]
+pub mod workspace_jobs;

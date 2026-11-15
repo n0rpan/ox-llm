@@ -89,3 +89,30 @@ log or forward it as metadata. Bound an untrusted transport before deserializing
 and diff/content agreement; then `verify_current_base` checks source freshness.
 Neither operation applies edits, provides an atomic apply lock or authorizes
 publication. Git worktrees and publication remain later slices.
+
+## Owned workspace I/O jobs
+
+With `core`, `workspace_jobs::Preparation` materializes an explicitly approved
+private copy on an owned thread, and `Collection` performs bounded review
+collection on an owned thread. The caller must first stop/reap every process
+with access before starting collection. Job completion is filesystem completion,
+not proof of model/process cleanup. These constructors do not launch workers,
+select models, add grants or apply changes to the source.
+
+The caller counts jobs against its lane limit and keeps polling other processes
+while a filesystem operation runs. Cancellation is a request, checked before
+materialization, between files and before publishing a result. It cannot preempt
+an OS I/O already in flight. An unused result is withdrawn after cancellation,
+and partial/private copies are retained for explicit caller cleanup.
+
+Each job retains its join handle. Taking a finished result joins the thread;
+dropping a job requests cancellation and joins instead of detaching a writer.
+Drop can wait for in-flight I/O to return, so a caller must not claim a hard
+elapsed-time guarantee or completed cleanup before that join. There is no thread
+kill, automatic deletion, registry change or new production service.
+
+Tests cover actual preparation/review results with unchanged original inputs,
+cancellation before destination creation, join-before-return on drop, withdrawn
+completed results and panicked jobs. Supervisor mount/tool-scope integration and
+independent-worker deadline coverage remain the next owning slice; this helper
+alone does not claim that integration is complete.

@@ -14,7 +14,10 @@ use std::os::unix::{
     fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
 };
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 const MAX_FILES: usize = 32;
 const MAX_FILE: usize = 256 * 1024;
@@ -144,12 +147,14 @@ impl Snapshot {
         )?);
         Ok(Self { files, manifest })
     }
-    pub(crate) fn write_new(&self, directory: &Path) -> io::Result<()> {
+    pub(crate) fn write_new(&self, directory: &Path, cancel: &AtomicBool) -> io::Result<()> {
+        check_cancel(cancel)?;
         DirBuilder::new().mode(0o700).create(directory)?;
-        self.write_contents(directory)
+        self.write_contents(directory, cancel)
     }
-    pub(crate) fn write_contents(&self, directory: &Path) -> io::Result<()> {
+    pub(crate) fn write_contents(&self, directory: &Path, cancel: &AtomicBool) -> io::Result<()> {
         for (path, text) in &self.files {
+            check_cancel(cancel)?;
             let target = directory.join(path.as_str());
             if let Some(parent) = target.parent() {
                 private_parents(directory, parent)?;
@@ -162,6 +167,7 @@ impl Snapshot {
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
         }
+        check_cancel(cancel)?;
         Ok(())
     }
     /// Returns only text explicitly approved by the caller.
@@ -226,6 +232,14 @@ impl Grant {
     /// Creates a new private copy under an existing private operator directory.
     /// A failure can leave a partial copy; cleanup is an explicit caller decision.
     pub fn materialize(self: &Arc<Self>, directory: &Path) -> io::Result<WorkingCopy> {
+        self.materialize_cancellable(directory, &AtomicBool::new(false))
+    }
+    pub(crate) fn materialize_cancellable(
+        self: &Arc<Self>,
+        directory: &Path,
+        cancel: &AtomicBool,
+    ) -> io::Result<WorkingCopy> {
+        check_cancel(cancel)?;
         let parent = directory.parent().ok_or_else(|| denied("copy needs a parent"))?;
         let parent = crate::namespace::protected_directory(parent)?;
         // SAFETY: geteuid has no arguments or memory side effects.
@@ -239,7 +253,7 @@ impl Grant {
         let pinned = Path::new("/proc/self/fd")
             .join(parent.as_raw_fd().to_string())
             .join(name);
-        self.snapshot.write_new(&pinned)?;
+        self.snapshot.write_new(&pinned, cancel)?;
         Ok(WorkingCopy {
             directory: directory.to_path_buf(),
             grant: self.clone(),
@@ -610,6 +624,16 @@ fn bounded_json(value: &impl Serialize, max: usize) -> io::Result<()> {
         }
     }
     serde_json::to_writer(Count { size: 0, max }, value).map_err(|_| limit("workspace review limit exceeded"))
+}
+fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
+    if cancel.load(Ordering::Acquire) {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "workspace preparation canceled",
+        ))
+    } else {
+        Ok(())
+    }
 }
 fn denied(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
