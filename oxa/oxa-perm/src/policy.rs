@@ -128,7 +128,7 @@ fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
     }
     dirs.iter().any(|d| {
         let d = resolve_real(d).unwrap_or_else(|| d.clone());
-        ["hooks", "config", "config.worktree"]
+        ["hooks", "config", "config.worktree", "commondir", "gitdir"]
             .iter()
             .any(|rel| is_inside(p, &d.join(rel)))
     })

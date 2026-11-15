@@ -323,6 +323,8 @@ fn git_worktree_common_dir_hooks_and_config_are_never_written() {
         main.join(".git/config"),
         wtgit.join("config.worktree"),
         wtgit.join("hooks/pre-push"),
+        wtgit.join("commondir"),
+        wtgit.join("gitdir"),
     ] {
         for mode in [Mode::Workspace, Mode::Ask] {
             assert_eq!(
