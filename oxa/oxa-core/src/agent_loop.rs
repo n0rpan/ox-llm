@@ -227,7 +227,7 @@ fn run_inner(
             if retried && crate::think::empty_length(&turn) {
                 account_discarded(st, &turn);
                 let e = OxaError::new(
-                    oxa_proto::codes::STREAM_BROKEN,
+                    crate::think::OVERRUN_ERROR_CLASS,
                     "The reply ran out of output tokens before any answer, even without thinking.",
                 )
                 .with_hint("Ask for a shorter answer or split the task.");
