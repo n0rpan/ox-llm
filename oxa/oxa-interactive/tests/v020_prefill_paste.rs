@@ -72,6 +72,7 @@ fn worker_prefills_the_current_draft_only() {
             thinking: None,
             mode: None,
             session_id: None,
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

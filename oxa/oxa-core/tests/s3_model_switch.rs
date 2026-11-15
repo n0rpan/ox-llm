@@ -142,6 +142,7 @@ fn deps(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -> D
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     }
 }
 

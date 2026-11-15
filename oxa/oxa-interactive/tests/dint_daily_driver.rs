@@ -334,6 +334,7 @@ fn deps_with(engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, root: &Path,
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     }
 }
 

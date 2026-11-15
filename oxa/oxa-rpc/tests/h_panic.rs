@@ -105,6 +105,7 @@ fn a_panicking_command_is_an_error_response_and_the_session_goes_on() {
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     let session = Session::open(deps, Open::New).expect("open");
     let (reader, mut writer) = std::io::pipe().expect("a pipe");
