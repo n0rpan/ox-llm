@@ -88,7 +88,7 @@ impl Sandbox for Bwrap {
             return refused(why);
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        self.launch(s, None, c, live)
+        self.launch(s, None, c, live, true)
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
         if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
@@ -97,9 +97,7 @@ impl Sandbox for Bwrap {
             return r;
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
-        argv.extend(bwrap_args_with(s, &self.home, &self.layout));
-        run_argv_capture(&argv, &[], s.timeout_s, c, live, false)
+        self.launch(s, None, c, live, false)
     }
     fn run_with_stdin(
         &self,
@@ -112,7 +110,7 @@ impl Sandbox for Bwrap {
             return refused(why);
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
-        self.launch(s, Some(stdin), c, live)
+        self.launch(s, Some(stdin), c, live, true)
     }
 }
 
@@ -146,6 +144,7 @@ impl Bwrap {
         stdin: Option<&[u8]>,
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
+        capture: bool,
     ) -> ExecResult {
         let (public, secret) = split_secrets(s);
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
@@ -178,7 +177,7 @@ impl Bwrap {
         }
         let res = match stdin {
             Some(b) => run_argv_stdin(&argv, &[], b, s.timeout_s, c, live),
-            None => run_argv(&argv, &[], s.timeout_s, c, live),
+            None => run_argv_capture(&argv, &[], s.timeout_s, c, live, capture),
         };
         if fds[0] >= 0 {
             // SAFETY: the read end is ours; the child has its own copy.
@@ -191,6 +190,41 @@ impl Bwrap {
 #[cfg(test)]
 mod secret_tests {
     use super::*;
+
+    /// A fake `bwrap` that records its argv to a file, so the real launcher is exercised.
+    #[test]
+    fn streaming_argv_has_no_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("oxa-stream-argv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("argv.txt");
+        let fake = dir.join("bwrap");
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", out.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sb = Bwrap {
+            bwrap: fake,
+            home: dir.clone(),
+            layout: Layout::default(),
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: dir.clone(),
+            writable: true,
+            net: true,
+            timeout_s: Some(10),
+            env: vec![("GH_TOKEN".into(), "SYNTH_STREAM_TOKEN_77".into())],
+        };
+        let r = sb.run_streaming(&spec, &CancelToken::new(), &mut |_| {});
+        assert!(r.output.is_empty());
+        let argv = std::fs::read_to_string(&out).unwrap();
+        assert!(!argv.contains("SYNTH_STREAM_TOKEN_77"), "{argv}");
+        assert!(argv.lines().any(|l| l == "--args"), "{argv}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn secrets_are_split_off_and_never_in_argv() {

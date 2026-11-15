@@ -167,7 +167,7 @@ impl Sandbox for NetSandbox {
         self.redacted_run(s, live, |s, live| self.inner.run(s, c, live))
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        self.inner.run_streaming(&self.clamp(s), c, live)
+        self.redacted_run(s, live, |s, live| self.inner.run_streaming(s, c, live))
     }
     fn run_with_stdin(
         &self,
@@ -210,6 +210,68 @@ mod tests {
                 timed_out: false,
             }
         }
+    }
+
+    /// Streaming like a background job: records env, emits the token in the live stream only.
+    struct Stream(Mutex<Vec<Vec<(String, String)>>>, usize);
+    impl Sandbox for Stream {
+        fn check(&self) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+            Vec::new()
+        }
+        fn run(&self, _s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
+            unreachable!("background jobs stream")
+        }
+        fn run_streaming(&self, s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+            self.0.lock().unwrap().push(s.env.clone());
+            let out = b"x SYNTH_BG_TOKEN_9 y";
+            live(&out[..self.1]);
+            live(&out[self.1..]);
+            ExecResult {
+                output: Vec::new(),
+                exit: Some(0),
+                timed_out: false,
+            }
+        }
+    }
+
+    fn stream(setting: bool, offline: bool, at: usize) -> (Vec<(String, String)>, String, ExecResult) {
+        let inner = Arc::new(Stream(Mutex::new(Vec::new()), at));
+        let sb =
+            NetSandbox::new(inner.clone(), setting, offline).with_gh_token(Some("SYNTH_BG_TOKEN_9".into()));
+        let mut live = Vec::new();
+        let r = sb.run_streaming(&spec(true), &CancelToken::new(), &mut |b| {
+            live.extend_from_slice(b)
+        });
+        let env = inner.0.lock().unwrap().pop().unwrap();
+        (env, String::from_utf8(live).unwrap(), r)
+    }
+
+    #[test]
+    fn streaming_injects_auth_and_redacts_split_chunks() {
+        let total = "x SYNTH_BG_TOKEN_9 y".len();
+        for at in 0..=total {
+            let (env, live, r) = stream(true, false, at);
+            assert!(
+                env.contains(&("GH_TOKEN".into(), "SYNTH_BG_TOKEN_9".into())),
+                "{env:?}"
+            );
+            assert!(env.contains(&("GH_HOST".into(), "github.com".into())));
+            assert_eq!(live, "x [redacted] y", "split at {at}");
+            assert!(r.output.is_empty());
+        }
+    }
+
+    #[test]
+    fn streaming_offline_refuses_token_and_network() {
+        let (env, live, _) = stream(true, true, 5);
+        assert!(
+            !env.iter().any(|(k, _)| k == "GH_TOKEN" || k == "GH_HOST"),
+            "{env:?}"
+        );
+        assert_eq!(live, "x SYNTH_BG_TOKEN_9 y");
     }
 
     fn spec(net: bool) -> ExecSpec {
