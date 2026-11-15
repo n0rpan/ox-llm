@@ -3186,8 +3186,10 @@ mod block_cache_tests {
     /// A streamed delta in the last block must not reassemble the lines of the blocks before it.
     #[test]
     fn a_change_in_the_last_block_rebuilds_only_from_that_block() {
-        let mut vm = ViewModel::default();
-        vm.blocks = vec![user("one"), user("two"), user("three")];
+        let mut vm = ViewModel {
+            blocks: vec![user("one"), user("two"), user("three")],
+            ..Default::default()
+        };
         let mut c = BlockCache::default();
         assert!(run(&mut c, &vm));
         vm.blocks[2] = user("three!");
