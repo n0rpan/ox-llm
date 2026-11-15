@@ -50,6 +50,7 @@ fn open(env: &TestEnv, engine: Arc<ScriptedEngine>, store: Arc<dyn SessionStore>
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         how,
     )

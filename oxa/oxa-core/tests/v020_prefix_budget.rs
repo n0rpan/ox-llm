@@ -22,15 +22,19 @@ use std::sync::Arc;
 /// today's bytes: a `pi` change is a PARITY event.
 /// 2026-11-14: the identity fallback text changed (oxa is the local agent of ox-llm; other AI
 /// tools' folders are data, not instructions); the pi tool texts are unchanged.
-const PI_STABLE_SHA: &str = "4d19948fecd5874c16bd94fa3910cf0233d2281548f7ded5f23b16402c081d5d";
-const PI_STABLE_SHA_SUBAGENT: &str = "6bec67802b7237f35e2539e6507d4a100fc7c0dae10aadf0517e555d34c3cc24";
+/// 2026-11-15: issue #127 (b) added `background`/`job` to the `bash` schema and dropped its
+/// `required: ["command"]` (a `job` read has no command), so the pi tools JSON changed.
+const PI_STABLE_SHA: &str = "5122e200fde1a43c332af0be6e583aa01e44e1399599f3edfe4e2b3e47123dd1";
+const PI_STABLE_SHA_SUBAGENT: &str = "bfb735421dbef23245bb094199818f4334c53411142858aa7f89568005a0f691";
 
 /// Pinned: the `local` diet-on prefix is at least this many bytes smaller than the `pi` one, with
 /// and without the subagent tool. Measured 2355 (default) and 2344 (with subagent) on 2026-11-13;
 /// the pin is the smaller one minus a 32-byte margin. L4-SUBVERIFY: the parent's subagent rule
 /// `RULE_SUBAGENT_CHECK` (115 bytes with its "- " and newline) lowers the with-subagent saving to
 /// 2229, so the pin moved from 2312 to 2197 (= 2229 - 32).
-const LOCAL_DIET_SAVING_MIN: usize = 2197;
+/// 2026-11-15: issue #127 (b) grew the `pi` `bash` schema (two new properties), so the saving
+/// rose to 2458 (default) and 2332 (with subagent); the pin moved from 2197 to 2300 (= 2332 - 32).
+const LOCAL_DIET_SAVING_MIN: usize = 2300;
 
 /// The rule texts of V020-OPTIMIZE #1 and #10, pinned here word for word.
 const DIET_RULES: [&str; 5] = [
@@ -129,6 +133,7 @@ fn open(env: &TestEnv, cwd: &std::path::Path, settings: &str, subagent: bool) ->
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

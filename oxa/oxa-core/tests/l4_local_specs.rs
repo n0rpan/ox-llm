@@ -104,6 +104,7 @@ fn open(env: &TestEnv) -> (Session, Arc<ScriptedEngine>) {
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )

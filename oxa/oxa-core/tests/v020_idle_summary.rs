@@ -95,6 +95,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, compact: CompactPolicy, setting
         host_rx: None,
         host_deferred: Vec::new(),
         compact_memo: Default::default(),
+        jobs: oxa_core::fresh_jobs(),
     }
 }
 

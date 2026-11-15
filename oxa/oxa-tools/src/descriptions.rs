@@ -65,8 +65,8 @@ pub const READ: ToolText = ToolText {
 /// ADAPTED: pi says "truncated to last 2000 lines or 50KB ... saved to a temp file".
 pub const BASH: ToolText = ToolText {
     name: "bash",
-    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part. If truncated, full output is saved to a file. Optionally provide a timeout in seconds.",
-    schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"}},"required":["command"]}"#,
+    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part. If truncated, full output is saved to a file. Optionally provide a timeout in seconds. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\".",
+    schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"}}}"#,
     class: ToolClass::Exec,
     prompt_snippet: "Execute bash commands (ls, grep, find, etc.)",
     guidelines: &["You can inspect OXA_* environment variables for current model and session details."],
@@ -571,8 +571,8 @@ pub mod local_specs {
 
     pub const BASH_LOCAL: ToolText = ToolText {
         name: BASH.name,
-        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file.",
-        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"}},"required":["command"]}"#,
+        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\".",
+        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"}}}"#,
         class: BASH.class,
         prompt_snippet: BASH.prompt_snippet,
         guidelines: BASH.guidelines,

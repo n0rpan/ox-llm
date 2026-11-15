@@ -66,6 +66,7 @@ fn open_session_with(env: &TestEnv, engine: Arc<dyn Engine>, settings: Settings)
         thinking: None,
         mode: None,
         session_id: None,
+        jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, Open::New).expect("the session opens over the engine")
 }

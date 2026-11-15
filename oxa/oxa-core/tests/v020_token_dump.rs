@@ -175,6 +175,7 @@ fn open(env: &TestEnv, cwd: &Path, engine: Arc<dyn Engine>, settings: &str, suba
             thinking: None,
             mode: None,
             session_id: Some("s1".to_string()),
+            jobs: oxa_core::fresh_jobs(),
         },
         Open::New,
     )
