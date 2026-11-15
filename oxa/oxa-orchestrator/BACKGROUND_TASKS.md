@@ -99,7 +99,7 @@ ledger still requires an explicit new goal or session change.
 
 - At most four starting/running/canceling tasks and sixteen retained results per
   session. Read and forget settled results to make room; IDs are not recycled.
-- A task timeout defaults to 120 seconds and is limited to 1..600. Goal deadlines
+- A task timeout defaults to 120 seconds and is limited to 1..86400, so a long CI watch can request an hour or more. Goal deadlines
   also cancel commands. Boot-clock time includes suspend; process cleanup has its
   own bounded signal/drain grace and remains visible until reap.
 - Combined stdout/stderr capture is 1..64 KiB (minimum request 1024 bytes). A flood
