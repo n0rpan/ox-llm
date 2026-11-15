@@ -83,7 +83,8 @@ class PriceRefresh(unittest.TestCase):
             value = cloud_prices.overlay(configured, UPSTREAM)
             self.assertEqual(value['tiers'][0]['input_per_million'], 3)
             self.assertEqual(value['tiers'][0]['output_per_million'], 5)
-            self.assertEqual(value['tiers'][1]['input_per_million'], 3)
+            self.assertEqual(value['tiers'][1]['output_per_million'], 20)
+            self.assertEqual(value['tiers'][1]['input_per_million'], 7)
             self.assertEqual(value['tiers'][1]['max_prompt_tokens'], None)
             self.assertEqual(cloud_prices.overlay({'input_per_million': 99, 'output_per_million': 99},
                                                   UPSTREAM)['input_per_million'], 3)

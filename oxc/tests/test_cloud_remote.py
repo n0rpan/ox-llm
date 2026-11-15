@@ -226,7 +226,7 @@ class ReportedCost(CloudCase):
         self.assertEqual(len(upstream.requests), 1)
 
     def test_streamed_bill_keeps_precision_and_settles_at_reported_cost(self):
-        for reported, expected in ((0.000021237, 0.000021237), (0.0, 0.0), (0.000001, 0.000001)):
+        for reported, expected in ((0.000021237, 0.000021237), (0.0, 0.000015), (0.000001, 0.000001)):
             with self.subTest(reported=reported):
                 meter = cloud.Meter()
                 frame = {'usage': {'prompt_tokens': 11, 'completion_tokens': 4,

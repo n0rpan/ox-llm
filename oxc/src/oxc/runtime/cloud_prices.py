@@ -136,14 +136,16 @@ def overlay(configured, model):
         return configured
     if configured is None:
         return current
-    def floor(tier):  # name kept: applies live rates over the configured tier
+    def floor(tier, base):
         out = dict(tier)
         for field, rate in current.items():
-            out[field] = rate  # the live list price is the base; configured is only a fallback
+            # The live list price is the short-context rate; a higher configured tier is never
+            # lowered by it, so long prompts are still reserved at their own rate.
+            out[field] = rate if base else max(out.get(field, rate), rate)
         return out
     if 'tiers' in configured:
-        return {'tiers': [floor(tier) for tier in configured['tiers']]}
-    return floor(configured)
+        return {'tiers': [floor(tier, index == 0) for index, tier in enumerate(configured['tiers'])]}
+    return floor(configured, True)
 
 
 class Refresher:
