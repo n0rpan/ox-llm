@@ -712,6 +712,14 @@ fn hud_counts_auto_approved_actions_and_reduced_motion_stills_the_flames() {
     }
     let ascii = oxa_hud(&st, None, 100, &oxa_tui::Theme::plain(), Skin::OxaAscii);
     assert!(ascii.contains("^ [YOLO] 12") && ascii.is_ascii());
+    let claude = StatusModel {
+        model: "anthropic/claude-haiku-5-5".to_string(),
+        thinking: Some(oxa_proto::ThinkingLevel::Off),
+        ..StatusModel::default()
+    };
+    let claude_ascii = oxa_hud(&claude, None, 100, &oxa_tui::Theme::plain(), Skin::OxaAscii);
+    assert!(claude_ascii.is_ascii(), "{claude_ascii:?}");
+    assert!(claude_ascii.contains("adaptive - low"), "{claude_ascii:?}");
     let off = oxa_hud(&StatusModel::default(), None, 100, &theme, Skin::Oxa);
     assert!(!strip_ansi(&off).contains("YOLO"));
 

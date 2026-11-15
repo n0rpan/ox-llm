@@ -7,22 +7,135 @@ use oxa_proto::{
     StopReason,
 };
 use oxa_session::SessionHeader;
+use std::collections::HashMap;
 use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-/// Collects what print mode needs from one run: the last assistant message (the reply that is
-/// printed) and the notices that go to stderr.
-#[derive(Default)]
-struct PrintSink {
+/// Collects what print mode needs from one run and writes progress as it happens: the text of
+/// a message followed by tool calls and one line per tool call go to `err`, the final reply of
+/// the last prompt goes to `out`; every write is flushed at once, so a killed run leaves a log.
+struct PrintSink<'a> {
+    out: &'a mut dyn Write,
+    err: &'a mut dyn Write,
+    /// The last assistant message of the current prompt.
     last: Option<EventMessage>,
+    /// Only the last prompt's final reply goes to stdout.
+    is_last_prompt: bool,
+    /// Text of a message without tool calls that may still turn out to be the final reply: a
+    /// `done` check or a steering message can start another turn after it.
+    pending: Option<String>,
+    /// The final reply of the last prompt, set at `AgentEnd`; written to `out` by `run_print`
+    /// once it knows the run did not fail or abort.
+    final_text: Option<String>,
     notes: Vec<String>,
+    started: HashMap<String, Instant>,
+    /// The first write error (events cannot fail).
+    io_error: Option<OxaError>,
 }
 
-impl EventSink for PrintSink {
+impl PrintSink<'_> {
+    fn progress(&mut self, line: &str) {
+        // Models end progress text with blank lines; one newline is the line terminator.
+        let line = line.trim_end();
+        let _ = self.err.write_all(format!("{line}\n").as_bytes());
+        let _ = self.err.flush();
+    }
+
+    /// Another turn follows: the buffered text was not the final reply, so it is progress.
+    fn flush_pending(&mut self) {
+        if let Some(t) = self.pending.take() {
+            self.progress(&t);
+        }
+    }
+
+    fn write_reply(&mut self, text: &str) {
+        let r = self
+            .out
+            .write_all(text.as_bytes())
+            .and_then(|_| self.out.write_all(b"\n"))
+            .and_then(|_| self.out.flush());
+        if let Err(e) = r {
+            if self.io_error.is_none() {
+                self.io_error = Some(OxaError::io("cannot write the reply", &e));
+            }
+        }
+    }
+}
+
+/// One line for a tool call's start: `[tool] bash: <first 100 chars>`.
+fn tool_start_line(name: &str, args: &serde_json::Value) -> String {
+    let detail = ["command", "path", "pattern", "file_path"]
+        .iter()
+        .find_map(|k| args.get(k).and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if args.is_null() {
+                String::new()
+            } else {
+                args.to_string()
+            }
+        });
+    let one: String = detail
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(100)
+        .collect();
+    if one.is_empty() {
+        format!("[tool] {name}")
+    } else {
+        format!("[tool] {name}: {one}")
+    }
+}
+
+impl EventSink for PrintSink<'_> {
     fn emit(&mut self, e: &AgentEvent) {
         match e {
             AgentEvent::MessageEnd { message } if message.msg.role == Role::Assistant => {
+                self.flush_pending();
                 self.last = Some(message.clone());
+                let text = message.msg.content.as_deref().filter(|t| !t.is_empty());
+                if !message.msg.tool_calls.is_empty() {
+                    if let Some(t) = text {
+                        self.progress(t);
+                    }
+                } else if let Some(t) = text {
+                    self.pending = Some(t.to_string());
+                }
+            }
+            AgentEvent::TurnStart => self.flush_pending(),
+            AgentEvent::AgentEnd { .. } => {
+                if self.is_last_prompt {
+                    self.final_text = self.pending.take();
+                } else {
+                    self.flush_pending();
+                }
+            }
+            AgentEvent::ToolExecutionStart {
+                tool_call_id,
+                tool_name,
+                args,
+            } => {
+                self.flush_pending();
+                self.started.insert(tool_call_id.clone(), Instant::now());
+                self.progress(&tool_start_line(tool_name, args));
+            }
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                tool_name,
+                result,
+                duration_ms,
+            } => {
+                let secs = duration_ms.map(|d| d as f64 / 1000.0).unwrap_or_else(|| {
+                    self.started
+                        .remove(tool_call_id)
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(0.0)
+                });
+                self.started.remove(tool_call_id);
+                let word = if result.is_error { "failed" } else { "ok" };
+                self.progress(&format!("[tool] {tool_name} {word} {secs:.1}s"));
             }
             AgentEvent::Notice { text, .. } => self.notes.push(text.clone()),
             AgentEvent::ExtensionError {
@@ -48,20 +161,37 @@ pub fn run_print(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, OxaError> {
-    let mut sink = PrintSink::default();
+    let mut sink = PrintSink {
+        out,
+        err,
+        last: None,
+        is_last_prompt: false,
+        pending: None,
+        final_text: None,
+        notes: Vec::new(),
+        started: HashMap::new(),
+        io_error: None,
+    };
     let mut ui = HeadlessUi::default();
     let mut failed = false;
-    for (text, parts) in prompts {
+    let n = prompts.len();
+    for (i, (text, parts)) in prompts.into_iter().enumerate() {
         sink.last = None;
+        sink.pending = None;
+        sink.final_text = None;
+        sink.is_last_prompt = i + 1 == n;
         let before = session.inner().tree.leaf().to_string();
         let lines = match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
             Ok(Message::Prompt | Message::Extension) => None,
             Ok(Message::Command(lines)) => Some(lines),
             Err(e) => {
-                let _ = writeln!(err, "{}", command_error(&e));
+                let _ = writeln!(sink.err, "{}", command_error(&e));
                 return Ok(1);
             }
         };
+        if let Some(e) = sink.io_error.take() {
+            return Err(e);
+        }
         if let Some(mut lines) = lines {
             // A command message: what it shows the user (its lines and its `info`
             // notifications) is the output; warnings and errors still go to stderr.
@@ -69,37 +199,57 @@ pub fn run_print(
                 lines.extend(take_info(&mut ui));
             }
             for l in lines {
-                out.write_all(format!("{l}\n").as_bytes())
+                sink.out
+                    .write_all(format!("{l}\n").as_bytes())
                     .map_err(|e| OxaError::io("cannot write the command output", &e))?;
             }
         }
-        failed = after_run(session, &before, &mut ui, &mut sink.notes, err);
+        failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err);
+        // A failed or aborted run prints no reply (only known after the run).
+        if !failed {
+            if let Some(t) = sink.final_text.clone() {
+                sink.write_reply(&t);
+                if let Some(e) = sink.io_error.take() {
+                    return Err(e);
+                }
+            }
+        }
     }
 
     let mut code = 0;
-    if done_failed(session, err) {
+    if done_failed(session, &mut *sink.err) {
         code = 1;
     }
     if failed {
         code = 1;
-    } else if let Some(m) = &sink.last {
-        if let Some(text) = m.msg.content.as_deref().filter(|t| !t.is_empty()) {
-            out.write_all(text.as_bytes())
-                .map_err(|e| OxaError::io("cannot write the reply", &e))?;
-            out.write_all(b"\n")
-                .map_err(|e| OxaError::io("cannot write the reply", &e))?;
+    } else if let Some(m) = sink.last.clone() {
+        if let Some(text) = sink.final_text.take() {
+            if session.inner().active.direct.is_empty() && has_tool_markup(&text) {
+                let _ = writeln!(
+                    sink.err,
+                    "warning: the model answered with tool-call markup but no tools are available (--no-tools); the answer may be unusable"
+                );
+            }
         }
         if m.stop == Some(StopReason::Length) {
             let _ = writeln!(
-                err,
+                sink.err,
                 "Response was truncated: the model reached its output token limit."
             );
             code = 1;
         }
     }
-    out.flush()
+    sink.out
+        .flush()
         .map_err(|e| OxaError::io("cannot flush the reply", &e))?;
     Ok(code)
+}
+
+/// Whether `text` contains tool-call markup a model writes when it believes tools exist.
+fn has_tool_markup(text: &str) -> bool {
+    ["<tool_calls>", "<invoke name=", "<tool_call>", "<function="]
+        .iter()
+        .any(|m| text.contains(m))
 }
 
 /// `--mode json`: write the session header record, then every event as a record, for each
@@ -256,4 +406,62 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assistant(text: &str) -> EventMessage {
+        EventMessage {
+            msg: oxa_proto::WireMsg {
+                role: Role::Assistant,
+                content: Some(text.to_string()),
+                reasoning: None,
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            },
+            ts_ms: 0,
+            stop: Some(StopReason::Stop),
+            usage: None,
+            model: None,
+            tool_name: None,
+            is_error: false,
+            error_message: None,
+        }
+    }
+
+    /// A no-tool-call message followed by another turn (a failed `done` check injects a user
+    /// message, or a steering message arrives) is progress; only the last reply is the final one.
+    #[test]
+    fn reply_followed_by_another_turn_is_progress_not_the_final_reply() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut sink = PrintSink {
+            out: &mut out,
+            err: &mut err,
+            last: None,
+            is_last_prompt: true,
+            pending: None,
+            final_text: None,
+            notes: Vec::new(),
+            started: HashMap::new(),
+            io_error: None,
+        };
+        sink.emit(&AgentEvent::TurnStart);
+        sink.emit(&AgentEvent::MessageEnd {
+            message: assistant("first draft"),
+        });
+        sink.emit(&AgentEvent::TurnStart);
+        sink.emit(&AgentEvent::MessageEnd {
+            message: assistant("real final"),
+        });
+        sink.emit(&AgentEvent::AgentEnd {
+            messages: Vec::new(),
+            will_retry: false,
+        });
+        assert_eq!(sink.final_text.as_deref(), Some("real final"));
+        drop(sink);
+        assert!(out.is_empty(), "stdout is written by run_print, once");
+        assert_eq!(String::from_utf8(err).unwrap(), "first draft\n");
+    }
 }

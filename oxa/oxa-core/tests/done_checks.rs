@@ -65,12 +65,21 @@ fn run_state(
     turns: Vec<ScriptTurn>,
     sandbox: Arc<dyn Sandbox>,
 ) -> (Rec, Arc<ScriptedEngine>, bool) {
-    let engine = Arc::new(ScriptedEngine::new(turns));
     let settings = if done.is_null() {
         Settings::default()
     } else {
         Settings::from_values(json!({ "done": done }), json!({}))
     };
+    run_settings(env, settings, turns, sandbox)
+}
+
+fn run_settings(
+    env: &TestEnv,
+    settings: Settings,
+    turns: Vec<ScriptTurn>,
+    sandbox: Arc<dyn Sandbox>,
+) -> (Rec, Arc<ScriptedEngine>, bool) {
+    let engine = Arc::new(ScriptedEngine::new(turns));
     let deps = Deps {
         engine: engine.clone(),
         store: Arc::new(MemStore::new()),
@@ -494,6 +503,34 @@ fn in_dir_recording_sandbox_cwd_stays_at_work_folder() {
         s.command
     );
 }
+
+#[test]
+fn child_local_shell_prefix_runs_in_the_child_folder() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work().join("sub")).unwrap();
+    // Exists only in the child: the prefix fails unless it starts there.
+    std::fs::write(env.work().join("sub/activate.sh"), "touch prefix-ran\n").unwrap();
+    let settings = Settings::from_values(
+        json!({
+            "done": ["in sub: test -f prefix-ran"],
+            "shellCommandPrefix": ". ./activate.sh",
+        }),
+        json!({}),
+    );
+    let (rec, _, failed) = run_settings(
+        &env,
+        settings,
+        vec![write("c1", "a.txt"), ScriptTurn::text("done")],
+        Arc::new(Direct),
+    );
+    assert_eq!(
+        rec.checks(),
+        vec!["done check: [sub] test -f prefix-ran ok".to_string()]
+    );
+    assert!(!failed);
+    assert!(env.work().join("sub/prefix-ran").exists());
+}
+
 #[test]
 fn swapped_subdir_symlink_cannot_move_the_bind_root() {
     let env = TestEnv::new();

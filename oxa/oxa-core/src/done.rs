@@ -169,17 +169,13 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
     // The sandbox authority always roots at the original workspace (`st.cwd`); a subdir entry
     // is selected inside that view with a shell `cd`, so a swapped symlink cannot move the
     // writable bind root to an outside directory.
-    let (cwd, prefixed) = match dir {
-        None => (st.cwd.clone(), None),
+    let child = match dir {
+        None => None,
         Some(d) => match resolve_dir(&st.cwd, d) {
-            Ok(p) => {
-                let text = format!(
-                    "cd -- {} || exit 111\n{}",
-                    single_quote(&p.to_string_lossy()),
-                    cmd
-                );
-                (st.cwd.clone(), Some(text))
-            }
+            Ok(p) => Some(format!(
+                "cd -- {} || exit 111\n",
+                single_quote(&p.to_string_lossy())
+            )),
             Err(why) => return (false, format!("done check: {label} FAILED (not run)"), why),
         },
     };
@@ -194,14 +190,15 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
         shell_path: st.settings.shell_path(&st.dirs.home),
         command_prefix: st.settings.shell_command_prefix(),
     };
-    let command_text = prefixed.as_deref().unwrap_or(cmd);
-    let command = match shell.command(command_text) {
-        Ok(c) => c,
+    // The `cd` goes before the fully resolved shell text, so shellCommandPrefix and a custom
+    // shell both start in the child folder.
+    let command = match shell.command(cmd) {
+        Ok(c) => format!("{}{c}", child.as_deref().unwrap_or("")),
         Err(e) => return (false, format!("done check: {label} FAILED (not run)"), e),
     };
     let spec = ExecSpec {
         command,
-        cwd,
+        cwd: st.cwd.clone(),
         writable: true,
         net: st.sandbox.network(),
         timeout_s: Some(TIMEOUT_S),

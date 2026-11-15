@@ -178,7 +178,13 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
-        let result = list_models(engine.as_ref(), &endpoint.name, search.as_deref(), &mut *stdout);
+        let result = list_models(
+            engine.as_ref(),
+            &endpoint.name,
+            search.as_deref(),
+            &mut *stdout,
+            &mut *stderr,
+        );
         return finish(result, &mut *stderr);
     }
 
@@ -350,8 +356,9 @@ impl Built {
             // O-182: YOLO answers the policy's questions; the guard above it is untouched.
             policy: Box::new(
                 ModePolicy::new()
-                    .with_guard(oxa_perm::PathGuard::new(
+                    .with_guard(oxa_perm::PathGuard::with_real_home(
                         &self.dirs.home,
+                        oxa_sandbox::account_home().as_deref(),
                         &self.dirs.agent_dir,
                         &self.dirs.tmp_dir,
                     ))
@@ -1098,6 +1105,7 @@ fn list_models(
     provider: &str,
     search: Option<&str>,
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<i32, OxaError> {
     let info = engine.info(None)?;
     let mut ids = info.models.clone();
@@ -1115,20 +1123,35 @@ fn list_models(
         })
         .map(|id| {
             let model_info = if id == info.limits_for {
-                info.clone()
+                Ok(info.clone())
             } else {
-                engine.info(Some(&id))?
+                engine.info(Some(&id))
             };
-            Ok([
-                provider.to_string(),
-                id,
-                format_tokens(model_info.n_ctx as u64),
-                format_tokens(model_info.max_output as u64),
-                "yes".to_string(),
-                "no".to_string(),
-            ])
+            match model_info {
+                Ok(model_info) => [
+                    provider.to_string(),
+                    id,
+                    format_tokens(model_info.n_ctx as u64),
+                    format_tokens(model_info.max_output as u64),
+                    model_info.thinking.map_or_else(|| "?".to_string(), bool_word),
+                    model_info.images.map_or_else(|| "?".to_string(), bool_word),
+                ],
+                // A failing per-model info call degrades only this row: '?' in the limits
+                // columns (never another model's limits), and the listing continues.
+                Err(e) => {
+                    let _ = writeln!(err, "warning: cannot list {id}: {}", e.message);
+                    [
+                        provider.to_string(),
+                        id,
+                        "?".to_string(),
+                        "?".to_string(),
+                        "?".to_string(),
+                        "?".to_string(),
+                    ]
+                }
+            }
         })
-        .collect::<Result<_, OxaError>>()?;
+        .collect();
     let write_err = |e: std::io::Error| OxaError::io("cannot write the model list", &e);
     if rows.is_empty() {
         match search {
@@ -1162,6 +1185,15 @@ fn list_models(
         writeln!(out, "{}", line(&cells)).map_err(write_err)?;
     }
     Ok(0)
+}
+
+/// `true` -> `yes`, `false` -> `no` for the `thinking`/`images` columns of `--list-models`.
+fn bool_word(b: bool) -> String {
+    if b {
+        "yes".to_string()
+    } else {
+        "no".to_string()
+    }
 }
 
 /// pi's token counts: `200K`, `1M`, `1.5M`; below a thousand the plain number.
@@ -1534,15 +1566,79 @@ mod model_limits_tests {
     #[test]
     fn list_models_uses_each_models_limits() {
         let mut out = Vec::new();
-        list_models(&CatalogEngine, "oxe", Some("sonnet"), &mut out).unwrap();
+        let mut err = Vec::new();
+        list_models(&CatalogEngine, "oxe", Some("sonnet"), &mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
         let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
         assert_eq!(&row[1..4], &["anthropic/claude-sonnet-5-5", "200K", "32K"]);
 
         let mut out = Vec::new();
-        list_models(&CatalogEngine, "oxe", Some("local"), &mut out).unwrap();
+        list_models(&CatalogEngine, "oxe", Some("local"), &mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
         let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
         assert_eq!(&row[1..4], &["local", "131.1K", "16.4K"]);
+    }
+
+    /// A failing per-model `info(Some(id))` degrades only that row: '?' in the context,
+    /// max-out, thinking and images columns, while every other model still lists.
+    struct FailingInfoEngine {
+        fail_id: String,
+    }
+
+    impl Engine for FailingInfoEngine {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            if target == Some(self.fail_id.as_str()) {
+                return Err(OxaError::new(codes::ENGINE_HTTP, "boom"));
+            }
+            CatalogEngine.info(target)
+        }
+
+        fn count_tokens(&self, _: &str) -> Result<u32, OxaError> {
+            panic!("listing models must not tokenize")
+        }
+
+        fn chat(
+            &self,
+            _: &ChatRequest,
+            _: &CancelToken,
+            _: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            panic!("listing models must not generate")
+        }
+    }
+
+    #[test]
+    fn list_models_degrades_a_failing_info_row() {
+        let engine = FailingInfoEngine {
+            fail_id: "anthropic/claude-sonnet-5-5".to_string(),
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        list_models(&engine, "oxe", None, &mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        // The listing succeeds and still contains every model id.
+        for id in ["local", "anthropic/claude-sonnet-5-5"] {
+            assert!(
+                text.lines().any(|l| l.split_whitespace().nth(1) == Some(id)),
+                "missing {id}"
+            );
+        }
+
+        // A one-line warning on stderr names the degrading row and its error.
+        let err = String::from_utf8(err).unwrap();
+        assert!(
+            err.contains("anthropic/claude-sonnet-5-5") && err.contains("boom"),
+            "stderr names the row and error: {err:?}"
+        );
+
+        // The failing row shows '?' in the context, max-out, thinking and images columns.
+        let row: Vec<_> = text
+            .lines()
+            .find(|l| l.split_whitespace().nth(1) == Some("anthropic/claude-sonnet-5-5"))
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        assert_eq!(&row[2..], &["?", "?", "?", "?"]);
     }
 }

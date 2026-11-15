@@ -164,6 +164,102 @@ pub enum Activity {
     },
 }
 
+impl StatusModel {
+    /// The thinking text for the status line. The request path only sends a boolean
+    /// `enable_thinking` and oxc maps it to the effort: `true` -> `high`, `false` -> `none`
+    /// (adaptive `low`). Claude 5.5 cannot disable thinking, so `off` shows as `adaptive • low`
+    /// and every other level as `adaptive • high`. Other models show the level name.
+    pub fn thinking_label(&self) -> Option<String> {
+        self.thinking_label_with("•")
+    }
+
+    /// [`Self::thinking_label`] with the separator between `adaptive` and the effort supplied by
+    /// the caller (the ASCII skin passes its `mid` glyph so the HUD stays ASCII).
+    pub fn thinking_label_with(&self, sep: &str) -> Option<String> {
+        let level = self.thinking?;
+        if !is_claude_55(&self.model) {
+            return Some(level.as_str().to_string());
+        }
+        let eff = if level == ThinkingLevel::Off {
+            "low"
+        } else {
+            "high"
+        };
+        Some(format!("adaptive {sep} {eff}"))
+    }
+}
+
+/// True for the Claude 5.5 families (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`),
+/// optionally behind `anthropic/` and with a `-`-separated suffix such as a date. Other names
+/// that merely contain `-5-5` (`claude-haiku-5-50`, `claude-5-5-x`) do not match.
+pub(crate) fn is_claude_55(model: &str) -> bool {
+    let m = model.strip_prefix("anthropic/").unwrap_or(model);
+    ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+        .iter()
+        .any(|family| {
+            m.strip_prefix(family)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+        })
+}
+
+#[cfg(test)]
+mod thinking_tests {
+    use super::*;
+
+    #[test]
+    fn claude_55_matcher_edges() {
+        for yes in [
+            "anthropic/claude-opus-5-5",
+            "anthropic/claude-sonnet-5-5",
+            "anthropic/claude-haiku-5-5",
+            "claude-haiku-5-5",
+            "anthropic/claude-haiku-5-5-20261001",
+            "anthropic/claude-sonnet-5-5-v2",
+        ] {
+            assert!(is_claude_55(yes), "{yes} should match");
+        }
+        for no in [
+            "anthropic/claude-haiku-5-50",
+            "anthropic/claude-5-5-x",
+            "anthropic/claude-haiku-5-5x",
+            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-opus-5-55",
+            "openrouter/claude-haiku-5-5",
+            "qwen-local",
+            "",
+        ] {
+            assert!(!is_claude_55(no), "{no} should not match");
+        }
+    }
+
+    #[test]
+    fn thinking_label_table() {
+        let levels = [
+            (ThinkingLevel::Off, "adaptive • low"),
+            (ThinkingLevel::Minimal, "adaptive • high"),
+            (ThinkingLevel::Low, "adaptive • high"),
+            (ThinkingLevel::Medium, "adaptive • high"),
+            (ThinkingLevel::High, "adaptive • high"),
+            (ThinkingLevel::Xhigh, "adaptive • high"),
+            (ThinkingLevel::Max, "adaptive • high"),
+        ];
+        for (level, want) in levels {
+            let st = StatusModel {
+                model: "anthropic/claude-haiku-5-5".to_string(),
+                thinking: Some(level),
+                ..StatusModel::default()
+            };
+            assert_eq!(st.thinking_label().as_deref(), Some(want), "5.5 level {level:?}");
+            let plain = StatusModel {
+                model: "qwen-local".to_string(),
+                thinking: Some(level),
+                ..StatusModel::default()
+            };
+            assert_eq!(plain.thinking_label().as_deref(), Some(level.as_str()));
+        }
+    }
+}
+
 /// Everything the chrome (D6) draws. Updated by [`crate::apply_event`] and by the app from
 /// `Session::state()` / `Session::stats()` after each settle.
 #[derive(Debug, Clone, PartialEq, Default)]

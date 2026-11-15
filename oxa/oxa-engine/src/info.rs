@@ -143,6 +143,7 @@ pub fn parse_info_for(
         .unwrap_or_else(|| DEFAULT_MAX_OUTPUT.min(n_ctx / 4).max(1));
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
     let (prefill_only, caps) = capabilities(status, &limits_for);
+    let (thinking, images) = modality(status, &limits_for);
 
     Ok(EngineInfo {
         base_url: base_url.to_string(),
@@ -155,7 +156,34 @@ pub fn parse_info_for(
         compact_at,
         prefill_only,
         caps,
+        thinking,
+        images,
     })
+}
+
+/// Whether `key` thinks or takes images (see [`EngineInfo::thinking`], [`EngineInfo::images`]):
+/// the controller's `model_limits[key].capabilities` first (`thinking`, `vision`), else `None`
+/// for either field the controller did not publish. A plain OpenAI server publishes neither.
+fn modality(status: &Value, key: &str) -> (Option<bool>, Option<bool>) {
+    let caps = status
+        .get("model_limits")
+        .and_then(|m| m.get(key))
+        .and_then(|r| r.get("capabilities"))
+        .filter(|c| c.is_object());
+    match caps {
+        Some(c) => (
+            // Any thinking value that is not "none"/"off"/false means the model thinks.
+            c.get("thinking").and_then(|t| {
+                if let Some(b) = t.as_bool() {
+                    Some(b)
+                } else {
+                    t.as_str().map(|s| !matches!(s, "none" | "off"))
+                }
+            }),
+            c.get("vision").and_then(Value::as_bool),
+        ),
+        None => (None, None),
+    }
 }
 
 /// `prefill_only` and the other capabilities of `key` (see [`parse_info_for`]): the controller's
@@ -647,5 +675,30 @@ mod cancel_advertised_tests {
     fn props_hints_advertise() {
         let props = json!({"oxe_hints": {"hints": ["cancel"]}});
         assert!(cancel_advertised(None, Some(&props)));
+    }
+}
+
+#[cfg(test)]
+mod modality_tests {
+    use super::modality;
+    use serde_json::json;
+
+    #[test]
+    fn null_thinking_is_unknown() {
+        let status = json!({
+            "model_limits": {"m": {"capabilities": {"thinking": null, "vision": false}}}
+        });
+        let (thinking, images) = modality(&status, "m");
+        assert_eq!(thinking, None, "a null thinking value is unknown, not `no`");
+        assert_eq!(images, Some(false));
+    }
+
+    #[test]
+    fn non_bool_non_string_thinking_is_unknown() {
+        let status = json!({
+            "model_limits": {"m": {"capabilities": {"thinking": 7}}}
+        });
+        let (thinking, _) = modality(&status, "m");
+        assert_eq!(thinking, None, "a numeric thinking value is unknown");
     }
 }

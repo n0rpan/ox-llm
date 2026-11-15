@@ -1164,6 +1164,7 @@ fn start_new(
     st.sref = sref;
     st.tree = Tree::new(Vec::new());
     st.transcript = Transcript::default();
+    st.stats.last_tok_s = 0.0;
     st.stats.user_messages = 0;
     st.stats.assistant_messages = 0;
     st.stats.tool_calls = 0;
@@ -1666,6 +1667,8 @@ pub(crate) fn switch_model(
     }
     persist(st, EntryBody::ModelChange(m.to_string()), sink)?;
     let previous = std::mem::replace(&mut st.model, m.to_string());
+    // The speed belongs to the model that produced it.
+    st.stats.last_tok_s = 0.0;
     sink.emit(&AgentEvent::ModelSelect {
         model: m.to_string(),
         previous: Some(previous.clone()),
@@ -1799,6 +1802,8 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
             };
             st.info = EngineInfo {
                 prefill_only,
+                thinking: fresh.thinking,
+                images: fresh.images,
                 ..fresh
             };
         }
@@ -1818,6 +1823,8 @@ pub(crate) fn refresh_budget(st: &mut SessionState, prev_enabled: Option<bool>, 
                     hint_clear: old.caps.hint_clear && fresh.caps.hint_clear,
                     ..fresh.caps
                 },
+                thinking: fresh.thinking,
+                images: fresh.images,
                 ..fresh
             };
             if merged != st.info {
@@ -1887,6 +1894,24 @@ mod tests {
             mode: None,
             session_id: None,
         }
+    }
+
+    /// The speed belongs to the model that produced it: a switch drops it for every later status.
+    #[test]
+    fn model_switch_resets_last_tok_s() {
+        let env = oxa_fake::TestEnv::new();
+        let mut s = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).expect("open");
+        s.st.stats.last_tok_s = 54.4;
+        let other = if s.st.model == "other-model" {
+            "x-model"
+        } else {
+            "other-model"
+        };
+        let mut sink = VecSink::default();
+        let _ = s.set_model(other, &mut sink);
+        assert_eq!(s.st.model, other, "the switch must have happened");
+        assert_eq!(s.stats().last_tok_s, 0.0);
+        assert_eq!(s.stats().last_tok_s, 0.0, "and it stays cleared");
     }
 
     /// Messages queued for the next turn are appended, in order, before the prompt's own message.
