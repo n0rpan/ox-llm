@@ -7,8 +7,10 @@ workflow, `packaging/**` or this document. Draft PRs skip the artifact builds wh
 changes are iterated locally. Marking a matching PR ready, or a manual dispatch,
 enables them. Ordinary PR checks remain independent.
 
-The release-build draft includes the separate CLI-version prerequisite draft.
-Review and merge that prerequisite first. Do not merge either draft automatically.
+The build workflow, Arch recipes and model-free version reporting are part of
+`main`. Follow-up PRs stay as drafts during v0.2.0 release mode: validate locally
+and use the cheap draft checks. Do not wait for a review or mark a PR ready to
+trigger full CI; the owner coordinates qualification of the release commit.
 
 ## What the build checks
 
@@ -70,14 +72,14 @@ maintainer laptop is needed for the existing gates.
 
 ## Run and inspect, without publishing
 
-Dispatch **release-build** on the reviewed branch, then record the resulting
-run's immutable source commit. The branch must remain at the reviewed commit.
-The CLI/API can dispatch this workflow while it is still in a draft PR; this was
-verified without putting the file on main. The Actions UI may not expose the
-manual button for a branch-only workflow. For example:
+When the owner requests release qualification, dispatch **release-build** on the
+selected branch and record the run's immutable source commit. The workflow is
+already on `main`; the Actions UI and CLI can dispatch it there. A qualification
+run can also target a specific follow-up branch without changing PR draft state.
+For example, to qualify current `main`:
 
 ```sh
-gh workflow run release-build.yml --repo oxstack/ox-llm --ref release-build/v020-artifacts
+gh workflow run release-build.yml --repo oxstack/ox-llm --ref main
 ```
 
 The path-filtered PR trigger exercises the same build and install gates.
@@ -134,12 +136,13 @@ Persistent user data created during actual use is not removed by pacman.
 
 ## Owner-only real release, later
 
-1. Review the prerequisite and packaging draft PRs, merge current main into each
-   update, and require green public checks plus both architecture artifact gates
-   and the Arch clean-install gate. Review namcap warnings, not just errors.
-2. Merge only after human review. Dispatch the artifact workflow on the exact
-   reviewed commit and save the run URL, commit, artifacts and checksums before
-   their retention expires. Confirm all three product versions are 0.2.0.
+1. Select the release commit from `main` and inspect its integration checks. Keep
+   follow-up work in draft PRs during release mode; this guide does not require
+   those PRs to be reviewed or merged before qualifying the selected commit.
+2. Dispatch the artifact workflow for that commit. Require both architecture
+   artifact gates and the Arch clean-install gate to pass; inspect namcap
+   warnings as well as errors. Save the run URL, commit, artifacts and checksums
+   before their retention expires. Confirm all three product versions are 0.2.0.
 3. Perform any desired Snapdragon hardware/model qualification separately.
 4. Inspect the existing tag-triggered `release.yml` and its protected `release`
    environment before creating a tag: creating a `v*` tag currently invokes that
