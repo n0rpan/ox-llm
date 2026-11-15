@@ -7,28 +7,32 @@ publish = false
 
 [features]
 default = []
-policy = ["dep:serde_json"]
-secrets = ["dep:serde_json", "dep:nix"]
 pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
 accounting = ["policy", "pricing", "dep:nix"]
+policy = ["dep:serde_json"]
+secrets = ["dep:serde_json", "dep:nix"]
+transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
 
 [dependencies]
-nix = { version = "0.30", features = ["user"], optional = true }
-serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
 bigdecimal = { version = "0.4", optional = true }
 num-traits = { version = "0.2", optional = true }
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
+nix = { version = "0.30", features = ["user"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"], optional = true }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [[example]]
 name = "policy_contract"
 required-features = ["policy"]
 
 [[example]]
-name = "pricing_contract"
-required-features = ["accounting"]
-
-[[example]]
 name = "secrets_contract"
 required-features = ["secrets"]
+
+[[example]]
+name = "pricing_contract"
+required-features = ["accounting"]
 
 [lints.rust]
 unsafe_code = "forbid"
