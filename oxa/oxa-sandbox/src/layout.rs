@@ -188,8 +188,11 @@ pub struct LayoutInputs {
     pub write_extra: Vec<PathBuf>,
     pub allow_home_write: bool,
     /// The running oxa binary: exposed read-only (when under `$HOME`, which is hidden) and
-    /// named by `OXA_BIN`, so an agent can start the TUI in tmux from inside the sandbox.
+    /// named by `OXA_RUNNING_BIN`, so an agent can start the TUI in tmux from inside the sandbox.
     pub exe: Option<PathBuf>,
+    /// The binary already lies inside the writable workspace: name it, but do not bind it
+    /// (a bind makes the file a mount point, so a rebuild could not replace it).
+    pub exe_in_workspace: bool,
 }
 
 /// `~` / `~/x` -> `$HOME` / `$HOME/x`; other paths unchanged.
@@ -242,7 +245,9 @@ impl Layout {
         }
         read.extend(TOOLCHAIN_READ.iter().map(|r| i.home.join(r)));
         read.extend(i.read_extra.iter().cloned());
-        read.extend(i.exe.iter().cloned());
+        if !i.exe_in_workspace {
+            read.extend(i.exe.iter().cloned());
+        }
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
         let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
@@ -304,8 +309,8 @@ impl Layout {
             .as_ref()
             .filter(|e| e.is_absolute() && e.is_file() && !denied(e, &deny))
         {
-            if !env.iter().any(|(n, _)| n == "OXA_BIN") {
-                env.push(("OXA_BIN".to_string(), exe.display().to_string()));
+            if !env.iter().any(|(n, _)| n == "OXA_RUNNING_BIN") {
+                env.push(("OXA_RUNNING_BIN".to_string(), exe.display().to_string()));
             }
         }
         env.sort();
@@ -349,7 +354,27 @@ mod tests {
         });
         let _ = std::fs::remove_dir_all(&d);
         assert!(l.read.contains(&bin), "{:?}", l.read);
-        assert!(l.env.contains(&("OXA_BIN".into(), bin.display().to_string())));
+        assert!(l
+            .env
+            .contains(&("OXA_RUNNING_BIN".into(), bin.display().to_string())));
+    }
+
+    #[test]
+    fn a_binary_in_the_workspace_is_named_not_bound() {
+        let d = std::env::temp_dir().join(format!("oxa-exew-{}", std::process::id()));
+        let bin = d.join("home/ws/target/release/oxa");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "x").unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: d.join("home"),
+            exe: Some(bin.clone()),
+            exe_in_workspace: true,
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!l.read.contains(&bin), "{:?}", l.read);
+        assert!(l.env.iter().any(|(k, _)| k == "OXA_RUNNING_BIN"));
+        assert!(!l.env.iter().any(|(k, _)| k == "OXA_BIN"));
     }
 
     #[test]

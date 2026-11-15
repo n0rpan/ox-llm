@@ -69,6 +69,7 @@ fn machine(env: &TestEnv) -> Layout {
         write_extra: Vec::new(),
         allow_home_write: false,
         exe: None,
+        exe_in_workspace: false,
     })
 }
 
@@ -872,6 +873,7 @@ fn mise_cache_and_state_are_writable() {
         write_extra: Vec::new(),
         allow_home_write: false,
         exe: None,
+        exe_in_workspace: false,
     });
     assert!(l.write.contains(&home.join(".cache/mise")), "{:?}", l.write);
     assert!(

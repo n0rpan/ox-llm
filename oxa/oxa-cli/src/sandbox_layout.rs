@@ -68,6 +68,14 @@ pub(crate) fn layout(
         notices.push((Level::Warning, home_root_warning(cwd, home_itself)));
     }
     let read_extra = paths(SETTING_READ_PATHS);
+    let exe = std::env::current_exe().ok();
+    let exe_in_workspace = exe.as_deref().is_some_and(|e| {
+        let canon = e.canonicalize().ok();
+        [Some(cwd), resolved.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|c| e.starts_with(c) || canon.as_deref().is_some_and(|k| k.starts_with(c)))
+    });
     let mut built = Layout::build(&LayoutInputs {
         home: dirs.home.clone(),
         agent_dir: Some(dirs.agent_dir.clone()),
@@ -76,7 +84,8 @@ pub(crate) fn layout(
         read_extra: read_extra.clone(),
         write_extra: paths(SETTING_WRITE_PATHS),
         allow_home_write,
-        exe: std::env::current_exe().ok(),
+        exe,
+        exe_in_workspace,
     });
     // #196: extra read-only paths are never silent; say which are mounted and which are not.
     // A bind that contains the cwd is never mounted (the cwd bind covers it): its siblings
