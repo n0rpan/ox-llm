@@ -67,23 +67,10 @@ fn check_namespace(directory: &File) -> io::Result<()> {
     Ok(())
 }
 
-// Inside a user namespace (the oxa sandbox) host root shows up as the overflow uid
-// because it is unmapped; it is still root-controlled, so accept it there.
+// Only the operator and real root are trusted. The overflow uid (65534) stands for
+// every unmapped host uid inside a user namespace, so it is never trusted by value.
 fn trusted_owner(owner: u32, user: u32) -> bool {
-    owner == user || owner == 0 || (owner == overflow_uid() && in_user_namespace())
-}
-
-fn overflow_uid() -> u32 {
-    std::fs::read_to_string("/proc/sys/kernel/overflowuid")
-        .ok()
-        .and_then(|text| text.trim().parse().ok())
-        .unwrap_or(65534)
-}
-
-fn in_user_namespace() -> bool {
-    std::fs::read_to_string("/proc/self/uid_map")
-        .map(|map| map.split_whitespace().collect::<Vec<_>>() != ["0", "0", "4294967295"])
-        .unwrap_or(false)
+    owner == user || owner == 0
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -95,11 +82,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unmapped_root_is_trusted_only_inside_a_user_namespace() {
-        let user = unsafe { libc::geteuid() };
-        assert!(trusted_owner(0, user));
+    fn overflow_and_other_owners_stay_rejected() {
+        let user = 1000;
         assert!(trusted_owner(user, user));
-        assert_eq!(trusted_owner(overflow_uid(), user), in_user_namespace());
-        assert!(!trusted_owner(user.wrapping_add(12345), user));
+        assert!(trusted_owner(0, user));
+        assert!(!trusted_owner(65534, user));
+        assert!(!trusted_owner(1001, user));
     }
 }
