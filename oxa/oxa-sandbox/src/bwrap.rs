@@ -78,7 +78,6 @@ pub(crate) fn bwrap_args_homes(
         &["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"],
     );
     push(&mut a, &["--tmpfs", "/tmp"]);
-    push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
     // #53: a `$HOME` that is not the account's real home leaves the real one visible. Hide it
     // like `$HOME` (an empty tmpfs; the cwd and the binds below are mounted on top), so its
     // credentials are absent, not merely emptied by a mask. Never `/` or the sandbox's `$HOME`.
@@ -86,8 +85,17 @@ pub(crate) fn bwrap_args_homes(
         .filter(|r| r.is_absolute() && *r != Path::new("/") && *r != home && **r != *home_c)
         .map(canon)
         .filter(|r| r != &home_c && r.parent().is_some() && std::fs::metadata(r).is_ok_and(|m| m.is_dir()));
+    // #188: parent first. A later tmpfs over an ancestor hides an earlier one below it, and
+    // the final `--remount-ro` of the hidden child then fails; so the outer home goes first.
+    let home_first = real_c.as_ref().is_none_or(|r| !home_c.starts_with(r));
+    if home_first {
+        push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
+    }
     if let Some(r) = &real_c {
         push(&mut a, &["--tmpfs", &r.to_string_lossy()]);
+    }
+    if !home_first {
+        push(&mut a, &["--tmpfs", &home_c.to_string_lossy()]);
     }
     let mode = effective_mode(s, home, layout, real_home);
     let writable = mode == CwdMode::Writable;
@@ -328,8 +336,11 @@ pub(crate) fn bwrap_args_homes(
     // the home tmpfs: home is then no mount of its own (bwrap's remount fails with EINVAL) and
     // is read-only already. Nothing is bound over home here: a late bind of the host home would
     // cover the masks above and expose the credentials.
-    if cwd_path.starts_with(&home_c) || !home_c.starts_with(cwd_path) {
-        push(&mut a, &["--remount-ro", &home_c.to_string_lossy()]);
+    // #188: the account home tmpfs is sealed too (a write to it fails), unless the cwd covers it.
+    for h in std::iter::once(&home_c).chain(real_c.as_ref()) {
+        if cwd_path.starts_with(h) || !h.starts_with(cwd_path) {
+            push(&mut a, &["--remount-ro", &h.to_string_lossy()]);
+        }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
     push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
@@ -352,11 +363,14 @@ pub fn account_home() -> Option<PathBuf> {
     real_home()
 }
 
-/// `argv` without the `--tmpfs <account home>` pair that hides the real home (for goldens that
+/// `argv` without the `--tmpfs <account home>` and `--remount-ro <account home>` pairs that hides the real home (for goldens that
 /// pin a fake `$HOME` and must not depend on the machine they run on).
 pub fn without_account_home(mut argv: Vec<String>) -> Vec<String> {
     if let Some(r) = real_home().map(|r| canon(&r).to_string_lossy().into_owned()) {
         if let Some(i) = argv.windows(2).position(|w| w[0] == "--tmpfs" && w[1] == r) {
+            argv.drain(i..i + 2);
+        }
+        if let Some(i) = argv.windows(2).position(|w| w[0] == "--remount-ro" && w[1] == r) {
             argv.drain(i..i + 2);
         }
     }
@@ -453,6 +467,11 @@ fn is_real(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink())
 }
 
+/// The protected entries that are directories (`hooks`, `info`): a tmpfs masks them when missing.
+fn is_dir_entry(p: &Path) -> bool {
+    p.file_name().is_some_and(|n| n == "hooks" || n == "info")
+}
+
 /// sbx-hooks: keep the missing protected git entry `p` missing for the command: an empty
 /// read-only tmpfs for the `hooks` directory, `/dev/null` for a file. bwrap creates the mount
 /// point (an empty directory or file) in the host's git directory, which stays after the run.
@@ -466,7 +485,7 @@ fn mask_missing(a: &mut Vec<String>, p: &Path) {
         return;
     }
     let ps = p.to_string_lossy();
-    if p.file_name().is_some_and(|n| n == "hooks") {
+    if is_dir_entry(p) {
         push(a, &["--tmpfs", &ps, "--remount-ro", &ps]);
     } else {
         push(a, &["--ro-bind", "/dev/null", &ps]);
@@ -509,7 +528,7 @@ pub(crate) fn create_missing_git_files_homes(
         files.extend(protected_entries(&dotgit, &dotgit));
     }
     for p in files {
-        if p.file_name().is_some_and(|n| n == "hooks") || !p.parent().is_some_and(is_real_dir) {
+        if is_dir_entry(&p) || !p.parent().is_some_and(is_real_dir) {
             continue;
         }
         let _ = std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
@@ -751,6 +770,114 @@ mod tests {
         a.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == p)
             || a.windows(3)
                 .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == p)
+    }
+
+    fn pos(a: &[String], flag: &str, p: &Path) -> Option<usize> {
+        let p = p.to_string_lossy();
+        a.windows(2).position(|w| w[0] == flag && w[1] == p)
+    }
+
+    /// #188: the home tmpfs mounts go parent first, whatever the relation of `$HOME` and the
+    /// account home; every mask comes after every bind and tmpfs.
+    #[test]
+    fn home_tmpfs_mounts_are_parent_first_in_every_relation() {
+        let env = TestEnv::new();
+        let root = env.root().join("rel");
+        let (real_dir, nested_home) = (root.join("acct"), root.join("acct/priv/home"));
+        let work = root.join("acct/priv/work");
+        for d in [
+            &nested_home,
+            &work,
+            &root.join("outside/home"),
+            &root.join("up/acct"),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for (home, real, label) in [
+            (nested_home.clone(), real_dir.clone(), "home below account"),
+            (real_dir.clone(), nested_home.clone(), "account below home"),
+            (root.join("outside/home"), real_dir.clone(), "unrelated"),
+        ] {
+            let sp = spec(&work, true);
+            let a = bwrap_args_homes(&sp, &home, &Layout::default(), Some(&real));
+            let (hc, rc) = (canon(&home), canon(&real));
+            let h = pos(&a, "--tmpfs", &hc).unwrap_or_else(|| panic!("{label}: {a:?}"));
+            let r = pos(&a, "--tmpfs", &rc).unwrap_or_else(|| panic!("{label}: {a:?}"));
+            let (first, second) = if hc.starts_with(&rc) { (r, h) } else { (h, r) };
+            if hc.starts_with(&rc) || rc.starts_with(&hc) {
+                assert!(first < second, "{label}: {a:?}");
+            }
+            let bind = pos(&a, "--bind", &canon(&work)).unwrap();
+            assert!(h < bind && r < bind, "{label}: {a:?}");
+            // The homes stay read-only: each tmpfs is remounted after both are in place.
+            for p in [&hc, &rc] {
+                let ro = pos(&a, "--remount-ro", p).unwrap_or_else(|| panic!("{label}: {a:?}"));
+                assert!(ro > h && ro > r, "{label}: {a:?}");
+            }
+        }
+        // Masks come after all home tmpfs and binds.
+        env.write("rel/acct/priv/home/.ssh/id", "K");
+        env.write("rel/acct/.ssh/id", "K");
+        let a = bwrap_args_homes(
+            &spec(&work, true),
+            &nested_home,
+            &Layout::default(),
+            Some(&real_dir),
+        );
+        let last_mount = a
+            .iter()
+            .rposition(|x| x == "--bind")
+            .unwrap()
+            .max(pos(&a, "--tmpfs", &canon(&real_dir)).unwrap());
+        for m in [nested_home.join(".ssh"), real_dir.join(".ssh")] {
+            if let Some(i) = pos(&a, "--tmpfs", &m) {
+                assert!(i > last_mount, "{m:?}: {a:?}");
+            }
+        }
+    }
+
+    /// #188, real bwrap: `$HOME` below the account home.
+    #[test]
+    fn nested_home_below_the_account_home_runs_and_stays_sealed() {
+        if std::process::Command::new("bwrap")
+            .args(["--ro-bind", "/", "/", "true"])
+            .status()
+            .map_or(true, |s| !s.success())
+        {
+            assert!(std::env::var("OXA_REQUIRE_BWRAP").map_or(true, |v| v != "1"));
+            return;
+        }
+        let env = TestEnv::new();
+        let real = env.root().join("acct188");
+        let home = real.join("priv/home");
+        let work = real.join("priv/work");
+        env.write("acct188/priv/work/ok.txt", "WORKSPACE_OK");
+        env.write("acct188/priv/home/.ssh/id", "PRIVATE_NESTED");
+        env.write("acct188/.netrc", "PRIVATE_REAL");
+        let run = |cmd: &str| {
+            let mut sp = spec(&work, false);
+            sp.command = cmd.into();
+            let mut argv = bwrap_args_homes(&sp, &home, &Layout::default(), Some(&real));
+            argv.retain(|x| x != "--die-with-parent");
+            let o = std::process::Command::new("bwrap").args(&argv).output().unwrap();
+            (
+                o.status.code(),
+                String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).into_owned(),
+            )
+        };
+        let ok = run("cat ok.txt");
+        assert_eq!(ok.0, Some(0), "{}", ok.1);
+        assert!(ok.1.contains("WORKSPACE_OK"), "{}", ok.1);
+        let creds = run(&format!(
+            "cat '{0}/.ssh/id' '{1}/.netrc' 2>&1; true",
+            home.display(),
+            real.display()
+        ));
+        assert!(!creds.1.contains("PRIVATE"), "{}", creds.1);
+        for d in [&home, &real] {
+            let w = run(&format!("touch '{}/x'", d.display()));
+            assert_ne!(w.0, Some(0), "{}: {}", d.display(), w.1);
+        }
     }
 
     #[test]
