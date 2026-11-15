@@ -93,8 +93,5 @@ fn replacing_the_canonical_parent_cannot_redirect_a_prepared_read() {
     let original = home.0.join("original-location");
     fs::rename(allowed.parent().unwrap(), &original).unwrap();
     symlink(inside.parent().unwrap(), allowed.parent().unwrap()).unwrap();
-    assert_eq!(
-        prepared.read("openrouter").unwrap().expose(),
-        "synthetic-allowed"
-    );
+    assert_eq!(prepared.read("openrouter").unwrap().expose(), "synthetic-allowed");
 }
