@@ -649,3 +649,15 @@ fn output_that_says_still_running_is_no_exemption() {
     }
     assert!(polls[LIMIT as usize..].iter().all(|r| is_notice(r)), "{res:#?}");
 }
+
+/// Review on #441: `wait_s` 0 or null does not wait (parse_wait), so it is no exemption (#150).
+#[test]
+fn zero_or_null_wait_polls_still_trip_the_guard() {
+    for poll in [
+        r#"{"job":"job-1","wait_s":0}"#,
+        r#"{"job":"job-1","wait_s":null}"#,
+    ] {
+        let res = poll_run("sleep 100", poll, Arc::new(Hold));
+        assert!(res[1..].iter().any(|r| is_notice(r)), "{poll}: {res:#?}");
+    }
+}

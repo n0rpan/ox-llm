@@ -76,7 +76,10 @@ pub(crate) fn judge(
     // job's output, and a poll without `wait_s` still trips the guard (#150).
     if name == "bash"
         && args.get("job").is_some()
-        && args.get("wait_s").is_some()
+        && args
+            .get("wait_s")
+            .and_then(|w| w.as_f64())
+            .is_some_and(|w| w > 0.0)
         && text
             .lines()
             .next()
