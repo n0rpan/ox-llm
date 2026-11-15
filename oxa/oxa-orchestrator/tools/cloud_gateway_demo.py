@@ -8,6 +8,7 @@ from pathlib import Path
 import shlex
 import select
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -35,20 +36,21 @@ def mock_type(base, case):
             super().__init__()
 
         def unfinished_stream(self, handler):
-            handler.send_response(200)
-            handler.send_header("Content-Type", "text/event-stream")
-            handler.send_header("Connection", "close")
-            handler.end_headers()
-            event = {"type": "response.output_text.delta", "output_index": 0,
-                     "delta": "synthetic streaming work "}
-            chunk = ("event: response.output_text.delta\ndata: " + json.dumps(event) + "\n\n").encode()
-            handler.wfile.write(chunk)
-            handler.wfile.flush()
+            if case != "cancel-headers":
+                handler.send_response(200)
+                handler.send_header("Content-Type", "text/event-stream")
+                handler.send_header("Connection", "close")
+                handler.end_headers()
+                event = {"type": "response.output_text.delta", "output_index": 0,
+                         "delta": "synthetic streaming work "}
+                chunk = ("event: response.output_text.delta\ndata: " + json.dumps(event) + "\n\n").encode()
+                handler.wfile.write(chunk)
+                handler.wfile.flush()
             self.streaming.set()
             try:
                 while not self.release_worker.is_set():
                     ready, _, _ = select.select([handler.connection], [], [], 0.02)
-                    if ready and not handler.connection.recv(1, socket.MSG_PEEK):
+                    if ready and not handler.connection.recv(1, 0 if isinstance(handler.connection, ssl.SSLSocket) else socket.MSG_PEEK):
                         self.disconnected.set()
                         break
                     if case == "cancel-stream":
@@ -151,8 +153,9 @@ def run_isolated(args):
     gateway = args.gateway_root.resolve()
     # Import gateway code only after re-exec with the empty HOME/environment.
     sys.path[:0] = [str(gateway / "lab" / "src"), str(gateway / "lab" / "tests")]
+    import mock_cloud
     from mock_cloud import MockOpenAIResponses
-    from openai_api_stack import Stack
+    from openai_api_stack import Stack, FakeEngine
     from snapdragon_ai_lab.runtime import cloud, cloud_openai, request_ledger
     demo_file = Path(__file__).with_name("live_tui_demo.py")
     spec = importlib.util.spec_from_file_location("a2a_live_demo", demo_file)
@@ -179,7 +182,28 @@ def run_isolated(args):
             assert result.returncode == 0, result.stderr or result.stdout
             return json.loads(result.stdout)
         demo.request = cli_request
-    upstream = mock_type(MockOpenAIResponses, args.case)()
+    local_backend = None
+    certificate = None
+    if args.tls_upstream:
+        certificate, private_key = root / "mock-cert.pem", root / "mock-key.pem"
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                        "-keyout", str(private_key), "-out", str(certificate), "-days", "1",
+                        "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        private_key.chmod(0o600)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certificate, private_key)
+        server_type = mock_cloud.ThreadingHTTPServer
+        def owned_tls_server(*positional, **keywords):
+            server = server_type(*positional, **keywords)
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+            return server
+        with patch.object(mock_cloud, "ThreadingHTTPServer", owned_tls_server):
+            upstream = mock_type(MockOpenAIResponses, args.case)()
+        local_backend = FakeEngine()
+    else:
+        upstream = mock_type(MockOpenAIResponses, args.case)()
+    upstream_base = upstream.base.replace("http://", "https://", 1) if args.tls_upstream else upstream.base
     stack = None
     try:
         (demo.work / "input.txt").write_text("synthetic approved input\n")
@@ -201,23 +225,27 @@ def run_isolated(args):
         models = {
             alias: {
                 "kind": "remote/openai", "upstream_model": model,
-                "base_url": upstream.base + "/v1", "context_window": 200000,
+                "base_url": upstream_base + "/v1", "context_window": 200000,
                 "max_output": 1024,
                 "pricing": {"input_per_million": 1.0, "output_per_million": 1.0},
             }
             for alias, model in (("root-gpt", "gpt-6.1-sol"), ("worker-gpt", "gpt-6-luna"))
         }
-        stack = Stack(upstream.port, cloud={
+        stack = Stack(local_backend.port if local_backend else upstream.port, cloud={
             "enabled": True, "daily_budget_usd": 1.0,
             "secrets_file": str(keyfile), "models": models,
+            "orchestrator_disconnect_watch": args.disconnect_watch,
         }, environ={"LOCAL_AI_LEDGER_DIR": str(ledger)})
         connect = cloud.connection
 
         def owned_connection(item, key):
             url = urllib.parse.urlsplit(item["base_url"])
-            assert (url.scheme, url.hostname, url.port) == ("http", "127.0.0.1", upstream.port)
+            assert (url.scheme, url.hostname, url.port) == ("https" if args.tls_upstream else "http", "127.0.0.1", upstream.port)
             assert key == KEY
-            return connect(item, key)
+            connection, path, headers = connect(item, key)
+            if certificate is not None:
+                connection._context = ssl.create_default_context(cafile=str(certificate))
+            return connection, path, headers
 
         stack.enter_context(patch.object(cloud, "connection", owned_connection))
         profiles = demo.agent / "workers.json"
@@ -261,7 +289,7 @@ def run_isolated(args):
             and upstream.counts.get("gpt-6-luna", 0) == 2
         ))
         if args.case.startswith("cancel-"):
-            check_cancellation(demo, upstream, ledger, waiting, sid, root, args.case)
+            check_cancellation(demo, upstream, ledger, waiting, sid, root, args.case, args.disconnect_watch, args.tls_upstream)
             return
         with cloud_openai._HISTORY_LOCK:
             evicted = len(cloud_openai._HISTORY)
@@ -368,9 +396,11 @@ def run_isolated(args):
         if stack is not None:
             stack.close()
         upstream.close()
+        if local_backend is not None:
+            local_backend.close()
 
 
-def check_cancellation(demo, upstream, ledger, waiting, sid, root, case):
+def check_cancellation(demo, upstream, ledger, waiting, sid, root, case, watched, tls):
     assert upstream.streaming.wait(2), "worker never entered upstream streaming"
     demo.save_screen("gateway-working-screen.txt", lambda s: (
         "worker-gpt (cloud)" in s and "working" in s
@@ -392,7 +422,7 @@ def check_cancellation(demo, upstream, ledger, waiting, sid, root, case):
     closed = upstream.disconnected.wait(max(0, 3 - (time.monotonic() - before)))
     rows = [json.loads(line) for p in ledger.glob("requests-*.jsonl")
             for line in p.read_text().splitlines() if line]
-    evidence = {"case": case, "same_parent_paused": True, "worker_reaped": True,
+    evidence = {"case": case, "tls_upstream": tls, "same_parent_paused": True, "worker_reaped": True,
                 "parent_tokens": 40, "worker_tokens": None, "upstream_closed": closed,
                 "upstream_calls": len(upstream.requests), "gateway_rows": len(rows)}
     (root / "cancellation.json").write_text(json.dumps(evidence, indent=2) + "\n")
@@ -409,7 +439,10 @@ def check_cancellation(demo, upstream, ledger, waiting, sid, root, case):
     canceled = [r for r in rows if r.get("settled") == "reserved"]
     assert len(canceled) == 1, rows
     assert canceled[0]["model"] == "worker-gpt" and canceled[0]["usage_missing"]
+    assert all(r["status"] == 200 and r.get("error") is None for r in rows if r["settled"] == "usage")
     assert canceled[0]["cost_usd"] > 0
+    if watched:
+        assert canceled[0]["status"] == 499 and canceled[0]["error"] == "client_disconnected", canceled[0]
     assert KEY not in json.dumps(rows)
     assert len(upstream.requests) == 4, "cancellation triggered follow-on inference"
     demo.save_screen("gateway-canceled-screen.txt", lambda s: (
@@ -425,7 +458,7 @@ def check_cancellation(demo, upstream, ledger, waiting, sid, root, case):
         time.sleep(0.02)
     else:
         raise AssertionError("TUI exit deadline")
-    evidence.update(gateway_rows=len(rows), reserved_cost=True, tui_exit=0)
+    evidence.update(gateway_rows=len(rows), reserved_cost=True, disconnect_watch=watched, tui_exit=0)
     (root / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(evidence, indent=2))
 
@@ -434,10 +467,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gateway-root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--bin-dir", type=Path, default=Path(__file__).resolve().parents[2] / "target" / "debug")
-    parser.add_argument("--case", choices=("expiry", "compaction", "cancel-stream", "cancel-quiet"), default="expiry")
+    parser.add_argument("--case", choices=("expiry", "compaction", "cancel-stream", "cancel-quiet", "cancel-headers"), default="expiry")
+    parser.add_argument("--tls-upstream", action="store_true", help="use an owned verified TLS provider mock for cancellation")
+    parser.add_argument("--disconnect-watch", action="store_true", help="enable opt-in gateway disconnect watcher")
     parser.add_argument("--control-client", action="store_true", help="use the actual CLI control client")
     parser.add_argument("--isolated-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.tls_upstream and not args.case.startswith("cancel-"):
+        parser.error("--tls-upstream requires a cancellation case")
     if args.isolated_root is not None:
         run_isolated(args)
         return
@@ -458,6 +495,10 @@ def main():
                "--case", args.case]
     if args.control_client:
         command.append("--control-client")
+    if args.disconnect_watch:
+        command.append("--disconnect-watch")
+    if args.tls_upstream:
+        command.append("--tls-upstream")
     result = subprocess.run(command, env=env)
     print(f"Isolated gateway evidence: {root}")
     raise SystemExit(result.returncode)

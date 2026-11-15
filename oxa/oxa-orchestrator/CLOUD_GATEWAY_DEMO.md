@@ -127,6 +127,12 @@ adding mock heartbeats, waiting for the provider timeout, or converting the
 failure into an expected-success result. No provider implementation is changed by
 this diagnostic. It is not enabled as a passing CI test.
 
+The later [default-off disconnect supervision hook](CLOUD_CANCELLATION.md) addresses
+this failure for the shared OpenAI/OpenRouter transport. Add `--disconnect-watch`
+to the diagnostic to enable it in the isolated fixture. Default behavior and native
+Anthropic SDK forwarding remain separate. The hook includes automated gateway
+regressions, including quiet TLS upstream and completed-usage race checks.
+
 ## Remaining acceptance
 
 This is a reproducible loopback integration demo, not #94's full working evening.

@@ -44,6 +44,13 @@ def _reply(self, st, status, message, code, error=None, param='model'):
 
 def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, failed=False):
     """Record one forwarded request.  Missing usage charges the reserved worst case."""
+    if (st.watcher is not None and st.client_gone()
+            and error in (None, 'client_disconnected', 'cloud_stream_error', 'cloud_unavailable', 'cloud_interrupted')):
+        complete = meter.finish is not None and meter.prompt is not None and meter.completion is not None
+        if not complete:
+            status, error, failed = 499, 'client_disconnected', True
+        elif error in (None, 'client_disconnected'):
+            status, error, failed = st.backend_status or status, None, False
     row = meter.row(item, secret)
     cloud.conservative_cost(row, hold, failed=failed)
     if st.led is not None:
@@ -112,6 +119,10 @@ def forward(self, st):
     try:
         connection, path, headers = cloud.connection(item, key)
         connection.request('POST', path, body=data, headers=headers)
+        # Operator opt-in: the existing EOF watcher requires a plain downstream socket.
+        if (cloud.settings(value).get('orchestrator_disconnect_watch') is True
+                and connection.sock is not None and not ctl.lan_share.is_tls(self.connection)):
+            st.watcher = ctl.ClientDisconnect(self.connection, connection.sock).start()
         response = connection.getresponse()
         st.backend_status = response.status
         content_type, full_type = _safe_headers(response)
@@ -200,7 +211,7 @@ def forward(self, st):
         _finish(self, st, item, meter, response.status, hold=hold, secret=key)
     except cloud.CloudError as error:
         _finish(self, st, item, meter, error.status, error.code, hold, key, failed=True)
-        if started:
+        if started or (st.watcher is not None and st.client_gone()):
             self.close_connection = True
         else:
             self.json_reply(error.status, {'error': {'message': cloud.redact(str(error), key),
@@ -208,12 +219,14 @@ def forward(self, st):
                                                    'code': error.code}})
     except Exception:  # every transport/protocol failure retains its conservative charge
         _finish(self, st, item, meter, 503, 'cloud_unavailable', hold, key, failed=True)
-        if not started:
+        if not started and not (st.watcher is not None and st.client_gone()):
             self.json_reply(503, {'error': {'message': 'The cloud provider is unavailable.',
                                             'type': 'cloud_error', 'param': 'model', 'code': 'cloud_unavailable'}})
         else:
             self.close_connection = True
     finally:
+        if st.watcher is not None:
+            st.watcher.stop()
         if hold is not None and not hold.settled:
             try:
                 _finish(self, st, item, meter, 503, 'cloud_interrupted', hold, key, failed=True)
