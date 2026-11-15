@@ -187,8 +187,9 @@ Translation rules:
 - The same cloud-off default, `OXC_OFFLINE` refusal, secrets file, daily budget and ledger rows
   apply as for OpenRouter.
 
-Install the SDK in the controller's Python environment with
-`python3 -m pip install 'anthropic==0.125.0'` (or the package extra `snapdragon-local-ai-lab[cloud]`).
+Install the SDK in the controller's Python environment (the one that runs the installer, e.g. the
+venv of the quickstart) with
+`python -m pip install 'anthropic==0.125.0'` (or the package extra `snapdragon-local-ai-lab[cloud]`).
 If it is missing, an Anthropic request answers `503` with `cloud_sdk_unavailable`; local models
 are unaffected.
 

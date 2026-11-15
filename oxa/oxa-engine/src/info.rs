@@ -66,8 +66,12 @@ pub fn parse_info_for(
         })
         .unwrap_or_default();
 
+    // A cloud-only controller (`engine_mode: "none"`) still reports its default local alias as
+    // `model`; no engine runs it, so the first listed (remote) model is the one to use.
+    let no_engine = status.get("engine_mode").and_then(Value::as_str) == Some("none");
     let model = ["/model", "/model_alias"]
         .iter()
+        .filter(|_| !(no_engine && !ids.is_empty()))
         .find_map(|p| {
             status
                 .pointer(p)
@@ -577,6 +581,15 @@ pub(crate) fn http_error(status: u16, body: &[u8]) -> OxaError {
     http_error_with(status, body, None)
 }
 
+/// The gateway's 503 `cloud_error` codes that are configuration problems (lab runtime/cloud.py
+/// and cloud_anthropic.py). The transient ones (`cloud_unavailable`, `cloud_upstream_error`,
+/// `cloud_stream_error`, `cloud_interrupted`) are deliberately absent.
+const PERMANENT_CLOUD_REFUSALS: &[&str] = &[
+    "cloud_credentials_unavailable",
+    "cloud_sdk_unavailable",
+    "cloud_ledger_unavailable",
+];
+
 /// [`http_error`] with the response's `Retry-After` (seconds). A 503 (the controller's queue-full
 /// reply, `local_backend_busy`, or the engine's own `unavailable_error`) is `engine_busy`; its
 /// message names `HTTP 503` and, with a `Retry-After`, `retry after <n> s`, which the core's
@@ -592,6 +605,21 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
         .and_then(|e| e.get("message").and_then(Value::as_str))
         .map(str::to_string)
         .unwrap_or_else(|| text.trim().chars().take(300).collect());
+    if status == 503 {
+        if let Some(code) = err
+            .filter(|e| e.get("type").and_then(Value::as_str) == Some("cloud_error"))
+            .and_then(|e| e.get("code").and_then(Value::as_str))
+            .filter(|c| PERMANENT_CLOUD_REFUSALS.contains(c))
+        {
+            // A cloud gateway setup refusal (no key, no SDK, ledger unusable): not the engine's
+            // queue, and a retry will not fix it. Show its own message. Every other 503
+            // (transient or unknown `cloud_*` codes) keeps `HTTP 503` so the core retries it.
+            return OxaError::new(
+                codes::ENGINE_HTTP,
+                format!("the cloud gateway refused the request ({code}): {detail}"),
+            );
+        }
+    }
     status_error(status, &detail, retry_after)
 }
 
@@ -660,6 +688,74 @@ fn status_error(status: u16, detail: &str, retry_after: Option<u32>) -> OxaError
         );
     }
     OxaError::new(codes::ENGINE_HTTP, msg)
+}
+
+#[cfg(test)]
+mod cloud_refusal_tests {
+    use super::http_error_with;
+    use oxa_proto::codes;
+
+    fn body(code: &str, message: &str) -> Vec<u8> {
+        format!(r#"{{"error":{{"message":"{message}","type":"cloud_error","param":null,"code":"{code}"}}}}"#)
+            .into_bytes()
+    }
+
+    /// A cloud gateway refusal that retrying cannot fix (no key, no SDK) shows the gateway's own
+    /// message; it is not the "engine is busy" text and carries no `HTTP 5xx` the core retries.
+    #[test]
+    fn a_cloud_503_shows_the_servers_message_not_engine_busy() {
+        for code in ["cloud_credentials_unavailable", "cloud_sdk_unavailable"] {
+            let message = "The Anthropic SDK is not installed on this host.";
+            let e = http_error_with(503, &body(code, message), None);
+            assert_eq!(e.code, codes::ENGINE_HTTP, "{code}");
+            assert!(
+                e.message.contains(message) && e.message.contains(code),
+                "{}",
+                e.message
+            );
+            assert!(!e.message.contains("HTTP 503"), "{}", e.message);
+            assert!(
+                e.hint.as_deref().is_none_or(|h| !h.contains("busy")),
+                "{:?}",
+                e.hint
+            );
+        }
+    }
+
+    /// Transient and unknown `cloud_*` 503s keep the `HTTP 503` marker, which
+    /// oxa-core/src/retry.rs `http_status` reads (`engine_http` with status >= 500 is retryable).
+    #[test]
+    fn transient_or_unknown_cloud_503_keeps_the_http_marker_for_retry() {
+        for code in [
+            "cloud_upstream_error",
+            "cloud_unavailable",
+            "cloud_stream_error",
+            "cloud_interrupted",
+            "cloud_xyz",
+        ] {
+            let e = http_error_with(503, &body(code, "try later"), None);
+            assert_eq!(e.code, codes::ENGINE_BUSY, "{code}");
+            assert!(e.message.contains("HTTP 503"), "{code}: {}", e.message);
+        }
+        let e = http_error_with(503, br#"{"error":{"message":"x","type":"cloud_error"}}"#, None);
+        assert!(e.message.contains("HTTP 503"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_ledger_refusal_is_permanent() {
+        let e = http_error_with(503, &body("cloud_ledger_unavailable", "m"), None);
+        assert!(!e.message.contains("HTTP 503"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_plain_503_is_still_engine_busy() {
+        let e = http_error_with(
+            503,
+            br#"{"error":{"message":"queue full","type":"local_backend_busy"}}"#,
+            None,
+        );
+        assert_eq!(e.code, codes::ENGINE_BUSY);
+    }
 }
 
 #[cfg(test)]

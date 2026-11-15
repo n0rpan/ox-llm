@@ -139,9 +139,10 @@ class StatusMixin:
                     expected = json.loads((ctl.CONFIG.parent / 'model.json').read_text()).get('expected_bytes')
             except (OSError, ValueError, KeyError):
                 pass
-            return {**({'flash_cache': dict(self.flash_cache_status)} if self.flash_cache_status else {}),
+            return {**({'engine_mode': 'none'} if self.cloud_only() else {}),
+                    **({'flash_cache': dict(self.flash_cache_status)} if self.flash_cache_status else {}),
                     **({'stop_pending': self.stop_pending} if self.stop_pending is not None else {}),
-                    'state': self.state, 'validated': self.eligible(config),
+                    'state': self.state, 'validated': self.cloud_only() or self.eligible(config),
                     'download_state': setup.get('state', 'preparing'),
                     'downloaded_bytes': downloaded, 'expected_bytes': expected,
                     'model': config.get('model_alias', 'qwen-local'),

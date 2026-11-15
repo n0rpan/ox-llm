@@ -77,6 +77,9 @@ pub struct FakeOpts {
     /// Wave D D4: publish every `model_limits` row as a cloud model of this provider
     /// (`openrouter` / `anthropic`), with the canonical remote capability block. Default `None`.
     pub remote: Option<&'static str>,
+    /// A cloud-only controller: the status carries `engine_mode: "none"` (no local engine) while
+    /// `model` still names the default local alias. Default `false`.
+    pub no_engine: bool,
 }
 
 /// When one chat request ran on the fake (ENG-001 / ENG-002): milliseconds since the server
@@ -220,6 +223,7 @@ impl Default for FakeOpts {
             drop_reasoning: false,
             omit_cached_tokens: false,
             remote: None,
+            no_engine: false,
         }
     }
 }
@@ -511,6 +515,14 @@ fn handle(mut stream: TcpStream, sh: &Shared) -> io::Result<()> {
 /// output limit: the controller publishes none, so neither does the fake (`max_output` is
 /// never reported).
 fn controller_status(o: &FakeOpts) -> Value {
+    let mut status = controller_status_base(o);
+    if o.no_engine {
+        status["engine_mode"] = json!("none");
+    }
+    status
+}
+
+fn controller_status_base(o: &FakeOpts) -> Value {
     json!({
         "state": "ready", "validated": true, "download_state": "ready",
         "model": o.model, "selected_model": o.model, "selection_error": null,

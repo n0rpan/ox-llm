@@ -160,6 +160,11 @@ class ModelsMixin:
         except (OSError, ValueError):
             raise Unavailable('Local model setup is still being prepared.')
 
+    def cloud_only(self):
+        """#70: the install has no local engine (`"cloud_only": true` in the runtime config)."""
+        try: return json.loads(ctl.CONFIG.read_text()).get('cloud_only') is True
+        except (OSError, ValueError, AttributeError): return False
+
     def eligible(self, config):
         if classic_beta.is_retired(config): return False
         if config.get('backend_kind') == oxe_runtime.KIND:
@@ -173,6 +178,8 @@ class ModelsMixin:
 
     def models(self):
         value = json.loads(ctl.CONFIG.read_text())
+        if value.get('cloud_only') is True:  # no local rows; only the remote catalog
+            return [cloud.row(item) for item in cloud.models(value)] if cloud.enabled(value) and not cloud.offline() else []
         aliases = [value.get('model_alias', 'qwen-local'), *value.get('profiles', {})]
         if value.get('profiles'): aliases.insert(0, 'qwen-local')
         rows = [{'id': alias, 'object': 'model', 'created': 0, 'owned_by': 'local',

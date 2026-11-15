@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -366,6 +367,138 @@ class TrackedExtracts(unittest.TestCase):
                 code, hits, _ = er.export([str(path)], out, {"ticket": path.name[4:7]}, deny_words=words)
                 self.assertEqual(code, 0, "%s: %s" % (path.name, sorted({r for r, _ in hits})))
                 self.assertEqual(er.scan_paths([str(out)], words), [])
+
+
+class RepoAllowFileTests(unittest.TestCase):
+    ALLOW = Path(er.__file__).with_name("tree-scan.allow")
+
+    def scan(self, word, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "planted.txt"
+            f.write_text(text)
+            return subprocess.run([sys.executable, er.__file__, "scan", "--profile", "tree", "--allow-file", str(self.ALLOW),
+                                   "--base", tmp, "--deny-word", word, str(f)], capture_output=True, text=True)
+
+    def test_explicit_deny_word_survives_the_repo_allow_file(self):
+        for word in ("plantedword", "n0rpan"):
+            r = self.scan(word, f"hello {word} again\n")
+            self.assertNotEqual(r.returncode, 0, (word, r.stdout, r.stderr))
+            self.assertIn("deny-word", r.stdout + r.stderr)
+
+    # -- helpers -----------------------------------------------------------
+    def contexts(self):
+        return er.load_allow_contexts(self.ALLOW)
+
+    def owner_handle(self):
+        """The real repository owner handle, read from LICENSE (never a literal here)."""
+        match = re.search(r"Copyright \(c\) \d{4} [^\n]+ \((?P<owner>[^)\s]+)\)",
+                          (ROOT / "LICENSE").read_text(encoding="utf-8"))
+        self.assertIsNotNone(match)
+        return match.group("owner")
+
+    LICENSE_TEXT = "MIT License\n\nCopyright (c) 2026 Ada Example (%s)\n"
+
+    def scan_host_hits(self, text, deny, base, name="README.md", license=True):
+        if license:
+            (Path(base) / "LICENSE").write_text(self.LICENSE_TEXT % "zorblax")
+        path = Path(base) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return [h for h in er.scan_paths([base], deny, (), self.contexts(), base) if h[1] == "host-name"]
+
+    # (a) the exemption is bound to the approved context, not to the file -------------
+    def test_context_exemption_stays_in_approved_contexts(self):
+        deny = {"hostlike-word": "host-name"}
+        with tempfile.TemporaryDirectory() as tmp:
+            # Plain prose still reports the host.
+            self.assertTrue(self.scan_host_hits("ssh to hostlike-word for the build\n", deny, tmp))
+            # A copyright-shaped line only exempts the word in the owner slot.
+            self.assertTrue(self.scan_host_hits(
+                "Copyright (c) 2026 hostlike-word Nordström (ownerword)\n", deny, tmp))
+            # The word outside the parentheses is still reported.
+            self.assertTrue(self.scan_host_hits(
+                "Copyright (c) 2026 Oscar Nordström (ownerword) then hostlike-word\n", deny, tmp))
+
+    # (b) the approved shapes are exempt when the owner handle is the denied word ---------
+    def test_context_exemption_approves_the_owner_positions(self):
+        handle = self.owner_handle()
+        deny = {handle: "host-name"}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "LICENSE").write_text(self.LICENSE_TEXT % handle)
+            (root / "README.md").write_text(
+                "Copyright (c) 2026 Oscar Nordström (%s)\n"
+                "download https://github.com/%s/ox-llm/releases\n"
+                "gh attestation verify x --repo %s/ox-llm\n"
+                "gh attestation verify x --signer-workflow %s/ox-llm/.github/workflows/release.yml\n"
+                % (handle, handle, handle, handle))
+            (root / "patches").mkdir()
+            (root / "patches" / "llama-x.patch").write_text(
+                "From: Oscar Nordstrom <13300531+%s@users.noreply.github.com>\n" % handle)
+            hits = [h for h in er.scan_paths([tmp], deny, (), self.contexts(), tmp) if h[1] == "host-name"]
+            self.assertEqual(hits, [])
+
+    # (b2) the exemption is bound to the approved VALUE, not only to the slot --------
+    def test_other_word_in_owner_slot_is_still_flagged(self):
+        deny = {"quuxhost": "host-name", "zorblax": "host-name"}
+        cases = [
+            ("THIRD_PARTY_NOTICES", "Build host (quuxhost)\n"),
+            ("README.md", "Copyright (c) 2026 Ada Example (quuxhost)\n"),
+            ("README.md", "see https://github.com/quuxhost/ox-llm/releases\n"),
+            ("README.md", "gh attestation verify x --repo quuxhost/ox-llm\n"),
+            ("patches/llama-x.patch", "From: A <1+quuxhost@users.noreply.github.com>\n"),
+        ]
+        for name, text in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertTrue(self.scan_host_hits(text, deny, tmp, name), (name, text))
+
+    def test_approved_owner_passes_in_each_context_shape(self):
+        deny = {"zorblax": "host-name"}
+        cases = [
+            ("THIRD_PARTY_NOTICES", "Ada Example (ZorBlax)\n"),
+            ("README.md", "Copyright (c) 2026 Ada Example (zorblax)\n"),
+            ("README.md", "see https://github.com/zorblax/ox-llm/releases\n"),
+            ("README.md", "gh attestation verify x --repo zorblax/ox-llm\n"),
+            ("patches/llama-x.patch", "From: A <1+zorblax@users.noreply.github.com>\n"),
+        ]
+        for name, text in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(self.scan_host_hits(text, deny, tmp, name), [], (name, text))
+
+    def test_missing_or_ambiguous_license_fails_closed(self):
+        deny = {"zorblax": "host-name"}
+        text = "Copyright (c) 2026 Ada Example (zorblax)\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(self.scan_host_hits(text, deny, tmp, license=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "LICENSE").write_text("MIT License\n\nNo copyright line here.\n")
+            self.assertTrue(self.scan_host_hits(text, deny, tmp, license=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "LICENSE").write_text(
+                "Copyright (c) 2026 Ada Example (zorblax)\nCopyright (c) 2026 Bo Example (quuxhost)\n")
+            self.assertTrue(self.scan_host_hits(text, deny, tmp, license=False))
+
+    # (c) the real files from the old whole-file entries scan clean for host-name ---------
+    def test_real_owner_files_scan_clean_for_host_name(self):
+        handle = self.owner_handle()
+        deny = {handle: "host-name"}
+        files = [ROOT / name for name in (
+            "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "docs/DEPENDENCIES.md",
+            "README.md", "docs/RELEASING.md", "docs/REPRODUCE.md")]
+        files += sorted((ROOT / "patches").glob("llama-*.patch"))
+        files = [p for p in files if p.is_file()]
+        self.assertTrue(files)
+        hits = [h for h in er.scan_paths([str(p) for p in files], deny, (), self.contexts(), str(ROOT))
+                if h[1] == "host-name"]
+        self.assertEqual(hits, [])
+
+    def test_repo_allow_file_has_no_global_word_except_yoga(self):
+        words = set()
+        for line in self.ALLOW.read_text().splitlines():
+            parts = line.split("\t")
+            if parts[0].strip() == "!allow-word":
+                words.add(parts[1].strip().lower())
+        self.assertEqual(words, {"yoga"})
 
 
 if __name__ == "__main__":

@@ -290,6 +290,7 @@ class ShareBase(unittest.TestCase):
                       begin=Mock(return_value=None), begin_queued=Mock(return_value=None),
                       end=Mock(return_value=None), prepare_prefix=Mock(return_value=None),
                       eligible=Mock(return_value=True), current_prefix_key=None, cache={},
+                      cloud_only=Mock(return_value=False),
                       cleanup=Mock(), mu=threading.Lock(), active=0)
         fields.update(overrides)
         return SimpleNamespace(**fields)

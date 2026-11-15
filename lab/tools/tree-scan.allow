@@ -25,6 +25,17 @@ benchmarks/classic/normal13.py	secret-assignment	Placeholder key "local-only" fo
 benchmarks/classic/normal13/opencode-base.synthetic.json	secret-assignment	Placeholder key in a synthetic config.
 patches/llama-*.patch	email	Patch author lines with GitHub noreply addresses; author lines keep the name (owner decision O-23).
 patches/llama-*.patch	user-name	Patch author lines; author lines keep the name (owner decision O-23).
+LICENSE	host-name	Copyright line: the parenthesised handle after the owner name (O-23).	Copyright \(c\) \d{4} [A-Za-zÅÄÖåäö]+(?: [A-Za-zÅÄÖåäö]+)? \((?P<owner>[^)\s]+)\)
+NOTICE	host-name	Copyright line: the parenthesised handle after the owner name (O-23).	Copyright \(c\) \d{4} [A-Za-zÅÄÖåäö]+(?: [A-Za-zÅÄÖåäö]+)? \((?P<owner>[^)\s]+)\)
+THIRD_PARTY_NOTICES	host-name	Attribution lines: the parenthesised handle after the owner name (O-23).	[A-Za-zÅÄÖåäö]+(?: [A-Za-zÅÄÖåäö]+)? \((?P<owner>[^)\s]+)\)
+docs/DEPENDENCIES.md	host-name	Copyright line: the parenthesised handle after the owner name (O-23).	copyright [A-Za-zÅÄÖåäö]+(?: [A-Za-zÅÄÖåäö]+)? \((?P<owner>[^)\s]+)\)
+README.md	host-name	Copyright line: the parenthesised handle after the owner name (O-23).	Copyright \(c\) \d{4} [A-Za-zÅÄÖåäö]+(?: [A-Za-zÅÄÖåäö]+)? \((?P<owner>[^)\s]+)\)
+README.md	host-name	Repository owner path segment in GitHub release URLs (O-23).	github\.com/(?P<owner>[^/\s]+)/ox-llm
+README.md	host-name	Repository owner path segment in gh attestation --repo/--signer-workflow arguments (O-23).	--(?:repo|signer-workflow) (?P<owner>[^/\s]+)/ox-llm
+docs/RELEASING.md	host-name	Repository owner path segment in the GitHub repository URL (O-23).	github\.com/(?P<owner>[^/\s]+)/ox-llm
+docs/REPRODUCE.md	host-name	Repository owner path segment in the GitHub release URL (O-23).	github\.com/(?P<owner>[^/\s]+)/ox-llm
+docs/REPRODUCE.md	host-name	Repository owner path segment in gh attestation --repo/--signer-workflow arguments (O-23).	--(?:repo|signer-workflow) (?P<owner>[^/\s]+)/ox-llm
+patches/llama-*.patch	host-name	GitHub noreply author address: the owner path segment after the numeric id (O-23).	<\d+\+(?P<owner>[^@\s]+)@users\.noreply\.github\.com>
 LICENSE	user-name	Copyright line (owner decision O-23).
 NOTICE	user-name	Copyright line (owner decision O-23).
 THIRD_PARTY_NOTICES	user-name	"Modified by" attribution lines (owner decision O-23).
@@ -54,3 +65,4 @@ benchmarks/o119/c3_user_snapshots.py	secret-assignment	Per-launch random credent
 tests/test_ab_tooling_controls.py	secret-assignment	O170 control: a synthetic placeholder search-key variable must be stripped from server and client env; no real key.
 tests/test_prereview_fixes.py	secret-assignment	O170 control: a synthetic placeholder search-key variable must be stripped from the oxa client env; no real key.
 tests/test_cloud_openai.py	secret-assignment	D8 T3 review: synthetic credential rotation literal for the loopback OpenAI key boundary test; no real credential. Exact test path and rule only.
+tests/test_cloud_only_no_engine.py	secret-assignment	Synthetic fake credential written to a fixture secrets file in a temp dir; invented key as test input, no real credential.

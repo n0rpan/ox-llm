@@ -98,3 +98,38 @@ fn offline_refuses_a_remote_model() {
     assert!(stderr.contains("offline mode is on"), "{stderr}");
     assert!(server.requests().is_empty(), "nothing reached the mock");
 }
+
+/// Cloud-only oxc (no engine): the status still names the default local alias, `/v1/models`
+/// lists only remote rows. oxa must pick a remote model, send no prefix preload and no warning.
+#[test]
+fn a_cloud_only_controller_gets_a_remote_model_and_no_preload() {
+    let env = TestEnv::new();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("hello")],
+        FakeOpts {
+            n_ctx: 8_000,
+            model: "qwen-local".to_string(),
+            remote: Some("anthropic"),
+            no_engine: true,
+            models: vec![FakeModel {
+                alias: "anthropic/claude-haiku-5-5".to_string(),
+                cap: 200_000,
+                max_output: Some(32_000),
+                caps: None,
+            }],
+            ..FakeOpts::default()
+        },
+    )
+    .expect("fake controller");
+    let out = run(&env, &server.url(), &["--no-session", "-p", "hi"], &[]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains("warning") && !stderr.contains("preload"),
+        "{stderr}"
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "no preload request: {requests:?}");
+    assert_eq!(requests[0].model, "anthropic/claude-haiku-5-5");
+}
