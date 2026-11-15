@@ -2351,7 +2351,7 @@ mod toolcall_stream_tests {
                 name: "t".into(),
             },
         );
-        let mut push = |vm: &mut ViewModel, d: &str| {
+        let push = |vm: &mut ViewModel, d: &str| {
             apply_delta(
                 vm,
                 &MessageDelta::ToolcallDelta {
