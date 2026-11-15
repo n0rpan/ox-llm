@@ -368,6 +368,31 @@ class TrackedExtracts(unittest.TestCase):
                 self.assertEqual(er.scan_paths([str(out)], words), [])
 
 
+class RepoAllowFileTests(unittest.TestCase):
+    ALLOW = Path(er.__file__).with_name("tree-scan.allow")
+
+    def scan(self, word, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "planted.txt"
+            f.write_text(text)
+            return subprocess.run([sys.executable, er.__file__, "scan", "--profile", "tree", "--allow-file", str(self.ALLOW),
+                                   "--base", tmp, "--deny-word", word, str(f)], capture_output=True, text=True)
+
+    def test_explicit_deny_word_survives_the_repo_allow_file(self):
+        for word in ("plantedword", "n0rpan"):
+            r = self.scan(word, f"hello {word} again\n")
+            self.assertNotEqual(r.returncode, 0, (word, r.stdout, r.stderr))
+            self.assertIn("deny-word", r.stdout + r.stderr)
+
+    def test_repo_allow_file_has_no_global_word_except_yoga(self):
+        words = set()
+        for line in self.ALLOW.read_text().splitlines():
+            parts = line.split("\t")
+            if parts[0].strip() == "!allow-word":
+                words.add(parts[1].strip().lower())
+        self.assertEqual(words, {"yoga"})
+
+
 if __name__ == "__main__":
     unittest.main()
 

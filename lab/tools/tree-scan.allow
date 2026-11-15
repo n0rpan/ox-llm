@@ -2,7 +2,6 @@
 # Columns are separated by TABs: GLOB, RULE, REASON. Every line needs a reason. Keep this list short.
 !allow-exact	Yoga	Product name of the test laptop.
 !allow-word	yoga	The host name of the development machine equals the product name, which is part of file and device-tree names.
-!allow-word	n0rpan	The owner's public handle (copyright, author and repository-owner lines, owner decision O-23) is also the host name of a development machine; a host named like the public handle must not fail the tree scan. The owner-identity test still confines the handle to those lines.
 tests/test_export_receipt.py	*	Scanner test: invented paths, addresses and keys are the test input.
 tests/test_mac_reproduce.py	*	Scanner test: invented paths, addresses and keys are the test input.
 tests/test_backup_sanitize.py	*	Scanner test: invented paths, addresses and keys are the test input (incl. plain-literal synthetic dotted credential controls, P63; export-excluded).
@@ -27,6 +26,14 @@ benchmarks/classic/normal13.py	secret-assignment	Placeholder key "local-only" fo
 benchmarks/classic/normal13/opencode-base.synthetic.json	secret-assignment	Placeholder key in a synthetic config.
 patches/llama-*.patch	email	Patch author lines with GitHub noreply addresses; author lines keep the name (owner decision O-23).
 patches/llama-*.patch	user-name	Patch author lines; author lines keep the name (owner decision O-23).
+LICENSE	host-name	Copyright line carries the owner's public handle (O-23).
+NOTICE	host-name	Copyright line carries the owner's public handle (O-23).
+THIRD_PARTY_NOTICES	host-name	Attribution lines carry the owner's public handle (O-23).
+docs/DEPENDENCIES.md	host-name	Copyright line carries the owner's public handle (O-23).
+README.md	host-name	Public repository owner in GitHub URLs and the copyright line (O-23).
+docs/RELEASING.md	host-name	Public repository owner in a GitHub URL.
+docs/REPRODUCE.md	host-name	Public repository owner in a GitHub URL.
+patches/llama-*.patch	host-name	Patch author lines with the GitHub noreply address of the owner's public handle (O-23).
 LICENSE	user-name	Copyright line (owner decision O-23).
 NOTICE	user-name	Copyright line (owner decision O-23).
 THIRD_PARTY_NOTICES	user-name	"Modified by" attribution lines (owner decision O-23).
