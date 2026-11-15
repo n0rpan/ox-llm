@@ -854,6 +854,7 @@ fn mise_cache_and_state_are_writable() {
     let env = TestEnv::new();
     env.write("home/.cache/mise/gh/keep", "");
     env.write("home/.local/state/mise/tracked-configs/keep", "");
+    env.write("home/.local/state/mise/trusted-configs/keep", "");
     let home = env.home();
     let l = Layout::build(&LayoutInputs {
         home: home.clone(),
@@ -865,5 +866,12 @@ fn mise_cache_and_state_are_writable() {
         allow_home_write: false,
     });
     assert!(l.write.contains(&home.join(".cache/mise")), "{:?}", l.write);
-    assert!(l.write.contains(&home.join(".local/state/mise")), "{:?}", l.write);
+    assert!(
+        l.write.contains(&home.join(".local/state/mise/tracked-configs")),
+        "{:?}",
+        l.write
+    );
+    // Trust records stay unwritable: no writable bind may be, or contain, `trusted-configs`.
+    let trusted = home.join(".local/state/mise/trusted-configs");
+    assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
 }
