@@ -5,7 +5,7 @@
 
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
-use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
+use oxa_fake::{Fault, ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_proto::{
     codes, Access, AgentEvent, CancelToken, CompactReason, CompactionResult, Decision, Engine, EventMessage,
     ExecResult, ExecSpec, Level, MessageDelta, Mode, OxaError, Part, Policy, Sandbox, StopReason,
@@ -784,6 +784,34 @@ fn exit_codes() {
     assert!(
         parsed.iter().any(|r| r["type"] == "agent_settled"),
         "the settled record is still written"
+    );
+}
+
+/// A spent daily cloud budget (gateway 429) is a failed run with its own exit code, in print
+/// and json mode, and the reason is on stderr.
+#[test]
+fn budget_exhausted_has_its_own_exit_code() {
+    let fault = || {
+        Arc::new(ScriptedEngine::new(vec![ScriptTurn::fault(Fault::Http {
+            status: 429,
+            body: "The daily cloud budget is exhausted.".to_string(),
+        })]))
+    };
+    let env = TestEnv::new();
+    let engine = fault();
+    let mut session = open(&env, &engine);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = run_print(&mut session, prompt("ok"), &mut out, &mut err).unwrap();
+    assert_eq!(code, 3);
+    assert!(String::from_utf8_lossy(&err).contains("budget"), "{err:?}");
+
+    let env = TestEnv::new();
+    let engine = fault();
+    let mut session = open(&env, &engine);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    assert_eq!(
+        run_json(&mut session, prompt("ok"), &mut out, &mut err).unwrap(),
+        3
     );
 }
 
