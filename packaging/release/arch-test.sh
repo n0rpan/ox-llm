@@ -11,6 +11,8 @@ sha256sum -c SHA256SUMS
 export SOURCE_DATE_EPOCH
 export OX_SOURCE_COMMIT
 export OX_SOURCE_SHA256=$(sha256sum "ox-llm-$OX_SOURCE_COMMIT.tar.gz" | cut -d' ' -f1)
+# release-build names the archive with the tag (ox-llm-v0.2.0-...); the PKGBUILD uses pkgver.
+cp ox-llm-v*-linux-$(uname -m).tar.gz "ox-llm-0.2.0-linux-$(uname -m).tar.gz"
 export OX_BINARY_SHA256=$(sha256sum "ox-llm-0.2.0-linux-$(uname -m).tar.gz" | cut -d' ' -f1)
 # Verify the binary package and then a real source rebuild (including check()).
 for variant in ox-llm-bin ox-llm; do
