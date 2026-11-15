@@ -1,33 +1,46 @@
-# Opt-in cloud gateway building blocks
+# In-process Rust gateway
 
-Default features are empty; no listener or installer is enabled. Enable only the
-needed modules. Policy stages consume trusted gateway facts; pricing and atomic
-settlement are separate work. Python remains the behavior reference.
+This library belongs to the oxa workspace and shares its lockfile and build
+profiles. Default features are empty. Workspace membership starts no listener,
+engine or runtime, and does not install another binary.
 
-- `cloud-only`: catalog contracts.
-- `policy`: policy contracts.
-- `secrets`: secrets contracts.
+The controller is built for small footprint, local use and large tasks. Its
+tests protect requests/streams, admission budgets, private accounting, secret
+handling and clean refusals. Python wording and CLI compatibility are not goals.
+The existing `policy` and `secrets` features are independently selectable.
+The `pricing` and `accounting` features supply cache-aware charges and atomic
+per-process reservations. Share a daily Budget across requests and retain each
+hold until its writer callback commits the private settlement row. Failed writes
+block further spending. Cross-process admission is a later series step.
 
-Build all examples with `cargo build --locked --manifest-path
-oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
-`/usr/bin/python3 oxc-gateway/conformance/run.py --python`. Native checks use
-`/usr/bin/python3 oxc-gateway/conformance/run.py --native-dir /absolute/cargo-target/debug/examples`.
-Every `test_<name>.py` requires its executable `<name>_contract`; missing native
-drivers fail before the suite starts. Source mode clears inherited native
-overrides. Both modes run in the required gateway job, including catalog parity;
-the manual workflow uses the same commands.
+```sh
+cargo check --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --no-default-features
+cargo test --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features --profile ci
+```
 
-Source cases use private HOME/network namespaces and synthetic data. No real
-API, credential, SDK material or sign-in is used. Every opt-in module forbids
-unsafe code. Preserve all present feature/module/example entries when merging
-companion slices. Full cloud-only forwarding/accounting remains incomplete.
+Tests use synthetic credential files and run in the required CI job with private
+HOME, cleared environment and an isolated network. No real credentials or cloud
+calls are used. The shared workspace's gateway job also runs formatting and
+strict Clippy; its result is included in `gate`.
 
-Main’s `secrets` module and its explicit native contracts are preserved. The
-symlink-loop case validates the two complete interpreter-specific safe refusals
-from Python 3.12/3.13; all other secret errors remain exact. Credentials are read
-from owner-only files and are never logged or included in errors.
+The `oxa-cli` example `gateway_footprint` measures the actual oxa executable with
+the existing owned HTTP fixture in a separate process. Run it inside the test
+sandbox, passing an absolute binary path:
 
-`Catalog::from_config` takes a trusted normalized public-price snapshot keyed
-by upstream ID. This keeps file IO outside metadata; valid/no configured router
-prices receive the overlay, while invalid configured prices stay invalid. Source
-contracts seed an owner-only public cache and make no public network calls.
+```sh
+cargo run --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli \
+  --example gateway_footprint --profile ci -- /absolute/path/to/oxa
+```
+
+It emits five samples of idle/streaming RSS and threads, startup/request time to
+the first text, and the overhead against a direct request with the same body.
+Results contain numbers only. This initial slice does not link the gateway into
+the production binary; consumer slices must measure their own footprint.
+
+The `cloud-only` feature provides a typed, immutable catalog. Construct validated
+`catalog::Model` values from trusted user settings, then create a `Catalog` with
+explicit `Access`. Discovery borrows `ModelInfo` values with each model's token
+limits; private upstream IDs and endpoints are excluded from those values and
+Debug output. Disabled/offline catalogs hide and refuse models. An explicit
+unknown model is refused rather than silently selecting another provider.
+Catalog construction reads no credential or ledger and starts no engine.
