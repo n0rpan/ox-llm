@@ -3,7 +3,7 @@
 use crate::descriptions::{self, errors};
 use oxa_proto::{Access, ExecSpec, Mode, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// `bash {command, timeout?}`: runs through `ToolCtx::sandbox` (never directly). `writable` = mode is not Plan; `net` = [`net_for`] (O-167(b): the sandbox network by mode and `oxa.sandbox.net`; `access` keeps `net: false`). Output streams to `live`; the result text is the merged output plus pi's exit-code / timeout lines; no timing text (W4). If `sandbox.check()` fails the result is that error (`is_error`). `ToolOutput::ui` = `{"exit": n|null, "timedOut": bool}`. Environment: `ToolCtx::env`.
 #[derive(Debug, Clone)]
@@ -163,6 +163,28 @@ pub(crate) fn diet_output(text: &str) -> String {
     format!("{}{tail}", out.join("\n"))
 }
 
+/// A note for `No such file or directory` on a path under the real home that is outside the
+/// workspace: the sandbox hides unbound home paths, so the path may exist on the host.
+/// Only the workspace (`cwd`) counts as visible: neither `ToolCtx` nor `Sandbox` exposes the
+/// bound/extra paths, so a path under such a bind still gets the note.
+pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Option<String> {
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return None;
+    }
+    let prefix = format!("{home}/");
+    for line in output.lines().filter(|l| l.contains("No such file or directory")) {
+        for tok in line.split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ':')) {
+            if tok.starts_with(&prefix) && !Path::new(tok).starts_with(cwd) {
+                return Some(format!(
+                    "path outside the sandbox (not mounted): {tok}; only the workspace and listed binds are visible"
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// O-167(b): the network of a bash command. `sandbox_net` is the sandbox's answer
 /// (`oxa.sandbox.net`, default on, and never on while offline). Per mode: plan = never (a
 /// read-only mode does not gain the network silently); workspace = `sandbox_net`; ask =
@@ -229,8 +251,13 @@ impl Tool for BashTool {
             output
         };
         let ui = json!({ "exit": res.exit, "timedOut": res.timed_out });
+        let note = std::env::var("HOME")
+            .ok()
+            .and_then(|h| unmounted_home_note(&output, &h, cx.cwd));
         let shown = if output.is_empty() {
             errors::BASH_NO_OUTPUT.to_string()
+        } else if let Some(n) = note {
+            format!("{}\n[{n}]", output.trim_end())
         } else {
             output.clone()
         };
@@ -364,6 +391,19 @@ echo '\''a'\'''"#
         let mut streamed = String::new();
         let out = BashTool::new().run(&args, &cx, &mut |t| streamed.push_str(t));
         (out, streamed)
+    }
+
+    #[test]
+    fn note_for_unmounted_home_path_only() {
+        let cwd = Path::new("/home/u/proj");
+        let msg = "touch: cannot touch '/home/u/lab/probe': No such file or directory\n";
+        let note = unmounted_home_note(msg, "/home/u", cwd).expect("note");
+        assert!(note.contains("path outside the sandbox (not mounted): /home/u/lab/probe"));
+        let inside = "cat: /home/u/proj/x: No such file or directory\n";
+        assert!(unmounted_home_note(inside, "/home/u", cwd).is_none());
+        let other = "cat: /etc/x: No such file or directory\n";
+        assert!(unmounted_home_note(other, "/home/u", cwd).is_none());
+        assert!(unmounted_home_note("/home/u/lab/p: Permission denied", "/home/u", cwd).is_none());
     }
 
     #[test]
