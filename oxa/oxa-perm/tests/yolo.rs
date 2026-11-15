@@ -1,7 +1,7 @@
 //! O-182, #202: `auto` (the old YOLO) and `yolo` (full access). At `auto` every question the
 //! policy would ask is answered with "allow" and counted, and the safety floor does not move: the
 //! deny-list, git's files and plan mode still deny, a write to `.oxa` still asks. At `yolo` the
-//! floor is lifted too, except plan mode.
+//! sandbox of bash is lifted, but the floor of the file tools stands.
 
 use oxa_fake::TestEnv;
 use oxa_perm::{deny_reasons, ModePolicy, PathGuard};
@@ -238,34 +238,45 @@ fn a_child_started_with_yolo_allows_a_write_and_still_asks_for_oxa() {
     assert_eq!(switch.approved(), 1, "the asked and the denied are not counted");
 }
 
-/// #202: `yolo` is full access: the deny-list, git's files, the project's `.oxa`, the home's
-/// startup files and every question of the table are allowed outside plan mode.
+/// #202: `yolo` answers every question of the table outside plan mode, but the mandatory
+/// safety floor stands (review of #314): the deny-list and git's files are refused, and the
+/// files that run outside the sandbox later (`.oxa`, the home's startup files) still ask.
 #[test]
-fn yolo_is_full_access_outside_plan_mode() {
+fn yolo_allows_the_table_but_keeps_the_floor() {
     let env = TestEnv::new();
     let switch = YoloSwitch::new(Autonomy::Yolo);
     let p = policy(&env, &switch);
     let cwd = env.work();
     let home = env.home();
-    let mut accesses = asked_in_workspace(&env);
-    for path in [
-        home.join(".ssh/id_ed25519"),
-        home.join(".aws/credentials"),
-        env.agent_dir().join("settings.json"),
-        cwd.join(".git/hooks/pre-commit"),
-        cwd.join(".git/config"),
-        cwd.join(".oxa/settings.json"),
-        home.join(".bashrc"),
-    ] {
-        accesses.push(Access::Write(path.clone()));
-        accesses.push(Access::Read(path));
-    }
     for mode in [Mode::Workspace, Mode::Ask] {
-        for a in &accesses {
+        for a in &asked_in_workspace(&env) {
+            assert_eq!(p.decide(mode, a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
+        }
+        for path in [
+            home.join(".ssh/id_ed25519"),
+            home.join(".aws/credentials"),
+            env.agent_dir().join("settings.json"),
+        ] {
+            for a in [Access::Read(path.clone()), Access::Write(path.clone())] {
+                assert_eq!(
+                    p.decide(mode, &a, &cwd),
+                    Decision::Deny(deny_reasons::SENSITIVE),
+                    "{a:?} in {mode:?}"
+                );
+            }
+        }
+        for path in [cwd.join(".git/hooks/pre-commit"), cwd.join(".git/config")] {
             assert_eq!(
-                p.decide(mode, a, &cwd),
-                Decision::Allow,
-                "{a:?} in {mode:?} under yolo"
+                p.decide(mode, &Access::Write(path.clone()), &cwd),
+                Decision::Deny(deny_reasons::GIT_PROTECTED),
+                "{path:?} in {mode:?}"
+            );
+        }
+        for path in [cwd.join(".oxa/settings.json"), home.join(".bashrc")] {
+            assert_eq!(
+                p.decide(mode, &Access::Write(path.clone()), &cwd),
+                Decision::Ask,
+                "{path:?} in {mode:?}"
             );
         }
     }
@@ -320,9 +331,10 @@ fn auto_after_yolo_restores_the_floor() {
     let switch = YoloSwitch::new(Autonomy::Yolo);
     let p = policy(&env, &switch);
     let cwd = env.work();
-    let key = Access::Read(env.home().join(".ssh/id_ed25519"));
-    assert_eq!(p.decide(Mode::Workspace, &key, &cwd), Decision::Allow);
+    let out = Access::Read(env.root().join("elsewhere/notes.txt"));
+    assert_eq!(p.decide(Mode::Workspace, &out, &cwd), Decision::Allow);
     switch.set_level(Autonomy::Auto);
+    let key = Access::Read(env.home().join(".ssh/id_ed25519"));
     assert_eq!(
         p.decide(Mode::Workspace, &key, &cwd),
         Decision::Deny(deny_reasons::SENSITIVE)

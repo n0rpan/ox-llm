@@ -36,11 +36,11 @@ On top of the table, the permission mode decides who answers the questions:
 |---|---|---|---|
 | `standard` | the table above asks you | in the sandbox | deny-list and protected paths apply |
 | `auto` (default) | none: what would be asked is allowed and counted | in the sandbox | deny-list and protected paths apply |
-| `yolo` | none | **without the sandbox**, in your own environment | **not** limited by the deny-list or the protected paths |
+| `yolo` | none | **without the sandbox**, in your own environment | deny-list and protected paths apply |
 | `plan` | as in the table | read-only commands | no writes |
 
 - `auto` is the default of a fresh install. It removes the prompts and nothing else: the bash sandbox and its deny-list stay, the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks.
-- `yolo` is full access. Bash runs as you, with your files, credentials and network; the file tools can read and write anything your account can. Use it only in a session you watch, on a machine and project you can restore. With `--offline` bash still has no network.
+- `yolo` is full access. Bash runs as you, with your files, credentials and network; the file tools still refuse the deny-list and git's protected files, and a write to `.oxa` or a startup file still asks. Use it only in a session you watch, on a machine and project you can restore. With `--offline` bash still has no network.
 - Set the mode at start with `--standard`, `--auto`, `--yolo` or `--permission-mode <mode>` (one run), or with the `permissions.defaultMode` setting (`standard`, `auto`, `yolo` or `plan`). `/mode <mode> --save` and "make default" in the `/mode` picker write that setting. A project's settings can lower the mode (for example to `standard`) but never raise it.
 - In a session: `/mode` opens the picker, `/mode <mode>` switches, `/auto` switches to auto, `/yolo [on|off]` or Ctrl+Alt+O toggles yolo (off returns to the mode before it), and Alt+M cycles standard, auto and yolo. `/mode workspace` and `/mode ask` still set the table mode.
 - The status bar always shows the mode. In yolo it shows a flame, `YOLO full access` and the count of auto-approved actions, the frames turn to the theme's hot colours, and the first switch in a session prints a one-line notice. In print, JSON and RPC mode the mode is written to stderr at start.

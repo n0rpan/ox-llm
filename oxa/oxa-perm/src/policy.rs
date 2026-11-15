@@ -286,23 +286,8 @@ impl ModePolicy {
     /// The decision of every level but full access: the deny-list and the protected paths,
     /// then the table, the grants and the `auto` answer.
     fn decide_floor(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
-        if let Access::Read(p) | Access::Write(p) = a {
-            let abs = crate::paths::normalize(p, cwd);
-            // B3: the deny-list beats the mode, the cwd and every grant.
-            if self.guard.denies(&abs) {
-                return Decision::Deny(deny_reasons::SENSITIVE);
-            }
-            // B4: files that run outside the sandbox later: never (git) or ask, no grant.
-            if let Access::Write(_) = a {
-                let protected = protected_write(&abs, cwd)
-                    .or_else(|| self.guard.protects_home_file(&abs, cwd).then_some(false));
-                match (protected, mode) {
-                    (Some(true), _) => return Decision::Deny(deny_reasons::GIT_PROTECTED),
-                    (Some(false), Mode::Plan) => return Decision::Deny(deny_reasons::PLAN_WRITE),
-                    (Some(false), _) => return Decision::Ask,
-                    (None, _) => {}
-                }
-            }
+        if let Some(d) = self.mandatory(mode, a, cwd) {
+            return d;
         }
         // Grants only turn Ask into Allow; a Deny from the table always stands.
         match table(mode, a, cwd) {
@@ -317,13 +302,41 @@ impl ModePolicy {
             d => d,
         }
     }
+
+    /// The mandatory floor (B3 deny-list, B4 protected files): it holds at every autonomy
+    /// level, `yolo` included.
+    fn mandatory(&self, mode: Mode, a: &Access, cwd: &Path) -> Option<Decision> {
+        if let Access::Read(p) | Access::Write(p) = a {
+            let abs = crate::paths::normalize(p, cwd);
+            // B3: the deny-list beats the mode, the cwd and every grant.
+            if self.guard.denies(&abs) {
+                return Some(Decision::Deny(deny_reasons::SENSITIVE));
+            }
+            // B4: files that run outside the sandbox later: never (git) or ask, no grant.
+            if let Access::Write(_) = a {
+                let protected = protected_write(&abs, cwd)
+                    .or_else(|| self.guard.protects_home_file(&abs, cwd).then_some(false));
+                match (protected, mode) {
+                    (Some(true), _) => return Some(Decision::Deny(deny_reasons::GIT_PROTECTED)),
+                    (Some(false), Mode::Plan) => return Some(Decision::Deny(deny_reasons::PLAN_WRITE)),
+                    (Some(false), _) => return Some(Decision::Ask),
+                    (None, _) => {}
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Policy for ModePolicy {
     fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
-        // #202: full access (yolo) outside plan mode: no prompt, no deny-list, no protected
-        // path. What would not have been allowed is counted as auto-approved.
+        // #202: full access (yolo) outside plan mode: no prompt from the table. The mandatory
+        // floor (deny-list, protected files) still holds. What would not have been allowed is
+        // counted as auto-approved.
         if let Some(switch) = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan) {
+            if let Some(d) = self.mandatory(mode, a, cwd) {
+                return d;
+            }
             // The floor counts what its table asked (the `auto` answer); the rest is counted here.
             if self.decide_floor(mode, a, cwd) != Decision::Allow {
                 switch.count();
