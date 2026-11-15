@@ -345,7 +345,7 @@ fn steer_and_follow_up_fixtures() {
     );
 
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
 }
 
 /// agent_settled aborted
@@ -382,7 +382,7 @@ fn abort_fixture() {
     );
 
     let (code, records) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(code, 130);
     assert!(has_settled(&records, true), "agent_settled with aborted true");
 }
 
@@ -633,7 +633,7 @@ fn model_commands_fixtures() {
     assert!(unknown["error"].as_str().unwrap().contains("Model not found"));
 
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
 }
 
 /// set/cycle/levels
@@ -743,7 +743,10 @@ fn parse_error_response_keeps_running() {
     );
 
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(
+        code, 1,
+        "reader-side rejection is retained in the terminal outcome"
+    );
 }
 
 /// correlation id
@@ -805,7 +808,10 @@ fn prompt_while_busy_needs_streaming_behavior() {
     let idle = rpc.call("st2", json!({"type": "set_auto_retry", "enabled": false}));
     assert_eq!(idle["success"], true);
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(
+        code, 1,
+        "reader-side rejection is retained in the terminal outcome"
+    );
 }
 
 /// Unit check on the helpers the server exposes: the error envelope keeps the id.

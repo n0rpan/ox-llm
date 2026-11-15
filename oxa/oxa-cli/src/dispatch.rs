@@ -17,7 +17,7 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json, run_print, serve, Out};
+use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
 use oxa_sandbox::{Bwrap, NoSandbox};
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
 use std::io::{BufReader, Read, Write};
@@ -71,6 +71,33 @@ pub fn choose_mode(a: &Args, stdin_is_tty: bool, stdout_is_tty: bool) -> RunMode
 
 pub(crate) const USAGE_HINT: &str = "Run `oxa --help` for the list of options.";
 
+fn headless_argument_error(argv: &[String], stdin_tty: bool, stdout_tty: bool) -> bool {
+    let standalone = parse_args(&argv[..argv.len().min(1)], &[])
+        .ok()
+        .is_some_and(|args| args.subcommand.is_some());
+    let flags: Vec<&str> = argv
+        .iter()
+        .map(String::as_str)
+        .take_while(|arg| *arg != "--")
+        .collect();
+    let single_action = flags.iter().any(|arg| {
+        ["--export", "--list-models", "--help", "-h", "--version", "-v"]
+            .iter()
+            .any(|flag| *arg == *flag || arg.starts_with(&format!("{flag}=")))
+    });
+    if standalone || single_action {
+        return false;
+    }
+    !stdin_tty
+        || !stdout_tty
+        || flags
+            .iter()
+            .any(|arg| matches!(*arg, "-p" | "--print" | "--mode=rpc" | "--mode=json"))
+        || flags
+            .windows(2)
+            .any(|pair| pair[0] == "--mode" && matches!(pair[1], "rpc" | "json"))
+}
+
 /// The whole program. Returns the exit code; never panics on user error.
 ///
 /// Order: parse args (two passes for extension flags) -> `--help` / `--version` ->
@@ -92,7 +119,14 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
 
     let a = match parse_args(argv, &[]) {
         Ok(a) => a,
-        Err(e) => return report(&mut *stderr, &e),
+        Err(e) => {
+            let headless = headless_argument_error(argv, stdin_is_tty, stdout_is_tty);
+            return if headless {
+                finish_outcome(Err(e), &mut *stderr)
+            } else {
+                report(&mut *stderr, &e)
+            };
+        }
     };
     if a.help {
         let flags = help_extension_flags(&a, env, &cwd, &mut *stderr);
@@ -103,6 +137,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         let _ = writeln!(stdout, "oxa {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
+    let headless = a.subcommand.is_none()
+        && a.export.is_none()
+        && a.list_models.is_none()
+        && choose_mode(&a, stdin_is_tty, stdout_is_tty) != RunMode::Interactive;
+    let report = |err: &mut dyn Write, error: &OxaError| {
+        if headless {
+            finish_outcome(Err(error.clone()), err)
+        } else {
+            report(err, error)
+        }
+    };
     // A long flag oxa does not know may belong to an extension (`registerFlag`): the session
     // paths resolve it once the extensions are loaded (`build_hooks`). The paths that load no
     // extension (subcommands, `--export`, `--list-models`) refuse it here.
@@ -231,7 +276,11 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         Ok(p) => p,
         Err(e) if e.code == FORK_DECLINED => {
             let _ = writeln!(stdout, "Aborted.");
-            return 0;
+            return if headless {
+                finish_outcome(Ok(oxa_core::RunOutcome::Interrupted), &mut *stderr)
+            } else {
+                0
+            };
         }
         Err(e) => return report(&mut *stderr, &e),
     };
@@ -920,7 +969,7 @@ fn run_headless(
     } = prep;
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
-        Err(e) => return report(stderr, &e),
+        Err(e) => return finish_outcome(Err(e), stderr),
     };
     notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
@@ -936,14 +985,14 @@ fn run_headless(
         }
     }
     let result = match mode {
-        RunMode::Json => run_json(&mut session, prompts, stdout, stderr),
-        _ => run_print(&mut session, prompts, stdout, stderr),
+        RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
+        _ => run_print_outcome(&mut session, prompts, stdout, stderr),
     };
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
     write_notices(stderr, ui.notes);
-    finish(result, stderr)
+    finish_outcome(result, stderr)
 }
 
 /// `--mode rpc`: the protocol owns stdin and stdout; notices go to stderr.
@@ -964,13 +1013,13 @@ fn run_rpc(
     } = prep;
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
-        Err(e) => return report(stderr, &e),
+        Err(e) => return finish_outcome(Err(e), stderr),
     };
     notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    finish(serve(session, dirs, input, out), stderr)
+    finish_outcome(serve_outcome(session, dirs, input, out), stderr)
 }
 
 /// The interactive terminal: the first prompt and the further messages come from the command
@@ -1445,6 +1494,19 @@ fn report(err: &mut dyn Write, e: &OxaError) -> i32 {
     };
     let _ = writeln!(err, "Error: {line}");
     exit_code(e)
+}
+
+fn finish_outcome(result: Result<oxa_core::RunOutcome, OxaError>, err: &mut dyn Write) -> i32 {
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            report(err, &error);
+            oxa_core::RunOutcome::from_error(&error)
+        }
+    };
+    let _ = writeln!(err, "{}", outcome.record());
+    let _ = err.flush();
+    outcome.exit_code()
 }
 
 fn finish(result: Result<i32, OxaError>, err: &mut dyn Write) -> i32 {
