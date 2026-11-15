@@ -1,4 +1,4 @@
-//! B1: the summary request and the rebased head. Owner: task B1. Signatures below are frozen; bodies are yours.
+//! B1: the summary request and the rebased head.
 // adapted from pi packages/coding-agent/src/core/compaction/compaction.ts (findCutPoint, prepareCompaction)
 use crate::prompt::{self, SummaryKind};
 use crate::{CompactPolicy, When};

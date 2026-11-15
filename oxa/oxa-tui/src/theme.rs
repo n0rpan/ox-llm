@@ -1,4 +1,4 @@
-//! B13: theme loading (pi theme JSON), colour conversion and terminal-colour detection. Owner: task B13. Signatures below are frozen; bodies are yours.
+//! B13: theme loading (pi theme JSON), colour conversion and terminal-colour detection.
 // ported from pi packages/coding-agent/src/modes/interactive/theme/{theme.ts,theme-schema.ts,system-theme.ts} and packages/tui/src/terminal-colors.ts
 //
 // The `Theme` value itself (tokens, SGR emission) is architect-owned in `theme_core.rs`.

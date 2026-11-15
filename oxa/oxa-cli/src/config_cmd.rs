@@ -1,4 +1,4 @@
-//! D13: `oxa config`. Owner: task D13. Signatures below are frozen; bodies are yours.
+//! D13: `oxa config`.
 use oxa_config::{schema, Dirs, Settings};
 use oxa_proto::{codes, OxaError};
 use serde_json::Value as Json;

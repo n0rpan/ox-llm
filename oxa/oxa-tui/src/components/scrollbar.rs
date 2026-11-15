@@ -1,4 +1,4 @@
-//! B12: scrollbar geometry and drawing. Owner: task B12. Signatures below are frozen; bodies are yours.
+//! B12: scrollbar geometry and drawing.
 // ported from pi packages/tui/src/components/scroll-view.ts
 use crate::Theme;
 

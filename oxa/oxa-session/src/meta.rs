@@ -1,4 +1,4 @@
-//! B14: session metadata, search and sort for the picker. Owner: task B14. Signatures below are frozen; bodies are yours.
+//! B14: session metadata, search and sort for the picker.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (buildSessionInfo) and modes/interactive/components/session-selector-search.ts
 use crate::{SessionHeader, SessionMeta, SessionRef};
 use oxa_proto::{Entry, EntryBody, Role};

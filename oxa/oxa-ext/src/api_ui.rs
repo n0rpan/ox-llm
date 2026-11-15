@@ -1,4 +1,4 @@
-//! F1: `ctx.ui` widgets (status, widget, footer, header, title, working message, autocomplete providers). Owner: task F1. Signatures below are frozen; bodies are yours.
+//! F1: `ctx.ui` widgets (status, widget, footer, header, title, working message, autocomplete providers).
 // ported from pi packages/coding-agent/src/core/extensions/types.ts (ExtensionUIContext)
 //
 // The setters are JS functions added to `ctx.ui` through `globalThis.__oxa_ui_extend(ui)`, which

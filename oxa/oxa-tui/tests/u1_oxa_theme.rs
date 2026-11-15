@@ -1,5 +1,5 @@
 //! U1 acceptance tests: the OXA themes (Omarchy palette reader and palette -> theme mapping).
-//! Owner: task U1. Public API only (plus std). Temp directories are unique per test and removed
+//! Public API only (plus std). Temp directories are unique per test and removed
 //! afterwards; no Omarchy file is ever touched.
 
 use oxa_tui::{

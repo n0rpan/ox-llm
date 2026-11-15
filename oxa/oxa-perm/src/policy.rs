@@ -1,4 +1,4 @@
-//! A10: the mode x access policy table. Owner: task A10. Signatures below are frozen; bodies are yours.
+//! A10: the mode x access policy table.
 use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
     home_protected_paths, is_home_or_above, sensitive_paths, GIT_PROTECTED_IN_CWD, PROTECTED_IN_CWD,
