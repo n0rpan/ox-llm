@@ -117,6 +117,8 @@ pub const ELIDE_MIN_TOKENS: u32 = 1000;
 /// prompt::elided_tool_result(its bytes))`; the message itself stays (its call keeps a result,
 /// pi's pairing) and the summary request, built before the cut, saw the whole result. Results
 /// up to [`ELIDE_MIN_TOKENS`] are always kept (a tiny `keepRecentTokens` elides nothing small).
+/// #459: an older `read` result that a later call of the tail supersedes (see
+/// [`superseded_read`]) is replaced by `prompt::superseded_read(path)` whatever its size.
 /// A pure function of the tail and the policy (W4).
 pub fn tail_elisions(
     tail: &[WireMsg],
@@ -129,9 +131,61 @@ pub fn tail_elisions(
         .filter(|(_, m)| m.role == Role::Tool)
         .filter_map(|(k, m)| {
             let c = m.content.as_deref()?;
+            if let Some(path) = superseded_read(tail, k) {
+                return Some((k, prompt::superseded_read(&path)));
+            }
             (count(c) > limit).then(|| (k, prompt::elided_tool_result(c.len())))
         })
         .collect()
+}
+
+/// The call (name, parsed args) that the tool result at `k` answers: the nearest earlier
+/// assistant call with its id.
+fn call_of(tail: &[WireMsg], k: usize) -> Option<(&str, serde_json::Value)> {
+    let id = tail[k].tool_call_id.as_deref()?;
+    let call = tail[..k]
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::Assistant)
+        .find_map(|m| m.tool_calls.iter().find(|c| c.id == id))?;
+    let args = serde_json::from_str(&call.args_raw).ok()?;
+    Some((call.name.as_str(), args))
+}
+
+/// #459: `Some(path)` when the tool result at `k` is a `read` of `path` that a later call of
+/// the tail supersedes: a `read` of the same page (same `offset` and `limit`) or an `edit` /
+/// `write` of the same path.
+fn superseded_read(tail: &[WireMsg], k: usize) -> Option<String> {
+    let (name, args) = call_of(tail, k)?;
+    if name != "read" {
+        return None;
+    }
+    let path = args.get("path")?.as_str()?;
+    let page = (args.get("offset"), args.get("limit"));
+    let later = tail[k + 1..]
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .flat_map(|m| &m.tool_calls)
+        .filter_map(|c| {
+            Some((
+                c.name.as_str(),
+                serde_json::from_str::<serde_json::Value>(&c.args_raw).ok()?,
+            ))
+        });
+    for (n, a) in later {
+        if a.get("path").and_then(|p| p.as_str()) != Some(path) {
+            continue;
+        }
+        let hit = match n {
+            "edit" | "write" => true,
+            "read" => (a.get("offset"), a.get("limit")) == page,
+            _ => false,
+        };
+        if hit {
+            return Some(path.to_string());
+        }
+    }
+    None
 }
 
 /// `true` for the user message that carries a compaction summary at the head of a wire.

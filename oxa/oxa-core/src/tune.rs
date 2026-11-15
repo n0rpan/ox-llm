@@ -24,6 +24,8 @@ const SMALL_PAGE_LINES: u32 = 200;
 const PAGE_BYTES: u32 = 8192;
 /// R5: the kept tail of a compaction on a small context, in tokens (when the user sets none).
 pub(crate) const SMALL_KEEP_TOKENS: u32 = 2000;
+/// #459: the kept tail of a remote model, in percent of its context window.
+pub(crate) const REMOTE_KEEP_PERCENT: u64 = 10;
 /// R5: the least output cap of a small context, in bytes.
 const SMALL_CAP_FLOOR: u32 = 2048;
 
@@ -123,8 +125,15 @@ pub(crate) fn output_cap(st: &SessionState) -> usize {
 /// R5: the kept tail in tokens. On a small context it keeps [`SMALL_KEEP_TOKENS`] unless the
 /// user set `compaction.keepRecentTokens` (or the model override of it) in some layer
 /// (`user_set`); otherwise `keep` is returned.
-pub(crate) fn keep_tokens(n_ctx: u32, user_set: bool, keep: u32) -> u32 {
-    if is_small(n_ctx) && !user_set {
+///
+/// #459: a remote model (no local prefill cost) keeps [`REMOTE_KEEP_PERCENT`] of its window
+/// when that is more than `keep` and the user set none.
+pub(crate) fn keep_tokens(n_ctx: u32, remote: bool, user_set: bool, keep: u32) -> u32 {
+    if user_set {
+        keep
+    } else if remote {
+        keep.max((u64::from(n_ctx) * REMOTE_KEEP_PERCENT / 100) as u32)
+    } else if is_small(n_ctx) {
         SMALL_KEEP_TOKENS
     } else {
         keep
@@ -228,8 +237,13 @@ mod tests {
 
     #[test]
     fn keep_tokens_table() {
-        assert_eq!(keep_tokens(16_384, false, 4000), 2000);
-        assert_eq!(keep_tokens(16_384, true, 4000), 4000);
-        assert_eq!(keep_tokens(49_152, false, 4000), 4000);
+        assert_eq!(keep_tokens(16_384, false, false, 4000), 2000);
+        assert_eq!(keep_tokens(16_384, false, true, 4000), 4000);
+        assert_eq!(keep_tokens(49_152, false, false, 4000), 4000);
+        // #459: a remote model keeps a share of its window, never less than the setting.
+        assert_eq!(keep_tokens(200_000, true, false, 4000), 20_000);
+        assert_eq!(keep_tokens(16_384, true, false, 4000), 4000);
+        assert_eq!(keep_tokens(200_000, true, true, 4000), 4000);
+        assert_eq!(keep_tokens(200_000, false, false, 4000), 4000);
     }
 }

@@ -1840,7 +1840,8 @@ pub(crate) fn policy_for(info: &EngineInfo, settings: &Settings) -> CompactPolic
 /// is ignored (see [`override_summary_model`]).
 ///
 /// R5: on a small context the kept tail is [`crate::tune::SMALL_KEEP_TOKENS`] unless
-/// `compaction.keepRecentTokens` is set in a layer or by the model's override.
+/// `compaction.keepRecentTokens` is set in a layer or by the model's override; #459: a remote
+/// model keeps a share of its window instead (see [`crate::tune::keep_tokens`]).
 pub(crate) fn policy_for_model(info: &EngineInfo, settings: &Settings, model: &str) -> CompactPolicy {
     let comp = settings.compaction();
     let entry = settings
@@ -1858,6 +1859,7 @@ pub(crate) fn policy_for_model(info: &EngineInfo, settings: &Settings, model: &s
         || entry.is_some_and(|e| e.get("keepRecentTokens").is_some());
     let keep = crate::tune::keep_tokens(
         info.n_ctx,
+        info.caps.remote,
         keep_set,
         num("keepRecentTokens", comp.keep_recent_tokens),
     );

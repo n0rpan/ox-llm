@@ -175,6 +175,12 @@ pub fn elided_tool_result(bytes: usize) -> String {
     )
 }
 
+/// #459: the text that replaces an older `read` result in the kept tail of a compaction when
+/// the tail reads the same page of `path` again or edits/writes it later.
+pub fn superseded_read(path: &str) -> String {
+    format!("[older read of {path} dropped at compaction: a later read or edit below supersedes it.]")
+}
+
 /// How custom instructions (`/compact <instr>`, `/tree` focus) extend an instruction.
 pub const ADDITIONAL_FOCUS: &str = "\n\nAdditional focus: ";
 
