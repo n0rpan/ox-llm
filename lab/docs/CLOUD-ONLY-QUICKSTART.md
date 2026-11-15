@@ -29,12 +29,12 @@ instead. Without it, the installer writes a user unit (`oxc.service`, change it 
 `--unit-name`) and runs `systemctl --user daemon-reload` and `enable --now`.
 
 The installer writes `<config-dir>/runtime.json`, the launcher `<prefix>/bin/oxc-controller`
-and a copy of the controller code under `<prefix>/share/oxc/runtime`. It uses a built-in
-catalog of cloud models unless you pass `--models-file` (format: [CLOUD-MODELS.md](CLOUD-MODELS.md#catalog)).
+and a copy of the controller code under `<prefix>/share/oxc/runtime`. It uses the catalog in
+`docs/cloud-models.json` of the source tree unless you pass `--models-file` (format: [CLOUD-MODELS.md](CLOUD-MODELS.md#catalog)).
 An existing `runtime.json` is kept; `--force` replaces it. `--oxa-binary PATH` also copies a
 built oxa to `<prefix>/bin/oxa`.
 
-The built-in catalog's prices are only an estimate for the budget. Check them against your
+The default catalog's prices are only an estimate for the budget. Check them against your
 provider, or pass your own `--models-file`.
 
 ## 2. Install the Anthropic SDK (only for `anthropic/*` models)

@@ -87,6 +87,13 @@ class CloudOnlyInstall(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse((self.root / 'config2/runtime.json').exists())
 
+    def test_no_default_catalog_file_asks_for_models_file(self):
+        self.args[self.args.index('--models-file'):self.args.index('--models-file') + 2] = []
+        with patch.object(cloud_install, 'DEFAULT_CATALOG', self.root / 'absent.json'):
+            code, _ = self.run_install(['--no-systemd'])
+        self.assertEqual(code, 1)
+        self.assertFalse((self.root / 'config/runtime.json').exists())
+
     def test_default_catalog_and_next_step(self):
         self.args[self.args.index('--models-file'):self.args.index('--models-file') + 2] = []
         out = io.StringIO()
