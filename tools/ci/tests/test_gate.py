@@ -48,6 +48,20 @@ class Gate(unittest.TestCase):
         for name in ('changes', 'scans'):
             self.assertNotRegex(job_block(self.checks, name), r'(?m)^    if:', name)
 
+    def test_gateway_commands_use_existing_manifests_and_conformance_directories(self):
+        root = WORKFLOWS.parents[1]
+        manual = (WORKFLOWS / 'cloud-gateway.yml').read_text()
+        for name, block in [('gate', job_block(self.checks, 'gateway')),
+                            ('manual', job_block(manual, 'conformance'))]:
+            manifests = re.findall(r'--manifest-path (\S+)', block)
+            suites = re.findall(r'discover -s (\S+)', block)
+            self.assertTrue(manifests, name)
+            self.assertTrue(suites, name)
+            for path in manifests:
+                self.assertTrue((root / path).is_file(), (name, path))
+            for path in suites:
+                self.assertTrue((root / path).is_dir(), (name, path))
+
     def test_caches_restore_only_and_save_only_on_main(self):
         for path in sorted(WORKFLOWS.glob('*.y*ml')):
             text = path.read_text()

@@ -37,7 +37,11 @@ def classify(paths, full_event=False):
     for path in paths:
         if documentation(path):
             continue
-        components = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
+        if path.startswith('oxa/oxc-gateway/'):
+            # Keep oxa coverage and test both consumers of the shared gateway.
+            components = {'oxa', 'cli', 'gateway'}
+        else:
+            components = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
         for component in components or OUTPUTS:
             changed[component] = True
     md = any(Path(path).suffix.lower() in ('.md', '.rst') for path in paths)

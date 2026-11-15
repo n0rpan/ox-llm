@@ -17,6 +17,7 @@ class Paths(unittest.TestCase):
         for directory, components in (('engine', {'engine'}), ('oxa', {'oxa'}),
                                       ('oxc', {'lab', 'cli', 'gateway'}), ('oxc-rs', {'cli'}),
                                       ('conformance', {'cli'}), ('oxc-gateway', {'gateway'}),
+                                      ('oxa/oxc-gateway', {'oxa', 'cli', 'gateway'}),
                                       ('fuzz/oxa', {'oxa'}), ('fuzz/oxe', {'engine'})):
             for suffix in ('src/code.rs', 'tests/test_unit.py', 'Cargo.lock'):
                 with self.subTest(directory=directory, suffix=suffix):
@@ -120,6 +121,7 @@ class GitPaths(unittest.TestCase):
     def test_merge_group_classifies_only_the_group_diff(self):
         self.assertEqual(self.group(b'oxa/oxa-core/src/a.rs\0fuzz/oxa/smoke.rs\0'), {'oxa'})
         self.assertEqual(self.group(b'oxc-gateway/src/a.rs\0oxc-rs/src/a.rs\0conformance/t.py\0'), {'cli', 'gateway'})
+        self.assertEqual(self.group(b'oxa/oxc-gateway/src/a.rs\0'), {'oxa', 'cli', 'gateway'})
         self.assertEqual(self.group(b'engine/crates/server/src/a.rs\0fuzz/oxe/smoke.rs\0'), {'engine'})
         self.assertEqual(self.group(b'oxa/src/a.rs\0engine/src/a.rs\0'), {'oxa', 'engine'})
         self.assertEqual(self.group(b'docs/page.md\0'), set())
