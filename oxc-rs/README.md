@@ -210,3 +210,5 @@ Keep the PR draft while iterating and test locally. Draft checkpoint pushes run
 formatting and mandatory scans. Request full PR CI/review deliberately by marking
 ready, or use one workflow dispatch when needed. Use one blocking
 `gh pr checks --watch` when waiting is needed, never repeated polling.
+
+The current [paired synthetic measurement](../conformance/benchmarks/rust-f8c482e-a874eac.json) verifies 100 measured requests plus warmup reached the same fixture with matching bodies and expected replies. Native idle/sampled-load RSS was 7,084/7,692 KiB and p50/p95 HTTP latency was 1.095/3.077 ms; the matching Python values were 19,696/20,504 KiB and 52.881/54.680 ms. Source, harness and executable identities are recorded. This measures controller overhead on the executor, with no hardware readiness claim.

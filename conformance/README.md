@@ -1,6 +1,6 @@
 # oxc drop-in conformance
 
-Reference: main `f8c482ea3936774c0eb6310cfe1d8e5415ae67e8`.
+Reference: main `756852b05c3a8d06e2b368e979607ec9426c8e52`.
 The current suite covers 662 scenarios in 97 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
@@ -167,7 +167,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Staged update/rollback | PASS, 15 scenarios / 22 CLI goldens | PASS: generic manifest transactions, sealed/bound hashes, exact restore, created/removed files, private state, receipts, positive identity, agent refresh and owner-edit refusal/recovery | Generated runtime materialization, interruptions and more filesystem races |
 | Uninstall | PASS, 27 cases plus original empty-install CLI cases | PASS: exact journal/stage records, hash/owner-edit protection, dry-run/apply, positive stops/restoration, models kept by default, explicit model deletion, symlinks/parent escape, private-home refusal and partial failures | More concurrent record/filesystem changes and filesystem failure cases |
 | Shipped scans | PASS, 38 cases | PASS: rules/order, machine words, exemptions, Unicode limits, generated trees, structured redaction/hashes, numeric values, directories, refusal before writing and layout-preserving scrubbing | More malformed inputs and filesystem races |
-| Fake engine benchmark | Python baseline recorded | Not implemented | Repeat identical measurement with Rust |
+| Fake engine benchmark | PASS, 100 requests | PASS: matching upstream payloads and 101 calls including warmup, source/harness/binary identities, RSS/CPU/latency receipts | Concurrent/streamed measurements; hardware A/B belongs to the owner |
 
 No hardware calls or real cloud API calls are part of this suite. Hardware A/B
 belongs to the owner's lane.
@@ -224,3 +224,5 @@ run formatting and mandatory scans. Full PR CI starts when marked ready; the
 merge queue runs full integration CI again. Request a manual run deliberately
 with one workflow dispatch when needed; use one blocking `gh pr checks --watch`
 rather than polling.
+
+Current synthetic comparison: [Python](benchmarks/python-f8c482e-a874eac.json) and [Rust](benchmarks/rust-f8c482e-a874eac.json). Both verify 101 identical engine request bodies including warmup and the expected reply/usage. Idle RSS was 19,696/7,084 KiB, sampled load RSS 20,504/7,692 KiB and p50/p95 HTTP latency 52.881/54.680 ms versus 1.095/3.077 ms. CPU counters have 10 ms resolution. These are controller-only executor measurements; no model or hardware performance is implied. Earlier receipts remain unchanged.

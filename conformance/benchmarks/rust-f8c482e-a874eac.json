@@ -1,0 +1,33 @@
+{
+  "schema": "oxc-fake-engine-benchmark/1",
+  "created_utc": "2026-11-15T07:28:27.452439+00:00",
+  "main_sha": "f8c482ea3936774c0eb6310cfe1d8e5415ae67e8",
+  "migration_sha": "a874eac481cd40dbf818bf1e9de5a2f35e164dfe",
+  "implementation": "selected",
+  "architecture": "x86_64",
+  "available_cpus": 5,
+  "cpu_tick_seconds": 0.01,
+  "fixture_sha256": "d26d7000c7d3a5d02ad53a9b15da18ed7c5ddb37543cf4d7fb69b668e73309a6",
+  "benchmark_sha256": "a86db8506ff6868b0e81c06c7fc325a295f992520a3acbcb71a9e474cfce3d87",
+  "upstream_post_requests_including_warmup": 101,
+  "upstream_request_body_sha256": "fffbf36289f0bfb3308d4d6fe56e7422c50bff2a336db119670770081c09ed75",
+  "command_executable_sha256": "c1331769a9172e8262e92243ca309fdf469de3b05eed91e43b80878ab28ebfd5",
+  "requests": 100,
+  "stream": false,
+  "output_tokens_per_request": 3,
+  "idle": {
+    "wall_seconds": 1.0001,
+    "rss_kib": 7084,
+    "cpu_seconds": 0.01,
+    "cpu_percent_one_core": 1.0
+  },
+  "load": {
+    "wall_seconds": 0.1379,
+    "peak_sampled_rss_kib": 7692,
+    "cpu_seconds": 0.07,
+    "cpu_percent_one_core": 50.751,
+    "latency_mean_ms": 1.377,
+    "latency_p50_ms": 1.095,
+    "latency_p95_ms": 3.077
+  }
+}

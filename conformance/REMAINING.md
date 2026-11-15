@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `f8c482ea3936774c0eb6310cfe1d8e5415ae67e8`.
+Reference main: `756852b05c3a8d06e2b368e979607ec9426c8e52`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -85,9 +85,9 @@ The following gaps remain visible rather than being represented by skipped tests
 Continue `oxc-rs/` (safe Rust, Tokio plus axum) area by area against this same
 suite. The owner authorized starting implementation while conformance/CI are
 still in progress. Establish or extend Python contracts before adjusting a
-ported behavior; do not change Python behavior to ease parity. Complete both
-file directions and the fake-engine benchmark with Rust before any readiness
-claim. Hardware A/B remains the owner's responsibility.
+ported behavior; do not change Python behavior to ease parity. Continue cross-implementation file coverage before any readiness claim. The
+current paired synthetic benchmark verifies identical engine work and records
+source/harness/binary identities; hardware performance remains unmeasured. Hardware A/B remains the owner's responsibility.
 
 Fetch/merge main every few hours and before any completion claim. Review all
 `lab/` changes since the previous merge point, add reference contracts first,
