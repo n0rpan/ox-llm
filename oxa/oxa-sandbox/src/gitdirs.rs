@@ -771,6 +771,8 @@ pub(crate) struct GitCheckGate {
     state: std::sync::Mutex<GateState>,
 }
 
+const STILL_RUNNING: &str = "a git config check of this repository is still running";
+
 #[derive(Default)]
 struct GateState {
     until: std::collections::HashMap<PathBuf, std::time::Instant>,
@@ -796,9 +798,25 @@ impl GitCheckGate {
             s.until.remove(repo);
         }
         if !s.running.insert(repo.to_path_buf()) {
-            return Err("a git config check of this repository is still running".into());
+            return Err(STILL_RUNNING.into());
         }
         Ok(())
+    }
+
+    /// [`begin`](Self::begin), but a check of `repo` that is still running is waited for (at
+    /// most `max_wait`) instead of refused: two commands at once in one repository both get
+    /// their check. A cooldown still refuses at once.
+    pub(crate) fn begin_waiting(&self, repo: &Path, max_wait: std::time::Duration) -> Result<(), String> {
+        let give_up = std::time::Instant::now() + max_wait;
+        loop {
+            let now = std::time::Instant::now();
+            match self.begin(repo, now) {
+                Err(why) if why == STILL_RUNNING && now < give_up => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
     }
 
     /// The check of `repo` that began ended at `now`; a timeout starts the cooldown.
@@ -828,7 +846,7 @@ fn common_of(dir: &Path) -> PathBuf {
 /// [`run_git_config`] for a config file of the repository `repo`, through [`git_gate`].
 fn git_include_values(p: &Path, repo: &Path) -> Option<Result<Vec<Vec<u8>>, String>> {
     let gate = git_gate();
-    if let Err(why) = gate.begin(repo, std::time::Instant::now()) {
+    if let Err(why) = gate.begin_waiting(repo, GIT_CHECK_TIMEOUT * 2) {
         return Some(Err(why));
     }
     let r = run_git_config(p);
@@ -1264,6 +1282,26 @@ mod include_tests {
         gate.end(a, t0 + Duration::from_secs(61), false);
         gate.begin(a, t0 + Duration::from_secs(62))
             .expect("and normal again");
+    }
+
+    #[test]
+    fn a_second_check_waits_for_the_running_one() {
+        use std::time::{Duration, Instant};
+        let gate = std::sync::Arc::new(GitCheckGate::new(Duration::from_secs(60)));
+        let a = Path::new("/repo-a/.git");
+        gate.begin(a, Instant::now()).expect("first");
+        let g2 = gate.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            g2.end(Path::new("/repo-a/.git"), Instant::now(), false);
+        });
+        gate.begin_waiting(a, Duration::from_secs(5)).expect("waited");
+        t.join().expect("thread");
+        // A check that never ends is given up on after the wait.
+        let err = gate
+            .begin_waiting(a, Duration::from_millis(50))
+            .expect_err("still running");
+        assert!(err.contains("still running"), "{err}");
     }
 
     #[test]
