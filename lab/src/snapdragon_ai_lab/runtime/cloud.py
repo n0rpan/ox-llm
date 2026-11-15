@@ -7,6 +7,7 @@ time, the per-day ledger spend and the upstream HTTP connection.  It never logs 
 never returns one to a caller that renders status.
 """
 import http.client
+from decimal import Decimal
 import json
 import math
 import os
@@ -18,8 +19,10 @@ import urllib.parse
 
 if __package__:
     from .ctl_seams import ctl
+    from . import cloud_prices
 else:
     from ctl_seams import ctl
+    import cloud_prices
 
 PROVIDERS = ('openrouter', 'anthropic', 'openai')
 KINDS = {'remote': None, 'remote/openrouter': 'openrouter', 'remote/anthropic': 'anthropic',
@@ -89,16 +92,46 @@ def _positive_number(raw, key, default=None):
 def _pricing(raw):
     price = raw.get('pricing')
     if isinstance(price, dict):
-        def one(*names):
-            for name in names:
-                value = price.get(name)
-                if type(value) in (int, float) and math.isfinite(value) and value >= 0:
-                    return float(value)
-            return None
-        input_price = one('input_per_million', 'input')
-        output_price = one('output_per_million', 'output')
-        if input_price is not None and output_price is not None:
-            return {'input_per_million': input_price, 'output_per_million': output_price}
+        def rates(value):
+            result = {}
+            for key, aliases in (
+                    ('input_per_million', ('input_per_million', 'input')),
+                    ('output_per_million', ('output_per_million', 'output')),
+                    ('cache_read_per_million', ('cache_read_per_million',)),
+                    ('cache_write_per_million', ('cache_write_per_million',))):
+                number = next((value[name] for name in aliases if name in value), None)
+                if number is None and key.startswith('cache_'):
+                    continue
+                if type(number) not in (int, float) or not 0 <= number <= 1e12:
+                    return None
+                result[key] = float(number)
+            return result
+        if 'tiers' not in price:
+            normalized = rates(price)
+            if normalized is not None:
+                return normalized
+        else:
+            tiers = price['tiers']
+            if not isinstance(tiers, list) or not 1 <= len(tiers) <= 64:
+                return None
+            result, previous = [], 0
+            for index, tier in enumerate(tiers):
+                if not isinstance(tier, dict):
+                    return None
+                normalized = rates({**price, **tier})
+                if normalized is None:
+                    return None
+                bound = tier.get('max_prompt_tokens')
+                if index == len(tiers) - 1:
+                    if bound is not None:
+                        return None  # Require an explicit final catch-all price.
+                elif type(bound) is not int or not previous < bound <= 100_000_000:
+                    return None
+                else:
+                    previous = bound
+                normalized['max_prompt_tokens'] = bound
+                result.append(normalized)
+            return {'tiers': result}
     if raw.get('free') is True:
         return {'input_per_million': 0.0, 'output_per_million': 0.0}
     return None  # Unknown pricing is never silently free.
@@ -133,10 +166,13 @@ def entry(alias, raw):
         return None
     if base_url is None or not isinstance(upstream, str) or not upstream.strip() or context is None:
         return None
+    price = _pricing(raw)
+    if provider == 'openrouter' and (price is not None or raw.get('pricing') is None):
+        price = cloud_prices.overlay(price, upstream.strip())
     return {'id': alias, 'kind': raw.get('kind', 'remote'), 'provider': provider,
             'base_url': base_url, 'upstream_model': upstream.strip(),
             'context_window': int(context), 'max_output': int(output) if output is not None else None,
-            'pricing': _pricing(raw), 'display_name': raw.get('name') if isinstance(raw.get('name'), str) else alias}
+            'pricing': price, 'display_name': raw.get('name') if isinstance(raw.get('name'), str) else alias}
 
 
 def entries(value, include_disabled=False):
@@ -181,8 +217,18 @@ def pricing(entry_value):
     return entry_value.get('pricing')
 
 
-def cost(entry_value, prompt_tokens, completion_tokens):
-    """USD for one usage record; numbers only, bounded to a small finite value."""
+def _cache_rates(item, price):
+    base = price['input_per_million']
+    # Without an explicit rate, do not assume a read discount. Anthropic's longest
+    # supported write TTL costs 2x input; retain that bound when TTL pricing is absent.
+    anthropic = (item['provider'] == 'anthropic'
+                 or item.get('upstream_model', '').startswith('anthropic/'))
+    write = price.get('cache_write_per_million', base * (2 if anthropic else 1))
+    return price.get('cache_read_per_million', base), write
+
+
+def cost(entry_value, prompt_tokens, completion_tokens, *, cache_read=0, cache_write=0):
+    """Price validated actual usage, selecting an inclusive prompt-size tier."""
     price = pricing(entry_value)
     if price is None:
         return None
@@ -190,7 +236,31 @@ def cost(entry_value, prompt_tokens, completion_tokens):
     completion = completion_tokens if type(completion_tokens) is int and completion_tokens >= 0 else 0
     if prompt > 100_000_000 or completion > 10_000_000:
         return None
-    return round((prompt * price['input_per_million'] + completion * price['output_per_million']) / 1_000_000.0, 8)
+    if 'tiers' in price:
+        price = next(tier for tier in price['tiers']
+                     if tier['max_prompt_tokens'] is None or prompt <= tier['max_prompt_tokens'])
+    read_rate, write_rate = _cache_rates(entry_value, price)
+    read_rate, write_rate = Decimal(str(read_rate)), Decimal(str(write_rate))
+    input_rate = Decimal(str(price['input_per_million']))
+    output_rate = Decimal(str(price['output_per_million']))
+    valid_cache = (type(cache_read) is int and type(cache_write) is int
+                   and cache_read >= 0 and cache_write >= 0 and cache_read + cache_write <= prompt)
+    if valid_cache:
+        input_usd = ((prompt - cache_read - cache_write) * input_rate
+                     + cache_read * read_rate + cache_write * write_rate)
+    else:
+        input_usd = prompt * max(input_rate, read_rate, write_rate)
+    return float((input_usd + completion * output_rate) / Decimal(1_000_000))
+
+
+def _reservation_cost(item, prompt, completion):
+    price = pricing(item)
+    if price is None or prompt > 100_000_000 or completion > 10_000_000:
+        return None
+    tiers = price.get('tiers', [price])
+    input_bound = max(max(tier['input_per_million'], *_cache_rates(item, tier)) for tier in tiers)
+    output_bound = max(tier['output_per_million'] for tier in tiers)
+    return (prompt * input_bound + completion * output_bound) / 1_000_000.0
 
 
 def _cap(value):
@@ -318,7 +388,7 @@ def estimate_prompt_tokens(payload):
 def worst_case_cost(item, payload):
     """Reserve the catalog input window; byte estimates cannot bound tokenization or images."""
     prompt = item['context_window']
-    usd = cost(item, prompt, _max_tokens(payload, item))
+    usd = _reservation_cost(item, prompt, _max_tokens(payload, item))
     # Routing prices may exceed the catalog. This headroom is additional to the
     # full-window reservation; it is a cushion, not a universal provider-price bound.
     if usd is not None and item['provider'] == 'openrouter':
@@ -395,7 +465,7 @@ def conservative_cost(row, hold, failed=False):
     """
     if hold is None:
         return row
-    missing = (failed or row.get('prompt_tokens') is None or row.get('completion_tokens') is None
+    missing = (failed or row.get('usage_missing') is True or row.get('prompt_tokens') is None or row.get('completion_tokens') is None
                or row.get('cost_usd') is None)
     if missing:
         row['cost_usd'] = max(hold.reserved, row.get('cost_usd') or 0)
@@ -707,6 +777,8 @@ class Meter:
         self.prompt = None
         self.completion = None
         self.cached = None
+        self.cache_written = None
+        self.cache_invalid = False
         self.reported_cost = None
         self.finish = None
         self._sse = SSEDecoder()
@@ -725,11 +797,18 @@ class Meter:
                 number = usage.get(source)
                 if type(number) is int and number >= 0:
                     setattr(self, target, number)
-            if type(usage.get('cache_read_input_tokens')) is int:
-                self.cached = usage['cache_read_input_tokens']
             details = usage.get('prompt_tokens_details')
-            if isinstance(details, dict) and type(details.get('cached_tokens')) is int:
-                self.cached = details['cached_tokens']
+            details = details if isinstance(details, dict) else {}
+            for source, target in ((usage, 'cached'), (details, 'cached'),
+                                   (usage, 'cache_written'), (details, 'cache_written')):
+                key = ('cache_read_input_tokens' if source is usage else 'cached_tokens') if target == 'cached' else (
+                    'cache_creation_input_tokens' if source is usage else 'cache_write_tokens')
+                if key in source:
+                    number = source[key]
+                    if type(number) is int and number >= 0:
+                        setattr(self, target, number)
+                    else:
+                        self.cache_invalid = True
         choices = value.get('choices')
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             if isinstance(choices[0].get('finish_reason'), str):
@@ -768,9 +847,16 @@ class Meter:
             out['completion_tokens'] = completion
         if self.cached is not None:
             out['cached_tokens'] = self.cached
+        if self.cache_written is not None:
+            out['cache_write_tokens'] = self.cache_written
         if self.finish is not None:
             out['finish_reason'] = redact(self.finish, secret)
-        usd = cost(item, prompt, completion)
+        invalid_cache = (self.cache_invalid or (prompt is not None
+                         and (self.cached or 0) + (self.cache_written or 0) > prompt))
+        if invalid_cache:
+            out['usage_missing'] = True
+        usd = None if invalid_cache else cost(
+            item, prompt, completion, cache_read=self.cached or 0, cache_write=self.cache_written or 0)
         if usd is not None:
             out['cost_usd'] = usd
             out['catalog_cost_usd'] = usd

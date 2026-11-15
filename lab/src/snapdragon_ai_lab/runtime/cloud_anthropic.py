@@ -318,7 +318,7 @@ def _usage(usage):
     prompt = input_tokens + cache_read + cache_write
     return {'prompt_tokens': prompt, 'completion_tokens': output_tokens,
             'total_tokens': prompt + output_tokens,
-            'prompt_tokens_details': {'cached_tokens': cache_read},
+            'prompt_tokens_details': {'cached_tokens': cache_read, 'cache_write_tokens': cache_write},
             'completion_tokens_details': {'reasoning_tokens': 0}}
 
 
@@ -424,7 +424,7 @@ class _Stream:
             usage = message.get('usage')
             if usage is not None:
                 self.raw_usage.update(_dump(usage))
-                self.usage = _usage(self.raw_usage)
+                self.usage = _usage(self.raw_usage) if _valid_usage(self.raw_usage) else None
             out.append(self._chunk({'role': 'assistant', 'content': None}))
         elif kind == 'content_block_start':
             index = value.get('index') if type(value.get('index')) is int else 0
@@ -482,7 +482,7 @@ class _Stream:
                 self.finish = STOP_REASONS.get(delta['stop_reason'], 'stop')
             if value.get('usage') is not None:
                 self.raw_usage.update(_dump(value['usage']))
-                self.usage = _usage(self.raw_usage)
+                self.usage = _usage(self.raw_usage) if _valid_usage(self.raw_usage) else None
         elif kind == 'message_stop':
             self.stopped = True
             self._remember()
@@ -532,14 +532,25 @@ def _usage_row(row, usage, item):
     row.update({'prompt_tokens': usage['prompt_tokens'],
                 'completion_tokens': usage['completion_tokens'],
                 'cached_tokens': usage['prompt_tokens_details']['cached_tokens'],
-                'cost_usd': cloud.cost(item, usage['prompt_tokens'], usage['completion_tokens'])})
+                'cache_write_tokens': usage['prompt_tokens_details'].get('cache_write_tokens', 0),
+                'cost_usd': cloud.cost(item, usage['prompt_tokens'], usage['completion_tokens'],
+                                       cache_read=usage['prompt_tokens_details']['cached_tokens'],
+                                       cache_write=usage['prompt_tokens_details'].get('cache_write_tokens', 0))})
     return row
 
 
+def _valid_usage(value):
+    return (isinstance(value, dict)
+            and all(type(value.get(name)) is int and value[name] >= 0
+                    for name in ('input_tokens', 'output_tokens'))
+            and all(name not in value or (type(value[name]) is int and value[name] >= 0)
+                    for name in ('cache_read_input_tokens', 'cache_creation_input_tokens')))
+
+
 def _has_usage(message):
-    if isinstance(message, dict):
-        return isinstance(message.get('usage'), dict)
-    return getattr(message, 'usage', None) is not None
+    value = _dump(message)
+    return _valid_usage(_dump(value.get('usage')) if value.get('usage') is not None else None)
+
 
 
 def _close(st, status, error=None):
