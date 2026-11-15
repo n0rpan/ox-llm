@@ -1,66 +1,9 @@
 //! Real child oxa with fake engine and local bare git remote; no network.
-use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+#[path = "common/work.rs"]
+mod work;
+use oxa_fake::{ScriptTurn, TestEnv};
 use std::{path::Path, process::Command};
-fn git(env: &TestEnv, dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env_clear()
-        .envs(env.envs("http://127.0.0.1:1"))
-        .env("GIT_AUTHOR_NAME", "Test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
-        .env("GIT_COMMITTER_NAME", "Test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-}
-fn setup(env: &TestEnv, done: &str) {
-    git(env, &env.work(), &["init", "--bare", "remote.git"]);
-    git(env, &env.work(), &["init", "-b", "main", "project"]);
-    let project = env.work().join("project");
-    env.write(
-        "work/project/.oxa/settings.json",
-        &format!(r#"{{"done":{done}}}"#),
-    );
-    git(env, &project, &["add", "."]);
-    git(env, &project, &["commit", "-m", "fixture"]);
-    git(env, &project, &["remote", "add", "origin", "../remote.git"]);
-    git(env, &project, &["push", "origin", "main"]);
-    env.write(
-        "work/tasks.json",
-        r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task"}]"#,
-    );
-}
-fn run(env: &TestEnv, turns: Vec<ScriptTurn>) -> serde_json::Value {
-    run_args(env, turns, &["work", "../tasks.json"], None)
-}
-fn run_args(env: &TestEnv, turns: Vec<ScriptTurn>, args: &[&str], path: Option<String>) -> serde_json::Value {
-    let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
-    command
-        .args(args)
-        .current_dir(env.work().join("project"))
-        .env_clear()
-        .envs(env.envs(&server.url()));
-    if let Some(path) = path {
-        command.env("PATH", path);
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        tx.send(command.output().unwrap()).unwrap();
-    });
-    let out = rx
-        .recv_timeout(std::time::Duration::from_secs(90))
-        .expect("runner finished");
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!(
-            "{e}: {} / {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    })
-}
+use work::{git, run, run_args, setup};
 #[test]
 fn external_checks_run_without_edits_and_retain_worktree() {
     let env = TestEnv::new();
@@ -180,13 +123,17 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
 }
 #[test]
-fn setup_failure_records_blocked_and_keeps_existing_branch() {
+fn branch_checked_out_elsewhere_is_blocked() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    git(&env, &env.work().join("project"), &["branch", "agent/test"]);
+    git(
+        &env,
+        &env.work().join("project"),
+        &["worktree", "add", "-b", "agent/test", "../other"],
+    );
     let record = run(&env, vec![]);
     assert_eq!(record["outcome"], "blocked", "{record}");
-    assert!(record["detail"].as_str().unwrap().contains("already exists"));
+    assert!(record["detail"].as_str().unwrap().contains("other"));
 }
 
 #[test]

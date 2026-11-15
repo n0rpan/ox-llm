@@ -1,4 +1,5 @@
 //! Opt-in, sequential unattended task execution. Worktrees are retained on every outcome.
+mod tree;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ fn default_base() -> String {
     "main".into()
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Done,
@@ -29,7 +30,7 @@ pub enum Outcome {
     Blocked,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Record {
     pub id: String,
     pub branch: String,
@@ -111,20 +112,6 @@ pub fn issue_task(repo: &Path, number: u64, model: String) -> Result<Task> {
     })
 }
 
-/// Acceptance commands are frozen from the base before the agent can edit settings.
-fn done_commands(root: &Path) -> Result<Vec<String>> {
-    let path = root.join(".oxa/settings.json");
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(e.to_string()),
-    };
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    match value.get("done") {
-        None => Ok(vec![]),
-        Some(value) => serde_json::from_value(value.clone()).map_err(|e| format!("done commands: {e}")),
-    }
-}
 fn acceptance(root: &Path, commands: &[String]) -> Result<String> {
     let mut failures = String::new();
     for entry in commands {
@@ -184,9 +171,6 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
         .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
     let _lock = TaskLock(lock_path);
     let receipt = storage.join(format!("{}.json", task.id));
-    if receipt.exists() {
-        return Err("task already has a receipt; retained for inspection".into());
-    }
     // The common git directory must not be an ancestor of the child cwd: the sandbox
     // deliberately refuses writable git binds with that layout.
     let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
@@ -201,6 +185,7 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
     let trees = parent.join(".oxa-worktrees").join(name);
     fs::create_dir_all(&trees).map_err(|e| e.to_string())?;
     let tree = trees.join(&task.id);
+    tree::check_receipt(&receipt, &tree, task)?;
     let mut record = Record {
         id: task.id.clone(),
         branch: task.branch.clone(),
@@ -209,18 +194,11 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
         detail: String::new(),
     };
     let result = (|| -> Result<Outcome> {
-        if tree.exists() {
-            return Err("task worktree already exists; retained for inspection".into());
-        }
-        let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
-        checked(git(
-            &root,
-            &["worktree", "add", "-b", &task.branch, tree_arg, &task.base],
-        ))?;
+        let prepared = tree::prepare(&root, &tree, task)?;
         let tree = tree.canonicalize().map_err(|e| e.to_string())?;
-        let initial = checked(git(&tree, &["rev-parse", "HEAD"]))?;
-        let commands = done_commands(&tree)?;
-        let first_agent = agent(binary, &tree, task, &task.prompt);
+        let commands = tree::done_from_base(&tree, &prepared.base)?;
+        let first_agent = agent(binary, &tree, task, &prepared.prompt);
+        tree::ensure_merged(&tree, &prepared.base, &task.branch)?;
         let failures = acceptance(&tree, &commands)?;
         if !failures.is_empty() {
             let repair_agent = agent(
@@ -229,9 +207,10 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
                 task,
                 &format!(
                     "{}\n\nExternal acceptance checks failed. Repair once:\n{failures}",
-                    task.prompt
+                    prepared.prompt
                 ),
             );
+            tree::ensure_merged(&tree, &prepared.base, &task.branch)?;
             let failures = acceptance(&tree, &commands)?;
             if !failures.is_empty() {
                 record.detail = failures;
@@ -243,7 +222,7 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
         }
         let head = checked(git(&tree, &["rev-parse", "HEAD"]))?;
         let dirty = checked(git(&tree, &["status", "--porcelain"]))?;
-        Ok(if head == initial && dirty.is_empty() {
+        Ok(if head == prepared.initial && dirty.is_empty() {
             Outcome::NothingToDo
         } else {
             Outcome::Done
