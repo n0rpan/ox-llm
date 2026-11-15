@@ -535,7 +535,17 @@ pub(crate) fn create_missing_git_files_homes(
         if is_dir_entry(&p) || !p.parent().is_some_and(is_real_dir) {
             continue;
         }
-        let _ = std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
+        // #201: git dies on an empty `commondir`; "." names the git directory itself, which
+        // is what a missing one means.
+        let body: &[u8] = if p.file_name().is_some_and(|n| n == "commondir") {
+            b".\n"
+        } else {
+            b""
+        };
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+            use std::io::Write as _;
+            let _ = f.write_all(body);
+        }
     }
 }
 

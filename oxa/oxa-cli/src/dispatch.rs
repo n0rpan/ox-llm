@@ -494,6 +494,12 @@ fn prepare(
     } else {
         trusted
     };
+    // #201: a project trusted by a saved decision gets its approval baseline now (also with
+    // no project config yet), before any tool runs: `.oxa` / `.agents` content the session
+    // creates is then new at the next start and goes through the normal approval.
+    if trusted && saved == Some(true) {
+        trust_store.record_baseline(&dirs.trust_file(), cwd)?;
+    }
     if !trusted && !gated.is_empty() {
         notices.push((
             Level::Warning,

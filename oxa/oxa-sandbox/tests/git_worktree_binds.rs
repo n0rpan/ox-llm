@@ -198,14 +198,19 @@ fn worktree_binds_its_gitdir_and_common_dir() {
         "the common dir and the worktree's gitdir, read-write"
     );
     assert!(got.ro.is_empty());
-    // Hooks and config of the common dir stay read-only: git runs them outside the sandbox.
+    // Hooks and config of the common dir stay read-only: git runs them outside the sandbox;
+    // #201: so do `commondir` and `gitdir` of both git directories (missing ones are masked).
     assert_eq!(
         sorted(got.protect.clone()),
         sorted(vec![
+            canon(&w.main_git).join("commondir"),
             canon(&w.main_git.join("config")),
+            canon(&w.main_git).join("gitdir"),
             canon(&w.main_git).join("config.worktree"),
             canon(&w.main_git.join("hooks")),
             canon(&w.main_git).join("info"),
+            canon(&w.gitdir.join("commondir")),
+            canon(&w.gitdir.join("gitdir")),
             canon(&w.gitdir).join("config.worktree"),
             canon(&w.gitdir).join("hooks"),
         ])
@@ -230,6 +235,21 @@ fn plain_repository_binds_nothing() {
     dir(&git.join("objects/pack"));
     let got = resolve_git_binds(&clone, &env.home(), Some(&env.agent_dir()));
     assert!(got.is_empty(), "{got:?}");
+}
+
+/// Review of #203: the `commondir` holding "." that a writable command leaves on the host is
+/// not a worktree link; the repository stays discoverable from a subdirectory.
+#[test]
+fn plain_repository_with_synthetic_commondir_is_still_found() {
+    let env = TestEnv::new();
+    let top = dir(&env.work().join("top"));
+    let git = dir(&top.join(".git"));
+    file(&git.join("HEAD"), "ref: refs/heads/main\n");
+    file(&git.join("commondir"), ".\n");
+    dir(&git.join("objects/pack"));
+    let sub = dir(&top.join("sub"));
+    let got = resolve_git_binds(&sub, &env.home(), Some(&env.agent_dir()));
+    assert_eq!(got.rw, vec![canon(&git)]);
 }
 
 #[test]
@@ -495,6 +515,9 @@ fn golden_worktree_argv_binds_read_write_then_protected_read_only() {
         "--bind",
         gd,
         gd,
+        "--ro-bind",
+        "/dev/null",
+        &format!("{mc}/commondir"),
         "--ro-bind",
         &format!("{mc}/config"),
         &format!("{mc}/config"),
