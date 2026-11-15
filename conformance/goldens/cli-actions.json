@@ -6,7 +6,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -33,7 +33,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -56,14 +56,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "The local chat service could not start. Details: journalctl --user -u local-ai-chat."
+          "The local chat service could not start. Details: journalctl --user -u oxc-chat."
         ],
         "command": "notify-send"
       }
@@ -79,14 +79,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "Flash is not ready on this machine. Run `local-ai status` to see why."
+          "Flash is not ready on this machine. Run `oxc status` to see why."
         ],
         "command": "notify-send"
       }
@@ -107,14 +107,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "Flash is not ready on this machine. Run `local-ai status` to see why."
+          "Flash is not ready on this machine. Run `oxc status` to see why."
         ],
         "command": "notify-send"
       }
@@ -135,14 +135,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "Flash is not ready on this machine. Run `local-ai status` to see why."
+          "Flash is not ready on this machine. Run `oxc status` to see why."
         ],
         "command": "notify-send"
       }
@@ -163,7 +163,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -254,7 +254,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -282,7 +282,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -322,14 +322,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "The coding agent (oxa) is not installed. Reinstall ox-llm or run `local-ai doctor`."
+          "The coding agent (oxa) is not installed. Reinstall ox-llm or run `oxc doctor`."
         ],
         "command": "notify-send"
       }
@@ -350,7 +350,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -390,7 +390,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -421,7 +421,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },

@@ -3,7 +3,7 @@
     "body": {
       "error": {
         "code": "service_unavailable",
-        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "message": "Model setup is not finished yet. Run `oxc status` to follow it.",
         "param": null,
         "type": "unavailable_error"
       }
@@ -16,7 +16,7 @@
     "body": {
       "error": {
         "code": "service_unavailable",
-        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "message": "Model setup is not finished yet. Run `oxc status` to follow it.",
         "param": null,
         "type": "unavailable_error"
       }
@@ -55,7 +55,7 @@
     "body": {
       "error": {
         "code": "service_unavailable",
-        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "message": "Model setup is not finished yet. Run `oxc status` to follow it.",
         "param": null,
         "type": "unavailable_error"
       }
@@ -95,7 +95,7 @@
     "body": {
       "error": {
         "code": "service_unavailable",
-        "message": "Model setup is not finished yet. Run `local-ai status` to follow it.",
+        "message": "Model setup is not finished yet. Run `oxc status` to follow it.",
         "param": null,
         "type": "unavailable_error"
       }

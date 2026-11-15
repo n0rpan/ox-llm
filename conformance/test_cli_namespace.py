@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 
-from environment import ROOT, isolated_env
+from environment import ROOT, isolated_env, PYTHON
 
 
 class CliNamespaceContract(unittest.TestCase):
@@ -29,7 +29,7 @@ class CliNamespaceContract(unittest.TestCase):
                 'bwrap', '--die-with-parent', '--unshare-net', '--ro-bind', '/', '/',
                 '--dev-bind', '/dev', '/dev', '--bind', '/proc', '/proc',
                 '--tmpfs', '/home', '--ro-bind', str(ROOT), str(checkout), '--tmpfs', '/tmp',
-                '--', sys.executable, '-c', program,
+                '--', PYTHON, '-c', program,
             ], env=env, capture_output=True, text=True, timeout=10)
             if result.returncode:
                 raise AssertionError('Private checkout contract failed: ' + result.stderr)

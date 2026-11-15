@@ -4,8 +4,8 @@ Description=Local private AI (studio)
 Type=simple
 WorkingDirectory=%h/.local/share/ai-stack/runtime
 ExecStart=/usr/bin/python3 %h/.local/share/ai-stack/runtime/studio
-Environment=LOCAL_AI_LEASE=%h/.local/state/local-ai/inference.lock
-Environment=LOCAL_IMAGE_CONFIG_DIR=%h/.config/local-ai/images
+Environment=OXC_LEASE=%h/.local/state/oxc/inference.lock
+Environment=LOCAL_IMAGE_CONFIG_DIR=%h/.config/oxc/images
 Environment=SD_HOME=%h/.local/share/ai-stack
 Environment=SD_CLI=%h/.local/share/ai-stack/releases/sd-cpu-repack/sd-cli
 Environment=IMG_OUTDIR=%h/Pictures/sd

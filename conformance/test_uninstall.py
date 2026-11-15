@@ -1,4 +1,5 @@
 """Uninstall contracts: exact install records, positive stops, and retained owner data."""
+from environment import PYTHON
 import hashlib
 import json
 import os
@@ -26,7 +27,7 @@ def capture(name):
     binary_dir.mkdir()
     executable = binary_dir / 'systemctl'
     source = (ROOT / 'conformance/fixtures/uninstall_host.py').read_text().split('\n', 1)[1]
-    executable.write_text('#!' + sys.executable + '\n' + source)
+    executable.write_text('#!' + PYTHON + '\n' + source)
     executable.chmod(0o700)
     program = home / '.local/bin/oxa'
     program.parent.mkdir(parents=True)
@@ -148,7 +149,7 @@ def capture(name):
     (home / 'systemd-state.json').write_text(json.dumps(state))
     entry = home / 'oxc'
     entry.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-    command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(entry)]
+    command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(entry)]
     environment = {**os.environ, 'PATH': str(binary_dir) + ':/usr/bin:/bin', 'FAKE_UNINSTALL_HOME': str(home)}
     if name in ('root-home', 'relative-home'):
         environment['HOME'] = '/' if name == 'root-home' else 'relative'

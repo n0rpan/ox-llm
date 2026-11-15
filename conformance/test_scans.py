@@ -1,4 +1,5 @@
 """Receipt exporter/scrubber contracts using synthetic files and no scanner exclusions."""
+from environment import PYTHON
 import datetime
 import hashlib
 import json
@@ -232,7 +233,7 @@ def run_case(name):
         elif name == 'rules':
             args = ['rules']
         command = shlex.split(os.environ[variable]) if variable in os.environ else [
-            sys.executable, str(ROOT / 'oxc/tools' / script)]
+            PYTHON, str(ROOT / 'oxc/tools' / script)]
         result = subprocess.run(command + args, env=env, cwd=home, capture_output=True, text=True, timeout=10)
         if result.returncode != expected:
             raise AssertionError(name + ': ' + repr((result.returncode, result.stdout, result.stderr)))

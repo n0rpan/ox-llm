@@ -1,4 +1,5 @@
 """Shared-listener contracts in a private network namespace, using loopback aliases only."""
+from environment import PYTHON
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
@@ -38,7 +39,7 @@ def prepare_network(name, script=None, address=ADDRESS):
     # Drop every setup capability before starting the real controller and its
     # nested host fixture. No product process receives network administration.
     os.execve('/usr/bin/setpriv', ['/usr/bin/setpriv', '--bounding-set=-all', '--inh-caps=-all',
-              '--ambient-caps=-all', '--securebits=+noroot,+noroot_locked', '--', sys.executable,
+              '--ambient-caps=-all', '--securebits=+noroot,+noroot_locked', '--', PYTHON,
               str(Path(script or __file__).resolve()), '--case-ready', name], dict(os.environ))
 
 
@@ -48,7 +49,7 @@ def capture(name):
     binary_dir.mkdir()
     executable = binary_dir / 'ip'
     source = (ROOT / 'conformance/fixtures/network_ip.py').read_text().split('\n', 1)[1]
-    executable.write_text('#!' + sys.executable + '\n' + source)
+    executable.write_text('#!' + PYTHON + '\n' + source)
     executable.chmod(0o700)
     network = home / 'network.json'
     network.write_text(json.dumps({'addresses': [{'ifname': 'tailscale-fixture', 'link_type': 'none',
@@ -179,7 +180,7 @@ def capture(name):
                 output.append(call())
                 entry = home / 'oxc'
                 entry.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-                command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(entry)]
+                command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(entry)]
                 rotated = subprocess.run([*command, 'share', 'key', '--rotate'], cwd=home, env=daemon.env,
                                          capture_output=True, timeout=5)
                 if rotated.returncode != 0:

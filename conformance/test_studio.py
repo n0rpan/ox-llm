@@ -1,4 +1,5 @@
 """Model-free installed Studio wire contracts; all traffic targets loopback."""
+from environment import PYTHON
 import hashlib
 import datetime
 import http.client
@@ -73,7 +74,7 @@ def capture(name):
             executable = home / 'bin/sd-cli'
             executable.parent.mkdir(mode=0o700)
             source = (ROOT / 'conformance/fixtures/fake_image_engine.py').read_text().split('\n', 1)[1]
-            executable.write_text('#!' + sys.executable + '\n' + source)
+            executable.write_text('#!' + PYTHON + '\n' + source)
             executable.chmod(0o700)
             env.update(SD_CLI=str(executable), FAKE_IMAGE_EVENTS=str(home / 'image-events.json'),
                        FAKE_IMAGE_EXPECTED_PROMPT='synthetic generation prompt',
@@ -191,7 +192,7 @@ def capture(name):
                 file_path.unlink()
                 file_path.mkdir(mode=0o700)
         command = shlex.split(os.environ['OXC_STUDIO_COMMAND']) if 'OXC_STUDIO_COMMAND' in os.environ else [
-            sys.executable, str(ROOT / 'oxc/src/oxc/runtime/studio')]
+            PYTHON, str(ROOT / 'oxc/src/oxc/runtime/studio')]
         with tempfile.TemporaryFile() as log:
             process = subprocess.Popen(command, env=env, cwd=home, stdin=subprocess.DEVNULL,
                 stdout=log, stderr=log, umask=0o077)

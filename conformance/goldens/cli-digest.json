@@ -4,7 +4,7 @@
     "engine_launches": 0,
     "exit": 2,
     "files": {},
-    "stderr": "local-ai: Use a day like 2026-11-13, today or yesterday.\n",
+    "stderr": "oxc: Use a day like 2026-11-13, today or yesterday.\n",
     "stdout": ""
   },
   "empty-json": {
@@ -443,7 +443,7 @@
     "engine_launches": 0,
     "exit": 1,
     "files": {},
-    "stderr": "local-ai: the digest could not be saved (NotADirectoryError).\n",
+    "stderr": "oxc: the digest could not be saved (NotADirectoryError).\n",
     "stdout": ""
   },
   "write-private": {

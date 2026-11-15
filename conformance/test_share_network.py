@@ -1,4 +1,5 @@
 """LAN pinning/discovery through real controllers, using isolated loopback aliases."""
+from environment import PYTHON
 import copy
 import hashlib
 import http.client
@@ -47,7 +48,7 @@ def capture(name):
     binary_dir.mkdir()
     executable = binary_dir / 'ip'
     source = (ROOT / 'conformance/fixtures/network_ip.py').read_text().split('\n', 1)[1]
-    executable.write_text('#!' + sys.executable + '\n' + source)
+    executable.write_text('#!' + PYTHON + '\n' + source)
     executable.chmod(0o700)
     fixture = {'addresses': [{'ifname': PIN['interface'], 'link_type': 'ether',
                              'addr_info': [{'local': ADDRESS, 'prefixlen': 24}]}],

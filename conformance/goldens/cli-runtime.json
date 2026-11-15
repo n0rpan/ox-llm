@@ -3,7 +3,7 @@
     "exit": 0,
     "host_commands": [],
     "stderr": "",
-    "stdout": "Usage:\n  local-ai cache [status] [--json]          conversation cache: used, budget, conversations\n  local-ai cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  local-ai cache clear [--all | --session ID]  --all (default) also clears stored prompts\n"
+    "stdout": "Usage:\n  oxc cache [status] [--json]          conversation cache: used, budget, conversations\n  oxc cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  oxc cache clear [--all | --session ID]  --all (default) also clears stored prompts\n"
   },
   "cache-budget-four": {
     "exit": 0,
@@ -20,7 +20,7 @@
   "cache-budget-invalid": {
     "exit": 2,
     "host_commands": [],
-    "stderr": "Usage:\n  local-ai cache [status] [--json]          conversation cache: used, budget, conversations\n  local-ai cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  local-ai cache clear [--all | --session ID]  --all (default) also clears stored prompts\n",
+    "stderr": "Usage:\n  oxc cache [status] [--json]          conversation cache: used, budget, conversations\n  oxc cache budget GB|off              decimal GB, 4 to 4096 (default 64); off keeps no saved state\n  oxc cache clear [--all | --session ID]  --all (default) also clears stored prompts\n",
     "stdout": ""
   },
   "cache-budget-off": {
@@ -54,7 +54,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -83,7 +83,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -93,34 +93,34 @@
           "show",
           "--no-pager",
           "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
-          "local-ai-planning-live.service",
-          "local-ai-flash-final-agent.service",
-          "local-ai-flash-code-screen.service",
-          "local-ai-flash-agent.service",
-          "local-ai-flash-native-http.service",
-          "local-ai-flash-prefill.service",
-          "local-ai-flash-wide-prefill.service",
-          "local-ai-flash-thp.service",
-          "local-ai-flash-cache-screen.service",
-          "local-ai-flash-overlap.service",
-          "local-ai-flash-smoke.service",
-          "local-ai-flash-profile-cache-abba.service",
-          "local-ai-flash-profile-hot-parity.service",
-          "local-ai-flash-profile-hot-abba.service",
-          "local-ai-flash-profile-cpu-quota-abba.service",
-          "local-ai-flash-profile-decode46.service",
-          "local-ai-flash-profile-decode48.service",
-          "local-ai-flash-profile-selective-q8.service",
-          "local-ai-flash-profile-placement.service",
-          "local-ai-flash-profile-combined-parity.service",
-          "local-ai-flash-profile-combined-coalescing.service",
-          "local-ai-flash-profile-combined-predictive.service",
-          "local-ai-flash-profile-ngram-capture.service",
-          "local-ai-flash-profile-ngram-screen.service",
-          "local-ai-flash-profile-cache-full-12288.service",
-          "local-ai-flash-profile-cache-full-13312.service",
-          "local-ai-flash-profile-io-full-4.service",
-          "local-ai-flash-profile-io-full-8.service"
+          "oxc-planning-live.service",
+          "oxc-flash-final-agent.service",
+          "oxc-flash-code-screen.service",
+          "oxc-flash-agent.service",
+          "oxc-flash-native-http.service",
+          "oxc-flash-prefill.service",
+          "oxc-flash-wide-prefill.service",
+          "oxc-flash-thp.service",
+          "oxc-flash-cache-screen.service",
+          "oxc-flash-overlap.service",
+          "oxc-flash-smoke.service",
+          "oxc-flash-profile-cache-abba.service",
+          "oxc-flash-profile-hot-parity.service",
+          "oxc-flash-profile-hot-abba.service",
+          "oxc-flash-profile-cpu-quota-abba.service",
+          "oxc-flash-profile-decode46.service",
+          "oxc-flash-profile-decode48.service",
+          "oxc-flash-profile-selective-q8.service",
+          "oxc-flash-profile-placement.service",
+          "oxc-flash-profile-combined-parity.service",
+          "oxc-flash-profile-combined-coalescing.service",
+          "oxc-flash-profile-combined-predictive.service",
+          "oxc-flash-profile-ngram-capture.service",
+          "oxc-flash-profile-ngram-screen.service",
+          "oxc-flash-profile-cache-full-12288.service",
+          "oxc-flash-profile-cache-full-13312.service",
+          "oxc-flash-profile-io-full-4.service",
+          "oxc-flash-profile-io-full-8.service"
         ],
         "command": "systemctl"
       },
@@ -151,7 +151,7 @@
   "digest-invalid-day": {
     "exit": 2,
     "host_commands": [],
-    "stderr": "local-ai: Use a day like 2026-11-13, today or yesterday.\n",
+    "stderr": "oxc: Use a day like 2026-11-13, today or yesterday.\n",
     "stdout": ""
   },
   "digest-soak": {
@@ -193,14 +193,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "Flash is not ready on this machine. Run `local-ai status` to see why."
+          "Flash is not ready on this machine. Run `oxc status` to see why."
         ],
         "command": "notify-send"
       }
@@ -233,7 +233,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -283,7 +283,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -298,7 +298,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
@@ -308,34 +308,34 @@
           "show",
           "--no-pager",
           "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
-          "local-ai-planning-live.service",
-          "local-ai-flash-final-agent.service",
-          "local-ai-flash-code-screen.service",
-          "local-ai-flash-agent.service",
-          "local-ai-flash-native-http.service",
-          "local-ai-flash-prefill.service",
-          "local-ai-flash-wide-prefill.service",
-          "local-ai-flash-thp.service",
-          "local-ai-flash-cache-screen.service",
-          "local-ai-flash-overlap.service",
-          "local-ai-flash-smoke.service",
-          "local-ai-flash-profile-cache-abba.service",
-          "local-ai-flash-profile-hot-parity.service",
-          "local-ai-flash-profile-hot-abba.service",
-          "local-ai-flash-profile-cpu-quota-abba.service",
-          "local-ai-flash-profile-decode46.service",
-          "local-ai-flash-profile-decode48.service",
-          "local-ai-flash-profile-selective-q8.service",
-          "local-ai-flash-profile-placement.service",
-          "local-ai-flash-profile-combined-parity.service",
-          "local-ai-flash-profile-combined-coalescing.service",
-          "local-ai-flash-profile-combined-predictive.service",
-          "local-ai-flash-profile-ngram-capture.service",
-          "local-ai-flash-profile-ngram-screen.service",
-          "local-ai-flash-profile-cache-full-12288.service",
-          "local-ai-flash-profile-cache-full-13312.service",
-          "local-ai-flash-profile-io-full-4.service",
-          "local-ai-flash-profile-io-full-8.service"
+          "oxc-planning-live.service",
+          "oxc-flash-final-agent.service",
+          "oxc-flash-code-screen.service",
+          "oxc-flash-agent.service",
+          "oxc-flash-native-http.service",
+          "oxc-flash-prefill.service",
+          "oxc-flash-wide-prefill.service",
+          "oxc-flash-thp.service",
+          "oxc-flash-cache-screen.service",
+          "oxc-flash-overlap.service",
+          "oxc-flash-smoke.service",
+          "oxc-flash-profile-cache-abba.service",
+          "oxc-flash-profile-hot-parity.service",
+          "oxc-flash-profile-hot-abba.service",
+          "oxc-flash-profile-cpu-quota-abba.service",
+          "oxc-flash-profile-decode46.service",
+          "oxc-flash-profile-decode48.service",
+          "oxc-flash-profile-selective-q8.service",
+          "oxc-flash-profile-placement.service",
+          "oxc-flash-profile-combined-parity.service",
+          "oxc-flash-profile-combined-coalescing.service",
+          "oxc-flash-profile-combined-predictive.service",
+          "oxc-flash-profile-ngram-capture.service",
+          "oxc-flash-profile-ngram-screen.service",
+          "oxc-flash-profile-cache-full-12288.service",
+          "oxc-flash-profile-cache-full-13312.service",
+          "oxc-flash-profile-io-full-4.service",
+          "oxc-flash-profile-io-full-8.service"
         ],
         "command": "systemctl"
       }
@@ -350,7 +350,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -365,7 +365,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -380,7 +380,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -423,14 +423,14 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       },
       {
         "args": [
           "Local AI",
-          "Flash is not ready on this machine. Run `local-ai status` to see why."
+          "Flash is not ready on this machine. Run `oxc status` to see why."
         ],
         "command": "notify-send"
       }
@@ -441,7 +441,7 @@
   "retired-dense": {
     "exit": 2,
     "host_commands": [],
-    "stderr": "The dense Qwen3.8 27B model was retired in v0.1.2. Use `local-ai ornith` or `local-ai moe`.\n",
+    "stderr": "The dense Qwen3.8 27B model was retired in v0.1.2. Use `oxc ornith` or `oxc moe`.\n",
     "stdout": ""
   },
   "rollback-check-no-stage": {
@@ -459,7 +459,7 @@
   "share-invalid": {
     "exit": 2,
     "host_commands": [],
-    "stderr": "Usage:\n  local-ai share [status] [--json]      what is shared, where, and the key fingerprint\n  local-ai share on [tailscale|lan]     share the OpenAI API with your devices (default: tailscale)\n  local-ai share off                    loopback only again, at once\n  local-ai share key [--rotate]         show the API key once; --rotate makes a new one (old stops working)\n",
+    "stderr": "Usage:\n  oxc share [status] [--json]      what is shared, where, and the key fingerprint\n  oxc share on [tailscale|lan]     share the OpenAI API with your devices (default: tailscale)\n  oxc share off                    loopback only again, at once\n  oxc share key [--rotate]         show the API key once; --rotate makes a new one (old stops working)\n",
     "stdout": ""
   },
   "share-json": {
@@ -483,34 +483,34 @@
           "show",
           "--no-pager",
           "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
-          "local-ai-planning-live.service",
-          "local-ai-flash-final-agent.service",
-          "local-ai-flash-code-screen.service",
-          "local-ai-flash-agent.service",
-          "local-ai-flash-native-http.service",
-          "local-ai-flash-prefill.service",
-          "local-ai-flash-wide-prefill.service",
-          "local-ai-flash-thp.service",
-          "local-ai-flash-cache-screen.service",
-          "local-ai-flash-overlap.service",
-          "local-ai-flash-smoke.service",
-          "local-ai-flash-profile-cache-abba.service",
-          "local-ai-flash-profile-hot-parity.service",
-          "local-ai-flash-profile-hot-abba.service",
-          "local-ai-flash-profile-cpu-quota-abba.service",
-          "local-ai-flash-profile-decode46.service",
-          "local-ai-flash-profile-decode48.service",
-          "local-ai-flash-profile-selective-q8.service",
-          "local-ai-flash-profile-placement.service",
-          "local-ai-flash-profile-combined-parity.service",
-          "local-ai-flash-profile-combined-coalescing.service",
-          "local-ai-flash-profile-combined-predictive.service",
-          "local-ai-flash-profile-ngram-capture.service",
-          "local-ai-flash-profile-ngram-screen.service",
-          "local-ai-flash-profile-cache-full-12288.service",
-          "local-ai-flash-profile-cache-full-13312.service",
-          "local-ai-flash-profile-io-full-4.service",
-          "local-ai-flash-profile-io-full-8.service"
+          "oxc-planning-live.service",
+          "oxc-flash-final-agent.service",
+          "oxc-flash-code-screen.service",
+          "oxc-flash-agent.service",
+          "oxc-flash-native-http.service",
+          "oxc-flash-prefill.service",
+          "oxc-flash-wide-prefill.service",
+          "oxc-flash-thp.service",
+          "oxc-flash-cache-screen.service",
+          "oxc-flash-overlap.service",
+          "oxc-flash-smoke.service",
+          "oxc-flash-profile-cache-abba.service",
+          "oxc-flash-profile-hot-parity.service",
+          "oxc-flash-profile-hot-abba.service",
+          "oxc-flash-profile-cpu-quota-abba.service",
+          "oxc-flash-profile-decode46.service",
+          "oxc-flash-profile-decode48.service",
+          "oxc-flash-profile-selective-q8.service",
+          "oxc-flash-profile-placement.service",
+          "oxc-flash-profile-combined-parity.service",
+          "oxc-flash-profile-combined-coalescing.service",
+          "oxc-flash-profile-combined-predictive.service",
+          "oxc-flash-profile-ngram-capture.service",
+          "oxc-flash-profile-ngram-screen.service",
+          "oxc-flash-profile-cache-full-12288.service",
+          "oxc-flash-profile-cache-full-13312.service",
+          "oxc-flash-profile-io-full-4.service",
+          "oxc-flash-profile-io-full-8.service"
         ],
         "command": "systemctl"
       }
@@ -527,34 +527,34 @@
           "show",
           "--no-pager",
           "--property=Id,ActiveState,ActiveEnterTimestampMonotonic",
-          "local-ai-planning-live.service",
-          "local-ai-flash-final-agent.service",
-          "local-ai-flash-code-screen.service",
-          "local-ai-flash-agent.service",
-          "local-ai-flash-native-http.service",
-          "local-ai-flash-prefill.service",
-          "local-ai-flash-wide-prefill.service",
-          "local-ai-flash-thp.service",
-          "local-ai-flash-cache-screen.service",
-          "local-ai-flash-overlap.service",
-          "local-ai-flash-smoke.service",
-          "local-ai-flash-profile-cache-abba.service",
-          "local-ai-flash-profile-hot-parity.service",
-          "local-ai-flash-profile-hot-abba.service",
-          "local-ai-flash-profile-cpu-quota-abba.service",
-          "local-ai-flash-profile-decode46.service",
-          "local-ai-flash-profile-decode48.service",
-          "local-ai-flash-profile-selective-q8.service",
-          "local-ai-flash-profile-placement.service",
-          "local-ai-flash-profile-combined-parity.service",
-          "local-ai-flash-profile-combined-coalescing.service",
-          "local-ai-flash-profile-combined-predictive.service",
-          "local-ai-flash-profile-ngram-capture.service",
-          "local-ai-flash-profile-ngram-screen.service",
-          "local-ai-flash-profile-cache-full-12288.service",
-          "local-ai-flash-profile-cache-full-13312.service",
-          "local-ai-flash-profile-io-full-4.service",
-          "local-ai-flash-profile-io-full-8.service"
+          "oxc-planning-live.service",
+          "oxc-flash-final-agent.service",
+          "oxc-flash-code-screen.service",
+          "oxc-flash-agent.service",
+          "oxc-flash-native-http.service",
+          "oxc-flash-prefill.service",
+          "oxc-flash-wide-prefill.service",
+          "oxc-flash-thp.service",
+          "oxc-flash-cache-screen.service",
+          "oxc-flash-overlap.service",
+          "oxc-flash-smoke.service",
+          "oxc-flash-profile-cache-abba.service",
+          "oxc-flash-profile-hot-parity.service",
+          "oxc-flash-profile-hot-abba.service",
+          "oxc-flash-profile-cpu-quota-abba.service",
+          "oxc-flash-profile-decode46.service",
+          "oxc-flash-profile-decode48.service",
+          "oxc-flash-profile-selective-q8.service",
+          "oxc-flash-profile-placement.service",
+          "oxc-flash-profile-combined-parity.service",
+          "oxc-flash-profile-combined-coalescing.service",
+          "oxc-flash-profile-combined-predictive.service",
+          "oxc-flash-profile-ngram-capture.service",
+          "oxc-flash-profile-ngram-screen.service",
+          "oxc-flash-profile-cache-full-12288.service",
+          "oxc-flash-profile-cache-full-13312.service",
+          "oxc-flash-profile-io-full-4.service",
+          "oxc-flash-profile-io-full-8.service"
         ],
         "command": "systemctl"
       }
@@ -575,7 +575,7 @@
         "args": [
           "--user",
           "start",
-          "local-ai-chat.service"
+          "oxc-chat.service"
         ],
         "command": "systemctl"
       }
@@ -593,13 +593,13 @@
     "exit": 0,
     "host_commands": [],
     "stderr": "",
-    "stdout": "Removed:\n  (nothing)\nNotes:\n  - no ox-llm install record was found (update state, or pass --record); no program file is removed\n  - Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\n"
+    "stdout": "Removed:\n  (nothing)\nNotes:\n  - no ox-llm install record was found (update state, or pass --record); no program file is removed\n  - Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\n"
   },
   "uninstall-dry-run": {
     "exit": 0,
     "host_commands": [],
     "stderr": "",
-    "stdout": "Dry run (nothing changed; pass --apply to remove):\n  (nothing)\nNotes:\n  - no ox-llm install record was found (update state, or pass --record); no program file is removed\n  - Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\n"
+    "stdout": "Dry run (nothing changed; pass --apply to remove):\n  (nothing)\nNotes:\n  - no ox-llm install record was found (update state, or pass --record); no program file is removed\n  - Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\n"
   },
   "unload": {
     "exit": 0,
@@ -611,6 +611,6 @@
     "exit": 2,
     "host_commands": [],
     "stderr": "",
-    "stdout": "Not ready to install: No staged release is ready to install. Stage one first, then run `local-ai update <dir>`.\n"
+    "stdout": "Not ready to install: No staged release is ready to install. Stage one first, then run `oxc update <dir>`.\n"
   }
 }

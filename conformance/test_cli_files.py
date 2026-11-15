@@ -1,4 +1,5 @@
 """CLI file readers: private ledger fixtures, bounds and symlink refusal."""
+from environment import PYTHON
 import json
 import os
 from pathlib import Path
@@ -40,7 +41,7 @@ def invoke(name):
             path.chmod(0o600)
         executable = home / 'oxc'
         executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
+        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(executable)]
         args = ['ledger', '--json'] + (['--limit', '0'] if name == 'limit-clamped' else [])
         result = subprocess.run(command + args, env=env, cwd=home, capture_output=True, text=True, timeout=5)
         if result.returncode != 0:

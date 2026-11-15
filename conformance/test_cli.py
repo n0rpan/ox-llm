@@ -1,6 +1,8 @@
 """Black-box CLI contracts. No controller modules are imported by this suite."""
+from environment import PYTHON
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -46,6 +48,13 @@ class CliContract(unittest.TestCase):
                 self.assertEqual(invoke(args), self.expected[name])
 
 
+def normalize_usage(text):
+    """Keep argparse's complete usage grammar, independent of version wrapping."""
+    return re.sub(r'^usage: ([^\n]*)(?:\n[ \t]+[^\n]+)*',
+                  lambda match: 'usage: ' + ' '.join(match.group().split()[1:]), text,
+                  flags=re.MULTILINE)
+
+
 def invoke(args):
     with tempfile.TemporaryDirectory(prefix='oxc-conformance-') as directory:
         home = Path(directory)
@@ -53,7 +62,7 @@ def invoke(args):
         # link also exercises Python's installed entry script without importing it.
         executable = home / 'oxc'
         executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
+        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(executable)]
         # Do not inherit credentials, proxy configuration, XDG paths or controller
         # overrides. These cases terminate in the parser before any HTTP request.
         env = {'HOME': str(home), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
@@ -66,8 +75,8 @@ def invoke(args):
                                 capture_output=True, timeout=10)
         if set(home.iterdir()) != {executable}:
             raise AssertionError('Parser-only invocation wrote installation state')
-        return {'exit': result.returncode, 'stdout': result.stdout.decode(),
-                'stderr': result.stderr.decode()}
+        return {'exit': result.returncode, 'stdout': normalize_usage(result.stdout.decode()),
+                'stderr': normalize_usage(result.stderr.decode())}
 
 
 if __name__ == '__main__':

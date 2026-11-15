@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 
-from environment import ROOT, isolated_env
+from environment import ROOT, isolated_env, PYTHON
 
 CANONICAL_HOME = Path('/home/oxc-conformance')  # Synthetic namespace mount.
 
@@ -16,7 +16,7 @@ def invoke_case(name, script=None, network_admin=False, timeout=25):
     with tempfile.TemporaryDirectory(prefix='oxc-cli-runtime-') as directory:
         home = Path(directory)
         env = isolated_env(home)
-        for key in ('OXC_COMMAND', 'OXC_DAEMON_COMMAND'):
+        for key in ('OXC_COMMAND', 'OXC_DAEMON_COMMAND', 'OXC_CLOUD_INSTALL_COMMAND'):
             if key in os.environ:
                 env[key] = os.environ[key]
         command = ['bwrap', '--die-with-parent', '--unshare-net',
@@ -28,7 +28,7 @@ def invoke_case(name, script=None, network_admin=False, timeout=25):
                    '--ro-bind', str(ROOT), str(ROOT),
                    '--bind', str(home), str(CANONICAL_HOME),
                    '--setenv', 'HOME', str(CANONICAL_HOME), '--',
-                   sys.executable, str(Path(script or ROOT / 'conformance/test_cli_runtime.py').resolve()), '--case', name]
+                   PYTHON, str(Path(script or ROOT / 'conformance/test_cli_runtime.py').resolve()), '--case', name]
         result = subprocess.run(command, env=env, capture_output=True, timeout=timeout)
         if result.returncode:
             raise AssertionError(name + ': ' + result.stderr.decode())

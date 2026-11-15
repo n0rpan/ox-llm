@@ -1,4 +1,5 @@
 """Public CLI staged update/rollback against loopback and stateful systemd peers."""
+from environment import PYTHON
 import hashlib
 import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,7 +37,7 @@ class UpdateContract(unittest.TestCase):
         binary.mkdir()
         systemctl = binary / 'systemctl'
         source = (ROOT / 'conformance/fixtures/host_command.py').read_text().split('\n', 1)[1]
-        systemctl.write_text('#!' + sys.executable + '\n' + source)
+        systemctl.write_text('#!' + PYTHON + '\n' + source)
         systemctl.chmod(0o700)
         self.env.update({'PATH': str(binary) + ':/usr/bin:/bin', 'OXC_STATEFUL_SYSTEMCTL': '1',
                          'OXC_UPDATE_READY_SECONDS': '0.1', 'OXC_UPDATE_CHAT_SECONDS': '2',
@@ -79,7 +80,7 @@ class UpdateContract(unittest.TestCase):
         self.env['OXC_CHAT_URL'] = 'http://127.0.0.1:' + str(self.server.server_port)
         executable = self.home / 'oxc'
         executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-        self.command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
+        self.command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(executable)]
         self.stage = self.home / 'staged/synthetic-release'
         (self.stage / 'rollback').mkdir(parents=True)
         (self.stage / 'tools').mkdir()
@@ -101,7 +102,7 @@ class UpdateContract(unittest.TestCase):
         (self.stage / 'manifest.json').write_text(json.dumps(manifest))
         for tool in ('install_staged_release.py', 'stage_rollback_guard.py'):
             shutil.copyfile(ROOT / 'oxc/tools' / tool, self.stage / 'tools' / tool)
-        binding = [sys.executable, str(self.stage / 'tools/stage_rollback_guard.py'), 'bind', str(self.stage)]
+        binding = [PYTHON, str(self.stage / 'tools/stage_rollback_guard.py'), 'bind', str(self.stage)]
         for key, path in self.paths.items():
             binding += ['--path', key + '=' + str(path)]
         result = subprocess.run(binding, env=self.env, cwd=self.home, capture_output=True, text=True, timeout=10)
@@ -337,7 +338,7 @@ class UpdateContract(unittest.TestCase):
         agent = target / '.local/bin/oxa'
         agent.parent.mkdir(parents=True)
         log = self.home / 'identity-calls.jsonl'
-        agent.write_text('#!' + sys.executable + '\nimport os,json,sys\n'
+        agent.write_text('#!' + PYTHON + '\nimport os,json,sys\n'
                          'with open(os.environ["FAKE_IDENTITY_LOG"],"a") as out:\n'
                          ' out.write(json.dumps({"args":sys.argv[1:],"home":os.environ["HOME"],'
                          '"url":os.environ["OXA_ENGINE_URL"]})+"\\n")\n'

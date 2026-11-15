@@ -1,4 +1,5 @@
 """Python integer syntax and bounds through the actual public ledger command."""
+from environment import PYTHON
 import json
 import os
 from pathlib import Path
@@ -38,7 +39,7 @@ def capture(name):
         before = path.read_bytes()
         executable = home / 'oxc'
         executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
+        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(executable)]
         # Explicit form lets argparse distinguish a negative Unicode number
         # from an option, while still running its real type=int conversion.
         result = subprocess.run([*command, 'ledger', '--json', '--limit=' + CASES[name]],

@@ -29,7 +29,7 @@
         "symlink": false
       },
       "exit": 1,
-      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `oxc share key --rotate` for a new one; the old one then stops working.\n",
       "stdout": ""
     }
   ],
@@ -66,7 +66,7 @@
         "symlink": false
       },
       "exit": 1,
-      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `oxc share key --rotate` for a new one; the old one then stops working.\n",
       "stdout": ""
     }
   ],
@@ -118,7 +118,7 @@
         "symlink": false
       },
       "exit": 1,
-      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `oxc share key --rotate` for a new one; the old one then stops working.\n",
       "stdout": ""
     },
     {
@@ -150,7 +150,7 @@
         "symlink": false
       },
       "exit": 1,
-      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-1>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-1>>). Run `oxc share key --rotate` for a new one; the old one then stops working.\n",
       "stdout": ""
     }
   ],
@@ -209,7 +209,7 @@
     {
       "disk": null,
       "exit": 1,
-      "stderr": "Share key unavailable: [Errno 40] Too many levels of symbolic links: '<HOME>/config/local-ai/.lan-share-key.json.lock'\n",
+      "stderr": "Share key unavailable: [Errno 40] Too many levels of symbolic links: '<HOME>/config/oxc/.lan-share-key.json.lock'\n",
       "stdout": ""
     },
     {
@@ -247,7 +247,7 @@
         "symlink": false
       },
       "exit": 1,
-      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-0>>). Run `oxc share key --rotate` for a new one; the old one then stops working.\n",
       "stdout": ""
     }
   ],
@@ -370,7 +370,7 @@
         "symlink": false
       },
       "exit": 1,
-      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-1>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-1>>). Run `oxc share key --rotate` for a new one; the old one then stops working.\n",
       "stdout": ""
     },
     {
@@ -402,7 +402,7 @@
         "symlink": false
       },
       "exit": 1,
-      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-2>>). Run `local-ai share key --rotate` for a new one; the old one then stops working.\n",
+      "stderr": "The key was already shown (fingerprint <fingerprint:<validated:key-2>>). Run `oxc share key --rotate` for a new one; the old one then stops working.\n",
       "stdout": ""
     }
   ],

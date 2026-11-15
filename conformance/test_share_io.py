@@ -1,4 +1,5 @@
 """Real 60-second shared-socket limits, observed concurrently in isolated networking."""
+from environment import PYTHON
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -23,7 +24,7 @@ def capture():
     binary_dir.mkdir()
     executable = binary_dir / 'ip'
     source = (ROOT / 'conformance/fixtures/network_ip.py').read_text().split('\n', 1)[1]
-    executable.write_text('#!' + sys.executable + '\n' + source)
+    executable.write_text('#!' + PYTHON + '\n' + source)
     executable.chmod(0o700)
     network = home / 'network.json'
     network.write_text(json.dumps({'addresses': [{'ifname': 'enp-fixture', 'link_type': 'ether',

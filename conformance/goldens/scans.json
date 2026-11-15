@@ -1495,7 +1495,7 @@
   },
   "scrub-layout": {
     "exit": 0,
-    "source_after": "$LAB_ROOT\r\n$AI_STACK\r\n$LOCAL_AI_STATE\r\n$XDG_RUNTIME_DIR user-UID.slice user@UID.service\r\n<redacted-uuid>\r\nnumbers 1.25 32768\r\n",
+    "source_after": "$LAB_ROOT\r\n$AI_STACK\r\n$OXC_STATE\r\n$XDG_RUNTIME_DIR user-UID.slice user@UID.service\r\n<redacted-uuid>\r\nnumbers 1.25 32768\r\n",
     "stderr": "",
     "stdout": "changed 1 files; replacements: home-path=3, user-slice=3, uuid=1\n"
   }

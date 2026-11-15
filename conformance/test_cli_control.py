@@ -11,7 +11,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from cli_harness import CANONICAL_HOME, invoke_case
-from environment import ROOT, isolated_env
+from environment import ROOT, isolated_env, PYTHON
 
 GOLDENS = Path(__file__).with_name('goldens') / 'cli-control.json'
 CASES = {
@@ -110,14 +110,14 @@ def capture(name):
         if name == 'unload-no-notifier' and command == 'notify-send':
             continue
         path = binary_dir / command
-        path.write_text('#!' + sys.executable + '\n' + peer)
+        path.write_text('#!' + PYTHON + '\n' + peer)
         path.chmod(0o700)
     env.update(PATH=str(binary_dir), OXC_STATEFUL_SYSTEMCTL='1')
     if name.endswith('start-fails'):
         (home / 'mock-fail-once').write_text('start')
     executable = home / 'oxc'
     executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-    command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
+    command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(executable)]
     server = ThreadingHTTPServer(('127.0.0.1', 8092), Handler)
     server.daemon_threads = True
     server.kind, server.requests = kind, []

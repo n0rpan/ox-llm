@@ -8,11 +8,11 @@
       "<HOME>/.config/omarchy/shell.json": {
         "sha256": "0c8841ba0c2500980d5846d33eebdf565e135619ac45be795423c2e0dc1e4ca4"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -30,25 +30,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -56,7 +56,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\",\n    \"<HOME>/.config/omarchy/shell.json still lists the snapdragon.local-ai widget in the bar layout; it is not edited. Remove that entry yourself, then restart the shell.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\",\n    \"<HOME>/.config/omarchy/shell.json still lists the snapdragon.local-ai widget in the bar layout; it is not edited. Remove that entry yourself, then restart the shell.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "change-after-plan": {
     "exit": 1,
@@ -64,11 +64,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -85,25 +85,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -111,7 +111,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 1,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"changed since the plan; kept\"\n    }\n  ],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 1,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"changed since the plan; kept\"\n    }\n  ],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "changed-file": {
     "exit": 0,
@@ -119,11 +119,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -140,25 +140,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -166,7 +166,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"changed since ox-llm installed it (sha256 differs); kept\"\n    },\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"changed since ox-llm installed it (sha256 differs); kept\"\n    },\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "directory-record": {
     "exit": 0,
@@ -174,11 +174,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -196,25 +196,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -222,7 +222,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin\",\n      \"reason\": \"changed since ox-llm installed it (sha256 differs); kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin\",\n      \"reason\": \"changed since ox-llm installed it (sha256 differs); kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "disable-failed": {
     "exit": 1,
@@ -230,11 +230,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -252,25 +252,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -278,7 +278,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 1,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [\n    {\n      \"path\": \"systemctl disable\",\n      \"reason\": \"synthetic disable failure\"\n    }\n  ],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 1,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [\n    {\n      \"path\": \"systemctl disable\",\n      \"reason\": \"synthetic disable failure\"\n    }\n  ],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "hardlink": {
     "exit": 0,
@@ -286,11 +286,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -311,25 +311,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -337,7 +337,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "journal-apply": {
     "exit": 0,
@@ -345,11 +345,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -367,25 +367,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -393,7 +393,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "journal-dry": {
     "exit": 0,
@@ -401,10 +401,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -419,7 +419,7 @@
     },
     "host_commands": [],
     "stderr": "",
-    "stdout": "{\n  \"applied\": false,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": false,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "journal-text": {
     "exit": 0,
@@ -427,11 +427,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -449,25 +449,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -475,7 +475,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "Removed:\n  - <HOME>/.config/systemd/user/local-ai-chat.service\n  - <HOME>/.local/bin/oxa\nNotes:\n  - Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\n"
+    "stdout": "Removed:\n  - <HOME>/.config/systemd/user/oxc-chat.service\n  - <HOME>/.local/bin/oxa\nNotes:\n  - Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\n"
   },
   "model-outside": {
     "exit": 0,
@@ -483,11 +483,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -508,25 +508,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -534,7 +534,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/local-ai\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    },\n    {\n      \"path\": \"/tmp/oxc-uninstall-outside/model owner's copy.gguf\",\n      \"reason\": \"model file outside home; never removed by this tool\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [\n    \"rm -- '/tmp/oxc-uninstall-outside/model owner'\\\"'\\\"'s copy.gguf'\"\n  ]\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/oxc\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    },\n    {\n      \"path\": \"/tmp/oxc-uninstall-outside/model owner's copy.gguf\",\n      \"reason\": \"model file outside home; never removed by this tool\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [\n    \"rm -- '/tmp/oxc-uninstall-outside/model owner'\\\"'\\\"'s copy.gguf'\"\n  ]\n}\n"
   },
   "model-parent-escape": {
     "exit": 2,
@@ -542,10 +542,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -563,7 +563,7 @@
     },
     "host_commands": [],
     "stderr": "",
-    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/local-ai\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    }\n  ],\n  \"refused\": [\n    {\n      \"path\": \"<HOME>/linked-models/model owner's copy.gguf\",\n      \"reason\": \"a parent directory is a symlink that leaves home\"\n    }\n  ],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"unsafe paths in the plan (see Refused); nothing removed\"\n}\n"
+    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/oxc\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    }\n  ],\n  \"refused\": [\n    {\n      \"path\": \"<HOME>/linked-models/model owner's copy.gguf\",\n      \"reason\": \"a parent directory is a symlink that leaves home\"\n    }\n  ],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"unsafe paths in the plan (see Refused); nothing removed\"\n}\n"
   },
   "model-symlink": {
     "exit": 0,
@@ -571,11 +571,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -597,25 +597,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -623,7 +623,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\",\n    \"<HOME>/models/synthetic.gguf\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/local-ai\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\",\n    \"<HOME>/models/synthetic.gguf\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/oxc\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "models-kept": {
     "exit": 0,
@@ -631,11 +631,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -656,25 +656,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -682,7 +682,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/local-ai\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    },\n    {\n      \"path\": \"<HOME>/models/synthetic.gguf\",\n      \"reason\": \"model weights (pass --remove-models to delete this file)\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/oxc\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    },\n    {\n      \"path\": \"<HOME>/models/synthetic.gguf\",\n      \"reason\": \"model weights (pass --remove-models to delete this file)\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "models-remove": {
     "exit": 0,
@@ -690,11 +690,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -716,25 +716,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -742,7 +742,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\",\n    \"<HOME>/models/synthetic.gguf\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/local-ai\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\",\n    \"<HOME>/models/synthetic.gguf\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.config/oxc\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "multiple-records": {
     "exit": 0,
@@ -750,11 +750,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -773,25 +773,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -799,7 +799,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/owner-file\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\",\n    \"<HOME>/extra-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/owner-file\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\",\n    \"<HOME>/extra-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "outside-record": {
     "exit": 2,
@@ -807,10 +807,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -825,7 +825,7 @@
     },
     "host_commands": [],
     "stderr": "",
-    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [],\n  \"remove\": [],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [\n    {\n      \"path\": \"/tmp/oxc-uninstall-outside/model owner's copy.gguf\",\n      \"reason\": \"outside home\"\n    }\n  ],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"unsafe paths in the plan (see Refused); nothing removed\"\n}\n"
+    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [],\n  \"remove\": [],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [\n    {\n      \"path\": \"/tmp/oxc-uninstall-outside/model owner's copy.gguf\",\n      \"reason\": \"outside home\"\n    }\n  ],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"unsafe paths in the plan (see Refused); nothing removed\"\n}\n"
   },
   "oversized-record": {
     "exit": 0,
@@ -833,10 +833,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -851,7 +851,7 @@
     },
     "host_commands": [],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [],\n  \"removed\": [],\n  \"records\": [],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"no ox-llm install record was found (update state, or pass --record); no program file is removed\",\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [],\n  \"removed\": [],\n  \"records\": [],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"no ox-llm install record was found (update state, or pass --record); no program file is removed\",\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "parent-escape": {
     "exit": 2,
@@ -859,10 +859,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -881,7 +881,7 @@
     },
     "host_commands": [],
     "stderr": "",
-    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [\n    {\n      \"path\": \"<HOME>/escaped-parent/model owner's copy.gguf\",\n      \"reason\": \"a parent directory is a symlink that leaves home\"\n    }\n  ],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"unsafe paths in the plan (see Refused); nothing removed\"\n}\n"
+    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [\n    {\n      \"path\": \"<HOME>/escaped-parent/model owner's copy.gguf\",\n      \"reason\": \"a parent directory is a symlink that leaves home\"\n    }\n  ],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"unsafe paths in the plan (see Refused); nothing removed\"\n}\n"
   },
   "program-symlink": {
     "exit": 0,
@@ -889,11 +889,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -910,25 +910,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -936,7 +936,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"changed since ox-llm installed it (sha256 differs); kept\"\n    },\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"changed since ox-llm installed it (sha256 differs); kept\"\n    },\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "relative-home": {
     "exit": 2,
@@ -944,10 +944,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -970,11 +970,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -992,25 +992,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -1018,7 +1018,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 1,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [\n    {\n      \"path\": \"systemctl daemon-reload\",\n      \"reason\": \"synthetic daemon-reload failure\"\n    }\n  ],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 1,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [\n    {\n      \"path\": \"systemctl daemon-reload\",\n      \"reason\": \"synthetic daemon-reload failure\"\n    }\n  ],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "root-home": {
     "exit": 2,
@@ -1026,10 +1026,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -1052,11 +1052,11 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "directory": false,
         "exists": false
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -1090,25 +1090,25 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "disable",
-        "local-ai-chat.service"
+        "oxc-chat.service"
       ],
       [
         "--user",
@@ -1116,7 +1116,7 @@
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\",\n    \"<HOME>/.local/share/ai-stack/releases/synthetic/oxe-server\",\n    \"<HOME>/.local/share/ai-stack/runtime-releases/synthetic/controller.txt\",\n    \"<HOME>/.local/share/ai-stack/runtime-releases/synthetic\",\n    \"<HOME>/.local/share/ai-stack/releases/synthetic\"\n  ],\n  \"records\": [\n    \"<HOME>/stage/manifest.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/state/local-ai\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    },\n    {\n      \"path\": \"<HOME>/.local/share/ai-stack/runtime-releases\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    },\n    {\n      \"path\": \"<HOME>/.local/share/ai-stack/releases\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"removed\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\",\n    \"<HOME>/.local/share/ai-stack/releases/synthetic/oxe-server\",\n    \"<HOME>/.local/share/ai-stack/runtime-releases/synthetic/controller.txt\",\n    \"<HOME>/.local/share/ai-stack/runtime-releases/synthetic\",\n    \"<HOME>/.local/share/ai-stack/releases/synthetic\"\n  ],\n  \"records\": [\n    \"<HOME>/stage/manifest.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/state/oxc\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    },\n    {\n      \"path\": \"<HOME>/.local/share/ai-stack/runtime-releases\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    },\n    {\n      \"path\": \"<HOME>/.local/share/ai-stack/releases\",\n      \"reason\": \"directory left in place; only its recorded files are removed\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "stop-refused": {
     "exit": 2,
@@ -1124,10 +1124,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -1144,30 +1144,30 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "stop",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ],
       [
         "--user",
         "start",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"could not prove these services stopped: local-ai-chat.service (active), prompt-studio-app.service (active); nothing removed; restarted local-ai-chat.service, prompt-studio-app.service\"\n}\n"
+    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"could not prove these services stopped: oxc-chat.service (active), prompt-studio-app.service (active); nothing removed; restarted oxc-chat.service, prompt-studio-app.service\"\n}\n"
   },
   "stop-unavailable": {
     "exit": 2,
@@ -1175,10 +1175,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -1195,12 +1195,12 @@
       [
         "--user",
         "is-active",
-        "local-ai-chat.service",
+        "oxc-chat.service",
         "prompt-studio-app.service"
       ]
     ],
     "stderr": "",
-    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [\n    \"local-ai-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/local-ai-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"cannot ask systemctl whether the ox-llm services run; nothing removed\"\n}\n"
+    "stdout": "{\n  \"applied\": false,\n  \"exit\": 2,\n  \"units\": [\n    \"oxc-chat.service\",\n    \"prompt-studio-app.service\"\n  ],\n  \"remove\": [\n    \"<HOME>/.config/systemd/user/oxc-chat.service\",\n    \"<HOME>/.local/bin/oxa\"\n  ],\n  \"records\": [\n    \"<HOME>/install-record.json\"\n  ],\n  \"failed\": [],\n  \"kept\": [],\n  \"refused\": [],\n  \"notes\": [\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": [],\n  \"error\": \"cannot ask systemctl whether the ox-llm services run; nothing removed\"\n}\n"
   },
   "symlink-record": {
     "exit": 0,
@@ -1208,10 +1208,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -1226,7 +1226,7 @@
     },
     "host_commands": [],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [],\n  \"removed\": [],\n  \"records\": [],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"no ox-llm install record was found (update state, or pass --record); no program file is removed\",\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [],\n  \"removed\": [],\n  \"records\": [],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"no ox-llm install record was found (update state, or pass --record); no program file is removed\",\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   },
   "unrecorded-file": {
     "exit": 0,
@@ -1234,10 +1234,10 @@
       "/tmp/oxc-uninstall-outside/model owner's copy.gguf": {
         "sha256": "e4803e065fa4574df1b6a57fbf89400e0e1d48bd2c9acb86811d8d1300dfb8a1"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service": {
+      "<HOME>/.config/systemd/user/oxc-chat.service": {
         "sha256": "ca40768e15730772f12712f47acd04dc707e22384147cf15669919d06e0e39cc"
       },
-      "<HOME>/.config/systemd/user/local-ai-chat.service.d/keep-owner.conf": {
+      "<HOME>/.config/systemd/user/oxc-chat.service.d/keep-owner.conf": {
         "sha256": "515f502d80e6dd191ed56b48b80c1aa15cd0948d7dac168edbb3f2b0aa497177"
       },
       "<HOME>/.config/systemd/user/prompt-studio-app.service": {
@@ -1252,6 +1252,6 @@
     },
     "host_commands": [],
     "stderr": "",
-    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [],\n  \"removed\": [],\n  \"records\": [],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"no ox-llm install record was found (update state, or pass --record); no program file is removed\",\n    \"Client configurations outside ~/.config/local-ai are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
+    "stdout": "{\n  \"applied\": true,\n  \"exit\": 0,\n  \"units\": [],\n  \"removed\": [],\n  \"records\": [],\n  \"failed\": [],\n  \"kept\": [\n    {\n      \"path\": \"<HOME>/.local/bin/oxa\",\n      \"reason\": \"not in an ox-llm install record; kept\"\n    }\n  ],\n  \"refused\": [],\n  \"notes\": [\n    \"no ox-llm install record was found (update state, or pass --record); no program file is removed\",\n    \"Client configurations outside ~/.config/oxc are yours and are left in place; a client set up for http://127.0.0.1:8092/v1 stops working until ox-llm is installed again.\"\n  ],\n  \"commands\": []\n}\n"
   }
 }

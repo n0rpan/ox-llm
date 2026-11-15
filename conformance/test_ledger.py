@@ -319,7 +319,10 @@ class LedgerContract(unittest.TestCase):
                 try:
                     request = pool.submit(daemon.call, 'POST', '/v1/chat/completions', chat(), HEADERS)
                     self.assertEqual(request.result(timeout=5)['status'], 200)
-                    self.assertEqual(status(daemon)['active_requests'], 1)
+                    # Main's cloud status reads spend under the ledger append
+                    # lock. It cannot observe this deliberately blocked writer;
+                    # discovery remains available and unload must still wait.
+                    self.assertEqual(daemon.call('GET', '/v1/models')['status'], 200)
                     unload = pool.submit(daemon.call, 'POST', '/_local/unload', {})
                     time.sleep(0.1)
                     self.assertFalse(unload.done(), 'Unload refused after forwarding had completed')
@@ -341,6 +344,11 @@ class LedgerContract(unittest.TestCase):
                     finally:
                         os.close(descriptor)
                 row = json.loads(data)
+                # Restore a regular daily ledger before status reads spend.
+                # Opening the completed FIFO for read would wait for a new
+                # writer, rather than represent the finished append.
+                path.unlink()
+                path.write_bytes(data)
                 self.assertEqual(row['status'], 200)
                 self.assertIsNone(row['error'])
                 self.assertEqual(unload.result(timeout=5)['status'], 200)

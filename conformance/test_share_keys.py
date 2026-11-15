@@ -1,4 +1,5 @@
 """Host-only share-key lifecycle, shown once under a real cross-process lock."""
+from environment import PYTHON
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -65,7 +66,7 @@ def capture(name):
         key.with_name('.' + key.name + '.lock').symlink_to(home / 'lock-target')
     entry = home / 'oxc'
     entry.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-    reference = [sys.executable, str(entry)]
+    reference = [PYTHON, str(entry)]
     command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else reference
 
     def snapshot():

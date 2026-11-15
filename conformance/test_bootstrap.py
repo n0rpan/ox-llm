@@ -1,4 +1,5 @@
 """Bootstrap/install/rollback contracts through their public process entry points."""
+from environment import PYTHON
 import hashlib
 import fcntl
 import http.client
@@ -38,7 +39,7 @@ class BootstrapContract(unittest.TestCase):
             'bootstrap': ('OXC_BOOTSTRAP_COMMAND', 'oxc.bootstrap'),
             'install': ('OXC_INSTALL_COMMAND', 'oxc.bootstrap_install'),
         }[operation]
-        command = shlex.split(os.environ[variable]) if variable in os.environ else [sys.executable, '-m', module]
+        command = shlex.split(os.environ[variable]) if variable in os.environ else [PYTHON, '-m', module]
         result = subprocess.run(command + [str(arg) for arg in args], cwd=self.home, env=self.env,
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
@@ -77,7 +78,7 @@ class BootstrapContract(unittest.TestCase):
         return ['rollback', '--journal', self.journal, '--journal-sha256', identity]
 
     def invoke_reference_install(self, args):
-        result = subprocess.run([sys.executable, '-m', 'oxc.bootstrap_install',
+        result = subprocess.run([PYTHON, '-m', 'oxc.bootstrap_install',
                                  *(str(arg) for arg in args)], cwd=self.home, env=self.env,
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -310,7 +311,7 @@ class BootstrapContract(unittest.TestCase):
                 args = ['--project', ROOT / 'oxc', 'plan', '--target-home', self.target,
                         '--image-model', image]
                 actual = json.loads(self.invoke('bootstrap', args).stdout)
-                reference = subprocess.run([sys.executable, '-m', 'oxc.bootstrap',
+                reference = subprocess.run([PYTHON, '-m', 'oxc.bootstrap',
                     *(str(arg) for arg in args)], cwd=self.home, env=self.env,
                     capture_output=True, text=True, timeout=20, check=True)
                 self.assertEqual(actual, json.loads(reference.stdout))
@@ -370,7 +371,7 @@ class BootstrapContract(unittest.TestCase):
                 with self.subTest(operation=operation, action=action):
                     args = ([action] if action else []) + ['--help']
                     actual = self.invoke(operation, args)
-                    reference = subprocess.run([sys.executable, '-m', 'oxc.' + module, *args],
+                    reference = subprocess.run([PYTHON, '-m', 'oxc.' + module, *args],
                         cwd=self.home, env=self.env, capture_output=True, text=True, timeout=10, check=True)
                     self.assertEqual(actual.stdout, reference.stdout)
                     self.assertEqual(actual.stderr, reference.stderr)

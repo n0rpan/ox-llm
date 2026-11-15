@@ -1,4 +1,5 @@
 """Numbers-only digest CLI contracts, including private writes and stored-day interoperability."""
+from environment import PYTHON
 import datetime
 import json
 import os
@@ -39,7 +40,7 @@ def capture(name):
     with Daemon(configured=True, home=home, port=8092) as daemon:
         entry = home / 'oxc'
         entry.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-        reference = [sys.executable, str(entry)]
+        reference = [PYTHON, str(entry)]
         ledger, directory = home / 'digest-ledger', home / 'digest-output'
         ledger.mkdir(mode=0o700)
         directory.mkdir(mode=0o755)
@@ -149,7 +150,7 @@ def capture(name):
             arguments[2] = '2026-W44-7'
         if name == 'date-not-padded':
             arguments[2] = '2026-1-1'
-        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(entry)]
+        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(entry)]
         result = subprocess.run([*daemon.namespace, *command, *arguments], cwd=home,
                                 env=environment, capture_output=True, text=True, timeout=15)
         def normalize(value):

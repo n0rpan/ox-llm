@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 
-from environment import ROOT, PRIMARY, SECONDARY, isolated_env
+from environment import ROOT, PRIMARY, SECONDARY, isolated_env, PYTHON
 
 
 def free_port():
@@ -135,7 +135,7 @@ class Daemon:
             self.config_path.write_text(json.dumps(self.config_changes))
             self.config_path.chmod(0o600)
         command = shlex.split(os.environ['OXC_DAEMON_COMMAND']) if 'OXC_DAEMON_COMMAND' in os.environ else [
-            sys.executable, '-m', 'oxc.runtime.controller']
+            PYTHON, '-m', 'oxc.runtime.controller']
         self.namespace = []
         if self.configured:
             self.namespace = self.host_fixture([])
@@ -186,7 +186,7 @@ class Daemon:
     def restart(self, reference=False):
         self.stop()
         if reference or 'OXC_DAEMON_COMMAND' not in os.environ:
-            command = [sys.executable, '-m', 'oxc.runtime.controller']
+            command = [PYTHON, '-m', 'oxc.runtime.controller']
         else:
             command = shlex.split(os.environ['OXC_DAEMON_COMMAND'])
         self.start(command)
@@ -201,7 +201,7 @@ class Daemon:
             source += '\n# supported flags: --state-cache --state-budget-bytes --state-ttl-secs \n'
         if self.environ.get('FAKE_ENGINE_STATE_PRELOAD') == '1':
             source += '\n# oxe-capability state-preload-v1\n'
-        binary.write_text('#!' + sys.executable + '\n' + source.split('\n', 1)[1])
+        binary.write_text('#!' + PYTHON + '\n' + source.split('\n', 1)[1])
         binary.chmod(0o700)
         model = self.home / 'synthetic.gguf'
         model.write_bytes(b'synthetic-model')
@@ -251,6 +251,18 @@ class Daemon:
         (proc / 'pressure/memory').write_text('some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n'
                                           'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n')
         (proc / 'vmstat').write_text('oom_kill 0\npswpin 0\npswpout 0\n')
+        thermal = telemetry / 'thermal'
+        thermal.mkdir()
+        for index, temperature in enumerate(('47500', '43250')):
+            zone = thermal / ('thermal_zone' + str(index))
+            zone.mkdir()
+            (zone / 'temp').write_text(temperature + '\n')
+        frequency = telemetry / 'cpufreq'
+        frequency.mkdir()
+        for index, khz in enumerate(('2600000', '1800000')):
+            policy = frequency / ('policy' + str(index))
+            policy.mkdir()
+            (policy / 'scaling_cur_freq').write_text(khz + '\n')
         return ['bwrap', '--die-with-parent', '--unshare-cgroup', '--ro-bind', '/', '/',
                 '--dev-bind', '/dev', '/dev',
                 # Host root is unmapped in the executor's user namespace. A
@@ -260,6 +272,8 @@ class Daemon:
                 '--bind', str(self.home), str(self.home),
                 '--tmpfs', '/run', '--ro-bind', '/proc', '/run/oxc-conformance-proc', '--bind', str(proc), '/proc',
                 '--ro-bind', str(cgroup), '/sys/fs/cgroup',
+                '--ro-bind', str(thermal), '/sys/class/thermal',
+                '--ro-bind', str(frequency), '/sys/devices/system/cpu/cpufreq',
                 '--', *command]
 
     def wait_event(self, predicate, timeout=5):

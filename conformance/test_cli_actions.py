@@ -1,4 +1,5 @@
 """CLI dispatch against bounded loopback metadata/control peers, without a model."""
+from environment import PYTHON
 import json
 import os
 from pathlib import Path
@@ -73,7 +74,7 @@ def capture(name, action=None, responses=None, setup=None, arguments=()):
         if name == 'chat-no-desktop' and command == 'omarchy' or name == 'plan-no-agent' and command == 'oxa':
             continue
         path = binary_dir / command
-        path.write_text('#!' + sys.executable + '\n' + peer)
+        path.write_text('#!' + PYTHON + '\n' + peer)
         path.chmod(0o700)
     environment.update({'PATH': str(binary_dir), 'OXC_LAUNCH_METADATA': '1',
                         'OXC_STATEFUL_SYSTEMCTL': '1'})
@@ -83,7 +84,7 @@ def capture(name, action=None, responses=None, setup=None, arguments=()):
         environment['OXC_CODE_DIRECTORY'] = str(home / 'synthetic project')
     executable = home / 'oxc'
     executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-    command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
+    command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(executable)]
     action = action or ('images' if name.startswith('images') else 'plan' if name.startswith('plan')
               else 'flash' if name.startswith('flash') else 'ornith' if name.startswith('ornith')
               else 'moe' if name.startswith('select') else 'chat')

@@ -2,7 +2,7 @@
   "bad-root": [
     {
       "body": {
-        "error": "LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started."
+        "error": "OXC_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started."
       },
       "content-type": "application/json",
       "status": 503,

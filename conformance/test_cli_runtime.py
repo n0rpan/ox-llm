@@ -1,4 +1,5 @@
 """Runtime CLI contracts in a fresh network namespace with synthetic system peers."""
+from environment import PYTHON
 import json
 import os
 from pathlib import Path
@@ -73,11 +74,11 @@ def capture_case(name):
         source = (ROOT / 'conformance/fixtures/host_command.py').read_text().split('\n', 1)[1]
         for command in ('systemctl', 'notify-send', 'omarchy', 'omarchy-shell', 'oxa', 'pgrep'):
             path = binary_dir / command
-            path.write_text('#!' + sys.executable + '\n' + source)
+            path.write_text('#!' + PYTHON + '\n' + source)
             path.chmod(0o700)
         executable = daemon.home / 'oxc'
         executable.symlink_to(ROOT / 'oxc/src/oxc/runtime/oxc')
-        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [sys.executable, str(executable)]
+        command = shlex.split(os.environ['OXC_COMMAND']) if 'OXC_COMMAND' in os.environ else [PYTHON, str(executable)]
         env = {**daemon.env, 'PATH': str(binary_dir) + ':/usr/bin:/bin'}
         if name == 'panel-output':
             env['OXC_PANEL_OUTPUT'] = '1'
