@@ -770,7 +770,14 @@ pub async fn handle_hints<E: Engine>(
                 };
                 let w = match st2.worker.try_lock() {
                     Ok(w) => w,
-                    Err(TryLockError::Poisoned(_)) => st2.lock_worker(),
+                    Err(TryLockError::Poisoned(p)) => {
+                        // recover with the guard we already hold (locking again would deadlock)
+                        let mut g = p.into_inner();
+                        let w = &mut *g;
+                        w.cache.reset(&mut w.engine);
+                        st2.worker.clear_poison();
+                        g
+                    }
                     Err(TryLockError::WouldBlock) => return Err(()),
                 };
                 Ok(w.states.as_ref().map(|s| {

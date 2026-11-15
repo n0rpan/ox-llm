@@ -566,6 +566,26 @@ class EndpointTests(Base):
         self.assertEqual(calls, [('POST', '/state-cache/clear', {'scope': 'hint', 'hint': keyed})])
         stack.manager.process = None
 
+    def test_busy_engine_is_not_off_nor_a_final_preload_answer(self):
+        from oxc.runtime.ctl_cache import EngineBusy
+        stack = self.stack()
+        stack.manager.state_engine = True
+        stack.manager.process = type('P', (), {'poll': lambda self: None, 'pid': None})()
+
+        def busy(method, path, payload=None):
+            raise EngineBusy('busy')
+        with patch.object(stack.manager, 'state_engine_json', busy):
+            self.assertEqual(check.call(stack.base, 'GET', '/_local/cache')[2]['engine'], {'busy': True})
+        # a 409 from the engine becomes EngineBusy, other failures stay plain ValueError
+        for status, exc in ((409, EngineBusy), (500, ValueError)):
+            conn = type('C', (), {'request': lambda self, *a, **k: None, 'close': lambda self: None,
+                                  'getresponse': lambda self, st=status: type('R', (), {'status': st, 'read': lambda self, n: b'{}'})()})()
+            with patch('http.client.HTTPConnection', lambda *a, **k: conn):
+                with self.assertRaises(exc) as raised:
+                    stack.manager.state_engine_json('GET', '/state-cache')
+                self.assertEqual(type(raised.exception) is EngineBusy, status == 409)
+        stack.manager.process = None
+
 
 class LeaseAndGuardTests(Base):
     """Codex review item 3: the budget write is TEST-ISO guarded before it mutates, and the
