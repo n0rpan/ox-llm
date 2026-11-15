@@ -43,7 +43,7 @@ maintainer, who says in the PR when a hardware check is needed.
 
 ## Definition of done
 
-Run these before saying a task is done, per area:
+Run these before saying a task is done, per area. oxa runs the checks in `.oxa/settings.json` (`done`) itself after an edit, for the same checks listed here:
 
 - **oxa** (Rust, run from `oxa/`):
   - `cargo fmt --check`
