@@ -6,8 +6,8 @@ ledgers. Enable the `policy` feature; defaults are empty and nothing is installe
 The functions consume trusted gateway facts. They neither read a credential nor
 create a reservation or contact a provider. Atomic accounting follows separately.
 
-Eleven contracts match main `bbec7919fd54ddcce6de49c6c33264e50e9a7494`.
-Ten use the unmodified Python HTTP controller in private HOME/network namespaces
+Twelve contracts match main `bbec7919fd54ddcce6de49c6c33264e50e9a7494`.
+Eleven use the unmodified Python HTTP controller in private HOME/network namespaces
 with an owned loopback mock and a foreign lease held through stop. Refusals send
 no provider request; the accepted case reaches exactly one mock. The guest case
 exercises the reference's already-authenticated guest context; live LAN listener
@@ -25,3 +25,7 @@ formatting and an empty-default build before readying. Companion #294 introduces
 catalog metadata for the same library; preserve both features/modules/examples
 when incorporating it. Full HTTP composition, secrets, atomic settlement and
 upstream protocols remain incomplete. Python behavior stays unchanged.
+
+The outstanding-hold case seeds $0.50 spend and holds a $0.40008 Python
+reservation at the owned upstream. The next request is refused before a second
+provider call, so dropping the reserved term makes native conformance fail.

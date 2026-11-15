@@ -109,5 +109,16 @@
       }
     },
     "status": 403
+  },
+  "reserved": {
+    "body": {
+      "error": {
+        "code": "budget_exceeded",
+        "message": "The daily cloud budget is exhausted.",
+        "param": "model",
+        "type": "rate_limit_error"
+      }
+    },
+    "status": 429
   }
 }
