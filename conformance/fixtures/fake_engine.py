@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import select
 import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -228,6 +229,11 @@ def main():
     parser.add_argument('--state-cache')
     parser.add_argument('--state-budget-bytes', type=int)
     parser.add_argument('--state-ttl-secs', type=int)
+    parser.add_argument('--prefix-cache')
+    parser.add_argument('--session-cache')
+    parser.add_argument('--prefix-cache-max-bytes', type=int)
+    parser.add_argument('--prefix-cache-min-tokens', type=int)
+    parser.add_argument('--prefix-cache-ttl-h', type=float)
     args = parser.parse_args()
     if diagnostic := os.environ.get('FAKE_ENGINE_STDERR'):
         os.write(2, diagnostic.encode())
@@ -248,10 +254,19 @@ def main():
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         state_args = {'root': args.state_cache, 'budget': args.state_budget_bytes,
                       'ttl': args.state_ttl_secs, 'existed': before}
+    legacy = None
+    if os.environ.get('FAKE_ENGINE_LEGACY_STORES') == '1':
+        legacy = {'argv': sys.argv[sys.argv.index('--alias') + 2:], 'directories': {}}
+        for name, path in (('prefix', args.prefix_cache), ('sessions', args.session_cache)):
+            if path:
+                directory = Path(path)
+                legacy['directories'][name] = {'path': path, 'exists': directory.exists(),
+                                               'mode': directory.stat().st_mode & 0o777 if directory.exists() else None}
     event('started', pid=os.getpid(), alias=args.alias,
           affinity=sorted(os.sched_getaffinity(0)),
           **({'context_size': args.ctx_size} if args.ctx_size is not None else {}),
-          **({'state_cache': state_args} if os.environ.get('FAKE_ENGINE_STATE_CACHE') == '1' else {}))
+          **({'state_cache': state_args} if os.environ.get('FAKE_ENGINE_STATE_CACHE') == '1' else {}),
+          **({'legacy': legacy} if legacy is not None else {}))
     server.serve_forever()
 
 

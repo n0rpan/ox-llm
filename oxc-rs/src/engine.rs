@@ -1194,13 +1194,7 @@ impl Manager {
                 _ => arg.to_owned(),
             });
         }
-        // Never silently discard legacy stores or state-cache settings. Their
-        // complete qualified launch adapters are ported separately.
-        if args.iter().any(|arg| {
-            ["--prefix-cache", "--session-cache"].contains(&arg.split('=').next().unwrap_or(arg))
-        }) {
-            return Err("The legacy conversation-store launch adapter is not implemented by the Rust controller yet.".into());
-        }
+        args=crate::state_cache::conversation_args(&profile,args).map_err(|_|"LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?;
         let settings = crate::state_cache::Settings::new(&profile);
         let overridden = crate::state_cache::overridden(&profile);
         let state_root = if settings.budget > 0 || overridden {
@@ -1213,9 +1207,6 @@ impl Manager {
             && binary_holds(Path::new(&args[0]), &[b"oxe-capability state-preload-v1"])?;
         if state_engine {
             let root = state_root.as_ref().expect("state root");
-            if overridden {
-                crate::state_cache::make_private(root).map_err(|_|"LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?;
-            }
             args.extend([
                 "--state-cache".into(),
                 root.to_string_lossy().into_owned(),
@@ -1224,6 +1215,19 @@ impl Manager {
                 "--state-ttl-secs".into(),
                 settings.ttl.to_string(),
             ]);
+        }
+        if overridden {
+            for (index, arg) in args.iter().enumerate() {
+                let (name, value) = arg
+                    .split_once('=')
+                    .map(|(name, value)| (name, Some(value)))
+                    .unwrap_or((arg.as_str(), args.get(index + 1).map(String::as_str)));
+                if ["--prefix-cache", "--session-cache", "--state-cache"].contains(&name) {
+                    if let Some(path) = value.filter(|s| !s.is_empty()) {
+                        crate::state_cache::make_private(Path::new(path)).map_err(|_|"LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started.".to_owned())?;
+                    }
+                }
+            }
         }
         if profile["environment"]["LOCAL_AI_ENGINE_LEDGER"] == "1"
             && !args

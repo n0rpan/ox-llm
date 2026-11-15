@@ -1,0 +1,234 @@
+{
+  "bad-root": [
+    {
+      "body": {
+        "error": "LOCAL_AI_STATE_CACHE_ROOT (or runtime.json cache.root) must be an absolute path inside your home; the model was not started."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "environment_exists": false,
+      "launches": [],
+      "override_exists": false
+    }
+  ],
+  "default": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "environment_exists": false,
+      "launches": [
+        {
+          "argv": [
+            "--prefix-cache",
+            "<home>/original prefix",
+            "--session-cache",
+            "<home>/original sessions",
+            "--prefix-cache-max-bytes",
+            "4096",
+            "--prefix-cache-min-tokens",
+            "64",
+            "--prefix-cache-ttl-h",
+            "24",
+            "--ctx-size",
+            "32768"
+          ],
+          "directories": {
+            "prefix": {
+              "exists": false,
+              "mode": null,
+              "path": "<home>/original prefix"
+            },
+            "sessions": {
+              "exists": false,
+              "mode": null,
+              "path": "<home>/original sessions"
+            }
+          }
+        }
+      ],
+      "override_exists": false
+    }
+  ],
+  "environment": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "environment_exists": true,
+      "launches": [
+        {
+          "argv": [
+            "--prefix-cache",
+            "<home>/cache-env-root/prefix",
+            "--session-cache",
+            "<home>/cache-env-root/sessions",
+            "--prefix-cache-max-bytes",
+            "4096",
+            "--prefix-cache-min-tokens",
+            "64",
+            "--prefix-cache-ttl-h",
+            "24",
+            "--ctx-size",
+            "32768"
+          ],
+          "directories": {
+            "prefix": {
+              "exists": true,
+              "mode": 448,
+              "path": "<home>/cache-env-root/prefix"
+            },
+            "sessions": {
+              "exists": true,
+              "mode": 448,
+              "path": "<home>/cache-env-root/sessions"
+            }
+          }
+        }
+      ],
+      "override_exists": false
+    }
+  ],
+  "equals": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "environment_exists": false,
+      "launches": [
+        {
+          "argv": [
+            "--prefix-cache=<home>/original prefix",
+            "--session-cache=<home>/original sessions",
+            "--prefix-cache-max-bytes=4096",
+            "--prefix-cache-min-tokens=64",
+            "--prefix-cache-ttl-h=24",
+            "--ctx-size",
+            "32768"
+          ],
+          "directories": {
+            "prefix": {
+              "exists": false,
+              "mode": null,
+              "path": "<home>/original prefix"
+            },
+            "sessions": {
+              "exists": false,
+              "mode": null,
+              "path": "<home>/original sessions"
+            }
+          }
+        }
+      ],
+      "override_exists": false
+    }
+  ],
+  "off": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "environment_exists": false,
+      "launches": [
+        {
+          "argv": [
+            "--ctx-size",
+            "32768"
+          ],
+          "directories": {}
+        }
+      ],
+      "override_exists": false
+    }
+  ],
+  "off-override": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "environment_exists": false,
+      "launches": [
+        {
+          "argv": [
+            "--ctx-size",
+            "32768"
+          ],
+          "directories": {}
+        }
+      ],
+      "override_exists": false
+    }
+  ],
+  "override": [
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "environment_exists": false,
+      "launches": [
+        {
+          "argv": [
+            "--prefix-cache",
+            "<home>/cache-root/prefix",
+            "--session-cache",
+            "<home>/cache-root/sessions",
+            "--prefix-cache-max-bytes",
+            "4096",
+            "--prefix-cache-min-tokens",
+            "64",
+            "--prefix-cache-ttl-h",
+            "24",
+            "--ctx-size",
+            "32768"
+          ],
+          "directories": {
+            "prefix": {
+              "exists": true,
+              "mode": 448,
+              "path": "<home>/cache-root/prefix"
+            },
+            "sessions": {
+              "exists": true,
+              "mode": 448,
+              "path": "<home>/cache-root/sessions"
+            }
+          }
+        }
+      ],
+      "override_exists": true
+    }
+  ]
+}

@@ -107,6 +107,52 @@ pub fn overridden(config: &Value) -> bool {
     std::env::var_os("LOCAL_AI_STATE_CACHE_ROOT").is_some_and(|s| !s.is_empty())
         || !config["cache"]["root"].is_null()
 }
+pub fn conversation_args(config: &Value, args: Vec<String>) -> io::Result<Vec<String>> {
+    let base = if overridden(config) {
+        Some(root(config)?.parent().expect("state parent").to_owned())
+    } else {
+        None
+    };
+    let off = !config["oxe_flash"].is_object() && Settings::new(config).budget == 0;
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        let (name, equals) = arg
+            .split_once('=')
+            .map(|(name, _)| (name, true))
+            .unwrap_or((arg.as_str(), false));
+        let store = match name {
+            "--prefix-cache" => Some("prefix"),
+            "--session-cache" => Some("sessions"),
+            _ => None,
+        };
+        let option = !config["oxe_flash"].is_object()
+            && [
+                "--prefix-cache-max-bytes",
+                "--prefix-cache-min-tokens",
+                "--prefix-cache-ttl-h",
+            ]
+            .contains(&name);
+        if off && (store.is_some() || option) {
+            index += if equals { 1 } else { 2 };
+            continue;
+        }
+        if let (Some(store), Some(base)) = (store, base.as_ref()) {
+            let target = base.join(store).to_string_lossy().into_owned();
+            if equals {
+                out.push(format!("{name}={target}"));
+            } else {
+                out.extend([name.into(), target]);
+            }
+            index += if equals { 1 } else { 2 };
+            continue;
+        }
+        out.push(arg.clone());
+        index += 1;
+    }
+    Ok(out)
+}
 pub fn make_private(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     let mut missing = Vec::new();
