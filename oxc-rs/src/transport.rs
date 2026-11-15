@@ -429,12 +429,29 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
             parts.headers.remove(header::TRANSFER_ENCODING);
             chunked = false;
         }
-        let fixed_length = parts
-            .headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .filter(|_| !chunked);
+        let mut lengths = parts.headers.get_all(header::CONTENT_LENGTH).iter();
+        let length = lengths.next();
+        if lengths.next().is_some() {
+            return;
+        }
+        let fixed_length = if let Some(value) = length {
+            let Ok(value) = value.to_str() else { return };
+            let value = value.trim_matches([' ', '\t']);
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return;
+            }
+            let Ok(length) = value.parse::<u64>() else {
+                return;
+            };
+            Some(length)
+        } else {
+            None
+        };
+        if let Some(length) = fixed_length {
+            parts
+                .headers
+                .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+        }
         let bodyless = head_request
             || matches!(parts.status.as_u16(), 204 | 304)
             || parts.status.is_informational();
@@ -475,7 +492,7 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
             output.push_str("\r\n");
         }
         output.push_str("\r\n");
-        if write.write_all(output.as_bytes()).await.is_err() {
+        if write.write_all(output.as_bytes()).await.is_err() || write.flush().await.is_err() {
             break;
         }
         let mut body = body.into_data_stream();
@@ -518,6 +535,9 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
             }
             written = written.saturating_add(chunk.len() as u64);
             if chunked && write.write_all(b"\r\n").await.is_err() {
+                return;
+            }
+            if write.flush().await.is_err() {
                 return;
             }
         }
