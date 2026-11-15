@@ -2261,6 +2261,7 @@ mod status_reset_tests {
 }
 
 const LIVE_BASH_MAX: usize = 64 * 1024;
+const LIVE_BASH_SNAP: usize = 4096;
 const LIVE_BASH_NOTE: &str = "... earlier output trimmed\n";
 
 /// Append to the live `!cmd` block, keeping only the tail.
@@ -2274,8 +2275,12 @@ fn append_live_bash(output: &mut String, delta: &str) {
     while !body.is_char_boundary(cut) {
         cut += 1;
     }
+    // Snap to a line start only when a newline is close and text remains;
+    // otherwise keep the partial-line tail instead of dropping everything.
     if let Some(nl) = body[cut..].find('\n') {
-        cut += nl + 1;
+        if nl < LIVE_BASH_SNAP && cut + nl + 1 < body.len() {
+            cut += nl + 1;
+        }
     }
     *output = format!("{LIVE_BASH_NOTE}{}", &body[cut..]);
 }
@@ -2293,5 +2298,27 @@ mod live_bash_tests {
         assert!(o.len() <= LIVE_BASH_MAX + LIVE_BASH_NOTE.len());
         assert!(o.starts_with(LIVE_BASH_NOTE));
         assert!(o.ends_with("line 19999\n"));
+    }
+
+    #[test]
+    fn long_last_line_keeps_tail() {
+        let mut o = String::new();
+        for _ in 0..9 {
+            append_live_bash(&mut o, &"x".repeat(8192));
+        }
+        append_live_bash(&mut o, "\n");
+        assert!(o.len() > LIVE_BASH_NOTE.len() + 60000, "{}", o.len());
+        assert!(o.ends_with("x\n"));
+    }
+
+    #[test]
+    fn newline_free_multibyte_stream_keeps_tail() {
+        let mut o = String::new();
+        for _ in 0..50 {
+            append_live_bash(&mut o, &"é".repeat(2000));
+        }
+        assert!(o.len() <= LIVE_BASH_MAX + LIVE_BASH_NOTE.len());
+        assert!(o.len() > LIVE_BASH_MAX / 2);
+        assert!(o.ends_with('é'));
     }
 }
