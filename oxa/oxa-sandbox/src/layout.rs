@@ -254,12 +254,14 @@ impl Layout {
         write.extend(i.write_extra.iter().cloned());
         // A user-chosen sccache directory is the same cache as `~/.cache/sccache`.
         if let Some((_, d)) = i.env.iter().find(|(k, _)| k == "SCCACHE_DIR") {
-            let d = PathBuf::from(d);
+            // Judge the resolved path: `..` or a symlink must not lead out of the cache.
+            let home = i.home.canonicalize().unwrap_or_else(|_| i.home.clone());
+            let d = Path::new(d).canonicalize().unwrap_or_default();
             // Only a cache-like directory: never the home, a parent of it, or a config tree.
-            let cache_like = d.starts_with(i.home.join(".cache"))
+            let cache_like = d.starts_with(home.join(".cache"))
                 || d.file_name()
                     .is_some_and(|n| n.to_string_lossy().to_lowercase().contains("sccache"));
-            if d.is_absolute() && !i.home.starts_with(&d) && cache_like {
+            if d.is_absolute() && !home.starts_with(&d) && cache_like {
                 write.push(d);
             }
         }
@@ -486,6 +488,42 @@ mod tests {
                 exe_in_workspace: false,
             });
             assert!(!l.write.contains(&bad), "{} must not be writable", bad.display());
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn sccache_dir_escaping_the_cache_is_not_bound() {
+        let home = std::env::temp_dir().join(format!("oxa-sccache4-{}/home/u", std::process::id()));
+        let root = home.parent().unwrap().parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(home.join(".cache")).unwrap();
+        std::fs::create_dir_all(home.join(".config/systemd")).unwrap();
+        // A symlink inside the cache that points at the home itself.
+        std::os::unix::fs::symlink(&home, home.join(".cache/my-sccache")).unwrap();
+        let cases = [
+            (
+                home.join(".cache/../.config/systemd"),
+                home.join(".config/systemd"),
+            ),
+            (home.join(".cache/my-sccache"), home.clone()),
+        ];
+        for (bad, real) in cases {
+            let l = Layout::build(&LayoutInputs {
+                home: home.clone(),
+                agent_dir: None,
+                path_var: String::new(),
+                env: vec![("SCCACHE_DIR".into(), bad.display().to_string())],
+                read_extra: vec![],
+                write_extra: vec![],
+                allow_home_write: false,
+                exe: None,
+                exe_in_workspace: false,
+            });
+            let hit = l
+                .write
+                .iter()
+                .any(|w| *w == bad || w.canonicalize().ok() == real.canonicalize().ok());
+            assert!(!hit, "{} must not be writable", bad.display());
         }
         std::fs::remove_dir_all(&root).ok();
     }
