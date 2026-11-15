@@ -134,10 +134,26 @@ fn run_inner(
             inner: &mut *sink,
             text: String::new(),
             got_data: false,
+            detector: crate::loopguard::LoopDetector::new(),
+            cancel: st.shared.cancel.clone(),
+            looped: false,
         };
         let res = chat_with_retry(st, &opts, &mut capture, ui);
         let partial = std::mem::take(&mut capture.text);
         let got_data = capture.got_data;
+        let looped = capture.looped;
+        // Our own stop (degenerate repetition, #141), not a user abort: clear the flag we set.
+        let res = match res {
+            Err(e) if looped && e.code == oxa_proto::codes::ABORTED => {
+                st.shared.cancel.reset();
+                Err(OxaError::new(
+                    oxa_proto::codes::STREAM_BROKEN,
+                    "Response stopped: the model fell into a repetition loop (the same block of text repeated).",
+                )
+                .with_hint("Rephrase the request or try again; the partial reply is shown but not sent back."))
+            }
+            other => other,
+        };
 
         let turn = match res {
             Ok(t) => t,
@@ -146,6 +162,9 @@ fn run_inner(
                 // Partial text is shown, never sent (W2); the wire keeps the user message.
                 let text = if partial.is_empty() {
                     e.to_string()
+                } else if looped {
+                    // Our own stop: the notice must stay visible after the partial reply.
+                    format!("{partial}\n\n{e}")
                 } else {
                     partial
                 };
@@ -604,6 +623,9 @@ struct Capture<'a> {
     inner: &'a mut dyn EventSink,
     text: String,
     got_data: bool,
+    detector: crate::loopguard::LoopDetector,
+    cancel: oxa_proto::CancelToken,
+    looped: bool,
 }
 
 impl EventSink for Capture<'_> {
@@ -611,11 +633,17 @@ impl EventSink for Capture<'_> {
         if let AgentEvent::MessageStart { .. } = e {
             self.text.clear();
             self.got_data = false;
+            self.detector.reset();
+            self.looped = false;
         }
         if let AgentEvent::MessageUpdate { delta, .. } = e {
             self.got_data = true;
             if let oxa_proto::MessageDelta::TextDelta { delta, .. } = delta {
                 self.text.push_str(delta);
+                if !self.looped && self.detector.push(delta) {
+                    self.looped = true;
+                    self.cancel.cancel();
+                }
             }
         }
         self.inner.emit(e);
