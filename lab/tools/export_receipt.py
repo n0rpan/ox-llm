@@ -152,6 +152,8 @@ def load_allow_file(path):
         if not line.strip() or line.startswith("#"):
             continue
         parts = line.split("\t")
+        if len(parts) == 4:
+            continue  # context exemptions, handled by load_allow_contexts
         if len(parts) != 3 or not all(part.strip() for part in parts):
             raise ValueError("%s:%d: expected GLOB<TAB>RULE<TAB>REASON" % (Path(path).name, no))
         if parts[0].strip() == "!allow-exact":
@@ -161,6 +163,91 @@ def load_allow_file(path):
         else:
             entries.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
     return entries, exact, words
+
+
+def load_allow_contexts(path):
+    """Read context exemptions: 'GLOB<TAB>RULE<TAB>REASON<TAB>CONTEXT' (four columns).
+
+    CONTEXT is a regex with a named group 'owner'. The exemption applies only to a
+    per-machine word match (a scan_text deny hit) whose whole-word span equals the span of
+    the 'owner' group inside a CONTEXT match on the same line, in a file whose path matches
+    GLOB. Returns a list of (glob, rule, compiled_regex, reason)."""
+    contexts = []
+    for no, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        glob, rule, reason, pattern = (part.strip() for part in parts)
+        if not all((glob, rule, reason, pattern)):
+            raise ValueError("%s:%d: expected GLOB<TAB>RULE<TAB>REASON<TAB>CONTEXT" % (Path(path).name, no))
+        try:
+            rx = re.compile(pattern)
+        except re.error as exc:
+            raise ValueError("%s:%d: invalid CONTEXT regex: %s" % (Path(path).name, no, exc))
+        if "owner" not in rx.groupindex:
+            raise ValueError("%s:%d: CONTEXT regex must name an 'owner' group" % (Path(path).name, no))
+        contexts.append((glob, rule, rx, reason))
+    return contexts
+
+
+def _deny_hits(text, deny_words=None, allow_exact=()):
+    """Per-occurrence per-machine word hits: (rule, line_no, start, end), allow_exact applied."""
+    hits = []
+    for no, line in enumerate(text.splitlines(), 1):
+        line = line[:200_000]
+        for word, rule in (deny_words or {}).items():
+            for match in _word_rx(word).finditer(line):
+                if match.group(0) not in allow_exact:
+                    hits.append((rule, no, match.start(), match.end()))
+    return hits
+
+
+_LICENSE_OWNER_RX = re.compile(r"^[ \t]*Copyright \(c\) \d{4} [^\n(]+ \((?P<owner>[^)\s]+)\)", re.M | re.I)
+
+
+def approved_owner(base):
+    """The approved public owner value: the handle in the Copyright line of base/LICENSE.
+
+    Returns it lower-cased, or None (fail closed) when LICENSE is missing, unreadable, has no
+    such line, or names several different values."""
+    try:
+        text = (Path(base or os.getcwd()) / "LICENSE").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    values = {m.group("owner").lower() for m in _LICENSE_OWNER_RX.finditer(text)}
+    return values.pop() if len(values) == 1 else None
+
+
+def _apply_context_allow(hits, text, contexts, rel, owner=None):
+    """Drop deny hits covered by a context exemption on their own line.
+
+    Accepts per-occurrence hits (rule, line_no, start, end) from _deny_hits and returns
+    (rule, line_no) for the survivors. A hit is dropped only when its rule matches the
+    exemption's rule, the file's relative path matches the exemption's glob, and the denied
+    word's whole-word span equals the span of the 'owner' group in a CONTEXT match on that
+    same line, and the text of that span equals `owner` (the approved value, case-insensitive).
+    With owner=None nothing is exempted (fail closed). The value is never printed."""
+    import fnmatch
+    matching = [(rule, rx) for glob, rule, rx, _reason in contexts if fnmatch.fnmatchcase(rel, glob)]
+    if not matching or not owner:
+        return [(rule, no) for rule, no, _start, _end in hits]
+    lines = [line[:200_000] for line in text.splitlines()]
+    kept = []
+    for rule, no, start, end in hits:
+        if no < 1 or no > len(lines):
+            kept.append((rule, no))
+            continue
+        owner_spans = set()
+        for allowed, rx in matching:
+            if allowed != rule:
+                continue
+            for match in rx.finditer(lines[no - 1]):
+                owner_spans.add(match.span("owner"))
+        if (start, end) not in owner_spans or lines[no - 1][start:end].lower() != owner:
+            kept.append((rule, no))
+    return kept
 
 
 def apply_allow(hits, entries, base=None):
@@ -179,9 +266,14 @@ def apply_allow(hits, entries, base=None):
     return remaining, [entries[i] for i in range(len(entries)) if i not in used]
 
 
-def scan_paths(paths, deny_words=None, allow_exact=()):
-    """Scan files and directories. Returns list of (path, rule, line_no)."""
+def scan_paths(paths, deny_words=None, allow_exact=(), allow_contexts=None, base=None):
+    """Scan files and directories. Returns list of (path, rule, line_no).
+
+    allow_contexts: optional list of (glob, rule, compiled_regex, reason) context
+    exemptions, as returned by load_allow_contexts. base is the directory those contexts'
+    globs are relative to (default: current directory)."""
     out = []
+    owner = approved_owner(base) if allow_contexts else None
     for raw in paths:
         root = Path(raw)
         files = sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts) if root.is_dir() else [root]
@@ -194,8 +286,16 @@ def scan_paths(paths, deny_words=None, allow_exact=()):
             if b"\x00" in data[:8192]:
                 out.append((str(path), "binary-file", 0))
                 continue
-            out += [(str(path), rule, no)
-                    for rule, no in scan_text(data.decode("utf-8", "replace"), deny_words, allow_exact)]
+            text = data.decode("utf-8", "replace")
+            if allow_contexts:
+                rel = os.path.relpath(str(path), base) if base else str(path)
+                rules = scan_text(text)
+                deny_hits = _apply_context_allow(_deny_hits(text, deny_words, allow_exact),
+                                                 text, allow_contexts, rel.replace(os.sep, "/"), owner)
+                hits = rules + deny_hits
+            else:
+                hits = scan_text(text, deny_words, allow_exact)
+            out += [(str(path), rule, no) for rule, no in hits]
     return out
 
 
@@ -735,8 +835,10 @@ def main(argv=None):
     if args.cmd == "scan":
         skips = set(args.skip_rule) | (set(TREE_PROFILE_SKIPS) if args.profile == "tree" else set())
         entries, exact, allowed_words = load_allow_file(args.allow_file) if args.allow_file else ([], set(), set())
+        contexts = load_allow_contexts(args.allow_file) if args.allow_file else []
         deny = {w: r for w, r in _deny(args).items() if w.lower() not in allowed_words}
-        hits = [h for h in scan_paths(args.paths, deny, set(args.allow_exact) | exact) if h[1] not in skips]
+        hits = [h for h in scan_paths(args.paths, deny, set(args.allow_exact) | exact, contexts,
+                                      args.base or os.getcwd()) if h[1] not in skips]
         if args.allow_file:
             hits, unused = apply_allow(hits, entries, args.base or os.getcwd())
             for glob, rule, _ in unused:
