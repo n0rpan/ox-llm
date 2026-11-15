@@ -180,15 +180,32 @@ fn project_config_write_setting_unprotects_oxa_and_skills_only() {
     env.write("work/.oxa/settings.json", "{}");
     env.write("work/.agents/skills/x/SKILL.md", "");
     env.write("work/.git/hooks/pre-commit.sample", "");
-    let has = |l: &Layout, p: &str| {
-        let a = bwrap_args_with(&spec("true", &env.work(), true), &env.home(), l);
+    let has_cmd = |l: &Layout, cmd: &str, p: &str| {
+        let a = bwrap_args_with(&spec(cmd, &env.work(), true), &env.home(), l);
         let want = env.work().join(p).display().to_string();
         a.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == want)
     };
+    let has = |l: &Layout, p: &str| has_cmd(l, "git pull", p);
     assert!(has(&l, ".oxa") && has(&l, ".agents/skills"));
     l.allow_project_config_write = true;
     assert!(!has(&l, ".oxa") && !has(&l, ".agents/skills"));
     assert!(has(&l, ".git/config") && has(&l, ".git/hooks"));
+    // Any other command keeps the protection (review of #302: no blanket bypass).
+    for cmd in [
+        "true",
+        "echo x > .oxa/extensions/x.js",
+        "git pull && echo x > .oxa/a",
+        "git rebase -x 'sh evil'",
+        "git rebase --exec evil main",
+        "git -c alias.pull='!sh' pull",
+        "git pull; sh evil",
+        "git status",
+    ] {
+        assert!(
+            has_cmd(&l, cmd, ".oxa") && has_cmd(&l, cmd, ".agents/skills"),
+            "{cmd}"
+        );
+    }
 }
 
 #[test]

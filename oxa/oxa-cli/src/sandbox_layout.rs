@@ -77,6 +77,12 @@ pub(crate) fn layout(
         allow_home_write,
     });
     layout.allow_project_config_write = user.bool(SETTING_ALLOW_PROJECT_CONFIG_WRITE, false);
+    if layout.allow_project_config_write {
+        notices.push((
+            Level::Warning,
+            "oxa.sandbox.allowProjectConfigWrite is on: plain git merge/pull/checkout/rebase may write the project's .oxa and .agents/skills".to_string(),
+        ));
+    }
     layout
 }
 
