@@ -9,6 +9,10 @@ autobins = false
 [features]
 default = []
 native-controller = []
+upstream-anthropic-stream = ["dep:serde_json"]
+
+[dependencies]
+serde_json = { version = "1", optional = true }
 
 [[bin]]
 name = "oxc-native"
