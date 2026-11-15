@@ -16,7 +16,7 @@ fn repo_done_list_runs_the_documented_checks() {
     );
     assert!(
         done.iter()
-            .any(|c| c == "in lab: sh tools/run_lab_tests.sh test_doc_links"),
+            .any(|c| c == "in oxc: sh tools/run_lab_tests.sh test_doc_links"),
         "lab wrapper missing: {done:?}"
     );
 }
