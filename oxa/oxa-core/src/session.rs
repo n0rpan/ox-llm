@@ -1,4 +1,4 @@
-//! C1: `Session`, the SDK object. Owner: task C1. Signatures below are frozen; bodies are yours.
+//! C1: `Session`, the SDK object.
 // ported from pi packages/coding-agent/src/core/agent-session.ts
 use crate::agent_loop::{persist, run_loop, RunEnd};
 use crate::host::{attach_hosts, first_reply, observe_hooks, pumped, serve_host, serve_idle, Serve};
@@ -103,9 +103,13 @@ pub struct Stats {
     pub last_snap_pos: Option<u32>,
     /// B6: the engine sent a reply without `cached_tokens` (the notice was shown).
     pub cached_unreported: bool,
-    /// The last round of `done` checks had a failure (no later round passed). Print mode reads
-    /// it at the end for its exit code.
+    /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
+    /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
+    /// Whether the current agent operation's last reply stopped at its output token limit.
+    pub output_truncated: bool,
+    /// Terminal result of the last prompt or extension-triggered run.
+    pub outcome: crate::RunOutcome,
     /// Adaptive thinking on tool follow-ups (`think.rs`) of the current run. Never persisted.
     pub escalation: crate::think::Escalation,
 }
@@ -160,6 +164,21 @@ impl Drop for BusyGuard {
 }
 
 impl Session {
+    /// Outcome of the last prompt, including errors retained after the loop settles.
+    pub fn outcome(&self) -> &crate::RunOutcome {
+        &self.st.stats.outcome
+    }
+
+    /// Record a built-in command's result independently of the last agent turn.
+    pub(crate) fn set_command_outcome(&mut self, outcome: crate::RunOutcome) {
+        self.st.stats.outcome = outcome;
+    }
+
+    /// Consume the last prompt outcome before dispatching a new headless message.
+    pub fn take_outcome(&mut self) -> crate::RunOutcome {
+        std::mem::take(&mut self.st.stats.outcome)
+    }
+
     /// Open per `how`. New / Fork without a stored prefix: fire `ResourcesDiscover` and
     /// `SessionStart`, attach the host to every hook set, read `Engine::info`, build the first
     /// epoch (`epoch::open_epoch`). Resume / Continue: replay the stored prefix bytes
@@ -293,7 +312,7 @@ impl Session {
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
             return self.run_command(&name, &args, sink, ui);
         }
-        let guard = self.begin()?;
+        let guard = self.begin_run()?;
         let result = oxa_proto::panic::contain(|| self.run_prompt(text, parts, sink, ui))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
         let mut aborted = matches!(result, Ok(Some(RunEnd::Aborted)));
@@ -312,6 +331,15 @@ impl Session {
                 aborted = *end == Some(RunEnd::Aborted);
             }
         }
+        self.st.stats.outcome = match result
+            .as_ref()
+            .err()
+            .or(triggered.as_ref().err())
+            .or(boundary.as_ref().err())
+        {
+            Some(error) => crate::RunOutcome::from_error(error),
+            None => settled_outcome(&self.st, boundary.as_ref().ok().and_then(|end| end.as_ref())),
+        };
         flush_queue(&self.st, sink);
         // The `agent_settled` hook observes the settled run while the session is still claimed;
         // the `AgentSettled` record is the last thing a prompt does: the claim is released
@@ -338,7 +366,7 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<RunEnd>, OxaError> {
-        let guard = self.begin()?;
+        let guard = self.begin_run()?;
         let ran = oxa_proto::panic::contain(|| queued_run(&mut self.st, sink, ui, true))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
         let result = match ran {
@@ -351,6 +379,15 @@ impl Session {
         let triggered = settle_triggered(&mut self.st, can_run, sink, ui);
         let last = last_end(&result, &triggered);
         let boundary = crate::fire::before_settle(&mut self.st, last.clone(), sink, ui);
+        self.st.stats.outcome = match result
+            .as_ref()
+            .err()
+            .or(triggered.as_ref().err())
+            .or(boundary.as_ref().err())
+        {
+            Some(error) => crate::RunOutcome::from_error(error),
+            None => settled_outcome(&self.st, boundary.as_ref().ok().and_then(|end| end.as_ref())),
+        };
         flush_queue(&self.st, sink);
         let ran = match (&boundary, &last) {
             (Ok(Some(end)), _) | (Err(_), Some(end)) => Some(*end == RunEnd::Aborted),
@@ -561,7 +598,7 @@ impl Session {
             .find(|h| h.commands().iter().any(|c| c.name == name))
             .cloned();
         if let Some(hook) = owner {
-            let _guard = self.begin()?;
+            let _guard = self.begin_run()?;
             // E-INT 2: the handler runs beside the session thread, which serves what it asks
             // of the host. No run is in progress, so session-shape actions apply at once.
             let result = pumped(&mut self.st, Serve::Command, sink, ui, &mut |_| {}, |ui| {
@@ -569,6 +606,10 @@ impl Session {
             });
             report_hook_errors(hook.as_ref(), sink);
             let (triggered, settled) = settle_and_report(&mut self.st, sink, ui);
+            if result.is_ok() && triggered.is_ok() && self.st.stats.outcome == crate::RunOutcome::NothingToDo
+            {
+                self.st.stats.outcome = crate::RunOutcome::Done;
+            }
             drop(_guard);
             emit_settled(sink, settled);
             return result.and(triggered);
@@ -794,7 +835,7 @@ impl Session {
         if !crate::host::host_pending(&mut self.st) {
             return Ok(());
         }
-        let guard = self.begin()?;
+        let guard = self.begin_run()?;
         let (result, settled) = settle_and_report(&mut self.st, sink, ui);
         drop(guard);
         emit_settled(sink, settled);
@@ -818,7 +859,7 @@ impl Session {
         let Some(hook) = owner else {
             return Ok(());
         };
-        let _guard = self.begin()?;
+        let _guard = self.begin_run()?;
         let result = pumped(&mut self.st, Serve::Command, sink, ui, &mut |_| {}, |ui| {
             contained_handler(|| hook.run_shortcut(key, ui))
         });
@@ -844,6 +885,14 @@ impl Session {
     /// Claim the session for one operation. Fails with `busy` when another one holds it. The
     /// cancel tokens are cleared only after the claim, so an abort aimed at the running prompt
     /// is never lost to a later reset.
+    /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
+    fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
+        let guard = self.begin()?;
+        self.st.stats.done_failed = false;
+        self.st.stats.output_truncated = false;
+        Ok(guard)
+    }
+
     fn begin(&self) -> Result<BusyGuard, OxaError> {
         let shared = self.st.shared.clone();
         if shared
@@ -907,6 +956,7 @@ impl Session {
                 EntryBody::Msg {
                     wire,
                     parts: Vec::new(),
+                    tool: None,
                 },
                 sink,
             )?;
@@ -917,7 +967,15 @@ impl Session {
         let mut parts = parts;
         parts.extend(note.map(Part::EnvNote));
         st.stats.user_messages += 1;
-        persist(st, EntryBody::Msg { wire, parts }, sink)?;
+        persist(
+            st,
+            EntryBody::Msg {
+                wire,
+                parts,
+                tool: None,
+            },
+            sink,
+        )?;
 
         let payload = crate::fire::before_agent_start_payload(st, &text, images);
         match first_reply(st, HookPoint::BeforeAgentStart, &payload, sink, ui) {
@@ -992,6 +1050,10 @@ fn settle_and_report(
         Ok(last) => crate::fire::before_settle(st, last, sink, ui),
         Err(e) => Err(e),
     };
+    st.stats.outcome = match &triggered {
+        Ok(end) => settled_outcome(st, end.as_ref()),
+        Err(error) => crate::RunOutcome::from_error(error),
+    };
     let ran = match &triggered {
         Ok(Some(end)) => Some(*end == RunEnd::Aborted),
         Ok(None) => None,
@@ -1027,6 +1089,19 @@ fn emit_settled(sink: &mut dyn EventSink, settled: Option<bool>) {
 }
 
 /// The end of the last run of an operation: a triggered turn's, else the prompt's own.
+fn settled_outcome(st: &SessionState, end: Option<&RunEnd>) -> crate::RunOutcome {
+    let outcome = crate::RunOutcome::from_end(end);
+    if outcome == crate::RunOutcome::Done {
+        if st.stats.done_failed {
+            return crate::RunOutcome::Failed("done_checks_failed");
+        }
+        if st.stats.output_truncated {
+            return crate::RunOutcome::Failed("output_limit");
+        }
+    }
+    outcome
+}
+
 fn last_end(
     result: &Result<Option<RunEnd>, OxaError>,
     triggered: &Result<Option<RunEnd>, OxaError>,
@@ -1144,6 +1219,7 @@ fn push_user(st: &mut SessionState, msg: String, sink: &mut dyn EventSink) -> Re
         EntryBody::Msg {
             wire: WireMsg::user(msg.clone()),
             parts: vec![Part::Text(msg)],
+            tool: None,
         },
         sink,
     )?;
@@ -1987,7 +2063,9 @@ mod tests {
             .entries()
             .iter()
             .find_map(|entry| match &entry.body {
-                EntryBody::Msg { wire, parts } if wire.content.as_deref() == Some(&texts[1]) => Some(parts),
+                EntryBody::Msg { wire, parts, .. } if wire.content.as_deref() == Some(&texts[1]) => {
+                    Some(parts)
+                }
                 _ => None,
             })
             .expect("stored prompt");

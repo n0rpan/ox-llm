@@ -1,4 +1,4 @@
-//! F5: OAuth for HTTP servers (PKCE, discovery, dynamic registration, callback server, token store). Owner: task F5. Signatures below are frozen; bodies are yours.
+//! F5: OAuth for HTTP servers (PKCE, discovery, dynamic registration, callback server, token store).
 // ported from pi packages/mcp/src/oauth/*
 use crate::{ClientRegistration, HttpConfig, OAuthSettings, TokenSource, PROTOCOL_VERSION};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};

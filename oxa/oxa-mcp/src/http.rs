@@ -1,4 +1,4 @@
-//! E8: the streamable HTTP transport. Owner: task E8. Signatures below are frozen; bodies are yours.
+//! E8: the streamable HTTP transport.
 // ported from pi packages/mcp/src/transports/streamable-http.ts
 use crate::{HttpConfig, TokenSource, Transport, CODE_NEEDS_AUTH};
 use oxa_proto::{codes, OxaError, Value};

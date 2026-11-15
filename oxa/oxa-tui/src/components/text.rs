@@ -1,4 +1,4 @@
-//! B12: Text and TruncatedText components. Owner: task B12. Signatures below are frozen; bodies are yours.
+//! B12: Text and TruncatedText components.
 // ported from pi packages/tui/src/components/text.ts and truncated-text.ts
 use crate::{truncate_to_width, visible_width, wrap_ansi, Component, Theme};
 

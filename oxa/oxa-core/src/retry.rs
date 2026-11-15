@@ -1,4 +1,4 @@
-//! C2: auto-retry and overflow recovery. Owner: task C2. Signatures below are frozen; bodies are yours.
+//! C2: auto-retry and overflow recovery.
 // ported from pi packages/coding-agent/src/core/agent-session.ts (auto retry, overflow recovery)
 use crate::agent_loop::persist;
 use crate::compaction::compact_now;
@@ -35,8 +35,8 @@ pub fn backoff_ms(attempt: u32, p: &RetryPolicy) -> u64 {
 ///   at `max_delay_ms`), `engine_http` 5xx / 429, `stream_broken` **before any data byte**.
 ///   The same idempotency key is reused. Emits `AutoRetryStart` / `AutoRetryEnd`; the wait is
 ///   interruptible by `Shared::cancel_retry` and `cancel`.
-/// * `stream_broken` after output: not replayed (until the engine has H2); returned as the
-///   error so the loop stores `Shown { why: cut }`. No duplicate body is ever sent on its own.
+/// * `stream_broken` after output: not replayed here; returned as the error. The agent loop
+///   stores the partial as `Shown { why: cut }` and resends a transport cut itself (#456).
 /// * `context_overflow`: once per prompt, `compact_now(.., Overflow)` then one retry; a second
 ///   overflow is returned.
 /// * `aborted` is never retried.
@@ -54,25 +54,35 @@ pub fn chat_with_retry(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<AssistantTurn, OxaError> {
+    chat_with_retry_keyed(st, &mut opts.clone(), sink, ui)
+}
+
+/// As `chat_with_retry`, but the effective idempotency key (fresh after an overflow
+/// compaction) is left in `opts`, so a later replay of the same request reuses it.
+pub(crate) fn chat_with_retry_keyed(
+    st: &mut SessionState,
+    opts: &mut RequestOpts,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<AssistantTurn, OxaError> {
     let policy = retry_policy(st);
     // A `abort_retry` only means something during a wait of this call; a stale one from an
     // earlier call must not cancel this call's wait.
     st.shared.cancel_retry.reset();
 
-    let mut opts = opts.clone();
     if opts.idem_key.is_empty() {
         opts.idem_key = fresh_idem_key(st);
     }
     let mut retries: u32 = 0;
     // H (SET-054): `retry.provider.*`, the HTTP-level attempts inside each agent-level attempt
-    // (one HTTP layer in oxa). Same replay rule; silent like pi's provider retries.
+    // (one HTTP layer in oxa). Same replay rule and visible notices as agent retries.
     let provider = st.settings.provider_retry();
     let mut provider_retries: u32 = 0;
     let mut overflowed = false;
     let mut reloaded = false;
     let mut loading_noticed = false; // R2: one "model loading" notice per logical request
     loop {
-        let (res, got_data) = probed_request(st, &opts, sink, ui);
+        let (res, got_data) = probed_request(st, opts, sink, ui);
         let err = match res {
             Ok(turn) if opts.max_tokens != Some(0) && context_full(st, &turn) => {
                 let err = OxaError::new(
@@ -158,6 +168,7 @@ pub fn chat_with_retry(
             };
             if let Some(delay_ms) = delay_ms {
                 provider_retries += 1;
+                retry_notice(sink, provider_retries, delay_ms, &err);
                 reloaded |= matches!(
                     err.code,
                     codes::ENGINE_BUSY | codes::ENGINE_DOWN | codes::ENGINE_HTTP
@@ -202,6 +213,7 @@ pub fn chat_with_retry(
             delay_ms,
             error_message: err.to_string(),
         });
+        retry_notice(sink, retries, delay_ms, &err);
         match wait(st, delay_ms) {
             Wait::Elapsed => {}
             Wait::RetryCancelled => {
@@ -315,12 +327,29 @@ fn context_full(st: &SessionState, turn: &AssistantTurn) -> bool {
         && u64::from(turn.usage.prompt) + u64::from(turn.usage.completion) >= u64::from(st.info.n_ctx - 1)
 }
 
-/// Whether an error may be replayed. `stream_broken` only before the first data byte.
+fn retry_notice(sink: &mut dyn EventSink, attempt: u32, delay_ms: u64, error: &OxaError) {
+    sink.emit(&AgentEvent::Notice {
+        level: oxa_proto::Level::Info,
+        text: format!(
+            "retrying request in {delay_ms} ms (attempt {attempt}, {})",
+            error.code
+        ),
+    });
+}
+
+/// Retry transient refusals and transport failures only before output was observed.
 fn retryable(e: &OxaError, got_data: bool) -> bool {
+    if got_data {
+        return false;
+    }
     match e.code {
-        codes::ENGINE_DOWN | codes::ENGINE_BUSY => true,
+        codes::ENGINE_DOWN
+        | codes::ENGINE_BUSY
+        | codes::STREAM_BROKEN
+        | codes::TIMEOUT
+        | "cloud_credentials_unavailable"
+        | "cloud_ledger_unavailable" => true,
         codes::ENGINE_HTTP => matches!(http_status(&e.message), Some(s) if s >= 500 || s == 429),
-        codes::STREAM_BROKEN => !got_data,
         _ => false,
     }
 }
@@ -448,7 +477,7 @@ impl Engine for ProbeEngine {
 }
 
 /// A fresh idempotency key (same construction as `exec`'s, which is private to B3).
-fn fresh_idem_key(st: &SessionState) -> String {
+pub(crate) fn fresh_idem_key(st: &SessionState) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
@@ -466,6 +495,20 @@ fn fresh_idem_key(st: &SessionState) -> String {
 #[cfg(test)]
 mod fit_tests {
     use super::*;
+
+    #[test]
+    fn transient_failures_after_output_are_never_replayed() {
+        for (class, message) in [
+            (codes::ENGINE_BUSY, "HTTP 503: busy"),
+            (codes::ENGINE_DOWN, "connection reset"),
+            (codes::ENGINE_HTTP, "HTTP 429: rate limited"),
+            (codes::TIMEOUT, "timed out"),
+            ("cloud_credentials_unavailable", "credentials unavailable"),
+            ("cloud_ledger_unavailable", "ledger unavailable"),
+        ] {
+            assert!(!retryable(&OxaError::new(class, message), true), "{class}");
+        }
+    }
 
     /// F3 / S2: `engine_busy` is retryable (also after nothing arrived), 4xx is final, and the
     /// wait named by `retry after <n> s` is read in milliseconds.

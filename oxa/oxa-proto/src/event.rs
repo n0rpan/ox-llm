@@ -30,6 +30,7 @@ impl From<Finish> for StopReason {
             Finish::Stop => StopReason::Stop,
             Finish::ToolCalls => StopReason::ToolUse,
             Finish::Length => StopReason::Length,
+            Finish::ContentFilter => StopReason::Stop,
         }
     }
 }

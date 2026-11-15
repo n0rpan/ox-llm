@@ -1,4 +1,4 @@
-//! C8: prefix epochs (W3). Owner: task C8. Signatures below are frozen; bodies are yours.
+//! C8: prefix epochs (W3).
 // ported from pi packages/coding-agent/src/core/agent-session.ts (reload, system prompt rebuild)
 use crate::agent_loop::persist;
 use crate::prefix::{build_prefix_with, PrefixOpts};
@@ -212,6 +212,25 @@ fn project_trusted(st: &SessionState) -> bool {
         && !matches!(store.approval(&st.cwd), oxa_perm::Approval::Changed(_))
 }
 
+/// Extension paths for a reload: the discovered ones plus earlier ones that still exist. While
+/// the project is not trusted (new or changed content), earlier paths inside the project's own
+/// `.oxa` or `.agents` are dropped, so a file rewritten by bash never loads without approval.
+fn reload_extension_paths(
+    discovered: &[std::path::PathBuf],
+    earlier: &[std::path::PathBuf],
+    cwd: &std::path::Path,
+    trusted: bool,
+) -> Vec<std::path::PathBuf> {
+    let mut paths = discovered.to_vec();
+    for p in earlier {
+        let project = p.starts_with(cwd.join(".oxa")) || p.starts_with(cwd.join(".agents"));
+        if (trusted || !project) && !paths.contains(p) && p.exists() {
+            paths.push(p.clone());
+        }
+    }
+    paths
+}
+
 /// `/reload`: re-read settings and resources, fire `ResourcesDiscover`, shut down and reload
 /// hook sets, then [`open_epoch`]. No change in the prefix bytes = no new epoch, returns false.
 pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) -> Result<bool, OxaError> {
@@ -240,12 +259,12 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
     let prev_enabled = st.settings.compaction().enabled;
     // EXT-007 (pi /reload): the code-loaded hook sets are re-created. The paths are the ones
     // discovered now plus the earlier ones that still exist (`-e` paths are not discovered).
-    let mut paths = resources.extension_paths.clone();
-    for p in &st.resources.extension_paths {
-        if !paths.contains(p) && p.exists() {
-            paths.push(p.clone());
-        }
-    }
+    let paths = reload_extension_paths(
+        &resources.extension_paths,
+        &st.resources.extension_paths,
+        &st.cwd,
+        trusted,
+    );
     st.settings = settings;
     st.resources = resources;
     crate::host::observe_hooks(st, HookPoint::SessionShutdown, &Value::Null, sink, ui);
@@ -272,4 +291,24 @@ pub fn replay_prefix(branch: &[&Entry]) -> Option<FrozenPrefix> {
         EntryBody::Prefix(p) => Some(p.clone()),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod reload_paths_tests {
+    use super::reload_extension_paths;
+
+    #[test]
+    fn untrusted_reload_drops_earlier_project_extensions() {
+        let d = std::env::temp_dir().join(format!("oxa-rp-{}", std::process::id()));
+        let ext = d.join(".oxa/extensions");
+        std::fs::create_dir_all(&ext).unwrap();
+        let proj = ext.join("x.js");
+        let other = d.join("flag.js");
+        std::fs::write(&proj, "1").unwrap();
+        std::fs::write(&other, "1").unwrap();
+        let both = vec![proj.clone(), other.clone()];
+        assert_eq!(reload_extension_paths(&[], &both, &d, false), vec![other.clone()]);
+        assert_eq!(reload_extension_paths(&[], &both, &d, true), both);
+        std::fs::remove_dir_all(&d).ok();
+    }
 }

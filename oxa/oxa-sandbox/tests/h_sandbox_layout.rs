@@ -68,6 +68,8 @@ fn machine(env: &TestEnv) -> Layout {
         read_extra: Vec::new(),
         write_extra: Vec::new(),
         allow_home_write: false,
+        exe: None,
+        exe_in_workspace: false,
     })
 }
 
@@ -126,6 +128,9 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "CARGO_HOME",
         "<root>/home/.cargo",
         "--setenv",
+        "GH_CACHE_DIR",
+        "/tmp/gh-cache",
+        "--setenv",
         "MISE_CACHE_DIR",
         "/tmp/mise-cache",
         "--setenv",
@@ -171,9 +176,41 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
     let names: Vec<&str> = l.env.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         names,
-        vec!["CARGO_HOME", "MISE_CACHE_DIR", "MISE_DATA_DIR", "MISE_STATE_DIR"],
+        vec![
+            "CARGO_HOME",
+            "GH_CACHE_DIR",
+            "MISE_CACHE_DIR",
+            "MISE_DATA_DIR",
+            "MISE_STATE_DIR"
+        ],
         "no token, no key, nothing unlisted"
     );
+}
+
+/// #280 / review of #302: no bash command, git included, may write the project's `.oxa` or
+/// `.agents/skills`: git can be made to run programs or check out content the model wrote.
+#[test]
+fn git_commands_keep_oxa_and_skills_read_only() {
+    let env = TestEnv::new();
+    let l = machine(&env);
+    env.write("work/.oxa/settings.json", "{}");
+    env.write("work/.agents/skills/x/SKILL.md", "");
+    for cmd in [
+        "git pull",
+        "git pull --upload-pack=./p.sh .",
+        "git merge -s evil main",
+        "git checkout abc123 -- .oxa/extensions/x.js",
+        "git rebase --exec evil main",
+    ] {
+        let a = bwrap_args_with(&spec(cmd, &env.work(), true), &env.home(), &l);
+        for p in [".oxa", ".agents/skills"] {
+            let want = env.work().join(p).display().to_string();
+            assert!(
+                a.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == want),
+                "{cmd}: {p}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -870,6 +907,8 @@ fn mise_cache_and_state_are_writable() {
         read_extra: Vec::new(),
         write_extra: Vec::new(),
         allow_home_write: false,
+        exe: None,
+        exe_in_workspace: false,
     });
     assert!(l.write.contains(&home.join(".cache/mise")), "{:?}", l.write);
     assert!(
@@ -880,4 +919,37 @@ fn mise_cache_and_state_are_writable() {
     // Trust records stay unwritable: no writable bind may be, or contain, `trusted-configs`.
     let trusted = home.join(".local/state/mise/trusted-configs");
     assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
+}
+
+/// #362: `gh` writes its cache to `GH_CACHE_DIR`; point it at the sandbox /tmp, never bind the
+/// real `~/.cache/gh`, never create host directories, and leave `XDG_CACHE_HOME` alone.
+#[test]
+fn gh_cache_dir_is_sandbox_tmp_and_host_untouched() {
+    let env = TestEnv::new();
+    let home = env.home();
+    let mk = |env: Vec<(String, String)>| {
+        Layout::build(&LayoutInputs {
+            home: home.clone(),
+            agent_dir: Some(env_agent(&env)),
+            path_var: "/usr/bin".into(),
+            env,
+            read_extra: Vec::new(),
+            write_extra: Vec::new(),
+            allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
+        })
+    };
+    fn env_agent(_: &[(String, String)]) -> PathBuf {
+        PathBuf::from("/nonexistent-agent")
+    }
+    let l = mk(Vec::new());
+    assert!(
+        l.env.contains(&("GH_CACHE_DIR".into(), "/tmp/gh-cache".into())),
+        "{:?}",
+        l.env
+    );
+    assert!(!l.env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"));
+    assert!(!l.write.contains(&home.join(".cache/gh")));
+    assert!(!home.join(".cache/gh").exists(), "build must not touch the host");
 }

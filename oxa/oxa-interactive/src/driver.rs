@@ -691,13 +691,7 @@ impl<'a> Loop<'a> {
         let queued = old.dequeue();
         if !queued.is_empty() {
             let n = queued.len();
-            let mut text = queued.join("\n\n");
-            let current = self.editor.text();
-            if !current.is_empty() {
-                text.push_str("\n\n");
-                text.push_str(&current);
-            }
-            self.editor.set_text(&text);
+            self.editor.prepend_text(&queued.join("\n\n"));
             self.push_notice(
                 Level::Warning,
                 format!("{n} queued message(s) were not sent to the previous session; they are back in the editor."),
@@ -970,6 +964,7 @@ impl<'a> Loop<'a> {
             HintContext::Idle {
                 has_text: !text.trim().is_empty(),
                 slash: text.starts_with('/'),
+                armed: self.armed,
             }
         }
     }
@@ -1047,7 +1042,12 @@ impl<'a> Loop<'a> {
                 Overlay::Settings(s) => s.paste(text),
                 Overlay::Sessions(s) => s.paste(text),
                 Overlay::Tree(s) => s.paste(text),
-                Overlay::Thinking(_) | Overlay::Theme(_) | Overlay::Fork(_) | Overlay::Mcp(_) => {}
+                Overlay::Thinking(_) | Overlay::Theme(_) | Overlay::Fork(_) | Overlay::Mcp(_) => {
+                    self.push_notice(
+                        Level::Info,
+                        "Paste ignored: this selector has no text field.".to_string(),
+                    );
+                }
             }
             return;
         }
@@ -1561,13 +1561,7 @@ impl<'a> Loop<'a> {
         if queued.is_empty() {
             return;
         }
-        let mut text = queued.join("\n\n");
-        let current = self.editor.text();
-        if !current.is_empty() {
-            text.push_str("\n\n");
-            text.push_str(&current);
-        }
-        self.editor.set_text(&text);
+        self.editor.prepend_text(&queued.join("\n\n"));
     }
 
     // -----------------------------------------------------------------------------------------

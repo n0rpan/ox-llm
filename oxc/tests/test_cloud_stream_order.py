@@ -16,15 +16,46 @@ class StreamOrder(unittest.TestCase):
         self.assertTrue(out.endswith(b'data: [DONE]\n\n'))
         return [json.loads(line[6:]) for line in out.splitlines() if line.startswith(b'data: {')]
 
+    def test_tool_name_ending_in_key_prefix_is_not_split(self):
+        # A name is atomic: holding its last character back made `ls` arrive as `l` then `s`.
+        frames = self.transcode([{'choices': [{'index': 0, 'delta': {'tool_calls': [
+            {'index': 0, 'id': 'c1', 'function': {'name': 'ls', 'arguments': ''}}]},
+            'finish_reason': None}]}], 'sk-synthetic')
+        names = [call['function']['name'] for frame in frames for choice in frame.get('choices', [])
+                 for call in choice.get('delta', {}).get('tool_calls', []) if 'name' in call['function']]
+        self.assertEqual(names, ['ls'])
+
+    def test_tool_name_key_split_across_deltas_is_redacted(self):
+        events = [{'choices': [{'index': 0, 'delta': {'tool_calls': [
+            {'index': 0, 'id': 'c1', 'function': {'name': piece}}]}, 'finish_reason': None}]}
+            for piece in ('sk-syn', 'thetic')]
+        events.append({'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]})
+        frames = self.transcode(events, 'sk-synthetic')
+        names = [call['function']['name'] for frame in frames for choice in frame.get('choices', [])
+                 for call in choice.get('delta', {}).get('tool_calls', []) if 'name' in call['function']]
+        self.assertNotIn('sk-synthetic', ''.join(names))
+        self.assertEqual(len(names), 1)
+
+    def test_tool_name_key_released_by_arguments_is_redacted(self):
+        events = [{'choices': [{'index': 0, 'delta': {'tool_calls': [
+            {'index': 0, 'id': 'c1', 'function': {'name': piece}}]}, 'finish_reason': None}]}
+            for piece in ('sk-syn', 'thetic')]
+        events.append({'choices': [{'index': 0, 'delta': {'tool_calls': [
+            {'index': 0, 'function': {'arguments': '{"a":1}'}}]}, 'finish_reason': None}]})
+        frames = self.transcode(events, 'sk-synthetic')
+        names = [call['function']['name'] for frame in frames for choice in frame.get('choices', [])
+                 for call in choice.get('delta', {}).get('tool_calls', []) if 'name' in call['function']]
+        self.assertEqual(len(names), 1)
+        self.assertNotIn('sk-synthetic', names[0])
+
     def test_final_delta_precedes_its_buffered_suffix_and_finish(self):
         for field, text, key in (('content', 'hello S', 'SYNTHETIC_KEY'),
                                   ('reasoning_content', 'think S', 'SYNTHETIC_KEY'),
                                   ('refusal', 'refused S', 'SYNTHETIC_KEY'),
-                                  ('name', 'ls', 'synthetic-key'),
                                   ('arguments', '{"path":"x"}', '}SYNTHETIC_KEY')):
             with self.subTest(field=field):
                 delta = ({'tool_calls': [{'index': 0, 'function': {field: text}}]}
-                         if field in ('name', 'arguments') else {field: text})
+                         if field == 'arguments' else {field: text})
                 frames = self.transcode([{
                     'choices': [{'index': 0, 'delta': delta, 'finish_reason': 'stop'}],
                     'usage': {'prompt_tokens': 11, 'completion_tokens': 4}}], key)
@@ -34,7 +65,7 @@ class StreamOrder(unittest.TestCase):
                         part = choice.get('delta', {})
                         value = (''.join(call.get('function', {}).get(field, '')
                                          for call in part.get('tool_calls', []))
-                                 if field in ('name', 'arguments') else part.get(field, ''))
+                                 if field == 'arguments' else part.get(field, ''))
                         if value:
                             fragments.append((position, value))
                         if choice.get('finish_reason') is not None:
@@ -45,6 +76,20 @@ class StreamOrder(unittest.TestCase):
                 self.assertEqual(sum('usage' in frame for frame in frames), 1)
                 if field == 'arguments':
                     self.assertEqual(json.loads(''.join(value for _, value in fragments)), {'path': 'x'})
+
+    def test_tool_names_arrive_whole_in_one_delta(self):
+        for name in ('ls', 'list_files', 'read'):
+            with self.subTest(name=name):
+                frames = self.transcode([
+                    {'choices': [{'index': 0, 'delta': {'tool_calls': [{
+                        'index': 0, 'id': 'c1', 'type': 'function',
+                        'function': {'name': name, 'arguments': ''}}]}, 'finish_reason': None}]},
+                    {'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}],
+                    'synthetic-key')
+                names = [call['function']['name'] for f in frames for c in f.get('choices', [])
+                         for call in c.get('delta', {}).get('tool_calls', [])
+                         if 'name' in call.get('function', {})]
+                self.assertEqual(names, [name])
 
     def test_finishing_one_choice_does_not_flush_another_choices_key_prefix(self):
         key = 'SYNTHETIC_KEY'

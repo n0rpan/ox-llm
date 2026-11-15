@@ -1,4 +1,4 @@
-//! A2: request body, reply assembly and the HTTP `Engine`. Owner: task A2. Signatures below are frozen; bodies are yours.
+//! A2: request body, reply assembly and the HTTP `Engine`.
 use crate::hints::{build_headers, new_idem_key};
 use crate::info::{clear_hint, count_tokens, fetch_info_full, http_error_with, send_cancel, stream_error};
 use crate::{post_sse, Flow, SseEvent, StreamOpts, Url};
@@ -181,7 +181,13 @@ impl ReplyAssembler {
                         self.calls[slot].id = id.to_string();
                     }
                     if let Some(name) = name {
-                        self.calls[slot].name.push_str(name);
+                        // Names arrive whole: a repeat is idempotent, only a real fragment appends.
+                        let cur = &mut self.calls[slot].name;
+                        if cur.is_empty() || cur == name {
+                            *cur = name.to_string();
+                        } else {
+                            cur.push_str(name);
+                        }
                     }
                     self.calls[slot].args_raw.push_str(args);
                     if id.is_some() || name.is_some() || !args.is_empty() {
@@ -426,6 +432,7 @@ fn parse_finish(v: &Value) -> Result<Finish, OxaError> {
         Some("stop") => Ok(Finish::Stop),
         Some("tool_calls") => Ok(Finish::ToolCalls),
         Some("length") => Ok(Finish::Length),
+        Some("content_filter") => Ok(Finish::ContentFilter),
         _ => Err(broken(format!("unknown finish_reason {v}"))),
     }
 }
@@ -611,8 +618,8 @@ impl Engine for HttpEngine {
                                 Err(e) => {
                                     // An error after reply data is a cut reply, never replayed
                                     // (the core retries `stream_broken` only before data).
-                                    failure = Some(if emitted && e.code != codes::STREAM_BROKEN {
-                                        broken(format!("the reply was cut: {}", e.message))
+                                    failure = Some(if emitted {
+                                        broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, e.message))
                                     } else {
                                         e
                                     });

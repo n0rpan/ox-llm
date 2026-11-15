@@ -1,4 +1,4 @@
-//! B10: the multi-line prompt editor. Owner: task B10. Signatures below are frozen; bodies are yours.
+//! B10: the multi-line prompt editor.
 // ported from pi packages/tui/src/components/editor.ts, kill-ring.ts, undo-stack.ts, word-navigation.ts
 use crate::{
     cluster_boundaries, pad_to_width, truncate_to_width, visible_width, AutocompleteItem,
@@ -207,6 +207,18 @@ impl Editor {
     /// The text with every paste marker replaced by its content.
     pub fn expanded_text(&self) -> String {
         expand(&self.text(), &self.pastes)
+    }
+    /// Put `prefix` in front of the current content, keeping paste contents.
+    pub fn prepend_text(&mut self, prefix: &str) {
+        let current = self.text();
+        if current.is_empty() {
+            self.set_text(prefix);
+            return;
+        }
+        let (pastes, counter) = (self.pastes.clone(), self.paste_counter);
+        self.set_text(&format!("{prefix}\n\n{current}"));
+        self.pastes = pastes;
+        self.paste_counter = counter;
     }
     /// Replace the content (one undo step); cursor to the end.
     pub fn set_text(&mut self, text: &str) {

@@ -110,6 +110,7 @@ fn say(st: &mut SessionState, text: &str) {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user");
@@ -122,6 +123,7 @@ fn push(st: &mut SessionState, wire: WireMsg) {
         EntryBody::Msg {
             wire,
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append message");

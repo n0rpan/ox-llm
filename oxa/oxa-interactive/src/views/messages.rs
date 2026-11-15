@@ -1,4 +1,4 @@
-//! D4: message views. Owner: task D4. Signatures below are frozen; bodies are yours.
+//! D4: message views.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{user-message.ts,assistant-message.ts,compaction-summary-message.ts,branch-summary-message.ts,custom-message.ts,bash-execution.ts}
 //
 // All functions are pure, return lines that fit `cx.width`, and never panic on any text.
@@ -278,7 +278,7 @@ pub fn render_shown(text: &str, why: &str, cx: &ViewCx) -> Vec<String> {
         other => (other, "dim"),
     };
     let reason = if why == shown_why::ABORTED {
-        format!("{label}: {}", "cancelled; your prompt is kept, type to go on")
+        format!("{label}: partial reply dropped; your prompt stays")
     } else {
         format!("{label}: not sent to the model; ask again")
     };

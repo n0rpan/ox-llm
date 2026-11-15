@@ -1,4 +1,4 @@
-//! E4: the `ctx.*` object handed to handlers, commands and tools. Owner: task E4. Signatures below are frozen; bodies are yours.
+//! E4: the `ctx.*` object handed to handlers, commands and tools.
 // ported from pi packages/coding-agent/src/core/extensions/types.ts (ExtensionContext, ExtensionCommandContext)
 //
 // Host functions bound on each runtime (all synchronous from the script's side):

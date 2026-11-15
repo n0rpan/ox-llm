@@ -1,4 +1,4 @@
-//! A11: the settings schema table, validation and merge rules. Owner: task A11. Signatures below are frozen; bodies are yours.
+//! A11: the settings schema table, validation and merge rules.
 // ported from pi packages/coding-agent/docs/settings.md and src/core/settings-manager.ts
 use crate::Diagnostic;
 use oxa_proto::{Level, Value};
@@ -183,6 +183,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
+    key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
@@ -267,7 +268,7 @@ const SCHEMA: &[KeyDef] = &[
         "null",
     ),
     key("ui.reducedMotion", Kind::Bool, "false"),
-    key("ui.skin", Kind::Enum(&["auto", "pi", "oxa"]), "\"auto\""),
+    key("ui.skin", Kind::Enum(&["auto", "pi", "oxa", "ascii"]), "\"auto\""),
     verdict_o("warnings.anthropicExtraUsage", Kind::Bool, "true"),
     verdict_o("websocketConnectTimeoutMs", Kind::Any, "15000"),
 ];

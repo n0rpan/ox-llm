@@ -1,4 +1,4 @@
-//! D3: transcript search in fullscreen mode. Owner: task D3. Signatures below are frozen; bodies are yours.
+//! D3: transcript search in fullscreen mode.
 // ported from pi packages/tui/src/alt-screen-search.ts
 use oxa_tui::{slice_by_column, strip_ansi, visible_width, Theme};
 

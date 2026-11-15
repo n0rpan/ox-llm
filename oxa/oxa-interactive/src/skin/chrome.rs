@@ -1,5 +1,5 @@
 //! U2: the chrome of the OXA skin: splash, HUD line, hint bar, activity line, window title.
-//! Owner: task U2. Signatures below are frozen; bodies are yours. Spec: OXA-UI-DESIGN.md sec. 4.
+//! Spec: OXA-UI-DESIGN.md sec. 4.
 use crate::{Activity, HeaderInfo, Skin, StatusModel, ViewModel};
 use oxa_config::Keymap;
 use oxa_proto::Mode;
@@ -11,7 +11,12 @@ use super::{badge, glyphs, left_right, meter, sprite_frame, Glyphs, Sprite};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintContext {
     /// Nothing runs. `has_text`: the editor is not empty; `slash`: its text starts with `/`.
-    Idle { has_text: bool, slash: bool },
+    Idle {
+        has_text: bool,
+        slash: bool,
+        /// A Ctrl+C was just pressed on an empty editor: the next one quits.
+        armed: bool,
+    },
     /// A run is in progress (thinking, streaming, tool, compaction, retry, queue).
     Running,
     /// A dialog waits for an answer.
@@ -128,10 +133,24 @@ pub fn oxa_hud(st: &StatusModel, width: u16, theme: &Theme, skin: Skin) -> Strin
     let g = glyphs(skin);
     let w = width as usize;
     let parts = HudParts::new(st, g);
-    for drops in 0..=HUD_DROPS {
+    for drops in 0..10 {
         let line = hud_build(&parts, drops, &parts.model, g, theme);
         if visible_width(&line) <= w {
             return line;
+        }
+    }
+    // Still too wide: shorten the model name (down to a readable stub) before the mode and the
+    // location go, since those say what the session may do and where it runs.
+    const MIN_MODEL: usize = 10;
+    for drops in 10..=HUD_DROPS {
+        let base = visible_width(&hud_build(&parts, drops, "", g, theme));
+        let room = w.saturating_sub(base);
+        if room >= MIN_MODEL.min(visible_width(&parts.model)) {
+            let short = truncate_to_width(&parts.model, room, "...");
+            let line = hud_build(&parts, drops, &short, g, theme);
+            if visible_width(&line) <= w {
+                return line;
+            }
         }
     }
     // Everything is dropped and it is still too wide: cut the model name, then the line.
@@ -142,7 +161,7 @@ pub fn oxa_hud(st: &StatusModel, width: u16, theme: &Theme, skin: Skin) -> Strin
 }
 
 /// Number of HUD segments that can be dropped (sec. 4.2 drop order, 1st .. 10th).
-const HUD_DROPS: usize = 10;
+const HUD_DROPS: usize = 12;
 
 /// The HUD's data, cleaned and ready to lay out. Built once per call.
 struct HudParts {
@@ -257,12 +276,21 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
         Some((pct, fraction, detail)) => {
             let token = ctx_token(*pct);
             let cells = if shown(6) { 10 } else { 5 };
-            let mut s = format!(
-                "{} {} {}",
-                theme.fg("muted", "CTX"),
-                theme.fg(token, &meter(*fraction, cells, g)),
-                theme.fg(token, &format!("{pct}%"))
-            );
+            let mut s = if shown(10) {
+                format!(
+                    "{} {} {}",
+                    theme.fg("muted", "CTX"),
+                    theme.fg(token, &meter(*fraction, cells, g)),
+                    theme.fg(token, &format!("{pct}%"))
+                )
+            } else {
+                // Narrow: the bar goes before the mode and the location do.
+                format!(
+                    "{} {}",
+                    theme.fg("muted", "CTX"),
+                    theme.fg(token, &format!("{pct}%"))
+                )
+            };
             if shown(4) {
                 s.push_str(&format!(" {}", theme.fg("muted", detail)));
             }
@@ -307,14 +335,14 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     }
 
     // 8: permission mode.
-    if shown(10) {
+    if shown(11) {
         if let Some(mode) = p.mode {
             segs.push(theme.fg(mode_token(mode), mode.as_str()));
         }
     }
 
     // 9: where the model runs (D4b); goes with the mode.
-    if shown(10) {
+    if shown(12) {
         segs.push(if p.is_remote {
             theme.fg(
                 "accent",
@@ -365,7 +393,16 @@ pub fn oxa_hint_bar(
 fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme) -> Vec<String> {
     let act = |id: &str, label: &str| action_hint(keymap, id, label, "text", theme);
     let items: Vec<Option<String>> = match ctx {
-        HintContext::Idle { has_text: false, .. } => vec![
+        HintContext::Idle {
+            has_text: false,
+            armed,
+            ..
+        } => vec![
+            if armed {
+                action_hint(keymap, "app.clear", "exit", "warning", theme)
+            } else {
+                None
+            },
             act("tui.input.submit", "send"),
             Some(hint("/", "commands", "text", theme)),
             act("app.model.select", "models"),
@@ -377,11 +414,12 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
             } else {
                 None
             },
-            act("app.exit", "exit"),
+            if armed { None } else { act("app.exit", "exit") },
         ],
         HintContext::Idle {
             has_text: true,
             slash: false,
+            ..
         } => vec![
             act("tui.input.submit", "send"),
             act("tui.input.newLine", "newline"),
@@ -391,6 +429,7 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
         HintContext::Idle {
             has_text: true,
             slash: true,
+            ..
         } => vec![
             act("tui.input.tab", "complete"),
             act("tui.input.submit", "run"),
