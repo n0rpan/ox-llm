@@ -208,6 +208,18 @@ fn denied(p: &Path, deny: &[PathBuf]) -> bool {
 }
 
 impl Layout {
+    /// Whether `build` keeps an extra path (the same checks it applies to every configured
+    /// path: absolute, existing, not a credential path, not the home itself or `/`).
+    pub fn keeps_extra(home: &Path, agent_dir: Option<&Path>, p: &Path) -> bool {
+        let deny = sensitive_paths(home, agent_dir);
+        p.is_absolute() && p.exists() && !denied(p, &deny) && p != home && p != Path::new("/")
+    }
+
+    /// Whether some writable mount lies strictly inside `p`.
+    pub fn has_writable_inside(&self, p: &Path) -> bool {
+        self.write.iter().any(|w| w != p && w.starts_with(p))
+    }
+
     /// Build the layout from the user's environment and settings (see the module docs).
     pub fn build(i: &LayoutInputs) -> Layout {
         let deny = sensitive_paths(&i.home, i.agent_dir.as_deref());
@@ -233,9 +245,7 @@ impl Layout {
         read.extend(i.exe.iter().cloned());
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
-        let keep = |p: &PathBuf| {
-            p.is_absolute() && p.exists() && !denied(p, &deny) && p != &i.home && p != Path::new("/")
-        };
+        let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
         read.retain(keep);
         write.retain(keep);
         read.sort();
