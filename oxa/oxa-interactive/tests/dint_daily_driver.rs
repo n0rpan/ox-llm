@@ -617,11 +617,17 @@ fn fullscreen_daily_driver_flow() {
 
 #[test]
 fn regular_mode_flow() {
-    let world = World::new(vec![
-        ScriptTurn::tool("call_1", "read", r#"{"path":"notes.md"}"#),
-        ScriptTurn::text("ALPHA answer."),
-        ScriptTurn::text("BETA answer."),
-    ]);
+    let world = World::with(
+        vec![
+            ScriptTurn::tool("call_1", "read", r#"{"path":"notes.md"}"#),
+            ScriptTurn::text("ALPHA answer."),
+            ScriptTurn::text("BETA answer."),
+        ],
+        FakeOpts {
+            done_gap_ms: 250,
+            ..FakeOpts::default()
+        },
+    );
     std::fs::write(world.env.work().join("notes.md"), "the secret word is OMEGA-42\n")
         .expect("write the notes");
 
@@ -630,6 +636,12 @@ fn regular_mode_flow() {
         step(
             "reply",
             &["OMEGA-42", "ALPHA answer."],
+            typed("/export alpha-idle.html", &["enter"]),
+        ),
+        // Reply text can precede [DONE]; the export notice follows AgentSettled in the worker FIFO.
+        step(
+            "alpha settled",
+            &["Exported the session to", "alpha-idle.html"],
             typed("/model", &["enter"]),
         ),
         step(
@@ -643,6 +655,11 @@ fn regular_mode_flow() {
         step(
             "info shown",
             &["Session id:", "Messages: user 1, assistant 2, tool calls 1"],
+            typed("/export info-idle.html", &["enter"]),
+        ),
+        step(
+            "info settled",
+            &["Exported the session to", "info-idle.html"],
             typed("/tree", &["enter"]),
         ),
         step(
