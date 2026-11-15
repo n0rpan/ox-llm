@@ -126,6 +126,9 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "CARGO_HOME",
         "<root>/home/.cargo",
         "--setenv",
+        "GH_CACHE_DIR",
+        "/tmp/gh-cache",
+        "--setenv",
         "MISE_CACHE_DIR",
         "/tmp/mise-cache",
         "--setenv",
@@ -167,14 +170,17 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
             home.join(".rustup")
         ]
     );
-    assert_eq!(
-        l.write,
-        vec![home.join(".cache/gh"), home.join(".cargo/registry")]
-    );
+    assert_eq!(l.write, vec![home.join(".cargo/registry")]);
     let names: Vec<&str> = l.env.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(
         names,
-        vec!["CARGO_HOME", "MISE_CACHE_DIR", "MISE_DATA_DIR", "MISE_STATE_DIR"],
+        vec![
+            "CARGO_HOME",
+            "GH_CACHE_DIR",
+            "MISE_CACHE_DIR",
+            "MISE_DATA_DIR",
+            "MISE_STATE_DIR"
+        ],
         "no token, no key, nothing unlisted"
     );
 }
@@ -219,9 +225,6 @@ fn golden_project_cwd() {
         "--bind",
         "<root>/work",
         "<root>/work",
-        "--bind",
-        "<root>/home/.cache/gh",
-        "<root>/home/.cache/gh",
         "--ro-bind",
         "<root>/home/.cargo/bin",
         "<root>/home/.cargo/bin",
@@ -285,9 +288,6 @@ fn golden_home_cwd_is_read_only_and_masked() {
     want.extend(strs(&["--ro-bind", "<root>/home", "<root>/home"]));
     // Every toolchain bind is inside the cwd: none is left out (they hold their own mode).
     want.extend(strs(&[
-        "--bind",
-        "<root>/home/.cache/gh",
-        "<root>/home/.cache/gh",
         "--ro-bind",
         "<root>/home/.cargo/bin",
         "<root>/home/.cargo/bin",
@@ -917,43 +917,33 @@ fn mise_cache_and_state_are_writable() {
     assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
 }
 
-/// #362: `gh run view` creates `~/.cache/gh`; with a read-only home that fails. The directory is
-/// bound writable when it exists, and `XDG_CACHE_HOME` is NOT redirected to the throwaway /tmp
-/// (that would discard the pip/uv/go/pnpm caches bound in `CACHE_WRITE`).
+/// #362: `gh` writes its cache to `GH_CACHE_DIR`; point it at the sandbox /tmp, never bind the
+/// real `~/.cache/gh`, never create host directories, and leave `XDG_CACHE_HOME` alone.
 #[test]
-fn gh_cache_writable_and_xdg_cache_not_redirected() {
-    let env = TestEnv::new();
-    env.write("home/.cache/gh/keep", "");
-    env.write("home/.cache/pip/keep", "");
-    let home = env.home();
-    let l = Layout::build(&LayoutInputs {
-        home: home.clone(),
-        agent_dir: Some(env.agent_dir()),
-        path_var: "/usr/bin".into(),
-        env: Vec::new(),
-        read_extra: Vec::new(),
-        write_extra: Vec::new(),
-        allow_home_write: false,
-    });
-    assert!(l.write.contains(&home.join(".cache/gh")), "{:?}", l.write);
-    assert!(l.write.contains(&home.join(".cache/pip")), "{:?}", l.write);
-    assert!(!l.env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"), "{:?}", l.env);
-}
-
-/// #362: `~/.cache/gh` is bound writable even when it does not exist yet.
-#[test]
-fn gh_cache_bound_when_missing() {
+fn gh_cache_dir_is_sandbox_tmp_and_host_untouched() {
     let env = TestEnv::new();
     let home = env.home();
-    assert!(!home.join(".cache/gh").exists());
-    let l = Layout::build(&LayoutInputs {
-        home: home.clone(),
-        agent_dir: Some(env.agent_dir()),
-        path_var: "/usr/bin".into(),
-        env: Vec::new(),
-        read_extra: Vec::new(),
-        write_extra: Vec::new(),
-        allow_home_write: false,
-    });
-    assert!(l.write.contains(&home.join(".cache/gh")), "{:?}", l.write);
+    let mk = |env: Vec<(String, String)>| {
+        Layout::build(&LayoutInputs {
+            home: home.clone(),
+            agent_dir: Some(env_agent(&env)),
+            path_var: "/usr/bin".into(),
+            env,
+            read_extra: Vec::new(),
+            write_extra: Vec::new(),
+            allow_home_write: false,
+        })
+    };
+    fn env_agent(_: &[(String, String)]) -> PathBuf {
+        PathBuf::from("/nonexistent-agent")
+    }
+    let l = mk(Vec::new());
+    assert!(
+        l.env.contains(&("GH_CACHE_DIR".into(), "/tmp/gh-cache".into())),
+        "{:?}",
+        l.env
+    );
+    assert!(!l.env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"));
+    assert!(!l.write.contains(&home.join(".cache/gh")));
+    assert!(!home.join(".cache/gh").exists(), "build must not touch the host");
 }

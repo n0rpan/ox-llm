@@ -88,8 +88,6 @@ pub const CACHE_WRITE: &[&str] = &[
     ".cache/pnpm",
     ".cache/deno",
     ".cache/node-gyp",
-    // #362: `gh run view` creates `~/.cache/gh`.
-    ".cache/gh",
     ".npm",
     ".bun/install/cache",
     "go/pkg/mod",
@@ -241,11 +239,6 @@ impl Layout {
         }
         read.extend(TOOLCHAIN_READ.iter().map(|r| i.home.join(r)));
         read.extend(i.read_extra.iter().cloned());
-        // `gh` creates its cache on first use, so make sure the bind target exists (#362).
-        let gh = i.home.join(".cache/gh");
-        if i.home.is_dir() && !gh.exists() {
-            let _ = std::fs::create_dir_all(&gh);
-        }
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
         let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
@@ -297,6 +290,9 @@ impl Layout {
         for (k, v) in [
             ("MISE_CACHE_DIR", "/tmp/mise-cache"),
             ("MISE_STATE_DIR", "/tmp/mise-state"),
+            // #362: `gh run view` creates its cache under the read-only home. Throwaway /tmp,
+            // so nothing persists in the real home for an unsandboxed `gh` to read back.
+            ("GH_CACHE_DIR", "/tmp/gh-cache"),
         ] {
             if !env.iter().any(|(n, _)| n == k) {
                 env.push((k.to_string(), v.to_string()));
