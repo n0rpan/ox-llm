@@ -19,6 +19,10 @@
 //! * a result of the same call with different text (a polling command whose output changes, a
 //!   test whose output changed): a legitimate re-run.
 //!
+//! A background job poll (`bash {job}`, #150) follows the same rule: its result text names the
+//! job's state and the bytes it has written, so a poll that saw progress is a different result
+//! and breaks the run; identical polls of a job with no news still count.
+//!
 //! Inside one batch the same applies in call order (`exec::run_calls`): the batch's earlier
 //! results are not on the wire yet, so `[read A, edit A, read A]` breaks the run at the edit,
 //! and earlier identical calls of the batch extend it.
@@ -167,4 +171,68 @@ fn find_call<'a>(before: &'a [WireMsg], id: &str) -> Option<&'a oxa_proto::ToolC
 
 fn parse(raw: &str) -> Option<Value> {
     serde_json::from_str::<Value>(raw).ok().filter(Value::is_object)
+}
+
+#[cfg(test)]
+mod job_poll_tests {
+    //! #150 (1): a job poll is a repeat only while its result text stays the same. The text
+    //! carries the job's state and how much output it has written, so a poll that saw any
+    //! progress differs from the one before; identical polls of a stuck job still count.
+    use super::*;
+    use oxa_proto::{ToolCall, WireMsg};
+
+    fn poll_call(i: usize) -> WireMsg {
+        WireMsg {
+            role: Role::Assistant,
+            content: None,
+            reasoning: None,
+            tool_calls: vec![ToolCall {
+                id: format!("p{i}"),
+                name: "bash".to_string(),
+                args_raw: r#"{"job":"job-1"}"#.to_string(),
+            }],
+            tool_call_id: None,
+        }
+    }
+
+    /// The wire of `texts` polls (each answered), oldest first.
+    fn polls(texts: &[&str]) -> Vec<WireMsg> {
+        let mut wire = Vec::new();
+        for (i, t) in texts.iter().enumerate() {
+            wire.push(poll_call(i));
+            wire.push(WireMsg::tool_result(format!("p{i}"), *t));
+        }
+        wire
+    }
+
+    fn count_for(wire: &[WireMsg], newest: &str) -> Found {
+        let mut found = Found::default();
+        let args = parse(r#"{"job":"job-1"}"#).unwrap();
+        scan(wire, "bash", &args, newest, &mut found);
+        found
+    }
+
+    #[test]
+    fn progress_between_polls_is_never_a_repeat() {
+        let a = "Job job-1: running (10 bytes of output)\nStill running.\n\nx";
+        let b = "Job job-1: running (20 bytes of output)\nStill running.\n\nx";
+        let c = "Job job-1: running (30 bytes of output)\nStill running.\n\nx";
+        // The newest poll saw progress since the one before it: nothing counted.
+        assert_eq!(count_for(&polls(&[a, b]), c).identical, 0);
+        // Even a poll identical to an older one does not count past a changed poll.
+        assert_eq!(count_for(&polls(&[a, a, b, b]), c).identical, 0);
+        let pass = finish(count_for(&polls(&[a, b, b]), c), "bash", r#"{"job":"job-1"}"#);
+        assert_eq!(pass, Verdict::Pass);
+    }
+
+    #[test]
+    fn identical_unchanged_polls_still_trip_the_guard() {
+        let same = "Job job-1: running (0 bytes of output)\nStill running.";
+        let found = count_for(&polls(&[same, same, same]), same);
+        assert_eq!(found.identical, LIMIT);
+        assert!(matches!(
+            finish(found, "bash", r#"{"job":"job-1"}"#),
+            Verdict::Notice(_)
+        ));
+    }
 }
