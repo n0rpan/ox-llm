@@ -2,6 +2,8 @@
 
 Enable `upstream-anthropic-stream` to use `anthropic_stream::Stream`. It accepts
 decoded Messages events and returns OpenAI chunk JSON values in order. The caller
+uses the shared implementation in `oxa/oxc-gateway`; the native module re-exports
+it. Fixtures and behavior tests live beside that shared implementation. The caller
 supplies the timestamp. SSE framing, transport and accounting remain the gateway's
 responsibility; no network, key or clock access occurs here. Production callers use
 `Stream::with_redactor` with the gateway's `Redactor` adapter. Its feed/finish hooks
@@ -28,8 +30,9 @@ signature deltas replace the prior signature exactly as Python does. Synthetic
 marker splits and held tails are compared against Python's stateful redactor too.
 
 ```sh
-python3 -I oxc-rs/tests/fixtures/record_anthropic_streams.py --check
-cargo test --locked --manifest-path oxc-rs/Cargo.toml --features upstream-anthropic-stream
+python3 -I oxa/oxc-gateway/tests/fixtures/record_anthropic_streams.py --check
+cargo test --locked --manifest-path oxa/oxc-gateway/Cargo.toml --features upstream-anthropic-stream
+cargo check --locked --manifest-path oxc-rs/Cargo.toml --features upstream-anthropic-stream
 cargo check --locked --manifest-path oxc-rs/Cargo.toml --no-default-features
 cargo clippy --locked --manifest-path oxc-rs/Cargo.toml --all-features --all-targets -- -D warnings
 cargo fmt --manifest-path oxc-rs/Cargo.toml --all -- --check
