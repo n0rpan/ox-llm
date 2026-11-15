@@ -4,6 +4,7 @@
 
 ### Fixed (first run)
 
+- The bash sandbox maps only the caller's uid, so root-owned system files show as uid 65534 (`nobody`) inside it; ownership checks that insist on "root or the caller" fail only there. Documented in [security.md](docs/pages/security.md#the-bash-sandbox), and the `exec_no_thp` wrapper test now skips (rather than fails) in such a user-namespace environment.
 - Started in your home directory and confirmed (or with `oxa.sandbox.allowHomeWrite`), bash now gets the home as its workspace: its folders and files are writable, the home folder itself, dotfiles, dot-folders and `~/bin` stay read-only, and keys stay masked. `/` and a parent of home are never writable, even with the setting; a symlink to home counts as home. The file tools ask before writing shell startup files and the agents' settings when started in home.
 
 ### Added
