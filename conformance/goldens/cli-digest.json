@@ -1,0 +1,698 @@
+{
+  "date-not-padded": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 2,
+    "files": {},
+    "stderr": "local-ai: Use a day like 2026-11-13, today or yesterday.\n",
+    "stdout": ""
+  },
+  "empty-json": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 0, \"by_origin\": {}, \"status\": {\"2xx\": 0, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": null, \"eligible_turns\": 0, \"prefix_hits\": 0, \"prefix_hit_rate\": null, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": null, \"miss_classes\": {}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {}}, \"store\": null, \"versions\": null, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": true}\n"
+  },
+  "iso-week-day": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 0, \"by_origin\": {}, \"status\": {\"2xx\": 0, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": null, \"eligible_turns\": 0, \"prefix_hits\": 0, \"prefix_hit_rate\": null, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": null, \"miss_classes\": {}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {}}, \"store\": null, \"versions\": null, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": true}\n"
+  },
+  "malformed": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 1, \"by_origin\": {\"organic\": 1}, \"status\": {\"2xx\": 1, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": 0.9981, \"eligible_turns\": 1, \"prefix_hits\": 1, \"prefix_hit_rate\": 1.0, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": 0.0, \"miss_classes\": {\"append-ok\": 1}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {\"ornith-35b-a3b-local/fast\": {\"requests\": 1, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 2000.0, \"n\": 1}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 500.0, \"n\": 1}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": null}}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {\"complete\": 1}}, \"store\": null, \"versions\": null, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": false}\n"
+  },
+  "nonfinite": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 2, \"by_origin\": {\"organic\": 1, \"remote\": 1}, \"status\": {\"2xx\": 1, \"4xx\": 0, \"5xx\": 0, \"other\": 1}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": 0.9981, \"eligible_turns\": 2, \"prefix_hits\": 2, \"prefix_hit_rate\": 1.0, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": 0.0, \"miss_classes\": {\"append-ok\": 2}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {\"ornith-35b-a3b-local/fast\": {\"requests\": 2, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 2000.0, \"n\": 1}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": null, \"n\": 0}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": null}}, \"errors\": {\"by_label\": {\"other\": 1}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {\"complete\": 2}}, \"store\": null, \"versions\": null, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": false}\n"
+  },
+  "numeric-rounding": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 3, \"by_origin\": {\"organic\": 3}, \"status\": {\"2xx\": 3, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": 0.9981, \"eligible_turns\": 3, \"prefix_hits\": 3, \"prefix_hit_rate\": 1.0, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": 0.0, \"miss_classes\": {\"append-ok\": 3}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": 2.69, \"p95\": 2.69, \"n\": 3}, \"ttft_hit_ms\": {\"p50\": 2.69, \"p95\": 2.69, \"n\": 3}, \"restore_ms\": {\"p50\": 2.69, \"p95\": 2.69, \"n\": 3}}, \"series\": {\"ornith-35b-a3b-local/fast\": {\"requests\": 3, \"ttft_hit_ms\": {\"p50\": 2.69, \"p95\": 2.69, \"n\": 3}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 2000.0, \"n\": 3}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 500.0, \"n\": 3}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": null}}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {\"complete\": 3}}, \"store\": null, \"versions\": null, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": false}\n"
+  },
+  "origin-filter": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 3, \"by_origin\": {\"excluded\": 2, \"organic\": 1, \"other\": 1, \"remote\": 1}, \"status\": {\"2xx\": 3, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": 0.9981, \"eligible_turns\": 3, \"prefix_hits\": 2, \"prefix_hit_rate\": 0.6667, \"c3_misses\": 1, \"unknown_misses\": 0, \"unknown_miss_rate\": 0.0, \"miss_classes\": {\"append-ok\": 2, \"other\": 1}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {\"other\": 1}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {\"other\": 1}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 3}, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 2}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {\"ornith-35b-a3b-local/fast\": {\"requests\": 2, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 2}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 2000.0, \"n\": 2}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 500.0, \"n\": 2}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": null}, \"other\": {\"requests\": 1, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 2000.0, \"n\": 1}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 500.0, \"n\": 1}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": null}}, \"errors\": {\"by_label\": {\"other\": 1}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {\"complete\": 2, \"other\": 1}}, \"store\": null, \"versions\": null, \"alerts\": [{\"id\": \"prefix_hits_low\", \"value\": 0.6667, \"threshold\": 0.9}], \"trend_basis_days\": 0, \"green\": false, \"idle\": false}\n"
+  },
+  "populated-json": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 3, \"by_origin\": {\"organic\": 2, \"remote\": 1, \"excluded\": 2}, \"status\": {\"2xx\": 2, \"4xx\": 0, \"5xx\": 1, \"other\": 0}, \"retries\": 1, \"duplicate_bodies\": 1, \"cache\": {\"token_hit_rate\": 0.9981, \"eligible_turns\": 1, \"prefix_hits\": 1, \"prefix_hit_rate\": 1.0, \"c3_misses\": 0, \"unknown_misses\": 1, \"unknown_miss_rate\": 1.0, \"miss_classes\": {\"append-ok\": 1, \"retry\": 1, \"unknown\": 1}}, \"history\": {\"history_rewrites\": 1, \"fold_suspects\": 1, \"rewrite_classes\": {\"other\": 1}, \"client_compactions\": 1, \"compaction_wall_ms_median\": 100}, \"queue\": {\"queued\": 1, \"session_switches\": 0, \"wait_ms\": {\"p50\": 25, \"p95\": 25, \"n\": 1}, \"replays\": {\"cut-aborted\": 1}}, \"guard\": {\"trips\": 1, \"by_group\": {\"oom\": 1, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 1, \"undated_engine_events\": 1}, \"latency\": {\"ttft_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 2}, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"restore_ms\": {\"p50\": 6000, \"p95\": 6000, \"n\": 1}}, \"series\": {\"ornith-35b-a3b-local/fast\": {\"requests\": 3, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 2000.0, \"n\": 2}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 500.0, \"n\": 2}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": 100}}, \"errors\": {\"by_label\": {\"backend_died\": 1}, \"http_5xx\": 1, \"stream_cut\": 1, \"backend_died\": 1, \"completeness\": {\"complete\": 2, \"incomplete\": 1}}, \"store\": null, \"versions\": null, \"alerts\": [{\"id\": \"client_retries\", \"value\": 1, \"threshold\": 0}, {\"id\": \"duplicate_prefill\", \"value\": 1, \"threshold\": 0}, {\"id\": \"http_5xx\", \"value\": 1, \"threshold\": 0}, {\"id\": \"stream_cut\", \"value\": 1, \"threshold\": 0}, {\"id\": \"engine_death\", \"value\": 1, \"threshold\": 0}, {\"id\": \"scope_oom\", \"value\": 1, \"threshold\": 0}, {\"id\": \"unknown_cache_misses\", \"value\": 1.0, \"threshold\": 0.01}, {\"id\": \"restore_slow\", \"value\": 6000, \"threshold\": 5000.0}], \"trend_basis_days\": 0, \"green\": false, \"idle\": false}\n"
+  },
+  "populated-text": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "Day 2026-11-01: 3 requests, 8 to look at: client retries, repeated requests, server errors, answers cut off, engine stopped unexpectedly, out-of-memory stop, unexplained cache misses, slow session restore\n  cache reuse 100% of tokens, 0 misses in 1 follow-up turns (1 unexplained)\n  history rewrites 1 (fold suspects 1, client compactions 1)\n  queued 1 (wait p95 25 ms), replays 1\n  first token p50 20 ms, p95 20 ms; errors 5xx 1, cut 1, guard stops 1\n  ornith-35b-a3b-local/fast reply speed tok/s by depth: 8-32k 500.0\n"
+  },
+  "public-ledger-metadata": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 3, \"by_origin\": {\"organic\": 2, \"remote\": 1, \"excluded\": 2}, \"status\": {\"2xx\": 2, \"4xx\": 0, \"5xx\": 1, \"other\": 0}, \"retries\": 1, \"duplicate_bodies\": 1, \"cache\": {\"token_hit_rate\": 0.9981, \"eligible_turns\": 1, \"prefix_hits\": 1, \"prefix_hit_rate\": 1.0, \"c3_misses\": 0, \"unknown_misses\": 1, \"unknown_miss_rate\": 1.0, \"miss_classes\": {\"append-ok\": 1, \"retry\": 1, \"unknown\": 1}}, \"history\": {\"history_rewrites\": 1, \"fold_suspects\": 1, \"rewrite_classes\": {\"other\": 1}, \"client_compactions\": 1, \"compaction_wall_ms_median\": 100}, \"queue\": {\"queued\": 1, \"session_switches\": 0, \"wait_ms\": {\"p50\": 25, \"p95\": 25, \"n\": 1}, \"replays\": {\"cut-aborted\": 1}}, \"guard\": {\"trips\": 1, \"by_group\": {\"oom\": 1, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 1, \"undated_engine_events\": 1}, \"latency\": {\"ttft_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 2}, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"restore_ms\": {\"p50\": 6000, \"p95\": 6000, \"n\": 1}}, \"series\": {\"ornith-35b-a3b-local/fast\": {\"requests\": 3, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 2000.0, \"n\": 2}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 500.0, \"n\": 2}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": 100}}, \"errors\": {\"by_label\": {\"backend_died\": 1}, \"http_5xx\": 1, \"stream_cut\": 1, \"backend_died\": 1, \"completeness\": {\"complete\": 2, \"incomplete\": 1}}, \"store\": null, \"versions\": null, \"alerts\": [{\"id\": \"client_retries\", \"value\": 1, \"threshold\": 0}, {\"id\": \"duplicate_prefill\", \"value\": 1, \"threshold\": 0}, {\"id\": \"http_5xx\", \"value\": 1, \"threshold\": 0}, {\"id\": \"stream_cut\", \"value\": 1, \"threshold\": 0}, {\"id\": \"engine_death\", \"value\": 1, \"threshold\": 0}, {\"id\": \"scope_oom\", \"value\": 1, \"threshold\": 0}, {\"id\": \"unknown_cache_misses\", \"value\": 1.0, \"threshold\": 0.01}, {\"id\": \"restore_slow\", \"value\": 6000, \"threshold\": 5000.0}], \"trend_basis_days\": 0, \"green\": false, \"idle\": false}\n"
+  },
+  "round-trip": {
+    "directory_mode": "0o700",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {
+      "digest-20261101.json": {
+        "body": {
+          "alerts": [],
+          "by_origin": {},
+          "cache": {
+            "c3_misses": 0,
+            "eligible_turns": 0,
+            "miss_classes": {},
+            "prefix_hit_rate": null,
+            "prefix_hits": 0,
+            "token_hit_rate": null,
+            "unknown_miss_rate": null,
+            "unknown_misses": 0
+          },
+          "day": "2026-11-01",
+          "duplicate_bodies": 0,
+          "errors": {
+            "backend_died": 0,
+            "by_label": {},
+            "completeness": {},
+            "http_5xx": 0,
+            "stream_cut": 0
+          },
+          "generated_at": "<validated:recent-unix-seconds>",
+          "green": true,
+          "guard": {
+            "by_group": {
+              "memory_floor": 0,
+              "oom": 0,
+              "other": 0,
+              "pids": 0,
+              "psi": 0,
+              "swap": 0
+            },
+            "engine_deaths": 0,
+            "trips": 0,
+            "undated_engine_events": 0
+          },
+          "history": {
+            "client_compactions": 0,
+            "compaction_wall_ms_median": null,
+            "fold_suspects": 0,
+            "history_rewrites": 0,
+            "rewrite_classes": {}
+          },
+          "idle": true,
+          "latency": {
+            "restore_ms": {
+              "n": 0,
+              "p50": null,
+              "p95": null
+            },
+            "ttft_hit_ms": {
+              "n": 0,
+              "p50": null,
+              "p95": null
+            },
+            "ttft_ms": {
+              "n": 0,
+              "p50": null,
+              "p95": null
+            }
+          },
+          "partial": false,
+          "queue": {
+            "queued": 0,
+            "replays": {},
+            "session_switches": 0,
+            "wait_ms": {
+              "n": 0,
+              "p50": null,
+              "p95": null
+            }
+          },
+          "requests": 0,
+          "retries": 0,
+          "schema": "local-ai-digest/1",
+          "series": {},
+          "status": {
+            "2xx": 0,
+            "4xx": 0,
+            "5xx": 0,
+            "other": 0
+          },
+          "store": null,
+          "trend_basis_days": 0,
+          "versions": null
+        },
+        "mode": "0o600"
+      },
+      "status.json": {
+        "body": {
+          "alert_text": [],
+          "alerts": [],
+          "day": "2026-11-01",
+          "generated_at": "<validated:recent-unix-seconds>",
+          "line": "No use recorded yet",
+          "requests": 0,
+          "schema": "local-ai-digest-status/1",
+          "soak": {
+            "green_days": 0,
+            "history_rewrites": 0,
+            "pass": false,
+            "requests": 0,
+            "ship_ready": false
+          },
+          "state": "no_data"
+        },
+        "mode": "0o600"
+      }
+    },
+    "python_read": {
+      "alert_text": [],
+      "alerts": [],
+      "day": "2026-11-01",
+      "generated_at": "<validated:recent-unix-seconds>",
+      "line": "No use recorded yet",
+      "requests": 0,
+      "schema": "local-ai-digest-status/1",
+      "soak": {
+        "green_days": 0,
+        "history_rewrites": 0,
+        "pass": false,
+        "requests": 0,
+        "ship_ready": false
+      },
+      "state": "no_data"
+    },
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 0, \"by_origin\": {}, \"status\": {\"2xx\": 0, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": null, \"eligible_turns\": 0, \"prefix_hits\": 0, \"prefix_hit_rate\": null, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": null, \"miss_classes\": {}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {}}, \"store\": null, \"versions\": null, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": true}\n"
+  },
+  "soak-alert-stop": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"green_days\": 2, \"days\": [\"2026-11-01\", \"2026-10-31\"], \"requests\": 100, \"history_rewrites\": 4, \"ship_ready\": false, \"pass\": false, \"needs\": {\"green_days\": 7, \"requests\": 300, \"history_rewrites\": 10, \"ship_green_days\": 3}}\n"
+  },
+  "soak-green": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"green_days\": 7, \"days\": [\"2026-11-01\", \"2026-10-31\", \"2026-10-30\", \"2026-10-29\", \"2026-10-28\", \"2026-10-27\", \"2026-10-26\"], \"requests\": 350, \"history_rewrites\": 14, \"ship_ready\": true, \"pass\": true, \"needs\": {\"green_days\": 7, \"requests\": 300, \"history_rewrites\": 10, \"ship_green_days\": 3}}\n"
+  },
+  "soak-idle-gap": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"green_days\": 6, \"days\": [\"2026-11-01\", \"2026-10-30\", \"2026-10-29\", \"2026-10-28\", \"2026-10-27\", \"2026-10-26\"], \"requests\": 300, \"history_rewrites\": 12, \"ship_ready\": true, \"pass\": false, \"needs\": {\"green_days\": 7, \"requests\": 300, \"history_rewrites\": 10, \"ship_green_days\": 3}}\n"
+  },
+  "status-empty": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest-status/1\", \"day\": null, \"state\": \"no_data\", \"line\": \"No health check yet\", \"alerts\": [], \"alert_text\": [], \"requests\": 0, \"generated_at\": null}\n"
+  },
+  "status-invalid": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest-status/1\", \"day\": null, \"state\": \"no_data\", \"line\": \"No health check yet\", \"alerts\": [], \"alert_text\": [], \"requests\": 0, \"generated_at\": null}\n"
+  },
+  "status-stale": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest-status/1\", \"day\": \"2026-11-01\", \"state\": \"stale\", \"line\": \"Health check has not run lately\", \"alerts\": [\"stream_cut\"], \"alert_text\": [\"answers cut off\"], \"requests\": 3, \"generated_at\": 1}\n"
+  },
+  "status-symlink": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest-status/1\", \"day\": null, \"state\": \"no_data\", \"line\": \"No health check yet\", \"alerts\": [], \"alert_text\": [], \"requests\": 0, \"generated_at\": null}\n"
+  },
+  "status-valid": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest-status/1\", \"day\": \"2026-11-01\", \"state\": \"attention\", \"line\": \"1 thing to look at\", \"alerts\": [\"stream_cut\"], \"alert_text\": [\"answers cut off\"], \"requests\": 3, \"generated_at\": \"<validated:recent-unix-seconds>\"}\n"
+  },
+  "stored-day": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"requests\": 12, \"stored_marker\": \"synthetic\"}\n"
+  },
+  "stored-write": {
+    "directory_mode": "0o700",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {
+      "digest-20261101.json": {
+        "body": {
+          "alerts": [],
+          "by_origin": {},
+          "cache": {
+            "c3_misses": 0,
+            "eligible_turns": 0,
+            "miss_classes": {},
+            "prefix_hit_rate": null,
+            "prefix_hits": 0,
+            "token_hit_rate": null,
+            "unknown_miss_rate": null,
+            "unknown_misses": 0
+          },
+          "day": "2026-11-01",
+          "duplicate_bodies": 0,
+          "errors": {
+            "backend_died": 0,
+            "by_label": {},
+            "completeness": {},
+            "http_5xx": 0,
+            "stream_cut": 0
+          },
+          "generated_at": 1,
+          "green": true,
+          "guard": {
+            "by_group": {
+              "memory_floor": 0,
+              "oom": 0,
+              "other": 0,
+              "pids": 0,
+              "psi": 0,
+              "swap": 0
+            },
+            "engine_deaths": 0,
+            "trips": 0,
+            "undated_engine_events": 0
+          },
+          "history": {
+            "client_compactions": 0,
+            "compaction_wall_ms_median": null,
+            "fold_suspects": 0,
+            "history_rewrites": 0,
+            "rewrite_classes": {}
+          },
+          "idle": true,
+          "latency": {
+            "restore_ms": {
+              "n": 0,
+              "p50": null,
+              "p95": null
+            },
+            "ttft_hit_ms": {
+              "n": 0,
+              "p50": null,
+              "p95": null
+            },
+            "ttft_ms": {
+              "n": 0,
+              "p50": null,
+              "p95": null
+            }
+          },
+          "partial": false,
+          "queue": {
+            "queued": 0,
+            "replays": {},
+            "session_switches": 0,
+            "wait_ms": {
+              "n": 0,
+              "p50": null,
+              "p95": null
+            }
+          },
+          "requests": 2,
+          "retries": 0,
+          "schema": "local-ai-digest/1",
+          "series": {},
+          "status": {
+            "2xx": 0,
+            "4xx": 0,
+            "5xx": 0,
+            "other": 0
+          },
+          "store": null,
+          "trend_basis_days": 0,
+          "versions": null
+        },
+        "mode": "0o600"
+      },
+      "status.json": {
+        "body": {
+          "alert_text": [],
+          "alerts": [],
+          "day": "2026-11-01",
+          "generated_at": 1,
+          "line": "Healthy",
+          "requests": 2,
+          "schema": "local-ai-digest-status/1",
+          "soak": {
+            "green_days": 1,
+            "history_rewrites": 0,
+            "pass": false,
+            "requests": 2,
+            "ship_ready": false
+          },
+          "state": "healthy"
+        },
+        "mode": "0o600"
+      }
+    },
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": 1, \"partial\": false, \"requests\": 2, \"by_origin\": {}, \"status\": {\"2xx\": 0, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": null, \"eligible_turns\": 0, \"prefix_hits\": 0, \"prefix_hit_rate\": null, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": null, \"miss_classes\": {}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {}}, \"store\": null, \"versions\": null, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": true}\n"
+  },
+  "symlink-ledger": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 0, \"by_origin\": {}, \"status\": {\"2xx\": 0, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": null, \"eligible_turns\": 0, \"prefix_hits\": 0, \"prefix_hit_rate\": null, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": null, \"miss_classes\": {}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {}}, \"store\": null, \"versions\": null, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": true}\n"
+  },
+  "today-unknown-version": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"<validated:today>\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": true, \"requests\": 0, \"by_origin\": {}, \"status\": {\"2xx\": 0, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": null, \"eligible_turns\": 0, \"prefix_hits\": 0, \"prefix_hit_rate\": null, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": null, \"miss_classes\": {}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {}}, \"store\": {\"used_bytes\": 0, \"budget_bytes\": 64000000000, \"used_fraction\": 0.0}, \"versions\": {\"oxa\": \"unknown\"}, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": true}\n"
+  },
+  "today-version": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"<validated:today>\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": true, \"requests\": 0, \"by_origin\": {}, \"status\": {\"2xx\": 0, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": null, \"eligible_turns\": 0, \"prefix_hits\": 0, \"prefix_hit_rate\": null, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": null, \"miss_classes\": {}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 0, \"compaction_wall_ms_median\": null}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"ttft_hit_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {}}, \"store\": {\"used_bytes\": 0, \"budget_bytes\": 64000000000, \"used_fraction\": 0.0}, \"versions\": {\"oxa\": \"1.2.3-synthetic\"}, \"alerts\": [], \"trend_basis_days\": 0, \"green\": true, \"idle\": true}\n"
+  },
+  "trends": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {},
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 5, \"by_origin\": {\"organic\": 5}, \"status\": {\"2xx\": 5, \"4xx\": 0, \"5xx\": 0, \"other\": 0}, \"retries\": 0, \"duplicate_bodies\": 0, \"cache\": {\"token_hit_rate\": 0.9981, \"eligible_turns\": 5, \"prefix_hits\": 5, \"prefix_hit_rate\": 1.0, \"c3_misses\": 0, \"unknown_misses\": 0, \"unknown_miss_rate\": 0.0, \"miss_classes\": {\"append-ok\": 5}}, \"history\": {\"history_rewrites\": 0, \"fold_suspects\": 0, \"rewrite_classes\": {}, \"client_compactions\": 5, \"compaction_wall_ms_median\": 1000}, \"queue\": {\"queued\": 0, \"session_switches\": 0, \"wait_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}, \"replays\": {}}, \"guard\": {\"trips\": 0, \"by_group\": {\"oom\": 0, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 0, \"undated_engine_events\": 0}, \"latency\": {\"ttft_ms\": {\"p50\": 100, \"p95\": 100, \"n\": 5}, \"ttft_hit_ms\": {\"p50\": 100, \"p95\": 100, \"n\": 5}, \"restore_ms\": {\"p50\": null, \"p95\": null, \"n\": 0}}, \"series\": {\"ornith-35b-a3b-local/fast\": {\"requests\": 5, \"ttft_hit_ms\": {\"p50\": 100, \"p95\": 100, \"n\": 5}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 160.0, \"n\": 5}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 16.0, \"n\": 5}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": 1000}}, \"errors\": {\"by_label\": {}, \"http_5xx\": 0, \"stream_cut\": 0, \"backend_died\": 0, \"completeness\": {\"complete\": 5}}, \"store\": null, \"versions\": null, \"alerts\": [{\"id\": \"decode_slower:ornith-35b-a3b-local/fast:8-32k\", \"value\": 16.0, \"threshold\": 90.0}, {\"id\": \"prefill_slower:ornith-35b-a3b-local/fast:8-32k\", \"value\": 160.0, \"threshold\": 900.0}, {\"id\": \"ttft_hit_slower:ornith-35b-a3b-local/fast\", \"value\": 100, \"threshold\": 15.0}, {\"id\": \"compaction_slower:ornith-35b-a3b-local/fast\", \"value\": 1000, \"threshold\": 15.0}], \"trend_basis_days\": 3, \"green\": false, \"idle\": false}\n"
+  },
+  "write-failure": {
+    "directory_mode": "0o755",
+    "engine_launches": 0,
+    "exit": 1,
+    "files": {},
+    "stderr": "local-ai: the digest could not be saved (NotADirectoryError).\n",
+    "stdout": ""
+  },
+  "write-private": {
+    "directory_mode": "0o700",
+    "engine_launches": 0,
+    "exit": 0,
+    "files": {
+      "digest-20261101.json": {
+        "body": {
+          "alerts": [
+            {
+              "id": "client_retries",
+              "threshold": 0,
+              "value": 1
+            },
+            {
+              "id": "duplicate_prefill",
+              "threshold": 0,
+              "value": 1
+            },
+            {
+              "id": "http_5xx",
+              "threshold": 0,
+              "value": 1
+            },
+            {
+              "id": "stream_cut",
+              "threshold": 0,
+              "value": 1
+            },
+            {
+              "id": "engine_death",
+              "threshold": 0,
+              "value": 1
+            },
+            {
+              "id": "scope_oom",
+              "threshold": 0,
+              "value": 1
+            },
+            {
+              "id": "unknown_cache_misses",
+              "threshold": 0.01,
+              "value": 1.0
+            },
+            {
+              "id": "restore_slow",
+              "threshold": 5000.0,
+              "value": 6000
+            }
+          ],
+          "by_origin": {
+            "excluded": 2,
+            "organic": 2,
+            "remote": 1
+          },
+          "cache": {
+            "c3_misses": 0,
+            "eligible_turns": 1,
+            "miss_classes": {
+              "append-ok": 1,
+              "retry": 1,
+              "unknown": 1
+            },
+            "prefix_hit_rate": 1.0,
+            "prefix_hits": 1,
+            "token_hit_rate": 0.9981,
+            "unknown_miss_rate": 1.0,
+            "unknown_misses": 1
+          },
+          "day": "2026-11-01",
+          "duplicate_bodies": 1,
+          "errors": {
+            "backend_died": 1,
+            "by_label": {
+              "backend_died": 1
+            },
+            "completeness": {
+              "complete": 2,
+              "incomplete": 1
+            },
+            "http_5xx": 1,
+            "stream_cut": 1
+          },
+          "generated_at": "<validated:recent-unix-seconds>",
+          "green": false,
+          "guard": {
+            "by_group": {
+              "memory_floor": 0,
+              "oom": 1,
+              "other": 0,
+              "pids": 0,
+              "psi": 0,
+              "swap": 0
+            },
+            "engine_deaths": 1,
+            "trips": 1,
+            "undated_engine_events": 1
+          },
+          "history": {
+            "client_compactions": 1,
+            "compaction_wall_ms_median": 100,
+            "fold_suspects": 1,
+            "history_rewrites": 1,
+            "rewrite_classes": {
+              "other": 1
+            }
+          },
+          "idle": false,
+          "latency": {
+            "restore_ms": {
+              "n": 1,
+              "p50": 6000,
+              "p95": 6000
+            },
+            "ttft_hit_ms": {
+              "n": 1,
+              "p50": 20.0,
+              "p95": 20.0
+            },
+            "ttft_ms": {
+              "n": 2,
+              "p50": 20.0,
+              "p95": 20.0
+            }
+          },
+          "partial": false,
+          "queue": {
+            "queued": 1,
+            "replays": {
+              "cut-aborted": 1
+            },
+            "session_switches": 0,
+            "wait_ms": {
+              "n": 1,
+              "p50": 25,
+              "p95": 25
+            }
+          },
+          "requests": 3,
+          "retries": 1,
+          "schema": "local-ai-digest/1",
+          "series": {
+            "ornith-35b-a3b-local/fast": {
+              "append_prefill_tok_s": {
+                "0-8k": {
+                  "n": 0,
+                  "p50": null
+                },
+                "32-64k": {
+                  "n": 0,
+                  "p50": null
+                },
+                "64-96k": {
+                  "n": 0,
+                  "p50": null
+                },
+                "8-32k": {
+                  "n": 2,
+                  "p50": 2000.0
+                },
+                "96k+": {
+                  "n": 0,
+                  "p50": null
+                }
+              },
+              "compaction_wall_ms_median": 100,
+              "decode_tok_s": {
+                "0-8k": {
+                  "n": 0,
+                  "p50": null
+                },
+                "32-64k": {
+                  "n": 0,
+                  "p50": null
+                },
+                "64-96k": {
+                  "n": 0,
+                  "p50": null
+                },
+                "8-32k": {
+                  "n": 2,
+                  "p50": 500.0
+                },
+                "96k+": {
+                  "n": 0,
+                  "p50": null
+                }
+              },
+              "requests": 3,
+              "ttft_hit_ms": {
+                "n": 1,
+                "p50": 20.0,
+                "p95": 20.0
+              }
+            }
+          },
+          "status": {
+            "2xx": 2,
+            "4xx": 0,
+            "5xx": 1,
+            "other": 0
+          },
+          "store": null,
+          "trend_basis_days": 0,
+          "versions": null
+        },
+        "mode": "0o600"
+      },
+      "status.json": {
+        "body": {
+          "alert_text": [
+            "client retries",
+            "repeated requests",
+            "server errors",
+            "answers cut off",
+            "engine stopped unexpectedly",
+            "out-of-memory stop",
+            "unexplained cache misses",
+            "slow session restore"
+          ],
+          "alerts": [
+            "client_retries",
+            "duplicate_prefill",
+            "http_5xx",
+            "stream_cut",
+            "engine_death",
+            "scope_oom",
+            "unknown_cache_misses",
+            "restore_slow"
+          ],
+          "day": "2026-11-01",
+          "generated_at": "<validated:recent-unix-seconds>",
+          "line": "8 things to look at",
+          "requests": 3,
+          "schema": "local-ai-digest-status/1",
+          "soak": {
+            "green_days": 0,
+            "history_rewrites": 0,
+            "pass": false,
+            "requests": 0,
+            "ship_ready": false
+          },
+          "state": "attention"
+        },
+        "mode": "0o600"
+      }
+    },
+    "stderr": "",
+    "stdout": "{\"schema\": \"local-ai-digest/1\", \"day\": \"2026-11-01\", \"generated_at\": \"<validated:recent-unix-seconds>\", \"partial\": false, \"requests\": 3, \"by_origin\": {\"organic\": 2, \"remote\": 1, \"excluded\": 2}, \"status\": {\"2xx\": 2, \"4xx\": 0, \"5xx\": 1, \"other\": 0}, \"retries\": 1, \"duplicate_bodies\": 1, \"cache\": {\"token_hit_rate\": 0.9981, \"eligible_turns\": 1, \"prefix_hits\": 1, \"prefix_hit_rate\": 1.0, \"c3_misses\": 0, \"unknown_misses\": 1, \"unknown_miss_rate\": 1.0, \"miss_classes\": {\"append-ok\": 1, \"retry\": 1, \"unknown\": 1}}, \"history\": {\"history_rewrites\": 1, \"fold_suspects\": 1, \"rewrite_classes\": {\"other\": 1}, \"client_compactions\": 1, \"compaction_wall_ms_median\": 100}, \"queue\": {\"queued\": 1, \"session_switches\": 0, \"wait_ms\": {\"p50\": 25, \"p95\": 25, \"n\": 1}, \"replays\": {\"cut-aborted\": 1}}, \"guard\": {\"trips\": 1, \"by_group\": {\"oom\": 1, \"psi\": 0, \"memory_floor\": 0, \"swap\": 0, \"pids\": 0, \"other\": 0}, \"engine_deaths\": 1, \"undated_engine_events\": 1}, \"latency\": {\"ttft_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 2}, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"restore_ms\": {\"p50\": 6000, \"p95\": 6000, \"n\": 1}}, \"series\": {\"ornith-35b-a3b-local/fast\": {\"requests\": 3, \"ttft_hit_ms\": {\"p50\": 20.0, \"p95\": 20.0, \"n\": 1}, \"append_prefill_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 2000.0, \"n\": 2}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"decode_tok_s\": {\"0-8k\": {\"p50\": null, \"n\": 0}, \"8-32k\": {\"p50\": 500.0, \"n\": 2}, \"32-64k\": {\"p50\": null, \"n\": 0}, \"64-96k\": {\"p50\": null, \"n\": 0}, \"96k+\": {\"p50\": null, \"n\": 0}}, \"compaction_wall_ms_median\": 100}}, \"errors\": {\"by_label\": {\"backend_died\": 1}, \"http_5xx\": 1, \"stream_cut\": 1, \"backend_died\": 1, \"completeness\": {\"complete\": 2, \"incomplete\": 1}}, \"store\": null, \"versions\": null, \"alerts\": [{\"id\": \"client_retries\", \"value\": 1, \"threshold\": 0}, {\"id\": \"duplicate_prefill\", \"value\": 1, \"threshold\": 0}, {\"id\": \"http_5xx\", \"value\": 1, \"threshold\": 0}, {\"id\": \"stream_cut\", \"value\": 1, \"threshold\": 0}, {\"id\": \"engine_death\", \"value\": 1, \"threshold\": 0}, {\"id\": \"scope_oom\", \"value\": 1, \"threshold\": 0}, {\"id\": \"unknown_cache_misses\", \"value\": 1.0, \"threshold\": 0.01}, {\"id\": \"restore_slow\", \"value\": 6000, \"threshold\": 5000.0}], \"trend_basis_days\": 0, \"green\": false, \"idle\": false}\n"
+  }
+}

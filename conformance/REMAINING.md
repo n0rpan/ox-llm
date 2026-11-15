@@ -38,12 +38,12 @@ The following gaps remain visible rather than being represented by skipped tests
   CPU pinning and Flash-specific launch adapters/capabilities.
 - Images: the CLI dispatch is covered; the shipped controller's image-slot IPC
   and related runtime paths need contracts without SDK, device or model content.
-- CLI: port digest, update/rollback and uninstall commands;
+- CLI: port update/rollback and uninstall commands;
   extend populated ledger/digest, valid cache status, sharing keys and offline
   failures. Fifteen desktop/model dispatch cases now cover detached sessions,
   inherited stdin/umask, exec/service failures, qualification and read-only planning.
   Sixteen status/code/mode cases cover filtered metadata, offline/stopping states,
-  selected models, download phases and bounded trial queries. Forty runtime CLI
+  selected models, download phases and bounded trial queries. Forty-four runtime CLI
   cases pass against both the Python and native daemons.
   Direct Oxe chooser/status facts now cover receipt-derived qualification,
   prefix identities, selection/load state, resident bytes, idle/unload availability
@@ -84,7 +84,9 @@ The merge queue runs full integration CI again. If waiting is needed, use one
 blocking gh pr checks --watch; never poll CI status.
 
 Next implementation step: remaining CLI
-commands. Rust now passes all 62 configured API and all 18 HTTP gate cases.
+commands. Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
+filtering, stored days, private writes, trend/soak thresholds, stale status, dates,
+installed versions and file interoperability. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise
 opt-in learning, memory-only operation, streaming, bounded candidates/prefixes,
 prepare requests, compatibility counters and Python/Rust file reads.

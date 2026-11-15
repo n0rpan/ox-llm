@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `d93f2c5fe0cc87c8fb7d3b33e28c90935280425a`.
-The current suite passes 483 scenarios in 65 unittest methods. This remains a
+The current suite passes 510 scenarios in 66 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -93,6 +93,7 @@ python3 conformance/test_ledger.py --record-python
 python3 conformance/test_cli_runtime.py --record-python
 python3 conformance/test_cli_actions.py --record-python
 python3 conformance/test_cli_status.py --record-python
+python3 conformance/test_cli_digest.py --record-python
 python3 conformance/test_catalog.py --record-python
 python3 conformance/test_share_control.py --record-python
 python3 conformance/test_share_keys.py --record-python
@@ -110,9 +111,10 @@ do not refresh goldens merely because an alternate implementation fails them.
 | --- | --- | --- | --- |
 | CLI parsing | PASS, 65 cases | PASS, captured grammar | More option combinations |
 | CLI ledger files | PASS, 5 cases | PASS | Additional historical ledger labels |
-| CLI runtime | PASS, 48 cases | Partial: 40/48 native CLI cases against both Python and native daemons | Digest, update/rollback and uninstall commands |
+| CLI runtime | PASS, 48 cases | Partial: 44/48 native CLI cases against both Python and native daemons | Update/rollback and uninstall commands |
 | CLI desktop/model dispatch | PASS, 15 cases | PASS: detached session and exec handshake, inherited stdin/umask, service failures, bounded model qualification/errors, selection and read-only planning | More malformed replies and command races |
 | CLI status/code/mode | PASS, 16 cases | PASS: filtered metadata, offline/stopping states, selected-model dispatch, Flash download phases and bounded trial queries | More malformed metadata and clock races |
+| CLI health digests | PASS, 27 cases | PASS: numeric/enum reduction, origin/text filtering, stored days, trend/soak thresholds, private atomic writes, stale status, date validation, installed versions and Python/Rust/Python reads | More malformed numeric/file inputs and interruption races |
 | Chooser/status metadata | PASS, 12 goldens and one additional check | PASS: direct Oxe chooser facts, selected/loaded states, prefix identities, receipt qualification/invalidation, resident/idle/unload and shared harness facts | Detailed failure provenance, Flash/classic adapters and more status fields |
 | Sharing controls | PASS, 14 cases | PASS: loopback status/off, options, key metadata/privacy, busy inference, validation, config symlinks/permissions and absent setup | Further network/TLS races and offline CLI fallback |
 | Sharing keys | PASS, 17 cases | PASS: show once, rotation, private atomic files, real cross-process locks, malformed/public/symlink refusal, overrides and Python/Rust file/lock interoperability | More filesystem failures |

@@ -17,8 +17,8 @@ cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --target-dir ..
 Local validation: 65 parser cases, five CLI ledger-file cases, seven empty-install
 HTTP cases, all 18 HTTP gates, all 62 configured API cases, and API-key file
 rotation/fail-closed behavior pass in Rust. All 18 lifecycle tests and 13 harness registry cases pass. Read-only
-cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 40 runtime cases passes against the Python daemon;
-all 40 also pass with the native daemon.
+cache usage and storage inventory pass 14 additional reference cases. A native CLI subset of 44 runtime cases passes against the Python daemon;
+all 44 also pass with the native daemon.
 Fifteen loopback CLI cases cover desktop dispatch, detached sessions and exec
 failure reporting, inherited stdin/umask, service failures, model qualification,
 selection and read-only planning. CLI replies are bounded to 64 KiB and control
@@ -27,8 +27,15 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-suite has 483 passing scenarios in 65
+suite has 510 passing scenarios in 66
 unittest methods.
+
+Twenty-seven digest CLI cases cover numeric/enum aggregation, origin/text filtering,
+stored days, trend and soak thresholds, private atomic writes, stale status, dates,
+installed versions and Python/Rust/Python reads. Non-finite ledger fields remain
+excluded from numeric calculations while preserving the reference record counts.
+Digest commands never start a model. Update/rollback and uninstall commands remain
+pending.
 
 The initial port includes CLI grammar/help/error output, local ledger file reads,
 cache controls, harness prepare/forget dispatch, load/unload dispatch, storage

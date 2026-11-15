@@ -729,6 +729,16 @@ pub async fn run(args: Args) -> i32 {
         }
         "share" => share(&args).await,
         "cache" => cache(&args).await,
+        "digest" => {
+            crate::health_digest::run(
+                args.value("--day").map(str::to_owned),
+                args.flag("--json"),
+                args.flag("--write"),
+                args.flag("--status"),
+                args.flag("--soak"),
+            )
+            .await
+        }
         _ => {
             eprintln!(
                 "local-ai: {} is not implemented by the Rust controller yet.",
@@ -857,7 +867,7 @@ fn valid_count(value: &Value) -> Value {
         .filter(|v| *v <= 1 << 31)
         .map_or(json!(0), |v| json!(v))
 }
-async fn cache_status() -> Value {
+pub(crate) async fn cache_status() -> Value {
     let (code, value) = request_timeout("/_local/cache", None, 2).await;
     if code != 200 {
         return json!({"cache_available":false});

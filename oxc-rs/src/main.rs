@@ -10,6 +10,7 @@ mod engine_cache;
 mod engine_ledger;
 mod guard;
 mod harness;
+mod health_digest;
 mod ledger;
 mod models;
 mod paths;
