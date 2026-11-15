@@ -9,7 +9,7 @@ offline policy, and supplies model rows, chooser rows, model limits, sleeping
 health and the startup line. Its status fragment is composed by a future HTTP
 adapter. It reads no files, keys, environment, hardware or inference leases.
 
-Reference: main `15fe33d6f53e61639b4232a2d229f66444c37f0d`. Eight cases use the
+Reference: main `d7f70bb05ed7ef65ea377e8e6cdcee0dab4415aa`. Eight cases use the
 unmodified Python HTTP controller, an owned mock upstream, a private network
 namespace and HOME, `/usr/bin/python3`, and a foreign lease held through stop.
 Only discovery/status fields owned by this slice are compared. HTTP gates,
@@ -25,3 +25,7 @@ OXC_CATALOG_CONTRACT="$PWD/oxc-gateway/target/debug/examples/catalog_contract" /
 Run Clippy with `--all-targets --all-features -- -D warnings`, and `cargo check
 --no-default-features`. Bubblewrap is required for source capture. Goldens are
 recorded only with `--record-python`; test/native runs never regenerate them.
+
+Catalog regressions cover fractional limits with strict JSON-type equality,
+truthy non-string upstream IDs and falsy provider/upstream fallback. All three
+failed against the initial native head; the unchanged source goldens still pass.
