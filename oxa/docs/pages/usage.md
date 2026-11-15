@@ -174,7 +174,7 @@ With the default `oxa` skin the footer is a single-line HUD instead of two lines
 - `CTX` — a meter and the percentage of the window used, and `used/n_ctx` when the window is known.
 - `CACHE` — a meter and the percentage of the last request, when a cache hit is known.
 - Decode speed (`tok/s`), only while the engine reports timings.
-- The activity badge (`READY` when idle), only while active.
+- The activity badge, always present; `READY` when idle.
 - `repairs N` and `no summary`, only when they apply.
 - The permission mode and the profile word, only when set.
 
