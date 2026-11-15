@@ -1,15 +1,12 @@
 # Reviewable Rust controller migration
 
-Ported up to main `194487ef05167c6932a63103f1d5ff0044b13e33`.
-Last main review: 2026-11-15 UTC. The latest merge retires one-off stage entry points, retains their shared
-helpers and updates the retained v0.2.0 stager to use them. Controller runtime
-files are unchanged. The accompanying engine changes are formatting-only and
-add its hosted formatter gate, retained alongside oxa and oxc. Subsequent
-merges update oxa/UI/CI, declare done checks and add a design-only OAuth document;
-controller behavior is unchanged. The latest c880642 merge adds an oxa notice
-only. The subsequent release-qualification guidance and ARM64 nightly stress
-gate change docs/CI only; no new controller behavior is present. OAuth remains
-pending project registration.
+Ported up to main `fc869d07b4b56926c00cc725df27484856c2dc25`.
+Last main review: 2026-11-15 UTC. The latest follow-up protects worktree gitdir
+metadata, fixes nested-HOME tmpfs ordering in oxa's sandbox and re-pins its
+built-in PR skill prefix hashes. These changes affect oxa only; the lab subtree
+is byte-identical to the reference used for the full 891-scenario runs. Earlier
+stager helper cleanup and release/ARM64 CI guidance remain incorporated. OAuth
+implementation remains pending project registration.
 
 ## Priority and source of truth
 
