@@ -1,37 +1,18 @@
-# Opt-in cloud secrets and redaction
+# Opt-in cloud gateway building blocks
 
-This #28 slice reads a configured credential file at request time and redacts
-raw streams or decoded JSON. Enable `secrets`; default features are empty and
-nothing is installed. `Key` has redacted Debug and no serialization support.
-Caller code exposes it only for provider request construction/redaction.
+Default features are empty; no listener or installer is enabled. Enable only the
+needed modules. Policy stages consume trusted gateway facts; pricing and atomic
+settlement are separate work. Python remains the behavior reference.
 
-The reader requires an absolute path outside Git/exported source trees, opens
-without following the final symlink, and checks the opened descriptor's owner,
-regular-file type, private permissions and 64 KiB bound. Keys must be nonempty
-printable ASCII (no spaces), at most 8,192 characters. Errors contain only fixed
-reasons. Nonblocking open also prevents a special file from hanging the reader.
-Parent symlinks follow main's policy. Reads are never cached.
+- `policy`: policy contracts.
+- `secrets`: secrets contracts.
 
-34 contracts match unmodified Python main
-`d7f70bb05ed7ef65ea377e8e6cdcee0dab4415aa`: file shape/ownership/modes/symlinks,
-source-tree refusal, size/key limits, UTF encodings, legacy numeric extras,
-rotation, escaped JSON and split/repeated/partial-stream redaction. Every case
-runs in private HOME/network/user namespaces under `/usr/bin/python3`. Synthetic
-keys only; owner refusal happens before reading a foreign public metadata file
-on a hosted unprivileged runner. No API call, SDK, hardware or real sign-in.
+Build all examples with `cargo build --locked --manifest-path
+oxc-gateway/Cargo.toml --all-features --examples`. Run the source contracts with
+`/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v`; native
+checks set each present `OXC_*_CONTRACT` to its absolute example executable.
 
-```sh
-cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
-/usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-OXC_SECRETS_CONTRACT="$PWD/oxc-gateway/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-```
-
-The native example prints booleans/refusals/redacted fragments, never the key or
-path. Keep an independent stream redactor for each decoded SSE field; transport
-and provider-frame parsing are later slices. Catalog/policy companions #294 and
-#297 introduce other opt-in features in this crate; retain all modules when
-incorporating the companions. Budget/ledger and upstream routing remain separate.
-
-The symlink-loop case validates the two real Python 3.12/3.13 refusal messages
-before normalizing only that interpreter-specific wording; every other error
-is compared exactly. Both source interpreters and the native reader are tested.
+Source cases use private HOME/network namespaces and synthetic data. No real
+API, credential, SDK material or sign-in is used. Every opt-in module forbids
+unsafe code. Preserve all present feature/module/example entries when merging
+companion slices. Full cloud-only forwarding/accounting remains incomplete.

@@ -7,11 +7,16 @@ publish = false
 
 [features]
 default = []
+policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
 
 [dependencies]
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
 nix = { version = "0.30", features = ["user"], optional = true }
+
+[[example]]
+name = "policy_contract"
+required-features = ["policy"]
 
 [[example]]
 name = "secrets_contract"
