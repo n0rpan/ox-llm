@@ -40,6 +40,10 @@ pub struct FakeOpts {
     /// engine's capabilities when `hints`, and without a `capabilities` block otherwise (an
     /// older controller).
     pub models: Vec<FakeModel>,
+    /// Omit the `thinking` and `vision` fields of every `model_limits[].capabilities` block,
+    /// modelling a controller that publishes no input-modality or thinking field (oxstack/ox-llm
+    /// #67). `false` (default) = the fields are present.
+    pub omit_modality: bool,
     /// `/props` answers 503 "no model loaded" (the controller with nothing loaded). Also
     /// switchable at run time ([`FakeServer::set_props_unloaded`]).
     pub props_unloaded: bool,
@@ -208,6 +212,7 @@ impl Default for FakeOpts {
             drop_at: None,
             hints: true,
             status_cancel: false,
+            omit_modality: false,
             models: Vec::new(),
             props_unloaded: false,
             loading: false,
@@ -585,15 +590,20 @@ fn model_limits(o: &FakeOpts) -> Value {
     for r in model_rows(o) {
         let mut row = json!({"cap": r.cap, "mode": null, "modes": [], "max_output": r.max_output});
         if let Some(c) = &r.caps {
-            row["capabilities"] = json!({
+            let mut caps = json!({
                 "prefill_only": c.prefill_only, "snapshot_hint": c.snapshot_hint,
-                "turn_kind": c.prefill_only, "hint_clear": c.hint_clear, "thinking": "toggle",
+                "turn_kind": c.prefill_only, "hint_clear": c.hint_clear,
                 "preserve_thinking": c.preserve_thinking, "mtp": null, "max_context": r.cap,
-                "vision": false, "slots": 1, "park": c.park,
+                "slots": 1, "park": c.park,
                 "remote": false, "remote_provider": null, "echo": c.prefill_only,
                 "cache_hints": c.hint_clear, "cancel": true, "prefill": c.prefill_only,
                 "context_window": r.cap,
             });
+            if !o.omit_modality {
+                caps["thinking"] = json!("toggle");
+                caps["vision"] = json!(false);
+            }
+            row["capabilities"] = caps;
         }
         if let Some(provider) = o.remote {
             row["context_window"] = json!(r.cap);

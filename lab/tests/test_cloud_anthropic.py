@@ -242,7 +242,9 @@ class KeyAndBudget(AnthropicBase):
                              'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}
         upstream = MockAnthropic(message=message)
         self.addCleanup(upstream.close)
-        self.start(mock=upstream, budget=0.005)
+        models = anthropic_models()
+        models['anthropic/claude-haiku-5-5']['context_window'] = 1000
+        self.start(mock=upstream, budget=0.005, models=models)
         self.assertEqual(self.chat(model='anthropic/claude-haiku-5-5', max_tokens=1000)[0], 200)
         rows = self.ledger_rows()
         self.assertEqual(rows[-1]['cost_usd'], 0.0048)

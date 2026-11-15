@@ -430,13 +430,19 @@ class GateTests(ShareBase):
         self.share.opts = {**self.share.opts, 'max_body_bytes': 1024}
         status, _ = self.send('POST', CHAT, b'x' * 2048, key=self.key)
         self.assertEqual(status, 413)
-        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=TIMEOUT)
-        try:
-            connection.request('POST', CHAT, body=iter([b'{}']), headers={
-                'Authorization': 'Bearer ' + self.key, 'Transfer-Encoding': 'chunked'}, encode_chunked=True)
-            self.assertEqual(connection.getresponse().status, 411)
-        finally:
-            connection.close()
+        # The gate rejects chunking as soon as it sees the headers. Send the complete,
+        # valid chunked request in one write so the client's later chunk writes cannot
+        # race that intentional refusal and raise BrokenPipe before we read its status.
+        request = (f'POST {CHAT} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n'
+                   f'Authorization: Bearer {self.key}\r\nTransfer-Encoding: chunked\r\n'
+                   'Content-Type: application/json\r\nConnection: close\r\n\r\n'
+                   '2\r\n{}\r\n0\r\n\r\n').encode('ascii')
+        with socket.create_connection(('127.0.0.1', self.port), timeout=TIMEOUT) as transport:
+            transport.sendall(request)
+            with http.client.HTTPResponse(transport) as response:
+                response.begin()
+                response.read()
+                self.assertEqual(response.status, 411)
         self.manager.begin_queued.assert_not_called()
 
     def test_one_shared_request_at_a_time(self):

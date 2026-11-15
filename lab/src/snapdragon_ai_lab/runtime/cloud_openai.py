@@ -229,6 +229,19 @@ def _restore(item, history, key):
     return None
 
 
+def _closed_historical_calls(messages, index):
+    """Only a new user turn may replay closed public tool history without opaque state."""
+    if not any(message.get('role') == 'user' for message in messages[index + 1:]):
+        return False
+    pending = {call['id'] for call in messages[index].get('tool_calls') or []}
+    for message in messages[index + 1:]:
+        if message.get('role') in ('assistant', 'user'):
+            break
+        if message.get('role') == 'tool':
+            pending.discard(message.get('tool_call_id'))
+    return not pending
+
+
 def responses_request(payload, item, key=None):
     limit = _output_limit(payload, item.get('max_output'))
     if payload.get('n') is not None and (type(payload['n']) is not int or payload['n'] != 1):
@@ -247,14 +260,19 @@ def responses_request(payload, item, key=None):
     inputs = []
     for index, message in enumerate(messages):
         role = message.get('role')
+        replay_calls = []
         if role == 'assistant':
             restored = _restore(item, messages[:index + 1], key)
             if restored is not None:
                 inputs.extend(restored)
                 continue
             if message.get('tool_calls'):
-                raise cloud.CloudError('OpenAI tool continuation expired; start a new turn.',
-                                       409, 'cloud_continuation_unavailable', 'messages')
+                if not _closed_historical_calls(messages, index):
+                    raise cloud.CloudError('OpenAI tool continuation expired; start a new turn.',
+                                           409, 'cloud_continuation_unavailable', 'messages')
+                # Reconstruct only closed, visible history for a fresh turn. Never attach
+                # opaque reasoning from a different prefix after compaction or expiration.
+                replay_calls = message['tool_calls']
         if role == 'tool':
             output = message.get('content') or ''
             if isinstance(output, list):
@@ -279,6 +297,10 @@ def responses_request(payload, item, key=None):
                     raise cloud.CloudError('Unsupported OpenAI message content.', 400,
                                            'invalid_value', 'messages')
             inputs.append({'role': role, 'content': parts})
+        for call in replay_calls:
+            inputs.append({'type': 'function_call', 'call_id': call['id'],
+                           'name': call['function']['name'], 'arguments': call['function']['arguments'],
+                           'status': 'completed'})
     body = {'model': item['upstream_model'], 'input': inputs, 'store': False,
             'include': ['reasoning.encrypted_content'], 'reasoning': {'effort': effort},
             'max_output_tokens': limit, 'stream': payload.get('stream') is True}

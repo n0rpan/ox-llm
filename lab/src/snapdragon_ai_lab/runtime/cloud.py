@@ -287,15 +287,19 @@ def _check_ledger_health():
 
 
 def _max_tokens(payload, item):
+    """The validated catalog-bounded output limit shared by translation and admission."""
     fields = ('max_tokens', 'max_completion_tokens', 'n_predict')
     if item.get('provider') == 'openai':
         fields += ('max_output_tokens',)
+    maximum = item.get('max_output') or 4096
     for field in fields:
-        value = payload.get(field) if isinstance(payload, dict) else None
-        if type(value) is int and value > 0:
-            return value
-    value = item.get('max_output')
-    return value if type(value) is int and value > 0 else 4096
+        if isinstance(payload, dict) and field in payload:
+            value = payload[field]
+            if type(value) is not int or value <= 0:
+                raise CloudError('The output token limit must be a positive integer.',
+                                 400, 'invalid_value', field)
+            return min(value, maximum)
+    return maximum
 
 
 def estimate_prompt_tokens(payload):
@@ -312,9 +316,13 @@ def estimate_prompt_tokens(payload):
 
 
 def worst_case_cost(item, payload):
-    """The most one request can cost: the prompt estimate plus max_tokens at the output price."""
-    prompt = item['context_window'] if item['provider'] == 'openai' else estimate_prompt_tokens(payload)
+    """Reserve the catalog input window; byte estimates cannot bound tokenization or images."""
+    prompt = item['context_window']
     usd = cost(item, prompt, _max_tokens(payload, item))
+    # Routing prices may exceed the catalog. This headroom is additional to the
+    # full-window reservation; it is a cushion, not a universal provider-price bound.
+    if usd is not None and item['provider'] == 'openrouter':
+        usd *= 1.25
     return math.inf if usd is None else usd
 
 
@@ -339,6 +347,10 @@ class BudgetHold:
 
 
 def validate_remote_request(payload, item):
+    try:
+        json.dumps(payload, ensure_ascii=False, allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError, UnicodeError):
+        raise CloudError('Invalid cloud request encoding.', 400, 'invalid_request') from None
     n = payload.get('n') if isinstance(payload, dict) else None
     if n is not None and (type(n) is not int or n != 1):
         raise CloudError('Cloud requests support one completion.', 400, 'invalid_value', 'n')
@@ -386,7 +398,7 @@ def conservative_cost(row, hold, failed=False):
     missing = (failed or row.get('prompt_tokens') is None or row.get('completion_tokens') is None
                or row.get('cost_usd') is None)
     if missing:
-        row['cost_usd'] = hold.reserved
+        row['cost_usd'] = max(hold.reserved, row.get('cost_usd') or 0)
         row['usage_missing'] = True
         row['settled'] = 'reserved'
     else:
@@ -629,14 +641,28 @@ def remote_payload(payload, item):
     id and the mandatory OpenRouter privacy prefs.  D3 adds the normalisation on top."""
     if not isinstance(payload, dict):
         raise CloudError('Invalid cloud request.', 400, 'invalid_request')
-    body = dict(payload)
+    fields = ('messages', 'tools', 'tool_choice', 'parallel_tool_calls', 'stream',
+              'response_format', 'temperature', 'top_p', 'frequency_penalty',
+              'presence_penalty', 'logit_bias', 'logprobs', 'top_logprobs', 'stop', 'seed',
+              'reasoning_effort', 'chat_template_kwargs')
+    body = {name: payload[name] for name in fields if name in payload}
+    if body.get('tools') is None:
+        body.pop('tools', None)
+    tools = body.get('tools', [])
+    if not isinstance(tools, list) or any(
+            not isinstance(tool, dict) or tool.get('type') != 'function'
+            or set(tool) - {'type', 'function'} or not isinstance(tool.get('function'), dict)
+            for tool in tools):
+        raise CloudError('Only client function tools are supported.', 400, 'invalid_value', 'tools')
     body['model'] = item['upstream_model']
+    field = 'max_completion_tokens' if 'max_completion_tokens' in payload else 'max_tokens'
+    # Resolve alias precedence once; admission receives this normalized body.
+    body[field] = _max_tokens(payload, item)
     for field in ('cache_prompt', 'n_predict', 'id_slot', 'slot',
                   'ignore_eos', 'typical_p', 'min_p', 'repeat_penalty', 'top_k'):
         body.pop(field, None)
     if item['provider'] == 'openrouter':
-        prefs = body.get('provider') if isinstance(body.get('provider'), dict) else {}
-        body['provider'] = {**prefs, 'zdr': True, 'data_collection': 'deny'}
+        body['provider'] = {'zdr': True, 'data_collection': 'deny'}
     return body
 
 
@@ -681,6 +707,7 @@ class Meter:
         self.prompt = None
         self.completion = None
         self.cached = None
+        self.reported_cost = None
         self.finish = None
         self._sse = SSEDecoder()
 
@@ -689,6 +716,10 @@ class Meter:
             return
         usage = value.get('usage')
         if isinstance(usage, dict):
+            reported = usage.get('cost')
+            if type(reported) in (int, float) and 0 <= reported <= 1e100:
+                # Usage frames may repeat. Never let a later partial frame reduce a bill.
+                self.reported_cost = max(self.reported_cost or 0, reported)
             for source, target in (('prompt_tokens', 'prompt'), ('input_tokens', 'prompt'),
                                    ('completion_tokens', 'completion'), ('output_tokens', 'completion')):
                 number = usage.get(source)
@@ -742,6 +773,10 @@ class Meter:
         usd = cost(item, prompt, completion)
         if usd is not None:
             out['cost_usd'] = usd
+            out['catalog_cost_usd'] = usd
+        if item['provider'] == 'openrouter' and self.reported_cost is not None:
+            out['reported_cost_usd'] = self.reported_cost
+            out['cost_usd'] = max(usd or 0, self.reported_cost)
         return out
 
 
@@ -777,8 +812,7 @@ def upstream_payload(payload, item, key=None):
     elif isinstance(kwargs, dict) and isinstance(kwargs.get('enable_thinking'), bool):
         body['reasoning_effort'] = 'high' if kwargs['enable_thinking'] else 'none'
     if body.get('stream') is True:
-        options = body.get('stream_options') if isinstance(body.get('stream_options'), dict) else {}
-        body['stream_options'] = {**options, 'include_usage': True}
+        body['stream_options'] = {'include_usage': True}
     return body
 
 

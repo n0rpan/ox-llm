@@ -95,13 +95,15 @@ def forward(self, st):
         return cloud_anthropic.forward(self, st, item, key)
     try:
         body = cloud.upstream_payload(st.payload, item, key)
+        data = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, param=error.param)
+    except (TypeError, ValueError, UnicodeError):
+        return _reply(self, st, 400, 'Invalid cloud request encoding.', 'invalid_request')
     try:
         hold = cloud.reserve(value, item, body)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, error.code, param=error.param)
-    data = json.dumps(body, ensure_ascii=False).encode()
     responses = (cloud_openai.ResponsesStream(item, st.payload.get('messages'), key)
                  if item['provider'] == 'openai' and cloud_openai.endpoint(item) == '/responses' else None)
     meter = cloud.Meter()
@@ -127,7 +129,7 @@ def forward(self, st):
             self.end_headers()
             started = True
             total = 0
-            streamer = cloud.CloudStream(item['id'], key=key if item['provider'] == 'openai' else None)
+            streamer = cloud.CloudStream(item['id'], key=key)
             redactor = cloud.StreamRedactor(key)
 
             def write(data):

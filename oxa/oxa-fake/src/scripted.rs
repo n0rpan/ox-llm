@@ -147,6 +147,8 @@ impl Engine for ScriptedEngine {
                 prefill: true,
                 ..oxa_proto::EngineCaps::default()
             },
+            thinking: None,
+            images: None,
         })
     }
 

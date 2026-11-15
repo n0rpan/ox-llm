@@ -329,3 +329,29 @@ fn env_empty_values_count_as_unset() {
     let (cfg, _) = ModelsConfig::load(&Dirs::under(t.root()), &env);
     assert_eq!(cfg.endpoints[0].base_url, "http://127.0.0.1:8092");
 }
+
+/// issue #50: engine model ids that contain a slash are not `provider/id`.
+#[test]
+fn slash_model_id_beats_provider_prefix() {
+    let models = vec![mr("oxe", "anthropic/claude-sonnet-5-5"), mr("oxe", "flash-20b")];
+    assert_eq!(
+        resolve_model("anthropic/claude-sonnet-5-5", None, &models).unwrap(),
+        mr("oxe", "anthropic/claude-sonnet-5-5")
+    );
+    let m = resolve_model("anthropic/claude-sonnet-5-5:high", None, &models).unwrap();
+    assert_eq!(m.model, "anthropic/claude-sonnet-5-5");
+    assert_eq!(m.thinking, Some(ThinkingLevel::High));
+    // no such model: the prefix is still treated as an unsupported provider
+    let err = resolve_model("anthropic/other", None, &models).unwrap_err();
+    assert_eq!(err.code, codes::UNSUPPORTED_IN_OXA);
+}
+
+/// Models with no endpoint name (the interactive `/model` list) show their ids as `/model <id>`
+/// takes them, without a stray leading slash.
+#[test]
+fn not_found_hint_lists_ids_without_a_leading_slash_for_an_empty_endpoint() {
+    let models = vec![mr("", "local-default"), mr("", "anthropic/claude-haiku-5-5")];
+    let err = resolve_model("nosuch", None, &models).unwrap_err();
+    let hint = err.hint.expect("a hint");
+    assert_eq!(hint, "available: local-default, anthropic/claude-haiku-5-5");
+}

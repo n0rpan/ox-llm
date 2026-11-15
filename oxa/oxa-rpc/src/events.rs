@@ -295,7 +295,6 @@ pub fn state_to_json(s: &State) -> Value {
     put(&mut o, "pendingMessageCount", s.pending_message_count);
     put(&mut o, "mode", s.mode.as_str());
     put(&mut o, "prefixSha256", hex(&s.prefix_sha256));
-    put(&mut o, "profile", s.profile.as_str());
     Value::Object(o)
 }
 

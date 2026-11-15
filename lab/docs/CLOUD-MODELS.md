@@ -68,7 +68,7 @@ echoes the key is redacted before it reaches the client.
   offline.
 - `cloud.daily_budget_usd` is a positive USD cap per local day. A missing or non-positive cap
   fails closed (`budget_not_configured`). Admission atomically reserves the worst case
-  (`prompt estimate + max_tokens` at the model price) before forwarding, so concurrent
+  (`catalog context_window + bounded output limit` at the model price) before forwarding, so concurrent
   requests cannot all spend the same budget; the actual cost settles after the ledger row is
   written. A request that would exceed `spent + reserved` gets `429` with code
   `budget_exceeded`.
@@ -211,6 +211,15 @@ model limits are supplied implicitly. The per-model capabilities disable echo,
 cache hints, cancellation and prefill; oxa shows `cloud · openai` in its footer
 and start banner.
 
+OpenRouter and generic compatible requests always carry an output limit, bounded by
+catalog `max_output` (4096 when omitted). Admission reserves the entire catalog input
+window because text-byte estimates cannot bound tokenization or image costs.
+
+An expired active Responses tool continuation returns a clear `409`; it is never
+retried automatically. A fresh user turn can replay completed public tool history
+after expiry or compaction, without attaching opaque reasoning from another prefix.
+Unresolved tool calls still require the original continuation state.
+
 The endpoint is selected by an explicit model contract:
 
 - `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol` and `gpt-6-luna`
@@ -243,3 +252,23 @@ The contract follows the official [GPT-6 guidance](https://developers.openai.com
 [reasoning replay guidance](https://developers.openai.com/api/docs/guides/reasoning),
 and [Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
 Tests in `lab/tests/test_cloud_openai.py` exercise loopback mocks only.
+
+OpenRouter settlement records `catalog_cost_usd` and, when supplied by upstream,
+`reported_cost_usd` separately. The charged `cost_usd` is their maximum, so a more
+expensive routed provider consumes the daily budget accurately. Only finite,
+non-negative numeric `usage.cost` values from upstream are accepted; client fields
+are not billing evidence. Repeated usage frames cannot reduce an earlier bill.
+Admission reserves the full catalog input window and bounded output, with 25%
+additional OpenRouter headroom. This cushion is not a bound on every provider's
+price: configure conservative catalog rates for the allowed routes. A reported
+bill can exceed the reservation; it is still charged in full and blocks subsequent
+requests at the daily cap. Missing usage or a failed request retains at least the
+reservation and any larger reported bill. No automatic paid retry is made.
+
+Compatible upstream requests use an explicit chat-field allow-list. Client plugins,
+fallback-model lists, transforms, service tiers and routing preferences are not forwarded.
+OpenRouter receives only the mandatory privacy preferences. Tools are client function
+definitions; provider-hosted paid tools are refused. Ordinary tool selection, reasoning,
+sampling and structured-output controls remain supported, including omitted/null tools.
+Anthropic translation and admission share one validated output limit, including `n_predict`,
+and never exceed the catalog maximum. Invalid limits refuse before an upstream call.

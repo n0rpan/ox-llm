@@ -158,7 +158,6 @@ fn quiet_startup() {
         model: "qwen".to_string(),
         model_remote: false,
         model_provider: None,
-        profile: None,
     };
     let keymap = Keymap::defaults();
     let vm = ViewModel::default();
@@ -345,27 +344,6 @@ fn loaded_resources_listing() {
     );
 }
 
-/// Wave H: under the `local` profile the header line carries the word, nothing under `pi`.
-#[test]
-fn header_profile_word() {
-    let mut info = HeaderInfo {
-        version: "0.1.0".to_string(),
-        resources: Vec::new(),
-        engine_url: "http://127.0.0.1:8080".to_string(),
-        model: "qwen".to_string(),
-        model_remote: false,
-        model_provider: None,
-        profile: Some("local".to_string()),
-    };
-    let keymap = Keymap::defaults();
-    let vm = ViewModel::default();
-    let lines = render_header(&info, &vm, &keymap, false, 80, &Theme::plain());
-    assert_eq!(lines[0], "oxa v0.1.0 local");
-    info.profile = None;
-    let lines = render_header(&info, &vm, &keymap, false, 80, &Theme::plain());
-    assert_eq!(lines[0], "oxa v0.1.0");
-}
-
 /// Wave D D4b: the status bar names where the model runs, both states.
 #[test]
 fn footer_and_header_show_the_model_location() {
@@ -389,7 +367,7 @@ fn footer_and_header_show_the_model_location() {
     theme.colors.insert("accent".to_string(), Color::Indexed(6));
     let local_colour = render_footer(&vm_with(base_status()), 120, &theme)[1].clone();
     assert!(
-        local_colour.contains("\x1b[38;5;2m"),
+        local_colour.contains(&theme.fg("success", "local")),
         "local is green: {local_colour}"
     );
     let cloud_colour = render_footer(
@@ -403,9 +381,10 @@ fn footer_and_header_show_the_model_location() {
     )[1]
     .clone();
     assert!(
-        cloud_colour.contains("\x1b[38;5;6m"),
+        cloud_colour.contains(&theme.fg("accent", "cloud · anthropic")),
         "cloud is its own colour: {cloud_colour}"
     );
+    assert_ne!(theme.fg("success", "location"), theme.fg("accent", "location"));
     assert!(cloud_colour.contains("cloud · anthropic"), "{cloud_colour}");
 
     let keymap = Keymap::defaults();
@@ -417,11 +396,12 @@ fn footer_and_header_show_the_model_location() {
         model: "qwen".to_string(),
         model_remote: false,
         model_provider: None,
-        profile: Some("local".to_string()),
     };
     let local_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
     assert!(local_header.contains("local"), "{local_header}");
     info.model_remote = true;
+    let generic = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
+    assert!(generic.contains("cloud · remote"), "{generic}");
     info.model_provider = Some("openrouter");
     let cloud_header = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
     assert!(cloud_header.contains("cloud · openrouter"), "{cloud_header}");
@@ -439,5 +419,50 @@ fn footer_and_header_show_the_model_location() {
     )[1]
     .clone();
     assert!(openai_footer.contains("cloud · openai"), "{openai_footer}");
-    assert!(openai_footer.contains("\x1b[38;5;6m"), "{openai_footer}");
+    assert!(
+        openai_footer.contains(&theme.fg("accent", "cloud · openai")),
+        "{openai_footer}"
+    );
+}
+
+/// Issue #51: Claude 5.5 cannot disable thinking; the footer shows what oxc sends upstream.
+#[test]
+fn footer_claude_55_never_shows_off() {
+    let footer = |model: &str, level| {
+        let st = StatusModel {
+            model: model.to_string(),
+            thinking: Some(level),
+            ..base_status()
+        };
+        render_footer(&vm_with(st), 120, &Theme::plain())[1].clone()
+    };
+    let off = footer("anthropic/claude-sonnet-5-5", ThinkingLevel::Off);
+    assert!(off.contains("adaptive • low") && !off.contains("off"), "{off}");
+    let high = footer("anthropic/claude-sonnet-5-5", ThinkingLevel::High);
+    assert!(high.contains("adaptive • high"), "{high}");
+    assert!(footer("qwen", ThinkingLevel::Off).contains("qwen • off"));
+}
+
+/// Claude 5.5 footer over every level, and an ordinary model unchanged.
+#[test]
+fn footer_thinking_table_claude_55_and_ordinary() {
+    let footer = |model: &str, level| {
+        let st = StatusModel {
+            model: model.to_string(),
+            thinking: Some(level),
+            ..base_status()
+        };
+        render_footer(&vm_with(st), 120, &Theme::plain())[1].clone()
+    };
+    for level in ThinkingLevel::ALL {
+        let want = if level == ThinkingLevel::Off {
+            "adaptive • low"
+        } else {
+            "adaptive • high"
+        };
+        let line = footer("anthropic/claude-haiku-5-5", level);
+        assert!(line.contains(want), "5.5 {level:?}: {line}");
+        let plain = footer("qwen", level);
+        assert!(plain.contains(&format!("qwen • {}", level.as_str())), "{plain}");
+    }
 }

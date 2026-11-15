@@ -13,7 +13,6 @@ tools/backup_sanitize.py	*	The pre-push scanner itself: rule text.
 tests/test_bootstrap.py	home-path	Invented path used as test input.
 tests/test_health_digest.py	home-path	Privacy test: asserts the digest/messages never leak a home path or prompt text; literals are test inputs.
 tests/test_health_digest.py	secret-assignment	Privacy test: asserts the digest/messages never leak a home path or prompt text; literals are test inputs.
-tests/test_oem_drills.py	home-path	Privacy test: asserts the digest/messages never leak a home path or prompt text; literals are test inputs.
 tests/test_bootstrap.py	email	Git identity of a synthetic fixture (example.invalid).
 tests/test_source_archive.py	email	Git identity of a synthetic fixture (example.invalid).
 tests/test_flash_memory.py	user-slice	Invented cgroup and runtime paths used as test input.
