@@ -62,7 +62,7 @@ class ProxyRequest:
                  'body', 'model_alias', 'payload', 'rewritten', 'target', 'harness_key', 'harness', 'turn',
                  'backend_path', 'completion_meta', 'request_process', 'request_engine_config',
                  'led', 'preempt', 'runtime', 'connection', 'backend_headers', 'started_response',
-                 'client_write_failed', 'watcher', 'backend_status', 'request_error', 'content_type',
+                 'client_write_failed', 'cloud_streamed', 'watcher', 'backend_status', 'request_error', 'content_type',
                  'raw_body', 'robust', 'shim', 'prep_s', 'cloud_entry')
 
     def __init__(self, path, api_value, api_key, remote, inference, helper):
@@ -76,6 +76,7 @@ class ProxyRequest:
         self.runtime = self.connection = self.backend_headers = None
         self.started_response = False
         self.client_write_failed = False
+        self.cloud_streamed = 0
         self.watcher = None
         self.backend_status = None
         self.request_error = None

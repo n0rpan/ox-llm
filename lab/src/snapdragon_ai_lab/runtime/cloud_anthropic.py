@@ -561,13 +561,15 @@ def _close(st, status, error=None):
         cloud.mark_ledger_failure()
 
 
-def _record(st, item, hold, usage, failed, status, error):
+def _record(st, item, hold, usage, failed, status, error, cancelled=None):
     row = _row(item)
     if isinstance(usage, dict):
         _usage_row(row, usage, item)
     if hold is None:
         row.setdefault('cost_usd', 0.0)
         row.setdefault('settled', 'not_forwarded')
+    elif cancelled is not None:
+        cloud.cancelled_cost(row, hold, item, *cancelled)
     else:
         cloud.conservative_cost(row, hold, failed=failed)
     if st.led is not None:
@@ -586,6 +588,7 @@ def _error(self, st, item, status, message, key, code='cloud_upstream_error', ho
 
 
 def _write(self, st, data):
+    st.cloud_streamed += len(data)
     self.wfile.write(('%x\r\n' % len(data)).encode() + data + b'\r\n')
     self.wfile.flush()
 
@@ -675,6 +678,12 @@ def forward(self, st, item, key):
             _record(st, item, hold, translator.usage if translator else None, True,
                     error.status, error.code)
             self.close_connection = True
+    except (BrokenPipeError, ConnectionResetError):  # the client cancelled the stream
+        st.client_write_failed = True
+        _record(st, item, hold, translator.usage if translator else None, False, 499, 'cancelled',
+                cancelled=(len(json.dumps(params, ensure_ascii=False).encode()),
+                           st.cloud_streamed))
+        self.close_connection = True
     except Exception as error:  # the SDK's own status/connection errors, redacted
         status = getattr(error, 'status_code', None) or 503
         if not isinstance(status, int) or not 400 <= status <= 599:

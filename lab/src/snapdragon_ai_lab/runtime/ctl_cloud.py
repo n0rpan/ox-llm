@@ -42,10 +42,17 @@ def _reply(self, st, status, message, code, error=None, param='model'):
                                               'param': param, 'code': code}})
 
 
-def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, failed=False):
-    """Record one forwarded request.  Missing usage charges the reserved worst case."""
+def _finish(self, st, item, meter, status, error=None, hold=None, secret=None, failed=False,
+            cancelled=None):
+    """Record one forwarded request.  Missing usage charges the reserved worst case.
+
+    ``cancelled`` = (request_bytes, streamed_bytes) for a client cancel: settled at actual usage
+    or an estimate of what was streamed."""
     row = meter.row(item, secret)
-    cloud.conservative_cost(row, hold, failed=failed)
+    if cancelled is not None:
+        cloud.cancelled_cost(row, hold, item, *cancelled)
+    else:
+        cloud.conservative_cost(row, hold, failed=failed)
     if st.led is not None:
         st.led.row.update(row)
         _close_row(st, status, error)
@@ -129,6 +136,7 @@ def forward(self, st):
             self.end_headers()
             started = True
             total = 0
+            sent = [0]
             streamer = cloud.CloudStream(item['id'], key=key)
             redactor = cloud.StreamRedactor(key)
 
@@ -142,6 +150,7 @@ def forward(self, st):
                     st.led.observe(safe)
                 self.wfile.write(('%x\r\n' % len(safe)).encode() + safe + b'\r\n')
                 self.wfile.flush()
+                sent[0] += len(safe)
 
             try:
                 while chunk := response.read1(65536):
@@ -171,6 +180,9 @@ def forward(self, st):
                 st.client_write_failed = True
                 st.request_error = 'client_disconnected'
                 self.close_connection = True
+                _finish(self, st, item, meter, 499, 'cancelled', hold, key,
+                        cancelled=(len(data), sent[0]))
+                return
             _finish(self, st, item, meter, response.status, st.request_error, hold, key,
                     failed=st.request_error is not None)
             return

@@ -478,6 +478,28 @@ def conservative_cost(row, hold, failed=False):
     return row
 
 
+def cancelled_cost(row, hold, item, request_bytes, streamed_bytes):
+    """Settle a stream the client cancelled.
+
+    Provider-reported usage wins.  Otherwise charge an estimate of what was actually sent and
+    streamed (one token per byte is an upper bound for text), never above the reservation; with
+    no known price the full reservation stays charged.  Fail-closed accounting is unchanged.
+    """
+    if hold is None:
+        return row
+    if (row.get('prompt_tokens') is not None and row.get('completion_tokens') is not None
+            and row.get('cost_usd') is not None):
+        row['settled'] = 'usage'
+        return row
+    estimate = cost(item, max(request_bytes, row.get('prompt_tokens') or 0),
+                    max(streamed_bytes, row.get('completion_tokens') or 0))
+    if estimate is None or not math.isfinite(estimate):
+        estimate = hold.reserved
+    row['cost_usd'] = min(hold.reserved, max(estimate, row.get('cost_usd') or 0))
+    row['usage_missing'] = True
+    row['settled'] = 'estimated'
+    return row
+
 
 def secrets_file(value):
     """The configured 0600 secrets file; it must be absolute and outside this repository."""
