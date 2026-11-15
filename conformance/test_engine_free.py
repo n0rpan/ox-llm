@@ -5,6 +5,7 @@ not a cloud-only parity claim: this reference still has no remote catalog. No
 model, engine executable, credentials or hardware fixture is installed.
 """
 import fcntl
+import gzip
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,12 @@ CASES = {name: value[:4] for name, value in GATES.items() if name != 'valid-gzip
 CASES.update({
     'unknown-route-body-is-not-json-parsed': ('POST', '/v1/not-a-route', '{', {}),
     'unknown-route-body-is-not-gzip-decoded': ('POST', '/v1/not-a-route', b'invalid', {'Content-Encoding': 'gzip'}),
+    'gzip-invalid-second-member': ('POST', '/v1/chat/completions',
+        gzip.compress(b'{"messages": [{"role": "user", "content": "Synthetic prompt."}]}', mtime=0)
+        + gzip.compress(b'{invalid', mtime=0), {'Content-Encoding': 'gzip'}),
+    'gzip-invalid-trailing-bytes': ('POST', '/v1/chat/completions',
+        gzip.compress(b'{"messages": [{"role": "user", "content": "Synthetic prompt."}]}', mtime=0)
+        + b'invalid', {'Content-Encoding': 'gzip'}),
 })
 
 

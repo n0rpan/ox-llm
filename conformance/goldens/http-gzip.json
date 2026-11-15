@@ -1,0 +1,371 @@
+{
+  "concatenated-decompressed-limit": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "Invalid model request.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "concatenated-json": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "empty-member-prefix": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "empty-member-suffix": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "invalid-second-crc": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "Invalid model request.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "invalid-trailing-data": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "Invalid model request.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "trailing-zero-padding": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "truncated-footer": {
+    "backend": [],
+    "reply": {
+      "body": {
+        "error": {
+          "code": "invalid_request",
+          "message": "Invalid model request.",
+          "param": null,
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "zero-padding-between-members": {
+    "backend": [
+      {
+        "body": {
+          "cache_prompt": true,
+          "chat_template_kwargs": {
+            "enable_thinking": false,
+            "preserve_thinking": true
+          },
+          "max_tokens": 4,
+          "messages": [
+            {
+              "content": "Synthetic prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "ornith-35b-a3b-local",
+          "temperature": 0
+        },
+        "path": "/v1/chat/completions"
+      }
+    ],
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic engine reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-synthetic",
+        "model": "ornith-35b-a3b-local",
+        "object": "chat.completion",
+        "system_fingerprint": "synthetic",
+        "timings": {
+          "cache_n": 2,
+          "predicted_n": 3,
+          "prompt_n": 6
+        },
+        "usage": {
+          "completion_tokens": 3,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 8,
+          "prompt_tokens_details": {
+            "cached_tokens": 2
+          },
+          "total_tokens": 11
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  }
+}

@@ -12,7 +12,7 @@ Cloud-only mode (no local engine) is the first complete runtime target. Its
 gateway and installation contracts will follow #24 and the cloud-only stack
 after they land on main. Hardware A/B waits for that suite to be green. See the
 [reviewable merge plan](../conformance/MERGE_PLAN.md); draft
-[#173](https://github.com/oxstack/ox-llm/pull/173) extracts only the opt-in parser
+[#177](https://github.com/oxstack/ox-llm/pull/177) extracts only the opt-in parser
 binary. This integration branch remains draft #28 and is not a merge slice.
 
 Build locally, keeping generated binaries outside the source checkout:
@@ -21,7 +21,7 @@ Build locally, keeping generated binaries outside the source checkout:
 cargo build --locked --release --manifest-path oxc-rs/Cargo.toml --target-dir ../oxc-target
 ```
 
-Local validation: 65 parser cases, five CLI ledger-file cases, seven empty-install
+Local validation: 140 parser cases, twelve CLI ledger-file/limit cases, seven empty-install
 HTTP cases, all 18 HTTP gates, all 62 configured API cases, and API-key file
 rotation/fail-closed behavior pass in Rust. All 18 lifecycle tests and 13 harness registry cases pass. Read-only
 cache usage and storage inventory pass 14 additional reference cases. A native CLI set of 48 runtime cases passes against the Python daemon;
@@ -34,12 +34,16 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-and native suites both pass 709 scenarios in 98 unittest methods.
+and native suites both pass 802 scenarios in 101 unittest methods.
 
-Nineteen engine-free HTTP cases need no fake model/engine or host-memory
+Twenty-one engine-free HTTP cases need no fake model/engine or host-memory
 namespace. They compare the real gates while another owner holds the inference
 lease and verify no child/model, config mutation or lease replacement remains.
-Three regressions establish classic-backend route/body parsing before the fix.
+Regression cases establish classic-backend route/body parsing before the fix.
+Nine gzip cases also check every member/checksum, zero padding, exact engine
+work and the unchanged 16 MiB bound across all decompressed members. CLI
+diagnostics preserve Python quoting and Unicode printability facts. All 280
+additional isolated parser probes match the reference.
 `conformance/run_suite.py cloud-foundation` selects these foundations plus CLI
 contracts; `--native /absolute/path/to/oxc` sets every helper override explicitly.
 Cloud-only validation remains an explicit pending-baseline error.
@@ -229,3 +233,7 @@ ready, or use one workflow dispatch when needed. Use one blocking
 `gh pr checks --watch` when waiting is needed, never repeated polling.
 
 The current [paired synthetic measurement](../conformance/benchmarks/rust-f8c482e-a874eac.json) verifies 100 measured requests plus warmup reached the same fixture with matching bodies and expected replies. Native idle/sampled-load RSS was 7,084/7,692 KiB and p50/p95 HTTP latency was 1.095/3.077 ms; the matching Python values were 19,696/20,504 KiB and 52.881/54.680 ms. Source, harness and executable identities are recorded. This measures controller overhead on the executor, with no hardware readiness claim.
+
+Until v0.2.0 ships, keep all migration PRs draft. Test locally and keep following
+main without review requests or full-CI dispatches. After release, the
+orchestrator (Fable) and oxa handle reviews.

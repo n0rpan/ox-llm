@@ -1,6 +1,6 @@
 # Remaining conformance and Rust work
 
-Reference main: `e62260833e5d0414fb295df0abd004d15ba4d1d9`.
+Reference main: `ef6d54c8ff2882b3503e3b168c08345590ffe97c`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
@@ -12,7 +12,7 @@ The following gaps remain visible rather than being represented by skipped tests
   reference main. The coordinator has prioritized complete cloud-only mode
   (no local engine) as the first A/B target. Wait for #24 and the cloud-only
   stack to land, capture their actual behavior on main, then port it. Do not
-  port the previous gateway. Nineteen engine-free HTTP foundation cases pass
+  port the previous gateway. Twenty-one engine-free HTTP foundation cases pass
   with no model/engine fixtures and an untouched foreign inference lease.
   The review runner refuses a cloud-only parity claim until real contracts exist.
 - Disk state/prefix/session caches: extend actual on-disk formats,
@@ -23,6 +23,9 @@ The following gaps remain visible rather than being represented by skipped tests
   Controller clear now covers all/model/session/hint scopes and shared ownership.
   PrefixStore lookup/save, engine-side persistence edge cases and further race
   coverage remain pending.
+- HTTP bodies: nine gzip cases now cover concatenated/empty members, padding,
+  checksum/truncation failures and the unchanged combined 16 MiB bound. Invalid
+  members never start the fake engine. More header/encoding combinations remain.
 - LAN sharing: more IPv6, network/config/certificate refresh races, slow response
   readers, local/shared admission and finalization races, and offline CLI fallback.
   Thirty-one LAN/TLS cases now cover route/link discovery, persisted network pins,
@@ -47,7 +50,10 @@ The following gaps remain visible rather than being represented by skipped tests
   and activity. Full editing, pixel operations, controller image-slot IPC and
   Oxi/NPU adapters still need contracts without SDK, device or model content.
   Pause further image work behind cloud-only completion.
-- CLI: extend malformed metadata, argument combinations and filesystem failures;
+- CLI: 75 additional parser cases now cover help/ambiguity precedence, Unicode
+  integers and exact quoted/control-character diagnostics; seven populated
+  ledger-limit cases verify actual Unicode/large-number clamps. Extend malformed
+  metadata, remaining argument combinations/non-UTF-8 argv and filesystem failures;
   extend populated ledger/digest, valid cache status, sharing keys and offline
   failures. Fifteen desktop/model dispatch cases now cover detached sessions,
   inherited stdin/umask, exec/service failures, qualification and read-only planning.
@@ -108,7 +114,7 @@ blocking gh pr checks --watch; never poll CI status.
 
 Next implementation step: complete the cloud-only path after its main baseline
 lands, while extracting reviewable PRs using [the merge plan](MERGE_PLAN.md).
-The parser-only first slice is draft #173; #28 stays the integration branch.
+The parser-only first slice is draft #177; #28 stays the integration branch.
 Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
 filtering, stored days, private writes, trend/soak thresholds, stale status, dates,
 installed versions and file interoperability. Rust now passes all 62 configured API and all 18 HTTP gate cases.
@@ -141,3 +147,6 @@ More malformed numeric inputs and stop races remain uncovered. The captured
 Python/native suite passes; complete product parity is unfinished. No native
 deployment or readiness claim is made, and hardware A/B waits for green cloud-only
 conformance.
+
+Release hold: remain draft until v0.2.0 ships; continue local work without
+waiting for reviews. Post-release review is via the orchestrator (Fable) and oxa.

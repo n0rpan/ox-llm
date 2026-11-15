@@ -1,13 +1,13 @@
 # oxc drop-in conformance
 
-Reference: main `e62260833e5d0414fb295df0abd004d15ba4d1d9`.
-The current suite covers 709 scenarios in 98 unittest methods. This remains a
+Reference: main `ef6d54c8ff2882b3503e3b168c08345590ffe97c`.
+The current suite covers 802 scenarios in 101 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
 Cloud-only mode is the first complete runtime target. See the
 [merge plan](MERGE_PLAN.md) for separate review slices; the first parser slice is
-draft [#173](https://github.com/oxstack/ox-llm/pull/173). The integration branch
+draft [#177](https://github.com/oxstack/ox-llm/pull/177). The integration branch
 remains in draft #28. Capture cloud gateway contracts after #24 lands on main,
 then port them and the cloud-only stack. Hardware A/B waits until cloud-only
 conformance is green.
@@ -21,7 +21,7 @@ python3 conformance/run_suite.py cloud-foundation --native /absolute/path/to/oxc
 python3 conformance/run_suite.py all --list
 ```
 
-The 19 engine-free HTTP cases install no engine/model and use no hardware
+The 21 engine-free HTTP cases install no engine/model and use no hardware
 fixtures or bubblewrap. They hold a foreign inference lease, compare the real
 HTTP replies and verify no child, local model or lease/config mutation remains.
 Three new failures before the fix established the classic-backend unknown-route
@@ -123,9 +123,12 @@ Intentional reference refresh, after reviewing changes on main:
 ```sh
 python3 conformance/test_cli.py --record-python
 python3 conformance/test_cli_files.py --record-python
+python3 conformance/test_cli_edges.py --record-python
+python3 conformance/test_cli_limits.py --record-python
 python3 conformance/test_http.py --record-python
 python3 conformance/test_api.py --record-python
 python3 conformance/test_http_gates.py --record-python
+python3 conformance/test_gzip.py --record-python
 python3 conformance/test_engine_free.py --record-python
 python3 conformance/test_state_cache.py --record-python
 python3 conformance/test_cache_budget.py --record-python
@@ -158,8 +161,8 @@ do not refresh goldens merely because an alternate implementation fails them.
 
 | Area | Python | Rust | Coverage still required |
 | --- | --- | --- | --- |
-| CLI parsing | PASS, 65 cases | PASS, captured grammar | More option combinations |
-| CLI ledger files | PASS, 5 cases | PASS | Additional historical ledger labels |
+| CLI parsing | PASS, 65 original + 75 additional cases | PASS: help/ambiguity precedence, Unicode integers, bounds, quoted/control-character diagnostics | More option combinations and non-UTF-8 argv |
+| CLI ledger files | PASS, 5 original + 7 limit cases | PASS: private/bounded reads, Unicode integers and large-limit clamps | Additional historical ledger labels |
 | CLI runtime | PASS, 48 cases | PASS: all 48 cases against both Python and native daemons | More combined flags and filesystem failures |
 | CLI desktop/model dispatch | PASS, 15 cases | PASS: detached session and exec handshake, inherited stdin/umask, service failures, bounded model qualification/errors, selection and read-only planning | More malformed replies and command races |
 | CLI status/code/mode | PASS, 16 cases | PASS: filtered metadata, offline/stopping states, selected-model dispatch, Flash download phases and bounded trial queries | More malformed metadata and clock races |
@@ -181,7 +184,8 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Context modes | PASS, 8 cases | PASS: limits/capabilities, fast/deep/max, RSS-proof gates, active/cap-changing controls and private config writes | Execution override adapters and more malformed profiles |
 | Storage inventory | PASS, 5 cases | PASS | Deletion, races and additional identity variants |
 | HTTP gates | PASS, 18 cases | PASS | More malformed framing variants |
-| Engine-free HTTP foundation | PASS, 19 cases | PASS: held foreign lease, no local engine/model/child or config mutation, backend-specific route/body parsing | Actual cloud-only catalog/routing/install after the upstream stack lands |
+| Engine-free HTTP foundation | PASS, 21 cases | PASS: held foreign lease, no local engine/model/child or config mutation, backend-specific route/body parsing | Actual cloud-only catalog/routing/install after the upstream stack lands |
+| Gzip request bodies | PASS, 9 cases | PASS: concatenated/empty members, padding, per-member integrity and the unchanged combined 16 MiB bound; exact fake-engine requests | More malformed headers and encoding combinations |
 | Lifecycle | PASS, 18 tests | PASS | Pressure keep-warm, image handoff, crash/reaper paths, CPU pinning |
 | Harness registry | PASS, 13 cases | PASS: learning/privacy, controls, prepare, streaming, limits and Python/Rust file reads | More malformed/advisory-I/O cases |
 | Request ledger | PASS, 12 goldens and 8 additional checks | PASS: private HMACs, JSON/SSE records, history/reply tracking, errors/cancel, retention, limits, engine hints, advisory I/O and unload finalization | Optional turn diagnostics, queue/replay modes and more malformed backend timings |
@@ -252,3 +256,7 @@ with one workflow dispatch when needed; use one blocking `gh pr checks --watch`
 rather than polling.
 
 Current synthetic comparison: [Python](benchmarks/python-f8c482e-a874eac.json) and [Rust](benchmarks/rust-f8c482e-a874eac.json). Both verify 101 identical engine request bodies including warmup and the expected reply/usage. Idle RSS was 19,696/7,084 KiB, sampled load RSS 20,504/7,692 KiB and p50/p95 HTTP latency 52.881/54.680 ms versus 1.095/3.077 ms. CPU counters have 10 ms resolution. These are controller-only executor measurements; no model or hardware performance is implied. Earlier receipts remain unchanged.
+
+During the v0.2.0 release hold, keep all migration PRs draft and continue local
+work/main follow-up without review requests or full-CI dispatches. Post-release
+review is through the orchestrator (Fable) and oxa.

@@ -1,8 +1,12 @@
 # Reviewable Rust controller migration
 
-Ported up to main `e62260833e5d0414fb295df0abd004d15ba4d1d9`.
-Last main review: 2026-11-15 UTC. The latest merges change CI caching/sandbox test partitioning and oxa edit
-diffs/background jobs. Python controller behavior is unchanged.
+Ported up to main `ef6d54c8ff2882b3503e3b168c08345590ffe97c`.
+Last main review: 2026-11-15 UTC. The latest merge retires one-off stage entry points, retains their shared
+helpers and updates the retained v0.2.0 stager to use them. Controller runtime
+files are unchanged. The accompanying engine changes are formatting-only and
+add its hosted formatter gate, retained alongside oxa and oxc. Subsequent
+merges update oxa/UI/CI, declare done checks and add a design-only OAuth document;
+controller behavior is unchanged. OAuth remains pending project registration.
 
 ## Priority and source of truth
 
@@ -22,7 +26,8 @@ Studio and remaining local-engine adapters follow cloud-only completion.
 ## How the code will land
 
 #28 remains the draft integration/proof branch, not a merge-sized change.
-Extract each slice into its own draft PR based on main or the immediately
+Use only `rust-oxc/*` branches. Extract each slice into its own draft PR based
+on main or the immediately
 preceding slice. Do not hide the entire existing port behind the first PR's flag.
 Each slice must build independently with only its necessary modules, fixtures
 and goldens. Split coupled modules such as CLI execution, daemon dispatch and
@@ -43,7 +48,7 @@ diff. A PR includes only its own conformance subset and direct dependencies.
 | Order / separate PR | Scope and dependency | Conformance gate |
 | --- | --- | --- |
 | 0. Contract tooling | Isolated process harness, slice inventory and reference provenance. No product behavior changes. | Inventory accounts for every captured method exactly once; reference subsets pass. |
-| 1. CLI grammar and config | Parser extraction is draft [#173](https://github.com/oxstack/ox-llm/pull/173); config follows separately. Binary scaffold; parser/help and path/config reader/writer, separated from command execution. T2. | `test_cli`; config preservation/mode/symlink contracts moved out of engine-dependent tests. |
+| 1. CLI grammar and config | Parser extraction is draft [#177](https://github.com/oxstack/ox-llm/pull/177); config follows separately. Binary scaffold; parser/help and path/config reader/writer, separated from command execution. T2. | `test_cli`; config preservation/mode/symlink contracts moved out of engine-dependent tests. |
 | 2. CLI execution | Bounded HTTP client, status projection and desktop exec handshake, depending on 1. T2. | `cli-config`; synthetic HTTP/system peers, no installed engine. |
 | 3. HTTP transport and gates | Framing, limits, Host/Origin/CORS/auth, request IDs and engine-free dispatch, depending on 1. T3. | `http-foundation`; gate subset of `http-admission` adapted to no-engine fixtures before extraction. |
 | 4. Request records | Private HMAC identity/files and bounded usage records, separated from local engine bookkeeping, depending on 3. T3. | File/privacy cases from `ledger`; remote settlement cases captured after #24. |
@@ -92,3 +97,7 @@ adjusting Rust, and update the exact SHA above, the parity matrix and #28's firs
 line. Keep slices draft while iterating; local checks precede pushes. Draft CI
 runs formatting/scans. Request full CI deliberately when a slice is reviewable,
 and use one blocking checks watch if waiting is necessary. Nothing merges here.
+
+Release hold: until v0.2.0 ships, keep all migration PRs draft, request no
+reviews/full CI and continue local implementation and main follow-up. After the
+release, reviews go through the orchestrator (Fable) and oxa, not Codex.

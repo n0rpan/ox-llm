@@ -175,6 +175,32 @@ fn api_key(config: &Value) -> Option<Vec<u8>> {
         .collect::<String>();
     Some(first.trim().as_bytes().to_vec())
 }
+fn decompress_gzip(mut input: &[u8]) -> std::io::Result<Vec<u8>> {
+    const LIMIT: usize = 16 * 1024 * 1024;
+    let mut output = Vec::new();
+    while !input.is_empty() {
+        // A bufread decoder stops precisely after one member, so subsequent
+        // members and their checksums are not silently discarded. Python also
+        // accepts zero padding after/between members, but never before the first.
+        let mut decoder = flate2::bufread::GzDecoder::new(input);
+        decoder
+            .by_ref()
+            .take((LIMIT + 1 - output.len()) as u64)
+            .read_to_end(&mut output)?;
+        if output.len() > LIMIT {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
+        let rest = decoder.into_inner();
+        if rest.len() >= input.len() {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
+        input = rest;
+        while input.first() == Some(&0) {
+            input = &input[1..];
+        }
+    }
+    Ok(output)
+}
 pub(crate) fn presented_key(headers: &HeaderMap) -> Option<&str> {
     if let Some(value) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
         if value
@@ -834,22 +860,18 @@ async fn dispatch(app: Arc<App>, request: Request, mut context: Context) -> Resp
         ]
         .contains(&path.as_str());
     let raw = if model_body && encoding == "gzip" {
-        let mut raw_decompressed = Vec::new();
-        if flate2::read::GzDecoder::new(raw.as_ref())
-            .take(16 * 1024 * 1024 + 1)
-            .read_to_end(&mut raw_decompressed)
-            .is_err()
-            || raw_decompressed.len() > 16 * 1024 * 1024
-        {
-            return context.error(
-                400,
-                "Invalid model request.",
-                "invalid_request_error",
-                "invalid_request",
-                None,
-            );
+        match decompress_gzip(raw.as_ref()) {
+            Ok(value) => value,
+            Err(_) => {
+                return context.error(
+                    400,
+                    "Invalid model request.",
+                    "invalid_request_error",
+                    "invalid_request",
+                    None,
+                )
+            }
         }
-        raw_decompressed
     } else {
         raw.to_vec()
     };
