@@ -142,3 +142,64 @@ fn a_read_only_prompt_after_failed_done_checks_reports_its_own_success() {
     assert!(results[1]["error_class"].is_null());
     assert_eq!(server.requests().len(), 7);
 }
+
+#[test]
+fn reader_handled_rpc_controls_count_as_done_and_keep_earlier_failures() {
+    for control in [
+        serde_json::json!({"type":"clear_queue"}),
+        serde_json::json!({"type":"steer","message":"later"}),
+        serde_json::json!({"type":"follow_up","message":"later"}),
+        serde_json::json!({"type":"abort_retry"}),
+        serde_json::json!({"type":"abort_bash"}),
+        serde_json::json!({"type":"abort"}),
+    ] {
+        for invalid_first in [false, true] {
+            let env = TestEnv::new();
+            let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+            let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+                .current_dir(env.work())
+                .env_clear()
+                .envs(env.envs(&server.url()))
+                .args(["--mode", "rpc", "--no-session", "--no-tools"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut input = child.stdin.take().unwrap();
+            if invalid_first {
+                writeln!(input, "{{\"type\":\"prompt\"}}").unwrap();
+            }
+            writeln!(input, "{control}").unwrap();
+            drop(input);
+            let output = child.wait_with_output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                output.status.code(),
+                Some(if invalid_first { 1 } else { 0 }),
+                "{control}: {stderr}"
+            );
+            let results: Vec<Value> = stderr
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|record| record["type"] == "oxa_result")
+                .collect();
+            assert_eq!(results.len(), 1);
+            assert_eq!(
+                results[0]["outcome"],
+                if invalid_first { "failed" } else { "done" }
+            );
+            assert!(server.requests().is_empty());
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .any(|record| record["type"] == "response"
+                        && record["command"] == control["type"]
+                        && record["success"] == true),
+                "{stdout}"
+            );
+        }
+    }
+}
