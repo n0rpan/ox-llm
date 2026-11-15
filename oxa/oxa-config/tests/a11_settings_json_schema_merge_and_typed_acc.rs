@@ -14,7 +14,6 @@ const DOC_KEYS: &[&str] = &[
     "defaultModel",
     "defaultThinkingLevel",
     "modelThinkingLevels",
-    "thinkingBudgets",
     "enabledModels",
     "hideThinkingBlock",
     "showCacheMissNotices",
@@ -89,7 +88,6 @@ const OXA_KEYS: &[&str] = &[
 /// The keys that oxa accepts and ignores with a warning (verdict O in PARITY.md).
 const VERDICT_O_KEYS: &[&str] = &[
     "defaultProvider",
-    "thinkingBudgets",
     "sessionShareDestination",
     "images.autoResize",
     "transport",
@@ -449,4 +447,13 @@ fn schema_sorted_and_unique() {
     let mut dedup = sorted.clone();
     dedup.dedup();
     assert_eq!(dedup.len(), keys.len());
+}
+
+#[test]
+fn thinking_budgets_is_an_unknown_setting() {
+    let settings = Settings::from_values(json!({"thinkingBudgets": {"high": 1000}}), json!({}));
+    assert!(settings
+        .diagnostics()
+        .iter()
+        .any(|d| d.message.contains("unknown setting `thinkingBudgets`")));
 }
