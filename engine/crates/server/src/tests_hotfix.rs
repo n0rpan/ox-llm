@@ -695,4 +695,20 @@ async fn panic_in_generate_clears_running_and_resets_the_cache() {
         resets.load(Ordering::SeqCst) > before,
         "cache not reset after the poisoned lock"
     );
+    assert!(!st.worker.is_poisoned(), "poison flag not cleared");
+    let after = resets.load(Ordering::SeqCst);
+    assert_eq!(
+        status_of(
+            &st,
+            "/v1/chat/completions",
+            chat_body(json!({"temperature": 0, "n_predict": 4}))
+        )
+        .await,
+        200
+    );
+    assert_eq!(
+        resets.load(Ordering::SeqCst),
+        after,
+        "healthy request reset the cache again"
+    );
 }
