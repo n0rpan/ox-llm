@@ -418,13 +418,19 @@ const TREE_OPEN_WAIT: &[&str] = &["second question", "BETA answer.", "Session Tr
 /// `/resume` picker -> fullscreen scroll + search -> exit, against the fake over HTTP.
 #[test]
 fn fullscreen_daily_driver_flow() {
-    let world = World::new(vec![
-        ScriptTurn::tool("call_1", "read", r#"{"path":"notes.md"}"#),
-        ScriptTurn::text(&long_reply("ALPHA")),
-        ScriptTurn::text("BETA answer."),
-        ScriptTurn::text("GAMMA answer."),
-        ScriptTurn::text("DELTA answer."),
-    ]);
+    let world = World::with(
+        vec![
+            ScriptTurn::tool("call_1", "read", r#"{"path":"notes.md"}"#),
+            ScriptTurn::text(&long_reply("ALPHA")),
+            ScriptTurn::text("BETA answer."),
+            ScriptTurn::text("GAMMA answer."),
+            ScriptTurn::text("DELTA answer."),
+        ],
+        FakeOpts {
+            done_gap_ms: 250,
+            ..FakeOpts::default()
+        },
+    );
     std::fs::write(world.env.work().join("notes.md"), "the secret word is OMEGA-42\n")
         .expect("write the notes");
 
@@ -441,6 +447,11 @@ fn fullscreen_daily_driver_flow() {
         step(
             "tool and reply",
             &["ALPHA last line."],
+            typed("/export alpha-idle.html", &["enter"]),
+        ),
+        step(
+            "alpha settled",
+            &["Exported the session to", "alpha-idle.html"],
             typed("/model", &["enter"]),
         ),
         // The model selector lists the engine's model; Enter on the current one closes it.
@@ -454,7 +465,16 @@ fn fullscreen_daily_driver_flow() {
             &["ALPHA last line."],
             typed("second question", &["enter"]),
         ),
-        step("second reply", &["BETA answer."], typed("/tree", &["enter"])),
+        step(
+            "second reply",
+            &["BETA answer."],
+            typed("/export beta-idle.html", &["enter"]),
+        ),
+        step(
+            "second reply settled",
+            &["Exported the session to", "beta-idle.html"],
+            typed("/tree", &["enter"]),
+        ),
         // The navigator opens on the leaf (the BETA reply); Up selects the user message.
         step("tree open", TREE_OPEN_WAIT, vec![key("up"), key("enter")]),
         // pi's question before the leaf moves; Enter = no summary.
@@ -469,14 +489,32 @@ fn fullscreen_daily_driver_flow() {
             &["Navigated to selected point", "second question"],
             vec![key("enter")],
         ),
-        step("branch reply", &["GAMMA answer."], typed("/new", &["enter"])),
+        step(
+            "branch reply",
+            &["GAMMA answer."],
+            typed("/export gamma-idle.html", &["enter"]),
+        ),
+        step(
+            "branch reply settled",
+            &["Exported the session to", "gamma-idle.html"],
+            typed("/new", &["enter"]),
+        ),
         // A fresh session: the old transcript is gone from the screen, the header is back.
         step(
             "new session",
             &["New session started"],
             typed("fresh start", &["enter"]),
         ),
-        step("fresh reply", &["DELTA answer."], typed("/resume", &["enter"])),
+        step(
+            "fresh reply",
+            &["DELTA answer."],
+            typed("/export delta-idle.html", &["enter"]),
+        ),
+        step(
+            "fresh reply settled",
+            &["Exported the session to", "delta-idle.html"],
+            typed("/resume", &["enter"]),
+        ),
         // The picker lists both sessions of this directory; search for the first and open it.
         step("picker", &["read the notes", "fresh start"], typed("notes", &[])),
         step("picker filtered", &["notes"], vec![key("enter")]),
@@ -645,18 +683,37 @@ fn regular_mode_flow() {
 /// the custom prompt goes back to the question; the user message refills the editor.
 #[test]
 fn tree_navigator_follows_pis_dialog_rules() {
-    let world = World::new(vec![
-        ScriptTurn::text("ONE answer."),
-        ScriptTurn::text("TWO answer."),
-    ]);
+    let world = World::with(
+        vec![ScriptTurn::text("ONE answer."), ScriptTurn::text("TWO answer.")],
+        FakeOpts {
+            done_gap_ms: 250,
+            ..FakeOpts::default()
+        },
+    );
     let steps = vec![
         step("open", &["oxa v"], typed("first question", &["enter"])),
+        // Reply text can precede [DONE]. HTML export is a read-only worker fence:
+        // its notice follows AgentSettled in the same FIFO, without adding a tree entry.
         step(
             "first reply",
             &["ONE answer."],
+            typed("/export first-idle.html", &["enter"]),
+        ),
+        step(
+            "first run idle",
+            &["Exported the session to", "first-idle.html"],
             typed("second question", &["enter"]),
         ),
-        step("second reply", &["TWO answer."], typed("/tree", &["enter"])),
+        step(
+            "second reply",
+            &["TWO answer."],
+            typed("/export second-idle.html", &["enter"]),
+        ),
+        step(
+            "second run idle",
+            &["Exported the session to", "second-idle.html"],
+            typed("/tree", &["enter"]),
+        ),
         // The selection starts at the leaf (the TWO reply): Enter there moves nothing.
         step(
             "tree on the leaf",
@@ -806,16 +863,33 @@ fn dropped_image_path_is_attached() {
 #[test]
 fn controls_are_rebound_to_the_new_session() {
     let hold_ms = 20_000;
-    let world = World::new(vec![
-        ScriptTurn::text("ALPHA answer."),
-        ScriptTurn {
-            fault: Some(Fault::HoldHeaders { ms: hold_ms }),
-            ..ScriptTurn::text("LATE answer.")
+    let world = World::with(
+        vec![
+            ScriptTurn::text("ALPHA answer."),
+            ScriptTurn {
+                fault: Some(Fault::HoldHeaders { ms: hold_ms }),
+                ..ScriptTurn::text("LATE answer.")
+            },
+        ],
+        FakeOpts {
+            done_gap_ms: 250,
+            ..FakeOpts::default()
         },
-    ]);
+    );
     let steps = vec![
         step("open", &["oxa v"], typed("first", &["enter"])),
-        step("first reply", &["ALPHA answer."], typed("/new", &["enter"])),
+        // A final content delta does not mean the worker is idle. The queued,
+        // read-only export notice proves AgentSettled has reached the UI first.
+        step(
+            "first reply",
+            &["ALPHA answer."],
+            typed("/export controls-idle.html", &["enter"]),
+        ),
+        step(
+            "first run idle",
+            &["Exported the session to", "controls-idle.html"],
+            typed("/new", &["enter"]),
+        ),
         step(
             "new session",
             &["New session started"],
