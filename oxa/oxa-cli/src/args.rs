@@ -458,19 +458,24 @@ fn positional(a: &mut Args, word: &str) {
 /// `unsupported_in_oxa`.
 pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaError> {
     let mut a = Args::default();
-    if let Some(first) = argv.first() {
-        if !first.starts_with('-') && !first.starts_with('@') {
-            if let Some(sub) = subcommand(first, &argv[1..])? {
-                a.subcommand = Some(sub);
-                return Ok(a);
-            }
-        }
-    }
     let mut i = 0;
     let mut stop = false;
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
+        if !stop
+            && !a.print
+            && a.mode.is_none()
+            && !arg.starts_with('-')
+            && !arg.starts_with('@')
+            && a.messages.is_empty()
+            && a.files.is_empty()
+        {
+            if let Some(sub) = subcommand(arg, &argv[i..])? {
+                a.subcommand = Some(sub);
+                break;
+            }
+        }
         if stop || !arg.starts_with('-') {
             positional(&mut a, arg);
             continue;

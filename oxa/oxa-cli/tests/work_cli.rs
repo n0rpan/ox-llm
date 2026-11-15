@@ -268,3 +268,85 @@ fn offline_issue_input_never_spawns_gh() {
         assert!(String::from_utf8_lossy(&out.stderr).contains("offline"));
     }
 }
+
+#[test]
+fn command_line_offline_policy_reaches_child_agent() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"cloud-model","prompt":"go"}]"#,
+    );
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("done")],
+        FakeOpts {
+            model: "cloud-model".into(),
+            remote: Some("openrouter"),
+            models: vec![oxa_fake::FakeModel {
+                alias: "cloud-model".into(),
+                cap: 64000,
+                max_output: Some(4096),
+                caps: None,
+            }],
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["--offline", "work", "../tasks.json"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .output()
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(
+        record["detail"].as_str().unwrap().contains("offline mode is on"),
+        "{record}"
+    );
+    assert!(
+        server.requests().is_empty(),
+        "no chat reached even the mock remote"
+    );
+}
+#[test]
+fn batch_reports_one_task_error_and_runs_later_tasks() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write("work/project/.git/oxa-work/test.json", "{}");
+    env.write("work/tasks.json", r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"go"},{"id":"next","branch":"agent/next","model":"fake","prompt":"go"}]"#);
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["outcome"], "blocked");
+    assert_eq!(rows[1]["outcome"], "nothing_to_do");
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("project/.git/oxa-work/test.json")).unwrap(),
+        "{}"
+    );
+}
+#[test]
+fn abandoned_lock_file_does_not_block_a_task() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write("work/project/.git/oxa-work/test.lock", "");
+    let record = run(&env, vec![ScriptTurn::text("done")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+}
