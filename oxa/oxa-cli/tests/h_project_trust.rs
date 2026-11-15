@@ -118,3 +118,28 @@ fn not_fired_without_gated_resources() {
         "nothing to trust: no event"
     );
 }
+
+/// #201 (3): a project trusted by a saved decision, with no project config when a session
+/// starts, gets its (empty) approval recorded at that start. `.oxa` content the session's tools
+/// then create is new at the next start and needs the normal approval instead of being taken
+/// as the project's first record.
+#[test]
+fn config_created_during_a_session_is_not_auto_approved_next_start() {
+    let env = TestEnv::new();
+    let trust = env.agent_dir().join("trust.json");
+    let mut store = oxa_perm::TrustStore::load(&trust);
+    store.save(&trust, &env.work(), true).expect("save trust");
+    let (code, err) = go(&env);
+    assert_eq!(code, 0, "{err}");
+    // What a tool of that session wrote (the sandbox leaves `.oxa` writable on purpose).
+    env.write("work/.oxa/settings.json", r#"{"done": ["echo planted"]}"#);
+    let (code, err) = go(&env);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("Project config not loaded"), "{err}");
+    assert!(err.contains("settings.json"), "{err}");
+    let store = oxa_perm::TrustStore::load(&trust);
+    assert!(
+        matches!(store.approval(&env.work()), oxa_perm::Approval::Changed(_)),
+        "the planted file is still not approved"
+    );
+}
