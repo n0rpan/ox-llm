@@ -18,6 +18,10 @@ unfinished responses are canceled. Timeouts measure stalled operations rather
 than total generation time. `serve` is an untimed convenience for controlled
 connections; network callers should use `serve_with_timeout` with a finite limit.
 HTTP/1.1 is the current controller protocol; no legacy serving path is exposed.
+Response transfer-coding tokens are case insensitive; Transfer-Encoding removes
+Content-Length. HTTP/1.0 streams use close delimiting without chunk framing;
+other transfer codings on HTTP/1.0 and invalid chunk-coding order close without
+emitting the malformed handler response.
 
 ```sh
 cargo test --locked --manifest-path oxc-rs/Cargo.toml --all-features
