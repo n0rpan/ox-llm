@@ -19,7 +19,10 @@ pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dy
 /// outside the sandbox, with a short timeout. Any failure (no `gh`, not logged in, slow) is
 /// `None`. The token is never logged.
 fn gh_token() -> Option<String> {
-    let exe = trusted_gh(std::env::var_os("PATH").as_deref(), std::env::current_dir().ok().as_deref())?;
+    let exe = trusted_gh(
+        std::env::var_os("PATH").as_deref(),
+        std::env::current_dir().ok().as_deref(),
+    )?;
     gh_token_from(&exe, GH_DEADLINE)
 }
 
@@ -79,9 +82,7 @@ fn trusted_gh(path: Option<&std::ffi::OsStr>, cwd: Option<&Path>) -> Option<std:
                 && std::fs::metadata(&dc).is_ok_and(|m| m.permissions().mode() & 0o022 == 0)
         })
         .map(|d| d.join("gh"))
-        .find(|p| {
-            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
+        .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
 /// The setting that allows an engine host that is not loopback (P3). Read from the user's
@@ -155,7 +156,11 @@ mod tests {
         let gh = script(&d, "gh", "(sleep 6 >&1 &)\necho SYNTH_TOKEN; exit 0");
         let t = std::time::Instant::now();
         let r = gh_token_from(&gh, std::time::Duration::from_millis(1500));
-        assert!(t.elapsed() < std::time::Duration::from_secs(3), "blocked {:?}", t.elapsed());
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(3),
+            "blocked {:?}",
+            t.elapsed()
+        );
         assert!(r.is_none() || r.as_deref() == Some("SYNTH_TOKEN"));
     }
 

@@ -132,10 +132,56 @@ pub(crate) fn bwrap_args_homes(
         && gh_source_is_safe(&gh_src, &[home, &home_c], real_home, real_c.as_deref(), layout)
         && !std::fs::symlink_metadata(gh_src.join(GH_HOSTS)).is_ok_and(|m| m.file_type().is_symlink());
     if gh_open {
-        push(&mut a, &["--ro-bind", &gh_src.to_string_lossy(), &gh.to_string_lossy()]);
+        push(
+            &mut a,
+            &["--ro-bind", &gh_src.to_string_lossy(), &gh.to_string_lossy()],
+        );
         // An empty, readable regular file (gh fails on `/dev/null` here: permission denied).
         if let (true, Some(e)) = (gh_src.join(GH_HOSTS).exists(), &gh_empty) {
-            push(&mut a, &["--ro-bind", &e.to_string_lossy(), &gh.join(GH_HOSTS).to_string_lossy()]);
+            push(
+                &mut a,
+                &[
+                    "--ro-bind",
+                    &e.to_string_lossy(),
+                    &gh.join(GH_HOSTS).to_string_lossy(),
+                ],
+            );
+            // The same token store at every other visible path of the source (a symlinked
+            // config dir inside the cwd, a home workspace entry, another bind, or a place the
+            // read-only root shows): the empty file goes over each, after the bind showing it.
+            let mut aliases: Vec<PathBuf> = Vec::new();
+            if gh_src != gh {
+                let hidden_home = |p: &Path| {
+                    p.starts_with(home)
+                        || p.starts_with(&home_c)
+                        || real_c.as_ref().is_some_and(|r| p.starts_with(r))
+                };
+                if !hidden_home(&gh_src) {
+                    aliases.push(gh_src.clone());
+                }
+                let via = home_entries
+                    .iter()
+                    .map(|p| (p.clone(), canon(p)))
+                    .chain(binds.iter().map(|(b, _)| (b.to_path_buf(), canon(b))));
+                for (dest, src) in via {
+                    if let Ok(rest) = gh_src.strip_prefix(&src) {
+                        aliases.push(dest.join(rest));
+                    }
+                }
+                aliases.sort();
+                aliases.dedup();
+                aliases.retain(|p| *p != gh);
+            }
+            for al in aliases {
+                push(
+                    &mut a,
+                    &[
+                        "--ro-bind",
+                        &e.to_string_lossy(),
+                        &al.join(GH_HOSTS).to_string_lossy(),
+                    ],
+                );
+            }
         }
     }
     // sbx-git: the git data of a worktree or shared clone outside the cwd (resolved once when
@@ -353,7 +399,11 @@ fn private_empty_file() -> Option<PathBuf> {
         return None;
     }
     let f = dir.join("empty");
-    let _ = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o444).open(&f);
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o444)
+        .open(&f);
     let fm = std::fs::symlink_metadata(&f).ok()?;
     (fm.is_file() && fm.uid() == uid && fm.len() == 0 && fm.permissions().mode() & 0o222 == 0).then_some(f)
 }
@@ -531,7 +581,12 @@ pub(crate) enum CwdMode {
 /// workspace, whatever the settings.
 /// [`cwd_mode`], but a cwd at or above the account's real home (under another `$HOME`) is the
 /// home root of that account: never writable as a whole (its startup files would be).
-pub(crate) fn effective_mode(s: &ExecSpec, home: &Path, layout: &Layout, real_home: Option<&Path>) -> CwdMode {
+pub(crate) fn effective_mode(
+    s: &ExecSpec,
+    home: &Path,
+    layout: &Layout,
+    real_home: Option<&Path>,
+) -> CwdMode {
     let home_c = canon(home);
     let cwd_c = canon(&s.cwd);
     let at_real_home = real_home
@@ -761,7 +816,8 @@ mod tests {
         sp.writable = true;
         let a = bwrap_args_homes(&sp, &env.home(), &Layout::default(), Some(&real));
         assert!(
-            !a.windows(3).any(|w| w[0] == "--bind" && w[1] == real_c && w[2] == real_c),
+            !a.windows(3)
+                .any(|w| w[0] == "--bind" && w[1] == real_c && w[2] == real_c),
             "the real home is bound writable: {a:?}"
         );
     }
@@ -785,8 +841,9 @@ mod tests {
 
     fn binds_src(a: &[String], p: &Path) -> bool {
         let p = p.to_string_lossy();
-        a.windows(3)
-            .any(|w| (w[0] == "--ro-bind" || w[0] == "--bind") && w[1] != "/dev/null" && (w[1] == p || w[2] == p))
+        a.windows(3).any(|w| {
+            (w[0] == "--ro-bind" || w[0] == "--bind") && w[1] != "/dev/null" && (w[1] == p || w[2] == p)
+        })
     }
 
     #[test]
@@ -807,7 +864,12 @@ mod tests {
         env.write("home/.config/gh2/x", "");
         let _ = std::fs::remove_file(&gh);
         std::os::unix::fs::symlink(real.join(".aws"), &gh).unwrap();
-        let on = bwrap_args_homes(&spec(&env.work(), true), &env.home(), &Layout::default(), Some(&real));
+        let on = bwrap_args_homes(
+            &spec(&env.work(), true),
+            &env.home(),
+            &Layout::default(),
+            Some(&real),
+        );
         assert!(!binds_src(&on, &gh), "{on:?}");
     }
 
@@ -821,13 +883,17 @@ mod tests {
         assert!(binds_src(&on, &gh), "{on:?}");
         let hy = gh.join("hosts.yml").to_string_lossy().into_owned();
         assert!(
-            on.windows(3).any(|w| w[0] == "--ro-bind" && w[1].ends_with("/empty") && w[2] == hy),
+            on.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1].ends_with("/empty") && w[2] == hy),
             "{on:?}"
         );
         assert!(!masked(&on, &gh.join("hosts.yml")), "never /dev/null: {on:?}");
         let ghs = gh.to_string_lossy().into_owned();
         let bind = on.iter().position(|x| *x == ghs).unwrap();
-        let mask = on.iter().position(|x| *x == gh.join("hosts.yml").to_string_lossy()).unwrap();
+        let mask = on
+            .iter()
+            .position(|x| *x == gh.join("hosts.yml").to_string_lossy())
+            .unwrap();
         assert!(bind < mask, "mask must come after the bind: {on:?}");
         let off = bwrap_args_homes(&spec(&env.work(), false), &env.home(), &Layout::default(), None);
         assert!(!binds_src(&off, &gh), "{off:?}");

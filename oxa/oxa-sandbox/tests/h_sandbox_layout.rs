@@ -738,7 +738,9 @@ fn real_gh_hosts_file_is_readable_empty_and_hides_the_token_store() {
     let env = TestEnv::new();
     env.write("home/.config/gh/hosts.yml", "SYNTH-HOST-TOKEN-SENTINEL");
     env.write("home/.config/gh/config.yml", "editor: synth-editor");
-    let Some(b) = real(&env, machine(&env)) else { return };
+    let Some(b) = real(&env, machine(&env)) else {
+        return;
+    };
     let mut sp = spec(
         "cat \"$HOME/.config/gh/hosts.yml\" && test -f \"$HOME/.config/gh/hosts.yml\" && echo REGULAR; cat \"$HOME/.config/gh/config.yml\"",
         &env.work(),
