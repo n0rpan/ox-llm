@@ -105,10 +105,13 @@ class FakeAuth:
         self.server.server_close()
 
 
-def multi_tool_events(completed_output):
+def multi_tool_events(completed_output, deltas='full'):
     """A subscription turn with three parallel tool calls, as the backend streams it: each
     call is announced with empty arguments, filled by deltas and closed by output_item.done;
-    with ``store: false`` the final response.completed carries ``completed_output``."""
+    with ``store: false`` the final response.completed carries ``completed_output``.
+    ``deltas``: ``full`` = all arguments as deltas plus function_call_arguments.done;
+    ``partial`` = only the first half as a delta, then .done; ``none`` = no argument events
+    at all, the arguments arrive only in output_item.done (#450)."""
     reasoning = {'type': 'reasoning', 'id': 'rs_1', 'summary': [], 'encrypted_content': 'opaque-synthetic'}
     calls = [{'type': 'function_call', 'id': 'fc_%d' % n, 'call_id': 'call_%d' % n, 'name': name,
               'arguments': args, 'status': 'completed'}
@@ -122,11 +125,14 @@ def multi_tool_events(completed_output):
         events.append({'type': 'response.output_item.added', 'output_index': index,
                        'item': dict(call, arguments='', status='in_progress')})
         half = len(call['arguments']) // 2
-        for piece in (call['arguments'][:half], call['arguments'][half:]):
+        pieces = {'full': (call['arguments'][:half], call['arguments'][half:]),
+                  'partial': (call['arguments'][:half],), 'none': ()}[deltas]
+        for piece in pieces:
             events.append({'type': 'response.function_call_arguments.delta', 'output_index': index,
                            'item_id': call['id'], 'delta': piece})
-        events.append({'type': 'response.function_call_arguments.done', 'output_index': index,
-                       'item_id': call['id'], 'arguments': call['arguments']})
+        if deltas != 'none':
+            events.append({'type': 'response.function_call_arguments.done', 'output_index': index,
+                           'item_id': call['id'], 'arguments': call['arguments']})
         events.append({'type': 'response.output_item.done', 'output_index': index, 'item': call})
     output = [reasoning] + calls if completed_output else []
     events.append({'type': 'response.completed', 'response': {
@@ -331,11 +337,13 @@ class Subscription(Base):
 
     def test_streamed_multi_tool_turn_continues(self):
         # #450: several tool calls in one streamed turn, then the continuation request.
-        for completed_output, stream in ((True, True), (False, True), (False, False)):
-            with self.subTest(completed_output=completed_output, stream=stream):
+        cases = [(c, s, d) for d in ('full', 'partial', 'none')
+                 for c, s in ((True, True), (False, True), (False, False))]
+        for completed_output, stream, deltas in cases:
+            with self.subTest(completed_output=completed_output, stream=stream, deltas=deltas):
                 self.sign_in()
                 self.start()
-                events, reasoning, calls = multi_tool_events(completed_output)
+                events, reasoning, calls = multi_tool_events(completed_output, deltas)
                 self.backend.events = events
                 tools = [{'type': 'function', 'function': {'name': n, 'parameters': {'type': 'object'}}}
                          for n in ('bash', 'read')]

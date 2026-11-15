@@ -645,9 +645,10 @@ class ResponsesMultiTool(CloudCase):
     def test_streamed_multi_tool_turn_continues_on_the_api_key_path(self):
         # #450: the same multi-call turn on the API-key Responses path, both final shapes.
         from test_cloud_chatgpt import assemble, multi_tool_events
-        for completed_output in (True, False):
-            with self.subTest(completed_output=completed_output):
-                events, reasoning, calls = multi_tool_events(completed_output)
+        cases = [(c, d) for c in (True, False) for d in ('full', 'partial', 'none')]
+        for completed_output, deltas in cases:
+            with self.subTest(completed_output=completed_output, deltas=deltas):
+                events, reasoning, calls = multi_tool_events(completed_output, deltas)
                 upstream = MockOpenAIResponses(events=events)
                 self.addCleanup(upstream.close)
                 self.start(mock=upstream, models=models('gpt-6.1-sol'))
@@ -657,7 +658,10 @@ class ResponsesMultiTool(CloudCase):
                 status, body = self.call('POST', '/v1/chat/completions', {
                     'model': REMOTE, 'messages': history, 'tools': tools, 'stream': True})
                 self.assertEqual(status, 200, body)
-                history += [assemble(body)] + [{'role': 'tool', 'tool_call_id': c['call_id'],
+                assistant = assemble(body)
+                self.assertEqual([(c['id'], c['function']['arguments']) for c in assistant['tool_calls']],
+                                 [(c['call_id'], c['arguments']) for c in calls])
+                history += [assistant] + [{'role': 'tool', 'tool_call_id': c['call_id'],
                                                 'content': 'ok'} for c in calls]
                 upstream.events = None
                 status, body = self.call('POST', '/v1/chat/completions', {

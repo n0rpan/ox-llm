@@ -415,6 +415,7 @@ class ResponsesStream:
         self.parser = cloud.SSEDecoder()
         self.slots = {}
         self.items = {}
+        self.sent = {}  # output index -> arguments already forwarded to the client
         self.done = False
         self.failed = False
 
@@ -432,6 +433,19 @@ class ResponsesStream:
         except (ValueError, KeyError, TypeError, AttributeError):
             raise cloud.CloudError('Invalid OpenAI stream event.', 502, 'cloud_stream_error') from None
 
+    def _complete(self, index, arguments):
+        """Forward the part of a call's final arguments the deltas did not carry (#450): the
+        backend may send no argument deltas and put the arguments only in the done events,
+        while the continuation cache stores the full arguments."""
+        sent = self.sent.get(index, '')
+        if index not in self.slots or not isinstance(arguments, str) or not arguments.startswith(sent):
+            return b''
+        rest = arguments[len(sent):]
+        if not rest:
+            return b''
+        self.sent[index] = arguments
+        return self._wire({'tool_calls': [{'index': self.slots[index], 'function': {'arguments': rest}}]})
+
     def _translate(self, value):
         kind = value.get('type')
         if self.done:
@@ -447,10 +461,16 @@ class ResponsesStream:
                     'type': 'function', 'function': {'name': part['name'], 'arguments': ''}}]})
         if kind == 'response.output_item.done':
             self.items[value['output_index']] = value['item']
+            if value['item'].get('type') == 'function_call':
+                return self._complete(value['output_index'], value['item'].get('arguments'))
             return b''
         if kind == 'response.function_call_arguments.delta':
-            return self._wire({'tool_calls': [{'index': self.slots[value['output_index']],
+            index = value['output_index']
+            self.sent[index] = self.sent.get(index, '') + value['delta']
+            return self._wire({'tool_calls': [{'index': self.slots[index],
                                               'function': {'arguments': value['delta']}}]})
+        if kind == 'response.function_call_arguments.done':
+            return self._complete(value['output_index'], value.get('arguments'))
         if kind in ('response.output_text.delta', 'response.refusal.delta',
                     'response.reasoning_summary_text.delta'):
             field = {'response.output_text.delta': 'content', 'response.refusal.delta': 'refusal',
