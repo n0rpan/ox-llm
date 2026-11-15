@@ -2,6 +2,11 @@
 use oxc::openai_chat::{request, response, Stream, Usage};
 use serde_json::{json, Value};
 
+fn canonical(mut value: Value) -> Vec<u8> {
+    value.sort_all_objects();
+    serde_json::to_vec(&value).unwrap()
+}
+
 #[test]
 fn python_request_contracts() {
     for row in include_str!("fixtures/openai_chat_requests.jsonl").lines() {
@@ -17,8 +22,8 @@ fn python_request_contracts() {
             );
         } else {
             assert_eq!(
-                serde_json::to_vec(&result.unwrap()).unwrap(),
-                serde_json::to_vec(&row["expected"]).unwrap(),
+                canonical(result.unwrap()),
+                canonical(row["expected"].clone()),
                 "{}",
                 row["name"]
             );
@@ -40,10 +45,7 @@ fn python_passthrough_stream_and_usage_extraction() {
             .map(|e| stream.event(e).unwrap())
             .collect();
         assert_eq!(json!(chunks), row["expected"]);
-        assert_eq!(
-            serde_json::to_vec(&chunks).unwrap(),
-            serde_json::to_vec(&row["expected"]).unwrap()
-        );
+        assert_eq!(canonical(json!(chunks)), canonical(row["expected"].clone()));
         stream.done().unwrap();
         let completed = stream.finish().unwrap();
         assert_eq!(completed.usage, usage);

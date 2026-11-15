@@ -176,6 +176,32 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
     );
 }
 
+/// #280 / review of #302: no bash command, git included, may write the project's `.oxa` or
+/// `.agents/skills`: git can be made to run programs or check out content the model wrote.
+#[test]
+fn git_commands_keep_oxa_and_skills_read_only() {
+    let env = TestEnv::new();
+    let l = machine(&env);
+    env.write("work/.oxa/settings.json", "{}");
+    env.write("work/.agents/skills/x/SKILL.md", "");
+    for cmd in [
+        "git pull",
+        "git pull --upload-pack=./p.sh .",
+        "git merge -s evil main",
+        "git checkout abc123 -- .oxa/extensions/x.js",
+        "git rebase --exec evil main",
+    ] {
+        let a = bwrap_args_with(&spec(cmd, &env.work(), true), &env.home(), &l);
+        for p in [".oxa", ".agents/skills"] {
+            let want = env.work().join(p).display().to_string();
+            assert!(
+                a.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == want),
+                "{cmd}: {p}"
+            );
+        }
+    }
+}
+
 #[test]
 fn golden_project_cwd() {
     let env = TestEnv::new();
@@ -851,4 +877,33 @@ fn real_gh_hosts_file_is_readable_empty_and_hides_the_token_store() {
         std::fs::read_to_string(env.home().join(".config/gh/hosts.yml")).unwrap(),
         "SYNTH-HOST-TOKEN-SENTINEL"
     );
+}
+
+/// #250: mise shims (`gh`, `claude`, ...) write their cache and tracked-config state; those
+/// directories are writable when they exist, so the shim does not fail on a read-only home.
+#[test]
+fn mise_cache_and_state_are_writable() {
+    let env = TestEnv::new();
+    env.write("home/.cache/mise/gh/keep", "");
+    env.write("home/.local/state/mise/tracked-configs/keep", "");
+    env.write("home/.local/state/mise/trusted-configs/keep", "");
+    let home = env.home();
+    let l = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin".into(),
+        env: Vec::new(),
+        read_extra: Vec::new(),
+        write_extra: Vec::new(),
+        allow_home_write: false,
+    });
+    assert!(l.write.contains(&home.join(".cache/mise")), "{:?}", l.write);
+    assert!(
+        l.write.contains(&home.join(".local/state/mise/tracked-configs")),
+        "{:?}",
+        l.write
+    );
+    // Trust records stay unwritable: no writable bind may be, or contain, `trusted-configs`.
+    let trusted = home.join(".local/state/mise/trusted-configs");
+    assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
 }
