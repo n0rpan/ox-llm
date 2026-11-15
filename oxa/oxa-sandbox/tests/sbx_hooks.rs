@@ -11,6 +11,10 @@
 //!
 //! Isolation: every path lives under `oxa_fake::TestEnv`; git runs with no global config.
 
+mod common {
+    pub mod host_watch;
+}
+use common::host_watch::HostWatch;
 use oxa_fake::TestEnv;
 use oxa_proto::{CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::{bwrap_args_with, resolve_git_binds, Bwrap, Layout};
@@ -474,8 +478,14 @@ fn sandbox(env: &TestEnv, cwd: &Path) -> Option<Bwrap> {
     detect(env).map(|b| b.with_git_dirs(cwd))
 }
 
+/// Runs `command`; #318: no entry appears in (or vanishes from) the fake home or the cwd's
+/// ancestors on the host while it runs, also not for a moment.
 fn run(b: &Bwrap, command: &str, cwd: &Path, writable: bool) -> (Option<i32>, String) {
+    let root = b.home.parent().expect("home below the test root");
+    let watch = HostWatch::new(root, &b.home, cwd);
     let r = b.run(&spec(command, cwd, writable), &CancelToken::new(), &mut |_| {});
+    let changed = watch.finish();
+    assert!(changed.is_empty(), "`{command}` touched the host: {changed:?}");
     (r.exit, String::from_utf8_lossy(&r.output).into_owned())
 }
 

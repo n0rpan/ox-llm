@@ -78,6 +78,9 @@ pub const TOOLCHAIN_READ: &[&str] = &[
 pub const CACHE_WRITE: &[&str] = &[
     ".cargo/registry",
     ".cargo/git",
+    ".cache/mise",
+    // Only `tracked-configs`: `trusted-configs` (trust records) must stay read-only.
+    ".local/state/mise/tracked-configs",
     ".cache/pip",
     ".cache/uv",
     ".cache/go-build",
