@@ -51,17 +51,28 @@ impl PermissionMode {
     }
 }
 
-/// Operator registration, never a property learned from an agent card. The
-/// caller must establish that this route cannot forward to a paid/cloud model.
-/// Literal loopback by itself does not establish that guarantee.
+/// Operator registration, never a property learned from an agent card.
+/// The public local constructor requires the caller to establish that the route
+/// cannot forward to paid inference; literal loopback alone is insufficient.
+/// It always launches offline. The historical type name is retained
+/// for API compatibility; only private operator profiles can grant a gateway.
 #[derive(Clone, Debug)]
 pub struct LocalInference {
     address: SocketAddr,
     model: String,
+    local_only: bool,
 }
 
 impl LocalInference {
     pub fn register_verified_local(address: SocketAddr, model: String) -> io::Result<Self> {
+        Self::validate_route(address, &model)?;
+        Ok(Self {
+            address,
+            model,
+            local_only: true,
+        })
+    }
+    pub(crate) fn validate_route(address: SocketAddr, model: &str) -> io::Result<()> {
         if !address.ip().is_loopback()
             || address.port() == 0
             || model.is_empty()
@@ -70,7 +81,19 @@ impl LocalInference {
         {
             return Err(invalid("invalid verified local inference route"));
         }
-        Ok(Self { address, model })
+        Ok(())
+    }
+    #[cfg(feature = "interactive-control")]
+    pub(crate) fn register_operator_gateway(address: SocketAddr, model: String) -> io::Result<Self> {
+        if oxa_proto::offline() {
+            return Err(invalid("offline mode refuses cloud worker inference"));
+        }
+        Self::validate_route(address, &model)?;
+        Ok(Self {
+            address,
+            model,
+            local_only: false,
+        })
     }
 }
 
@@ -519,6 +542,7 @@ pub(crate) fn run_with_workspaces(
                 settings.mode.as_str(),
                 spec.budget.output_bytes,
                 workspace.as_ref(),
+                spec.inference.local_only,
             ) {
                 Ok(mut process) => {
                     let queued = process.queue(&json!({"id":"check","type":"get_state"}));
@@ -936,6 +960,7 @@ impl SessionWorker {
             settings.mode.as_str(),
             spec.budget.output_bytes,
             workspace.as_ref(),
+            spec.inference.local_only,
         )?;
         process.queue(&json!({"id":"check","type":"get_state"}))?;
         journal.record(Some(&spec.id), "spawned", json!({"processId":process.pid()}))?;
@@ -1106,6 +1131,10 @@ pub(crate) fn validate(settings: &RunSettings, plan: &[WorkerSpec]) -> io::Resul
     let mut bytes = 0usize;
     let mut tokens = 0u64;
     for worker in plan {
+        #[cfg(feature = "interactive-control")]
+        if !worker.inference.local_only && oxa_proto::offline() {
+            return Err(invalid("offline mode refuses cloud worker inference"));
+        }
         if !valid_id(&worker.id)
             || !ids.insert(&worker.id)
             || worker.role.is_empty()
