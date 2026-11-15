@@ -29,9 +29,19 @@ def config(name):
              'base_url': 'http://127.0.0.1:1/v1', 'context_window': 64000,
              'max_output': 512, 'name': 'Synthetic cloud model'}
     if name == 'router':
-        model.update(context_window=64000.5, max_output=512.9)
+        model.update(context_window=64000.5, max_output=512.9,
+                     pricing={'input': 1, 'output': 2, 'cache_read_per_million': .1,
+                              'cache_write_per_million': 1.25})
     if name == 'anthropic':
         model.update(provider=0, upstream_model=0, upstream='synthetic/upstream')
+    if name == 'openai':
+        model['pricing'] = {'input': 1, 'output': 2, 'cache_read_per_million': .1,
+                            'cache_write_per_million': 1.25,
+                            'tiers': [{'max_prompt_tokens': 100}, {'max_prompt_tokens': None}]}
+    if name == 'invalid-entries':
+        model['pricing'] = {'input': 1, 'output': 2, 'cache_read_per_million': .1,
+                            'cache_write_per_million': 1.25,
+                            'tiers': [{'max_prompt_tokens': True}, {'max_prompt_tokens': None}]}
     value = {'cloud_only': True, 'cloud': {'enabled': name != 'disabled',
              'daily_budget_usd': 1, 'models': {'synthetic-cloud': model}}}
     if name == 'default-off':

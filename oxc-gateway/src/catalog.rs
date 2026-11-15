@@ -12,6 +12,7 @@ struct Model {
     name: String,
     context: Value,
     output: Value,
+    cache_pricing: &'static str,
 }
 
 fn positive(value: &Value) -> Option<Value> {
@@ -39,6 +40,57 @@ fn truth(value: &Value) -> bool {
         Value::String(value) => !value.is_empty(),
         Value::Array(value) => !value.is_empty(),
         Value::Object(value) => !value.is_empty(),
+    }
+}
+
+// Discovery needs only the classification, not settlement arithmetic. Invalid
+// prices must not claim explicit cache rates merely because both keys exist.
+fn cache_pricing(provider: &str, raw: &Value) -> &'static str {
+    let explicit = || -> Option<()> {
+        let price = raw["pricing"].as_object()?;
+        let levels = match price.get("tiers") {
+            None => vec![&raw["pricing"]],
+            Some(Value::Array(tiers)) if (1..=64).contains(&tiers.len()) => tiers.iter().collect(),
+            _ => return None,
+        };
+        let mut previous = 0;
+        for (index, level) in levels.iter().enumerate() {
+            let mut merged = price.clone();
+            merged.extend(level.as_object()?.clone());
+            for (name, alias) in [
+                ("input_per_million", "input"),
+                ("output_per_million", "output"),
+                ("cache_read_per_million", "cache_read_per_million"),
+                ("cache_write_per_million", "cache_write_per_million"),
+            ] {
+                let number = merged.get(name).or_else(|| merged.get(alias))?.as_f64()?;
+                if !(0.0..=1e12).contains(&number) {
+                    return None;
+                }
+            }
+            if price.contains_key("tiers") {
+                let bound = &level["max_prompt_tokens"];
+                if index == levels.len() - 1 {
+                    if !bound.is_null() {
+                        return None;
+                    }
+                } else {
+                    let bound = bound.as_u64()?;
+                    if bound <= previous || bound > 100_000_000 {
+                        return None;
+                    }
+                    previous = bound;
+                }
+            }
+        }
+        Some(())
+    };
+    if explicit().is_some() {
+        "explicit"
+    } else if provider == "anthropic" {
+        "provider_default"
+    } else {
+        "conservative"
     }
 }
 
@@ -100,10 +152,11 @@ impl Model {
             name: raw["name"].as_str().unwrap_or(alias).into(),
             context,
             output: output.unwrap_or(Value::Null),
+            cache_pricing: cache_pricing(provider, raw),
         })
     }
     fn capabilities(&self) -> Value {
-        json!({"remote":true,"remote_provider":self.provider,"echo":false,
+        json!({"cache_pricing":self.cache_pricing,"remote":true,"remote_provider":self.provider,"echo":false,
             "cache_hints":false,"cancel":self.provider!="openai","prefill":false,
             "preserve_thinking":false,"context_window":self.context})
     }
