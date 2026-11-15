@@ -26,6 +26,8 @@ pub mod deny_reasons {
 pub struct PathGuard {
     deny: Vec<PathBuf>,
     allow: Vec<PathBuf>,
+    /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
+    read_allow: Vec<PathBuf>,
     /// The home directory and its startup files, keys and agent settings
     /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
     /// directory or above it (O-199 first run: oxa started in `$HOME`).
@@ -61,6 +63,7 @@ impl PathGuard {
         PathGuard {
             deny,
             allow: vec![tmp_dir.to_path_buf()],
+            read_allow: vec![agent_dir.join("builtin-skills")],
             home: home.to_path_buf(),
             home_protected,
         }
@@ -80,6 +83,11 @@ impl PathGuard {
     /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
     pub fn denies(&self, p: &Path) -> bool {
         self.deny.iter().any(|d| is_inside(p, d)) && !self.allow.iter().any(|a| is_inside(p, a))
+    }
+
+    /// Like [`PathGuard::denies`] for a read: the built-in skills are readable.
+    pub fn denies_read(&self, p: &Path) -> bool {
+        self.denies(p) && !self.read_allow.iter().any(|a| is_inside(p, a))
     }
 }
 
@@ -315,7 +323,11 @@ impl ModePolicy {
         if let Access::Read(p) | Access::Write(p) = a {
             let abs = crate::paths::normalize(p, cwd);
             // B3: the deny-list beats the mode, the cwd and every grant.
-            if self.guard.denies(&abs) {
+            let denied = match a {
+                Access::Read(_) => self.guard.denies_read(&abs),
+                _ => self.guard.denies(&abs),
+            };
+            if denied {
                 return Some(Decision::Deny(deny_reasons::SENSITIVE));
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.

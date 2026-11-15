@@ -71,6 +71,33 @@ pub fn choose_mode(a: &Args, stdin_is_tty: bool, stdout_is_tty: bool) -> RunMode
 
 pub(crate) const USAGE_HINT: &str = "Run `oxa --help` for the list of options.";
 
+fn headless_argument_error(argv: &[String], stdin_tty: bool, stdout_tty: bool) -> bool {
+    let standalone = parse_args(&argv[..argv.len().min(1)], &[])
+        .ok()
+        .is_some_and(|args| args.subcommand.is_some());
+    let flags: Vec<&str> = argv
+        .iter()
+        .map(String::as_str)
+        .take_while(|arg| *arg != "--")
+        .collect();
+    let single_action = flags.iter().any(|arg| {
+        ["--export", "--list-models", "--help", "-h", "--version", "-v"]
+            .iter()
+            .any(|flag| *arg == *flag || arg.starts_with(&format!("{flag}=")))
+    });
+    if standalone || single_action {
+        return false;
+    }
+    !stdin_tty
+        || !stdout_tty
+        || flags
+            .iter()
+            .any(|arg| matches!(*arg, "-p" | "--print" | "--mode=rpc" | "--mode=json"))
+        || flags
+            .windows(2)
+            .any(|pair| pair[0] == "--mode" && matches!(pair[1], "rpc" | "json"))
+}
+
 /// The whole program. Returns the exit code; never panics on user error.
 ///
 /// Order: parse args (two passes for extension flags) -> `--help` / `--version` ->
@@ -93,11 +120,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     let a = match parse_args(argv, &[]) {
         Ok(a) => a,
         Err(e) => {
-            let headless = !stdin_is_tty
-                || !stdout_is_tty
-                || argv
-                    .iter()
-                    .any(|arg| matches!(arg.as_str(), "-p" | "--print" | "rpc" | "json"));
+            let headless = headless_argument_error(argv, stdin_is_tty, stdout_is_tty);
             return if headless {
                 finish_outcome(Err(e), &mut *stderr)
             } else {
