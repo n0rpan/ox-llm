@@ -309,6 +309,9 @@ impl Layout {
         for (k, v) in [
             ("MISE_CACHE_DIR", "/tmp/mise-cache"),
             ("MISE_STATE_DIR", "/tmp/mise-state"),
+            // #362: `gh run view` creates its cache under the read-only home. Throwaway /tmp,
+            // so nothing persists in the real home for an unsandboxed `gh` to read back.
+            ("GH_CACHE_DIR", "/tmp/gh-cache"),
             ("SCCACHE_DIR", "/tmp/sccache"),
         ] {
             if !env.iter().any(|(n, _)| n == k) {

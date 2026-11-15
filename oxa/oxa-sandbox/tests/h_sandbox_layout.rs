@@ -128,6 +128,9 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "CARGO_HOME",
         "<root>/home/.cargo",
         "--setenv",
+        "GH_CACHE_DIR",
+        "/tmp/gh-cache",
+        "--setenv",
         "MISE_CACHE_DIR",
         "/tmp/mise-cache",
         "--setenv",
@@ -178,6 +181,7 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
         names,
         vec![
             "CARGO_HOME",
+            "GH_CACHE_DIR",
             "MISE_CACHE_DIR",
             "MISE_DATA_DIR",
             "MISE_STATE_DIR",
@@ -919,4 +923,37 @@ fn mise_cache_and_state_are_writable() {
     // Trust records stay unwritable: no writable bind may be, or contain, `trusted-configs`.
     let trusted = home.join(".local/state/mise/trusted-configs");
     assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
+}
+
+/// #362: `gh` writes its cache to `GH_CACHE_DIR`; point it at the sandbox /tmp, never bind the
+/// real `~/.cache/gh`, never create host directories, and leave `XDG_CACHE_HOME` alone.
+#[test]
+fn gh_cache_dir_is_sandbox_tmp_and_host_untouched() {
+    let env = TestEnv::new();
+    let home = env.home();
+    let mk = |env: Vec<(String, String)>| {
+        Layout::build(&LayoutInputs {
+            home: home.clone(),
+            agent_dir: Some(env_agent(&env)),
+            path_var: "/usr/bin".into(),
+            env,
+            read_extra: Vec::new(),
+            write_extra: Vec::new(),
+            allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
+        })
+    };
+    fn env_agent(_: &[(String, String)]) -> PathBuf {
+        PathBuf::from("/nonexistent-agent")
+    }
+    let l = mk(Vec::new());
+    assert!(
+        l.env.contains(&("GH_CACHE_DIR".into(), "/tmp/gh-cache".into())),
+        "{:?}",
+        l.env
+    );
+    assert!(!l.env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"));
+    assert!(!l.write.contains(&home.join(".cache/gh")));
+    assert!(!home.join(".cache/gh").exists(), "build must not touch the host");
 }
