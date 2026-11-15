@@ -74,9 +74,10 @@ class ReadSecrets(unittest.TestCase):
         self.assertNotIn(KEY, str(exc))
 
 
-    def test_an_empty_git_directory_is_not_a_repository(self):
+    def test_an_empty_git_directory_is_still_refused_and_named(self):
         (self.tmp / '.git').mkdir()
-        self.assertEqual(cloud._read_secrets(_value(self.secrets))['openrouter']['api_key'], KEY)
+        exc = self._refusal()
+        self.assertIn('inside a repository', str(exc))
 
     def test_a_real_repository_is_refused_and_named(self):
         (self.tmp / '.git').mkdir()

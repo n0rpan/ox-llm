@@ -86,7 +86,7 @@ def fixture(name):
         elif name == 'git-file':
             (parent / '.git').write_text('gitdir: synthetic\n')
         elif name == 'git-empty':
-            (parent / '.git').mkdir()  # a mount placeholder, not a repository: no HEAD
+            (parent / '.git').mkdir()  # a mount placeholder still counts: the check is not loosened
         else:
             (parent / '.git').mkdir()
             (parent / '.git' / 'HEAD').write_text('ref: refs/heads/main\n')

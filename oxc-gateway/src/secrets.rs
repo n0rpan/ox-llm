@@ -197,10 +197,7 @@ pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
     }
     let resolved = resolve(path, &mut 0).map_err(|_| Error::Unavailable)?;
     if resolved.ancestors().skip(1).any(|parent| {
-        // An empty .git directory (a sandbox mount placeholder) is not a repository: needs a HEAD.
-        let git = parent.join(".git");
-        git.is_file()
-            || git.join("HEAD").exists()
+        parent.join(".git").exists()
             || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
     }) {
         return Err(Error::InRepository);
