@@ -24,7 +24,7 @@ The secrets subset passes both Python versions and native; every other error is
 compared exactly. Credential values and paths must never appear in errors.
 
 `secrets::KeyFile::prepare` validates the configured location once per config
- generation. Keep its Result and surface the static refusal after policy checks;
+generation. Keep its Result and surface the static refusal after policy checks;
 repository/source-tree paths now have their own safe reason (#331/#266). Parent
 links bind to the approved canonical directory, so later retargeting cannot
 select a repository key. Reprepare when configuration/location changes. Every
