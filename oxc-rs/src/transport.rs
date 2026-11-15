@@ -476,7 +476,7 @@ async fn serve_inner<S: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
         if !bodyless && fixed_length.is_some_and(|length| written != length) {
             return;
         }
-        if chunked && write.write_all(b"0\r\n\r\n").await.is_err() {
+        if !bodyless && chunked && write.write_all(b"0\r\n\r\n").await.is_err() {
             return;
         }
         if write.flush().await.is_err() || close {

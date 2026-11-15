@@ -176,6 +176,39 @@ async fn head_keeps_the_connection_without_consuming_declared_body_bytes() {
 }
 
 #[tokio::test]
+async fn chunked_bodyless_responses_end_at_the_headers_before_the_next_response() {
+    for first_request in [
+        "HEAD /first HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        "GET /not-modified HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    ] {
+        let app = Router::new().fallback(|request: Request| async move {
+            if request.uri().path() == "/second" {
+                return reply(Body::from("ok"));
+            }
+            Response::builder()
+                .status(if request.uri().path() == "/not-modified" {
+                    304
+                } else {
+                    200
+                })
+                .header("transfer-encoding", "chunked")
+                .body(Body::from("must not be written"))
+                .unwrap()
+        });
+        let wire = format!(
+            "{first_request}GET /second HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        );
+        let response = String::from_utf8(exchange(wire.as_bytes(), app).await).unwrap();
+        let (_, next_response) = response.split_once("\r\n\r\n").unwrap();
+        assert!(
+            next_response.starts_with("HTTP/1.1 200 OK\r\n"),
+            "{response:?}"
+        );
+        assert!(next_response.ends_with("\r\n\r\nok"));
+    }
+}
+
+#[tokio::test]
 async fn ambiguous_or_unsupported_request_framing_cannot_reuse_the_connection() {
     for headers in [
         "Content-Length: invalid",
