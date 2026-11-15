@@ -419,6 +419,28 @@ fn narrowing_with_cursor_at_line_start_does_not_climb() {
     assert!(out.contains("\r\x1b[J"), "{out:?}");
 }
 
+/// the cursor on the first cell of a reflowed row: that row is above the cursor's line start
+#[test]
+fn narrowing_with_cursor_on_row_boundary_climbs_to_its_row() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
+    let full = "x".repeat(20);
+    let mut f = frame(&[&full]);
+    f.cursor = Some(CursorPos { row: 0, col: 10 });
+    r.draw(&f, &mut term);
+    term.take_output();
+    term.resize(10, 20);
+    let mut f = frame(&[&full[..10]]);
+    f.cursor = Some(CursorPos { row: 0, col: 0 });
+    r.draw(&f, &mut term);
+    let out = term.take_output();
+    assert!(
+        out.contains("\x1b[1A\r"),
+        "climb one row to the region start: {out:?}"
+    );
+}
+
 /// a wide character that does not fit at a row end moves to the next row
 #[test]
 fn narrowing_counts_wide_character_wrap() {
@@ -432,7 +454,7 @@ fn narrowing_counts_wide_character_wrap() {
     r.draw(&frame(&[&line, "z"]), &mut term);
     let out = term.take_output();
     // 5 columns hold two wide chars (4 cols): 3 rows, plus "z" row; cursor on last line
-    assert!(out.contains("\x1b[3A\r\x1b[J"), "{out:?}");
+    assert!(out.contains("\x1b[4A\r\x1b[J"), "{out:?}");
 }
 
 /// a terminal that does not reflow must never be climbed past the live region
@@ -450,7 +472,7 @@ fn narrowing_without_reflow_never_climbs_past_the_region() {
     assert!(out.contains("\x1b[2A\r\x1b[J"), "{out:?}");
 }
 
-/// the cursor row counts wide-character carry: 4 wide chars (col 8) at 3 columns is row 3, not 8/3
+/// the cursor row counts wide-character carry: the cursor on the 5th wide char (col 8) at 3 columns is row 4, not 8/3
 #[test]
 fn narrowing_cursor_row_counts_wide_carry() {
     let mut term = TestTerminal::new(20, 20);
@@ -464,5 +486,5 @@ fn narrowing_cursor_row_counts_wide_carry() {
     term.resize(3, 20);
     r.draw(&f, &mut term);
     let out = term.take_output();
-    assert!(out.contains("\x1b[3A\r\x1b[J"), "{out:?}");
+    assert!(out.contains("\x1b[4A\r\x1b[J"), "{out:?}");
 }

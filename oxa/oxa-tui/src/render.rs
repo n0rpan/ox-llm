@@ -114,13 +114,15 @@ fn terminal_reflows() -> bool {
     .any(|k| set(k))
 }
 
-/// The part of `line` (ANSI stripped) that lies left of display column `col`.
+/// The part of `line` (ANSI stripped) up to and including the character under display column
+/// `col`, if there is one: that character decides which row the cursor is on after a reflow.
 fn prefix_to_col(line: &str, col: usize) -> String {
     let mut x = 0;
     let mut out = String::new();
     for ch in crate::strip_ansi(line).chars() {
         let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if x + w > col {
+        if x >= col && w > 0 {
+            out.push(ch);
             break;
         }
         x += w;
