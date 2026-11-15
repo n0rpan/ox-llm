@@ -1,7 +1,7 @@
 """C4: default-off config reaches the existing native flags; metadata only, no engine/model."""
 import copy
 import unittest
-from snapdragon_ai_lab.runtime import oxe_runtime, profile_policy
+from oxc.runtime import oxe_runtime, profile_policy
 from test_oxe_runtime import config
 
 
