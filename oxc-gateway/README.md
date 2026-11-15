@@ -41,7 +41,7 @@ OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC
 
 Forty-six price/settlement cases are captured from unmodified Python in private
 HOME/network namespaces using `/usr/bin/python3`; thirteen include remote row
-fields and cancellation. Nine native regressions cover concurrent admission,
+fields and cancellation. Ten native regressions cover concurrent admission,
 partial appends, rewrite/reset, permissions, cache pricing, reported cost and
 write-failure handling. Source goldens use one case per line for review. These
 contracts use synthetic data only; no real keys or API calls. Existing policy
@@ -63,3 +63,6 @@ the reference’s remaining plain-input estimate for cache writes. The three
 estimate fixtures retain both the unchanged Python row and an explicit native
 contract derived with Python’s existing conservative cost oracle; final usage
 stays exact. Two costs differ; the reservation-capped case agrees.
+
+Cancellation estimates are capped at the admission hold, but a known actual
+charge above that hold is always retained (#283).
