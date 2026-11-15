@@ -1,0 +1,656 @@
+{
+  "custom": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "synthetic-custom",
+            "key": "",
+            "memory_gib": 3.0,
+            "name": "Synthetic custom model",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "empty": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "prefix-cold": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "cold",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "prefix-mismatch": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "cold",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "prefix-symlink": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "cold",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "prefix-warm": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "warm",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "qualification-changed": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "qualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "qualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "receipt-missing",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "receipt-missing",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "qualification-good": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "qualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "qualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "qualification-missing": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "receipt-missing",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "receipt-missing",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "qualification-stale": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "stale",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "stale",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "selected": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen3.6-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ],
+  "states": [
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "state": "ready"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "ready"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "state": "unloaded"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "default": true,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "ornith-35b-a3b-local",
+            "key": "ornith",
+            "memory_gib": 3.0,
+            "name": "Ornith 1.5 35B A3B",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": true,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "default": false,
+            "engine": "rust",
+            "engine_status": "production",
+            "id": "qwen3.6-35b-a3b-local",
+            "key": "moe",
+            "memory_gib": 3.0,
+            "name": "Qwen 3.6 35B MoE",
+            "prefix": "off",
+            "qualification": "unqualified",
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "ornith-35b-a3b-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  ]
+}

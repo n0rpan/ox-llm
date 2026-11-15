@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod catalog;
 mod cli;
 mod cli_status;
 mod daemon;

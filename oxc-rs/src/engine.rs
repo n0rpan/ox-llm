@@ -587,11 +587,46 @@ impl Manager {
             .loaded()
             .or_else(|| models::resolve(config, None).ok())
             .unwrap_or_else(|| json!({}));
-        let memory = self
+        let (memory, pid) = self
             .state
             .try_lock()
             .ok()
-            .and_then(|s| s.running.as_ref().map(|r| r.guard.metadata()));
+            .and_then(|s| {
+                s.running
+                    .as_ref()
+                    .map(|r| (Some(r.guard.metadata()), Some(r.process.pid())))
+            })
+            .unwrap_or((None, None));
+        let loaded = self.loaded();
+        let idle = setting(
+            &profile,
+            "idle_unload_seconds",
+            "LOCAL_LLM_KEEP_WARM_IDLE_SECONDS",
+            1e-9,
+            7200.0,
+        );
+        let remaining = if loaded.is_some() && self.phase() == "ready" && !self.busy() {
+            idle.map(|idle| {
+                ((idle
+                    - self
+                        .last_used
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .elapsed()
+                        .as_secs_f64())
+                .max(0.0)
+                    * 10.0)
+                    .round_ties_even()
+                    / 10.0
+            })
+        } else {
+            None
+        };
+        let harness = self
+            .harness
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status(&profile, config);
         let limits = models::rows(config)
             .into_iter()
             .filter_map(|row| {
@@ -603,11 +638,20 @@ impl Manager {
                 ))
             })
             .collect::<serde_json::Map<_, _>>();
-        json!({"state":self.phase(),"model":profile["model_alias"],"selected_model":models::resolve(config,None).ok().map(|p|p["model_alias"].clone()),
+        let mut status = json!({"state":self.phase(),"model":profile["model_alias"],"selected_model":models::resolve(config,None).ok().map(|p|p["model_alias"].clone()),
             "validated":models::eligible(&profile),"active_requests":self.active.load(Ordering::SeqCst),"queued_requests":self.queued.load(Ordering::SeqCst),
-            "capabilities":["models","active"],"context_size":profile["context_size"],"context":models::context(&profile,config),"model_limits":limits,"memory_policy":memory,
+            "capabilities":["models","storage","harness","harness_learning","ledger","active","openai_aliases","state_cache","context_modes","preload","model_preload"],
+            "context_size":profile["context_size"],"context":models::context(&profile,config),"model_limits":limits,"memory_policy":memory,
+            "idle_unload_seconds":idle,"loaded_model":loaded.as_ref().map(|p|p["model_alias"].clone()),"resident_bytes":pid.and_then(resident_bytes),
+            "idle_unload_remaining_seconds":remaining,"unload":{"method":"POST","path":"/_local/unload","available":loaded.is_some() && !self.busy()},
+            "error_at":null,"error_origin":null,
             "last_error":self.last_failure.lock().unwrap_or_else(|e|e.into_inner()).clone(),"model_preload":self.preload.lock().unwrap_or_else(|e|e.into_inner()).clone(),"preload":self.preload_status(),
-            "engine_ledger":self.engine_ledger.read().unwrap_or_else(|e|e.into_inner()).as_ref().map(|m|m.value()).unwrap_or_else(||json!({"enabled":false}))})
+            "engine_ledger":self.engine_ledger.read().unwrap_or_else(|e|e.into_inner()).as_ref().map(|m|m.value()).unwrap_or_else(||json!({"enabled":false}))});
+        status
+            .as_object_mut()
+            .expect("status object")
+            .extend(harness.as_object().expect("harness facts").clone());
+        status
     }
     pub async fn set_harness_learning(
         &self,
@@ -1546,6 +1590,16 @@ impl Manager {
             }
         }
     }
+}
+fn resident_bytes(pid: u32) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines().filter(|s| s.starts_with("VmRSS:")) {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() == 3 && fields[2] == "kB" && fields[1].bytes().all(|b| b.is_ascii_digit()) {
+            return fields[1].parse::<u64>().ok()?.checked_mul(1024);
+        }
+    }
+    None
 }
 pub fn client(seconds: f64) -> reqwest::Client {
     reqwest::Client::builder()

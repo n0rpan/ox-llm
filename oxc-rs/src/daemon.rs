@@ -388,7 +388,10 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         return context.reply(200, app.engine.status(&config));
     }
     if path == "/_local/models" {
-        return context.reply(200, json!({"object":"list","data":models::rows(&config)}));
+        return context.reply(
+            200,
+            crate::catalog::view(&config, app.engine.loaded().as_ref(), app.engine.phase()),
+        );
     }
     if path == "/_local/ledger" {
         let url = reqwest::Url::parse(&format!("http://localhost{target}")).ok();

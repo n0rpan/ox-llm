@@ -33,8 +33,12 @@ The following gaps remain visible rather than being represented by skipped tests
   inherited stdin/umask, exec/service failures, qualification and read-only planning.
   Sixteen status/code/mode cases cover filtered metadata, offline/stopping states,
   selected models, download phases and bounded trial queries. Forty runtime CLI
-  cases pass against the Python daemon. An integrated native run passes 34/40;
-  status JSON, storage text/JSON and sharing status/JSON/off remain different.
+  cases pass against the Python daemon. An integrated native run passes 37/40;
+  sharing status/JSON/off remain different.
+  Direct Oxe chooser/status facts now cover receipt-derived qualification,
+  prefix identities, selection/load state, resident bytes, idle/unload availability
+  and shared harness facts. Detailed failure provenance and additional status
+  fields remain pending, along with the Flash/classic qualification adapters.
 - Bootstrap: source transfer/build/check flows need loopback fixtures, never a
   model download or real API call. Current tests cover source-payload staging,
   installation, unit text, installed help and rollback/refusal cases.

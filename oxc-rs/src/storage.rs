@@ -77,7 +77,7 @@ fn read_prefix(path: &Path, rust: bool) -> Option<Pair> {
         (hex(model, 64) && hex(server, 64)).then(|| (model.to_owned(), server.to_owned()))
     }
 }
-fn prefixes(path: &Path, rust: bool) -> BTreeMap<Pair, Vec<PathBuf>> {
+pub(crate) fn prefixes(path: &Path, rust: bool) -> BTreeMap<Pair, Vec<PathBuf>> {
     let mut groups = BTreeMap::<Pair, Vec<PathBuf>>::new();
     let suffix = if rust { ".bin" } else { ".json" };
     for name in names(path).into_iter().take(1024) {
