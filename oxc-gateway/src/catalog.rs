@@ -128,7 +128,7 @@ impl Model {
 #[derive(Clone, Debug)]
 pub struct Catalog {
     models: Vec<Model>,
-    selected: Value,
+    selected: Result<Value, &'static str>,
 }
 impl Catalog {
     /// Returns `None` for a local-engine configuration. Cloud is off by default.
@@ -147,14 +147,27 @@ impl Catalog {
             }
         }
         models.sort_by(|a, b| a.alias.cmp(&b.alias));
-        Some(Self {
-            models,
-            selected: config
-                .get("selected_model")
-                .or_else(|| config.get("model_alias"))
-                .cloned()
-                .unwrap_or_else(|| json!("qwen-local")),
-        })
+        let base = config
+            .get("model_alias")
+            .cloned()
+            .unwrap_or_else(|| json!("qwen-local"));
+        let selected = config
+            .get("selected_model")
+            .cloned()
+            .unwrap_or_else(|| base.clone());
+        let profiles = config["profiles"].as_object();
+        let selected = if selected == base
+            || selected
+                .as_str()
+                .is_some_and(|alias| profiles.is_some_and(|p| p.contains_key(alias)))
+        {
+            Ok(selected)
+        } else if profiles.is_none_or(|profiles| profiles.is_empty()) {
+            Ok(base)
+        } else {
+            Err("Unknown local model. Choose one listed in /v1/models.")
+        };
+        Some(Self { models, selected })
     }
     /// The public `/v1/models` body, without credential paths or upstream URLs.
     pub fn models(&self) -> Value {
@@ -166,11 +179,14 @@ impl Catalog {
             .find(|model| model.alias == alias)
             .map(Model::row)
     }
-    /// The cloud-only `/_local/models` chooser body. Legacy chooser selection is
+    /// The cloud-only `/_local/models` chooser body. Stored chooser selection is
     /// descriptive metadata; it does not resolve or qualify a local profile.
-    pub fn chooser(&self) -> Value {
-        json!({"object":"list","data":self.models.iter().map(Model::chooser_row).collect::<Vec<_>>(),
-            "default_model":"ornith-35b-a3b-local","selected_model":self.selected})
+    pub fn chooser(&self) -> Result<Value, &'static str> {
+        let selected = self.selected.as_ref().map_err(|message| *message)?;
+        Ok(
+            json!({"object":"list","data":self.models.iter().map(Model::chooser_row).collect::<Vec<_>>(),
+            "default_model":"ornith-35b-a3b-local","selected_model":selected}),
+        )
     }
     /// Merge this fragment into the controller's status response after HTTP gates.
     pub fn status_fragment(&self) -> Value {

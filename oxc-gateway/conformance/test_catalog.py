@@ -36,11 +36,15 @@ def config(name):
              'daily_budget_usd': 1, 'models': {'synthetic-cloud': model}}}
     if name == 'default-off':
         del value['cloud']['enabled']
+    if name == 'disabled':
+        value['selected_model'] = 'synthetic-cloud'
     if name == 'local-profile':
         value.update(selected_model='synthetic-local', profiles={
             'synthetic-local': {'backend_kind': 'oxe', 'ready': False,
                                 'model_path': '/synthetic/absent-model'}})
     if name == 'invalid-entries':
+        value.update(selected_model='synthetic-unknown',
+                     profiles={'synthetic-local': {'ready': False, 'backend_kind': 'oxe'}})
         models = value['cloud']['models']
         models.update({'bad id!': model, 'wrong-kind': {**model, 'kind': 'local'},
                        'wrong-provider': {**model, 'provider': 'synthetic'},
@@ -111,6 +115,9 @@ def source(name, home):
             for label, route in (('models', '/v1/models'), ('chooser', '/_local/models'),
                                  ('status', '/_local/status'), ('health', '/health')):
                 status, body = get(route)
+                if label == 'chooser' and name == 'invalid-entries' and status == 503:
+                    result[label] = body
+                    continue
                 if status != 200:
                     raise AssertionError((route, status, body))
                 result[label] = body
