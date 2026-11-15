@@ -1,4 +1,4 @@
-//! C1: `Session`, the SDK object. Owner: task C1. Signatures below are frozen; bodies are yours.
+//! C1: `Session`, the SDK object.
 // ported from pi packages/coding-agent/src/core/agent-session.ts
 use crate::agent_loop::{persist, run_loop, RunEnd};
 use crate::host::{attach_hosts, first_reply, observe_hooks, pumped, serve_host, serve_idle, Serve};
@@ -956,6 +956,7 @@ impl Session {
                 EntryBody::Msg {
                     wire,
                     parts: Vec::new(),
+                    tool: None,
                 },
                 sink,
             )?;
@@ -966,7 +967,15 @@ impl Session {
         let mut parts = parts;
         parts.extend(note.map(Part::EnvNote));
         st.stats.user_messages += 1;
-        persist(st, EntryBody::Msg { wire, parts }, sink)?;
+        persist(
+            st,
+            EntryBody::Msg {
+                wire,
+                parts,
+                tool: None,
+            },
+            sink,
+        )?;
 
         let payload = crate::fire::before_agent_start_payload(st, &text, images);
         match first_reply(st, HookPoint::BeforeAgentStart, &payload, sink, ui) {
@@ -1210,6 +1219,7 @@ fn push_user(st: &mut SessionState, msg: String, sink: &mut dyn EventSink) -> Re
         EntryBody::Msg {
             wire: WireMsg::user(msg.clone()),
             parts: vec![Part::Text(msg)],
+            tool: None,
         },
         sink,
     )?;
@@ -2053,7 +2063,9 @@ mod tests {
             .entries()
             .iter()
             .find_map(|entry| match &entry.body {
-                EntryBody::Msg { wire, parts } if wire.content.as_deref() == Some(&texts[1]) => Some(parts),
+                EntryBody::Msg { wire, parts, .. } if wire.content.as_deref() == Some(&texts[1]) => {
+                    Some(parts)
+                }
                 _ => None,
             })
             .expect("stored prompt");

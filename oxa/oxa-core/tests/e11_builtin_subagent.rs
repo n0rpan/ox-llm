@@ -1,4 +1,4 @@
-//! E11 acceptance tests: builtin:subagent. Owner: task E11.
+//! E11 acceptance tests: builtin:subagent.
 //! One test per acceptance bullet of WAVES.toml (plus the OXA-ENGINE-SUPPORT sec. 4 amendments).
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
@@ -30,6 +30,8 @@ struct MockHost {
     limits: Mutex<Value>,
     park: Value,
     clear_fails: bool,
+    /// Model ids `HostAction::ModelInfo` reports as remote (cloud through oxc).
+    remote: Mutex<Vec<String>>,
 }
 
 impl MockHost {
@@ -40,6 +42,7 @@ impl MockHost {
             limits: Mutex::new(limits("sess", 131072, None)),
             park: json!({"parked": true, "promptTokens": 100, "snapPos": 100}),
             clear_fails: false,
+            remote: Mutex::new(Vec::new()),
         })
     }
     fn with(env: &TestEnv, limits: Value, park: Value, clear_fails: bool) -> Arc<MockHost> {
@@ -49,6 +52,7 @@ impl MockHost {
             limits: Mutex::new(limits),
             park,
             clear_fails,
+            remote: Mutex::new(Vec::new()),
         })
     }
     fn calls(&self) -> Vec<HostAction> {
@@ -86,6 +90,10 @@ impl Host for MockHost {
         self.calls.lock().unwrap().push(action.clone());
         match action {
             HostAction::EngineLimits => Ok(self.limits.lock().unwrap().clone()),
+            HostAction::ModelInfo(m) => {
+                let remote = self.remote.lock().unwrap().contains(&m);
+                Ok(json!({"model": m, "remote": remote}))
+            }
             HostAction::ParkSession => {
                 append(&self.log, "park");
                 Ok(self.park.clone())
@@ -800,6 +808,85 @@ fn agent_model_other_than_session_ignored() {
         )],
         "one warning per agent and call; none for the session's own model"
     );
+}
+
+/// #458: a cloud lead runs remote children concurrently, each on its agent's own `model:`,
+/// and the results come back in call order.
+#[test]
+fn remote_children_run_concurrently_on_their_own_model() {
+    let env = TestEnv::new();
+    let mut l = limits("sess", 200_000, None);
+    l["model"] = json!("cloud-lead");
+    l["remote"] = json!(true);
+    let host = MockHost::with(&env, l, json!({"parked": false}), false);
+    host.remote.lock().unwrap().push("cloud-child".to_string());
+    // Every child waits until all three have started: serial children would time out.
+    let body = format!(
+        r#"i=0
+while [ "$(grep -c '^start' "$ROOT/calls.log")" -lt 3 ]; do
+  i=$((i+1)); [ $i -gt 250 ] && {{ echo "serial" >&2; exit 3; }}; sleep 0.02
+done
+case "$last" in *one*) sleep 0.3;; esac
+{OK_BODY}"#
+    );
+    let h = hooks_with(
+        child_script(&env, &body),
+        vec![agent("scout", Some("cloud-child")), agent("worker", None)],
+        Value::Null,
+        &host,
+    );
+    let o = run(
+        &env,
+        &h,
+        json!({"tasks": [
+            {"agent": "scout", "task": "one"},
+            {"agent": "worker", "task": "two"},
+            {"agent": "scout", "task": "three"},
+        ]}),
+    );
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert_eq!(
+        o.out.text,
+        "Parallel: 3/3 succeeded\n\n### [scout] completed\n\ndone: Task: one\n\n---\n\n### [worker] completed\n\ndone: Task: two\n\n---\n\n### [scout] completed\n\ndone: Task: three"
+    );
+    let words = |hint: &str| argv(&env, hint).join(" ");
+    assert!(
+        words("sess.s1").contains("--model cloud-child"),
+        "{}",
+        words("sess.s1")
+    );
+    assert!(
+        words("sess.s2").contains("--model cloud-lead"),
+        "{}",
+        words("sess.s2")
+    );
+    assert!(
+        words("sess.s3").contains("--model cloud-child"),
+        "{}",
+        words("sess.s3")
+    );
+    assert!(o.notes.is_empty(), "{:?}", o.notes);
+    // Remote children hold no engine state: nothing to clear.
+    assert_eq!(host.clears().len(), 0);
+}
+
+/// A local child under a remote lead still gets its engine state cleared.
+#[test]
+fn local_child_of_remote_lead_is_cleared() {
+    let env = TestEnv::new();
+    let mut l = limits("sess", 200_000, None);
+    l["model"] = json!("cloud-lead");
+    l["remote"] = json!(true);
+    let host = MockHost::with(&env, l, json!({"parked": false}), false);
+    let h = hooks_with(
+        child_script(&env, OK_BODY),
+        vec![agent("scout", Some("local-child"))],
+        Value::Null,
+        &host,
+    );
+    let o = run(&env, &h, json!({"agent": "scout", "task": "one"}));
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert_eq!(host.clears(), vec!["sess.s1".to_string()]);
 }
 
 /// child soft limit = min(`oxa.subagent.softTokens`, the parent's `compactAt`), below the cap

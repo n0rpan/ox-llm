@@ -1,4 +1,4 @@
-//! E6: the script globals (`tools`, `text`, `store`, `searchTools`, ..). Owner: task E6. Signatures below are frozen; bodies are yours.
+//! E6: the script globals (`tools`, `text`, `store`, `searchTools`, ..).
 // ported from pi packages/codemode/src/{declarations,identifier,portable}.ts
 use crate::tool::{MAX_OUTPUT_CHARS, MAX_OUTPUT_ITEMS, MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS};
 use crate::{Namespace, Shared, CODEMODE_TOOL, STORE_ENTRY_TYPE};

@@ -1,4 +1,4 @@
-//! C4 acceptance tests: Tree navigation, fork, clone. Owner: task C4.
+//! C4 acceptance tests: Tree navigation, fork, clone.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -115,6 +115,7 @@ fn say(st: &mut SessionState, text: &str) -> String {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user")
@@ -128,6 +129,7 @@ fn reply(st: &mut SessionState, text: &str) -> String {
         EntryBody::Msg {
             wire: WireMsg::assistant(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append assistant")

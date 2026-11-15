@@ -1,4 +1,4 @@
-//! B8: prompt templates. Owner: task B8. Signatures below are frozen; bodies are yours.
+//! B8: prompt templates.
 // ported from pi packages/coding-agent/src/core/prompt-templates.ts
 use crate::frontmatter::{frontmatter_get, parse_frontmatter};
 use crate::skills::{canonical_path, resolve_setting_path, utf16_len};

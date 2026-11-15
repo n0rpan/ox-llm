@@ -872,6 +872,20 @@ fn dropped_image_path_is_attached() {
     assert!(sent.contains("[image"), "a placeholder on the wire: {sent}");
 }
 
+/// A paste while a list selector (no text field) is open is not dropped silently: a notice says so.
+#[test]
+fn paste_into_thinking_selector_shows_a_notice() {
+    let world = World::new(vec![ScriptTurn::text("OK.")]);
+    let steps = vec![
+        step("selector", &[], typed("/thinking", &["enter"])),
+        step("paste", &["off"], vec![InputEvent::Paste("hello".to_string())]),
+        step("notice", &["Paste ignored"], vec![key("escape")]),
+        step("exit", &[], typed("/exit", &["enter"])),
+    ];
+    let (code, _l, _t, _f) = run_app(&world, false, (90, 30), steps);
+    assert_eq!(code, 0);
+}
+
 // ---------------------------------------------------------------------------------------------
 // X5: controls follow the session; quit is a stop signal
 // ---------------------------------------------------------------------------------------------
@@ -1151,14 +1165,18 @@ fn aborted_stream_is_shown_not_a_reply() {
     );
 }
 
-/// A stream cut by the engine mid-reply: `Shown { why: cut }`, shown with the warning.
+/// A stream cut by the engine mid-reply: `Shown { why: cut }`, shown with the warning, then
+/// the request is resent and the replayed reply completes the run (#456).
 #[test]
 fn cut_stream_is_shown_not_a_reply() {
-    let world = World::new(vec![ScriptTurn {
-        chunk: 8,
-        fault: Some(Fault::DropAt { bytes: 600 }),
-        ..ScriptTurn::text(&"CUTTEXT words keep coming and coming. ".repeat(40))
-    }]);
+    let world = World::new(vec![
+        ScriptTurn {
+            chunk: 8,
+            fault: Some(Fault::DropAt { bytes: 600 }),
+            ..ScriptTurn::text(&"CUTTEXT words keep coming and coming. ".repeat(40))
+        },
+        ScriptTurn::text("REPLAYED answer"),
+    ]);
     let steps = vec![
         step("open", &["oxa v"], typed("go", &["enter"])),
         step(
@@ -1166,26 +1184,23 @@ fn cut_stream_is_shown_not_a_reply() {
             &[
                 "CUTTEXT",
                 "cut: not sent to the model",
-                "The reply did not finish",
+                "the reply stream broke",
+                "REPLAYED answer",
             ],
             typed("/session", &["enter"]),
         ),
         step(
             "counted",
-            &["Messages: user 1, assistant 0, tool calls 0"],
+            &["Messages: user 1, assistant 1, tool calls 0"],
             vec![key("ctrl+d")],
         ),
     ];
-    let (code, last, _term, _first) = run_app(&world, false, (90, 40), steps);
+    let (code, _last, _term, _first) = run_app(&world, false, (90, 40), steps);
     assert_eq!(code, 0);
-    match last_entry(&world, &last) {
-        oxa_proto::EntryBody::Shown { why, .. } => assert_eq!(why, "cut"),
-        other => panic!("the core stored a Shown entry at the leaf, got {other:?}"),
-    }
     assert_eq!(
         world.requests().iter().filter(|r| r.max_tokens > 0).count(),
-        1,
-        "a cut reply is never resent"
+        2,
+        "the cut reply is resent once"
     );
 }
 

@@ -1,4 +1,4 @@
-//! C14: OSC sequences: hyperlinks (8), clipboard (52), title, colour queries. Owner: task C14. Signatures below are frozen; bodies are yours.
+//! C14: OSC sequences: hyperlinks (8), clipboard (52), title, colour queries.
 // ported from pi packages/tui/src/terminal.ts, terminal-colors.ts, terminal-image.ts (hyperlink)
 
 const ESC: char = '\x1b';

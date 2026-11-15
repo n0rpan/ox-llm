@@ -1,9 +1,9 @@
-//! A3: the session file store and the entry codec. Owner: task A3. Signatures below are frozen; bodies are yours.
+//! A3: the session file store and the entry codec.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (file format: docs/session-format.md)
 use crate::{SessionHeader, SessionMeta, SessionRef, SessionStore};
 use oxa_proto::{
     codes, names, shown_why, Entry, EntryBody, FrozenPrefix, Mode, OxaError, Part, Role, ThinkingLevel,
-    ToolCall, Usage, WireMsg,
+    ToolCall, ToolMeta, Usage, WireMsg,
 };
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions};
@@ -461,7 +461,7 @@ fn body_fields(body: &EntryBody, ts_ms: u64) -> (&'static str, Map<String, Value
             f.insert("message".into(), Value::Object(msg));
             "message"
         }
-        EntryBody::Msg { wire, parts } => {
+        EntryBody::Msg { wire, parts, tool } => {
             let mut msg = Map::new();
             msg.insert("role".into(), pi_role(wire.role).into());
             msg.insert(
@@ -478,6 +478,9 @@ fn body_fields(body: &EntryBody, ts_ms: u64) -> (&'static str, Map<String, Value
                 "parts".into(),
                 Value::Array(parts.iter().map(part_value).collect()),
             );
+            if let Some(t) = tool {
+                msg_tool_fields(&mut f, t);
+            }
             "message"
         }
         EntryBody::Shown { text, why } => {
@@ -749,6 +752,7 @@ fn decode_message(m: &Map<String, Value>) -> Result<EntryBody, OxaError> {
         "system" | "user" | "assistant" | "toolResult" => Ok(EntryBody::Msg {
             wire: decode_wire(m, msg, role)?,
             parts: decode_parts(m)?,
+            tool: decode_tool(m),
         }),
         other => Err(invalid(format!("unknown message role `{other}`"))),
     }
@@ -868,6 +872,25 @@ fn decode_tool_call(v: &Value) -> Result<ToolCall, OxaError> {
         id: get_str(o, "id")?.to_string(),
         name: get_str(o, "name")?.to_string(),
         args_raw: get_str(o, "arguments")?.to_string(),
+    })
+}
+
+fn msg_tool_fields(f: &mut Map<String, Value>, t: &ToolMeta) {
+    f.insert("toolError".into(), Value::Bool(t.is_error));
+    if !t.ui.is_null() {
+        f.insert("toolUi".into(), t.ui.clone());
+    }
+}
+
+fn decode_tool(m: &Map<String, Value>) -> Option<ToolMeta> {
+    let is_error = m.get("toolError").and_then(Value::as_bool);
+    let ui = m.get("toolUi").cloned();
+    if is_error.is_none() && ui.is_none() {
+        return None;
+    }
+    Some(ToolMeta {
+        is_error: is_error.unwrap_or(false),
+        ui: ui.unwrap_or(Value::Null),
     })
 }
 

@@ -1,4 +1,4 @@
-//! B4: the frozen prefix builder (W3). Owner: task B4. Signatures below are frozen; bodies are yours.
+//! B4: the frozen prefix builder (W3).
 // ported from pi packages/coding-agent/src/core/system-prompt.ts (text comes from prompt.rs)
 use oxa_proto::{Exposure, FrozenPrefix, Source, ToolSpec};
 use oxa_resources::Resources;

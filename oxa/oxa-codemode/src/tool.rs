@@ -1,4 +1,4 @@
-//! E6: the `codemode` tool (options line, run, result text). Owner: task E6. Signatures below are frozen; bodies are yours.
+//! E6: the `codemode` tool (options line, run, result text).
 // ported from pi packages/codemode/src/{index,source,types}.ts
 use crate::api::ScriptSink;
 use crate::{Shared, CODEMODE_TOOL, STORE_ENTRY_TYPE};
