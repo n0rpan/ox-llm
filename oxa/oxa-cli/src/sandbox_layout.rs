@@ -68,7 +68,7 @@ pub(crate) fn layout(
         notices.push((Level::Warning, home_root_warning(cwd, home_itself)));
     }
     let read_extra = paths(SETTING_READ_PATHS);
-    let built = Layout::build(&LayoutInputs {
+    let mut built = Layout::build(&LayoutInputs {
         home: dirs.home.clone(),
         agent_dir: Some(dirs.agent_dir.clone()),
         path_var: env.get("PATH").unwrap_or("").to_string(),
@@ -158,6 +158,7 @@ pub(crate) fn layout(
             ),
         ));
     }
+    built.mask_runtime_ipc = true;
     built
 }
 
