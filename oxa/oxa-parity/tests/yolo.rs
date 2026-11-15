@@ -1,6 +1,6 @@
 //! O-182, #202: the permission modes end to end with the real binary against the fake engine.
 //! `auto` (the default) removes the prompts and keeps the deny-list and the sandbox; `yolo` is
-//! full access: no prompts, bash without the sandbox, file tools keep the deny-list;
+//! full access: no prompts, bash without the sandbox, no guard for the file tools;
 //! `standard` asks (and print mode, with nobody to ask, refuses).
 
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
@@ -99,9 +99,10 @@ fn the_saved_default_mode_applies_and_a_flag_wins() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("permission mode auto"));
 }
 
-/// The deny-list holds at `auto` and at `yolo`: a write to `~/.ssh` is refused (review of #314).
+/// The deny-list holds at `auto`; `yolo` removes it (owner's decision on #202): the same write
+/// to `~/.ssh` goes through.
 #[test]
-fn auto_and_yolo_keep_the_deny_list() {
+fn auto_keeps_the_deny_list_and_yolo_removes_it() {
     let env = TestEnv::new();
     let ssh = env.home().join(".ssh");
     std::fs::create_dir_all(&ssh).expect("dir");
@@ -118,7 +119,7 @@ fn auto_and_yolo_keep_the_deny_list() {
     let target = ssh.join("authorized_keys");
     let (out, _) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(!target.exists(), "--yolo keeps the deny-list of the file tools");
+    assert!(target.exists(), "--yolo removes the deny-list of the file tools");
 }
 
 /// `auto` keeps bash in the sandbox; `yolo` runs it without the sandbox.

@@ -1,7 +1,7 @@
 //! O-182, #202: `auto` (the old YOLO) and `yolo` (full access). At `auto` every question the
 //! policy would ask is answered with "allow" and counted, and the safety floor does not move: the
 //! deny-list, git's files and plan mode still deny, a write to `.oxa` still asks. At `yolo` the
-//! sandbox of bash is lifted, but the floor of the file tools stands.
+//! sandbox of bash is lifted and the file tools keep no guard either (plan mode excepted).
 
 use oxa_fake::TestEnv;
 use oxa_perm::{deny_reasons, ModePolicy, PathGuard};
@@ -238,11 +238,11 @@ fn a_child_started_with_yolo_allows_a_write_and_still_asks_for_oxa() {
     assert_eq!(switch.approved(), 1, "the asked and the denied are not counted");
 }
 
-/// #202: `yolo` answers every question of the table outside plan mode, but the mandatory
-/// safety floor stands (review of #314): the deny-list and git's files are refused, and the
-/// files that run outside the sandbox later (`.oxa`, the home's startup files) still ask.
+/// #202, owner's decision on #314 ("yolo should be yolo"): outside plan mode `yolo` removes
+/// every guard of the file tools: the table's questions, the deny-list, git's files and the
+/// protected configuration (`.oxa`, the home's startup files) are all allowed and counted.
 #[test]
-fn yolo_allows_the_table_but_keeps_the_floor() {
+fn yolo_removes_every_guard() {
     let env = TestEnv::new();
     let switch = YoloSwitch::new(Autonomy::Yolo);
     let p = policy(&env, &switch);
@@ -252,39 +252,52 @@ fn yolo_allows_the_table_but_keeps_the_floor() {
         for a in &asked_in_workspace(&env) {
             assert_eq!(p.decide(mode, a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
         }
+        let mut guarded = Vec::new();
         for path in [
             home.join(".ssh/id_ed25519"),
             home.join(".aws/credentials"),
             env.agent_dir().join("settings.json"),
         ] {
-            for a in [Access::Read(path.clone()), Access::Write(path.clone())] {
-                assert_eq!(
-                    p.decide(mode, &a, &cwd),
-                    Decision::Deny(deny_reasons::SENSITIVE),
-                    "{a:?} in {mode:?}"
-                );
-            }
+            guarded.push(Access::Read(path.clone()));
+            guarded.push(Access::Write(path));
         }
-        for path in [cwd.join(".git/hooks/pre-commit"), cwd.join(".git/config")] {
-            assert_eq!(
-                p.decide(mode, &Access::Write(path.clone()), &cwd),
-                Decision::Deny(deny_reasons::GIT_PROTECTED),
-                "{path:?} in {mode:?}"
-            );
+        for path in [
+            cwd.join(".git/hooks/x"),
+            cwd.join(".git/config"),
+            cwd.join(".oxa/settings.json"),
+            home.join(".bashrc"),
+        ] {
+            guarded.push(Access::Write(path));
         }
-        for path in [cwd.join(".oxa/settings.json"), home.join(".bashrc")] {
-            assert_eq!(
-                p.decide(mode, &Access::Write(path.clone()), &cwd),
-                Decision::Ask,
-                "{path:?} in {mode:?}"
-            );
+        for a in &guarded {
+            let before = switch.approved();
+            assert_eq!(p.decide(mode, a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
+            assert_eq!(switch.approved(), before + 1, "{a:?} is counted once");
         }
     }
-    assert!(switch.approved() > 0, "what was not allowed before is counted");
     // An ordinary write inside the work tree needed no answer: not counted.
     let before = switch.approved();
     p.decide(Mode::Workspace, &Access::Write(cwd.join("a.txt")), &cwd);
     assert_eq!(switch.approved(), before);
+}
+
+/// #202: the same three guarded writes keep their answers in `auto`.
+#[test]
+fn auto_keeps_every_guard() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Auto);
+    let p = policy(&env, &switch);
+    let cwd = env.work();
+    let w = |path: PathBuf| p.decide(Mode::Workspace, &Access::Write(path), &cwd);
+    assert_eq!(w(cwd.join(".oxa/settings.json")), Decision::Ask);
+    assert_eq!(
+        w(cwd.join(".git/hooks/x")),
+        Decision::Deny(deny_reasons::GIT_PROTECTED)
+    );
+    assert_eq!(
+        w(env.home().join(".ssh/id_ed25519")),
+        Decision::Deny(deny_reasons::SENSITIVE)
+    );
 }
 
 /// #202: plan mode still plans only under `yolo`: writes and changing commands are refused,
@@ -350,13 +363,13 @@ fn auto_after_yolo_restores_the_floor() {
 }
 
 /// Review of #314: the one-line description shown in the picker, the start notice and stderr
-/// must say what the policy does at `yolo`: the file tools keep the deny-list and the
-/// protected paths (pinned by the tests above), only bash leaves the sandbox.
+/// must say what the policy does at `yolo`: every guard is gone (pinned by the tests above).
 #[test]
-fn yolo_description_matches_the_kept_floor() {
+fn yolo_description_says_every_guard_is_gone() {
     use oxa_proto::PermissionMode;
     let text = PermissionMode::Yolo.describe();
     assert!(text.contains("without the sandbox"), "{text}");
     assert!(!text.contains("not limited"), "{text}");
-    assert!(text.contains("file tools keep the deny-list"), "{text}");
+    assert!(!text.contains("keep the deny-list"), "{text}");
+    assert!(text.contains("no deny-list"), "{text}");
 }

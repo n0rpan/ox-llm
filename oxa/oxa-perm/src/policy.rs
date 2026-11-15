@@ -189,8 +189,8 @@ impl ModePolicy {
     /// `Decision::Allow` and is counted on the switch; the safety floor is unchanged: the
     /// deny-list (B3) and git's files (B4) stay `Deny`, plan mode's `Deny`s stand, and a write
     /// to the project's protected configuration (`.oxa`) still asks. At `Autonomy::Yolo` (full
-    /// access) everything else is allowed outside plan mode, but the floor still applies first
-    /// (`mandatory()`: deny-list and git-protected paths deny, `.oxa` asks); in plan mode it
+    /// access) every `Ask` and every `Deny` (of the table and of `mandatory()`) becomes `Allow`
+    /// outside plan mode, counted on the switch (owner's decision on #202); in plan mode it
     /// answers as `Auto`.
     pub fn with_yolo(mut self, switch: YoloSwitch) -> ModePolicy {
         self.yolo = Some(switch);
@@ -310,7 +310,7 @@ impl ModePolicy {
     }
 
     /// The mandatory floor (B3 deny-list, B4 protected files): it holds at every autonomy
-    /// level, `yolo` included.
+    /// level but `yolo` outside plan mode.
     fn mandatory(&self, mode: Mode, a: &Access, cwd: &Path) -> Option<Decision> {
         if let Access::Read(p) | Access::Write(p) = a {
             let abs = crate::paths::normalize(p, cwd);
@@ -336,13 +336,10 @@ impl ModePolicy {
 
 impl Policy for ModePolicy {
     fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
-        // #202: full access (yolo) outside plan mode: no prompt from the table. The mandatory
-        // floor (deny-list, protected files) still holds. What would not have been allowed is
-        // counted as auto-approved.
+        // #202: full access (yolo) outside plan mode removes every guard: no prompt and no
+        // refusal, the deny-list and the protected files included (bash in the same mode has no
+        // sandbox either). What would not have been allowed is counted as auto-approved.
         if let Some(switch) = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan) {
-            if let Some(d) = self.mandatory(mode, a, cwd) {
-                return d;
-            }
             // The floor counts what its table asked (the `auto` answer); the rest is counted here.
             if self.decide_floor(mode, a, cwd) != Decision::Allow {
                 switch.count();
