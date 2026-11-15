@@ -239,6 +239,15 @@ fn openai_http_chat_omits_local_cache_echo_and_prefill_controls() {
         .unwrap();
     let seen = server.requests();
     assert_eq!(seen.len(), 1);
+    let session = seen[0]
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("X-Session-Id"))
+        .map(|(_, value)| value.as_str());
+    assert_eq!(session, cfg!(feature = "session-accounting").then_some("session"));
+    assert!(seen[0].headers.iter().all(|(name, _)| {
+        !name.to_ascii_lowercase().starts_with("x-oxe-") && !name.eq_ignore_ascii_case("Idempotency-Key")
+    }));
     let body: serde_json::Value = serde_json::from_slice(&seen[0].body).unwrap();
     for field in [
         "cache_prompt",

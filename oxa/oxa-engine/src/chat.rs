@@ -456,7 +456,7 @@ impl Engine for HttpEngine {
         clear_hint(&self.url, self.api_key.as_deref(), hint)
     }
     fn count_prompt(&self, r: &ChatRequest) -> Result<Option<u64>, OxaError> {
-        if self.is_remote(&r.model) {
+        if self.is_remote(r.model) {
             return Ok(None);
         }
         let mut body = Vec::new();
@@ -469,7 +469,7 @@ impl Engine for HttpEngine {
         cancel: &CancelToken,
         on: &mut dyn FnMut(StreamEvent),
     ) -> Result<AssistantTurn, OxaError> {
-        let remote = self.is_remote(&r.model);
+        let remote = self.is_remote(r.model);
         let mut body = Vec::new();
         build_body_for(r, remote, &mut body);
 
@@ -484,6 +484,10 @@ impl Engine for HttpEngine {
             ..r.hints
         };
         let mut headers = if remote { Vec::new() } else { build_headers(&hints) };
+        #[cfg(feature = "session-accounting")]
+        if remote && !hints.session.is_empty() {
+            headers.push(("X-Session-Id", hints.session.to_string()));
+        }
         if let Some(k) = self.api_key.as_deref().filter(|k| !k.is_empty()) {
             headers.push(("Authorization", format!("Bearer {k}")));
         }

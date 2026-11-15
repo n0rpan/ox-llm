@@ -23,6 +23,9 @@ python3 -m venv /tmp/oxa-review-sdk
 
 The SDK version matches `lab/pyproject.toml` at gateway revision `d5f0ff8`.
 `--gateway-root` and `--bin-dir` can select other explicit checkouts/builds.
+The opt-in [session accounting and pricing variant](SESSION_ACCOUNTING.md) also
+checks separate session ledgers when parent and author use the same model alias,
+including prompt tiers and native cache-write counts from the #162 gateway.
 No provider key is needed. Before gateway or SDK imports, the script re-executes
 with a cleared environment and private temporary HOME/XDG directories. It creates
 one synthetic 0600 capability file outside the worker workspace. Both the shared

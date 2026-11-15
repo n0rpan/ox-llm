@@ -153,7 +153,7 @@ def run_isolated(args):
     sys.path[:0] = [str(gateway / "lab" / "src"), str(gateway / "lab" / "tests")]
     from mock_cloud import MockOpenAIResponses
     from openai_api_stack import Stack
-    from snapdragon_ai_lab.runtime import cloud, cloud_openai
+    from snapdragon_ai_lab.runtime import cloud, cloud_openai, request_ledger
     demo_file = Path(__file__).with_name("live_tui_demo.py")
     spec = importlib.util.spec_from_file_location("a2a_live_demo", demo_file)
     live = importlib.util.module_from_spec(spec)
@@ -327,6 +327,10 @@ def run_isolated(args):
                    if r["model"] == "root-gpt") == demo.goal(done)["reported_tokens"]
         assert sum(r["prompt_tokens"] + r["completion_tokens"] for r in rows
                    if r["model"] == "worker-gpt") == child["goal"]["reported_tokens"]
+        parent_session = request_ledger.session_key({"X-Session-Id": sid}, {})
+        assert {r["session"] for r in rows if r["model"] == "root-gpt"} == {parent_session}
+        child_sessions = {r["session"] for r in rows if r["model"] == "worker-gpt"}
+        assert len(child_sessions) == 1 and None not in child_sessions and parent_session not in child_sessions
         assert all(r.get("remote_provider") == "openai" and r.get("settled") == "usage" for r in rows)
         assert KEY not in json.dumps(rows) and "synthetic-opaque-" not in json.dumps(rows)
         demo.mux("send-keys", "-t", "demo", "C-d")

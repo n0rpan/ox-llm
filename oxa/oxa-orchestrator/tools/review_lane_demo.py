@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Actual TUI: GPT author proposal -> parent -> native Anthropic reviewer, mocks only."""
 import argparse
+from decimal import Decimal
 import hashlib
 import importlib.util
 import json
@@ -31,7 +32,7 @@ def output(body):
     return values[-1]
 
 
-def providers(openai_base, anthropic_base):
+def providers(openai_base, anthropic_base, tiered_pricing=False):
     class AuthorAndParent(openai_base):
         def __init__(self):
             self.counts = {}
@@ -47,13 +48,16 @@ def providers(openai_base, anthropic_base):
                 return self._json(handler, 404, {"error": "local backend unavailable"})
             body = json.loads(raw)
             assert handler.headers.get("Authorization") == "Bearer " + KEY
+            assert handler.headers.get("X-Session-Id") is None, "gateway leaked session metadata upstream"
             with self.mu:
                 self.requests.append(body)
                 model = body["model"]
-                self.counts[model] = self.counts.get(model, 0) + 1
-                step = self.counts[model]
+                lane = "author" if "fixed isolated author" in json.dumps(body["input"][:1]) else "parent"
+                self.counts[lane] = self.counts.get(lane, 0) + 1
+                step = self.counts[lane]
             name = None
-            if model == "gpt-6-luna":
+            if lane == "author":
+                assert model in ("gpt-6-luna", "gpt-6.1-sol")
                 if step == 1:
                     assert "fixed isolated author" in json.dumps(body)
                     name, value = "write", {"path": "input.txt", "content": AFTER}
@@ -89,7 +93,7 @@ def providers(openai_base, anthropic_base):
                     assert report["process_stopped"] and report["goal"]["state"] == "done"
                     assert "reviewer verified exact patch" in report["last_reply"]
                     value = completed("mixed-provider-review-final")
-            uid = model.replace(".", "-") + "-" + str(step)
+            uid = lane + "-" + model.replace(".", "-") + "-" + str(step)
             events = [{"type": "response.created", "response": {"id": uid}}]
             if name:
                 encoded = json.dumps(value)
@@ -120,6 +124,7 @@ def providers(openai_base, anthropic_base):
             body = json.loads(handler.rfile.read(int(handler.headers["Content-Length"])))
             assert handler.path == "/v1/messages"
             assert handler.headers.get("x-api-key") == KEY
+            assert handler.headers.get("X-Session-Id") is None, "gateway leaked session metadata upstream"
             assert body["model"] == "claude-sonnet-5-5"
             self.requests.append(body)
             assert len(self.requests) == 1
@@ -146,6 +151,8 @@ def providers(openai_base, anthropic_base):
             for kind, value in events:
                 if kind == "message_delta":
                     value["usage"]["output_tokens"] = 8
+                if tiered_pricing and kind == "message_start":
+                    value["message"]["usage"]["cache_creation_input_tokens"] = 5
             return self._sse(handler, events)
     return AuthorAndParent, Reviewer
 
@@ -157,14 +164,14 @@ def run(args):
     sys.path[:0] = [str(gateway / "lab" / "src"), str(gateway / "lab" / "tests")]
     from mock_cloud import MockOpenAIResponses, MockAnthropic
     from openai_api_stack import Stack
-    from snapdragon_ai_lab.runtime import cloud, cloud_anthropic
+    from snapdragon_ai_lab.runtime import cloud, cloud_anthropic, request_ledger
     import anthropic
     assert anthropic.__version__ == "0.125.0", "use the repository-pinned SDK"
     spec = importlib.util.spec_from_file_location("review_live_demo", Path(__file__).with_name("live_tui_demo.py"))
     live = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(live)
     demo = live.Demo(args.bin_dir)
-    author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic)
+    author_type, reviewer_type = providers(MockOpenAIResponses, MockAnthropic, args.pricing)
     author = author_type()
     reviewer = reviewer_type(author)
     stack = None
@@ -185,9 +192,24 @@ def run(args):
             models[alias] = {"kind": "remote/" + provider, "upstream_model": upstream,
                              "base_url": base, "context_window": 200000, "max_output": 1024,
                              "pricing": {"input_per_million": 1.0, "output_per_million": 1.0}}
+        if args.pricing:
+            from snapdragon_ai_lab.runtime import cloud_prices
+            # Any unexpected refresher must fail before opening a public connection.
+            # This scenario exercises configured tiers, not live public metadata.
+            def refuse_public_fetch(url):
+                raise AssertionError("public price fetch is outside this loopback-only scenario")
+            for item in models.values():
+                item["pricing"] = {"tiers": [
+                    {"max_prompt_tokens": 15, "input_per_million": 1, "output_per_million": 2,
+                     "cache_read_per_million": 0.1, "cache_write_per_million": 1.25},
+                    {"input_per_million": 5, "output_per_million": 10,
+                     "cache_read_per_million": 0.5, "cache_write_per_million": 6.25},
+                ]}
         ledger = root / "ledger"
-        stack = Stack(author.port, cloud={"enabled": True, "daily_budget_usd": 1.0,
+        stack = Stack(author.port, cloud={"enabled": True, "daily_budget_usd": 10.0 if args.pricing else 1.0,
             "secrets_file": str(secrets), "models": models}, environ={"LOCAL_AI_LEDGER_DIR": str(ledger)})
+        if args.pricing:
+            stack.enter_context(patch.object(cloud_prices, "_fetch", refuse_public_fetch))
         connection, client = cloud.connection, cloud_anthropic._client
 
         def owned(item, key, original, port):
@@ -198,9 +220,10 @@ def run(args):
 
         stack.enter_context(patch.object(cloud, "connection", lambda item, key: owned(item, key, connection, author.port)))
         stack.enter_context(patch.object(cloud_anthropic, "_client", lambda item, key: owned(item, key, client, reviewer.port)))
+        author_model = "root-gpt" if args.shared_model else "author-gpt"
         profiles = []
         for name, model, edit, files, role in (
-            ("author", "author-gpt", True, ["input.txt"], "fixed isolated author"),
+            ("author", author_model, True, ["input.txt"], "fixed isolated author"),
             ("reviewer", "reviewer-sonnet", False, [], "fixed independent reviewer"),
         ):
             profiles.append({"name": name, "role": role, "route": "cloud_gateway",
@@ -234,22 +257,23 @@ def run(args):
             and demo.goal(v).get("reason") == "waiting_workers" and reviewer.started.is_set()))
         assert (demo.work / "input.txt").read_text() == BEFORE
         demo.save_screen("reviewer-working-screen.txt", lambda s: any(
-            "reviewer-sonnet (cloud) · working" in line and "author-gpt (cloud) · completed" in line
+            "reviewer-sonnet (cloud) · working" in line and f"{author_model} (cloud) · completed" in line
             for line in s.splitlines()[-3:]))
         reviewer.release.set()
         done = demo.wait(lambda v: demo.goal(v)["state"] == "done" and all(w["process_stopped"] for w in v["status"]["workers"]))
         assert done["status"]["session"]["id"] == sid and demo.goal(done)["budget"] == budget
         assert demo.goal(done)["reported_tokens"] == 140
         workers = {w["profile"]: w for w in done["status"]["workers"]}
-        assert workers["author"]["model"] == "author-gpt"
+        assert workers["author"]["model"] == author_model
         assert workers["reviewer"]["model"] == "reviewer-sonnet"
         assert all(w["route"] == "cloud_gateway" for w in workers.values())
-        assert {k: w["goal"]["reported_tokens"] for k, w in workers.items()} == {"author": 40, "reviewer": 23}
+        reviewer_tokens = 28 if args.pricing else 23
+        assert {k: w["goal"]["reported_tokens"] for k, w in workers.items()} == {"author": 40, "reviewer": reviewer_tokens}
         assert all(w["state"] == "completed" and not Path("/proc", str(w["process_id"])).exists() for w in workers.values())
         assert (demo.work / "input.txt").read_text() == BEFORE
         demo.save_screen("review-completed-screen.txt", lambda s: (
             "mixed-provider-review-final" in s and "Goal Done" in s
-            and any("reviewer-sonnet (cloud) · completed" in line and "author-gpt (cloud) · completed" in line
+            and any("reviewer-sonnet (cloud) · completed" in line and f"{author_model} (cloud) · completed" in line
                     for line in s.splitlines()[-3:])))
         deadline = time.monotonic() + 2
         rows = []
@@ -260,9 +284,30 @@ def run(args):
                 break
             time.sleep(0.02)
         assert len(rows) == 10 and all(r["settled"] == "usage" for r in rows)
-        for model, tokens in (("root-gpt", 140), ("author-gpt", 40), ("reviewer-sonnet", 23)):
-            assert sum(r["prompt_tokens"] + r["completion_tokens"] for r in rows if r["model"] == model) == tokens
-        assert next(r for r in rows if r["model"] == "reviewer-sonnet")["cached_tokens"] == 3
+        # Use the owned fixture's install salt to correlate the known parent ID.
+        # Worker costs stay separate even when author and parent share one alias.
+        parent_session = request_ledger.session_key({"X-Session-Id": sid}, {})
+        author_sessions = {r["session"] for r in rows
+                           if r["model"] == author_model and r["session"] != parent_session}
+        reviewer_sessions = {r["session"] for r in rows if r["model"] == "reviewer-sonnet"}
+        assert len(author_sessions) == len(reviewer_sessions) == 1
+        sessions = {"parent": parent_session, "author": author_sessions.pop(), "reviewer": reviewer_sessions.pop()}
+        assert None not in sessions.values() and len(set(sessions.values())) == 3
+        for lane, count, tokens in (("parent", 7, 140), ("author", 2, 40), ("reviewer", 1, reviewer_tokens)):
+            selected = [r for r in rows if r["session"] == sessions[lane]]
+            assert len(selected) == count, (lane, selected)
+            assert sum(r["prompt_tokens"] + r["completion_tokens"] for r in selected) == tokens
+        reviewer_row = next(r for r in rows if r["model"] == "reviewer-sonnet")
+        assert reviewer_row["cached_tokens"] == 3
+        costs = {}
+        if args.pricing:
+            assert reviewer_row["cache_write_tokens"] == 5
+            expected = {"parent": Decimal("0.000196"), "author": Decimal("0.000056"),
+                        "reviewer": Decimal("0.00017275")}
+            for lane, cost in expected.items():
+                actual = sum(Decimal(str(r["cost_usd"])) for r in rows if r["session"] == sessions[lane])
+                assert actual == cost, (lane, actual, cost)
+                costs[lane] = str(actual)
         assert KEY not in json.dumps(rows)
         demo.mux("send-keys", "-t", "demo", "C-d")
         deadline = time.monotonic() + 5
@@ -276,7 +321,9 @@ def run(args):
             raise AssertionError("TUI exit deadline")
         result = {"same_parent_session": True, "verified_author_proposal": True,
             "native_anthropic_reviewer": True, "source_unchanged": True, "workers_reaped": True,
-            "parent_tokens": 140, "author_tokens": 40, "reviewer_tokens": 23, "gateway_rows": 10, "tui_exit": 0}
+            "parent_tokens": 140, "author_tokens": 40, "reviewer_tokens": reviewer_tokens,
+            "tiered_pricing": args.pricing, "shared_parent_author_model": args.shared_model,
+            "distinct_session_ledgers": True, "cost_usd": costs, "gateway_rows": 10, "tui_exit": 0}
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         (root / "status.json").write_text(json.dumps(done, indent=2) + "\n")
         (root / "proposal.json").write_text(json.dumps(author.proposal, indent=2) + "\n")
@@ -303,6 +350,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gateway-root", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--bin-dir", type=Path, default=Path(__file__).resolve().parents[2] / "target" / "debug")
+    parser.add_argument("--shared-model", action="store_true", help="author and parent use one gateway model alias")
+    parser.add_argument("--pricing", action="store_true", help="require tier/cache pricing from gateway #162")
     parser.add_argument("--isolated-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.isolated_root is not None:
@@ -316,8 +365,13 @@ def main():
         directory = root / name
         directory.mkdir(mode=0o700)
         env[key] = str(directory)
-    result = subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), "--isolated-root", str(root),
-        "--gateway-root", str(args.gateway_root.resolve()), "--bin-dir", str(args.bin_dir.resolve())], env=env)
+    command = [sys.executable, "-I", str(Path(__file__).resolve()), "--isolated-root", str(root),
+               "--gateway-root", str(args.gateway_root.resolve()), "--bin-dir", str(args.bin_dir.resolve())]
+    if args.pricing:
+        command.append("--pricing")
+    if args.shared_model:
+        command.append("--shared-model")
+    result = subprocess.run(command, env=env)
     print(f"Isolated mixed-provider evidence: {root}")
     raise SystemExit(result.returncode)
 
