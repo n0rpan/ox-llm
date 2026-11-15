@@ -1,11 +1,18 @@
 # Landing the orchestrator after v0.2.0
 
-Coordinator instruction: replace rollups with independently building/tested PRs
-targeting current main, approximately 1,500 changed lines or fewer per PR. Start
-as drafts; mark ready only after their checks pass. Never push to a queued PR;
-subsequent changes belong in a new slice. Read and answer automated review
-comments at every task boundary. The earlier four-draft/review deferral is
-superseded by this instruction.
+Current coordinator steering: until v0.2.0 ships, retain at most four draft
+PRs, do not mark ready, request reviews or poll hosted checks. Continue local
+acceptance on the rolling branches. The earlier independent-slice landing plan
+below is preparatory history, not authorization to open or ready more PRs.
+
+The release core consolidation retains the complete tested preparation chain
+through `84b745a` and merges the exact heads of #368 (`cf7a72b`) and #396
+(`2258851`), including their main ancestry. Overlapping core files retain the
+newer implementations: owned workspace jobs include Git preparation and worker
+pipes retain their bounded nonblocking implementation. Those two step PRs are
+superseded by this draft; their branches and commits remain available. Historical
+#88, background/goals #129 and assembled CLI/TUI #176 remain intact. No code,
+review clearance, merge or provider acceptance is inferred from consolidation.
 
 Preserved sources: #88 at `ee04d55`, #129 at `f89ba2e`, and #176 at `0be9968`.
 Protocol #22 is merged. Main now uses `oxc/` and package `oxc`; later controller
@@ -32,9 +39,9 @@ are not blanket approval for newly adapted slices.
    boundaries and each under the line limit.
 8. Minimal default-off CLI entrypoints for the completed library capabilities.
 
-Dependencies must be available on main before a dependent PR is presented as an
-independent main-based slice. Preparatory branches may retain work in the meantime;
-queued branches are immutable. Small source modules are not an excuse to omit
+Future independent landing requires dependencies on main. Until release, retain
+the prepared dependency sequence in the core rollup and test locally; do not
+modify queued branch commits. Small source modules are not an excuse to omit
 negative cases, publication ownership or actual-process cleanup evidence.
 
 ## Goals/background (#129), then CLI/TUI integration (#176)
@@ -58,6 +65,6 @@ allowance, account length-limited turns honestly, and prove truncation handling
 with owned mocks before another live experiment. The prior live authorization
 was one-shot and has been consumed; this slice plan authorizes no paid rerun.
 
-Each PR body must give its exact scope, dependencies, current-base adaptation,
-review tier, default-off hooks, local acceptance commands/results and hosted
-check state. No full-evening or provider-billing claim follows from mock tests.
+Each rolling draft records its scope, dependencies, current-base adaptation,
+review tier, default-off hooks and local acceptance commands/results. Hosted
+checks are not polled during release mode. No full-evening or provider-billing claim follows from mock tests.
