@@ -324,7 +324,7 @@ def status(secrets_file):
 
 # ---------------------------------------------------------------- sign-in (CLI)
 class Flow:
-    """One PKCE authorization: verifier, challenge, state and the token exchange."""
+    """One PKCE sign-in flow: verifier, challenge, state and the token exchange."""
 
     def __init__(self, client, base=AUTH_URL, port=REDIRECT_PORT):
         self.client = client
