@@ -1179,3 +1179,25 @@ fn hud_thinking_label_claude_55_effective_effort() {
     let line = hud_for("qwen-local", ThinkingLevel::Off);
     assert!(line.contains("off") && !line.contains("adaptive"), "{line}");
 }
+
+/// #343: at 60 columns a cloud model still shows where it runs and the permission mode.
+#[test]
+fn hud_keeps_location_at_60_columns() {
+    let st = StatusModel {
+        model: "anthropic/claude-haiku-5-5".to_string(),
+        model_remote: true,
+        model_provider: Some("anthropic"),
+        ..full_status()
+    };
+    for width in 60..=70u16 {
+        let line = plain_hud(&st, width);
+        assert!(
+            line.contains("cloud · anthropic"),
+            "location at {width}: {line:?}"
+        );
+        if width >= 70 {
+            assert!(line.contains("workspace"), "mode at {width}: {line:?}");
+        }
+        assert!(line.contains("READY"), "state at {width}: {line:?}");
+    }
+}
