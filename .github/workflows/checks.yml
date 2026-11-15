@@ -310,7 +310,10 @@ jobs:
           HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" XDG_RUNTIME_DIR="$root/r" \
             PYTHONPATH=src python3 -m oxc --help > /dev/null
       - name: oxc black-box conformance (Python reference)
-        run: python3 -m unittest discover -s ../conformance -v
+        run: |
+          export OXC_CONFORMANCE_PYTHON_DEPS="$RUNNER_TEMP/oxc-reference-deps"
+          python3 -m pip --python /usr/bin/python3 install --target "$OXC_CONFORMANCE_PYTHON_DEPS" anthropic==0.125.0
+          /usr/bin/python3 ../conformance/run_suite.py all --python
 
   scans:
     name: secret scan, SDK-material check, product isolation

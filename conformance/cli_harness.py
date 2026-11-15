@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 
-from environment import ROOT, isolated_env, PYTHON
+from environment import ROOT, isolated_env, PYTHON, python_dependency_mounts
 
 CANONICAL_HOME = Path('/home/oxc-conformance')  # Synthetic namespace mount.
 
@@ -26,6 +26,7 @@ def invoke_case(name, script=None, network_admin=False, timeout=25):
                    # Hosted checkouts can be inside /home (or /tmp). Keep just
                    # the source checkout visible after replacing those roots.
                    '--ro-bind', str(ROOT), str(ROOT),
+                   *python_dependency_mounts(env),
                    '--bind', str(home), str(CANONICAL_HOME),
                    '--setenv', 'HOME', str(CANONICAL_HOME), '--',
                    PYTHON, str(Path(script or ROOT / 'conformance/test_cli_runtime.py').resolve()), '--case', name]

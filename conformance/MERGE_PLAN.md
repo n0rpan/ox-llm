@@ -1,105 +1,71 @@
-# Reviewable Rust controller migration
+# Reviewable Rust cloud migration
 
-Ported up to main `fc869d07b4b56926c00cc725df27484856c2dc25`.
-Last main review: 2026-11-15 UTC. The latest follow-up protects worktree gitdir
-metadata, fixes nested-HOME tmpfs ordering in oxa's sandbox and re-pins its
-built-in PR skill prefix hashes. These changes affect oxa only; the lab subtree
-is byte-identical to the reference used for the full 891-scenario runs. Earlier
-stager helper cleanup and release/ARM64 CI guidance remain incorporated. OAuth
-implementation remains pending project registration.
+Ported up to main `15fe33d6f53e61639b4232a2d229f66444c37f0d`.
+Main is incorporated with normal merges. Never rebase or force-push a published
+branch. Directory/package names follow main: `oxc/`, `oxc`, applicable `OXC_*`
+variables; retained `LOCAL_LLM_*`, cache paths and schema identifiers keep their
+reference meanings. Python remains the behavior reference.
 
-## Priority and source of truth
+#28 is a draft integration/proof branch and must not be merged as a monolith.
+The other lane owns #177, #186 and #197; do not push their branches. #177 has
+landed on current main. New work uses `rust-oxc/cloud-<name>` branches, separate
+PRs against main and roughly 1,500 lines per slice, including their own contracts.
+Do not push a queued PR; put follow-ups in a new small PR. Never merge our PRs.
 
-Cloud-only means **no local engine**: no engine/model installation, launch,
-preload, inference lease acquisition, local qualification or host-memory
-admission on the remote request path. The first complete A/B target is this
-mode on Linux x86_64 and arm64, using loopback mock providers and synthetic keys.
-Hardware A/B waits until the cloud-only reference and Rust suites are green.
+## Cloud-only first
 
-On this main, #24 and the cloud-only stack (#78, #79, #80, #82, #84) are still
-unmerged. #81 is an unrelated orchestrator PR; #83 is not a pull request.
-Do not port the earlier gateway implementation. After #24 lands, capture its
-actual HTTP/file/process behavior first, then port it. Repeat for the cloud-only
-stack as it lands; branch-only behavior is not a frozen main contract.
-Studio and remaining local-engine adapters follow cloud-only completion.
+The target has no local engine installation, construction, qualification, model,
+memory admission or inference lease use. Owned mocks and a foreign held lease
+prove this on Linux x86_64/arm64 without Snapdragon. Hardware A/B waits until the
+complete cloud-only suite is green. Do not change Python behavior to match Rust.
 
-## How the code will land
-
-#28 remains the draft integration/proof branch, not a merge-sized change.
-Use only `rust-oxc/*` branches. Extract each slice into its own draft PR based
-on main or the immediately
-preceding slice. Do not hide the entire existing port behind the first PR's flag.
-Each slice must build independently with only its necessary modules, fixtures
-and goldens. Split coupled modules such as CLI execution, daemon dispatch and
-proxy finalization before extracting them. No temporary Python fallback.
-
-The initial PR introduces an opt-in `native-controller` Cargo feature with no
-default features and a separate native binary requiring that feature. Existing
-installation scripts and service ExecStart lines keep using Python. Subsequent
-PRs extend that binary; enabling native installation is a final, separately
-reviewed change after complete parity. Unsupported native commands must refuse
-explicitly until their slice lands. No existing user path switches by default.
-
-Aim for roughly 500–2,000 handwritten product lines per PR; a larger slice must
-be split at its behavior boundary. Generated Unicode tables and immutable JSON
-goldens get separate file/provenance summaries rather than inflating the product
-diff. A PR includes only its own conformance subset and direct dependencies.
-
-| Order / separate PR | Scope and dependency | Conformance gate |
+| Slice | Scope | Required conformance |
 | --- | --- | --- |
-| 0. Contract tooling | Isolated process harness, slice inventory and reference provenance. No product behavior changes. | Inventory accounts for every captured method exactly once; reference subsets pass. |
-| 1. CLI grammar and config | Parser extraction is draft [#177](https://github.com/oxstack/ox-llm/pull/177); config follows separately. Binary scaffold; parser/help and path/config reader/writer, separated from command execution. T2. | `test_cli`; config preservation/mode/symlink contracts moved out of engine-dependent tests. |
-| 2a. CLI control requests | Draft [#186](https://github.com/oxstack/ox-llm/pull/186), stacked on #177. Independent 280-line client/control implementation; seven commands, 64 KiB replies, stalled-read timeouts and notifications. T3 for controls/CI. | 33 control scenarios, hosted-checkout regression, parser dependencies and 14 unsupported-command refusals; no engine. |
-| 2b. Read-only ledger CLI | Draft [#197](https://github.com/oxstack/ox-llm/pull/197), stacked on #186. Independent 279-line reader/home/JSON/dispatch extraction, no engine/gateway. T3. | 12 file/limit scenarios, parser/control dependencies and 13 unsupported-command refusals; exact copied reference goldens. |
-| 2c. Remaining CLI execution | Status projection and desktop exec handshake, extracted separately after 2a. T2/T3. | Respective `cli-config` contracts with synthetic HTTP/system peers. |
-| 3. HTTP transport and gates | Framing, limits, Host/Origin/CORS/auth, request IDs and engine-free dispatch, depending on 1. Reply/policy code is now a separate 428-line module with no engine/model/proxy dependency; the runtime supplies its sharing context. Extract transport/policy before routing/admission. T3. | `http-foundation`; gate subset of `http-admission` adapted to no-engine fixtures before extraction. |
-| 4. Request records | Private HMAC identity/files and bounded usage records, separated from local engine bookkeeping, depending on 3. T3. | File/privacy cases from `ledger`; remote settlement cases captured after #24. |
-| 5. Cloud-only catalog and policy | Main's remote catalog/capabilities, cloud-off/offline rules, status/health with no engine, depending on 3. T3. | New Python contracts after #24/#78; no fake engine or weight files; held foreign lease remains untouched. |
-| 6. Cloud credentials and spend | Request-time private secrets, redaction, reservations, daily limits, unknown prices and settlement, depending on 4–5. T3. | New gateway refusal/concurrency/cancellation and file interoperability contracts after #24. |
-| 7. OpenRouter / OpenAI Chat | Exact upstream request/reply and SSE/tool/usage behavior, depending on 6. T3. Split by provider if needed. | Loopback provider goldens; request counts prove no paid retry or local fallback. |
-| 8. OpenAI Responses | Continuation state/binding/expiry, history recovery and streaming, depending on 7. T3. | New #24 continuation/tool-history/identity contracts; fresh-turn and unresolved-state refusals. |
-| 9. Native Anthropic Messages | Native protocol mapping, thinking/cache/tool streaming and errors, depending on 6. T3. | New #24 mock Messages contracts. Native Rust HTTP adapter, no Python runtime dependency. |
-| 10. Cloud-only installation | Engine-free native bundle, config and optional service, depending on 7–9. T3. Still opt-in. | New #79/#84 install/start/stop/private-file round trips; no models, local binaries or credentials copied. Complete `cloud-only` gate. |
-| 11. Local lifecycle | Lazy startup/lease/auth/session, guard, cancellation/reaping and local admission, depending on 3–4. T3. Separate guard/progress hooks if needed. | `engine-lifecycle`, local `http-admission`, numeric engine ledger. |
-| 12. Cache and harness | Storage readers, config controls, cache mutation and engine-owned adapters, depending on 11. T3. Separate read-only, mutation and harness PRs. | Respective modules in `cache-harness`; Python/Rust/Python file cases. |
-| 13. Sharing | Keys/config first, then network/TLS listeners and shared admission/finalization, depending on 11. T3; three PRs. | Respective modules in `auth-sharing`, including real I/O deadlines. |
-| 14. Receipt tools | Native scanner/exporter/scrubber, Unicode facts and provenance; independent of engines. T3. | `receipt-tools`, unchanged original repository scanners and old goldens. |
-| 15. Local installer | Descriptor-anchored transaction primitives first, then native bootstrap/bundles, depending on 11 and later Studio completion. T3; two PRs. | `installer`; exact units except explicit native ExecStart, unchanged size bound and journal interoperability. |
-| 16. Updates and uninstall | Separate update/recovery and deletion PRs on the transaction primitives. T3. | Their respective modules in `updates-uninstall`, owner edits, refusal and rollback round trips. |
-| 17. Studio | Metadata/page/files, then CPU jobs/pixel operations, then Oxi/NPU IPC; separate PRs after cloud-only. T3 for ownership/files/IPC. | `studio`, with separate case sets as each path is completed. No SDK/device/model material. |
-| 18. Default switch | Installation/runtime selection only after remaining parity gaps are closed and owner readiness review. T3. | All conformance, required CI, rollback proof; hardware lane stays with owner. |
+| a. Discovery metadata | [#294](https://github.com/oxstack/ox-llm/pull/294), head `82beba1`: opt-in `oxc-gateway` library, empty defaults; model/chooser rows, model limits, health and startup line. No installed binary or full HTTP adapter. | Eight Python HTTP/native library cases: three providers, cloud off/default/offline, ignored local profile, invalid entries; held foreign lease, no config mutation or inference request. PASS. |
+| b. Policy refusals | Cloud credentials unavailable, offline, budget exhausted/missing, unknown price and LAN guests refused before forwarding. | Exact public errors, zero provider requests and no local admission. |
+| c. Secrets and redaction | Private request-time files, ownership/mode/no-follow checks; JSON and split-stream redaction. Never expose keys or credential paths in errors/ledgers. | File rotation and malformed/symlink/permission cases, escaped and split secrets, metadata/tool deltas. |
+| d. Accounting | Daily cap, atomic reservations, conservative missing-usage/cancel settlement, private remote ledger and cache read/write pricing. | Concurrent cap, failures, ledger health/privacy, seeded spend and explicit 95% cache-hit prices (#283). |
+| e. OpenRouter | Privacy preferences, JSON/SSE/tools, no paid retry, bounded responses and cancellation. | Owned loopback upstream, exact request/reply frames and settlement. |
+| f. OpenAI | Supported Chat and Responses models, translations, long tool loops and identity-bound opaque continuation. | Main #251/#246 closed-history replay, current open call, missing/expired state and credential/history binding; JSON/SSE/tools/cancel. |
+| g. Anthropic | Native Messages protocol, thinking/signatures, tools and cache controls, usage/cache-write settlement. | Owned native Messages mock, exact translations/frames, long thinking/tool history and cancellation. |
+| h. Installation/integration | Engine-free install, native launcher/config/optional unit and full authenticated HTTP composition. Still opt-in. | Install/start/stop, existing config, force, symlinks, quoting, preserved credentials, no local model/engine or Python fallback. Complete cloud-only gate. |
+| i. In-process library | Same gateway policy, secrets and accounting in oxa and `oxc serve` (#289). | Identical engine-free contracts in both adapters; packaging/retirement is later. |
 
-## Runnable gates and pending contracts
+Independent library/contract work can proceed while earlier slices are reviewed.
+Keep subsequent dependent work local or draft until its prerequisite is on main,
+so each final PR diff stays small. Do not make unrelated slices dependencies of
+the cloud path. Existing transport extraction #271 remains a separate draft.
 
-`slices.json` assigns every currently captured unittest method to one review
-subset. These are extraction/verification groups, not a claim that each coupled
-module can be copied unchanged into a new PR. `run_suite.py` audits that inventory
-before running and sets **all seven** command overrides for a native run.
+## Reference and test discipline
+
+The current integration inventory has 108 methods assigned exactly once. New
+Python contracts cover nine catalog, 24 gateway wire/accounting and 15 installer
+scenarios. Those are subsets, not complete native cloud parity. Full cloud-only
+and gateway gates must not pass as empty suites or silently fall back to Python.
+
+The harness uses `/usr/bin/python3`, isolated HOME/environment, fixed CPU
+frequency/thermal/memory counters, usage-wrap normalization and synthetic peers.
+The Python Anthropic SDK is pinned to the reference requirement; an explicitly
+supplied dependency directory is mounted read-only through private namespaces.
+All cloud captures have private networks, including the public-price background
+thread, and never read a real credential or contact a public API. No sign-in.
 
 ```sh
-python3 conformance/run_suite.py cloud-foundation --python
-python3 conformance/run_suite.py cloud-foundation --native /absolute/path/to/oxc
-python3 conformance/run_suite.py engine-lifecycle --native /absolute/path/to/oxc
-python3 conformance/run_suite.py all --list
+/usr/bin/python3 conformance/run_suite.py all --list
+OXC_CONFORMANCE_PYTHON_DEPS=/absolute/pinned/dependencies /usr/bin/python3 conformance/run_suite.py cloud-catalog --python
+OXC_CONFORMANCE_PYTHON_DEPS=/absolute/pinned/dependencies /usr/bin/python3 conformance/run_suite.py cloud-gateway-wire --python
+OXC_CONFORMANCE_PYTHON_DEPS=/absolute/pinned/dependencies /usr/bin/python3 conformance/run_suite.py cloud-installer --python
+/usr/bin/python3 conformance/run_suite.py cloud-installer --native /absolute/native/oxc
 ```
 
-`cloud-foundation` currently checks CLI behavior and engine-free HTTP gates. It
-does not prove cloud-only mode. `cloud-only`, `cloud-gateway` and `cloud-installer`
-exit with an explicit pending-baseline error instead of passing empty suites or
-skipping tests. Replace those errors with real captured contracts after the
-corresponding main changes land. The completed cloud-only profile must cover
-all three upstream protocols, JSON/SSE/tools, Responses continuation, discovery
-and health, cloud off/offline, request-time key refresh/refusals, reservations and
-settlement, ledger privacy, cancellation, install/start/stop and absence of local
-engine activity. Every upstream is an owned loopback mock; no real key is read.
+Local validation precedes ready status. Draft pushes run cheap formatting and
+mandatory scans; mark a slice ready when its conformance subset is green. Never
+poll CI: use one blocking checks watch if waiting, or continue other work.
+Read automated review comments at each task boundary and answer them. The review
+on #294 at `82beba1` reported no findings and has been acknowledged.
 
-Follow main daily during active work and before each slice is readied. Merge
-normally, review controller/test/config changes, capture changed contracts before
-adjusting Rust, and update the exact SHA above, the parity matrix and #28's first
-line. Keep slices draft while iterating; local checks precede pushes. Draft CI
-runs formatting/scans. Request full CI deliberately when a slice is reviewable,
-and use one blocking checks watch if waiting is necessary. Nothing merges here.
-
-Release hold: until v0.2.0 ships, keep all migration PRs draft, request no
-reviews/full CI and continue local implementation and main follow-up. After the
-release, reviews go through the orchestrator (Fable) and oxa, not Codex.
+Follow main daily and at slice boundaries, using normal merges. Capture changed
+Python contracts before porting changes. Keep this SHA and #28's first body line
+current. The immutable synthetic benchmarks remain historical evidence only;
+they do not demonstrate hardware or cloud parity. Local engine/Studio adapters
+and default installation remain deferred behind cloud-only completion.

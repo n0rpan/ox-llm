@@ -1,0 +1,3625 @@
+{
+  "anthropic-cache": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": true,
+        "openai": false,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 0.000163
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cache_write_tokens": 40,
+          "cached_tokens": 950,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 0.000163,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 1000,
+          "remote": true,
+          "remote_model": "claude-sonnet-5-5",
+          "remote_provider": "anthropic",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic cloud reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "msg_mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 1000,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 40,
+            "cached_tokens": 950
+          },
+          "total_tokens": 1004
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cache_write_tokens": 40,
+        "cached_tokens": 950,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 0.000163,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 1000,
+        "remote": true,
+        "remote_model": "claude-sonnet-5-5",
+        "remote_provider": "anthropic",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": {
+                    "type": "ephemeral"
+                  },
+                  "text": "Synthetic private cloud prompt.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "model": "claude-sonnet-5-5"
+        },
+        "headers": {
+          "accept": "application/json",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-api-key": "<synthetic:provider-key>"
+        },
+        "method": "POST",
+        "path": "/v1/messages"
+      }
+    ]
+  },
+  "anthropic-json": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": true,
+        "openai": false,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 2.5e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cache_write_tokens": 0,
+          "cached_tokens": 3,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 5,
+          "cost_usd": 2.5e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 15,
+          "remote": true,
+          "remote_model": "claude-sonnet-5-5",
+          "remote_provider": "anthropic",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Anthropic reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "msg_mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 5,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 15,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 3
+          },
+          "total_tokens": 20
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cache_write_tokens": 0,
+        "cached_tokens": 3,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 5,
+        "cost_usd": 2.5e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 15,
+        "remote": true,
+        "remote_model": "claude-sonnet-5-5",
+        "remote_provider": "anthropic",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": {
+                    "type": "ephemeral"
+                  },
+                  "text": "Synthetic private cloud prompt.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "model": "claude-sonnet-5-5"
+        },
+        "headers": {
+          "accept": "application/json",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-api-key": "<synthetic:provider-key>"
+        },
+        "method": "POST",
+        "path": "/v1/messages"
+      }
+    ]
+  },
+  "anthropic-sse": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": true,
+        "openai": false,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 2.5e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cache_write_tokens": 0,
+          "cached_tokens": 3,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 5,
+          "cost_usd": 2.5e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 15,
+          "remote": true,
+          "remote_model": "claude-sonnet-5-5",
+          "remote_provider": "anthropic",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": true,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": null,
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "chatcmpl_anthropic",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Anthropic "
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "chatcmpl_anthropic",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "reply."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "chatcmpl_anthropic",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "created": "<current:unix-seconds>",
+          "id": "chatcmpl_anthropic",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cache_write_tokens": 0,
+        "cached_tokens": 3,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 5,
+        "cost_usd": 2.5e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 15,
+        "remote": true,
+        "remote_model": "claude-sonnet-5-5",
+        "remote_provider": "anthropic",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": true,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": {
+                    "type": "ephemeral"
+                  },
+                  "text": "Synthetic private cloud prompt.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "model": "claude-sonnet-5-5",
+          "stream": true
+        },
+        "headers": {
+          "accept": "application/json",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-api-key": "<synthetic:provider-key>"
+        },
+        "method": "POST",
+        "path": "/v1/messages"
+      }
+    ]
+  },
+  "anthropic-thinking": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": true,
+        "openai": false,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 2.5e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cache_write_tokens": 0,
+          "cached_tokens": 3,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 5,
+          "cost_usd": 2.5e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 15,
+          "remote": true,
+          "remote_model": "claude-sonnet-5-5",
+          "remote_provider": "anthropic",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Anthropic reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "msg_mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 5,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 15,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 3
+          },
+          "total_tokens": 20
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cache_write_tokens": 0,
+        "cached_tokens": 3,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 5,
+        "cost_usd": 2.5e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 15,
+        "remote": true,
+        "remote_model": "claude-sonnet-5-5",
+        "remote_provider": "anthropic",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": {
+                    "type": "ephemeral"
+                  },
+                  "text": "Synthetic private cloud prompt.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "model": "claude-sonnet-5-5",
+          "output_config": {
+            "effort": "high"
+          },
+          "thinking": {
+            "type": "adaptive"
+          }
+        },
+        "headers": {
+          "accept": "application/json",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-api-key": "<synthetic:provider-key>"
+        },
+        "method": "POST",
+        "path": "/v1/messages"
+      }
+    ]
+  },
+  "anthropic-tools": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": true,
+        "openai": false,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 2.2e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 5,
+          "cost_usd": 2.2e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "tool_calls",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 1,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 12,
+          "remote": true,
+          "remote_model": "claude-sonnet-5-5",
+          "remote_provider": "anthropic",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "tool_calls",
+            "index": 0,
+            "message": {
+              "content": null,
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "function": {
+                    "arguments": "{\"value\": 7}",
+                    "name": "synthetic_tool"
+                  },
+                  "id": "tool_synthetic",
+                  "type": "function"
+                }
+              ]
+            }
+          }
+        ],
+        "created": "<current:unix-seconds>",
+        "id": "msg_mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 5,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 12,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "total_tokens": 17
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cache_write_tokens": 0,
+        "cached_tokens": 0,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 5,
+        "cost_usd": 2.2e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "tool_calls",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 1,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 12,
+        "remote": true,
+        "remote_model": "claude-sonnet-5-5",
+        "remote_provider": "anthropic",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": [
+                {
+                  "cache_control": {
+                    "type": "ephemeral"
+                  },
+                  "text": "Synthetic private cloud prompt.",
+                  "type": "text"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "model": "claude-sonnet-5-5",
+          "tool_choice": {
+            "type": "auto"
+          },
+          "tools": [
+            {
+              "cache_control": {
+                "type": "ephemeral"
+              },
+              "description": "Synthetic tool.",
+              "input_schema": {
+                "properties": {
+                  "value": {
+                    "type": "integer"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "synthetic_tool"
+            }
+          ]
+        },
+        "headers": {
+          "accept": "application/json",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-api-key": "<synthetic:provider-key>"
+        },
+        "method": "POST",
+        "path": "/v1/messages"
+      }
+    ]
+  },
+  "openai-cache": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": true,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 0.000163
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cache_write_tokens": 40,
+          "cached_tokens": 950,
+          "catalog_cost_usd": 0.000163,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 0.000163,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 1000,
+          "remote": true,
+          "remote_model": "gpt-4.1",
+          "remote_provider": "openai",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic cloud reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 1000,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 40,
+            "cached_tokens": 950
+          },
+          "total_tokens": 1004
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cache_write_tokens": 40,
+        "cached_tokens": 950,
+        "catalog_cost_usd": 0.000163,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 0.000163,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 1000,
+        "remote": true,
+        "remote_model": "gpt-4.1",
+        "remote_provider": "openai",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_completion_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "gpt-4.1",
+          "store": false,
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "openai-chat": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": true,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 1.9e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "catalog_cost_usd": 1.9e-05,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 1.9e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 11,
+          "remote": true,
+          "remote_model": "gpt-4.1",
+          "remote_provider": "openai",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic cloud reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 11,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 15
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "catalog_cost_usd": 1.9e-05,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 1.9e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 11,
+        "remote": true,
+        "remote_model": "gpt-4.1",
+        "remote_provider": "openai",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_completion_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "gpt-4.1",
+          "store": false,
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "openai-chat-sse": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": true,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 1.9e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "catalog_cost_usd": 1.9e-05,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 1.9e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 11,
+          "remote": true,
+          "remote_model": "gpt-4.1",
+          "remote_provider": "openai",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": true,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "",
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "id": "chatcmpl-mock",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Synthetic cloud reply."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "id": "chatcmpl-mock",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "id": "chatcmpl-mock",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [],
+          "id": "chatcmpl-mock",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk",
+          "usage": {
+            "completion_tokens": 4,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 11,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 15
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "catalog_cost_usd": 1.9e-05,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 1.9e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 11,
+        "remote": true,
+        "remote_model": "gpt-4.1",
+        "remote_provider": "openai",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": true,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_completion_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "gpt-4.1",
+          "store": false,
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          }
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "openai-responses": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": true,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 1.9e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cached_tokens": 0,
+          "catalog_cost_usd": 1.9e-05,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 1.9e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 11,
+          "remote": true,
+          "remote_model": "gpt-6-luna",
+          "remote_provider": "openai",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic response reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "resp_synthetic",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 11,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 15
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cached_tokens": 0,
+        "catalog_cost_usd": 1.9e-05,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 1.9e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 11,
+        "remote": true,
+        "remote_model": "gpt-6-luna",
+        "remote_provider": "openai",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "include": [
+            "reasoning.encrypted_content"
+          ],
+          "input": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "max_output_tokens": 32,
+          "model": "gpt-6-luna",
+          "reasoning": {
+            "effort": "medium"
+          },
+          "store": false,
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/responses"
+      }
+    ]
+  },
+  "openai-responses-cache": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": true,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 0.000163
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cache_write_tokens": 40,
+          "cached_tokens": 950,
+          "catalog_cost_usd": 0.000163,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 0.000163,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 1000,
+          "remote": true,
+          "remote_model": "gpt-6-luna",
+          "remote_provider": "openai",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic response reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "resp_synthetic",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 1000,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 40,
+            "cached_tokens": 950
+          },
+          "total_tokens": 1004
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cache_write_tokens": 40,
+        "cached_tokens": 950,
+        "catalog_cost_usd": 0.000163,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 0.000163,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 1000,
+        "remote": true,
+        "remote_model": "gpt-6-luna",
+        "remote_provider": "openai",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "include": [
+            "reasoning.encrypted_content"
+          ],
+          "input": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "max_output_tokens": 32,
+          "model": "gpt-6-luna",
+          "reasoning": {
+            "effort": "medium"
+          },
+          "store": false,
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/responses"
+      }
+    ]
+  },
+  "router-budget": {
+    "cloud_status": {
+      "daily_budget_usd": 1e-09,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 0.0
+    },
+    "public_ledger": {
+      "answered": 0,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": null
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "client": null,
+          "completeness": "errored",
+          "cost_usd": 0.0,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": "budget_exceeded",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "remote": true,
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "not_forwarded",
+          "status": 429,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "error": {
+          "code": "budget_exceeded",
+          "message": "The daily cloud budget is exhausted.",
+          "param": "model",
+          "type": "rate_limit_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 429,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "client": null,
+        "completeness": "errored",
+        "cost_usd": 0.0,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": "budget_exceeded",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "remote": true,
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "not_forwarded",
+        "status": 429,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": []
+  },
+  "router-cache": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 0.000163
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "cache_write_tokens": 40,
+          "cached_tokens": 950,
+          "catalog_cost_usd": 0.000163,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 0.000163,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 1000,
+          "remote": true,
+          "remote_model": "synthetic/upstream",
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic cloud reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 1000,
+          "prompt_tokens_details": {
+            "cache_write_tokens": 40,
+            "cached_tokens": 950
+          },
+          "total_tokens": 1004
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "cache_write_tokens": 40,
+        "cached_tokens": 950,
+        "catalog_cost_usd": 0.000163,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 0.000163,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 1000,
+        "remote": true,
+        "remote_model": "synthetic/upstream",
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "synthetic/upstream",
+          "provider": {
+            "data_collection": "deny",
+            "zdr": true
+          },
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "router-disabled": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": false,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 0,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 0.0
+    },
+    "public_ledger": {
+      "answered": 0,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": null
+      },
+      "object": "list",
+      "rows": []
+    },
+    "reply": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [],
+    "upstream": []
+  },
+  "router-error-redaction": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 0.08008
+    },
+    "public_ledger": {
+      "answered": 0,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": null
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "catalog_cost_usd": 0.0,
+          "client": null,
+          "completeness": "errored",
+          "cost_usd": 0.08008,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": "cloud_upstream_error",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "remote": true,
+          "remote_model": "synthetic/upstream",
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "reserved",
+          "status": 401,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "usage_missing": true,
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "error": {
+          "code": "upstream_error",
+          "message": "Synthetic provider refusal: [redacted]",
+          "param": null,
+          "type": "upstream_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 401,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "catalog_cost_usd": 0.0,
+        "client": null,
+        "completeness": "errored",
+        "cost_usd": 0.08008,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": "cloud_upstream_error",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "remote": true,
+        "remote_model": "synthetic/upstream",
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "reserved",
+        "status": 401,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "usage_missing": true,
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "synthetic/upstream",
+          "provider": {
+            "data_collection": "deny",
+            "zdr": true
+          },
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "router-json": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 1.9e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "catalog_cost_usd": 1.9e-05,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 1.9e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 11,
+          "remote": true,
+          "remote_model": "synthetic/upstream",
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic cloud reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 11,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 15
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "catalog_cost_usd": 1.9e-05,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 1.9e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 11,
+        "remote": true,
+        "remote_model": "synthetic/upstream",
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "synthetic/upstream",
+          "provider": {
+            "data_collection": "deny",
+            "zdr": true
+          },
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "router-key-mode": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 0.0
+    },
+    "public_ledger": {
+      "answered": 0,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": null
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "client": null,
+          "completeness": "errored",
+          "cost_usd": 0.0,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": "cloud_credentials_unavailable",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "remote": true,
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "not_forwarded",
+          "status": 503,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "error": {
+          "code": "cloud_credentials_unavailable",
+          "message": "Cloud credentials are not configured: the file is not mode 0600 (group/other permissions must be off).",
+          "param": "model",
+          "type": "cloud_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "client": null,
+        "completeness": "errored",
+        "cost_usd": 0.0,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": "cloud_credentials_unavailable",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "remote": true,
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "not_forwarded",
+        "status": 503,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": []
+  },
+  "router-key-symlink": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 0.0
+    },
+    "public_ledger": {
+      "answered": 0,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": null
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "client": null,
+          "completeness": "errored",
+          "cost_usd": 0.0,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": "cloud_credentials_unavailable",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "remote": true,
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "not_forwarded",
+          "status": 503,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "error": {
+          "code": "cloud_credentials_unavailable",
+          "message": "Cloud credentials are not configured: the configured path is a symbolic link.",
+          "param": "model",
+          "type": "cloud_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "client": null,
+        "completeness": "errored",
+        "cost_usd": 0.0,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": "cloud_credentials_unavailable",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "remote": true,
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "not_forwarded",
+        "status": 503,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": []
+  },
+  "router-no-key": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": false
+      },
+      "rejected": {},
+      "spend_today_usd": 0.0
+    },
+    "public_ledger": {
+      "answered": 0,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": null
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "client": null,
+          "completeness": "errored",
+          "cost_usd": 0.0,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": "cloud_credentials_unavailable",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "remote": true,
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "not_forwarded",
+          "status": 503,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "error": {
+          "code": "cloud_credentials_unavailable",
+          "message": "Cloud credentials are not configured.",
+          "param": "model",
+          "type": "cloud_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "client": null,
+        "completeness": "errored",
+        "cost_usd": 0.0,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": "cloud_credentials_unavailable",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "remote": true,
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "not_forwarded",
+        "status": 503,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": []
+  },
+  "router-no-price": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 0.0
+    },
+    "public_ledger": {
+      "answered": 0,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": null
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "client": null,
+          "completeness": "errored",
+          "cost_usd": 0.0,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": "cloud_pricing_unavailable",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "remote": true,
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "not_forwarded",
+          "status": 400,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "error": {
+          "code": "cloud_pricing_unavailable",
+          "message": "Cloud models need catalog pricing or explicit free: true.",
+          "param": "pricing",
+          "type": "cloud_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 400,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "client": null,
+        "completeness": "errored",
+        "cost_usd": 0.0,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": "cloud_pricing_unavailable",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "remote": true,
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "not_forwarded",
+        "status": 400,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": []
+  },
+  "router-no-usage": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 0.08008
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "catalog_cost_usd": 0.0,
+          "client": null,
+          "completeness": "incomplete",
+          "cost_usd": 0.08008,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "remote": true,
+          "remote_model": "synthetic/upstream",
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "reserved",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "usage_missing": true,
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic cloud reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "catalog_cost_usd": 0.0,
+        "client": null,
+        "completeness": "incomplete",
+        "cost_usd": 0.08008,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "remote": true,
+        "remote_model": "synthetic/upstream",
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "reserved",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "usage_missing": true,
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "synthetic/upstream",
+          "provider": {
+            "data_collection": "deny",
+            "zdr": true
+          },
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "router-offline": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": true,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 0.0
+    },
+    "public_ledger": {
+      "answered": 0,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": null
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "client": null,
+          "completeness": "errored",
+          "cost_usd": 0.0,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": "offline",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "remote": true,
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "not_forwarded",
+          "status": 403,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "error": {
+          "code": "offline",
+          "message": "Cloud models are unavailable in offline mode.",
+          "param": "model",
+          "type": "permission_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 403,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "client": null,
+        "completeness": "errored",
+        "cost_usd": 0.0,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": "offline",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "remote": true,
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "not_forwarded",
+        "status": 403,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": []
+  },
+  "router-privacy": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 1.9e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "catalog_cost_usd": 1.9e-05,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 1.9e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 11,
+          "remote": true,
+          "remote_model": "synthetic/upstream",
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic cloud reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 11,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 15
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "catalog_cost_usd": 1.9e-05,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 1.9e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 11,
+        "remote": true,
+        "remote_model": "synthetic/upstream",
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "synthetic/upstream",
+          "provider": {
+            "data_collection": "deny",
+            "zdr": true
+          },
+          "stream": false
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "router-sse": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 1.9e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "catalog_cost_usd": 1.9e-05,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 1.9e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 0,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 11,
+          "remote": true,
+          "remote_model": "synthetic/upstream",
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": true,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "",
+                "role": "assistant"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "id": "chatcmpl-mock",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Synthetic cloud reply."
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ],
+          "id": "chatcmpl-mock",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "stop",
+              "index": 0
+            }
+          ],
+          "id": "chatcmpl-mock",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk"
+        },
+        {
+          "choices": [],
+          "id": "chatcmpl-mock",
+          "model": "synthetic-cloud",
+          "object": "chat.completion.chunk",
+          "usage": {
+            "completion_tokens": 4,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 11,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 15
+          }
+        },
+        "[DONE]"
+      ],
+      "content-type": "text/event-stream",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "catalog_cost_usd": 1.9e-05,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 1.9e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 0,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 11,
+        "remote": true,
+        "remote_model": "synthetic/upstream",
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": true,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "synthetic/upstream",
+          "provider": {
+            "data_collection": "deny",
+            "zdr": true
+          },
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          }
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  },
+  "router-tools": {
+    "cloud_status": {
+      "daily_budget_usd": 1.0,
+      "enabled": true,
+      "ledger_error": null,
+      "ledger_ok": true,
+      "models": 1,
+      "offline": false,
+      "providers": {
+        "anthropic": false,
+        "openai": false,
+        "openrouter": true
+      },
+      "rejected": {},
+      "spend_today_usd": 1.9e-05
+    },
+    "public_ledger": {
+      "answered": 1,
+      "available": true,
+      "medians": {
+        "admit_ms": null,
+        "predicted_tokens_per_second": null,
+        "prompt_tokens_per_second": null,
+        "queue_wait_ms": null,
+        "ttfb_ms": null,
+        "wall_ms": "<measured:nonnegative-ms>"
+      },
+      "object": "list",
+      "rows": [
+        {
+          "agent": null,
+          "catalog_cost_usd": 1.9e-05,
+          "client": null,
+          "completeness": "incomplete",
+          "completion_tokens": 4,
+          "cost_usd": 1.9e-05,
+          "ctl_prep_ms": "<measured:nonnegative-ms>",
+          "error": null,
+          "finish_reason": "stop",
+          "gap_ms": null,
+          "history_change": "initial",
+          "history_common_messages": 0,
+          "id": "<generated:ledger_12hex>",
+          "last_role": "user",
+          "max_tokens": 32,
+          "model": "synthetic-cloud",
+          "n_messages": 1,
+          "n_tool_msgs": 0,
+          "n_tools": 1,
+          "origin": "organic",
+          "path": "/v1/chat/completions",
+          "prompt_tokens": 11,
+          "remote": true,
+          "remote_model": "synthetic/upstream",
+          "remote_provider": "openrouter",
+          "session": "db12ab3283049803",
+          "settled": "usage",
+          "status": 200,
+          "stream": false,
+          "t": "<current:unix-seconds>",
+          "temperature": null,
+          "tool_bytes": [],
+          "wall_ms": "<measured:nonnegative-ms>"
+        }
+      ]
+    },
+    "reply": {
+      "body": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "Synthetic cloud reply.",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1,
+        "id": "chatcmpl-mock",
+        "model": "synthetic-cloud",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "prompt_tokens": 11,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "total_tokens": 15
+        }
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "rows": [
+      {
+        "agent": null,
+        "catalog_cost_usd": 1.9e-05,
+        "client": null,
+        "completeness": "incomplete",
+        "completion_tokens": 4,
+        "cost_usd": 1.9e-05,
+        "ctl_prep_ms": "<measured:nonnegative-ms>",
+        "error": null,
+        "finish_reason": "stop",
+        "gap_ms": null,
+        "history_change": "initial",
+        "history_common_messages": 0,
+        "id": "<generated:ledger_12hex>",
+        "last_role": "user",
+        "max_tokens": 32,
+        "model": "synthetic-cloud",
+        "n_messages": 1,
+        "n_tool_msgs": 0,
+        "n_tools": 1,
+        "origin": "organic",
+        "path": "/v1/chat/completions",
+        "prompt_tokens": 11,
+        "remote": true,
+        "remote_model": "synthetic/upstream",
+        "remote_provider": "openrouter",
+        "session": "db12ab3283049803",
+        "settled": "usage",
+        "status": 200,
+        "stream": false,
+        "t": "<current:unix-seconds>",
+        "temperature": null,
+        "tool_bytes": [],
+        "wall_ms": "<measured:nonnegative-ms>"
+      }
+    ],
+    "upstream": [
+      {
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "Synthetic private cloud prompt.",
+              "role": "user"
+            }
+          ],
+          "model": "synthetic/upstream",
+          "provider": {
+            "data_collection": "deny",
+            "zdr": true
+          },
+          "stream": false,
+          "tools": [
+            {
+              "function": {
+                "description": "Synthetic tool.",
+                "name": "synthetic_tool",
+                "parameters": {
+                  "properties": {
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "function"
+            }
+          ]
+        },
+        "headers": {
+          "accept": "application/json",
+          "authorization": "<synthetic:provider-key>",
+          "content-type": "application/json"
+        },
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      }
+    ]
+  }
+}

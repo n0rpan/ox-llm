@@ -1,9 +1,14 @@
 # oxc drop-in conformance
 
-Reference: main `fc869d07b4b56926c00cc725df27484856c2dc25`.
-The current suite covers 891 scenarios in 105 unittest methods. This remains a
-partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
-work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
+Reference: main `15fe33d6f53e61639b4232a2d229f66444c37f0d`.
+The pre-cloud/rename suite passed 891 scenarios in 105 methods against Python
+and native at main fc869d0. Main includes #180, #251 and the rename. The reference goldens have been
+recaptured with `/usr/bin/python3`, fixed CPU-frequency/thermal sources and
+argparse usage-wrap normalization. Nine catalog, 24 gateway wire/accounting and
+15 cloud installer scenarios are captured from Python. The gateway cases include
+95% cache reads and explicit cache-write prices for all provider paths. Native
+cloud runtime parity remains incomplete; the first opt-in metadata library is
+[PR #294](https://github.com/oxstack/ox-llm/pull/294), with eight source/native cases.
 
 Cloud-only mode is the first complete runtime target. See the
 [merge plan](MERGE_PLAN.md) for separate review slices; the first parser slice is
@@ -11,12 +16,12 @@ draft [#177](https://github.com/oxstack/ox-llm/pull/177). The integration branch
 remains in draft #28. The next independent control-client slice is draft
 [#186](https://github.com/oxstack/ox-llm/pull/186), stacked on #177. The read-only
 ledger CLI is draft [#197](https://github.com/oxstack/ox-llm/pull/197), stacked on
-#186, with 12 file/limit cases and only its minimal reader helpers. Capture cloud gateway contracts after #24 lands on main,
-then port them and the cloud-only stack. Hardware A/B waits until cloud-only
+#186, with 12 file/limit cases and only its minimal reader helpers. The transport/policy library is draft [#271](https://github.com/oxstack/ox-llm/pull/271).
+Capture cloud contracts from the merged #180 baseline, then port those paths. Hardware A/B waits until cloud-only
 conformance is green.
 
 The review runner audits that every captured method belongs to one slice and
-sets all seven native command overrides. For example:
+sets all eight native command overrides. For example:
 
 ```sh
 python3 conformance/run_suite.py cloud-foundation --python
@@ -29,17 +34,18 @@ fixtures or bubblewrap. They hold a foreign inference lease, compare the real
 HTTP replies and verify no child, local model or lease/config mutation remains.
 Three new failures before the fix established the classic-backend unknown-route
 and body-parsing behavior. Together with CLI cases they form `cloud-foundation`;
-this is not cloud-only parity. The runner refuses `cloud-only`, `cloud-gateway`
-and `cloud-installer` explicitly until their main reference contracts exist.
+this is not cloud-only parity. The complete `cloud-only` and `cloud-gateway` gates remain explicit incomplete
+errors. `cloud-catalog`, `cloud-gateway-wire` and `cloud-installer` run captured
+subsets; a passing subset never means the whole cloud runtime is complete.
 
-Requires Linux, Python 3.10+, OpenSSL, util-linux `setpriv`, and bubblewrap with unprivileged
+Requires Linux, `/usr/bin/python3`, OpenSSL, util-linux `setpriv`, and bubblewrap with unprivileged
 user, network and cgroup namespaces. The lab CI job already installs bubblewrap. Run from the repository root:
 
 ```sh
 python3 -m unittest discover -s conformance -v
 ```
 
-The suite invokes the shipped Python `runtime/local-ai` entry script under the
+The suite invokes the shipped Python `runtime/oxc` entry script under the
 public executable name `oxc`, and the unmodified controller daemon as a separate
 process. Each invocation gets a temporary HOME and explicit XDG directories; its
 environment is constructed from an allowlist and inherits no API credentials or
@@ -58,7 +64,7 @@ storage IDs reproducible across test runs.
 
 Configured HTTP tests launch the unchanged daemon and a hash-pinned synthetic
 engine executable through its real lifecycle. A private bubblewrap mount/cgroup
-namespace supplies deterministic host memory, PSI and cgroup counters, including
+namespace supplies deterministic CPU frequency, thermal, host memory, PSI and cgroup counters, including
 the installed service's `memory.swap.max=0`. Changing those fixture files tests
 the real guard's refusal and recovery, including runtime faults and sustained PSI.
 A private /tmp supplies an owned ancestor for the existing diagnostic log path
@@ -99,13 +105,14 @@ OXC_INSTALL_COMMAND='/absolute/path/to/oxc __install' \
 OXC_EXPORT_RECEIPT_COMMAND='/absolute/path/to/oxc __export_receipt' \
 OXC_SCRUB_RECEIPTS_COMMAND='/absolute/path/to/oxc __scrub_receipts' \
 OXC_STUDIO_COMMAND='/absolute/path/to/oxc studio' \
+OXC_CLOUD_INSTALL_COMMAND='/absolute/path/to/oxc __cloud_install' \
 python3 -m unittest discover -s conformance -v
 ```
 
 The captured native helper cases pass with those explicit overrides. This is a
 partial contract suite; complete runtime parity and hardware readiness remain unfinished.
 Bootstrap's native bundle changes only the two service ExecStart lines to
-`local-ai serve` and `local-ai studio`; separate unit snapshots assert every
+`oxc serve` and `oxc studio`; separate unit snapshots assert every
 other byte remains unchanged. Installation stays unqualified and starts no services.
 
 The daemon command must use the existing `LOCAL_LLM_PORT`, `LOCAL_LLM_CONFIG`,
@@ -199,7 +206,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Model-free config files | PASS, 6 cases | PASS: exact JSON bytes, Unicode/control/astral escaping, unknown fields, mode bits, atomic replacement and stable symlink chains | Additional numeric encodings and filesystem races |
 | Engine-free HTTP policy | PASS, 49 wire cases | PASS: header ordering/duplicates/whitespace, navigation queries, health/key exemptions, nullable/Unicode/CR key files and CORS defaults; ten regressions reproduced before fixing | Further malformed field syntax, key encodings and persistent-connection cases |
 | Files | PASS, 3 tests | PASS: config and ledger Python/Rust/Python, API-key refresh/fail-closed | Additional state stores and sharing secrets |
-| Cloud gateway / cloud-only | Main baseline pending #24 and the cloud-only stack | Deferred until reference contracts land; first complete runtime priority | All three providers, loopback mocks, continuation, reservations/settlement, budgets, ledger, redaction, off/offline, engine-free installation |
+| Cloud gateway / cloud-only | Merged in #180; reference contracts being captured | First complete runtime priority; gateway/installer still pending | All three providers, loopback mocks, continuation, reservations/settlement, budgets, ledger, redaction, off/offline, engine-free installation |
 | Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |
 | Bootstrap/install | PASS, 34 scenarios / 24 methods | PASS: pinned plans, native bundle, installed help and both services, unchanged 8 MiB bound, create-only transactions, journals, leases, owner edits, refusals, agent refresh and Python/Rust rollback | Transfer/build flows, interruption and more filesystem races |
 | Studio | PASS, 87 cases | PASS: unchanged page, HTTP/1.0, request gates, metadata/settings, estimates/routing, private uploads/files, planner refusals, synthetic CPU jobs/batches, anonymous prompt FDs, validated CPU profiles/tuning and failure/activity state | Pixel operations, full edit/upscale/refine, Oxi/NPU/image-slot adapters and more ownership edges; deferred behind cloud-only |
@@ -228,11 +235,11 @@ provides them. Each override is a shell command string parsed with shlex:
 
 | Environment variable | Python reference process |
 | --- | --- |
-| `OXC_BOOTSTRAP_COMMAND` | `python3 -m snapdragon_ai_lab.bootstrap` |
-| `OXC_INSTALL_COMMAND` | `python3 -m snapdragon_ai_lab.bootstrap_install` |
-| `OXC_EXPORT_RECEIPT_COMMAND` | `python3 lab/tools/export_receipt.py` |
-| `OXC_SCRUB_RECEIPTS_COMMAND` | `python3 lab/tools/scrub_receipts.py` |
-| `OXC_STUDIO_COMMAND` | `python3 lab/src/snapdragon_ai_lab/runtime/studio` |
+| `OXC_BOOTSTRAP_COMMAND` | `python3 -m oxc.bootstrap` |
+| `OXC_INSTALL_COMMAND` | `python3 -m oxc.bootstrap_install` |
+| `OXC_EXPORT_RECEIPT_COMMAND` | `python3 oxc/tools/export_receipt.py` |
+| `OXC_SCRUB_RECEIPTS_COMMAND` | `python3 oxc/tools/scrub_receipts.py` |
+| `OXC_STUDIO_COMMAND` | `python3 oxc/src/snapdragon_ai_oxc/runtime/studio` |
 
 Runtime CLI commands passed in overrides should be outside `/home` and `/tmp`,
 which are private mounts in these tests (a build under the checkout works).
@@ -274,3 +281,10 @@ The standalone CLI harness keeps the unchanged credential/proxy-free environment
 allowlist and rebinds only the read-only checkout after hiding HOME/tmp roots. A
 synthetic checkout under /home verifies hosted-runner portability without exposing
 other home contents or requiring an engine fixture.
+
+Cloud source tests require the Python reference's pinned `anthropic==0.125.0`
+dependency for `/usr/bin/python3`. An isolated dependency directory can be passed
+with `OXC_CONFORMANCE_PYTHON_DEPS=/absolute/path`; it is mounted read-only inside
+private namespaces. Arbitrary caller `PYTHONPATH`, credentials and proxy settings
+are never inherited. Every cloud process case has its own private network, so
+the reference's background public-price refresh cannot contact an external API.

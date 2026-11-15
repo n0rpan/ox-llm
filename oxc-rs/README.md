@@ -5,12 +5,12 @@ axum router; this crate forbids unsafe code and invokes no Python interpreter.
 It is not a complete replacement yet and has no installation switch enabled.
 
 The owner authorized starting Rust while the remaining conformance work and CI
-proceed. Existing Python product code and pre-existing goldens remain unchanged;
+proceed. Python product code remains unchanged; reference goldens follow merged main;
 new tests still establish Python behavior before checking a ported path.
 
 Cloud-only mode (no local engine) is the first complete runtime target. Its
 gateway and installation contracts will follow #24 and the cloud-only stack
-after they land on main. Hardware A/B waits for that suite to be green. See the
+from merged main #180. Hardware A/B waits for that suite to be green. See the
 [reviewable merge plan](../conformance/MERGE_PLAN.md); draft
 [#177](https://github.com/oxstack/ox-llm/pull/177) extracts only the opt-in parser
 binary. Draft [#186](https://github.com/oxstack/ox-llm/pull/186) adds the independent
@@ -38,7 +38,7 @@ The request ledger passes 12 golden scenarios and eight additional checks;
 Python/Rust/Python ledger round trips preserve the salt, hashes and row schema.
 Twelve cache-budget cases, eight context-mode cases and all three file round-trip
 contracts also pass. Eighteen scoped cache-clear cases pass. The Python reference
-and native suites both pass 891 scenarios in 105 unittest methods.
+and native suites passed 891 scenarios in 105 methods at the pre-cloud/rename fc869d0 baseline; current contracts are being recaptured.
 
 Twenty-one engine-free HTTP cases need no fake model/engine or host-memory
 namespace. They compare the real gates while another owner holds the inference
@@ -50,7 +50,7 @@ diagnostics preserve Python quoting and Unicode printability facts. All 280
 additional isolated parser probes match the reference.
 `conformance/run_suite.py cloud-foundation` selects these foundations plus CLI
 contracts; `--native /absolute/path/to/oxc` sets every helper override explicitly.
-Cloud-only validation remains an explicit pending-baseline error.
+Complete cloud-only validation remains explicitly incomplete; its captured Python subsets are runnable.
 
 Native bootstrap/install passes 34 scenarios in 24 methods: pinned asset plans,
 model-free native bundles, installed help and service startup, create-only file
@@ -59,7 +59,7 @@ preservation, refusals and Python/Rust journal interoperability. The inference
 lease remains held through offline agent identity refresh and child cleanup.
 Release size optimization keeps the executable inside the unchanged 8 MiB
 payload bound. Bundles include no Python runtime; the two ExecStart lines become
-`local-ai serve` and `local-ai studio`, with every other unit byte checked against
+`oxc serve` and `oxc studio`, with every other unit byte checked against
 the original snapshots. Installation starts no service and enables no qualification.
 
 Eighty-seven Studio cases cover the unchanged frontend, HTTP/1.0, request gates,

@@ -1,0 +1,3542 @@
+{
+  "budget-missing": {
+    "catalog": {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-anthropic",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic anthropic",
+            "prefix": "off",
+            "provider": "anthropic",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-openai",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openai",
+            "prefix": "off",
+            "provider": "openai",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-router",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openrouter",
+            "prefix": "off",
+            "provider": "openrouter",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "Model setup is still running. Run `oxc status` to follow it."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "capabilities": {
+          "cache_hints": false,
+          "cancel": true,
+          "context_window": 64000,
+          "echo": false,
+          "prefill": false,
+          "preserve_thinking": false,
+          "remote": true,
+          "remote_provider": "openrouter"
+        },
+        "context_length": 64000,
+        "context_window": 64000,
+        "created": 0,
+        "id": "synthetic-router",
+        "max_output_tokens": 512,
+        "name": "Synthetic openrouter",
+        "object": "model",
+        "owned_by": "openrouter",
+        "provider": "openrouter",
+        "remote": true
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-anthropic",
+            "max_output_tokens": 512,
+            "name": "Synthetic anthropic",
+            "object": "model",
+            "owned_by": "anthropic",
+            "provider": "anthropic",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-openai",
+            "max_output_tokens": 512,
+            "name": "Synthetic openai",
+            "object": "model",
+            "owned_by": "openai",
+            "provider": "openai",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-router",
+            "max_output_tokens": 512,
+            "name": "Synthetic openrouter",
+            "object": "model",
+            "owned_by": "openrouter",
+            "provider": "openrouter",
+            "remote": true
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "qwen-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "llama",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": null,
+          "enabled": true,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 3,
+          "offline": false,
+          "providers": {
+            "anthropic": true,
+            "openai": true,
+            "openrouter": true
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": null,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "llama.cpp",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": null,
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {
+          "synthetic-anthropic": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-openai": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-router": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          }
+        },
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "default-off": {
+    "catalog": {
+      "body": {
+        "data": [],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "Model setup is still running. Run `oxc status` to follow it."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "qwen-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "llama",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": 1.0,
+          "enabled": false,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 0,
+          "offline": false,
+          "providers": {
+            "anthropic": true,
+            "openai": true,
+            "openrouter": true
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": null,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "llama.cpp",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": null,
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {},
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "disabled": {
+    "catalog": {
+      "body": {
+        "data": [],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "Model setup is still running. Run `oxc status` to follow it."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "qwen-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "llama",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": 1.0,
+          "enabled": false,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 0,
+          "offline": false,
+          "providers": {
+            "anthropic": true,
+            "openai": true,
+            "openrouter": true
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": null,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "llama.cpp",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": null,
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {},
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "enabled": {
+    "catalog": {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-anthropic",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic anthropic",
+            "prefix": "off",
+            "provider": "anthropic",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-openai",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openai",
+            "prefix": "off",
+            "provider": "openai",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-router",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openrouter",
+            "prefix": "off",
+            "provider": "openrouter",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "Model setup is still running. Run `oxc status` to follow it."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "capabilities": {
+          "cache_hints": false,
+          "cancel": true,
+          "context_window": 64000,
+          "echo": false,
+          "prefill": false,
+          "preserve_thinking": false,
+          "remote": true,
+          "remote_provider": "openrouter"
+        },
+        "context_length": 64000,
+        "context_window": 64000,
+        "created": 0,
+        "id": "synthetic-router",
+        "max_output_tokens": 512,
+        "name": "Synthetic openrouter",
+        "object": "model",
+        "owned_by": "openrouter",
+        "provider": "openrouter",
+        "remote": true
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-anthropic",
+            "max_output_tokens": 512,
+            "name": "Synthetic anthropic",
+            "object": "model",
+            "owned_by": "anthropic",
+            "provider": "anthropic",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-openai",
+            "max_output_tokens": 512,
+            "name": "Synthetic openai",
+            "object": "model",
+            "owned_by": "openai",
+            "provider": "openai",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-router",
+            "max_output_tokens": 512,
+            "name": "Synthetic openrouter",
+            "object": "model",
+            "owned_by": "openrouter",
+            "provider": "openrouter",
+            "remote": true
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "qwen-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "llama",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": 1.0,
+          "enabled": true,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 3,
+          "offline": false,
+          "providers": {
+            "anthropic": true,
+            "openai": true,
+            "openrouter": true
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": null,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "llama.cpp",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": null,
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {
+          "synthetic-anthropic": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-openai": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-router": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          }
+        },
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "local-profile-ignored": {
+    "catalog": {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-anthropic",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic anthropic",
+            "prefix": "off",
+            "provider": "anthropic",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-openai",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openai",
+            "prefix": "off",
+            "provider": "openai",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-router",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openrouter",
+            "prefix": "off",
+            "provider": "openrouter",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "synthetic-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "This model profile is not marked ready; finish its setup and validation first."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "capabilities": {
+          "cache_hints": false,
+          "cancel": true,
+          "context_window": 64000,
+          "echo": false,
+          "prefill": false,
+          "preserve_thinking": false,
+          "remote": true,
+          "remote_provider": "openrouter"
+        },
+        "context_length": 64000,
+        "context_window": 64000,
+        "created": 0,
+        "id": "synthetic-router",
+        "max_output_tokens": 512,
+        "name": "Synthetic openrouter",
+        "object": "model",
+        "owned_by": "openrouter",
+        "provider": "openrouter",
+        "remote": true
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-anthropic",
+            "max_output_tokens": 512,
+            "name": "Synthetic anthropic",
+            "object": "model",
+            "owned_by": "anthropic",
+            "provider": "anthropic",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-openai",
+            "max_output_tokens": 512,
+            "name": "Synthetic openai",
+            "object": "model",
+            "owned_by": "openai",
+            "provider": "openai",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-router",
+            "max_output_tokens": 512,
+            "name": "Synthetic openrouter",
+            "object": "model",
+            "owned_by": "openrouter",
+            "provider": "openrouter",
+            "remote": true
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "synthetic-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "oxe",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": 1.0,
+          "enabled": true,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 3,
+          "offline": false,
+          "providers": {
+            "anthropic": true,
+            "openai": true,
+            "openrouter": true
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": 65536,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "rust",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": "This model profile is not marked ready; finish its setup and validation first.",
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {
+          "synthetic-anthropic": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-openai": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-router": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          }
+        },
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "missing-secrets": {
+    "catalog": {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-anthropic",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic anthropic",
+            "prefix": "off",
+            "provider": "anthropic",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-openai",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openai",
+            "prefix": "off",
+            "provider": "openai",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-router",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openrouter",
+            "prefix": "off",
+            "provider": "openrouter",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "Model setup is still running. Run `oxc status` to follow it."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "capabilities": {
+          "cache_hints": false,
+          "cancel": true,
+          "context_window": 64000,
+          "echo": false,
+          "prefill": false,
+          "preserve_thinking": false,
+          "remote": true,
+          "remote_provider": "openrouter"
+        },
+        "context_length": 64000,
+        "context_window": 64000,
+        "created": 0,
+        "id": "synthetic-router",
+        "max_output_tokens": 512,
+        "name": "Synthetic openrouter",
+        "object": "model",
+        "owned_by": "openrouter",
+        "provider": "openrouter",
+        "remote": true
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-anthropic",
+            "max_output_tokens": 512,
+            "name": "Synthetic anthropic",
+            "object": "model",
+            "owned_by": "anthropic",
+            "provider": "anthropic",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-openai",
+            "max_output_tokens": 512,
+            "name": "Synthetic openai",
+            "object": "model",
+            "owned_by": "openai",
+            "provider": "openai",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-router",
+            "max_output_tokens": 512,
+            "name": "Synthetic openrouter",
+            "object": "model",
+            "owned_by": "openrouter",
+            "provider": "openrouter",
+            "remote": true
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "qwen-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "llama",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": 1.0,
+          "enabled": true,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 3,
+          "offline": false,
+          "providers": {
+            "anthropic": false,
+            "openai": false,
+            "openrouter": false
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": null,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "llama.cpp",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": null,
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {
+          "synthetic-anthropic": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-openai": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-router": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          }
+        },
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "offline": {
+    "catalog": {
+      "body": {
+        "data": [],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "Model setup is still running. Run `oxc status` to follow it."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "qwen-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "llama",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": 1.0,
+          "enabled": true,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 3,
+          "offline": true,
+          "providers": {
+            "anthropic": true,
+            "openai": true,
+            "openrouter": true
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": null,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "llama.cpp",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": null,
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {},
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "old-offline-name-ignored": {
+    "catalog": {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-anthropic",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic anthropic",
+            "prefix": "off",
+            "provider": "anthropic",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-openai",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openai",
+            "prefix": "off",
+            "provider": "openai",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-router",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openrouter",
+            "prefix": "off",
+            "provider": "openrouter",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "Model setup is still running. Run `oxc status` to follow it."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "capabilities": {
+          "cache_hints": false,
+          "cancel": true,
+          "context_window": 64000,
+          "echo": false,
+          "prefill": false,
+          "preserve_thinking": false,
+          "remote": true,
+          "remote_provider": "openrouter"
+        },
+        "context_length": 64000,
+        "context_window": 64000,
+        "created": 0,
+        "id": "synthetic-router",
+        "max_output_tokens": 512,
+        "name": "Synthetic openrouter",
+        "object": "model",
+        "owned_by": "openrouter",
+        "provider": "openrouter",
+        "remote": true
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-anthropic",
+            "max_output_tokens": 512,
+            "name": "Synthetic anthropic",
+            "object": "model",
+            "owned_by": "anthropic",
+            "provider": "anthropic",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-openai",
+            "max_output_tokens": 512,
+            "name": "Synthetic openai",
+            "object": "model",
+            "owned_by": "openai",
+            "provider": "openai",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-router",
+            "max_output_tokens": 512,
+            "name": "Synthetic openrouter",
+            "object": "model",
+            "owned_by": "openrouter",
+            "provider": "openrouter",
+            "remote": true
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "qwen-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "llama",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": 1.0,
+          "enabled": true,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 3,
+          "offline": false,
+          "providers": {
+            "anthropic": true,
+            "openai": true,
+            "openrouter": true
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": null,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "llama.cpp",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": null,
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {
+          "synthetic-anthropic": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-openai": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-router": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          }
+        },
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  },
+  "price-missing": {
+    "catalog": {
+      "body": {
+        "data": [
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-anthropic",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic anthropic",
+            "prefix": "off",
+            "provider": "anthropic",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-openai",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openai",
+            "prefix": "off",
+            "provider": "openai",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          },
+          {
+            "battery_start_percent": null,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "default": false,
+            "engine": "remote",
+            "engine_status": "remote",
+            "id": "synthetic-router",
+            "key": "cloud",
+            "max_output": 512,
+            "memory_gib": null,
+            "name": "Synthetic openrouter",
+            "prefix": "off",
+            "provider": "openrouter",
+            "qualification": null,
+            "remote": true,
+            "selected": false,
+            "state": "unloaded"
+          }
+        ],
+        "default_model": "ornith-35b-a3b-local",
+        "object": "list",
+        "selected_model": "qwen-local"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "health": {
+      "body": {
+        "sleeping": true,
+        "status": "ok"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "load-refused": {
+      "body": {
+        "error": "Model setup is still running. Run `oxc status` to follow it."
+      },
+      "content-type": "application/json",
+      "status": 503,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "model": {
+      "body": {
+        "capabilities": {
+          "cache_hints": false,
+          "cancel": true,
+          "context_window": 64000,
+          "echo": false,
+          "prefill": false,
+          "preserve_thinking": false,
+          "remote": true,
+          "remote_provider": "openrouter"
+        },
+        "context_length": 64000,
+        "context_window": 64000,
+        "created": 0,
+        "id": "synthetic-router",
+        "max_output_tokens": 512,
+        "name": "Synthetic openrouter",
+        "object": "model",
+        "owned_by": "openrouter",
+        "provider": "openrouter",
+        "remote": true
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "models": {
+      "body": {
+        "data": [
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-anthropic",
+            "max_output_tokens": 512,
+            "name": "Synthetic anthropic",
+            "object": "model",
+            "owned_by": "anthropic",
+            "provider": "anthropic",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-openai",
+            "max_output_tokens": 512,
+            "name": "Synthetic openai",
+            "object": "model",
+            "owned_by": "openai",
+            "provider": "openai",
+            "remote": true
+          },
+          {
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_length": 64000,
+            "context_window": 64000,
+            "created": 0,
+            "id": "synthetic-router",
+            "max_output_tokens": 512,
+            "name": "Synthetic openrouter",
+            "object": "model",
+            "owned_by": "openrouter",
+            "provider": "openrouter",
+            "remote": true
+          }
+        ],
+        "object": "list"
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "preload-control": {
+      "body": {
+        "model": "qwen-local",
+        "started": true,
+        "state": "loading"
+      },
+      "content-type": "application/json",
+      "status": 202,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "status": {
+      "body": {
+        "active": {
+          "model": null,
+          "phase": "idle",
+          "prompt_tokens_done": null,
+          "prompt_tokens_total": null,
+          "queued_requests": 0,
+          "seconds": null,
+          "tokens_out": null,
+          "tokens_per_second": null
+        },
+        "active_requests": 0,
+        "api_base": "http://127.0.0.1:<PORT>/v1",
+        "backend": null,
+        "backend_kind": "llama",
+        "capabilities": [
+          "models",
+          "storage",
+          "harness",
+          "harness_learning",
+          "ledger",
+          "active",
+          "openai_aliases",
+          "state_cache",
+          "context_modes",
+          "preload",
+          "model_preload",
+          "cloud"
+        ],
+        "chat_url": "http://127.0.0.1:<PORT>",
+        "cloud": {
+          "daily_budget_usd": 1.0,
+          "enabled": true,
+          "ledger_error": null,
+          "ledger_ok": true,
+          "models": 3,
+          "offline": false,
+          "providers": {
+            "anthropic": true,
+            "openai": true,
+            "openrouter": true
+          },
+          "rejected": {},
+          "spend_today_usd": 0.0
+        },
+        "context": {
+          "cap": null,
+          "mode": null,
+          "modes": []
+        },
+        "context_size": null,
+        "download_state": "none",
+        "downloaded_bytes": 0,
+        "engine": "llama.cpp",
+        "engine_ledger": {
+          "enabled": false
+        },
+        "engine_mode": "none",
+        "engine_note": null,
+        "error_at": null,
+        "error_origin": null,
+        "execution_policy_mode": "stock",
+        "expected_bytes": null,
+        "flash_idle_qos": {
+          "enabled": false,
+          "error": null,
+          "started": false,
+          "unit": null
+        },
+        "flash_memory": null,
+        "flash_qualification": null,
+        "gpu_layers": 0,
+        "harness_learning": {
+          "candidates": [],
+          "enabled": false,
+          "ignored": [],
+          "min_prefix_chars": 3000,
+          "min_requests": 3,
+          "persistent": true
+        },
+        "harnesses": {},
+        "idle_unload_remaining_seconds": null,
+        "idle_unload_seconds": 7200.0,
+        "image_active": false,
+        "image_broker_error": null,
+        "image_slot_stale": 0,
+        "keep_warm": {
+          "idle_unload_seconds": 7200.0,
+          "last_sample": null,
+          "last_unload": null,
+          "min_available_mib": 1024,
+          "pressure_grace_seconds": 60.0,
+          "psi_some_avg10": 10.0
+        },
+        "lan_share": {
+          "active": false,
+          "addresses": [],
+          "enabled": false,
+          "encryption": null,
+          "error": null,
+          "key_fingerprint": null,
+          "key_present": false,
+          "key_shown": false,
+          "limits": {
+            "burst": 30,
+            "concurrency": 1,
+            "max_body_bytes": 8388608,
+            "max_tokens": 16384,
+            "rate_per_min": 120
+          },
+          "mode": "off",
+          "paused": null,
+          "pinned_network": null,
+          "port": "<PORT>",
+          "remote_active": 0,
+          "remote_refused": 0,
+          "remote_requests": 0,
+          "routes": [
+            "POST /v1/chat/completions",
+            "POST /v1/completions",
+            "GET /v1/models",
+            "GET /v1/models/{id}"
+          ],
+          "urls": [],
+          "warning": null
+        },
+        "last_error": null,
+        "last_failure": null,
+        "loaded_model": null,
+        "memory_guard_setup": {
+          "fix": null,
+          "not_applicable": true,
+          "ok": true,
+          "problem": null,
+          "swap_max": null
+        },
+        "memory_policy": null,
+        "model": null,
+        "model_limits": {
+          "synthetic-anthropic": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "anthropic"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-openai": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": false,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openai"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          },
+          "synthetic-router": {
+            "cap": 64000,
+            "capabilities": {
+              "cache_hints": false,
+              "cancel": true,
+              "context_window": 64000,
+              "echo": false,
+              "prefill": false,
+              "preserve_thinking": false,
+              "remote": true,
+              "remote_provider": "openrouter"
+            },
+            "context_window": 64000,
+            "max_output": 512,
+            "mode": null,
+            "modes": []
+          }
+        },
+        "model_preload": null,
+        "prefix_cache": {
+          "enabled": false,
+          "failures": 0,
+          "primes": 0,
+          "restores": 0
+        },
+        "preload": {
+          "age_s": null,
+          "ms": null,
+          "src": null,
+          "state": "idle"
+        },
+        "queued_requests": 0,
+        "request_compat": {},
+        "resident_bytes": null,
+        "selected_model": null,
+        "selection_error": null,
+        "state": "unloaded",
+        "stop_pending": null,
+        "threads": null,
+        "unload": {
+          "available": false,
+          "method": "POST",
+          "path": "/_local/unload"
+        },
+        "validated": true,
+        "validation": {}
+      },
+      "content-type": "application/json",
+      "status": 200,
+      "x-request-id": "<generated:req_32hex>"
+    },
+    "unknown-model": {
+      "body": {
+        "error": {
+          "code": "model_not_found",
+          "message": "Unknown local model. Choose one listed in /v1/models.",
+          "param": "model",
+          "type": "invalid_request_error"
+        }
+      },
+      "content-type": "application/json",
+      "status": 404,
+      "x-request-id": "<generated:req_32hex>"
+    }
+  }
+}

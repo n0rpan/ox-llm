@@ -19,6 +19,7 @@ OVERRIDES = {
     'OXC_EXPORT_RECEIPT_COMMAND': ('__export_receipt',),
     'OXC_SCRUB_RECEIPTS_COMMAND': ('__scrub_receipts',),
     'OXC_STUDIO_COMMAND': ('studio',),
+    'OXC_CLOUD_INSTALL_COMMAND': ('__cloud_install',),
 }
 
 

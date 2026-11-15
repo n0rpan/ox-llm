@@ -1,0 +1,484 @@
+{
+  "bad-budget": {
+    "exit": 1,
+    "stderr": "cloud-install: The daily budget must be a positive USD amount.\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "bad-catalog": {
+    "exit": 1,
+    "stderr": "cloud-install: Catalog entry 'bad id!' is not valid (see docs/CLOUD-MODELS.md).\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "bad-json": {
+    "exit": 1,
+    "stderr": "cloud-install: The models file is missing or not valid JSON.\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "bad-port": {
+    "exit": 1,
+    "stderr": "cloud-install: Invalid port.\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "bad-unit": {
+    "exit": 1,
+    "stderr": "cloud-install: Invalid unit name.\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "config-symlink": {
+    "exit": 1,
+    "stderr": "cloud-install: refusing to write through a symlink: <HOME>/config/runtime.json\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "default-catalog": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "anthropic/claude-haiku-5-5": {
+            "base_url": "https://api.anthropic.com",
+            "context_window": 200000,
+            "kind": "remote/anthropic",
+            "max_output": 32000,
+            "pricing": {
+              "input_per_million": 0.5,
+              "output_per_million": 2.5
+            },
+            "provider": "anthropic",
+            "upstream_model": "claude-haiku-5-5"
+          },
+          "anthropic/claude-opus-5-5": {
+            "base_url": "https://api.anthropic.com",
+            "context_window": 200000,
+            "kind": "remote/anthropic",
+            "max_output": 32000,
+            "pricing": {
+              "input_per_million": 4.0,
+              "output_per_million": 20.0
+            },
+            "provider": "anthropic",
+            "upstream_model": "claude-opus-5-5"
+          },
+          "anthropic/claude-sonnet-5-5": {
+            "base_url": "https://api.anthropic.com",
+            "context_window": 200000,
+            "kind": "remote/anthropic",
+            "max_output": 32000,
+            "pricing": {
+              "input_per_million": 2.0,
+              "output_per_million": 10.0
+            },
+            "provider": "anthropic",
+            "upstream_model": "claude-sonnet-5-5"
+          },
+          "openai/gpt-6-luna": {
+            "base_url": "https://api.openai.com/v1",
+            "context_window": 200000,
+            "kind": "remote/openai",
+            "max_output": 128000,
+            "pricing": {
+              "input_per_million": 0.1,
+              "output_per_million": 0.5
+            },
+            "provider": "openai",
+            "upstream_model": "gpt-6-luna"
+          },
+          "openai/gpt-6.1-sol": {
+            "base_url": "https://api.openai.com/v1",
+            "context_window": 200000,
+            "kind": "remote/openai",
+            "max_output": 128000,
+            "pricing": {
+              "input_per_million": 2.0,
+              "output_per_million": 10.0
+            },
+            "provider": "openai",
+            "upstream_model": "gpt-6.1-sol"
+          },
+          "openrouter/deepseek-v4-pro": {
+            "base_url": "https://openrouter.ai/api/v1",
+            "context_window": 200000,
+            "kind": "remote/openrouter",
+            "max_output": 32768,
+            "pricing": {
+              "input_per_million": 0.111,
+              "output_per_million": 4.44
+            },
+            "provider": "openrouter",
+            "upstream_model": "deepseek/deepseek-v4-pro-0813"
+          },
+          "openrouter/deepseek-v4.1-flash": {
+            "base_url": "https://openrouter.ai/api/v1",
+            "context_window": 200000,
+            "kind": "remote/openrouter",
+            "max_output": 32768,
+            "pricing": {
+              "input_per_million": 0.0507,
+              "output_per_million": 0.2028
+            },
+            "provider": "openrouter",
+            "upstream_model": "deepseek/deepseek-v4.1-flash"
+          }
+        },
+        "secrets_file": "<HOME>/config/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "stderr": "",
+    "stdout": {
+      "anthropic_sdk": true,
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 7,
+      "next_step": "put your API keys in <HOME>/config/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "run": "<HOME>/prefix/bin/oxc-controller",
+      "runtime_json": "<HOME>/config/runtime.json",
+      "secrets_file": "<HOME>/config/cloud-secrets.json"
+    },
+    "systemctl": [],
+    "unit": null
+  },
+  "existing-config": {
+    "config": {
+      "owner": "synthetic-keep"
+    },
+    "config_mode": 384,
+    "exit": 1,
+    "stderr": "cloud-install: runtime.json already exists in the config directory; it was kept (use --force to replace).\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "force": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "synthetic-cloud": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "stderr": "",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "run": "<HOME>/prefix/bin/oxc-controller",
+      "runtime_json": "<HOME>/config/runtime.json",
+      "secrets_file": "<HOME>/config/cloud-secrets.json"
+    },
+    "systemctl": [],
+    "unit": null
+  },
+  "foreground": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "synthetic-cloud": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "stderr": "",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "run": "<HOME>/prefix/bin/oxc-controller",
+      "runtime_json": "<HOME>/config/runtime.json",
+      "secrets_file": "<HOME>/config/cloud-secrets.json"
+    },
+    "systemctl": [],
+    "unit": null
+  },
+  "installed-startup": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "synthetic-cloud": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "installed": {
+      "engine_mode": "none",
+      "health": {
+        "body": {
+          "sleeping": true,
+          "status": "ok"
+        },
+        "status": 200
+      },
+      "keyless": {
+        "body": {
+          "error": {
+            "code": "cloud_credentials_unavailable",
+            "message": "Cloud credentials are not configured.",
+            "param": "model",
+            "type": "cloud_error"
+          }
+        },
+        "status": 503
+      },
+      "loaded_model": null,
+      "models": {
+        "body": {
+          "data": [
+            {
+              "capabilities": {
+                "cache_hints": false,
+                "cancel": true,
+                "context_window": 64000,
+                "echo": false,
+                "prefill": false,
+                "preserve_thinking": false,
+                "remote": true,
+                "remote_provider": "openrouter"
+              },
+              "context_length": 64000,
+              "context_window": 64000,
+              "created": 0,
+              "id": "synthetic-cloud",
+              "max_output_tokens": 512,
+              "name": "synthetic-cloud",
+              "object": "model",
+              "owned_by": "openrouter",
+              "provider": "openrouter",
+              "remote": true
+            }
+          ],
+          "object": "list"
+        },
+        "status": 200
+      }
+    },
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "stderr": "",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "run": "<HOME>/prefix/bin/oxc-controller",
+      "runtime_json": "<HOME>/config/runtime.json",
+      "secrets_file": "<HOME>/config/cloud-secrets.json"
+    },
+    "systemctl": [],
+    "unit": null
+  },
+  "launcher-symlink": {
+    "exit": 1,
+    "stderr": "cloud-install: refusing to write through a symlink: <HOME>/prefix/bin/oxc-controller\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "not-object": {
+    "exit": 1,
+    "stderr": "cloud-install: The models file must be a JSON object of catalog entries.\n",
+    "stdout": "",
+    "systemctl": []
+  },
+  "quoted-paths": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "synthetic-cloud": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix with spaces $ %/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix with spaces $ %/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix with spaces $ %/state"
+    },
+    "launcher_mode": 493,
+    "stderr": "",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix with spaces $ %/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix with spaces $ %",
+      "runtime_json": "<HOME>/config/runtime.json",
+      "secrets_file": "<HOME>/config/cloud-secrets.json",
+      "unit": "oxc-synthetic.service"
+    },
+    "systemctl": [
+      [
+        "--user",
+        "daemon-reload"
+      ],
+      [
+        "--user",
+        "enable",
+        "--now",
+        "<HOME>/units/oxc-synthetic.service"
+      ]
+    ],
+    "unit": "[Unit]\nDescription=oxc cloud-only controller (oxc-synthetic)\n[Service]\nType=simple\nExecStart=\"<HOME>/prefix with spaces $$ %%/bin/oxc-controller\"\nWorkingDirectory=<HOME>/prefix with spaces $ %%\nRestart=on-failure\nRestartSec=5\nUMask=0077\nLimitCORE=0\n[Install]\nWantedBy=default.target\n"
+  },
+  "systemd": {
+    "config": {
+      "cloud": {
+        "daily_budget_usd": 2.5,
+        "enabled": true,
+        "models": {
+          "synthetic-cloud": {
+            "base_url": "http://127.0.0.1:1/v1",
+            "context_window": 64000,
+            "kind": "remote/openrouter",
+            "max_output": 512,
+            "pricing": {
+              "input_per_million": 1.0,
+              "output_per_million": 2.0
+            },
+            "upstream_model": "synthetic/upstream"
+          }
+        },
+        "secrets_file": "<HOME>/config/cloud-secrets.json"
+      },
+      "cloud_only": true
+    },
+    "config_mode": 384,
+    "exit": 0,
+    "launcher_environment": {
+      "LOCAL_LLM_CONFIG": "<HOME>/config/runtime.json",
+      "LOCAL_LLM_PORT": "<PORT>",
+      "OXC_LEASE": "<HOME>/prefix/state/inference.lock",
+      "OXC_LEDGER_DIR": "<HOME>/prefix/state/ledger",
+      "XDG_STATE_HOME": "<HOME>/prefix/state"
+    },
+    "launcher_mode": 493,
+    "stderr": "",
+    "stdout": {
+      "api_base": "http://127.0.0.1:<PORT>/v1",
+      "launcher": "<HOME>/prefix/bin/oxc-controller",
+      "models": 1,
+      "next_step": "put your API keys in <HOME>/config/cloud-secrets.json (mode 0600), then `curl <api_base>/models`; the file is never read or printed here",
+      "prefix": "<HOME>/prefix",
+      "runtime_json": "<HOME>/config/runtime.json",
+      "secrets_file": "<HOME>/config/cloud-secrets.json",
+      "unit": "oxc-synthetic.service"
+    },
+    "systemctl": [
+      [
+        "--user",
+        "daemon-reload"
+      ],
+      [
+        "--user",
+        "enable",
+        "--now",
+        "<HOME>/units/oxc-synthetic.service"
+      ]
+    ],
+    "unit": "[Unit]\nDescription=oxc cloud-only controller (oxc-synthetic)\n[Service]\nType=simple\nExecStart=\"<HOME>/prefix/bin/oxc-controller\"\nWorkingDirectory=<HOME>/prefix\nRestart=on-failure\nRestartSec=5\nUMask=0077\nLimitCORE=0\n[Install]\nWantedBy=default.target\n"
+  }
+}

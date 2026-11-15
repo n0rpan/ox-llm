@@ -64,6 +64,15 @@
     ],
     "studio": [
       "test_studio"
+    ],
+    "cloud-catalog": [
+      "test_cloud_catalog"
+    ],
+    "cloud-gateway-wire": [
+      "test_cloud_gateway"
+    ],
+    "cloud-installer": [
+      "test_cloud_installer"
     ]
   },
   "profiles": {
@@ -74,6 +83,9 @@
     "all": [
       "cli-config",
       "http-foundation",
+      "cloud-catalog",
+      "cloud-gateway-wire",
+      "cloud-installer",
       "http-admission",
       "ledger",
       "engine-lifecycle",
@@ -83,11 +95,13 @@
       "updates-uninstall",
       "receipt-tools",
       "studio"
+    ],
+    "cloud-catalog": [
+      "cloud-catalog"
     ]
   },
   "blocked": {
-    "cloud-only": "Reference contracts await merged main for #24 and the cloud-only stack (#78, #79, #80, #82, #84). The cloud-foundation profile is runnable but does not establish cloud-only parity.",
-    "cloud-gateway": "Do not port the previous gateway. Capture the three-provider gateway, budgets, remote ledger and Responses continuation from main after #24 lands.",
-    "cloud-installer": "Capture the engine-free install/start/stop contract after the cloud-only installer lands on main. Existing bootstrap tests are for the local stack."
+    "cloud-only": "The Python cloud stack is captured on merged main; complete native policy, provider protocols, cancellation, long Responses continuation and installed-runtime conformance remain required.",
+    "cloud-gateway": "Provider wire and ledger foundation contracts are runnable as cloud-gateway-wire. Capture and implement concurrency, cancellation, cache pricing and long tool continuation before declaring the full gateway green."
   }
 }

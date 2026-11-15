@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 
-from environment import ROOT, PRIMARY, SECONDARY, isolated_env, PYTHON
+from environment import ROOT, PRIMARY, SECONDARY, isolated_env, PYTHON, python_dependency_mounts
 
 
 def free_port():
@@ -274,6 +274,7 @@ class Daemon:
                 '--ro-bind', str(cgroup), '/sys/fs/cgroup',
                 '--ro-bind', str(thermal), '/sys/class/thermal',
                 '--ro-bind', str(frequency), '/sys/devices/system/cpu/cpufreq',
+                *python_dependency_mounts(self.env),
                 '--', *command]
 
     def wait_event(self, predicate, timeout=5):

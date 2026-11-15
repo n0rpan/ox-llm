@@ -8,6 +8,11 @@ SECONDARY = 'qwen3.6-35b-a3b-local'
 PYTHON = '/usr/bin/python3'
 
 
+def python_dependency_mounts(env):
+    path = env.get('OXC_CONFORMANCE_PYTHON_DEPS')
+    return ['--ro-bind', path, path] if path else []
+
+
 def isolated_env(home):
     env = {'HOME': str(home), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
            'LC_ALL': 'C.UTF-8', 'TERM': 'dumb', 'COLUMNS': '80',

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 
-from environment import ROOT, isolated_env, PYTHON
+from environment import ROOT, isolated_env, PYTHON, python_dependency_mounts
 
 
 class CliNamespaceContract(unittest.TestCase):
@@ -29,6 +29,7 @@ class CliNamespaceContract(unittest.TestCase):
                 'bwrap', '--die-with-parent', '--unshare-net', '--ro-bind', '/', '/',
                 '--dev-bind', '/dev', '/dev', '--bind', '/proc', '/proc',
                 '--tmpfs', '/home', '--ro-bind', str(ROOT), str(checkout), '--tmpfs', '/tmp',
+                *python_dependency_mounts(env),
                 '--', PYTHON, '-c', program,
             ], env=env, capture_output=True, text=True, timeout=10)
             if result.returncode:

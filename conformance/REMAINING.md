@@ -1,20 +1,24 @@
 # Remaining conformance and Rust work
 
-Reference main: `fc869d07b4b56926c00cc725df27484856c2dc25`.
+Reference main: `15fe33d6f53e61639b4232a2d229f66444c37f0d`.
 The passing Python suite is partial. Per the owner's updated instruction, Rust
 implementation has started in parallel with the remaining contracts. See
 `oxc-rs/README.md` for the implemented scope and local checks.
 
 The following gaps remain visible rather than being represented by skipped tests:
 
-- Cloud routing, three upstream providers, budget reservations, unknown-price
-  refusal, remote ledger labels and redaction: no implementation exists on this
-  reference main. The coordinator has prioritized complete cloud-only mode
-  (no local engine) as the first A/B target. Wait for #24 and the cloud-only
-  stack to land, capture their actual behavior on main, then port it. Do not
-  port the previous gateway. Twenty-one engine-free HTTP foundation cases pass
-  with no model/engine fixtures and an untouched foreign inference lease.
-  The review runner refuses a cloud-only parity claim until real contracts exist.
+- Cloud-only remains the first complete runtime target. Python contracts now cover
+  nine catalog, 24 gateway and 15 installer cases. Positive provider cases must
+  actually forward; private namespaces prevent the price refresher reaching a
+  public API. Explicit cache read/write pricing is checked with 95% cache hits
+  on OpenRouter, OpenAI Chat/Responses and Anthropic. Provider-default pricing
+  and OpenRouter reported-cost behavior still track main's #283 fix.
+  PR #294 provides only opt-in discovery metadata with eight source/native cases.
+  Full HTTP runtime composition, keyless/policy refusals, secrets/redaction,
+  concurrent reservations and settlement, remote ledgers, three-provider
+  forwarding/cancellation and long Responses tool loops still need native slices.
+  Main #251's closed historical-tool replay is the #246 reference. No hardware
+  A/B or Python retirement before complete conformance and the owner's run.
 - Engine-free HTTP policy: 49 additional wire cases now match the reference for
   header precedence/whitespace, request-target normalization, navigation queries,
   key-file settings and CORS. Ten differences were shown failing before their
@@ -118,7 +122,7 @@ current paired synthetic benchmark verifies identical engine work and records
 source/harness/binary identities; hardware performance remains unmeasured. Hardware A/B remains the owner's responsibility.
 
 Follow main daily during active work and before any slice is readied. Review all
-`lab/` changes since the previous merge point, add reference contracts first,
+`oxc/` changes since the previous merge point, add reference contracts first,
 then port the changed behavior. Keep the draft PR's first line and parity table
 in sync. Never merge, tag, release, push main or mark hardware readiness early.
 
