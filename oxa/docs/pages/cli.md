@@ -48,6 +48,8 @@ Retries use the `retry` settings: transient gateway credentials/ledger refusals,
 
 This is a graceful limit: an active tool or model request finishes before the final turn, so elapsed time can exceed the requested duration. The first SIGTERM does not cancel that tool. A further SIGTERM, or SIGTERM after the time limit has requested wrap-up, takes the default termination action so a stuck tool or final request can be stopped. This forced termination cannot guarantee a final result record or session flush. SIGKILL and process/system crashes cannot run a wrap-up turn.
 
+If a local model spends its output budget on thinking without an answer, oxa retries once with thinking off. If that fallback still reaches the output limit without text or tool calls, the run fails with `error_class: "thinking_overrun"` and exit 1 in print, JSON and RPC modes. No further generation is attempted; the terminal result distinguishes this from a broken transport or an empty successful answer.
+
 ## Commands
 
 Commands take the place of the message. They do not start a session.
