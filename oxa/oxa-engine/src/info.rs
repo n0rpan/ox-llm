@@ -146,7 +146,8 @@ pub fn parse_info_for(
         .filter(|n| *n > 0)
         .unwrap_or_else(|| DEFAULT_MAX_OUTPUT.min(n_ctx / 4).max(1));
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
-    let (prefill_only, caps) = capabilities(status, &limits_for);
+    let (prefill_only, mut caps) = capabilities(status, &limits_for);
+    caps.remote = caps.remote || remote.is_some();
     if caps.remote && oxa_proto::offline() {
         return Err(oxa_proto::offline_error(&format!("the cloud model {limits_for}")));
     }
