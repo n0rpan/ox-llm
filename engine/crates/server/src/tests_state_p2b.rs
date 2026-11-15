@@ -1130,3 +1130,22 @@ fn thinking_follow_up_after_a_restart_resumes_the_exact_ram_checkpoint() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #213: GET /state-cache must not wait for a running generation (it holds the worker): it
+/// answers 409 "busy" at once instead of blocking until the generation ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn state_cache_status_reports_busy_instead_of_blocking() {
+    let dir = tmp("p213-status-busy");
+    let a = server_echo(&dir, vec![], 1 << 40);
+    let held = a.worker.lock().unwrap();
+    let r = tokio::time::timeout(
+        Duration::from_secs(3),
+        call(&a, "GET", "/state-cache", Json::Null),
+    )
+    .await;
+    drop(held);
+    let (c, j) = r.expect("GET /state-cache blocked on the worker lock");
+    assert_eq!(c, 409, "{j}");
+    let (c, _) = call(&a, "GET", "/state-cache", Json::Null).await;
+    assert_eq!(c, 200, "idle again");
+}
