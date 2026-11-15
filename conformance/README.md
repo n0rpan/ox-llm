@@ -1,7 +1,7 @@
 # oxc drop-in conformance
 
 Reference: main `2e8209c9b276b767d4603d6822f902ddd0537b19`.
-The current suite passes 537 scenarios in 67 unittest methods. This remains a
+The current suite passes 546 scenarios in 76 unittest methods. This remains a
 partial contract suite, not a complete parity claim. The owner authorized starting Rust in parallel with the remaining conformance
 work. The initial native crate is in `oxc-rs/`; full Rust parity is not yet claimed.
 
@@ -59,6 +59,24 @@ OXC_DAEMON_COMMAND='/absolute/path/to/oxc serve' \
 python3 -m unittest discover -s conformance -v
 ```
 
+Those two overrides exercise the controller and runtime CLI. Bootstrap/install
+and receipt tools have separate command overrides; leaving them unset runs the
+Python reference for those components. To check the unfinished native helper
+entry points explicitly, also set:
+
+```sh
+OXC_COMMAND='/absolute/path/to/oxc' \
+OXC_DAEMON_COMMAND='/absolute/path/to/oxc serve' \
+OXC_BOOTSTRAP_COMMAND='/absolute/path/to/oxc __bootstrap' \
+OXC_INSTALL_COMMAND='/absolute/path/to/oxc __install' \
+OXC_EXPORT_RECEIPT_COMMAND='/absolute/path/to/oxc __export_receipt' \
+OXC_SCRUB_RECEIPTS_COMMAND='/absolute/path/to/oxc __scrub_receipts' \
+python3 -m unittest discover -s conformance -v
+```
+
+These helper entry points are still pending; all four bootstrap scenarios and
+all eleven receipt-tool cases fail with those explicit native overrides.
+
 The daemon command must use the existing `LOCAL_LLM_PORT`, `LOCAL_LLM_CONFIG`,
 `LOCAL_AI_LEASE` and XDG settings. `serve` above is illustrative; its final public
 invocation remains to be established from the installation contract.
@@ -112,7 +130,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | --- | --- | --- | --- |
 | CLI parsing | PASS, 65 cases | PASS, captured grammar | More option combinations |
 | CLI ledger files | PASS, 5 cases | PASS | Additional historical ledger labels |
-| CLI runtime | PASS, 48 cases | Partial: 46/48 native CLI cases against both Python and native daemons | Update/rollback commands |
+| CLI runtime | PASS, 48 cases | PASS: all 48 cases against both Python and native daemons | More combined flags and filesystem failures |
 | CLI desktop/model dispatch | PASS, 15 cases | PASS: detached session and exec handshake, inherited stdin/umask, service failures, bounded model qualification/errors, selection and read-only planning | More malformed replies and command races |
 | CLI status/code/mode | PASS, 16 cases | PASS: filtered metadata, offline/stopping states, selected-model dispatch, Flash download phases and bounded trial queries | More malformed metadata and clock races |
 | CLI health digests | PASS, 27 cases | PASS: numeric/enum reduction, origin/text filtering, stored days, trend/soak thresholds, private atomic writes, stale status, date validation, installed versions and Python/Rust/Python reads | More malformed numeric/file inputs and interruption races |
@@ -140,7 +158,7 @@ do not refresh goldens merely because an alternate implementation fails them.
 | Cloud gateway | Not covered | Not implemented | All three providers, loopback mock upstreams, reservations, budgets, ledger, redaction, offline, unknown prices |
 | Cross-implementation file reads | Harness/ledger ready; Python/Python PASS | Harness and ledger Python/Rust/Python PASS | Other state stores |
 | Bootstrap/install | PASS, 4 scenarios | Not implemented | Transfer/build/install-journal edge cases |
-| Staged update/rollback | PASS, 6 scenarios / 9 CLI goldens | Not implemented | Release identity proof, created/removed files, interruption recovery |
+| Staged update/rollback | PASS, 15 scenarios / 22 CLI goldens | PASS: generic manifest transactions, sealed/bound hashes, exact restore, created/removed files, private state, receipts, positive identity, agent refresh and owner-edit refusal/recovery | Generated runtime materialization, interruptions and more filesystem races |
 | Uninstall | PASS, 27 cases plus original empty-install CLI cases | PASS: exact journal/stage records, hash/owner-edit protection, dry-run/apply, positive stops/restoration, models kept by default, explicit model deletion, symlinks/parent escape, private-home refusal and partial failures | More concurrent record/filesystem changes and filesystem failure cases |
 | Shipped scans | PASS, 11 cases | Not implemented | More secret/SDK rule inputs (no real secrets or SDK material) |
 | Fake engine benchmark | Python baseline recorded | Not implemented | Repeat identical measurement with Rust |

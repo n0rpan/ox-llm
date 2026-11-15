@@ -1,4 +1,19 @@
 {
+  "test_agent_identity_refresh_uses_the_target_home_and_offline_fallback/0": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nUpdated to synthetic-release. If anything feels wrong: local-ai rollback\n"
+  },
+  "test_bound_service_state_is_validated_before_rollback/0": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nUpdated to synthetic-release. If anything feels wrong: local-ai rollback\n"
+  },
+  "test_bound_service_state_is_validated_before_rollback/1": {
+    "exit": 2,
+    "stderr": "",
+    "stdout": "Nothing was changed: the saved copy of the previous version does not match its record.\n"
+  },
   "test_changed_seal_is_refused_without_stopping_services/0": {
     "exit": 2,
     "stderr": "",
@@ -24,6 +39,16 @@
     "stderr": "",
     "stdout": "Putting back the version before synthetic-release ...\nThe previous version is back and running. To install the newer one again: local-ai update <HOME>/staged/synthetic-release\n"
   },
+  "test_created_and_removed_files_round_trip/0": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nUpdated to synthetic-release. If anything feels wrong: local-ai rollback\n"
+  },
+  "test_created_and_removed_files_round_trip/1": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Putting back the version before synthetic-release ...\nThe previous version is back and running. To install the newer one again: local-ai update <HOME>/staged/synthetic-release\n"
+  },
   "test_failed_chat_automatically_restores_previous_files/0": {
     "exit": 1,
     "stderr": "",
@@ -34,14 +59,54 @@
     "stderr": "",
     "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nThe new version did not pass its check (the service did not start). Putting the previous version back ...\nYour previous version is back and working. Nothing else changed.\n"
   },
+  "test_install_and_rollback_receipts/0": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nUpdated to synthetic-release. If anything feels wrong: local-ai rollback\n"
+  },
+  "test_install_and_rollback_receipts/1": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Putting back the version before synthetic-release ...\nThe previous version is back and running. To install the newer one again: local-ai update <HOME>/staged/synthetic-release\n"
+  },
   "test_live_drift_is_refused_without_overwriting_owner_data/0": {
     "exit": 2,
     "stderr": "",
     "stdout": "Checking the staged release synthetic-release ...\nNothing was changed: Its rollback would not work (the installed files are not the ones this release put there (a newer install or a hand edit)).\n"
   },
+  "test_owner_edit_after_install_refuses_rollback/0": {
+    "exit": 0,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nUpdated to synthetic-release. If anything feels wrong: local-ai rollback\n"
+  },
+  "test_owner_edit_after_install_refuses_rollback/1": {
+    "exit": 2,
+    "stderr": "",
+    "stdout": "Nothing to roll back: no installed release with a saved previous version was found.\n"
+  },
+  "test_owner_edit_during_failed_chat_refuses_automatic_rollback/0": {
+    "exit": 3,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nChecking that chat answers (this may load the model) ...\nThe new version did not pass its check (the test chat did not answer (HTTP 503)). Putting the previous version back ...\nThe automatic rollback did not finish (the installed files are not the ones this release put there (a newer install or a hand edit)). Run `local-ai rollback`; if that also stops, run `<HOME>/staged/synthetic-release/rollback/rollback.py --check` and share its output.\n"
+  },
+  "test_resealed_changed_preimage_refuses_rollback_binding/0": {
+    "exit": 2,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nNot ready to install: Its rollback would not work (the saved copy of the previous version does not match its record).\n"
+  },
+  "test_unknown_controller_release_keeps_recovery_not_ready/0": {
+    "exit": 3,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nThe new version did not pass its check (which version the service runs could not be confirmed within 0 s). Putting the previous version back ...\nThe previous version is back, but the service is not answering yet (which version the service runs could not be confirmed within 0 s). Give it a minute, then run `local-ai status`.\n"
+  },
   "test_unproven_service_stop_refuses_install/0": {
     "exit": 2,
     "stderr": "",
     "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nNothing was changed: the local AI service did not stop\n"
+  },
+  "test_wrong_controller_release_is_not_readiness/0": {
+    "exit": 1,
+    "stderr": "",
+    "stdout": "Checking the staged release synthetic-release ...\nStopping the local AI service ...\nInstalling synthetic-release ...\nStarting the local AI service ...\nWaiting for it to be ready ...\nThe new version did not pass its check (the service runs another version than expected within 0 s). Putting the previous version back ...\nYour previous version is back and working. Nothing else changed.\n"
   }
 }

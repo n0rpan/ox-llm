@@ -38,12 +38,12 @@ The following gaps remain visible rather than being represented by skipped tests
   CPU pinning and Flash-specific launch adapters/capabilities.
 - Images: the CLI dispatch is covered; the shipped controller's image-slot IPC
   and related runtime paths need contracts without SDK, device or model content.
-- CLI: port update/rollback commands;
+- CLI: extend malformed metadata, argument combinations and filesystem failures;
   extend populated ledger/digest, valid cache status, sharing keys and offline
   failures. Fifteen desktop/model dispatch cases now cover detached sessions,
   inherited stdin/umask, exec/service failures, qualification and read-only planning.
   Sixteen status/code/mode cases cover filtered metadata, offline/stopping states,
-  selected models, download phases and bounded trial queries. Forty-six runtime CLI
+  selected models, download phases and bounded trial queries. All forty-eight runtime CLI
   cases pass against both the Python and native daemons.
   Direct Oxe chooser/status facts now cover receipt-derived qualification,
   prefix identities, selection/load state, resident bytes, idle/unload availability
@@ -52,10 +52,14 @@ The following gaps remain visible rather than being represented by skipped tests
 - Bootstrap: source transfer/build/check flows need loopback fixtures, never a
   model download or real API call. Current tests cover source-payload staging,
   installation, unit text, installed help and rollback/refusal cases.
-- Updates: created/removed files, interruption recovery, positive release identity
-  checks, rollback refusing unrelated owner edits and exit-3 recovery failure.
-  Current stages are identity-free synthetic stages; no release identity claim
-  is made.
+- Updates: generated runtime materialization, interruption recovery and additional
+  filesystem/service races. Fifteen scenarios (22 CLI snapshots) now pass for
+  generic manifest transactions, sealed/bound hashes, exact restore, created and
+  removed files, private state/receipts, positive release identity, agent refresh,
+  and refusal to overwrite owner edits during recovery. Legacy rollback bindings
+  are parsed as quoted JSON data; no Python interpreter is invoked by the port.
+  Generated stagers remain refused until their additional checks/materialization
+  have native adapters.
 - Uninstall: more record/filesystem mutation races, foreign ownership and
   filesystem failures. Twenty-seven cases now pass for exact bootstrap/stage
   records, hashes/owner edits, dry-run/apply, positive stop/restoration, default
@@ -85,8 +89,7 @@ run/review, mark ready deliberately or dispatch checks.yml once for the branch.
 The merge queue runs full integration CI again. If waiting is needed, use one
 blocking gh pr checks --watch; never poll CI status.
 
-Next implementation step: remaining CLI
-commands. Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
+Next implementation step: native bootstrap/install and receipt tools. Twenty-seven digest cases now cover numeric/enum aggregation, text/origin
 filtering, stored days, private writes, trend/soak thresholds, stale status, dates,
 installed versions and file interoperability. Rust now passes all 62 configured API and all 18 HTTP gate cases.
 All 18 lifecycle tests and 13 harness cases pass. The harness tests exercise

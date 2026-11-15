@@ -752,6 +752,15 @@ pub async fn run(args: Args) -> i32 {
             )
             .await
         }
+        "update" | "rollback" => {
+            crate::release_update::run(
+                &args.action,
+                &args.rest,
+                args.flag("--check"),
+                args.flag("--no-chat"),
+            )
+            .await
+        }
         _ => {
             eprintln!(
                 "local-ai: {} is not implemented by the Rust controller yet.",
