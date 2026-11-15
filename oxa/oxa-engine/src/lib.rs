@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 
 mod chat;
+mod embedded;
 mod handshake;
 mod hints;
 mod http;
@@ -25,6 +26,7 @@ mod info;
 mod sse;
 
 pub use chat::{build_body, build_body_for, HttpEngine, ReplyAssembler};
+pub use embedded::{EmbeddedEngine, EmbeddedGateway, GatewayContext, GatewayDiscovery};
 pub use handshake::{handshake_warning, NEEDED_CAPABILITIES, PROTOCOL_UNDERSTOOD};
 pub use hints::{build_headers, new_idem_key};
 pub use http::{http_request, HttpRequest, HttpResponse, Url};

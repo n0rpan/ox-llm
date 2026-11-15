@@ -1,0 +1,123 @@
+"""Every workflow job runs on a hosted ARM image or on the project's runner expression.
+
+A job whose `runs-on` names a hosted x86_64 image directly (ubuntu-latest, ubuntu-24.04, ...)
+bypasses the project's runners for good; this check keeps the x86_64/ARM split automatic.
+Parsed line by line (no YAML library) so it runs with a bare `python3 -I`.
+"""
+from pathlib import Path
+import re
+import unittest
+
+WORKFLOWS = Path(__file__).resolve().parents[3] / '.github' / 'workflows'
+
+ARM_IMAGE = 'ubuntu-24.04-arm'
+# The runner expression from checks.yml: the project's runners when the switch is on, otherwise
+# (or for fork pull requests) the hosted x86_64 image.
+RUNNER_CONDITION = (
+    "vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && "
+    "github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04'"
+)
+RUNNER_EXPRESSION = '${{ ' + RUNNER_CONDITION + ' }}'
+
+# Workflows allowed to name hosted images directly, with the reason.
+EXCEPTIONS = {
+    'release.yml': 'publishes releases; published binaries are never built on the project\'s own runners',
+    'release-build.yml': 'builds the published binaries; they are never built on the project\'s own runners',
+}
+
+FIX = (
+    "Run the job on the hosted ARM image ({arm}) or copy the runner expression from "
+    ".github/workflows/checks.yml:\n    runs-on: {expr}"
+)
+
+
+def jobs_runs_on(text):
+    """Yield (job, runs-on value, matrix values by key) for every job in a workflow."""
+    jobs, in_jobs, job = {}, False, None
+    for line in text.splitlines():
+        if re.match(r'^jobs:\s*$', line):
+            in_jobs = True
+            continue
+        if in_jobs and re.match(r'^\S', line) and not line.startswith('#'):
+            in_jobs = False
+        if not in_jobs:
+            continue
+        m = re.match(r'^  ([A-Za-z0-9_-]+):\s*$', line)
+        if m:
+            job = m.group(1)
+            jobs[job] = {'runs_on': None, 'matrix': {}}
+            continue
+        if job is None:
+            continue
+        m = re.match(r'^    runs-on:\s*(.+?)\s*$', line)
+        if m:
+            jobs[job]['runs_on'] = m.group(1).strip('"\'') if not m.group(1).startswith('${{') else m.group(1)
+            continue
+        m = re.match(r'^\s+([A-Za-z0-9_-]+):\s*\[(.*)\]\s*$', line)
+        if m:
+            values = [v.strip().strip('"\'') for v in m.group(2).split(',') if v.strip()]
+            jobs[job]['matrix'][m.group(1)] = values
+    return jobs
+
+
+def problems(name, text):
+    found = []
+    for job, info in jobs_runs_on(text).items():
+        value = info['runs_on']
+        if value is None:
+            continue  # reusable-workflow call: no runner of its own
+        if value == ARM_IMAGE or value == RUNNER_EXPRESSION:
+            continue
+        if value.startswith('${{'):
+            refs = re.findall(r'matrix\.([A-Za-z0-9_-]+)', value)
+            ok = bool(refs)
+            for key in set(refs):
+                for v in info['matrix'].get(key, [None]):
+                    if v == ARM_IMAGE:
+                        continue
+                    # an x86 matrix entry must be routed through the runner expression
+                    guard = f"matrix.{key} == '{v}' && ({RUNNER_CONDITION})"
+                    if v is None or guard not in value:
+                        ok = False
+            if ok:
+                continue
+        found.append(f'{name}: job {job!r} has runs-on: {value}')
+    return found
+
+
+class WorkflowRunners(unittest.TestCase):
+    def test_no_job_names_a_hosted_x86_image(self):
+        checks = (WORKFLOWS / 'checks.yml').read_text()
+        self.assertIn(RUNNER_EXPRESSION, checks, 'the runner expression in this test must match checks.yml')
+        found = []
+        files = sorted(WORKFLOWS.glob('*.y*ml'))
+        self.assertTrue(files)
+        for path in files:
+            if path.name in EXCEPTIONS:
+                continue
+            found += problems(path.name, path.read_text())
+        self.assertFalse(found, '\n'.join(found) + '\n' + FIX.format(arm=ARM_IMAGE, expr=RUNNER_EXPRESSION))
+
+    def test_exceptions_exist(self):
+        for name in EXCEPTIONS:
+            self.assertTrue((WORKFLOWS / name).is_file(), name)
+
+    def test_detects_hosted_images(self):
+        for image in ('ubuntu-latest', 'ubuntu-24.04', 'ubuntu-22.04', '"ubuntu-latest"'):
+            text = f'on: push\njobs:\n  a:\n    runs-on: {image}\n'
+            self.assertTrue(problems('x.yml', text), image)
+        text = 'jobs:\n  a:\n    strategy:\n      matrix:\n        r: [ubuntu-latest]\n    runs-on: ${{ matrix.r }}\n'
+        self.assertTrue(problems('x.yml', text))
+        expr = RUNNER_EXPRESSION.replace("|| 'ubuntu-24.04' }}", "|| 'ubuntu-22.04' }}")
+        self.assertTrue(problems('x.yml', f'jobs:\n  a:\n    runs-on: {expr}\n'))
+
+    def test_accepts_arm_and_expression(self):
+        for value in (ARM_IMAGE, RUNNER_EXPRESSION):
+            self.assertFalse(problems('x.yml', f'jobs:\n  a:\n    runs-on: {value}\n'))
+        guarded = ("${{ matrix.r == 'ubuntu-latest' && (" + RUNNER_CONDITION + ") || matrix.r }}")
+        text = f'jobs:\n  a:\n    strategy:\n      matrix:\n        r: [ubuntu-latest, {ARM_IMAGE}]\n    runs-on: {guarded}\n'
+        self.assertFalse(problems('x.yml', text))
+
+
+if __name__ == '__main__':
+    unittest.main()
