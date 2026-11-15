@@ -34,7 +34,7 @@ fn older_read_of_a_reread_or_edited_file_is_dropped() {
         call("c4", "read", r#"{"path":"src/a.rs"}"#),
         WireMsg::tool_result("c4", "new a"),
         call("c5", "edit", r#"{"path":"src/b.rs","edits":[]}"#),
-        WireMsg::tool_result("c5", "edited"),
+        WireMsg::tool_result("c5", "Successfully replaced 1 block(s) in src/b.rs."),
         call("c6", "read", r#"{"path":"src/c.rs","offset":400}"#),
         WireMsg::tool_result("c6", "page 2 of c"),
     ];
@@ -42,4 +42,45 @@ fn older_read_of_a_reread_or_edited_file_is_dropped() {
     let idx: Vec<usize> = got.iter().map(|(k, _)| *k).collect();
     assert_eq!(idx, vec![2, 4], "{got:?}");
     assert_eq!(got[0].1, prompt::superseded_read("src/a.rs"));
+}
+
+fn idx(tail: &[WireMsg]) -> Vec<usize> {
+    tail_elisions(tail, 4000, &count)
+        .iter()
+        .map(|(k, _)| *k)
+        .collect()
+}
+
+#[test]
+fn failed_or_partial_later_calls_keep_the_older_read() {
+    let tail = vec![
+        WireMsg::user("go"),
+        call("c1", "read", r#"{"path":"a.rs","offset":1}"#),
+        WireMsg::tool_result("c1", "page 1"),
+        call("c2", "read", r#"{"path":"a.rs","offset":400}"#),
+        WireMsg::tool_result("c2", "page 2"),
+        call("c3", "edit", r#"{"path":"a.rs","edits":[]}"#),
+        WireMsg::tool_result("c3", "Could not find the exact text"),
+        call("c4", "read", r#"{"path":"a.rs","offset":1}"#),
+        WireMsg::tool_result("c4", "Could not read file: a.rs. gone"),
+        call("c5", "edit", r#"{"path":"a.rs","edits":[]}"#),
+        WireMsg::tool_result("c5", "Successfully replaced 1 block(s) in a.rs."),
+    ];
+    assert_eq!(idx(&tail), Vec::<usize>::new());
+}
+
+#[test]
+fn successful_write_and_full_read_edit_drop_older_reads() {
+    let tail = vec![
+        WireMsg::user("go"),
+        call("c1", "read", r#"{"path":"a.rs","offset":1}"#),
+        WireMsg::tool_result("c1", "page"),
+        call("c2", "write", r#"{"path":"a.rs","content":"x"}"#),
+        WireMsg::tool_result("c2", "Successfully wrote to a.rs"),
+        call("c3", "read", r#"{"path":"b.rs"}"#),
+        WireMsg::tool_result("c3", "b"),
+        call("c4", "edit", r#"{"path":"b.rs","edits":[]}"#),
+        WireMsg::tool_result("c4", "Successfully replaced 1 block(s) in b.rs."),
+    ];
+    assert_eq!(idx(&tail), vec![2, 6]);
 }

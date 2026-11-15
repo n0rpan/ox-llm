@@ -153,8 +153,8 @@ fn call_of(tail: &[WireMsg], k: usize) -> Option<(&str, serde_json::Value)> {
 }
 
 /// #459: `Some(path)` when the tool result at `k` is a `read` of `path` that a later call of
-/// the tail supersedes: a `read` of the same page (same `offset` and `limit`) or an `edit` /
-/// `write` of the same path.
+/// the tail supersedes: a successful `read` of the same page (same `offset` and `limit`), a
+/// successful `write` of the path, or a successful `edit` of it when the read was a full read.
 fn superseded_read(tail: &[WireMsg], k: usize) -> Option<String> {
     let (name, args) = call_of(tail, k)?;
     if name != "read" {
@@ -162,23 +162,20 @@ fn superseded_read(tail: &[WireMsg], k: usize) -> Option<String> {
     }
     let path = args.get("path")?.as_str()?;
     let page = (args.get("offset"), args.get("limit"));
-    let later = tail[k + 1..]
-        .iter()
-        .filter(|m| m.role == Role::Assistant)
-        .flat_map(|m| &m.tool_calls)
-        .filter_map(|c| {
-            Some((
-                c.name.as_str(),
-                serde_json::from_str::<serde_json::Value>(&c.args_raw).ok()?,
-            ))
-        });
-    for (n, a) in later {
+    let full = page == (None, None);
+    for (j, m) in tail.iter().enumerate().skip(k + 1) {
+        if m.role != Role::Tool {
+            continue;
+        }
+        let Some((n, a)) = call_of(tail, j) else { continue };
         if a.get("path").and_then(|p| p.as_str()) != Some(path) {
             continue;
         }
+        let text = m.content.as_deref().unwrap_or("");
         let hit = match n {
-            "edit" | "write" => true,
-            "read" => (a.get("offset"), a.get("limit")) == page,
+            "write" => text.starts_with("Successfully wrote"),
+            "edit" => full && text.starts_with("Successfully replaced"),
+            "read" => (a.get("offset"), a.get("limit")) == page && read_succeeded(text),
             _ => false,
         };
         if hit {
@@ -186,6 +183,20 @@ fn superseded_read(tail: &[WireMsg], k: usize) -> Option<String> {
         }
     }
     None
+}
+
+/// The wire has no error flag: a `read` result counts as a success unless it is empty or
+/// starts with one of the failure texts of `oxa-tools`' read.
+fn read_succeeded(text: &str) -> bool {
+    !text.is_empty()
+        && ![
+            "Could not read file",
+            "Operation aborted",
+            "Not a regular file",
+            "Invalid arguments",
+        ]
+        .iter()
+        .any(|p| text.starts_with(p))
 }
 
 /// `true` for the user message that carries a compaction summary at the head of a wire.

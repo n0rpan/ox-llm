@@ -2022,6 +2022,30 @@ mod tests {
         }
     }
 
+    /// #459: `policy_for_model` reads `caps.remote` from the engine info (kept tail share).
+    #[test]
+    fn policy_for_model_keeps_a_bigger_tail_for_a_remote_model() {
+        let mut info = EngineInfo {
+            base_url: String::new(),
+            models: Vec::new(),
+            model: "m".into(),
+            limits_for: "m".into(),
+            n_ctx: 200_000,
+            max_output: 32_000,
+            queue: 0,
+            compact_at: None,
+            prefill_only: false,
+            caps: Default::default(),
+            thinking: None,
+            images: None,
+        };
+        let local = policy_for_model(&info, &Settings::default(), "m").keep_tokens;
+        info.caps.remote = true;
+        let remote = policy_for_model(&info, &Settings::default(), "m").keep_tokens;
+        assert_eq!(remote, 20_000);
+        assert!(remote > local, "{remote} vs {local}");
+    }
+
     /// The speed belongs to the model that produced it: a switch drops it for every later status.
     #[test]
     fn model_switch_resets_last_tok_s() {
