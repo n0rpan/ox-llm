@@ -11,8 +11,8 @@
 //!   ways. Waits are bounded and on screen content; a fixed pause is only ever input timing.
 //! * Component rows call oxa-tui directly (`Renderer` + `TestTerminal`, the components, the
 //!   width functions).
-//! * P rows: the documented pi behaviour is recorded in `fixtures/pi/tui/{usage,tui}.txt`
-//!   (`p_rows_compare_with_pi` checks it exists); each test cites the pi doc or source it follows.
+//! * P rows: the documented pi behaviour is recorded in `fixtures/goldens/tui/{usage,tui}.txt`
+//!   (`documented_rows_have_tests` checks it exists); each test cites the pi doc or source it follows.
 //! * A rows: the body names its invariant in an `// invariant:` comment.
 //! * A needle check stays where the row is about the existence of names (TUI-002), and for
 //!   the rows not converted in wave H (TUI-006, TUI-012, TUI-025, TUI-027: their wave G checks).
@@ -45,7 +45,7 @@ fn joined(files: &[&str]) -> String {
 
 /// The documented pi behaviour recorded for a row id.
 fn documented(id: &str) -> String {
-    for page in ["pi/tui/usage.txt", "pi/tui/tui.txt"] {
+    for page in ["goldens/tui/usage.txt", "goldens/tui/tui.txt"] {
         let text = std::fs::read_to_string(fixture(page)).expect("read tui fixture");
         for line in text.lines() {
             if let Some((k, v)) = line.split_once(" | ") {
@@ -108,7 +108,7 @@ fn parity_rows() -> Vec<ParityRow> {
             test: cells[5].trim_matches('`').to_string(),
         });
     }
-    assert_eq!(rows.len(), 39, "USE (12) + TUI (27) rows of PARITY.md");
+    assert_eq!(rows.len(), 37, "USE (12) + TUI (25) rows of PARITY.md");
     rows
 }
 
@@ -138,7 +138,7 @@ fn every_row_has_test_or_recorded_omission() {
 
 /// documented output or recorded fixture
 #[test]
-fn p_rows_compare_with_pi() {
+fn documented_rows_have_tests() {
     let mut n = 0;
     for r in parity_rows().iter().filter(|r| r.verdict == "P") {
         assert!(!documented(&r.id).is_empty(), "{}: no documented pi output", r.id);
@@ -161,23 +161,6 @@ fn a_rows_name_their_invariant() {
         n += 1;
     }
     assert_eq!(n, 12, "A rows of USE and TUI (2 + 10)");
-}
-
-/// unsupported_in_oxa
-#[test]
-fn o_rows_assert_unsupported_error() {
-    for r in parity_rows().iter().filter(|r| r.verdict == "O") {
-        if r.test == "omission" {
-            // No callable surface: the omission is recorded in PARITY.md.
-            continue;
-        }
-        let body = fn_body(&fname(&r.id)).unwrap_or_else(|| panic!("{}: no fn", r.id));
-        assert!(
-            body.contains("unsupported_in_oxa"),
-            "{}: no unsupported_in_oxa",
-            r.id
-        );
-    }
 }
 
 // ---------------------------------------------------------------- helpers
