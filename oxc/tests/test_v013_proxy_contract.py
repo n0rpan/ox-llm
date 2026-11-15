@@ -1519,18 +1519,18 @@ GOLDEN = {'test_backend_4xx_passes_through': {'client': 'HTTP/1.1 400 *\r\n'
                      'engine': [],
                      'events': [['eligible', 'synthetic-flash&1']]},
  'test_flash_page_unqualified_is_503': {'client': 'HTTP/1.1 503 *\r\n'
-                                                  'Server: *\r\n'
-                                                  'Date: *\r\n'
-                                                  'Content-Type: application/json\r\n'
-                                                  'Content-Length: 170\r\n'
-                                                  'Cache-Control: no-store\r\n'
-                                                  'Retry-After: 5\r\n'
-                                                  '\r\n'
-                                                  '{"error": {"message": "Flash is not ready on this machine. Run `oxc status` to see why.", "type": '
-                                                  '"unavailable_error", "param": null, "code": "service_unavailable"}}',
-                                        'closed': False,
-                                        'engine': [],
-                                        'events': [['eligible', 'synthetic-flash&1']]},
+           'Server: *\r\n'
+           'Date: *\r\n'
+           'Content-Type: application/json\r\n'
+           'Content-Length: 165\r\n'
+           'Cache-Control: no-store\r\n'
+           'Retry-After: 5\r\n'
+           '\r\n'
+           '{"error": {"message": "Flash is not ready on this machine. Run `oxc status` to see '
+           'why.", "type": "unavailable_error", "param": null, "code": "service_unavailable"}}',
+ 'closed': False,
+ 'engine': [],
+ 'events': [['eligible', 'synthetic-flash&1']]},
  'test_get_with_a_query_is_neither_served_from_nor_stored_in_the_cache': {'client': 'HTTP/1.1 200 *\r\n'
                                                                                     'Server: *\r\n'
                                                                                     'Date: *\r\n'
@@ -1839,30 +1839,32 @@ GOLDEN = {'test_backend_4xx_passes_through': {'client': 'HTTP/1.1 400 *\r\n'
                                                                   ['led.finish', 200, None],
                                                                   ['end', {'inference': True, 'touch': False}]]},
  'test_local_start_failure_names_the_cause': {'client': 'HTTP/1.1 503 *\r\n'
-                                                        'Server: *\r\n'
-                                                        'Date: *\r\n'
-                                                        'Content-Type: application/json\r\n'
-                                                        'Content-Length: 206\r\n'
-                                                        'Cache-Control: no-store\r\n'
-                                                        'Retry-After: 5\r\n'
-                                                        '\r\n'
-                                                        '{"error": {"message": "The model could not start (RuntimeError: engine exploded). Details: journalctl '
-                                                        '--user -u oxc-chat.", "type": "local_backend_error", "param": null, "code": "service_unavailable"}}',
-                                              'closed': False,
-                                              'engine': [],
-                                              'events': [['Entry',
-                                                          '/v1/chat/completions',
-                                                          {'messages': [{'content': 'hi', 'role': 'user'}]},
-                                                          None,
-                                                          'synthetic-loopback',
-                                                          True,
-                                                          None,
-                                                          None],
-                                                         ['led.label', None, None],
-                                                         ['led.label_turn', None],
-                                                         ['begin_queued', {'allow_start': True, 'inference': True, 'model_alias': None, 'origin': 'organic'}],
-                                                         ['begin_queued.raised', 'RuntimeError'],
-                                                         ['led.finish', 503, 'start_failed']]},
+           'Server: *\r\n'
+           'Date: *\r\n'
+           'Content-Type: application/json\r\n'
+           'Content-Length: 201\r\n'
+           'Cache-Control: no-store\r\n'
+           'Retry-After: 5\r\n'
+           '\r\n'
+           '{"error": {"message": "The model could not start (RuntimeError: engine exploded). '
+           'Details: journalctl --user -u oxc-chat.", "type": "local_backend_error", "param": '
+           'null, "code": "service_unavailable"}}',
+ 'closed': False,
+ 'engine': [],
+ 'events': [['Entry',
+             '/v1/chat/completions',
+             {'messages': [{'content': 'hi', 'role': 'user'}]},
+             None,
+             'synthetic-loopback',
+             True,
+             None,
+             None],
+            ['led.label', None, None],
+            ['led.label_turn', None],
+            ['begin_queued',
+             {'allow_start': True, 'inference': True, 'model_alias': None, 'origin': 'organic'}],
+            ['begin_queued.raised', 'RuntimeError'],
+            ['led.finish', 503, 'start_failed']]},
  'test_model_alias_is_rewritten': {'client': 'HTTP/1.1 200 *\r\n'
                                              'Server: *\r\n'
                                              'Date: *\r\n'
