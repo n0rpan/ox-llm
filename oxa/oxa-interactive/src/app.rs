@@ -1688,6 +1688,13 @@ fn fresh_status(s: &Session, last: &mut StatusModel) -> StatusModel {
     let state = s.state();
     let stats = s.stats();
     let next = status_from(&state, &stats, last);
+    #[cfg(feature = "session-control")]
+    let next = {
+        let mut next = next;
+        next.ext_status.retain(|key, _| !key.starts_with("oxa.worker."));
+        next.ext_status.extend(oxa_orchestrator::tui::worker_rows());
+        next
+    };
     *last = next.clone();
     next
 }
@@ -1710,6 +1717,16 @@ pub(crate) fn refresh_status(dst: &mut StatusModel, fresh: StatusModel) {
     if dst.model != fresh.model || fresh.context_tokens == 0 {
         dst.last_cached = None;
         dst.last_prompt = None;
+    }
+    #[cfg(feature = "session-control")]
+    {
+        dst.ext_status.retain(|key, _| !key.starts_with("oxa.worker."));
+        dst.ext_status.extend(
+            fresh
+                .ext_status
+                .into_iter()
+                .filter(|(key, _)| key.starts_with("oxa.worker.")),
+        );
     }
     dst.model = fresh.model;
     dst.thinking = fresh.thinking;

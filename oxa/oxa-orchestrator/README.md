@@ -6,6 +6,9 @@ This library has no startup side effects and is not linked into the normal oxa
 binary. The default-off `orchestrator` feature adds `oxa orchestrate`; see
 [the CLI guide](CLI.md). There is no automatically started listener.
 
+For fixed role/model/budget workers inside the shared-session TUI, see
+[WORKER_LANES.md](WORKER_LANES.md).
+
 ## Executable profile
 
 `run` validates a complete plan and its aggregate reservations before launching
