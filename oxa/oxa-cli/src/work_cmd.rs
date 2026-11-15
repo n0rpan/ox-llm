@@ -20,7 +20,8 @@ pub(crate) fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dy
         let binary: PathBuf = std::env::current_exe().map_err(|e| e.to_string())?;
         let mut code = 0;
         for task in tasks {
-            let record = oxa_work::run_task(cwd, &binary, &task)?;
+            let record = oxa_work::run_task_with_policy(cwd, &binary, &task, oxa_proto::offline())
+                .unwrap_or_else(|detail| oxa_work::blocked_record(&task, detail));
             if matches!(
                 record.outcome,
                 oxa_work::Outcome::Red | oxa_work::Outcome::Blocked

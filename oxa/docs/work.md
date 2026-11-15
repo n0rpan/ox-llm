@@ -15,7 +15,8 @@ starts. No remote fetch happens automatically. For a GitHub issue use
 authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
 when the environment or user settings enable offline mode.
 
-Each task runs a child `oxa -p` with its model. Normal agent permission, trust and
+Each task runs a child `oxa -p` with its model. The installed offline policy,
+including a parent `--offline` flag, is passed to every child. Normal agent permission, trust and
 sandbox rules apply. Configure project trust before unattended use. The runner
 executes the base version of `.oxa/settings.json`'s `done` commands outside the
 agent after it exits, even without edits. These are trusted project shell commands:
@@ -29,7 +30,11 @@ Failed acceptance output goes to one additional child run with the original prom
 then acceptance runs once more. JSON lines report `done`, `nothing_to_do` (no
 commits or file changes), `red` (checks still fail), or `blocked` (setup or agent
 execution failed). Exit codes are 0 for success, 1 if any task is red or blocked,
-and 2 for invalid input or runner errors.
+and 2 for invalid input or output errors. A task setup failure produces a blocked
+JSON line and does not skip later tasks. If a task cannot be locked or already has
+a receipt, its existing state is preserved; a pre-worktree failure has an empty
+`worktree` in the result. Locks use kernel ownership, so an abandoned lock file
+after process death does not permanently block a task.
 
 Worktrees and uncommitted changes remain in `.oxa-worktrees/<repository>/<id>`
 beside the repository (or the separate git directory). Result receipts live inside

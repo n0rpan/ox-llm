@@ -137,21 +137,30 @@ fn acceptance(root: &Path, commands: &[String]) -> Result<String> {
     }
     Ok(failures)
 }
-fn agent(binary: &Path, root: &Path, task: &Task, prompt: &str) -> Result<()> {
+fn agent(binary: &Path, root: &Path, task: &Task, prompt: &str, offline: bool) -> Result<()> {
     let mut c = Command::new(binary);
     c.current_dir(root)
-        .args(["-p", "--model", &task.model, "--no-session", "--", prompt]);
+        .args(["-p", "--model", &task.model, "--no-session"]);
+    if offline {
+        c.arg("--offline");
+    }
+    c.args(["--", prompt]);
     checked(c).map(|_| ())
 }
 
-struct TaskLock(PathBuf);
-impl Drop for TaskLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+pub fn blocked_record(task: &Task, detail: String) -> Record {
+    Record {
+        id: task.id.clone(),
+        branch: task.branch.clone(),
+        worktree: PathBuf::new(),
+        outcome: Outcome::Blocked,
+        detail,
     }
 }
-
 pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
+    run_task_with_policy(repo, binary, task, false)
+}
+pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bool) -> Result<Record> {
     validate(task)?;
     let root = checked(git(repo, &["rev-parse", "--show-toplevel"]))?;
     let root = PathBuf::from(root);
@@ -164,12 +173,17 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
     let storage = common.join("oxa-work");
     fs::create_dir_all(&storage).map_err(|e| e.to_string())?;
     let lock_path = storage.join(format!("{}.lock", task.id));
-    let _lock_file = fs::OpenOptions::new()
+    let lock_file = fs::OpenOptions::new()
         .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
-    let _lock = TaskLock(lock_path);
+    lock_file
+        .try_lock()
+        .map_err(|e| format!("task {} is already running: {e}", task.id))?;
+    // Keep the inode so a crashed runner leaves no stale ownership and concurrent
+    // runners cannot acquire locks on two different files with the same name.
     let receipt = storage.join(format!("{}.json", task.id));
     // The common git directory must not be an ancestor of the child cwd: the sandbox
     // deliberately refuses writable git binds with that layout.
@@ -197,7 +211,7 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
         let prepared = tree::prepare(&root, &tree, task)?;
         let tree = tree.canonicalize().map_err(|e| e.to_string())?;
         let commands = tree::done_from_base(&tree, &prepared.base)?;
-        let first_agent = agent(binary, &tree, task, &prepared.prompt);
+        let first_agent = agent(binary, &tree, task, &prepared.prompt, offline);
         tree::ensure_merged(&tree, &prepared.base, &task.branch)?;
         let failures = acceptance(&tree, &commands)?;
         if !failures.is_empty() {
@@ -209,6 +223,7 @@ pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
                     "{}\n\nExternal acceptance checks failed. Repair once:\n{failures}",
                     prepared.prompt
                 ),
+                offline,
             );
             tree::ensure_merged(&tree, &prepared.base, &task.branch)?;
             let failures = acceptance(&tree, &commands)?;

@@ -78,7 +78,7 @@ BUSY_KEYS = ['state', 'active_requests', 'capabilities', 'active']
 ACTIVE_KEYS = ['phase', 'model', 'seconds', 'queued_requests', 'prompt_tokens_done', 'prompt_tokens_total',
                'tokens_out', 'tokens_per_second']
 CAPABILITIES = ('models', 'storage', 'harness', 'harness_learning', 'ledger', 'active', 'openai_aliases',
-                'state_cache', 'context_modes', 'preload', 'model_preload', 'cloud')
+                'state_cache', 'context_modes', 'preload', 'model_preload', 'cloud', 'cancel')
 
 
 class Namespace(unittest.TestCase):

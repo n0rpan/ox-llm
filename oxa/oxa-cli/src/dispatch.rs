@@ -1118,7 +1118,8 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
         silence_limit_ms: silence,
         ..oxa_engine::StreamOpts::default()
     };
-    let engine = HttpEngine::new(&endpoint.base_url, endpoint.api_key.clone())?.with_opts(opts, 2);
+    // The core owns session retries so every retry uses its backoff and visible notice.
+    let engine = HttpEngine::new(&endpoint.base_url, endpoint.api_key.clone())?.with_opts(opts, 0);
     Ok(Arc::new(engine))
 }
 
