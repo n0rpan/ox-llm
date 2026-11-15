@@ -222,6 +222,7 @@ fn run_inner(
             break turn;
         };
 
+        st.stats.output_truncated = turn.finish == Finish::Length;
         let usage: Usage = turn.usage;
         if !st.info.caps.remote {
             // Wave D D4: cache-miss accounting and the reload probe are local-engine features.
