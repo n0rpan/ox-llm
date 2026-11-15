@@ -44,7 +44,8 @@ jobs:
           gateway_test_home=$(mktemp -d)
           gateway_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
           gateway_rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
-          env -i PATH="$PATH" HOME="$gateway_test_home" CARGO_HOME="$gateway_cargo_home" RUSTUP_HOME="$gateway_rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+          bwrap --unshare-user --unshare-net --cap-drop ALL --die-with-parent --new-session --bind / / --proc /proc --dev /dev -- \
+            env -i PATH="$PATH" HOME="$gateway_test_home" CARGO_HOME="$gateway_cargo_home" RUSTUP_HOME="$gateway_rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             cargo test --locked --offline --manifest-path oxc-gateway/Cargo.toml --all-features
       - run: cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
       - run: /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
