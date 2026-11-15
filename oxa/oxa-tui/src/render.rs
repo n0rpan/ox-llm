@@ -91,6 +91,42 @@ pub struct Renderer {
     size: Option<(u16, u16)>,
     /// Set by `reset` and `clear`: the next draw repaints everything.
     stale: bool,
+    /// The terminal rewraps old rows when it narrows (see `terminal_reflows`). When it does
+    /// not, climbing by the reflowed height would erase committed transcript lines.
+    reflow: bool,
+}
+
+/// Whether the terminal is known to reflow on a width change: a few modern emulators do;
+/// xterm, the Linux console and multiplexers truncate rows instead. Unknown means no.
+fn terminal_reflows() -> bool {
+    let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    if set("TMUX") || set("STY") {
+        return false;
+    }
+    [
+        "KITTY_WINDOW_ID",
+        "WEZTERM_PANE",
+        "ALACRITTY_WINDOW_ID",
+        "GHOSTTY_RESOURCES_DIR",
+        "VTE_VERSION",
+    ]
+    .iter()
+    .any(|k| set(k))
+}
+
+/// The part of `line` (ANSI stripped) that lies left of display column `col`.
+fn prefix_to_col(line: &str, col: usize) -> String {
+    let mut x = 0;
+    let mut out = String::new();
+    for ch in crate::strip_ansi(line).chars() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if x + w > col {
+            break;
+        }
+        x += w;
+        out.push(ch);
+    }
+    out
 }
 
 /// Rows a line occupies after the terminal reflowed it to `cols` columns; a wide character
@@ -136,7 +172,13 @@ impl Renderer {
             cursor_shown: None,
             size: None,
             stale: true,
+            reflow: terminal_reflows(),
         }
+    }
+
+    /// Override the reflow detection (tests, or a terminal known to reflow).
+    pub fn set_reflow(&mut self, reflow: bool) {
+        self.reflow = reflow;
     }
 
     pub fn mode(&self) -> ScreenMode {
@@ -282,12 +324,13 @@ impl Renderer {
         };
         // A narrower terminal has reflowed the old lines into more rows than there are lines.
         let old_cols = self.size.map_or(cols, |s| s.0);
-        let reflowed_up = if full && cols < old_cols && cols > 0 {
+        let reflowed_up = if self.reflow && full && cols < old_cols && cols > 0 {
             let end = self.cursor_row.min(self.prev.len());
             let above: usize = self.prev[..end].iter().map(|l| reflowed_rows(l, cols)).sum();
             // Inside the cursor's own line only the rows up to the cursor's column count.
             let within = match (self.prev_cursor, self.prev.get(self.cursor_row)) {
-                (Some(cur), _) => cur.col as usize / cols as usize,
+                (Some(cur), Some(l)) => reflowed_rows(&prefix_to_col(l, cur.col as usize), cols) - 1,
+                (Some(cur), None) => cur.col as usize / cols as usize,
                 (None, Some(l)) => reflowed_rows(l, cols) - 1,
                 (None, None) => 0,
             };

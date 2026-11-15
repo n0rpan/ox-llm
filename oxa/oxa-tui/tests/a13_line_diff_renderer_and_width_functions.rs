@@ -386,6 +386,7 @@ fn repaint_rewrites_the_region_from_its_first_row() {
 fn narrowing_clears_reflowed_height() {
     let mut term = TestTerminal::new(20, 20);
     let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
     let full = "x".repeat(20);
     r.draw(&frame(&[&full, &full, &full]), &mut term);
     term.take_output();
@@ -403,6 +404,7 @@ fn narrowing_clears_reflowed_height() {
 fn narrowing_with_cursor_at_line_start_does_not_climb() {
     let mut term = TestTerminal::new(20, 20);
     let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
     let full = "x".repeat(20);
     let mut f = frame(&[&full]);
     f.cursor = Some(CursorPos { row: 0, col: 0 });
@@ -422,6 +424,7 @@ fn narrowing_with_cursor_at_line_start_does_not_climb() {
 fn narrowing_counts_wide_character_wrap() {
     let mut term = TestTerminal::new(20, 20);
     let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
     let line = "あ".repeat(5); // 10 columns
     r.draw(&frame(&[&line, "z"]), &mut term);
     term.take_output();
@@ -429,5 +432,37 @@ fn narrowing_counts_wide_character_wrap() {
     r.draw(&frame(&[&line, "z"]), &mut term);
     let out = term.take_output();
     // 5 columns hold two wide chars (4 cols): 3 rows, plus "z" row; cursor on last line
+    assert!(out.contains("\x1b[3A\r\x1b[J"), "{out:?}");
+}
+
+/// a terminal that does not reflow must never be climbed past the live region
+#[test]
+fn narrowing_without_reflow_never_climbs_past_the_region() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(false);
+    let full = "x".repeat(20);
+    r.draw(&frame(&[&full, &full, &full]), &mut term);
+    term.take_output();
+    term.resize(10, 20);
+    r.draw(&frame(&[&full[..10], &full[..10], &full[..10]]), &mut term);
+    let out = term.take_output();
+    assert!(out.contains("\x1b[2A\r\x1b[J"), "{out:?}");
+}
+
+/// the cursor row counts wide-character carry: 4 wide chars (col 8) at 3 columns is row 3, not 8/3
+#[test]
+fn narrowing_cursor_row_counts_wide_carry() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
+    let line = "あ".repeat(5);
+    let mut f = frame(&[&line]);
+    f.cursor = Some(CursorPos { row: 0, col: 8 });
+    r.draw(&f, &mut term);
+    term.take_output();
+    term.resize(3, 20);
+    r.draw(&f, &mut term);
+    let out = term.take_output();
     assert!(out.contains("\x1b[3A\r\x1b[J"), "{out:?}");
 }
