@@ -292,6 +292,14 @@ impl Facts {
                 self.root.append(CURRENT, &bytes)?;
             } else if journal.events.last() != Some(&event) || journal.torn_at.is_some() {
                 return Err("pending fact disagrees with the journal".into());
+            } else {
+                // Visibility is not durability: the original append may have died before sync.
+                let leaf = if journal.current_bytes == 0 {
+                    PREVIOUS
+                } else {
+                    CURRENT
+                };
+                self.root.append(leaf, b"")?;
             }
             state.committed(&event)?;
             self.root.atomic(STATE, &state.bytes()?)?;
