@@ -26,14 +26,14 @@ fn sibling(name: &str, var: &str) -> PathBuf {
     if p.ends_with("deps") {
         p.pop();
     }
-    let bin = p.join(name);
-    if !bin.exists() {
-        build_binaries(&p);
-    }
-    bin
+    // Cargo does not rebuild another package's executables for these tests. Refresh
+    // even existing siblings so a bare test run cannot silently exercise stale code.
+    build_binaries(&p);
+    p.join(name)
 }
 
-/// Build `oxa` and `oxa-fake` once when a bare `cargo test -p oxa-parity` finds them missing.
+/// Refresh default `oxa` and `oxa-fake` siblings once per test process.
+/// Explicit `OXA_BIN` / `OXA_FAKE_BIN` overrides bypass this build (e.g. CI archives).
 fn build_binaries(profile_dir: &std::path::Path) {
     use std::sync::Once;
     static BUILD: Once = Once::new();
@@ -46,6 +46,61 @@ fn build_binaries(profile_dir: &std::path::Path) {
         let ok = cmd.status().map(|s| s.success()).unwrap_or(false);
         assert!(ok, "building oxa and oxa-fake failed");
     });
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn existing_sibling_binaries_are_refreshed() {
+        const CHILD: &str = "OXA_PARITY_REFRESH_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(std::fs::read_to_string(oxa_bin()).unwrap(), "fresh oxa");
+            assert_eq!(std::fs::read_to_string(fake_bin()).unwrap(), "fresh fake");
+            return;
+        }
+
+        let env = TestEnv::new();
+        let profile = env.root().join("debug");
+        let deps = profile.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        // Exercise discovery from a test executable next to existing, stale binaries.
+        let test_bin = deps.join("refresh-test");
+        std::fs::copy(std::env::current_exe().unwrap(), &test_bin).unwrap();
+        std::fs::write(profile.join("oxa"), "stale oxa").unwrap();
+        std::fs::write(profile.join("oxa-fake"), "stale fake").unwrap();
+        let cargo = env.write(
+            "cargo",
+            "#!/bin/sh\nset -eu\n[ \"$*\" = 'build -p oxa-cli -p oxa-fake' ]\nprintf 'build\\n' >> \"$REFRESH_PROFILE/builds\"\nprintf 'fresh oxa' > \"$REFRESH_PROFILE/oxa\"\nprintf 'fresh fake' > \"$REFRESH_PROFILE/oxa-fake\"\n",
+        );
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(test_bin)
+            .args([
+                "--exact",
+                "tests::existing_sibling_binaries_are_refreshed",
+                "--nocapture",
+            ])
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:1"))
+            .env(CHILD, "1")
+            .env("CARGO", cargo)
+            .env("REFRESH_PROFILE", &profile)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(profile.join("builds")).unwrap(),
+            "build\n",
+            "both sibling binaries share one build"
+        );
+    }
 }
 
 /// The `oxa` binary: `$OXA_BIN` or `target/<profile>/oxa`.
