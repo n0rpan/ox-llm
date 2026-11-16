@@ -448,6 +448,9 @@ async fn openrouter_absent_or_invalid_reported_cost_uses_catalog() {
         Some(json!("0.1")),
         Some(json!(true)),
         Some(json!({"cost":0.1})),
+        // The existing arbitrary-precision JSON parser can retain numbers
+        // outside f64; they are invalid reported costs, not token errors.
+        Some(serde_json::from_str("1e999").unwrap()),
     ] {
         let mock = MockAnthropic::start(vec![wire(chunks_with_cost(cost), true)]);
         let (gateway, fixture) = gateway(&mock);
