@@ -10,22 +10,37 @@ by rust-cloud on #331; no sign-in or file-format change.
 ## Contract
 
 `Client::stream(Chat, Auth, Cancellation, callback)` returns the final assistant,
-ordered private replay items, optional `accounting::Usage` and finish reason.
+all ordered private `output_items`, authorized `replay_items`, optional
+`accounting::Usage` and finish reason.
 Callbacks receive `Sending` before generation forwarding and normalized `Chunk`
 values. There is no transport Done: the owner settles and writes its ledger
 before signaling success. `stream_with_usage` preserves private terminal usage
 before a finish/public-usage callback can cancel delivery.
 
 `Chat` borrows canonical JSON and explicit per-assistant-turn replay items; it
-uses #663's translator API. Persist the returned ordered items with assistant
+uses #663's translator API. Persist only authorized `replay_items` with assistant
 history under the owner's provider/model/account/prefix scope. Supply them to a
-new client/process on continuation. There is no previous-response ID or hidden
+new client/process on continuation. `output_items` always retains all ordered
+provider items. The two fields share an Arc allocation when replay is authorized.
+
+Per the orchestrator's #331 decision, a response containing an unexecuted,
+truncated tool call has empty replay authority. Tool chunks are held until terminal
+status; in that case none are delivered and the visible assistant has no tool
+calls, including mixed valid/truncated responses. All original output items and
+actual usage remain available, with a length outcome and redacted Debug. The next
+request is a fresh user turn from visible partial assistant text, with no opaque
+replay and no phantom tool result. No interrupted-call metadata or fabricated
+execution is introduced. There is no previous-response ID or hidden
 continuation cache. Missing replay items retain the typed request refusal before
 credential access. Error tool results retain their content and matching call IDs.
 
 `Auth::ApiKey` borrows a freshly supplied `secrets::Key`.
 `Auth::Subscription` uses only the explicitly supplied token path and refresh
-configuration through the merged token-file helper. It does not discover ambient
+configuration through the merged token-file helper. The caller supplies
+`expected_account_id` from its admission scope; fresh and locked refresh records
+must match before refresh or Responses sending. Refreshed bearer values never
+define the replay scope. Account mismatch is a fixed credential refusal without
+HTTP forwarding or account text in Debug. It does not discover ambient
 credentials or sign in. Subscription request adaptation and protocol headers come
 from the pure helper. Refresh rotates returned access/refresh tokens, retains the
 selected account, and preserves the prior refresh token when omitted. Invalid
@@ -81,7 +96,7 @@ rewrites. All 21 stream regressions pass, including failing-first cases. The
 native incomplete/invalid-usage client case now passes as well.
 
 Full gateway tests pass in the normal parallel mode with private HOME, a private
-`/tmp` mount and network namespace. This includes 102 library tests, 17 actual
+`/tmp` mount and network namespace. This includes 102 library tests, 19 actual
 client integration tests, eight token-file tests and four subscription classifier
 tests, plus the remaining gateway suites. Strict all-target/all-feature Clippy,
 formatting and default-off checks pass. Persisted history is serialized to disk

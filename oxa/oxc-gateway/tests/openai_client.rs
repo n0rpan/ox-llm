@@ -95,6 +95,7 @@ async fn both_modes_three_tools_done_only_partial_and_empty_completed_output() {
             let path = fixture.token_path(true);
             let auth = if subscription {
                 Auth::Subscription {
+                    expected_account_id: "synthetic-account",
                     token_path: &path,
                     refresh: client::Refresh {
                         endpoint: &base,
@@ -214,6 +215,7 @@ async fn persisted_three_tool_history_continues_identically_in_new_process_both_
         let auth = || {
             if subscription {
                 Auth::Subscription {
+                    expected_account_id: "synthetic-account",
                     token_path: &path,
                     refresh: client::Refresh {
                         endpoint: &base,
@@ -242,7 +244,7 @@ async fn persisted_three_tool_history_continues_identically_in_new_process_both_
         for i in 0..3 {
             messages.push(json!({"role":"tool","tool_call_id":format!("call_{i}"),"content":if i==1{"failed: synthetic permission denied"}else{"synthetic result"},"is_error":i==1}));
         }
-        let replay = vec![Some(request::ReplayItems::new(completed.replay_items.clone()))];
+        let replay = vec![Some(request::ReplayItems::new(completed.replay_items.to_vec()))];
         let refused = client
             .stream(
                 chat(&base, &next, &[]),
@@ -265,7 +267,7 @@ async fn persisted_three_tool_history_continues_identically_in_new_process_both_
             .await
             .unwrap();
         let history = fixture.root.join("history.json");
-        fs::write(&history,json!({"payload":next,"items":completed.replay_items,"subscription":subscription,"base":base,"token_path":path}).to_string()).unwrap();
+        fs::write(&history,json!({"payload":next,"items":completed.replay_items.as_ref(),"subscription":subscription,"base":base,"token_path":path}).to_string()).unwrap();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "new_process_replay_child", "--nocapture"])
             .env_clear()
@@ -310,6 +312,7 @@ fn new_process_replay_child() {
     let path = PathBuf::from(saved["token_path"].as_str().unwrap());
     let auth = if saved["subscription"] == true {
         Auth::Subscription {
+            expected_account_id: "synthetic-account",
             token_path: &path,
             refresh: client::Refresh {
                 endpoint: base,
@@ -355,6 +358,7 @@ async fn expired_token_refreshes_once_under_lock_and_uses_new_bearer() {
             .stream(
                 chat(&base, &payload(), &[]),
                 Auth::Subscription {
+                    expected_account_id: "synthetic-account",
                     token_path: &path,
                     refresh: client::Refresh {
                         endpoint: &endpoint,
@@ -402,6 +406,7 @@ async fn refresh_timeout_releases_lock_without_forwarding_or_replacing_tokens() 
         client.stream(
             chat(&base, &payload(), &[]),
             Auth::Subscription {
+                expected_account_id: "synthetic-account",
                 token_path: &path,
                 refresh: client::Refresh {
                     endpoint: &base,
@@ -425,6 +430,7 @@ async fn refresh_timeout_releases_lock_without_forwarding_or_replacing_tokens() 
         .stream(
             chat(&upstream_base, &payload(), &[]),
             Auth::Subscription {
+                expected_account_id: "synthetic-account",
                 token_path: &path,
                 refresh: client::Refresh {
                     endpoint: &base,
@@ -461,6 +467,7 @@ async fn refusals_use_typed_classifiers_and_never_expose_credentials() {
         let base = mock.base_url();
         let auth = if subscription {
             Auth::Subscription {
+                expected_account_id: "synthetic-account",
                 token_path: &path,
                 refresh: client::Refresh {
                     endpoint: &base,
@@ -632,6 +639,7 @@ async fn refreshed_and_retired_credentials_are_redacted_from_decoded_fields() {
         .stream(
             chat(&base, &payload(), &[]),
             Auth::Subscription {
+                expected_account_id: "synthetic-account",
                 token_path: &path,
                 refresh: client::Refresh {
                     endpoint: &endpoint,
@@ -673,6 +681,7 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
             .stream(
                 chat(&base, &payload(), &[]),
                 Auth::Subscription {
+                    expected_account_id: "synthetic-account",
                     token_path: &path,
                     refresh: client::Refresh {
                         endpoint: &base,
@@ -706,6 +715,7 @@ async fn missing_replay_refuses_before_any_token_file_access() {
         .stream(
             chat(&base, &payload, &[]),
             Auth::Subscription {
+                expected_account_id: "synthetic-account",
                 token_path: &absent,
                 refresh: client::Refresh {
                     endpoint: &base,
@@ -729,7 +739,8 @@ fn completed_and_auth_debug_hide_private_values() {
     assert!(!format!("{auth:?}").contains(KEY));
     let completed = client::Completed {
         assistant: json!({"content":KEY}),
-        replay_items: vec![json!({"encrypted_content":"synthetic-refresh"})],
+        output_items: vec![json!({"encrypted_content":"synthetic-refresh"})].into(),
+        replay_items: vec![json!({"encrypted_content":"synthetic-refresh"})].into(),
         usage: None,
         finish_reason: "stop",
     };
@@ -755,6 +766,7 @@ async fn dropping_refresh_future_releases_owned_http_work_and_lock() {
     let mut first = Box::pin(client.stream(
         chat(&endpoint, &payload, &[]),
         Auth::Subscription {
+            expected_account_id: "synthetic-account",
             token_path: &path,
             refresh: client::Refresh {
                 endpoint: &endpoint,
@@ -775,6 +787,7 @@ async fn dropping_refresh_future_releases_owned_http_work_and_lock() {
         client.stream(
             chat(&base, &payload, &[]),
             Auth::Subscription {
+                expected_account_id: "synthetic-account",
                 token_path: &path,
                 refresh: client::Refresh {
                     endpoint: &endpoint,
@@ -879,6 +892,7 @@ fn cancel_lock_wait_child() {
                 .stream(
                     chat(base, &payload(), &[]),
                     Auth::Subscription {
+                        expected_account_id: "synthetic-account",
                         token_path: &tokens,
                         refresh: client::Refresh {
                             endpoint: base,
@@ -953,12 +967,13 @@ async fn incomplete_unexecuted_call_does_not_poison_a_new_user_turn() {
                 items.push(json!({"type":"function_call","id":"fc_valid","call_id":"call_valid","name":"read","arguments":"{}","status":"completed"}));
             }
             items.push(json!({"type":"function_call","id":"fc_partial","call_id":"call_partial","name":"read","arguments":"{","status":"incomplete"}));
-            let mock = MockOpenAi::start(vec![
-                Reply::events(vec![
-                    json!({"type":"response.incomplete","response":{"status":"incomplete","output":items,"usage":{"input_tokens":10,"output_tokens":4}}}),
-                ]),
-                answer(),
-            ]);
+            items.push(json!({"type":"message","id":"msg_partial","role":"assistant","content":[{"type":"output_text","text":"Visible partial answer"}],"status":"incomplete"}));
+            let mut events = Vec::new();
+            if mixed {
+                events.push(json!({"type":"response.output_item.done","output_index":1,"item":items[1]}));
+            }
+            events.push(json!({"type":"response.incomplete","response":{"status":"incomplete","output":items.clone(),"usage":{"input_tokens":10,"output_tokens":4}}}));
+            let mock = MockOpenAi::start(vec![Reply::events(events), answer()]);
             let fixture = Fixture::new();
             let base = mock.base_url();
             let client = Client::new().unwrap();
@@ -966,6 +981,7 @@ async fn incomplete_unexecuted_call_does_not_poison_a_new_user_turn() {
             let auth = || {
                 if subscription {
                     Auth::Subscription {
+                        expected_account_id: "synthetic-account",
                         token_path: &path,
                         refresh: client::Refresh {
                             endpoint: &base,
@@ -977,32 +993,39 @@ async fn incomplete_unexecuted_call_does_not_poison_a_new_user_turn() {
                     Auth::ApiKey(&fixture.key)
                 }
             };
+            let mut chunks = Vec::new();
             let complete = client
                 .stream(
                     chat(&base, &payload(), &[]),
                     auth(),
                     &Cancellation::default(),
-                    &mut |_| Control::Continue,
+                    &mut |event| {
+                        if let Event::Chunk(chunk) = event {
+                            chunks.push(chunk);
+                        }
+                        Control::Continue
+                    },
                 )
                 .await
                 .unwrap();
             assert_eq!(complete.finish_reason, "length");
             assert_eq!(complete.usage.as_ref().unwrap().output, Some(4));
-            let calls = complete.assistant["tool_calls"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            assert_eq!(complete.output_items.as_ref(), items.as_slice());
+            assert!(complete.replay_items.is_empty());
+            assert!(complete.assistant.get("tool_calls").is_none());
+            assert_eq!(complete.assistant["content"], "Visible partial answer");
+            assert!(chunks
+                .iter()
+                .all(|chunk| chunk.pointer("/choices/0/delta/tool_calls").is_none()));
+            assert!(!format!("{complete:?}").contains("opaque-synthetic-partial"));
             let mut next = payload();
             let messages = next["messages"].as_array_mut().unwrap();
             messages.push(complete.assistant);
-            for call in calls {
-                messages.push(json!({"role":"tool","tool_call_id":call["id"],"content":"synthetic result for a public executable call"}));
-            }
             messages.push(json!({"role":"user","content":"Start a new turn after the interrupted response"}));
             let replay = [if complete.replay_items.is_empty() {
                 None
             } else {
-                Some(request::ReplayItems::new(complete.replay_items))
+                Some(request::ReplayItems::new(complete.replay_items.to_vec()))
             }];
             match client
                 .stream(
@@ -1016,10 +1039,65 @@ async fn incomplete_unexecuted_call_does_not_poison_a_new_user_turn() {
                 Ok(continued) => assert_eq!(continued.assistant["content"], "Synthetic answer"),
                 Err(error) => failures.push((subscription, mixed, error)),
             }
+            let requests = mock.wait_for_requests(2);
+            let input = requests[1].body["input"].as_array().unwrap();
+            assert!(input
+                .iter()
+                .any(|item| item["role"] == "assistant" && item["content"] == "Visible partial answer"));
+            assert!(input.iter().all(|item| !matches!(
+                item["type"].as_str(),
+                Some("function_call" | "function_call_output" | "reasoning")
+            )));
         }
     }
     assert!(
         failures.is_empty(),
         "interrupted continuation failures: {failures:?}"
     );
+}
+
+#[tokio::test]
+async fn subscription_account_switch_refuses_before_refresh_or_paid_sending() {
+    for fresh in [false, true] {
+        let fixture = Fixture::new();
+        let path = fixture.token_path(fresh);
+        // Represents an account switch after the caller scoped its admission.
+        let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record["account_id"] = json!("synthetic-other-account");
+        fs::write(&path, record.to_string()).unwrap();
+        let before = fs::read(&path).unwrap();
+        let mock = MockOpenAi::start(vec![]);
+        let base = mock.base_url();
+        let mut sending = 0;
+        let auth = Auth::Subscription {
+            token_path: &path,
+            expected_account_id: "synthetic-account",
+            refresh: client::Refresh {
+                endpoint: &base,
+                client_id: "synthetic-client",
+                timeout: std::time::Duration::from_secs(1),
+            },
+        };
+        assert!(!format!("{auth:?}").contains("synthetic-account"));
+        let error = Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &payload(), &[]),
+                auth,
+                &Cancellation::default(),
+                &mut |event| {
+                    if matches!(event, Event::Sending) {
+                        sending += 1;
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, client::Error::Credentials);
+        assert_eq!(sending, 0);
+        assert!(mock.requests().is_empty());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(!format!("{error:?} {error}").contains("synthetic-other-account"));
+    }
 }

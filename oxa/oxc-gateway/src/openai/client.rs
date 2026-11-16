@@ -12,6 +12,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     path::Path,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -44,6 +45,8 @@ pub enum Auth<'a> {
     ApiKey(&'a Key),
     Subscription {
         token_path: &'a Path,
+        /// Stable account selected and scoped by the caller before admission.
+        expected_account_id: &'a str,
         refresh: Refresh<'a>,
     },
 }
@@ -69,8 +72,12 @@ pub struct Chat<'a> {
 }
 pub struct Completed {
     pub assistant: Value,
-    /// Private ordered provider output, to persist with this assistant turn.
-    pub replay_items: Vec<Value>,
+    /// All ordered provider output, including unexecuted/truncated items.
+    pub output_items: Arc<[Value]>,
+    /// Replay authority; empty for an unexecuted truncated tool call. The caller
+    /// then starts a fresh user turn from visible text, without tool results.
+    /// Shares output_items' allocation when replay is authorized.
+    pub replay_items: Arc<[Value]>,
     pub usage: Option<Usage>,
     pub finish_reason: &'static str,
 }
@@ -205,8 +212,14 @@ impl Client {
                 sensitive.push(key.expose());
                 (key.expose(), None)
             }
-            Auth::Subscription { token_path, refresh } => {
-                let credentials = self.credentials(token_path, refresh, cancel).await?;
+            Auth::Subscription {
+                token_path,
+                expected_account_id,
+                refresh,
+            } => {
+                let credentials = self
+                    .credentials(token_path, expected_account_id, refresh, cancel)
+                    .await?;
                 record = credentials.0;
                 retired = credentials.1;
                 sensitive.extend(retired.iter().map(String::as_str));
@@ -274,6 +287,8 @@ impl Client {
         let mut decoder = Decoder::default();
         let mut received = 0usize;
         let mut redactor = Fields::new(sensitive);
+        // No executable call escapes until terminal replay authority is known.
+        let mut pending_tools = Vec::new();
         loop {
             let bytes = tokio::select! {
                 biased;
@@ -298,6 +313,18 @@ impl Client {
                     if native.failed {
                         return Err(Error::Protocol);
                     }
+                    let withheld = native.native_blocks.iter().any(|item| {
+                        item["type"] == "function_call"
+                            && !native.assistant["tool_calls"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .any(|call| {
+                                    item["call_id"]
+                                        .as_str()
+                                        .is_some_and(|id| call["id"].as_str() == Some(id))
+                                })
+                    });
                     let usage = native.usage.map(|u| Usage {
                         prompt: Some(u.prompt_tokens),
                         output: Some(u.output_tokens),
@@ -308,29 +335,55 @@ impl Client {
                     });
                     *terminal_usage = usage.clone();
                     for chunk in chunks {
+                        if chunk.pointer("/choices/0/delta/tool_calls").is_some() {
+                            pending_tools.push(chunk);
+                            continue;
+                        }
                         if chunk
                             .pointer("/choices/0/finish_reason")
                             .is_some_and(|v| !v.is_null())
                         {
+                            for tool in pending_tools.drain(..) {
+                                if !withheld {
+                                    redactor.deliver(tool, cancel, on)?;
+                                }
+                            }
                             redactor.flush(cancel, on)?;
                         }
                         redactor.deliver(chunk, cancel, on)?;
                     }
                     redactor.flush(cancel, on)?;
                     let mut assistant = native.assistant;
+                    if withheld {
+                        assistant
+                            .as_object_mut()
+                            .ok_or(Error::Protocol)?
+                            .remove("tool_calls");
+                    }
+                    let output_items: Arc<[Value]> = native.native_blocks.into();
+                    let replay_items = if withheld {
+                        Arc::from([])
+                    } else {
+                        Arc::clone(&output_items)
+                    };
                     redact_value(&mut assistant, &redactor.secrets);
                     if cancel.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
                     return Ok(Completed {
                         assistant,
-                        replay_items: native.native_blocks,
+                        output_items,
+                        replay_items,
                         usage,
                         finish_reason: native.finish_reason,
                     });
                 }
                 for chunk in chunks {
-                    redactor.deliver(chunk, cancel, on)?;
+                    if chunk.pointer("/choices/0/delta/tool_calls").is_some() {
+                        pending_tools.push(chunk);
+                    } else {
+                        redactor.deliver(chunk, cancel, on)?;
+                    }
                 }
             }
         }
@@ -338,9 +391,14 @@ impl Client {
     async fn credentials(
         &self,
         path: &Path,
+        expected_account_id: &str,
         refresh: Refresh<'_>,
         cancel: &Cancellation,
     ) -> Result<(chatgpt_tokens::TokenRecord, Vec<String>), Error> {
+        if expected_account_id.is_empty() {
+            return Err(Error::Credentials);
+        }
+        let expected_account_id = expected_account_id.to_owned();
         let endpoint = validate_endpoint(refresh.endpoint)?;
         let timeout = refresh.timeout.min(REFRESH_TIMEOUT);
         if timeout.is_zero() || refresh.client_id.is_empty() || refresh.client_id.len() > 128 {
@@ -357,13 +415,14 @@ impl Client {
         let deadline = tokio::time::Instant::now() + timeout;
         let acquire = async {
             loop {
-                let (path, client_id, client, cancel_task, handle, endpoint) = (
+                let (path, client_id, client, cancel_task, handle, endpoint, expected_account_id) = (
                     path.clone(),
                     client_id.clone(),
                     client.clone(),
                     cancel_task.clone(),
                     handle.clone(),
                     endpoint.clone(),
+                    expected_account_id.clone(),
                 );
                 let attempt = tokio::task::spawn_blocking(move || {
                     let mut retired = Vec::new();
@@ -373,6 +432,9 @@ impl Client {
                             old.refresh_token().to_owned(),
                             old.account_id().to_owned(),
                         ]);
+                        if old.account_id() != expected_account_id {
+                            return Err(Error::Credentials);
+                        }
                         if cancel_task.is_cancelled() {
                             return Err(Error::Cancelled);
                         }
@@ -386,6 +448,12 @@ impl Client {
                             }
                         })
                     })?;
+                    if record
+                        .as_ref()
+                        .is_some_and(|record| record.account_id() != expected_account_id)
+                    {
+                        return Err(chatgpt_tokens::Error::InvalidRecord);
+                    }
                     Ok::<_, chatgpt_tokens::Error>(record.map(|record| (record, retired)))
                 });
                 let result = attempt
@@ -715,6 +783,7 @@ impl fmt::Debug for Completed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Completed")
             .field("assistant", &"[redacted]")
+            .field("output_items", &"[redacted]")
             .field("replay_items", &"[redacted]")
             .field("usage", &self.usage)
             .field("finish_reason", &self.finish_reason)
