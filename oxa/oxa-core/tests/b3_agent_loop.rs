@@ -708,6 +708,53 @@ fn a_stream_cut_then_length_cut_still_completes() {
     }
 }
 
+#[test]
+fn length_recovery_skips_unavailable_or_disabled_prefill() {
+    for advertised in [false, true] {
+        let env = TestEnv::new();
+        let mut cut = ScriptTurn::text("part one");
+        cut.finish = Finish::Length;
+        let (mut st, eng) =
+            scripted_state(&env, vec![cut, ScriptTurn::text("done")], vec![], Mode::Workspace);
+        st.info.prefill_only = advertised;
+        st.settings = Settings::from_values(
+            serde_json::json!({"cacheWarming":if advertised { "off" } else { "idle" }}),
+            serde_json::json!({}),
+        );
+        say(&mut st, "finish the task");
+        let (end, _) = run(&mut st);
+        assert_eq!(end, RunEnd::Stopped);
+        assert_eq!(eng.requests().len(), 2);
+        assert!(eng.requests().iter().all(|r| r.max_tokens > 0));
+        assert!(!st.stats.output_truncated);
+    }
+}
+
+#[test]
+fn disabled_length_recovery_keeps_the_cut_outcome() {
+    for setting in ["disabled", "zero", "runtime"] {
+        let env = TestEnv::new();
+        let mut cut = ScriptTurn::text("part one");
+        cut.finish = Finish::Length;
+        let (mut st, eng) = scripted_state(
+            &env,
+            vec![cut, ScriptTurn::text("not requested")],
+            vec![],
+            Mode::Workspace,
+        );
+        st.settings = Settings::from_values(
+            serde_json::json!({"retry":{"enabled":setting!="disabled","maxRetries":if setting=="zero" {0} else {2}}}),
+            serde_json::json!({}),
+        );
+        st.auto_retry = setting != "runtime";
+        say(&mut st, "finish the task");
+        let (end, _) = run(&mut st);
+        assert_eq!(end, RunEnd::Stopped);
+        assert_eq!(eng.requests().len(), 1);
+        assert!(st.stats.output_truncated);
+    }
+}
+
 /// A refusal (`content_filter`) keeps the streamed text, shows a one-line notice and does not retry.
 #[test]
 fn content_filter_keeps_text_notices_and_does_not_retry() {
