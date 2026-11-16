@@ -1,5 +1,8 @@
 //! One admission/stream/settlement path, with Done only after a durable row.
 #[cfg(test)]
+#[path = "../tests/common/openrouter_cases.rs"]
+mod openrouter_tests;
+#[cfg(test)]
 #[path = "../tests/common/gateway_cases.rs"]
 mod tests;
 use crate::{
@@ -72,8 +75,8 @@ impl Error {
             param,
             message: match error {
                 anthropic_client::Error::Cancelled => "Request cancelled.",
-                anthropic_client::Error::Request(_) => "Invalid Anthropic request.",
-                _ => "The Anthropic upstream request failed.",
+                anthropic_client::Error::Request(_) => "Invalid cloud request.",
+                _ => "The cloud upstream request failed.",
             },
         }
     }
@@ -198,7 +201,7 @@ impl Gateway {
         }
         // Transport dispatch is added with the provider client; an admitted
         // foreign route must never be sent using the Anthropic protocol.
-        if model.info().provider != Provider::Anthropic {
+        if !matches!(model.info().provider, Provider::Anthropic | Provider::OpenRouter) {
             let error = Refusal {
                 status: 503,
                 code: "cloud_provider_unavailable",
@@ -211,6 +214,7 @@ impl Gateway {
         }
         let key = call.key_handle().map_err(Error::Refused)?;
         let mut terminal_usage = None;
+        let mut terminal_reported_cost = None;
         let request = Chat {
             base_url: model.endpoint().as_str(),
             upstream_model: model.upstream(),
@@ -221,40 +225,56 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
         };
-        let result = self
-            .client
-            .stream_with_blocks(
-                request,
-                &key,
-                cancel,
-                &mut |event| match event {
-                    anthropic_client::Event::Sending => {
-                        if cancel.is_cancelled() {
-                            return Control::Stop;
-                        }
-                        call.mark_forwarded();
-                        Control::Continue
-                    }
-                    anthropic_client::Event::Chunk(chunk) => {
-                        call.observe(&chunk);
-                        on(Event::Chunk(chunk))
-                    }
-                },
-                |index| {
-                    history?
-                        .messages
-                        .get(index.checked_sub(1)?)?
-                        .provider_history
-                        .as_ref()
-                        .map(|saved| saved.items().to_vec())
-                },
-                &mut terminal_usage,
-            )
-            .await;
+        let mut deliver = |event| match event {
+            anthropic_client::Event::Sending => {
+                if cancel.is_cancelled() {
+                    return Control::Stop;
+                }
+                call.mark_forwarded();
+                Control::Continue
+            }
+            anthropic_client::Event::Chunk(chunk) => {
+                call.observe(&chunk);
+                on(Event::Chunk(chunk))
+            }
+        };
+        let result = if model.info().provider == crate::catalog::Provider::OpenRouter {
+            self.client
+                .stream_openrouter(
+                    request,
+                    &key,
+                    cancel,
+                    &mut deliver,
+                    &mut terminal_usage,
+                    &mut terminal_reported_cost,
+                )
+                .await
+        } else {
+            self.client
+                .stream_with_blocks(
+                    request,
+                    &key,
+                    cancel,
+                    &mut deliver,
+                    |index| {
+                        history?
+                            .messages
+                            .get(index.checked_sub(1)?)?
+                            .provider_history
+                            .as_ref()
+                            .map(|saved| saved.items().to_vec())
+                    },
+                    &mut terminal_usage,
+                )
+                .await
+        };
         // This record survives cancellation during final chunk delivery and
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
             call.metered(usage);
+            if model.info().provider == crate::catalog::Provider::OpenRouter {
+                call.metered_cost(terminal_reported_cost);
+            }
         }
         self.finish(
             call,
@@ -291,7 +311,10 @@ impl Gateway {
                     // private replay) still has trusted provider usage. Charge
                     // those facts without granting reply/replay authority.
                     Outcome::Complete
-                } else if completion::clean_refusal(error) {
+                } else if completion::clean_refusal(error)
+                    || call.model().info().provider == Provider::OpenRouter
+                        && matches!(error, Error::Upstream(anthropic_client::Error::Http(402)))
+                {
                     Outcome::Refused
                 } else {
                     Outcome::Failed
