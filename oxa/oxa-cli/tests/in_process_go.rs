@@ -204,6 +204,62 @@ fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
 }
 
 #[test]
+fn authenticated_discovery_never_publishes_an_echoed_credential() {
+    for field in [
+        "/data/0/id",
+        "/data/0/canonical_id",
+        "/data/0/api/chat-completions/base_url",
+        "/data/0/api/chat-completions",
+        "/data/0/cost",
+        "/data/0/capabilities",
+        "/data/0/modalities",
+    ] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            let mut value = discovery(base);
+            if field.ends_with("/chat-completions") {
+                value
+                    .pointer_mut(field)
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(CREDENTIAL.into(), json!(true));
+            } else {
+                *value.pointer_mut(field).unwrap() = if field.ends_with("/cost") {
+                    json!({"nested":[{"description":CREDENTIAL}]})
+                } else if field.ends_with("base_url") {
+                    json!(format!("{base}/inference/go/{CREDENTIAL}"))
+                } else {
+                    json!(format!("prefix-{CREDENTIAL}-suffix"))
+                };
+            }
+            vec![Reply::json(value)]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["--list-models"]);
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL),
+            "{field}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL),
+            "{field}"
+        );
+        assert!(
+            !output.status.success(),
+            "credential-bearing discovery accepted: {field}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains(MODEL),
+            "partial catalog"
+        );
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+        assert_eq!(mock.requests().len(), 1);
+        mock.assert_healthy();
+    }
+}
+
+#[test]
 fn credentials_split_across_chat_fields_never_reach_output_or_receipts() {
     let env = TestEnv::new();
     let half = CREDENTIAL.len() / 2;
