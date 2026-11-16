@@ -625,3 +625,42 @@ fn composed_factory_lists_all_configured_providers_without_credentials_or_http()
     assert!(!env.home().join(".config/oxc/llm/chatgpt-auth.json").exists());
     assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
 }
+
+#[test]
+fn both_native_switches_route_cloud_model_without_selecting_local() {
+    for configured_local in [false, true] {
+        let env = cloud_env();
+        let mock = MockAnthropic::start(vec![Reply::text("Resolved cloud route", 11, 7, 3, 5)]);
+        settings(&env, &mock.base_url(), true);
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        value["oxa"]["engine"]["inProcessLocal"] = json!(true);
+        if configured_local {
+            value["defaultModel"] = json!("synthetic-local");
+            value["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+                "models":{"synthetic-local":{"model":"/synthetic/model.gguf"}},
+                "limits":{"synthetic-local":{"context_window":4096,"max_output":64,
+                    "required_available_bytes":1048576}}});
+        }
+        fs::write(path, value.to_string()).unwrap();
+        write_key(&env, &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string());
+        let output = run(
+            &env,
+            &[
+                "--model",
+                MODEL,
+                "--no-session",
+                "--no-tools",
+                "-p",
+                "Synthetic routing",
+            ],
+            None,
+        );
+        success(&output);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Resolved cloud route"));
+        assert_eq!(mock.requests().len(), 1);
+        assert_eq!(rows(&env)[0]["remote_provider"], "anthropic");
+        assert!(!env.home().join(".oxa/agent/local-engine").exists());
+        mock.finish();
+    }
+}
