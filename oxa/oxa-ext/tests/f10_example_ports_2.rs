@@ -427,6 +427,7 @@ fn ask(host: &ExtensionHost, env: &TestEnv, ui: &mut ScriptUi, args: Value) -> (
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let out = tool.run_with_ui(&args, &cx, &mut |_: &str| {}, ui);
     (out.text, out.ui)

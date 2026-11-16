@@ -199,6 +199,7 @@ fn run_tool(hooks: &CodemodeHooks, code: &str) -> ToolOutput {
         cancel: &cancel,
         env: &envs,
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&json!({ "code": code }), &cx, &mut |_| {})
 }
