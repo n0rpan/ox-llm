@@ -41,7 +41,10 @@ fn credentials_are_fresh_and_debug_never_discloses_them() {
     let home = Home::new();
     let path = home.write(br#"{"anthropic":"synthetic-first-credential"}"#);
     let first = secrets::read(&path, "anthropic").unwrap();
-    home.write(br#"{"anthropic":"synthetic-next-credential"}"#);
+    let replacement = home.0.join("replacement.json");
+    fs::write(&replacement, br#"{"anthropic":"synthetic-next-credential"}"#).unwrap();
+    fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::rename(replacement, &path).unwrap();
     let next = secrets::read(&path, "anthropic").unwrap();
     assert_eq!(first.expose(), "synthetic-first-credential");
     assert_eq!(next.expose(), "synthetic-next-credential");
@@ -53,12 +56,21 @@ fn public_permissions_links_and_directories_are_refused() {
     let home = Home::new();
     let path = home.write(br#"{"anthropic":"synthetic-credential"}"#);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(secrets::read(&path, "anthropic").is_err());
+    assert_eq!(
+        secrets::read(&path, "anthropic").err(),
+        Some(secrets::Error::Permissions)
+    );
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let link = home.0.join("alias.json");
     symlink(&path, &link).unwrap();
-    assert!(secrets::read(&link, "anthropic").is_err());
-    assert!(secrets::read(&home.0, "anthropic").is_err());
+    assert_eq!(
+        secrets::read(&link, "anthropic").err(),
+        Some(secrets::Error::SymbolicLink)
+    );
+    assert_eq!(
+        secrets::read(&home.0, "anthropic").err(),
+        Some(secrets::Error::NotRegular)
+    );
 }
 
 #[test]
@@ -93,7 +105,7 @@ fn repository_markers_have_a_distinct_refusal_without_disclosing_paths_or_keys()
 }
 
 #[test]
-fn invalid_or_oversized_data_produces_a_clean_refusal() {
+fn invalid_data_produces_a_clean_refusal() {
     let home = Home::new();
     for bytes in [
         b"{synthetic-invalid-json}".as_slice(),
@@ -103,10 +115,47 @@ fn invalid_or_oversized_data_produces_a_clean_refusal() {
     ] {
         let path = home.write(bytes);
         let error = secrets::read(&path, "anthropic").err().unwrap();
+        assert_eq!(error, secrets::Error::Unavailable);
         assert!(!format!("{error:?}: {error}").contains("synthetic"));
     }
-    let path = home.write(&vec![b'x'; 65537]);
-    assert!(secrets::read(&path, "anthropic").is_err());
+}
+
+#[test]
+fn valid_json_at_the_file_size_boundary_is_accepted_and_one_extra_byte_is_too_large() {
+    let home = Home::new();
+    let mut bytes = br#"{"anthropic":"synthetic-size-credential"}"#.to_vec();
+    bytes.resize(65536, b' ');
+    let path = home.write(&bytes);
+    assert_eq!(
+        secrets::read(&path, "anthropic").unwrap().expose(),
+        "synthetic-size-credential"
+    );
+    bytes.push(b' ');
+    home.write(&bytes);
+    assert_eq!(
+        secrets::read(&path, "anthropic").err(),
+        Some(secrets::Error::TooLarge)
+    );
+}
+
+#[test]
+fn a_different_file_owner_is_refused_before_permissions_or_content() {
+    use std::os::unix::fs::MetadataExt;
+    // CI supplies a synthetic regular file owned by a different UID before
+    // dropping capabilities. Without it, public kernel metadata provides an
+    // unmapped owner in an unprivileged user namespace; no content is needed.
+    let path = std::env::var_os("OXC_SECRET_OWNER_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/proc/uptime"));
+    assert_ne!(
+        fs::metadata(&path).unwrap().uid(),
+        nix::unistd::Uid::current().as_raw(),
+        "supply a synthetic OXC_SECRET_OWNER_PATH owned by a different UID"
+    );
+    assert_eq!(
+        secrets::read(&path, "anthropic").err(),
+        Some(secrets::Error::WrongOwner)
+    );
 }
 
 #[test]
@@ -136,4 +185,178 @@ fn streaming_redaction_catches_every_split_of_the_credential() {
         output.extend(stream.finish());
         assert_eq!(String::from_utf8(output).unwrap(), "before [redacted] after");
     }
+}
+
+#[test]
+fn missing_relative_dangling_loop_and_parent_alias_paths_have_explicit_results() {
+    let home = Home::new();
+    assert_eq!(
+        secrets::read(&home.0.join("missing.json"), "anthropic").err(),
+        Some(secrets::Error::Unavailable)
+    );
+    let dangling = home.0.join("dangling.json");
+    symlink(home.0.join("missing.json"), &dangling).unwrap();
+    let cycle = home.0.join("cycle.json");
+    symlink("cycle.json", &cycle).unwrap();
+    for path in [&dangling, &cycle] {
+        assert_eq!(
+            secrets::read(path, "anthropic").err(),
+            Some(secrets::Error::SymbolicLink)
+        );
+    }
+    let path = home.write(br#"{"anthropic":"synthetic-parent-credential"}"#);
+    let mut relative = PathBuf::new();
+    for part in std::env::current_dir().unwrap().components() {
+        if matches!(part, std::path::Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    relative.push(path.strip_prefix("/").unwrap());
+    assert_eq!(fs::canonicalize(&relative).unwrap(), path);
+    assert!(secrets::read(&path, "anthropic").is_ok());
+    assert_eq!(
+        secrets::read(&relative, "anthropic").err(),
+        Some(secrets::Error::Unavailable)
+    );
+    let actual = home.0.join("actual");
+    fs::create_dir(&actual).unwrap();
+    fs::rename(&path, actual.join("credentials.json")).unwrap();
+    let alias = home.0.join("alias");
+    symlink(&actual, &alias).unwrap();
+    assert_eq!(
+        secrets::read(&alias.join("credentials.json"), "anthropic")
+            .unwrap()
+            .expose(),
+        "synthetic-parent-credential"
+    );
+    fs::create_dir(actual.join(".git")).unwrap();
+    assert_eq!(
+        secrets::read(&alias.join("credentials.json"), "anthropic").err(),
+        Some(secrets::Error::InRepository)
+    );
+}
+
+#[test]
+fn flat_and_nested_keys_accept_the_maximum_and_reject_invalid_types_and_characters() {
+    let home = Home::new();
+    for raw in [
+        json!({"anthropic":"synthetic-form-credential"}),
+        json!({"anthropic":{"api_key":"synthetic-form-credential"}}),
+    ] {
+        let path = home.write(raw.to_string().as_bytes());
+        assert_eq!(
+            secrets::read(&path, "anthropic").unwrap().expose(),
+            "synthetic-form-credential"
+        );
+    }
+    let maximum = "p".repeat(8192);
+    let path = home.write(json!({"anthropic":maximum}).to_string().as_bytes());
+    assert_eq!(secrets::read(&path, "anthropic").unwrap().expose(), maximum);
+    for raw in [
+        json!([]),
+        json!({}),
+        json!({"other":"synthetic-unused"}),
+        json!({"anthropic":{"api_key":true}}),
+        json!({"anthropic":null}),
+    ] {
+        let path = home.write(raw.to_string().as_bytes());
+        assert_eq!(
+            secrets::read(&path, "anthropic").err(),
+            Some(secrets::Error::Unavailable)
+        );
+    }
+    for key in [
+        String::new(),
+        "synthetic credential".into(),
+        "synthetic\ncredential".into(),
+        "synthetic-λ".into(),
+        "p".repeat(8193),
+    ] {
+        let path = home.write(json!({"anthropic":key}).to_string().as_bytes());
+        let error = secrets::read(&path, "anthropic").err().unwrap();
+        assert_eq!(error, secrets::Error::Unavailable);
+        if !key.is_empty() {
+            assert!(!error.to_string().contains(&key));
+        }
+    }
+}
+
+#[test]
+fn supported_encodings_and_unused_nonfinite_values_do_not_change_the_key() {
+    let home = Home::new();
+    let text = r#"{"anthropic":{"api_key":"synthetic-encoded-credential"}}"#;
+    let mut formats = vec![
+        text.as_bytes().to_vec(),
+        [b"\xef\xbb\xbf".as_slice(), text.as_bytes()].concat(),
+    ];
+    for little in [false, true] {
+        let utf16: Vec<u8> = text
+            .encode_utf16()
+            .flat_map(|n| if little { n.to_le_bytes() } else { n.to_be_bytes() })
+            .collect();
+        let utf32: Vec<u8> = text
+            .chars()
+            .flat_map(|c| {
+                if little {
+                    (c as u32).to_le_bytes()
+                } else {
+                    (c as u32).to_be_bytes()
+                }
+            })
+            .collect();
+        formats.push([if little { b"\xff\xfe" } else { b"\xfe\xff" }.as_slice(), &utf16].concat());
+        formats.push(utf16);
+        formats.push(
+            [
+                if little {
+                    b"\xff\xfe\x00\x00"
+                } else {
+                    b"\x00\x00\xfe\xff"
+                }
+                .as_slice(),
+                &utf32,
+            ]
+            .concat(),
+        );
+        formats.push(utf32);
+    }
+    formats.push(
+        br#"{"unused":[NaN,Infinity,-Infinity],"anthropic":{"api_key":"synthetic-encoded-credential"}}"#
+            .to_vec(),
+    );
+    formats.push(br#"{"anthropic":"synthetic-\u0065ncoded-credential"}"#.to_vec());
+    for bytes in formats {
+        let path = home.write(&bytes);
+        assert_eq!(
+            secrets::read(&path, "anthropic").unwrap().expose(),
+            "synthetic-encoded-credential"
+        );
+    }
+}
+
+#[test]
+fn streaming_buffers_partial_matches_releases_mismatches_and_preserves_unicode() {
+    let home = Home::new();
+    let path = home.write(br#"{"anthropic":"synthetic-stream-credential"}"#);
+    let key = secrets::read(&path, "anthropic").unwrap();
+    let mut stream = redaction::Stream::new(&key);
+    assert_eq!(stream.feed(b"tail synthetic-st"), b"tail ");
+    assert_eq!(stream.feed(b"X"), b"synthetic-stX");
+    assert!(stream.finish().is_empty());
+    let mut stream = redaction::Stream::new(&key);
+    assert_eq!(stream.feed(b"tail syntheti"), b"tail ");
+    assert_eq!(stream.finish(), b"syntheti");
+    assert!(stream.finish().is_empty());
+    let input = format!("λ {}{} 😀", key.expose(), key.expose());
+    for split in 0..=input.len() {
+        let mut stream = redaction::Stream::new(&key);
+        let mut output = stream.feed(&input.as_bytes()[..split]);
+        output.extend(stream.feed(&input.as_bytes()[split..]));
+        output.extend(stream.finish());
+        assert_eq!(String::from_utf8(output).unwrap(), "λ [redacted][redacted] 😀");
+    }
+    let mut stream = redaction::Stream::new(&key);
+    assert_eq!(stream.feed(b"ordinary text"), b"ordinary text");
+    assert!(stream.feed(b"").is_empty());
+    assert!(stream.finish().is_empty());
 }

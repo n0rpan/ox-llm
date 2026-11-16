@@ -58,6 +58,8 @@ class Gate(unittest.TestCase):
         self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features', block)
         self.assertIn('bwrap --unshare-user --unshare-net --cap-drop ALL', block)
         self.assertIn('env -i ', block)
+        self.assertIn('sudo chown 65534:65534 "$gateway_owner_fixture"', block)
+        self.assertIn('OXC_SECRET_OWNER_PATH="$gateway_owner_fixture"', block)
         self.assertNotIn('unittest discover', block)
         self.assertNotIn('OXC_POLICY_CONTRACT', block)
         workspace = tomllib.loads((root / 'oxa/Cargo.toml').read_text())['workspace']
