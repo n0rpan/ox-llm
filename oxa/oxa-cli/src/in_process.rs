@@ -13,6 +13,34 @@ use std::{sync::Arc, time::Duration};
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 
+pub(crate) fn credential_path(dirs: &Dirs) -> std::path::PathBuf {
+    dirs.home.join(".config/oxc/llm/cloud-secrets.json")
+}
+
+/// Terminal-only context for the native reader's local refusal. Never enrich an
+/// engine error: those also reach session history, JSON/RPC events and API callers.
+/// Native upstream authentication failures have a different typed error class.
+pub(crate) fn report_credentials(
+    result: &Result<oxa_core::RunOutcome, OxaError>,
+    native_cloud: bool,
+    dirs: &Dirs,
+    stderr: &mut dyn std::io::Write,
+) {
+    let local_refusal = match result {
+        Ok(oxa_core::RunOutcome::Blocked("cloud_credentials_unavailable")) => true,
+        Err(error) => error.code == "cloud_credentials_unavailable",
+        _ => false,
+    };
+    if native_cloud && local_refusal {
+        // Debug quoting keeps unusual HOME characters on one diagnostic line.
+        let _ = writeln!(
+            stderr,
+            "Local cloud credentials unavailable; attempted protected store: {:?}. Check the provider entry and file protections.",
+            credential_path(dirs),
+        );
+    }
+}
+
 fn invalid() -> OxaError {
     OxaError::new(codes::INVALID, "Invalid user cloud configuration in oxa.cloud.")
 }
@@ -78,7 +106,7 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
     // Discovery prepares the key parent only; it reads no key and opens no ledger.
     let runtime = Runtime::new(
         routes,
-        dirs.home.join(".config/oxc/llm/cloud-secrets.json"),
+        credential_path(dirs),
         dirs.agent_dir.join("cloud-ledger"),
         Options {
             access: Access::Enabled,
