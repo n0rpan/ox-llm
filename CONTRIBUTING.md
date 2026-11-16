@@ -65,8 +65,18 @@ The bundled headers avoid incompatibilities with newer system kernel headers; di
 optional multi-personality decoding avoids needing a 32-bit toolchain. Neither changes the
 native `execve` tracing used by this test. Keep this `PATH` prefix for subsequent check commands
 (and set it again in each new shell); all downloaded sources and build/install output remain
-ignored inside `.local-checks/`. No test is skipped or substituted, and no host installation
-is changed. A failure to trace (for example, denied `ptrace`) must still be fixed, not ignored.
+ignored inside `.local-checks/`. An export in a setup shell does not update a separate check
+runner's environment. For a runner that starts a fresh shell, pass the prefix with the check
+command itself (from the repository root, after building above):
+
+```sh
+(cd oxa && env -u TMPDIR PATH="$PWD/../.local-checks/strace/bin:$PATH" \
+  cargo test -p oxa-cli --test in_process_cloud \
+  native_discovery_tool_loop_and_budget_settlement_use_no_python_process)
+```
+
+Use the same explicit `PATH` prefix for any outside check runner that executes this test.
+No test is skipped or substituted, and no host installation is changed. A failure to trace (for example, denied `ptrace`) must still be fixed, not ignored.
 Keep the test's temporary directory outside any repository: its synthetic credential fixture
 is subject to the production repository-key refusal. If `TMPDIR` points inside a checkout,
 run the test with `env -u TMPDIR cargo test ...` to use the system temporary directory instead;
