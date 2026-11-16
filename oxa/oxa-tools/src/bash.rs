@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/src/core/tools/bash.ts (execution replaced by the sandbox)
 use crate::descriptions::{self, errors};
 use crate::jobs::{JobRegistry, JobStatus};
-use oxa_proto::{Access, ExecSpec, Mode, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
+use oxa_proto::{Access, ExecSpec, Mode, Sandbox, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +14,19 @@ pub struct BashTool {
     spec: ToolSpec,
     shell: ShellConfig,
     jobs: Arc<JobRegistry>,
+    /// #202: the sandbox the tool runs through instead of `ToolCtx::sandbox` (the session's
+    /// `oxa_sandbox::FullAccess`, which drops bwrap under `yolo`). `None` = `ToolCtx::sandbox`.
+    sandbox: Option<OwnSandbox>,
+}
+
+/// An own sandbox of the tool (no `Debug` on `dyn Sandbox`).
+#[derive(Clone)]
+struct OwnSandbox(Arc<dyn Sandbox>);
+
+impl std::fmt::Debug for OwnSandbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OwnSandbox")
+    }
 }
 
 impl BashTool {
@@ -22,6 +35,7 @@ impl BashTool {
             spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell: ShellConfig::default(),
             jobs: Arc::new(JobRegistry::new()),
+            sandbox: None,
         }
     }
     /// H: the tool with pi's `shellPath` / `shellCommandPrefix` settings.
@@ -30,6 +44,7 @@ impl BashTool {
             spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
             jobs: Arc::new(JobRegistry::new()),
+            sandbox: None,
         }
     }
     /// Issue #127 (b): the tool with `shell` and a shared [`JobRegistry`] (the session's).
@@ -38,6 +53,18 @@ impl BashTool {
             spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
             jobs,
+            sandbox: None,
+        }
+    }
+    /// #202: run through `sandbox` instead of `ToolCtx::sandbox`.
+    pub fn with_sandbox(mut self, sandbox: Arc<dyn Sandbox>) -> BashTool {
+        self.sandbox = Some(OwnSandbox(sandbox));
+        self
+    }
+    fn sandbox<'a>(&'a self, cx: &'a ToolCtx) -> &'a dyn Sandbox {
+        match &self.sandbox {
+            Some(OwnSandbox(s)) => s.as_ref(),
+            None => cx.sandbox,
         }
     }
 }
@@ -430,7 +457,7 @@ impl BashTool {
 
     /// Issue #127 (b): start `command` detached and return its job id at once.
     fn start_job(&self, command: &str, timeout_s: Option<u32>, cx: &ToolCtx) -> ToolOutput {
-        if let Err(e) = cx.sandbox.check() {
+        if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
         let command = match self.shell.command(command) {
@@ -441,7 +468,7 @@ impl BashTool {
             command,
             cwd: cx.cwd.to_path_buf(),
             writable: !matches!(cx.mode, Mode::Plan),
-            net: net_for(cx.mode, cx.sandbox.network()),
+            net: net_for(cx.mode, self.sandbox(cx).network()),
             // A background job has no timeout unless the call names one: it runs until it
             // exits, is killed (`bash {job, kill: true}`) or the session ends.
             timeout_s,
@@ -469,7 +496,7 @@ impl BashTool {
         cx: &ToolCtx,
         live: &mut dyn FnMut(&str),
     ) -> ToolOutput {
-        if let Err(e) = cx.sandbox.check() {
+        if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
         let backgrounded = looks_backgrounded(command);
@@ -482,7 +509,7 @@ impl BashTool {
             command,
             cwd: cx.cwd.to_path_buf(),
             writable: !matches!(cx.mode, Mode::Plan),
-            net: net_for(cx.mode, cx.sandbox.network()),
+            net: net_for(cx.mode, self.sandbox(cx).network()),
             // F5: the call's own timeout wins; else the epoch's default (0 = none, pi).
             timeout_s: timeout_s.or_else(|| (cx.tune.bash_timeout_s > 0).then_some(cx.tune.bash_timeout_s)),
             env: cx.env.to_vec(),
@@ -495,7 +522,7 @@ impl BashTool {
                 live(&text);
             }
         };
-        let res = cx.sandbox.run(&spec, cx.cancel, &mut sink);
+        let res = self.sandbox(cx).run(&spec, cx.cancel, &mut sink);
         if !pending.is_empty() {
             live(&String::from_utf8_lossy(&pending));
         }
@@ -512,7 +539,11 @@ impl BashTool {
                 ]
                 .iter()
                 .any(|error| output.to_ascii_lowercase().contains(error)));
-        if let Some(notice) = cx.sandbox.persistence_notice().filter(|_| persistence_relevant) {
+        if let Some(notice) = self
+            .sandbox(cx)
+            .persistence_notice()
+            .filter(|_| persistence_relevant)
+        {
             output.push_str("\n\n");
             output.push_str(notice);
         }

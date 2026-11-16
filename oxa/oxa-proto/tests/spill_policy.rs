@@ -30,4 +30,7 @@ fn default_spill_hooks_leave_custom_policy_and_walk_filter_unchanged() {
         );
     }
     assert!(policy.path_filter().is_none());
+    for mode in Mode::ALL {
+        assert!(policy.path_filter_for_mode(mode).is_none());
+    }
 }

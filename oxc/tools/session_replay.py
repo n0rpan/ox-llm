@@ -877,6 +877,24 @@ def run_repeat(parts, turns, args, index):
             'totals': compute_totals(rows), 'env': samples}
 
 
+def receipt(repeats):
+    """Per-request receipt pooled over all repeats: TTFT and wall p50/p90, prompt tokens
+    reused (cache_n) versus new (prompt_n), generated tokens and total wall time."""
+    rows = [row for rep in repeats for row in rep['turns'] if not row.get('error')]
+
+    def pcts(key):
+        values = [r[key] for r in rows if r.get(key) is not None]
+        return {'p50': _pct(values, 0.5), 'p90': _pct(values, 0.9)}
+
+    def total(key):
+        return int(sum(r.get(key) or 0 for r in rows))
+
+    return {'n_requests': len(rows), 'ttft_ms': pcts('ttft_ms'), 'wall_ms': pcts('wall_ms'),
+            'reused_tokens': total('cache_n'), 'new_tokens': total('prompt_n'),
+            'generated_tokens': total('predicted_n'),
+            'wall_s': sum(r.get('wall_ms') or 0 for r in rows) / 1000.0}
+
+
 def summarize(repeats):
     walls = [r['totals']['wall_s'] for r in repeats]
     median = statistics.median(walls)
@@ -884,7 +902,7 @@ def summarize(repeats):
     return {'wall_s_median': median, 'wall_s_all': walls,
             'decode_s_median': statistics.median(r['totals']['decode_s'] for r in repeats),
             'prompt_s_median': statistics.median(r['totals']['prompt_s'] for r in repeats),
-            'spread_pct': spread}
+            'spread_pct': spread, 'receipt': receipt(repeats)}
 
 
 def print_replay_table(repeats):
@@ -921,6 +939,11 @@ def cmd_replay(args):
     print(f"summary: wall median {result['summary']['wall_s_median']:.3f} s, "
           f"spread {result['summary']['spread_pct']:.2f}% over {args.repeat} repeat(s); "
           f"result -> {args.out}")
+    rc = result['summary']['receipt']
+    print(f"receipt: {rc['n_requests']} requests, ttft p50 {fmt(rc['ttft_ms']['p50'], '.1f')} ms "
+          f"p90 {fmt(rc['ttft_ms']['p90'], '.1f')} ms, wall p50 {fmt(rc['wall_ms']['p50'], '.1f')} ms "
+          f"p90 {fmt(rc['wall_ms']['p90'], '.1f')} ms, prompt tokens reused {rc['reused_tokens']} "
+          f"new {rc['new_tokens']}, generated {rc['generated_tokens']}, wall {rc['wall_s']:.3f} s")
     equal = all(rep['totals']['equal_work_all'] for rep in repeats)
     return 0 if equal else 3
 
@@ -977,6 +1000,17 @@ def cmd_compare(args):
     print(f"totals wall (median over repeats): A {fmt(wall_a, '.3f')} s  B {fmt(wall_b, '.3f')} s  "
           f"delta {fmt(delta, '+.2f')}%")
     within = delta is not None and abs(delta) <= args.gate_pct
+    ra, rb = receipt(a['repeats']), receipt(b['repeats'])
+    for key in ('ttft_ms', 'wall_ms'):
+        for q in ('p50', 'p90'):
+            x, y = ra[key][q], rb[key][q]
+            print(f"{key} {q}: A {fmt(x, '.1f')}  B {fmt(y, '.1f')}  delta {fmt(pct_delta(x, y), '+.2f')}%")
+    na, nb = max(len(a['repeats']), 1), max(len(b['repeats']), 1)
+    print(f"n_requests: A {ra['n_requests']} ({na} repeat{'s' * (na != 1)})  "
+          f"B {rb['n_requests']} ({nb} repeat{'s' * (nb != 1)})")
+    for key in ('reused_tokens', 'new_tokens', 'generated_tokens'):
+        x, y = ra[key] / na, rb[key] / nb
+        print(f"{key} (per repeat): A {x:.1f}  B {y:.1f}  delta {fmt(pct_delta(x, y), '+.2f')}%")
     print(f"gate {args.gate_pct:g}%: {'WITHIN' if within else 'OUTSIDE'}")
     return 0 if within else 1
 

@@ -316,6 +316,18 @@ class ReplayTests(RecorderFixture):
         self.assertTrue(all(row['wall_ms'] > 0 for row in rep['turns']))
         self.assertTrue(rep['env'])
         self.assertIn('spread_pct', result['summary'])
+        receipt = result['summary']['receipt']
+        rows = rep['turns']
+        self.assertEqual(receipt['n_requests'], 6)
+        self.assertEqual(receipt['reused_tokens'], sum(r['cache_n'] for r in rows))
+        self.assertEqual(receipt['new_tokens'], sum(r['prompt_n'] for r in rows))
+        self.assertGreater(receipt['reused_tokens'], 0)
+        self.assertEqual(receipt['generated_tokens'], sum(EXPECTED_TOKENS))
+        ttfts = sorted(r['ttft_ms'] for r in rows)
+        self.assertAlmostEqual(receipt['ttft_ms']['p50'], (ttfts[2] + ttfts[3]) / 2)
+        self.assertLessEqual(receipt['ttft_ms']['p50'], receipt['ttft_ms']['p90'])
+        self.assertLessEqual(receipt['wall_ms']['p90'], max(r['wall_ms'] for r in rows))
+        self.assertIn('ttft p50', stdout)
 
     def test_repeat_two_and_scrub_between_repeats(self):
         mock = self.start_mock()
@@ -383,6 +395,36 @@ class CompareTests(RecorderFixture):
         code, out, _ = run_main(['compare', str(self.a_path), str(b_path)])
         self.assertEqual(code, 1)
         self.assertIn('OUTSIDE', out)
+
+    def test_receipt_diff_reports_ttft_percentiles(self):
+        result = json.loads(self.a_path.read_text())
+        for rep in result['repeats']:
+            for row in rep['turns']:
+                row['ttft_ms'] *= 2.0
+        b_path = self.tmp / 'slow_ttft.json'
+        b_path.write_text(json.dumps(result))
+        code, out, _ = run_main(['compare', str(self.a_path), str(b_path), '--gate-pct', '100'])
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r'ttft_ms p50: A \S+ +B \S+ +delta \+100\.00%')
+        self.assertRegex(out, r'ttft_ms p90: A \S+ +B \S+ +delta \+100\.00%')
+        self.assertIn('reused_tokens', out)
+
+    def test_token_deltas_are_per_repeat_and_requests_shown(self):
+        result = json.loads(self.a_path.read_text())
+        one = copy.deepcopy(result)
+        one['repeats'] = one['repeats'][:1]
+        two = copy.deepcopy(one)
+        dup = copy.deepcopy(two['repeats'][0])
+        dup['repeat'] = 2
+        two['repeats'].append(dup)
+        pa, pb = self.tmp / 'one.json', self.tmp / 'two.json'
+        pa.write_text(json.dumps(one))
+        pb.write_text(json.dumps(two))
+        code, out, _ = run_main(['compare', str(pa), str(pb), '--gate-pct', '100'])
+        self.assertRegex(out, r'reused_tokens \(per repeat\): A \S+ +B \S+ +delta \+0\.00%')
+        self.assertRegex(out, r'new_tokens \(per repeat\): A \S+ +B \S+ +delta \+0\.00%')
+        self.assertRegex(out, r'generated_tokens \(per repeat\): A \S+ +B \S+ +delta \+0\.00%')
+        self.assertIn('n_requests: A 6 (1 repeat)  B 12 (2 repeats)', out)
 
     def test_different_recordings_are_refused(self):
         result = json.loads(self.a_path.read_text())
