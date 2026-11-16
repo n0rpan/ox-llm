@@ -704,6 +704,9 @@ fn child_cwd(session_cwd: &Path, c: &str) -> PathBuf {
     std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
+const CWD_CHANGED: &str =
+    "the subagent working directory changed after the permission check; no child was started there";
+
 fn available_list(agents: &[AgentDef]) -> String {
     let list: Vec<String> = agents
         .iter()
@@ -742,7 +745,9 @@ impl Tool for SubagentTool {
         for c in cwds {
             let dir = child_cwd(cx.cwd, c);
             let w = Access::Write(dir.clone());
-            if !oxa_perm::is_inside(&dir, cx.cwd) && !out.contains(&w) {
+            // Pin in-project roots too: an earlier child can retarget their symlinks.
+            // Workspace writes inside the session remain allowed without a prompt.
+            if !out.contains(&w) {
                 out.push(w);
             }
         }
@@ -798,6 +803,22 @@ impl Tool for SubagentTool {
             )
         };
 
+        // Resolve the entire call before any child runs, not one chain step at a time.
+        // When called through the executor, each explicit cwd must still be a location
+        // the permission check pinned. Direct tool calls have no checked paths.
+        let mut cwds = Vec::with_capacity(items.len());
+        for item in &items {
+            let dir = item
+                .cwd
+                .as_deref()
+                .map(|c| child_cwd(cx.cwd, c))
+                .unwrap_or_else(|| child_cwd(cx.cwd, "."));
+            if item.cwd.is_some() && !cx.checked.is_empty() && cx.checked_real(&dir) != Some(dir.as_path()) {
+                return ToolOutput::error(CWD_CHANGED);
+            }
+            cwds.push(dir);
+        }
+
         let Some(host) = lock(&inner.host).clone() else {
             return ToolOutput::error(NOT_ATTACHED);
         };
@@ -834,6 +855,7 @@ impl Tool for SubagentTool {
             warned_models: Vec::new(),
             remote_models: HashMap::new(),
             n: items.len(),
+            cwds,
             agents: items.iter().map(|i| i.agent.clone()).collect(),
             done: vec![None; items.len()],
             activity: vec![None; items.len()],
@@ -999,6 +1021,8 @@ struct Run<'a, 'b> {
     remote_models: HashMap<String, bool>,
     /// Number of tasks and their agents (for the progress lines).
     n: usize,
+    /// Resolved before any child starts; never rebase a later step onto a changed symlink.
+    cwds: Vec<PathBuf>,
     agents: Vec<String>,
     /// Status of each finished task.
     done: Vec<Option<Status>>,
@@ -1061,7 +1085,7 @@ struct Prepared {
     agent: String,
     argv: Vec<String>,
     env: Vec<(String, String)>,
-    cwd: PathBuf,
+    cwd: oxa_sandbox::PinnedCwd,
     hint: String,
     /// Its model runs at a cloud provider (it does not take the local engine's slot).
     remote: bool,
@@ -1261,9 +1285,18 @@ impl Run<'_, '_> {
             (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
             (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
         ];
-        let cwd = match &item.cwd {
-            Some(c) => child_cwd(self.cx.cwd, c),
-            None => self.cx.cwd.to_path_buf(),
+        let expected = &self.cwds[k];
+        let current = child_cwd(self.cx.cwd, item.cwd.as_deref().unwrap_or("."));
+        if &current != expected {
+            let r = ChildResult::unstarted(&item.agent, Status::Failed, CWD_CHANGED.to_string());
+            return Err(Box::new(self.finish(k, r)));
+        }
+        let cwd = match oxa_sandbox::PinnedCwd::open(expected) {
+            Ok(dir) => dir,
+            Err(e) => {
+                let r = ChildResult::unstarted(&item.agent, Status::Failed, format!("{CWD_CHANGED}: {e}"));
+                return Err(Box::new(self.finish(k, r)));
+            }
         };
         Ok(Prepared {
             agent: agent.name,
@@ -1643,14 +1676,18 @@ fn tail(s: &str, max: usize) -> &str {
 
 /// Spawn the child in its own process group, dying with this process (ENG-019). A just-written executable can be briefly busy
 /// (`ETXTBSY`) while another thread forks; that is retried.
-fn spawn(bin: &Path, argv: &[String], env: &[(String, String)], cwd: &Path) -> std::io::Result<Child> {
+fn spawn(
+    bin: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+    cwd: &oxa_sandbox::PinnedCwd,
+) -> std::io::Result<Child> {
     let mut attempt = 0;
     loop {
         let mut cmd = Command::new(bin);
         cmd.args(argv)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .envs(oxa_proto::offline().then_some(("OXA_OFFLINE", "1"))) // P4: the child stays offline
-            .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1658,6 +1695,7 @@ fn spawn(bin: &Path, argv: &[String], env: &[(String, String)], cwd: &Path) -> s
         // ENG-019: the child dies with this process (PR_SET_PDEATHSIG). The forking thread is the
         // tool call's thread, which blocks until the child is waited for.
         oxa_sandbox::die_with_parent(&mut cmd);
+        cwd.apply(&mut cmd)?;
         let r = cmd.spawn();
         match r {
             Err(e) if e.raw_os_error() == Some(26) && attempt < 10 => {
