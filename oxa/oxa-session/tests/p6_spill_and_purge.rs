@@ -149,6 +149,69 @@ fn spill_cleanup_follows_forks_of_forks_in_every_deletion_order() {
 }
 
 #[test]
+fn cross_store_forks_keep_spills_until_the_last_descendant_is_deleted() {
+    use oxa_proto::{Entry, EntryBody, WireMsg};
+    use oxa_session::{
+        clone_session, fork_file, inherited_spill_dirs, remove_spill_dir_unless_forked, FsStore, SessionStore,
+    };
+    for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let env = oxa_fake::TestEnv::new();
+        let tmp = env.root().join("tmp");
+        let roots = ["sessions-a", "sessions-b", "sessions-c"].map(|s| env.root().join(s));
+        let stores = roots.clone().map(FsStore::new);
+        let cwd = std::path::Path::new("/work/project");
+        let source = stores[0].create(cwd, Some("source"), None).unwrap();
+        fs::create_dir_all(tmp.join("source")).unwrap();
+        let output = tmp.join("source/output.txt");
+        fs::write(&output, "inherited output").unwrap();
+        stores[0]
+            .append(
+                &source,
+                &Entry {
+                    id: "00000001".into(),
+                    parent: None,
+                    ts_ms: 1,
+                    body: EntryBody::Msg {
+                        wire: WireMsg::user(format!("full output in {}", output.display())),
+                        parts: vec![],
+                        tool: None,
+                    },
+                },
+            )
+            .unwrap();
+        let child = fork_file(&stores[1], &source, cwd, None).unwrap();
+        let grandchild = clone_session(&stores[2], &child, "00000001", cwd).unwrap();
+        assert_eq!(
+            stores[2].load(&grandchild).unwrap(),
+            stores[0].load(&source).unwrap()
+        );
+        let sessions = [source, child, grandchild];
+        let mut live = [true; 3];
+        for index in order {
+            // Dependencies must survive reopening, not just the process that forked.
+            let store = FsStore::new(roots[index].clone());
+            remove_session_preserving_spills(&store, &tmp, &sessions[index]).unwrap();
+            remove_spill_dir_unless_forked(&store, &tmp, &sessions[index]).unwrap();
+            live[index] = false;
+            for survivor in (0..3).filter(|&i| live[i]) {
+                assert_eq!(
+                    fs::read_to_string(&output).unwrap(),
+                    "inherited output",
+                    "{order:?}"
+                );
+                let reopened = FsStore::new(roots[survivor].clone());
+                if survivor != 0 {
+                    assert!(inherited_spill_dirs(&reopened, &tmp, &sessions[survivor])
+                        .contains(&tmp.join("source")));
+                }
+            }
+        }
+        assert!(!output.exists(), "orphaned cross-store output after {order:?}");
+        assert_eq!(fs::read_dir(tmp.join(".spill-ancestry")).unwrap().count(), 0);
+    }
+}
+
+#[test]
 fn spill_cleanup_waits_for_siblings_in_other_workspaces() {
     use oxa_session::{remove_spill_dir_unless_forked, FsStore, SessionStore};
     let tmp = tmp_root("siblings");

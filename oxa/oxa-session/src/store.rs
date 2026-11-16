@@ -153,6 +153,9 @@ impl SessionStore for FsStore {
         let dir = self.root.join(session_dir_name(cwd));
         ensure_dir(&self.root)?;
         ensure_dir(&dir)?;
+        if let Some(parent) = parent {
+            crate::spill::link_spill_stores(&self.root, parent)?;
+        }
         let ts_ms = now_ms();
         let path = dir.join(session_file_name(ts_ms, &id));
         let header = SessionHeader {
@@ -290,6 +293,10 @@ impl SessionStore for FsStore {
         // Match session_files' two-level layout, not a prefix (roots may be nested).
         path.parent().and_then(Path::parent) == Some(self.root.as_path())
             && path.extension() == Some(std::ffi::OsStr::new("jsonl"))
+    }
+
+    fn spill_cleanup_roots(&self) -> Result<Vec<PathBuf>, OxaError> {
+        crate::spill::linked_spill_stores(&self.root)
     }
 
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {

@@ -104,6 +104,11 @@ pub trait SessionStore: Send + Sync {
     fn lists_path(&self, _path: &Path) -> bool {
         false
     }
+    /// File-store roots linked by cross-store forks. Cleanup must check all of these stores
+    /// before reclaiming spills; errors leave the spills intact. Other store types need no roots.
+    fn spill_cleanup_roots(&self) -> Result<Vec<PathBuf>, OxaError> {
+        Ok(Vec::new())
+    }
     /// Resolve a path, a full id or a unique id prefix (`--session`, `--fork`).
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError>;
     /// Delete through the `trash` command when available, else unlink (pi's behaviour).

@@ -105,6 +105,89 @@ fn cleanup_in_another_session_store_preserves_unchecked_ancestry() {
 }
 
 #[test]
+fn cross_store_links_are_private_deduplicated_and_fail_closed() {
+    use oxa_session::FsStore;
+
+    for corrupt in [false, true] {
+        let env = oxa_fake::TestEnv::new();
+        let tmp = env.root().join("tmp");
+        let root_a = env.root().join("sessions-a");
+        let root_b = env.root().join("sessions-b");
+        let store_a = FsStore::new(root_a.clone());
+        let store_b = FsStore::new(root_b.clone());
+        let cwd = Path::new("/work/project");
+        let source = store_a.create(cwd, Some("source"), None).unwrap();
+        store_b.create(cwd, Some("child"), Some(&source.path)).unwrap();
+        store_b.create(cwd, Some("sibling"), Some(&source.path)).unwrap();
+        for root in [&root_a, &root_b] {
+            let dir = root.join(".spill-stores");
+            assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+            let links: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+            assert_eq!(links.len(), 1, "repeated forks must not accumulate links");
+            assert_eq!(
+                fs::metadata(&links[0]).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::create_dir_all(tmp.join("source")).unwrap();
+        let output = tmp.join("source/output.txt");
+        fs::write(&output, "keep").unwrap();
+        remove_session_preserving_spills(&store_a, &tmp, &source).unwrap();
+        // Interrupted publication is invisible; a malformed published link must block cleanup.
+        fs::write(root_a.join(".spill-stores/.interrupted.tmp"), "{").unwrap();
+        if corrupt {
+            let link = fs::read_dir(root_a.join(".spill-stores"))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| p.extension().is_some_and(|e| e == "json"))
+                .unwrap();
+            fs::write(link, "{").unwrap();
+            assert!(remove_spill_dir_unless_forked(&store_a, &tmp, &source).is_err());
+        } else {
+            assert_eq!(
+                remove_spill_dir_unless_forked(&store_a, &tmp, &source).unwrap(),
+                0
+            );
+        }
+        assert_eq!(fs::read_to_string(output).unwrap(), "keep");
+    }
+}
+
+#[test]
+fn cross_store_links_refuse_symlinks_without_publishing_a_child() {
+    use oxa_session::FsStore;
+
+    for link_file in [false, true] {
+        let env = oxa_fake::TestEnv::new();
+        let root_a = env.root().join("sessions-a");
+        let root_b = env.root().join("sessions-b");
+        let outside = env.root().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let target = outside.join("keep.txt");
+        fs::write(&target, "keep").unwrap();
+        let store_a = FsStore::new(root_a.clone());
+        let store_b = FsStore::new(root_b);
+        let cwd = Path::new("/work/project");
+        let source = store_a.create(cwd, Some("source"), None).unwrap();
+        let dir = root_a.join(".spill-stores");
+        if link_file {
+            store_b.create(cwd, Some("child"), Some(&source.path)).unwrap();
+            let link = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+            fs::remove_file(&link).unwrap();
+            symlink(&target, link).unwrap();
+        } else {
+            symlink(&outside, &dir).unwrap();
+        }
+        assert!(store_b
+            .create(cwd, Some("refused-child"), Some(&source.path))
+            .is_err());
+        assert!(!store_b.list(None).iter().any(|s| s.sref.id == "refused-child"));
+        assert!(store_a.spill_cleanup_roots().is_err());
+        assert_eq!(fs::read_to_string(target).unwrap(), "keep");
+    }
+}
+
+#[test]
 fn retained_ancestry_refuses_symlinked_metadata_before_deleting_the_session() {
     for link_file in [false, true] {
         let env = oxa_fake::TestEnv::new();
