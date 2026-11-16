@@ -38,6 +38,34 @@ The native cloud tool-loop test uses `strace -f -e trace=execve` to verify that 
 and its descendants never launch Python; running without the tracer is not a valid substitute.
 Hosted CI installs both prerequisites too.
 
+If system packages cannot be installed, build a checkout-local tracer instead (requires a C
+compiler, Make, curl and xz). From the repository root:
+
+```sh
+repo_root="$PWD"
+tools_dir="$repo_root/oxa/target/test-tools"
+mkdir -p "$tools_dir/src"
+(
+  cd "$tools_dir/src"
+  curl --fail --location https://strace.io/files/7.3/strace-7.3.tar.xz -o strace-7.3.tar.xz &&
+  printf '%s  %s\n' \
+    529634c40910895a9a1f3c5c1e65da2ca9ed72fb158dfc4bcc89efdf05e39b72 \
+    strace-7.3.tar.xz | sha256sum --check &&
+  tar -xJf strace-7.3.tar.xz &&
+  cd strace-7.3 &&
+  ./configure --prefix="$tools_dir" --enable-mpers=no --enable-bundled=yes &&
+  make -j2 && make install
+) && export PATH="$tools_dir/bin:$PATH"
+strace --version
+cd "$repo_root/oxa"
+cargo test -p oxa-cli --test in_process_cloud \
+  native_discovery_tool_loop_and_budget_settlement_use_no_python_process -- --exact
+```
+
+Keep that `PATH` for subsequent test commands; the build lives under ignored `oxa/target/` and
+must be recreated after cleaning that directory. This supplies the same real process tracer,
+not a test bypass; `bubblewrap` is still required for sandbox tests.
+
 ```sh
 cd oxc && ./tools/run_lab_tests.sh                       # lab
 cd engine && cargo test --release --locked --workspace --exclude qwen4exp   # engine (Flash: see engine/CONTRIBUTING.md)

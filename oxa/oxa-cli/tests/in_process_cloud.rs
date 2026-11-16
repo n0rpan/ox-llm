@@ -100,6 +100,234 @@ fn success(output: &Output) {
     );
 }
 
+// These regressions must exercise the ordinary protected reader, not a test bypass.
+fn diagnostic_env() -> TestEnv {
+    let env = TestEnv::new();
+    assert!(env.root().is_absolute());
+    assert!(!env.root().ancestors().any(|p| p.join(".git").exists()));
+    env
+}
+
+#[test]
+fn native_local_credentials_diagnostic_names_attempted_store_only_on_stderr() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    for case in [
+        "missing-parent",
+        "missing-store",
+        "missing-provider",
+        "mode",
+        "symlink",
+        "repository",
+    ] {
+        let env = diagnostic_env();
+        let mock = MockAnthropic::start(vec![]);
+        settings(&env, &mock.base_url(), true);
+        let path = key_path(&env);
+        match case {
+            "missing-parent" => {}
+            "missing-store" => fs::create_dir_all(path.parent().unwrap()).unwrap(),
+            "missing-provider" => write_key(&env, r#"{"TEST":"TEST"}"#),
+            _ => {
+                write_key(&env, r#"{"anthropic":{"api_key":"TEST"}}"#);
+                match case {
+                    "mode" => fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap(),
+                    "symlink" => {
+                        let target = env.root().join("TEST-store.json");
+                        fs::rename(&path, &target).unwrap();
+                        symlink(target, &path).unwrap();
+                    }
+                    "repository" => fs::create_dir(path.parent().unwrap().join(".git")).unwrap(),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        // Save a session as well: the local diagnostic must never enter history.
+        let output = run(&env, &["--no-tools", "-p", "TEST"], None);
+        assert_eq!(output.status.code(), Some(5), "{case}: {output:?}");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains(path.to_str().unwrap()),
+            "{case}: {diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("Local cloud credentials unavailable; attempted protected store"),
+            "{case}: {diagnostic}"
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(path.to_str().unwrap()));
+        for session_dir in fs::read_dir(env.agent_dir().join("sessions")).unwrap() {
+            for file in fs::read_dir(session_dir.unwrap().path()).unwrap() {
+                let text = fs::read_to_string(file.unwrap().path()).unwrap();
+                assert!(!text.contains(path.to_str().unwrap()), "path leaked to history");
+            }
+        }
+        assert!(mock.requests().is_empty(), "{case}");
+        assert_eq!(rows(&env)[0]["error"], "cloud_credentials_unavailable");
+
+        // The same protected reader must still produce the fixed API refusal.
+        use oxc_gateway::{
+            catalog::{Access, Model, Provider},
+            ledger::Context,
+            pricing::Price,
+            runtime::{Options, Runtime},
+        };
+        let model = Model::new(MODEL, Provider::Anthropic, UPSTREAM, &mock.base_url(), 128000, 16).unwrap();
+        let runtime = Runtime::new(
+            [(model, Price::from_model(&json!({"free":true})))],
+            path,
+            env.agent_dir().join("TEST-api-ledger"),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: Some(1.0),
+                ledger_enabled: true,
+            },
+        )
+        .unwrap();
+        let refusal = runtime
+            .begin(&json!({"model":MODEL}), Context::default())
+            .err()
+            .unwrap();
+        assert_eq!(refusal.status, 503);
+        assert_eq!(
+            refusal.body(),
+            json!({"error":{
+            "message":"Cloud credentials are not configured.", "type":"cloud_error",
+            "code":"cloud_credentials_unavailable", "param":"model"}})
+        );
+    }
+}
+
+#[test]
+fn native_credentials_diagnostic_does_not_relabel_upstream_401_or_protocol_failure() {
+    for (reply, class, status) in [
+        (
+            Reply::error(401, "TEST upstream metadata"),
+            "cloud_upstream_error",
+            401,
+        ),
+        (
+            Reply::wire("text/event-stream", b"data: TEST\n\n"),
+            "cloud_upstream_stream_broken",
+            502,
+        ),
+    ] {
+        let env = diagnostic_env();
+        let mock = MockAnthropic::start(vec![reply]);
+        settings(&env, &mock.base_url(), true);
+        write_key(&env, r#"{"anthropic":{"api_key":"TEST"}}"#);
+        let output = run(&env, &["--no-session", "--no-tools", "-p", "TEST"], None);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !diagnostic.contains(key_path(&env).to_str().unwrap()),
+            "{diagnostic}"
+        );
+        assert!(!diagnostic.contains("attempted protected store"), "{diagnostic}");
+        assert!(!diagnostic.contains("TEST upstream metadata"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("\"error_class\":\"engine_http\""),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains(&format!("HTTP {status}")), "{diagnostic}");
+        let ledger = rows(&env);
+        assert_eq!(ledger[0]["status"], status);
+        assert_eq!(ledger[0]["error"], class);
+        assert_eq!(mock.requests().len(), 1);
+    }
+}
+
+#[test]
+fn native_credentials_diagnostic_is_not_forwarded_from_supervised_children() {
+    let env = diagnostic_env();
+    let mock = MockAnthropic::start(vec![]);
+    settings(&env, &mock.base_url(), true);
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["--no-session", "--no-tools", "-p", "TEST"])
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .env("OXA_SUBAGENT_DEPTH", "1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(5));
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("Cloud credentials are not configured."),
+        "{diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains(key_path(&env).to_str().unwrap()),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("attempted protected store"), "{diagnostic}");
+    assert!(mock.requests().is_empty());
+}
+
+#[test]
+fn native_credentials_diagnostic_keeps_json_protocol_errors_redacted() {
+    let env = diagnostic_env();
+    let mock = MockAnthropic::start(vec![]);
+    settings(&env, &mock.base_url(), true);
+    let output = run(
+        &env,
+        &["--no-session", "--no-tools", "--mode", "json", "-p", "TEST"],
+        None,
+    );
+    assert_eq!(output.status.code(), Some(5));
+    let protocol = String::from_utf8_lossy(&output.stdout);
+    assert!(protocol.contains("\"type\":\"agent_settled\""), "{protocol}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Cloud credentials are not configured."));
+    assert!(!protocol.contains(key_path(&env).to_str().unwrap()), "{protocol}");
+    assert!(!protocol.contains("attempted protected store"), "{protocol}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains(key_path(&env).to_str().unwrap()));
+    assert!(mock.requests().is_empty());
+}
+
+#[test]
+fn native_credentials_diagnostic_valid_store_succeeds() {
+    let env = diagnostic_env();
+    let mock = MockAnthropic::start(vec![Reply::text("Synthetic answer", 1, 0, 0, 1)]);
+    settings(&env, &mock.base_url(), true);
+    write_key(&env, r#"{"anthropic":{"api_key":"TEST"}}"#);
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "TEST"], None);
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic answer"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(key_path(&env).to_str().unwrap()));
+    assert_eq!(mock.requests().len(), 1);
+}
+
+#[test]
+fn http_credentials_refusal_does_not_name_a_local_store() {
+    let env = diagnostic_env();
+    settings(&env, "http://127.0.0.1:9", false);
+    let http = FakeServer::start(
+        vec![ScriptTurn::fault(oxa_fake::Fault::Http {
+            status: 503,
+            body: json!({"error":{"type":"cloud_error","code":"cloud_credentials_unavailable",
+            "message":"Cloud credentials are not configured."}})
+            .to_string(),
+        })],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = run_to(
+        &env,
+        &http.url(),
+        &["--no-session", "--no-tools", "-p", "TEST"],
+        None,
+    );
+    assert_eq!(output.status.code(), Some(5));
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostic.contains("Cloud credentials are not configured."),
+        "{diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains(key_path(&env).to_str().unwrap()),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("attempted protected store"), "{diagnostic}");
+}
+
 #[test]
 fn native_silence_timeout_honors_effective_settings_and_provider_override() {
     for (idle, provider, project, times_out) in [

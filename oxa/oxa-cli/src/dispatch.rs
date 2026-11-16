@@ -446,6 +446,8 @@ struct Built {
     result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
     engine: Arc<dyn Engine>,
+    /// Selected from user-only settings, never from project settings or an API error.
+    native_cloud: bool,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
     settings: Settings,
@@ -855,6 +857,7 @@ fn prepare(
         result_facts,
         output_schema,
         engine,
+        native_cloud: user_settings.bool(crate::in_process::SETTING, false),
         store,
         sandbox,
         settings,
@@ -1239,6 +1242,10 @@ fn run_headless(
             "tokens": session.handle().run_tokens_used(),
         });
         let _ = writeln!(stdout, "{usage}");
+    }
+    // Child stderr can be captured as a tool result in the parent's history.
+    if !built.supervised_child {
+        crate::in_process::report_credentials(&result, built.native_cloud, &built.dirs, stderr);
     }
     finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
@@ -2098,6 +2105,7 @@ mod session_scratch_tests {
             result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+            native_cloud: false,
             store: Arc::new(MemStore::new()),
             sandbox: base.clone(),
             settings: Settings::default(),
