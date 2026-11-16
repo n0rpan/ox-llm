@@ -28,7 +28,7 @@ mod tree;
 
 pub use clock::{local_time, LocalTime};
 pub use lock::{lock_path_of, SessionLock, LOCKED};
-pub use meta::{meta_of, search_sessions, sort_sessions, SessionSort};
+pub use meta::{search_sessions, sort_sessions, SessionSort};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
 pub use store::{
     count_files, decode_entry, decode_header, encode_entry, encode_header, new_entry_id, purge_session_file,
