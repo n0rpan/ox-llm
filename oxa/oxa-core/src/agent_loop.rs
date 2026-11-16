@@ -216,6 +216,8 @@ fn run_inner(
                     // `Shown { cut }` (never sent, W2) and the request is resent from the same
                     // wire; a fresh `MessageStart` opens the replay's message.
                     replays += 1;
+                    // The cut request ran and its usage never arrived: count the request.
+                    st.stats.requests += 1;
                     let text = if partial.is_empty() {
                         e.to_string()
                     } else {
@@ -687,9 +689,9 @@ fn turn_end(
     crate::fire::turn_end(st, ids.0, &message, &tool_results, (ids.1, ids.2), sink, ui);
 }
 
-/// A request whose reply is not kept (the overrun turn and a failed retry): its tokens still
+/// A request whose reply is not kept (the overrun turn, a failed retry and a context-full cut): its tokens still
 /// count in the stats. No `Usage` entry, so the cache expectation is not moved by it.
-fn account_discarded(st: &mut SessionState, turn: &oxa_proto::AssistantTurn) {
+pub(crate) fn account_discarded(st: &mut SessionState, turn: &oxa_proto::AssistantTurn) {
     st.stats.requests += 1;
     st.stats.prompt_tokens += turn.usage.prompt as u64;
     st.stats.completion_tokens += turn.usage.completion as u64;
