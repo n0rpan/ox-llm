@@ -114,6 +114,18 @@ impl Reply {
             ..Self::error(429, "insufficient_quota", "synthetic quota exhausted")
         }
     }
+    /// Synthetic private subscription usage reply; no credentials or live service.
+    #[allow(dead_code)] // Shared constructor; only usage-parser tests consume it.
+    pub fn chatgpt_usage() -> Self {
+        Self::json(json!({
+            "plan_type": "synthetic-plan",
+            "rate_limit": {
+                "primary_window": {"used_percent": 12.5, "reset_at": 1_800_000_000},
+                "secondary_window": {"used_percent": 75, "reset_at": 1_800_600_000}
+            },
+            "credits": {"has_credits": true, "unlimited": false, "balance": "42.50"}
+        }))
+    }
     /// #450: three parallel calls with all arguments delivered as deltas.
     /// Completed output is empty; output_item.done is authoritative.
     pub fn multi_tool_full_deltas() -> Self {
