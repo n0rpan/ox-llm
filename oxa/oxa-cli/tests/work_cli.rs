@@ -697,3 +697,36 @@ fn untrusted_issue_input_never_spawns_even_a_trusted_gh() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("trust"));
     assert!(!env.home().join("issue-lookup-ran").exists());
 }
+
+#[test]
+fn invalid_nested_git_metadata_cannot_hide_an_outer_project_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let bad = env.write(
+        "work/project/bin/git",
+        "#!/bin/sh\nprintf invoked > \"$HOME/nested-project-git-ran\"\nexec /usr/bin/git \"$@\"\n",
+    );
+    std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
+    env.write("work/project/nested/.git", "invalid git metadata\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../../tasks.json"])
+        .current_dir(env.work().join("project/nested"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bad.parent().unwrap().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        !env.home().join("nested-project-git-ran").exists(),
+        "nested metadata bypassed the source boundary"
+    );
+}

@@ -37,9 +37,15 @@ pub(crate) fn run(
             .ancestors()
             .find(|p| p.join(".git").exists())
             .ok_or("oxa work requires a Git repository")?;
+        // Nested repository metadata cannot bless code from an outer project.
+        let host_project = project
+            .ancestors()
+            .filter(|p| p.join(".git").exists())
+            .last()
+            .unwrap_or(project);
         let host_path = crate::netguard::trusted_work_path(
             std::ffi::OsStr::new(env.get("PATH").unwrap_or("")),
-            project,
+            host_project,
             &dirs.home,
         )
         .ok_or("cannot resolve trusted worker PATH")?;
