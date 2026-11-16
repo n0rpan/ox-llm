@@ -19,10 +19,12 @@ struct Fake {
     bad_image: Cell<bool>,
     fail_build: Cell<bool>,
     builds: Cell<usize>,
+    verifications: Cell<usize>,
     notifications: Cell<usize>,
 }
 impl Host for Fake {
     fn verify(&self, _: &menu::Menu, name: &str, _: &Path, expected: Option<&str>) -> Result<()> {
+        self.verifications.set(self.verifications.get() + 1);
         if self.bad_image.get() && name == OWN {
             return oxc_memlat::err("bad image");
         }
@@ -153,6 +155,11 @@ fn other_user_default_is_not_overridden_by_update_hooks() {
         assert_eq!(f.apply(a)["changed"], false);
     }
     assert_eq!(f.text(), MENU);
+    assert_eq!(
+        f.host.verifications.get(),
+        0,
+        "unrelated defaults must not trigger EFI verification"
+    );
 }
 #[test]
 fn ambiguity_and_remember_last_rejected() {
