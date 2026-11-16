@@ -84,7 +84,9 @@ impl EventSink for Probe {
         match e {
             AgentEvent::AgentSettled { .. } => self.busy_at_settle.push(self.handle.is_busy()),
             AgentEvent::AgentStart if self.abort_on_start => self.handle.abort(),
-            AgentEvent::Notice { text, .. } if text == oxa_core::OVERRUN_NOTICE => {
+            AgentEvent::Notice { text, .. }
+                if text == "thinking used the whole output budget; answered without thinking" =>
+            {
                 if let Some(reason) = self.wrap_on_overrun.take() {
                     self.handle.request_wrap_up(reason);
                 }
