@@ -9,6 +9,8 @@ use reqwest::{
 use serde_json::Value;
 use std::{collections::BTreeMap, str::FromStr};
 
+pub mod client;
+
 pub const GO_BASE: &str = "https://opencode.ai/inference/go";
 const MAX_MODELS: usize = 1024;
 
@@ -196,10 +198,21 @@ impl Model {
 /// The gateway supplies a persistent, private HMAC, never a raw session id or
 /// workspace path. Keeping construction typed avoids a free-form header value.
 #[derive(Clone)]
-pub struct SessionHint([u8; 32]);
+pub struct SessionHint(String);
 impl SessionHint {
     pub fn from_hmac(digest: [u8; 32]) -> Self {
-        Self(digest)
+        use std::fmt::Write;
+        let mut text = String::with_capacity(64);
+        for byte in digest {
+            write!(&mut text, "{byte:02x}").expect("String write");
+        }
+        Self(text)
+    }
+    pub(crate) fn from_provider_hint(digest: String) -> Result<Self, Error> {
+        if digest.len() != 32 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::SessionHint);
+        }
+        Ok(Self(digest))
     }
     pub fn headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -207,12 +220,7 @@ impl SessionHint {
             USER_AGENT,
             HeaderValue::from_static(concat!("oxa/", env!("CARGO_PKG_VERSION"))),
         );
-        let mut text = String::with_capacity(64);
-        use std::fmt::Write;
-        for byte in self.0 {
-            write!(&mut text, "{byte:02x}").expect("String write");
-        }
-        let mut hint = HeaderValue::from_str(&text).expect("hex header");
+        let mut hint = HeaderValue::from_str(&self.0).expect("validated hex header");
         hint.set_sensitive(true);
         headers.insert("x-opencode-session", hint);
         headers
@@ -268,6 +276,32 @@ impl Usage {
             tokens,
         })
     }
+}
+
+/// Only these validated numeric fields may enter a private usage receipt.
+/// Raw provider metadata, extra names and text are never copied to the ledger.
+pub(crate) fn ledger_metadata(value: &Value) -> Result<Value, Error> {
+    if value.as_object().is_none_or(|o| o.len() != 3) {
+        return Err(Error::Usage);
+    }
+    money(&value["allowance"])?;
+    money(&value["list_cost"])?;
+    let raw = value["tokens"]
+        .as_object()
+        .filter(|o| o.len() == 6)
+        .ok_or(Error::Usage)?;
+    let mut tokens = BTreeMap::<&str, u64>::new();
+    for key in [
+        "input",
+        "output",
+        "reasoning",
+        "cache_read",
+        "cache_write_5m",
+        "cache_write_1h",
+    ] {
+        tokens.insert(key, raw.get(key).and_then(Value::as_u64).ok_or(Error::Usage)?);
+    }
+    Ok(serde_json::json!({"allowance":value["allowance"],"list_cost":value["list_cost"],"tokens":tokens}))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

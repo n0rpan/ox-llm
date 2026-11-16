@@ -40,6 +40,7 @@ impl Default for Options {
 pub struct Runtime {
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    go_models: BTreeMap<String, crate::opencode::Model>,
     key_file: Result<KeyFile, crate::secrets::Error>,
     ledger_dir: PathBuf,
     ledger: OnceLock<Result<Ledger, Refusal>>,
@@ -64,6 +65,7 @@ pub struct Call<'a> {
     hold: Option<Hold>,
     entry: Option<Entry>,
     forwarded: bool,
+    go_usage: Option<Value>,
 }
 fn invalid(param: &'static str) -> Refusal {
     Refusal {
@@ -161,6 +163,7 @@ impl Runtime {
         Ok(Self {
             catalog,
             billings,
+            go_models: BTreeMap::new(),
             key_file: KeyFile::prepare(&key_path),
             ledger_dir,
             ledger: OnceLock::new(),
@@ -188,6 +191,64 @@ impl Runtime {
         let daily = ledger.today().map_err(|_| Refusal::ledger())?;
         let entry = daily.entry(model, context).map_err(|_| Refusal::ledger())?;
         Ok((daily, entry))
+    }
+    pub(crate) fn go_model(&self, alias: &str) -> Option<&crate::opencode::Model> {
+        self.go_models.get(alias)
+    }
+    pub(crate) async fn discover_go(
+        &mut self,
+        client: &reqwest::Client,
+        base: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), crate::opencode::client::Error> {
+        use crate::opencode::client::Error;
+        if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
+            return Err(Error::Request);
+        }
+        if self.subscription_limits.is_none() {
+            return Err(Error::Request);
+        }
+        let key = self
+            .key_file
+            .as_ref()
+            .map_err(|_| Error::Refused(crate::opencode::Refusal::Unauthenticated))?
+            .read("opencode")
+            .map_err(|_| Error::Refused(crate::opencode::Refusal::Unauthenticated))?;
+        let discovered =
+            crate::opencode::client::models(client, base, &key, timeout, &oxa_proto::CancelToken::new())
+                .await?;
+        let mut models: Vec<_> = self
+            .catalog
+            .models()
+            .filter_map(|m| self.catalog.configured(m.id).cloned())
+            .collect();
+        let mut additions = BTreeMap::new();
+        for model in discovered {
+            if !model.api.contains_key("chat-completions") {
+                continue;
+            }
+            let alias = format!("opencode/{}", model.id);
+            let endpoint = &model.api["chat-completions"].base_url;
+            models.push(
+                Model::new(
+                    &alias,
+                    Provider::OpenCode,
+                    &model.id,
+                    endpoint,
+                    model.context_window,
+                    model.max_output,
+                )
+                .map_err(|_| Error::Protocol)?,
+            );
+            additions.insert(alias, model);
+        }
+        let catalog = Catalog::new(Access::Enabled, models).map_err(|_| Error::Protocol)?;
+        for alias in additions.keys() {
+            self.billings.insert(alias.clone(), Billing::Subscription);
+        }
+        self.go_models = additions;
+        self.catalog = catalog;
+        Ok(())
     }
     pub fn begin(&self, payload: &Value, context: Context<'_>) -> Result<Call<'_>, Refusal> {
         let owner_origin = matches!(context.origin, crate::ledger::Origin::Oxa);
@@ -292,6 +353,7 @@ impl Runtime {
                 hold: Some(hold),
                 entry: Some(entry),
                 forwarded: false,
+                go_usage: None,
             })
         })();
         if let Err(error) = &result {
@@ -407,6 +469,13 @@ impl<'a> Call<'a> {
         self.hold.as_mut().expect("unsettled call").mark_forwarded();
     }
     pub fn observe(&mut self, chunk: &Value) {
+        if self.model.info().provider == Provider::OpenCode {
+            if let Ok(usage) = crate::opencode::Usage::parse(&chunk["usage"]) {
+                self.go_usage = Some(
+                    json!({"allowance":usage.allowance,"list_cost":usage.list_cost,"tokens":usage.tokens}),
+                );
+            }
+        }
         self.usage.observe(chunk);
         self.entry.as_mut().expect("unsettled call").observe();
     }
@@ -447,6 +516,9 @@ impl<'a> Call<'a> {
         let mut saved = Value::Null;
         hold.finish(usage, outcome, |fields| {
             let mut fields = fields.clone();
+            if let Some(usage) = &self.go_usage {
+                fields["opencode"] = usage.clone();
+            }
             if !self.forwarded {
                 fields["settled"] = json!("not_forwarded");
             }

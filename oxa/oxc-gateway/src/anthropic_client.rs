@@ -79,6 +79,10 @@ impl std::error::Error for Error {}
 #[derive(Clone)]
 pub struct Client(reqwest::Client);
 impl Client {
+    pub(crate) fn transport(&self) -> &reqwest::Client {
+        &self.0
+    }
+
     pub fn new() -> Result<Self, Error> {
         Self::with_read_timeout(Some(Duration::from_secs(1800)))
     }
@@ -271,9 +275,17 @@ where
     Ok(())
 }
 
-struct KeyRedactor<'a> {
+pub(crate) struct KeyRedactor<'a> {
     key: &'a Key,
     fields: BTreeMap<Field, redaction::Stream>,
+}
+impl<'a> KeyRedactor<'a> {
+    pub(crate) fn new(key: &'a Key) -> Self {
+        Self {
+            key,
+            fields: BTreeMap::new(),
+        }
+    }
 }
 impl Redactor for KeyRedactor<'_> {
     fn feed(&mut self, field: Field, fragment: &str) -> String {

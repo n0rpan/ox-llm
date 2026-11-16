@@ -211,9 +211,14 @@ pub struct MockOpenAi {
 }
 impl MockOpenAi {
     pub fn start(replies: Vec<Reply>) -> Self {
+        Self::start_with(|_| replies)
+    }
+    /// Discovery fixtures advertise the exact already-bound loopback origin.
+    pub fn start_with(replies: impl FnOnce(&str) -> Vec<Reply>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
+        let replies = replies(&format!("http://{address}"));
         let shared = Arc::new(Shared::default());
         let worker = shared.clone();
         let replies = Arc::new(Mutex::new(VecDeque::from(replies)));

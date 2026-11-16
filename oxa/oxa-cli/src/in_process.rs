@@ -3,6 +3,7 @@ use oxa_config::{Dirs, Settings};
 use oxa_engine::EmbeddedEngine;
 use oxa_proto::{codes, Engine, OxaError};
 use oxc_gateway::{
+    billing::{Billing, SubscriptionLimits},
     catalog::{Access, Model, Provider},
     gateway::Gateway,
     pricing::Price,
@@ -46,10 +47,16 @@ pub(crate) fn select(
 
 fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn Engine>, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
-    let models = cloud["models"]
-        .as_object()
-        .filter(|m| !m.is_empty())
-        .ok_or_else(invalid)?;
+    let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
+    let empty = serde_json::Map::new();
+    let models = match cloud.get("models") {
+        None | Some(Value::Null) if go_enabled => &empty,
+        Some(value) => value.as_object().ok_or_else(invalid)?,
+        None => return Err(invalid()),
+    };
+    if models.is_empty() && !go_enabled {
+        return Err(invalid());
+    }
     let mut routes = Vec::with_capacity(models.len());
     for (alias, value) in models {
         if text(value, "provider")? != "anthropic" {
@@ -68,14 +75,27 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
             limit(value, "max_output")?,
         )
         .map_err(|_| invalid())?;
-        routes.push((model, Price::from_model(value)));
+        routes.push((model, Price::from_model(value).map(Billing::Metered)));
     }
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
     };
     // These existing private locations are denied to both file tools and bash.
-    // Discovery prepares the key parent only; it reads no key and opens no ledger.
+    // Anthropic discovery stays credential-free; explicit Go discovery uses
+    // only the existing protected key reader and never opens the ledger.
+    let subscription_limits = if go_enabled {
+        let limits = &cloud["subscription_limits"];
+        Some(
+            SubscriptionLimits::new(
+                limits["daily_requests"].as_u64().ok_or_else(invalid)?,
+                limits["daily_tokens"].as_u64().ok_or_else(invalid)?,
+            )
+            .map_err(|e| OxaError::new(e.code, e.message))?,
+        )
+    } else {
+        None
+    };
     let runtime = Runtime::new(
         routes,
         dirs.home.join(".config/oxc/llm/cloud-secrets.json"),
@@ -84,13 +104,27 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
             access: Access::Enabled,
             daily_budget_usd: cap,
             ledger_enabled: true,
+            subscription: None,
+            subscription_limits,
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
     let timeout = crate::dispatch::stream_silence_timeout(effective).map(Duration::from_millis);
-    let gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
+    let mut gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
         let refusal = e.refusal();
         OxaError::new(refusal.code, refusal.message)
     })?;
+    if go_enabled {
+        let base = cloud
+            .pointer("/opencode/base_url")
+            .map_or(Some(oxc_gateway::opencode::GO_BASE), Value::as_str)
+            .ok_or_else(invalid)?;
+        gateway
+            .discover_opencode(base, Duration::from_secs(30))
+            .map_err(|e| {
+                let refusal = e.refusal();
+                OxaError::new(refusal.code, refusal.message)
+            })?;
+    }
     Ok(Arc::new(EmbeddedEngine::from_gateway(gateway)))
 }

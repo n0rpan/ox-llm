@@ -26,6 +26,16 @@ fn normalize(error: Error) -> OxaError {
         return OxaError::new(codes::ABORTED, "request cancelled");
     }
     let mut refusal = error.refusal();
+    if matches!(
+        refusal.code,
+        "region_blocked"
+            | "subscription_limit_reached"
+            | "subscription_limit_exceeded"
+            | "subscription_limits_not_configured"
+            | "subscription_private"
+    ) {
+        return OxaError::new(refusal.code, refusal.message);
+    }
     if refusal.code == "budget_not_configured" {
         refusal.message = "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.";
     }
