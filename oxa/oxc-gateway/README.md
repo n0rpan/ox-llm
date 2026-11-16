@@ -155,3 +155,26 @@ Shared `CancelToken` notifications wake network waits directly, with no timer
 or relay token. Async consumers use `Gateway::chat` directly. The user-only
 `oxa.engine.inProcessCloud` selector is default off. Its factory accepts Anthropic,
 OpenAI Responses API and explicit ChatGPT subscription routes.
+
+### OpenCode Go chat models
+
+The native factory can opt into Go with user-only `oxa.cloud.opencode.enabled`
+while `oxa.engine.inProcessCloud` is enabled. The provider base defaults to
+`https://opencode.ai/inference/go`; a user-only `base_url` overrides it for owned
+loopback fixtures. Supply the owner's positive `daily_requests` and `daily_tokens`
+under `oxa.cloud.subscription_limits`; the existing mandatory subscription caps
+and consuming settlement apply unchanged. There is no paid-balance fallback.
+
+The protected cloud key file's `opencode` entry is read by the gateway. Startup
+fetches bounded live discovery and admits chat-completions shapes only, using the
+advertised endpoint and limits. IDs are `opencode/<discovered id>`; no model table
+is maintained. Messages/Responses/unknown shape records are not chat routes.
+Discovery never opens the ledger, and offline refusal precedes key reads.
+
+Go uses the one gateway HTTP pool, shared raw SSE Framer and field redactor.
+The existing provider-bound private session hint supplies `x-opencode-session`;
+raw session IDs and the private salt never leave the ledger. API/guest origins
+cannot use the subscription. Region and allowance refusals are typed, with no
+workspace console URL or provider error body exposed. Successful rows retain zero
+USD, request/token accounting and checked numeric-only allowance/list-cost/token
+metadata; arbitrary provider text cannot enter those receipt fields.

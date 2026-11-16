@@ -41,11 +41,13 @@ pub enum Error {
     Upstream(anthropic_client::Error),
     #[cfg(feature = "upstream-openai")]
     OpenAi(crate::openai::client::Error),
+    OpenCode(crate::opencode::client::Error),
 }
 impl Error {
     pub fn refusal(&self) -> Refusal {
         let error = match self {
             Self::Refused(refusal) => return refusal.clone(),
+            Self::OpenCode(error) => return go_refusal(*error),
             Self::Upstream(error) => error,
             #[cfg(feature = "upstream-openai")]
             Self::OpenAi(error) => return completion::openai_refusal(error),
@@ -106,6 +108,20 @@ impl Gateway {
             #[cfg(feature = "upstream-openai")]
             openai,
         })
+    }
+    /// Startup-only bounded live discovery. Reuses this gateway's HTTP pool;
+    /// the temporary current-thread driver creates no second queue or daemon.
+    pub fn discover_opencode(&mut self, base: &str, timeout: Duration) -> Result<(), Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(Error::OpenCode(crate::opencode::client::Error::Request));
+        }
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| Error::OpenCode(crate::opencode::client::Error::Transport))?;
+        let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
+        driver.shutdown_timeout(Duration::from_secs(1));
+        result.map_err(Error::OpenCode)
     }
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
         self.runtime.discovery()
@@ -176,6 +192,9 @@ impl Gateway {
         #[cfg(feature = "upstream-openai")]
         if matches!(model.info().provider, Provider::OpenAi | Provider::ChatGpt) {
             return self.openai_chat(call, payload, history, cancel, on).await;
+        }
+        if model.info().provider == Provider::OpenCode {
+            return self.chat_go(call, payload, cancel, on).await;
         }
         // Transport dispatch is added with the provider client; an admitted
         // foreign route must never be sent using the Anthropic protocol.
@@ -300,6 +319,119 @@ impl Gateway {
         let _ = on(Event::Done);
         Ok(completed)
     }
+    async fn chat_go<F>(
+        &self,
+        mut call: crate::runtime::Call<'_>,
+        payload: &Value,
+        cancel: &Cancellation,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
+        use crate::opencode::client::{self, Error as GoError};
+        let alias = call.model().info().id;
+        let model = self
+            .runtime
+            .go_model(alias)
+            .ok_or(Error::OpenCode(GoError::Endpoint))?;
+        let hint = crate::opencode::SessionHint::from_provider_hint(
+            call.provider_session_hint().map_err(Error::Refused)?,
+        )
+        .map_err(|_| Error::OpenCode(GoError::Request))?;
+        let key = call.key_handle().map_err(Error::Refused)?;
+        let mut payload = payload.clone();
+        payload["max_tokens"] = call.max_output().into();
+        let mut usage = None;
+        let result = client::stream(
+            self.client.transport(),
+            client::Chat {
+                model,
+                alias,
+                payload: &payload,
+                key: &key,
+                hint: &hint,
+            },
+            cancel,
+            &mut |event| match event {
+                client::Event::Sending => {
+                    if cancel.is_cancelled() {
+                        return Control::Stop;
+                    }
+                    call.mark_forwarded();
+                    Control::Continue
+                }
+                client::Event::Chunk(chunk) => {
+                    call.observe(&chunk);
+                    on(Event::Chunk(chunk))
+                }
+            },
+            &mut usage,
+        )
+        .await;
+        self.finish_go(call, result, usage, on)
+    }
+    fn finish_go<F>(
+        &self,
+        mut call: crate::runtime::Call<'_>,
+        result: Result<crate::anthropic_stream::Completed, crate::opencode::client::Error>,
+        usage: Option<crate::opencode::Usage>,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
+        use crate::opencode::client::Error as GoError;
+        // Parsed terminal usage survives cancellation before public delivery.
+        // Meter it privately before consuming the hold, just as for Anthropic.
+        call.metered_go(usage.as_ref());
+        let (outcome, status, code) = match &result {
+            Ok(_) => (Outcome::Complete, 200, None),
+            Err(GoError::Cancelled) => (
+                if usage.is_some() {
+                    Outcome::Cancelled {
+                        request_bytes: 0,
+                        streamed_bytes: 0,
+                        usage_final: true,
+                        elapsed: Duration::ZERO,
+                    }
+                } else {
+                    Outcome::Failed
+                },
+                499,
+                Some("request_cancelled"),
+            ),
+            Err(error) => {
+                let refusal = go_refusal(*error);
+                let outcome = if usage.is_some() {
+                    Outcome::Complete
+                } else if matches!(
+                    error,
+                    GoError::Refused(
+                        crate::opencode::Refusal::RegionBlocked
+                            | crate::opencode::Refusal::LimitReached
+                            | crate::opencode::Refusal::Unauthenticated
+                            | crate::opencode::Refusal::Forbidden
+                    )
+                ) {
+                    Outcome::Refused
+                } else {
+                    Outcome::Failed
+                };
+                (outcome, refusal.status, Some(refusal.code))
+            }
+        };
+        call.finish(outcome, status, code).map_err(Error::Refused)?;
+        let completed = result.map_err(|error| {
+            if error == GoError::Cancelled {
+                Error::Upstream(anthropic_client::Error::Cancelled)
+            } else {
+                Error::OpenCode(error)
+            }
+        })?;
+        let _ = on(Event::Done);
+        Ok(completion::anthropic(completed))
+    }
 }
 
 /// Provider conversion consumes the same borrowed request the core passed to
@@ -348,4 +480,51 @@ fn payload(request: &oxa_proto::ChatRequest<'_>) -> Result<Value, Refusal> {
     Ok(json!({"model":request.model,"messages":messages,"tools":tools,
         "max_tokens":request.max_tokens,"reasoning_effort":effort,
         "stream":true,"stream_options":{"include_usage":true}}))
+}
+
+fn go_refusal(error: crate::opencode::client::Error) -> Refusal {
+    use crate::opencode::{client::Error as E, Refusal as R};
+    let (status, code, message) = match error {
+        E::Refused(R::RegionBlocked) => (
+            403,
+            "region_blocked",
+            "This Go model is blocked by the workspace region policy.",
+        ),
+        E::Refused(R::LimitReached) => (
+            429,
+            "subscription_limit_reached",
+            "The Go subscription limit was reached; no paid fallback was attempted.",
+        ),
+        E::Refused(R::Unauthenticated) => (
+            503,
+            "cloud_credentials_unavailable",
+            "OpenCode Go credentials are unavailable.",
+        ),
+        E::Refused(R::Forbidden) => (403, "cloud_forbidden", "OpenCode Go refused this request."),
+        E::Refused(R::Other(status)) => (
+            if (400..600).contains(&status) { status } else { 502 },
+            "cloud_upstream_error",
+            "The Go upstream request failed.",
+        ),
+        E::Discovery(problem) => (502, "cloud_discovery_invalid", problem.message()),
+        E::Cancelled => (499, "request_cancelled", "Request cancelled."),
+        E::Request => (400, "invalid_value", "Invalid Go configuration or request."),
+        E::Endpoint => (
+            503,
+            "cloud_provider_unavailable",
+            "This Go model has no supported chat route.",
+        ),
+        E::Protocol | E::TooLarge => (
+            502,
+            "cloud_upstream_stream_broken",
+            "Invalid or incomplete Go response.",
+        ),
+        E::Transport => (502, "cloud_upstream_unavailable", "The Go connection failed."),
+    };
+    Refusal {
+        status,
+        code,
+        message,
+        param: "model",
+    }
 }
