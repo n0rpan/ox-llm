@@ -397,7 +397,7 @@ fn command_line_offline_policy_reaches_child_agent() {
 fn batch_reports_one_task_error_and_runs_later_tasks() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    std::fs::create_dir_all(storage(&env)).unwrap();
+    oxa_work::FactObserver::for_run(&storage(&env)).unwrap();
     std::fs::write(storage(&env).join("test.json"), "{}").unwrap();
     env.write("work/tasks.json", r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"go"},{"id":"next","branch":"agent/next","model":"fake","prompt":"go"}]"#);
     let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();

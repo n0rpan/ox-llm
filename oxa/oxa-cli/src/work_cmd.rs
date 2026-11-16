@@ -222,7 +222,7 @@ pub(crate) fn run(
                 Err(refused) => {
                     let (task, detail) = *refused;
                     if let Some(observer) = &observer {
-                        oxa_work::checkpoint_plan_refusal(&common, &task, detail, &policy, rerun, observer)
+                        oxa_work::checkpoint_plan_refusal(&common, &task, detail, &policy, observer)
                             .map_err(|error| error.to_string())?
                     } else {
                         oxa_work::blocked_record(&task, detail)

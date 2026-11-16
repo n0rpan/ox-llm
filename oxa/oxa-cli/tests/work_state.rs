@@ -60,6 +60,77 @@ fn status(env: &TestEnv) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+// Fail the real observer after a durable append. The runner and facts stop at
+// the same boundary; no finished receipt or journal is rewound to fake a crash.
+fn pause_at(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    step: oxa_work::Step,
+    kind: oxa_work::CheckpointKind,
+) -> serde_json::Value {
+    use oxa_work::CheckpointObserver;
+    use std::os::unix::fs::PermissionsExt;
+    let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+    let assignments = env
+        .envs(&server.url())
+        .into_iter()
+        .map(|(key, value)| quote(&format!("{key}={value}")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let wrapper = env.tmp().join("checkpoint-child");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nexec /usr/bin/env -i {assignments} {} \"$@\"\n",
+            quote(env!("CARGO_BIN_EXE_oxa"))
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let policy = oxa_work::RunPolicy {
+        git_binary: "/usr/bin/git".into(),
+        host_path: "/usr/bin:/bin".into(),
+        terminate_binary: Some("/usr/bin/kill".into()),
+        offline: false,
+        storage: storage(env),
+        status_reader: None,
+    };
+    let task = oxa_work::read_tasks(&env.work().join("tasks.json"))
+        .unwrap()
+        .remove(0);
+    let plan = oxa_work::plan_task_for_run(&project(env), task, &policy, false).unwrap();
+    let facts = oxa_work::FactObserver::for_run(&policy.storage).unwrap();
+    let captured = std::sync::Mutex::new(None);
+    let outcome = oxa_work::run_task_with_observer(
+        &project(env),
+        &wrapper,
+        &plan,
+        &policy,
+        false,
+        &|record: &oxa_work::Record| {
+            facts.checkpoint(record)?;
+            if record.step == step && record.checkpoint_kind == kind {
+                *captured.lock().unwrap() = Some(record.clone());
+                return Err("synthetic stop after durable observation".into());
+            }
+            Ok(())
+        },
+    );
+    assert!(
+        matches!(outcome, Err(oxa_work::RunError::Checkpoint(ref error)) if error.contains("synthetic stop"))
+    );
+    let record = captured
+        .into_inner()
+        .unwrap()
+        .expect("requested checkpoint reached");
+    assert_eq!(
+        load(env)["record"]["checkpoint_revision"],
+        record.checkpoint_revision
+    );
+    serde_json::to_value(record).unwrap()
+}
+
 #[test]
 fn dirty_success_is_saved_and_records_the_actual_head_and_tree() {
     use std::os::unix::fs::PermissionsExt;
@@ -121,14 +192,15 @@ fn finished_success_is_cached_and_explicit_rerun_keeps_revisions_monotonic() {
 #[test]
 fn restart_at_saving_preserves_the_verdict_and_does_not_replay_the_worker() {
     let env = TestEnv::new();
-    setup(&env, "[]");
-    let first = run(&env, vec![ScriptTurn::text("done")]);
+    setup(&env, r#"["exit 1"]"#);
+    let first = pause_at(
+        &env,
+        vec![ScriptTurn::text("done"), ScriptTurn::text("cannot repair")],
+        oxa_work::Step::Saving,
+        oxa_work::CheckpointKind::TaskTransition,
+    );
+    assert_eq!(first["outcome"], "red");
     fs::write(tree(&first).join("recovered.txt"), "recovered").unwrap();
-    let mut state = load(&env);
-    state["record"]["step"] = "saving".into();
-    state["record"]["outcome"] = "red".into();
-    state["record"]["detail"] = "previous acceptance failed".into();
-    replace(&env, &state);
     let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
     assert_eq!(record["outcome"], "red", "{record}");
     assert!(requests.is_empty());
@@ -142,7 +214,12 @@ fn restart_at_saving_preserves_the_verdict_and_does_not_replay_the_worker() {
 fn restart_at_acceptance_uses_the_durable_base_and_commands() {
     let env = TestEnv::new();
     setup(&env, r#"["printf ran >> attempts"]"#);
-    let first = run(&env, vec![ScriptTurn::text("done")]);
+    let first = pause_at(
+        &env,
+        vec![ScriptTurn::text("done")],
+        oxa_work::Step::Acceptance,
+        oxa_work::CheckpointKind::TaskTransition,
+    );
     let old_base = git(&env, &project(&env), &["rev-parse", "main"]);
     env.write("work/project/.oxa/settings.json", r#"{"done":false}"#);
     git(&env, &project(&env), &["add", "."]);
@@ -152,44 +229,36 @@ fn restart_at_acceptance_uses_the_durable_base_and_commands() {
     // Source resources remain exactly what the owner approved. The mutable base
     // now differs, so planning sees its new commands but recovery must ignore them.
     git(&env, &project(&env), &["checkout", "--detach", &old_base]);
-    let mut state = load(&env);
-    state["record"]["step"] = "acceptance".into();
-    state["record"]["outcome"] = "running".into();
-    replace(&env, &state);
     let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
     assert_eq!(record["outcome"], "done", "{record}");
     assert_eq!(record["base_sha"], old_base);
     assert!(requests.is_empty());
-    assert_eq!(
-        fs::read_to_string(tree(&first).join("attempts")).unwrap(),
-        "ranran"
-    );
+    assert_eq!(fs::read_to_string(tree(&first).join("attempts")).unwrap(), "ran");
 }
 
 #[test]
 fn a_deleted_base_cannot_strand_saving_or_a_cached_success() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    let first = run(&env, vec![ScriptTurn::text("done")]);
+    let first = pause_at(
+        &env,
+        vec![write_turn(), ScriptTurn::text("done")],
+        oxa_work::Step::Saving,
+        oxa_work::CheckpointKind::TaskTransition,
+    );
     git(&env, &project(&env), &["checkout", "--detach"]);
     git(&env, &project(&env), &["branch", "-D", "main"]);
-    let (cached, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
-    assert_eq!(cached, first);
-    assert!(requests.is_empty());
-
     fs::write(tree(&first).join("recovered.txt"), "kept").unwrap();
-    let mut state = load(&env);
-    state["record"]["step"] = "saving".into();
-    state["record"]["outcome"] = "red".into();
-    state["record"]["detail"] = "saved acceptance failed".into();
-    replace(&env, &state);
     let (recovered, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
-    assert_eq!(recovered["outcome"], "red", "{recovered}");
+    assert_eq!(recovered["outcome"], "done", "{recovered}");
     assert!(requests.is_empty());
     assert_eq!(
         git(&env, tree(&recovered), &["show", "HEAD:recovered.txt"]),
         "kept"
     );
+    let (cached, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
+    assert_eq!(cached, recovered);
+    assert!(requests.is_empty());
 
     let before = fs::read(path(&env)).unwrap();
     let (fresh, requests) = run_observed(&env, vec![], &["work", "../tasks.json", "--rerun"], None);
@@ -585,20 +654,17 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
 fn a_crash_between_worker_finished_and_acceptance_entry_does_not_restart_the_worker() {
     let env = TestEnv::new();
     setup(&env, r#"["printf ran >> attempts"]"#);
-    run(&env, vec![ScriptTurn::text("done")]);
-    let mut state = load(&env);
-    state["record"]["step"] = "acceptance".into();
-    state["record"]["outcome"] = "running".into();
-    state["record"]["checkpoint_kind"] = "worker_finished".into();
-    replace(&env, &state);
+    pause_at(
+        &env,
+        vec![ScriptTurn::text("done")],
+        oxa_work::Step::Acceptance,
+        oxa_work::CheckpointKind::WorkerFinished,
+    );
     let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
     assert!(requests.is_empty());
     assert_eq!(record["outcome"], "done", "{record}");
     assert_eq!(record["checkpoint_kind"], "task_transition");
-    assert_eq!(
-        fs::read_to_string(tree(&record).join("attempts")).unwrap(),
-        "ranran"
-    );
+    assert_eq!(fs::read_to_string(tree(&record).join("attempts")).unwrap(), "ran");
 }
 
 #[test]
@@ -629,15 +695,27 @@ fn acceptance_time_cannot_give_the_repair_worker_a_fresh_time_budget() {
 fn a_restart_keeps_the_original_deadline_instead_of_starting_another_budget() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    run(&env, vec![ScriptTurn::text("done")]);
-    let mut state = load(&env);
-    state["record"]["step"] = "worker".into();
-    state["record"]["outcome"] = "running".into();
-    state["deadline_at_ms"] = 1.into();
-    replace(&env, &state);
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":1}]"#,
+    );
+    pause_at(
+        &env,
+        vec![],
+        oxa_work::Step::Worker,
+        oxa_work::CheckpointKind::TaskTransition,
+    );
+    let deadline = load(&env)["deadline_at_ms"].as_u64().unwrap();
+    until(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            > u128::from(deadline)
+    });
     let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
     assert!(requests.is_empty());
     assert_eq!(record["outcome"], "interrupted", "{record}");
     assert_eq!(record["interruption"], "deadline");
-    assert_eq!(load(&env)["deadline_at_ms"], 1);
+    assert_eq!(load(&env)["deadline_at_ms"], deadline);
 }

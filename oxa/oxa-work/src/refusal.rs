@@ -11,7 +11,6 @@ pub fn checkpoint_plan_refusal(
     task: &Task,
     detail: String,
     policy: &RunPolicy,
-    rerun: bool,
     observer: &dyn CheckpointObserver,
 ) -> std::result::Result<Record, RunError> {
     crate::validate(task)?;
@@ -45,7 +44,8 @@ pub fn checkpoint_plan_refusal(
             if old.task != *task
                 || old.record.worktree != worktree
                 || old.record.step != Step::Finished
-                || (!rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo))
+                || old.execution.is_some()
+                || matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo)
             {
                 return Ok(record);
             }
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn a_new_refusal_is_durable_without_a_worktree_or_execution() -> Result<()> {
         let (_fixture, policy, facts, task, common) = fixture();
-        let record = checkpoint_plan_refusal(&common, &task, "raw diagnostic".into(), &policy, false, &facts)
+        let record = checkpoint_plan_refusal(&common, &task, "raw diagnostic".into(), &policy, &facts)
             .map_err(|error| error.to_string())?;
         assert!(!record.worktree.exists());
         let saved = state::load(&policy.storage.join("test.json"))?;
@@ -171,15 +171,8 @@ mod tests {
             }
             let before = fs::read(&path).unwrap();
             let seq = facts.situation().unwrap().as_of_seq;
-            let refused = checkpoint_plan_refusal(
-                &common,
-                &input,
-                "refused".into(),
-                &policy,
-                kind != "cached",
-                &facts,
-            )
-            .unwrap();
+            let refused =
+                checkpoint_plan_refusal(&common, &input, "refused".into(), &policy, &facts).unwrap();
             assert_eq!(refused.checkpoint_revision, 0);
             assert_eq!(fs::read(&path).unwrap(), before);
             assert_eq!(facts.situation().unwrap().as_of_seq, seq);
