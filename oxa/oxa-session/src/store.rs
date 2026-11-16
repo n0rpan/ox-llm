@@ -140,13 +140,15 @@ impl SessionStore for FsStore {
         let id = match id {
             Some(given) => {
                 validate_session_id(given)?;
+                // Only an id the caller chose can collide: a fresh random id needs no scan of
+                // every stored session.
+                if find_session_path(&self.root, given).is_some() {
+                    return Err(invalid(format!("session id `{given}` already exists")));
+                }
                 given.to_string()
             }
             None => uuid_v4(),
         };
-        if find_session_path(&self.root, &id).is_some() {
-            return Err(invalid(format!("session id `{id}` already exists")));
-        }
         let dir = self.root.join(session_dir_name(cwd));
         ensure_dir(&self.root)?;
         ensure_dir(&dir)?;
@@ -204,9 +206,19 @@ impl SessionStore for FsStore {
     }
 
     fn append(&self, s: &SessionRef, e: &Entry) -> Result<(), OxaError> {
+        self.append_many(s, std::slice::from_ref(e))
+    }
+
+    fn append_many(&self, s: &SessionRef, entries: &[Entry]) -> Result<(), OxaError> {
         check_safe(&s.path)?;
-        let mut line = Vec::new();
-        encode_entry(e, &mut line);
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut lines = Vec::new();
+        for e in entries {
+            encode_entry(e, &mut lines);
+            lines.push(b'\n');
+        }
         let mut f = OpenOptions::new()
             .read(true)
             .append(true)
@@ -222,7 +234,7 @@ impl SessionStore for FsStore {
                 &io::Error::last_os_error(),
             ));
         }
-        let mut buf = Vec::with_capacity(line.len() + 2);
+        let mut buf = Vec::with_capacity(lines.len() + 1);
         // A torn last line (a crash mid-write) has no newline. Start a new line so the new entry
         // is not glued to the fragment. The fragment is skipped on load, never repaired in place.
         let len = f
@@ -239,8 +251,7 @@ impl SessionStore for FsStore {
                 buf.push(b'\n');
             }
         }
-        buf.extend_from_slice(&line);
-        buf.push(b'\n');
+        buf.extend_from_slice(&lines);
         // One write on an O_APPEND descriptor: concurrent appends never interleave within a line.
         f.write_all(&buf)
             .map_err(|e| OxaError::io(&format!("cannot append to {}", s.path.display()), &e))
