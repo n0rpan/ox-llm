@@ -742,7 +742,15 @@ fn start_tool_prefill(
                         },
                     );
                 }
-                let res = engine.chat(&req, &cancel, &mut |_| {});
+                let mut prefilled = 0;
+                let res = engine.chat(&req, &cancel, &mut |event| {
+                    if let (Some(progress), StreamEvent::Prefill { done, .. }) = (&progress, event) {
+                        if done > prefilled {
+                            prefilled = done;
+                            progress.notify(&session, crate::Progress::Advanced);
+                        }
+                    }
+                });
                 if let Some(progress) = &progress {
                     progress.notify(
                         &session,

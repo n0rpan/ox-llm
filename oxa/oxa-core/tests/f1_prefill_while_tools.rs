@@ -960,8 +960,15 @@ fn advancing_tool_prefill_counts_as_progress_while_a_quiet_tool_runs() {
                 return self.0.chat(request, cancel, on);
             }
             for done in [0, 1, 1, 0, 2] {
-                on(StreamEvent::Prefill { done, total: 2, secs: 0 });
-                on(StreamEvent::Queued { pos: None, wait_s: done });
+                on(StreamEvent::Prefill {
+                    done,
+                    total: 2,
+                    secs: 0,
+                });
+                on(StreamEvent::Queued {
+                    pos: None,
+                    wait_s: done,
+                });
             }
             // Keep the real scripted request/result/usage, with only the progress script replaced.
             self.0.chat(request, cancel, &mut |_| {})
@@ -973,10 +980,13 @@ fn advancing_tool_prefill_counts_as_progress_while_a_quiet_tool_runs() {
         fn notify(&self, session: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
             let mut state = self.0.lock().unwrap();
             match progress {
-                oxa_core::Progress::RequestStart { kind: oxa_proto::TurnKind::Prefill, .. } => state.0 = true,
+                oxa_core::Progress::RequestStart {
+                    kind: oxa_proto::TurnKind::Prefill,
+                    ..
+                } => state.0 = true,
                 oxa_core::Progress::RequestEnd { .. } => state.0 = false,
                 oxa_core::Progress::Advanced if state.0 => state.1.push(session.clone()),
-                _ => {},
+                _ => {}
             }
         }
     }
@@ -985,14 +995,31 @@ fn advancing_tool_prefill_counts_as_progress_while_a_quiet_tool_runs() {
     let inner = Arc::new(ScriptedEngine::new(script(reads_then_slow())));
     let waiter = inner.clone();
     let mut session = open(
-        &env, Arc::new(Prefilling(inner.clone())),
-        tools(1500, wait_for(move || has_prefill(&waiter))), tools_on(true), true,
+        &env,
+        Arc::new(Prefilling(inner.clone())),
+        tools(1500, wait_for(move || has_prefill(&waiter))),
+        tools_on(true),
+        true,
     );
     let trace = Arc::new(Trace::default());
     session.set_progress_observer(trace.clone());
-    session.prompt("look around".into(), vec![], &mut VecSink::default(), &mut HeadlessUi::default()).unwrap();
+    session
+        .prompt(
+            "look around".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
     assert_eq!(inner.requests().len(), 3, "chat, overlapping prefill, follow-up");
     let state = trace.0.lock().unwrap();
-    assert_eq!(state.1.len(), 2, "only increasing prefill counts advance the stall clock");
-    assert!(state.1.iter().all(|reference| reference.id == inner.requests()[1].session));
+    assert_eq!(
+        state.1.len(),
+        2,
+        "only increasing prefill counts advance the stall clock"
+    );
+    assert!(state
+        .1
+        .iter()
+        .all(|reference| reference.id == inner.requests()[1].session));
 }
