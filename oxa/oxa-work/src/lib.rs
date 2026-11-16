@@ -1,8 +1,13 @@
 //! Opt-in, sequential unattended task execution. Worktrees are retained on every outcome.
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+mod worker;
+pub use worker::{WorkerOutcome, WorkerResult};
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -36,6 +41,8 @@ pub struct Record {
     pub worktree: PathBuf,
     pub outcome: Outcome,
     pub detail: String,
+    pub worker: Option<WorkerResult>,
+    pub session_id: Option<String>,
 }
 
 fn output(mut command: Command) -> Result<Output> {
@@ -125,40 +132,55 @@ fn done_commands(root: &Path) -> Result<Vec<String>> {
         Some(value) => serde_json::from_value(value.clone()).map_err(|e| format!("done commands: {e}")),
     }
 }
-fn acceptance(root: &Path, commands: &[String]) -> Result<String> {
-    let mut failures = String::new();
-    for entry in commands {
-        let (dir, shell) = match entry.strip_prefix("in ").and_then(|s| s.split_once(':')) {
-            Some((dir, cmd)) => (root.join(dir.trim()), cmd.trim()),
-            None => (root.to_path_buf(), entry.as_str()),
-        };
-        let dir = dir.canonicalize().map_err(|e| e.to_string())?;
-        if !dir.starts_with(root) {
-            return Err("done directory escapes worktree".into());
-        }
-        let mut c = Command::new("sh");
-        c.current_dir(dir).args(["-c", shell]);
-        let out = output(c)?;
-        if !out.status.success() {
-            failures.push_str(&format!(
-                "{entry}: {}\n{}\n{}\n",
-                out.status,
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-    }
-    Ok(failures)
+/// Private runner data stays outside every workspace and writable Git bind.
+pub struct RunPolicy {
+    pub offline: bool,
+    pub storage: PathBuf,
 }
-fn agent(binary: &Path, root: &Path, task: &Task, prompt: &str, offline: bool) -> Result<()> {
-    let mut c = Command::new(binary);
-    c.current_dir(root)
-        .args(["-p", "--model", &task.model, "--no-session"]);
-    if offline {
-        c.arg("--offline");
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptanceRequest {
+    pub source: PathBuf,
+    pub commands: Vec<String>,
+}
+
+fn acceptance(
+    binary: &Path,
+    root: &Path,
+    source: &Path,
+    commands: &[String],
+    offline: bool,
+    lock: &fs::File,
+) -> Result<String> {
+    if commands.is_empty() {
+        return Ok(String::new());
     }
-    c.args(["--", prompt]);
-    checked(c).map(|_| ())
+    let request = AcceptanceRequest {
+        source: source.to_path_buf(),
+        commands: commands.to_vec(),
+    };
+    let mut command = Command::new(binary);
+    if offline {
+        command.arg("--offline");
+    }
+    let out = command
+        .current_dir(root)
+        .args([
+            "work",
+            "--acceptance",
+            &serde_json::to_string(&request).map_err(|e| e.to_string())?,
+        ])
+        // The deterministic supervisor retains ownership if this runner dies.
+        .stdin(lock.try_clone().map_err(|e| e.to_string())?)
+        .output()
+        .map_err(|e| format!("acceptance supervisor: {e}"))?;
+    let diagnostic = String::from_utf8_lossy(&out.stderr).into_owned();
+    match out.status.code() {
+        Some(0) => Ok(String::new()),
+        Some(1) => Ok(diagnostic),
+        _ => Err(format!("acceptance could not run: {diagnostic}")),
+    }
 }
 
 pub fn blocked_record(task: &Task, detail: String) -> Record {
@@ -168,12 +190,11 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         worktree: PathBuf::new(),
         outcome: Outcome::Blocked,
         detail,
+        worker: None,
+        session_id: None,
     }
 }
-pub fn run_task(repo: &Path, binary: &Path, task: &Task) -> Result<Record> {
-    run_task_with_policy(repo, binary, task, false)
-}
-pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bool) -> Result<Record> {
+pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &RunPolicy) -> Result<Record> {
     validate(task)?;
     let root = checked(git(repo, &["rev-parse", "--show-toplevel"]))?;
     let root = PathBuf::from(root);
@@ -183,11 +204,17 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bo
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ))?;
     let common = PathBuf::from(common);
-    let storage = common.join("oxa-work");
-    fs::create_dir_all(&storage).map_err(|e| e.to_string())?;
+    let storage = &policy.storage;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(storage)
+        .map_err(|e| e.to_string())?;
     let lock_path = storage.join(format!("{}.lock", task.id));
     let lock_file = fs::OpenOptions::new()
+        .read(true)
         .write(true)
+        .mode(0o600)
         .create(true)
         .truncate(false)
         .open(&lock_path)
@@ -221,6 +248,8 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bo
         worktree: tree.clone(),
         outcome: Outcome::Blocked,
         detail: String::new(),
+        worker: None,
+        session_id: None,
     };
     let result = (|| -> Result<Outcome> {
         if tree.exists() {
@@ -234,30 +263,41 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bo
         let tree = tree.canonicalize().map_err(|e| e.to_string())?;
         let initial = checked(git(&tree, &["rev-parse", "HEAD"]))?;
         let commands = done_commands(&tree)?;
-        let first_agent = agent(binary, &tree, task, &task.prompt, offline);
-        let failures = acceptance(&tree, &commands)?;
+        let first = worker::run(
+            binary,
+            &tree,
+            task,
+            &task.prompt,
+            policy.offline,
+            &lock_file,
+            None,
+        )?;
+        record.worker = Some(first.result.clone());
+        record.session_id = first.session.clone();
+        let failures = acceptance(binary, &tree, &root, &commands, policy.offline, &lock_file)?;
+        if let Some(error) = first.failure() {
+            return Err(format!("{error}\nAcceptance checks:\n{failures}"));
+        }
         if !failures.is_empty() {
-            let repair_agent = agent(
+            let repair = worker::run(
                 binary,
                 &tree,
                 task,
-                &format!(
-                    "{}\n\nExternal acceptance checks failed. Repair once:\n{failures}",
-                    task.prompt
-                ),
-                offline,
-            );
-            let failures = acceptance(&tree, &commands)?;
+                &format!("External acceptance checks failed. Repair once:\n{failures}"),
+                policy.offline,
+                &lock_file,
+                first.session.as_deref(),
+            )?;
+            record.worker = Some(repair.result.clone());
+            record.session_id = repair.session.clone();
+            let failures = acceptance(binary, &tree, &root, &commands, policy.offline, &lock_file)?;
+            if let Some(error) = repair.failure() {
+                return Err(format!("{error}\nAcceptance checks:\n{failures}"));
+            }
             if !failures.is_empty() {
-                if let Err(error) = repair_agent {
-                    return Err(format!("{error}\nAcceptance checks:\n{failures}"));
-                }
                 record.detail = failures;
                 return Ok(Outcome::Red);
             }
-            repair_agent?;
-        } else {
-            first_agent?;
         }
         let head = checked(git(&tree, &["rev-parse", "HEAD"]))?;
         let dirty = checked(git(&tree, &["status", "--porcelain"]))?;
@@ -272,10 +312,13 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, offline: bo
         Err(e) => record.detail = e,
     }
     // Separate receipts avoid overwriting another task's result. Never remove its worktree.
-    fs::write(
-        receipt,
-        serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(receipt)
+        .map_err(|e| e.to_string())?;
+    file.write_all(&serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
     Ok(record)
 }

@@ -1,6 +1,19 @@
 //! Real child oxa with fake engine and local bare git remote; no network.
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+fn storage(env: &TestEnv) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let common = env.work().join("project/.git").canonicalize().unwrap();
+    let key: String = Sha256::digest(common.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    env.agent_dir().join("work").join(key)
+}
 fn git(env: &TestEnv, dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
@@ -27,6 +40,11 @@ fn setup(env: &TestEnv, done: &str) {
     git(env, &project, &["commit", "-m", "fixture"]);
     git(env, &project, &["remote", "add", "origin", "../remote.git"]);
     git(env, &project, &["push", "origin", "main"]);
+    // Approve the source repository only. The separate worker worktree still
+    // uses the normal project-resource decision of its own child session.
+    oxa_perm::TrustStore::default()
+        .save(&env.agent_dir().join("trust.json"), &project, true)
+        .unwrap();
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task"}]"#,
@@ -69,7 +87,7 @@ fn external_checks_run_without_edits_and_retain_worktree() {
     assert_eq!(record["outcome"], "done", "{record}");
     let tree = Path::new(record["worktree"].as_str().unwrap());
     assert_eq!(std::fs::read_to_string(tree.join("receipt")).unwrap(), "checked");
-    assert!(env.work().join("project/.git/oxa-work/test.json").exists());
+    assert!(storage(&env).join("test.json").exists());
 }
 #[test]
 fn clean_task_is_nothing_to_do() {
@@ -121,11 +139,27 @@ fn retry_can_make_acceptance_green() {
         &env,
         r#"["if test -f once; then true; else touch once; exit 1; fi"]"#,
     );
-    let record = run(
-        &env,
+    let server = FakeServer::start(
         vec![ScriptTurn::text("finished"), ScriptTurn::text("retry")],
-    );
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .output()
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(record["outcome"], "done", "{record}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].session, requests[1].session,
+        "repair lost the worker session"
+    );
+    assert_eq!(record["session_id"], requests[0].session);
 }
 
 #[test]
@@ -167,7 +201,7 @@ fn invalid_task_file_is_rejected_before_creating_worktree() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert!(!env.work().join("project/.git/oxa-work").exists());
+    assert!(!env.agent_dir().join("work").exists());
 }
 
 #[test]
@@ -329,7 +363,8 @@ fn command_line_offline_policy_reaches_child_agent() {
 fn batch_reports_one_task_error_and_runs_later_tasks() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    env.write("work/project/.git/oxa-work/test.json", "{}");
+    std::fs::create_dir_all(storage(&env)).unwrap();
+    std::fs::write(storage(&env).join("test.json"), "{}").unwrap();
     env.write("work/tasks.json", r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"go"},{"id":"next","branch":"agent/next","model":"fake","prompt":"go"}]"#);
     let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
@@ -353,7 +388,7 @@ fn batch_reports_one_task_error_and_runs_later_tasks() {
     assert_eq!(rows[0]["outcome"], "blocked");
     assert_eq!(rows[1]["outcome"], "nothing_to_do");
     assert_eq!(
-        std::fs::read_to_string(env.work().join("project/.git/oxa-work/test.json")).unwrap(),
+        std::fs::read_to_string(storage(&env).join("test.json")).unwrap(),
         "{}"
     );
 }
@@ -361,7 +396,216 @@ fn batch_reports_one_task_error_and_runs_later_tasks() {
 fn abandoned_lock_file_does_not_block_a_task() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    env.write("work/project/.git/oxa-work/test.lock", "");
+    std::fs::create_dir_all(storage(&env)).unwrap();
+    std::fs::write(storage(&env).join("test.lock"), "").unwrap();
     let record = run(&env, vec![ScriptTurn::text("done")]);
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+}
+
+#[test]
+fn untrusted_project_never_executes_external_checks() {
+    let env = TestEnv::new();
+    setup(&env, r#"["printf escaped > \"$HOME/untrusted-check\""]"#);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"never"}"#,
+    );
+    oxa_perm::TrustStore::default()
+        .save(
+            &env.agent_dir().join("trust.json"),
+            &env.work().join("project"),
+            false,
+        )
+        .unwrap();
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert!(!env.home().join("untrusted-check").exists(), "untrusted code ran");
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["detail"].as_str().unwrap().contains("trust"), "{record}");
+}
+
+#[test]
+fn agent_written_acceptance_code_cannot_write_outside_the_sandbox() {
+    let env = TestEnv::new();
+    setup(&env, r#"["sh check.sh"]"#);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"always"}"#,
+    );
+    env.write("work/project/check.sh", "exit 0\n");
+    let project = env.work().join("project");
+    git(&env, &project, &["add", "check.sh"]);
+    git(&env, &project, &["commit", "-m", "base check"]);
+    let script = "if printf escaped > \"$HOME/acceptance-escape\" 2>/dev/null; then true; fi\nprintf checked > acceptance-ran\n";
+    let args = serde_json::json!({"path":"check.sh", "content":script}).to_string();
+    let record = run(
+        &env,
+        vec![
+            ScriptTurn::tool("change-check", "write", &args),
+            ScriptTurn::text("finished"),
+        ],
+    );
+    assert!(
+        !env.home().join("acceptance-escape").exists(),
+        "agent-written code escaped acceptance"
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("acceptance-ran"))
+            .unwrap(),
+        "checked"
+    );
+}
+
+#[test]
+fn worker_result_and_session_come_from_the_real_child_contract() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert_eq!(record["worker"]["outcome"], "done", "{record}");
+    assert_eq!(record["worker"]["exit_code"], 0, "{record}");
+    assert!(!record["session_id"].as_str().unwrap().is_empty());
+}
+
+#[test]
+fn blocked_worker_keeps_its_result_and_does_not_start_a_repair() {
+    use oxa_fake::Fault;
+    let env = TestEnv::new();
+    setup(&env, r#"["echo external-check-failed; exit 1"]"#);
+    env.write("home/.oxa/agent/settings.json", r#"{"retry":{"enabled":false}}"#);
+    let server = FakeServer::start(
+        vec![ScriptTurn::fault(Fault::Http {
+            status: 429,
+            body: serde_json::json!({"error":{"code":"budget_exceeded", "message":"Synthetic daily cap"}})
+                .to_string(),
+        })],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .output()
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["worker"]["outcome"], "blocked", "{record}");
+    assert_eq!(record["worker"]["error_class"], "budget_exhausted", "{record}");
+    assert_eq!(record["worker"]["exit_code"], oxa_proto::EXIT_BUDGET, "{record}");
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "a budget refusal must not start a repair worker"
+    );
+    assert!(record["detail"]
+        .as_str()
+        .unwrap()
+        .contains("external-check-failed"));
+}
+
+#[test]
+fn large_streamed_reply_does_not_enter_the_runner_receipt() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let mut turn = ScriptTurn::text(&"Synthetic response ".repeat(8192));
+    turn.completion_tokens = Some(5);
+    turn.chunk = 8192;
+    let record = run(&env, vec![turn]);
+    assert_eq!(record["worker"]["outcome"], "done", "{record}");
+    assert!(
+        record.to_string().len() < 2048,
+        "runner retained streamed model output"
+    );
+}
+
+#[test]
+fn changed_project_commands_need_the_existing_content_approval() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    oxa_perm::TrustStore::load(&env.agent_dir().join("trust.json"))
+        .approve(&env.agent_dir().join("trust.json"), &project)
+        .unwrap();
+    env.write(
+        "work/project/.oxa/settings.json",
+        r#"{"done":["printf escaped > \"$HOME/changed-check\""]}"#,
+    );
+    git(&env, &project, &["add", ".oxa/settings.json"]);
+    git(&env, &project, &["commit", "-m", "changed commands"]);
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(!env.home().join("changed-check").exists());
+}
+
+#[test]
+fn acceptance_has_no_unsandboxed_fallback() {
+    use std::os::unix::fs::symlink;
+    let env = TestEnv::new();
+    setup(&env, r#"["printf ran > acceptance-ran"]"#);
+    let tools = env.tmp().join("tools");
+    std::fs::create_dir(&tools).unwrap();
+    for name in ["git", "sh"] {
+        symlink(Path::new("/usr/bin").join(name), tools.join(name)).unwrap();
+    }
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("finished")],
+        &["work", "../tasks.json"],
+        Some(tools.to_string_lossy().into_owned()),
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["detail"].as_str().unwrap().contains("bwrap"), "{record}");
+    assert!(!Path::new(record["worktree"].as_str().unwrap())
+        .join("acceptance-ran")
+        .exists());
+}
+
+#[test]
+fn runner_state_is_private_and_outside_the_workers_git_bind() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        std::fs::metadata(storage(&env)).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for file in ["test.json", "test.lock"] {
+        assert_eq!(
+            std::fs::metadata(storage(&env).join(file))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    assert!(!env.work().join("project/.git/oxa-work").exists());
+}
+
+#[test]
+fn acceptance_preserves_the_normal_read_only_git_configuration() {
+    let env = TestEnv::new();
+    setup(&env, r#"["sh check.sh"]"#);
+    env.write("work/project/check.sh", "git config core.fsmonitor 'printf escaped > \"$HOME/git-probe-escape\"; printf \"\\0\"' 2>/dev/null || true\nprintf checked > acceptance-ran\n");
+    let project = env.work().join("project");
+    git(&env, &project, &["add", "check.sh"]);
+    git(&env, &project, &["commit", "-m", "check fixture"]);
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert!(!env.home().join("git-probe-escape").exists());
+    let config = Command::new("git")
+        .args(["config", "--get", "core.fsmonitor"])
+        .current_dir(project)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        config.status.code(),
+        Some(1),
+        "acceptance rewrote executable Git configuration"
+    );
 }
