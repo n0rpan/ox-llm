@@ -17,6 +17,18 @@ pub struct Completed {
     pub failed: bool,
 }
 
+impl std::fmt::Debug for Completed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Completed")
+            .field("assistant", &"[redacted]")
+            .field("native_blocks", &"[redacted]")
+            .field("usage", &self.usage)
+            .field("finish_reason", &self.finish_reason)
+            .field("failed", &self.failed)
+            .finish()
+    }
+}
+
 struct Item {
     native: Value,
     slot: Option<usize>,
@@ -113,7 +125,7 @@ impl Stream {
         if let Some(arguments) = native["arguments"].as_str() {
             // Empty snapshot placeholders must not erase arguments from deltas/done.
             if !arguments.is_empty() || item.arguments.is_empty() {
-                if item.emitted && arguments != item.arguments {
+                if !arguments.starts_with(&item.arguments) || item.emitted && arguments != item.arguments {
                     return Err(());
                 }
                 item.arguments = arguments.to_owned();
@@ -180,17 +192,26 @@ impl Stream {
         };
         previous.push_str(delta);
         if !delta.is_empty() {
-            out.push(self.chunk(json!({field:delta}), None));
+            let visible = if field == "reasoning_summary" {
+                "reasoning_content"
+            } else {
+                field
+            };
+            out.push(self.chunk(json!({visible:delta}), None));
         }
         Ok(())
     }
 
     fn item_text(&mut self, index: u64, item: &Value, out: &mut Vec<Value>) -> Result<(), ()> {
-        for (key, field) in [("content", "content"), ("summary", "reasoning_content")] {
+        for (key, field) in [("content", "content"), ("summary", "reasoning_summary")] {
             if let Some(parts) = item[key].as_array() {
                 for (part, value) in parts.iter().enumerate() {
                     let (field, text_key) = if value["type"] == "refusal" {
                         ("refusal", "refusal")
+                    } else if key == "content"
+                        && (item["type"] == "reasoning" || value["type"] == "reasoning_text")
+                    {
+                        ("reasoning_content", "text")
                     } else {
                         (field, "text")
                     };
@@ -259,7 +280,8 @@ impl Stream {
                     item.arguments.push_str(v["delta"].as_str().ok_or(())?);
                 } else {
                     let arguments = v["arguments"].as_str().ok_or(())?;
-                    if item.emitted && arguments != item.arguments {
+                    if !arguments.starts_with(&item.arguments) || item.emitted && arguments != item.arguments
+                    {
                         return Err(());
                     }
                     item.arguments = arguments.to_owned();
@@ -270,19 +292,20 @@ impl Stream {
             | "response.output_text.done"
             | "response.refusal.delta"
             | "response.refusal.done"
+            | "response.reasoning_text.delta"
+            | "response.reasoning_text.done"
             | "response.reasoning_summary_text.delta"
             | "response.reasoning_summary_text.done" => {
                 let index = self.index(v)?;
                 let reasoning = kind.starts_with("response.reasoning");
-                let part = v[if reasoning {
-                    "summary_index"
-                } else {
-                    "content_index"
-                }]
-                .as_u64()
-                .ok_or(())?;
+                let summary = kind.starts_with("response.reasoning_summary");
+                let part = v[if summary { "summary_index" } else { "content_index" }]
+                    .as_u64()
+                    .ok_or(())?;
                 let refusal = kind.starts_with("response.refusal");
-                let field = if reasoning {
+                let field = if summary {
+                    "reasoning_summary"
+                } else if reasoning {
                     "reasoning_content"
                 } else if refusal {
                     "refusal"
@@ -336,7 +359,7 @@ impl Stream {
                     "stop"
                 };
                 if let Some(usage) = response.get("usage").filter(|u| !u.is_null()) {
-                    self.usage = Some(Usage::from_value(usage).ok_or(())?);
+                    self.usage = Usage::from_value(usage);
                 }
                 self.stopped = true;
                 out.push(self.chunk(json!({}), Some(self.reason)));
@@ -376,7 +399,7 @@ impl Stream {
         let reasoning: String = self
             .fields
             .iter()
-            .filter(|((_, _, field), _)| *field == "reasoning_content")
+            .filter(|((_, _, field), _)| matches!(*field, "reasoning_content" | "reasoning_summary"))
             .map(|(_, v)| v.as_str())
             .collect();
         let mut assistant =
@@ -682,5 +705,108 @@ mod tests {
     #[test]
     fn eof_without_terminal_is_failed() {
         assert!(Stream::new("test-model", 7, false).finish().failed);
+    }
+    #[test]
+    fn invalid_terminal_usage_keeps_output_with_unknown_metering() {
+        for usage in [
+            json!({"input_tokens":10,"output_tokens":"invalid"}),
+            json!({"input_tokens":1,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}),
+        ] {
+            let (chunks, done) = run(vec![
+                json!({"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}],"usage":usage}}),
+            ]);
+            assert!(!done.failed);
+            assert_eq!(done.assistant["content"], "answer");
+            assert!(done.usage.is_none());
+            assert!(chunks.iter().all(|v| v.get("usage").is_none()));
+        }
+    }
+    #[test]
+    fn reasoning_text_events_and_snapshots_never_enter_answer_content() {
+        let item = json!({"type":"reasoning","id":"rs_synthetic","encrypted_content":"opaque-synthetic-private","content":[{"type":"reasoning_text","text":"private reasoning"}]});
+        let (chunks, done) = run(vec![
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_synthetic"}}),
+            json!({"type":"response.reasoning_text.delta","output_index":0,"content_index":0,"delta":"private "}),
+            json!({"type":"response.reasoning_text.done","output_index":0,"content_index":0,"text":"private reasoning"}),
+            json!({"type":"response.output_item.done","output_index":0,"item":item}),
+            terminal("response.completed"),
+        ]);
+        assert!(!done.failed);
+        assert!(done.assistant["content"].is_null());
+        assert_eq!(done.assistant["reasoning_content"], "private reasoning");
+        let streamed: String = chunks
+            .iter()
+            .filter_map(|c| c.pointer("/choices/0/delta/reasoning_content")?.as_str())
+            .collect();
+        assert_eq!(streamed, "private reasoning");
+        assert!(!serde_json::to_string(&chunks)
+            .unwrap()
+            .contains("opaque-synthetic-private"));
+    }
+    #[test]
+    fn opaque_output_items_remain_ordered_and_exact_with_empty_completed_output() {
+        let items = vec![
+            json!({"type":"reasoning","id":"rs_synthetic","encrypted_content":"opaque-synthetic-private","summary":[]}),
+            json!({"type":"function_call","id":"fc_synthetic","call_id":"call_synthetic","name":"read","arguments":"{}"}),
+            json!({"type":"message","id":"msg_synthetic","content":[{"type":"output_text","text":"answer"}]}),
+        ];
+        let mut events = vec![];
+        for index in [2, 0, 1] {
+            events.push(json!({"type":"response.output_item.done","output_index":index,"item":items[index]}));
+        }
+        events.push(terminal("response.completed"));
+        let (chunks, done) = run(events);
+        assert!(!done.failed);
+        assert_eq!(done.native_blocks, items);
+        assert!(!serde_json::to_string(&chunks)
+            .unwrap()
+            .contains("opaque-synthetic-private"));
+    }
+
+    #[test]
+    fn completed_debug_and_errors_hide_opaque_items() {
+        let item = json!({"type":"reasoning","id":"rs_synthetic","encrypted_content":"opaque-synthetic-private","summary":[]});
+        let (_, done) = run(vec![
+            json!({"type":"response.completed","response":{"output":[item]}}),
+        ]);
+        assert!(!done.failed);
+        assert!(!format!("{done:?}").contains("opaque-synthetic-private"));
+        let (chunks, failed) = run(vec![
+            json!({"type":"response.output_item.done","output_index":0,"item":item}),
+            json!({"type":"response.failed","response":{"error":{"message":"opaque-synthetic-private"}}}),
+        ]);
+        assert!(failed.failed);
+        assert!(failed.native_blocks.is_empty());
+        assert!(!format!("{failed:?} {chunks:?}").contains("opaque-synthetic-private"));
+    }
+    #[test]
+    fn summary_and_full_reasoning_use_independent_snapshot_channels() {
+        let (_, done) = run(vec![
+            json!({"type":"response.completed","response":{"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"summary"}],"content":[{"type":"reasoning_text","text":"full reasoning"}]}]}}),
+        ]);
+        assert!(!done.failed);
+        assert!(done.assistant["content"].is_null());
+        assert!(done.assistant["reasoning_content"]
+            .as_str()
+            .unwrap()
+            .contains("full reasoning"));
+    }
+    #[test]
+    fn completed_arguments_cannot_rewrite_an_already_received_prefix() {
+        for item_done in [false, true] {
+            let mut events = vec![
+                added(0, "synthetic", "read"),
+                json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\":"}),
+            ];
+            if item_done {
+                events.push(json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"synthetic","call_id":"call_synthetic","name":"read","arguments":"{\"other\":1}"}}));
+            } else {
+                events.push(json!({"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"other\":1}"}));
+            }
+            events.push(terminal("response.completed"));
+            let (_, done) = run(events);
+            assert!(done.failed);
+            assert!(done.native_blocks.is_empty());
+        }
     }
 }
