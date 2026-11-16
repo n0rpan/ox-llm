@@ -17,6 +17,13 @@ use std::{
 const MODEL: &str = "synthetic-cloud";
 const UPSTREAM: &str = "synthetic-anthropic";
 
+fn test_env() -> TestEnv {
+    // Native keys and ledgers deliberately refuse repository paths. A runner's
+    // TMPDIR may be inside the checkout; keep this Linux fixture outside it
+    // rather than weakening that production restriction.
+    TestEnv::new_in(Path::new("/tmp"))
+}
+
 fn settings(env: &TestEnv, base: &str, enabled: bool) {
     env.write(
         "home/.oxa/agent/settings.json",
@@ -109,7 +116,7 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
         (json!(0), None, false, false),
         (json!("disabled"), None, false, false),
     ] {
-        let env = TestEnv::new();
+        let env = test_env();
         let (reply, release) = Reply::text("delayed native answer", 11, 7, 3, 5).gated();
         let mock = MockAnthropic::start(vec![reply]);
         settings(&env, &mock.base_url(), true);
@@ -162,7 +169,7 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
 
 #[test]
 fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
-    let env = TestEnv::new();
+    let env = test_env();
     let mock = MockAnthropic::start(vec![]);
     settings(&env, &mock.base_url(), true);
     let path = env.home().join(".oxa/agent/settings.json");
@@ -192,7 +199,7 @@ fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
 
 #[test]
 fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
-    let env = TestEnv::new();
+    let env = test_env();
     env.write("work/note.txt", "SYNTHETIC PROOF\n");
     let tool_reply = Reply::events(vec![
         json!({"type":"message_start","message":{"usage":{"input_tokens":11,
