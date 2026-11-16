@@ -223,6 +223,7 @@ impl Rig {
             cancel: &cancel,
             env: &[],
             tune: Default::default(),
+            hidden: None,
         };
         tool.run(&args, &cx, &mut |_: &str| {})
     }

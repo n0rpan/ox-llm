@@ -48,6 +48,7 @@ fn run(content: &[u8], args: &Value, tune: ToolTune) -> (ToolOutput, Vec<u8>) {
         cancel: &cancel,
         env: &envs,
         tune,
+        hidden: None,
     };
     let out = EditTool::new().run(args, &cx, &mut |_: &str| {});
     let after = std::fs::read(env.root().join(PATH)).expect("read back");

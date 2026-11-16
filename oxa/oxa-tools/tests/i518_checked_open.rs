@@ -45,6 +45,7 @@ fn run_pinned(tool: &dyn Tool, env: &TestEnv, rel: &str, pin: PathBuf, mut args:
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     args["path"] = json!(rel);
     tool.run(&args, &cx, &mut |_: &str| {})

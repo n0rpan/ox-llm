@@ -177,6 +177,7 @@ fn with_ctx<R>(env: &TestEnv, cancel: &CancelToken, f: impl FnOnce(&ToolCtx) -> 
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     f(&cx)
 }

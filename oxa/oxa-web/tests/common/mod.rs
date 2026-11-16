@@ -272,6 +272,7 @@ pub fn ctx<'a>(cwd: &'a Path, sb: &'a NoSandbox, mode: Mode, cancel: &'a CancelT
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     }
 }
 

@@ -216,6 +216,7 @@ fn run_with(env: &TestEnv, h: &SubagentHooks, args: Value, cancel: &CancelToken)
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let mut live = Vec::new();
     let mut ui = HeadlessUi::default();
@@ -526,6 +527,7 @@ fn parallel_is_queued() {
                     cancel: &cancel,
                     env: &[],
                     tune: Default::default(),
+                    hidden: None,
                 };
                 t.run(
                     &json!({"agent": "scout", "task": format!("c{i}")}),
@@ -663,6 +665,7 @@ fn run_in(env: &TestEnvRef, h: &SubagentHooks, args: Value, cancel: &CancelToken
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     t.run(&args, &cx, &mut |_| {})
 }

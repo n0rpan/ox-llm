@@ -92,6 +92,7 @@ fn child_argv(env: &TestEnv, h: &SubagentHooks, hint: &str) -> Vec<String> {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let mut ui = HeadlessUi::default();
     let args = json!({"agent": "scout", "task": "look around"});
