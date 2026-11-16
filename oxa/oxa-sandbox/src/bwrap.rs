@@ -32,7 +32,7 @@ pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
 /// The exact bwrap argv (without `bwrap` itself) for `s`. Pure over the file system state and
 /// deterministic; golden per case. Order: the fixed flags (`--unshare-all`, `--share-net` only
 /// when `net`, `--die-with-parent`, `--new-session`, `--cap-drop ALL`), `--ro-bind / /`,
-/// `--dev /dev`, `--proc /proc`, `--tmpfs /tmp`, `--tmpfs <home>`, the cwd (`--bind`, or
+/// `--dev /dev`, `--proc /proc`, `--tmpfs /tmp` (or `--bind <session dir> /tmp`, #457), `--tmpfs <home>`, the cwd (`--bind`, or
 /// `--ro-bind` when not writable or when cwd is `$HOME` / `/` / a parent of `$HOME`, B3; in a
 /// home workspace (O-199, [`cwd_mode`]) followed by `--bind` of each of
 /// [`home_workspace_entries`]), the layout's binds sorted by path (read-only toolchains, read-write
@@ -81,7 +81,11 @@ pub(crate) fn bwrap_args_homes(
         &mut a,
         &["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"],
     );
-    push(&mut a, &["--tmpfs", "/tmp"]);
+    // #457: the session directory, or a fresh tmpfs. Before the home and every mask (N28).
+    match &layout.scratch {
+        Some(sc) => push(&mut a, &["--bind", &sc.path().to_string_lossy(), "/tmp"]),
+        None => push(&mut a, &["--tmpfs", "/tmp"]),
+    }
     // #53: a `$HOME` that is not the account's real home leaves the real one visible. Hide it
     // like `$HOME` (an empty tmpfs; the cwd and the binds below are mounted on top), so its
     // credentials are absent, not merely emptied by a mask. Never `/` or the sandbox's `$HOME`.
