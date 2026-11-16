@@ -203,6 +203,7 @@ impl Client {
                     continue;
                 };
                 let event: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
+                drop(data);
                 let chunks = translated.event(&event).map_err(|_| Error::Protocol)?;
                 if event["type"] == "message_stop" {
                     let completed = translated.finish().map_err(|_| Error::Protocol)?;
