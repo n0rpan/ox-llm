@@ -4,7 +4,7 @@ mod work;
 use oxa_fake::{ScriptTurn, TestEnv};
 use oxa_proto::work::{EventPage, Fact, Snapshot};
 use std::process::Command;
-use work::{run, run_observed, setup};
+use work::{git, run, run_observed, setup};
 
 fn read(env: &TestEnv, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_oxa"))
@@ -131,7 +131,8 @@ fn a_new_planning_refusal_is_visible_and_a_fixed_plan_clears_its_block() {
         .events
         .iter()
         .all(|event| !matches!(event.fact, Fact::TaskStarted(_) | Fact::WorkerFinished(_))));
-    env.write("work/tasks.json", &tasks.replace("missing", "main"));
+    // Repair the missing ref, preserving the task identity/specification.
+    git(&env, &env.work().join("project"), &["branch", "missing", "main"]);
     let completed = run(&env, vec![ScriptTurn::text("done")]);
     assert_eq!(completed["outcome"], "nothing_to_do", "{completed}");
     assert!(situation(&env).blocked.is_empty());
