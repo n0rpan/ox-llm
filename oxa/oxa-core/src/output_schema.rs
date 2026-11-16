@@ -35,7 +35,14 @@ fn check_schema(schema: &Value, depth: usize) -> Result<(), &'static str> {
             }
             "items" => check_schema(value, depth + 1)?,
             "enum" if value.as_array().is_some_and(|a| !a.is_empty()) => {}
-            "required" if value.as_array().is_some_and(|a| a.iter().all(Value::is_string)) => {}
+            "required" => {
+                let mut seen = std::collections::HashSet::new();
+                for entry in value.as_array().ok_or(bad)? {
+                    if !seen.insert(entry.as_str().ok_or(bad)?) {
+                        return Err(bad);
+                    }
+                }
+            }
             _ => return Err(bad),
         }
     }
@@ -144,6 +151,21 @@ mod tests {
                 OutputSchema::new(serde_json::from_str(&format!(r#"{{"enum":[{choice}]}}"#)).unwrap())
                     .unwrap();
             assert!(!schema.matches(answer), "{choice} must differ from {answer}");
+        }
+    }
+
+    #[test]
+    fn required_entries_must_be_unique_strings() {
+        for schema in [
+            json!({"type":"object","required":["answer","answer"]}),
+            json!({"properties":{"nested":{"required":["a","b","a"]}}}),
+            json!({"items":{"required":["answer","answer"]}}),
+        ] {
+            let error = OutputSchema::new(schema).unwrap_err();
+            assert_eq!(error.code, codes::USAGE);
+        }
+        for required in [json!([]), json!(["answer"]), json!(["a", "b"])] {
+            assert!(OutputSchema::new(json!({"type":"object","required":required})).is_ok());
         }
     }
 
