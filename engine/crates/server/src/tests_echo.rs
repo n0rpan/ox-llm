@@ -1103,6 +1103,31 @@ fn tmp_dir(tag: &str) -> std::path::PathBuf {
     d
 }
 
+// A reply guarantees the RAM record, not completion of its background append. Restart
+// fixtures must wait for complete lines before attach (which can prune empty files).
+async fn wait_echo_lines(dir: &std::path::Path, expected: usize) {
+    let mut lines = 0;
+    for _ in 0..200 {
+        lines = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+            .map(|e| {
+                std::fs::read(e.path())
+                    .unwrap()
+                    .iter()
+                    .filter(|&&b| b == b'\n')
+                    .count()
+            })
+            .sum();
+        if lines == expected {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(lines, expected, "background echo appends completed");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn echo_records_survive_a_restart_with_thinking_on() {
     // M3: thinking on, the client returns no reasoning (a client that drops it). After an engine restart (or a
@@ -1128,6 +1153,9 @@ async fn echo_records_survive_a_restart_with_thinking_on() {
             body(json!([{"role":"user","content":"do"}]), kw.clone()),
         )
         .await;
+        if persisted {
+            wait_echo_lines(&dir, 1).await;
+        }
         drop(a);
         // the restarted engine: empty KV, records only from disk
         let b = st(vec![tok.encode("ok", false, true)], true);
@@ -1147,6 +1175,7 @@ async fn echo_records_survive_a_restart_with_thinking_on() {
                 !fed.contains("<think>\n\n</think>\n\nDone"),
                 "no empty think block for the earlier turn"
             );
+            wait_echo_lines(&dir, 2).await;
         } else {
             assert_eq!(r2["timings"]["echo_miss_class"], "no-record");
             assert!(
@@ -1171,6 +1200,7 @@ async fn echo_records_survive_a_restart_with_thinking_on() {
         body(json!([{"role":"user","content":"do"}]), kw.clone()),
     )
     .await;
+    wait_echo_lines(&dir, 1).await;
     assert_eq!(
         other.attach(&dir).unwrap(),
         0,
@@ -2216,7 +2246,7 @@ async fn trailing_assistant_continuation_refused_and_h6_unchanged() {
 /// Issue #583: the echo line's append and fsync must not sit between the generation and the
 /// reply. With the file-write lock held (a stalled disk), the non-stream body and the stream's
 /// final frames and `[DONE]` still arrive; the line is written once the disk answers.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn echo_file_append_never_delays_the_reply() {
     let tok = synth_tokenizer();
     let dir = tmp_dir("n583");
@@ -2237,28 +2267,49 @@ async fn echo_file_append_never_delays_the_reply() {
             .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
             .count()
     };
-    let stalled = io.lock().unwrap();
-    let limit = std::time::Duration::from_secs(20);
+    // A separate thread releases the lock even if a request blocks a Tokio worker. The
+    // timeout below polls a JoinHandle, never the blocking request future itself.
+    let (release, resume) = std::sync::mpsc::channel::<()>();
+    let (locked, ready) = std::sync::mpsc::channel();
+    let disk = std::thread::spawn(move || {
+        let _stalled = io.lock().unwrap();
+        locked.send(()).unwrap();
+        let _ = resume.recv_timeout(std::time::Duration::from_secs(30));
+    });
+    ready.recv().unwrap();
+    let limit = std::time::Duration::from_secs(10);
     let req = |stream: bool, sess: &str| {
-        let mut b = body(json!([{"role":"user","content":"go"}]), kw.clone());
+        let messages = if stream {
+            // This unrecorded history turn also exercises echo_adopt's deferred writes.
+            json!([
+                {"role":"user","content":"history"},
+                {"role":"assistant","content":"Prior"},
+                {"role":"user","content":"go"}
+            ])
+        } else {
+            json!([{"role":"user","content":"go"}])
+        };
+        let mut b = body(messages, kw.clone());
         b["stream"] = json!(stream);
         (serde_json::to_vec(&b).unwrap(), sess.to_string())
     };
     let (b1, s1) = req(false, "sess-a");
+    let state = s.clone();
     let r = tokio::time::timeout(
         limit,
-        crate::service::handle_session(
-            s.clone(),
-            "POST",
-            "/v1/chat/completions",
-            "",
-            &b1,
-            Some(s1),
-        ),
+        tokio::spawn(async move {
+            crate::service::handle_session(state, "POST", "/v1/chat/completions", "", &b1, Some(s1))
+                .await
+        }),
     )
     .await
-    .expect("the JSON reply does not wait for the echo file");
-    assert!(matches!(r, Reply::Json(200, _)));
+    .expect("the JSON reply does not wait for the echo file")
+    .unwrap();
+    let Reply::Json(200, reply) = r else {
+        panic!("expected a JSON completion")
+    };
+    assert_eq!(reply["choices"][0]["message"]["content"], "One");
+    assert_eq!(s.echo.lock().unwrap().n_records(), 1, "already in RAM");
     let (b2, s2) = req(true, "sess-b");
     let Reply::Stream(mut rx) = crate::service::handle_session(
         s.clone(),
@@ -2273,21 +2324,47 @@ async fn echo_file_append_never_delays_the_reply() {
         panic!("expected a stream")
     };
     let mut done = false;
+    let mut finished = false;
     while let Some(f) = tokio::time::timeout(limit, rx.recv())
         .await
         .expect("the stream does not wait for the echo file")
     {
         done |= f.contains("[DONE]");
+        finished |= f.contains("\"finish_reason\":\"stop\"");
     }
-    assert!(done);
+    assert!(done && finished, "the final chunk and DONE both arrived");
+    assert_eq!(
+        s.echo.lock().unwrap().n_records(),
+        3,
+        "history and both replies in RAM"
+    );
     assert_eq!(jsonl(), 0, "the disk is stalled: nothing written yet");
-    drop(stalled);
+    release.send(()).unwrap();
+    disk.join().unwrap();
     for _ in 0..200 {
         if jsonl() == 2 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert_eq!(jsonl(), 2, "both lines reach their files afterwards");
+    assert_eq!(jsonl(), 2, "both sessions reach disk afterwards");
+    // File creation can precede a completed write. Wait for every persisted line before
+    // reloading: attach can prune empty files and must not race an append still writing.
+    for _ in 0..200 {
+        let lines: usize = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+            .map(|e| std::fs::read_to_string(e.path()).unwrap().lines().count())
+            .sum();
+        if lines == 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let mut reloaded = crate::echo::EchoStore::new(Default::default());
+    assert_eq!(reloaded.attach(&dir).unwrap(), 3);
+    assert_eq!(reloaded.n_session_records("sess-a"), 1);
+    assert_eq!(reloaded.n_session_records("sess-b"), 2);
     let _ = std::fs::remove_dir_all(&dir);
 }

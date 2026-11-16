@@ -481,7 +481,7 @@ fn append_line(p: &std::path::Path, line: &str) {
 /// Write generations of the echo files (N4): a group's counter rises when its file is dropped, the
 /// global one when every file goes or the directory changes (clear, budget 0, attach).
 #[derive(Default)]
-pub struct EchoIo {
+struct EchoIo {
     all: u64,
     groups: HashMap<String, u64>,
 }
@@ -514,6 +514,7 @@ pub struct PendingAppend {
     group: String,
     epoch: (u64, u64),
     io: std::sync::Arc<std::sync::Mutex<EchoIo>>,
+    file_write: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl PendingAppend {
@@ -525,8 +526,16 @@ impl PendingAppend {
 
     /// Append and sync the line (under the file-write lock only). Returns whether it was written.
     pub fn write(self) -> bool {
-        let io = self.io.lock().unwrap_or_else(|p| p.into_inner());
-        if io.epoch(&self.group) != self.epoch {
+        // Lock order for writers and invalidators: file_write, then io. Never hold the
+        // epoch mutex over disk I/O: recording the next turn must not wait for this fsync.
+        let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+        if self
+            .io
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .epoch(&self.group)
+            != self.epoch
+        {
             return false;
         }
         append_line(&self.path, &self.line);
@@ -553,9 +562,12 @@ pub struct EchoStore {
     next_check: HashMap<String, u64>,
     /// files rewritten by compaction (diagnostics, tests)
     pub compactions: u64,
-    /// N4: serialises the file writes (deferred appends, compaction, drops) without the store's
-    /// own mutex; also tells a deferred append whether its group was dropped meanwhile
+    /// Short-held generation counters, separate from the file-write lock so preparing a
+    /// deferred append never waits for an earlier append's disk I/O.
     io: std::sync::Arc<std::sync::Mutex<EchoIo>>,
+    /// N4: serialises appends, compaction and invalidation/deletion. Invalidators hold this
+    /// before updating io, so a cleared session cannot be resurrected by an in-flight append.
+    file_write: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
 impl EchoStore {
@@ -574,13 +586,14 @@ impl EchoStore {
             next_check: HashMap::new(),
             compactions: 0,
             io: Default::default(),
+            file_write: Default::default(),
         }
     }
 
     /// The file-write lock (tests hold it to stall the deferred appends).
     #[cfg(test)]
-    pub fn io_lock_for_test(&self) -> std::sync::Arc<std::sync::Mutex<EchoIo>> {
-        self.io.clone()
+    pub fn io_lock_for_test(&self) -> std::sync::Arc<std::sync::Mutex<()>> {
+        self.file_write.clone()
     }
 
     /// Set the identity mixed into every key (drops records made under another identity).
@@ -761,6 +774,7 @@ impl EchoStore {
                         group: group.clone(),
                         epoch,
                         io: self.io.clone(),
+                        file_write: self.file_write.clone(),
                     }
                 })
             }
@@ -808,7 +822,7 @@ impl EchoStore {
         pending.push(".pending");
         let pending = std::path::PathBuf::from(pending);
         // serialised with deferred appends (N4): none lands between the rewrite and the rename
-        let _io = self.io.lock().unwrap_or_else(|p| p.into_inner());
+        let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
         let r = (|| -> std::io::Result<()> {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
@@ -849,10 +863,13 @@ impl EchoStore {
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(dir)?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-        self.io
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .invalidate_all();
+        {
+            let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+            self.io
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .invalidate_all();
+        }
         self.dir = Some(dir.to_path_buf());
         let idh = crate::prefix_store::sha256_hex(self.identity.as_bytes());
         // ECHO-WRITE-ORDER: a deferred append can land after a newer record's line (or after a
@@ -1094,6 +1111,7 @@ impl EchoStore {
     /// Drop every record of one session (eviction group), on disk too.
     fn drop_group(&mut self, group: &str) {
         // a deferred append of this group that has not run yet must not bring the file back (N4)
+        let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
         self.io
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1154,6 +1172,7 @@ impl EchoStore {
     /// means no conversation state on disk (Codex P2/P3 review 2). Returns the previous directory.
     pub fn set_disk(&mut self, dir: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
         // budget 0 means nothing more on disk, deferred appends included (N4)
+        let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
         self.io
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1167,11 +1186,11 @@ impl EchoStore {
 
     /// Drop every record (clear cache), on disk too.
     pub fn clear(&mut self) {
-        let _io = {
-            let mut io = self.io.lock().unwrap_or_else(|p| p.into_inner());
-            io.invalidate_all();
-            io
-        };
+        let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+        self.io
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .invalidate_all();
         if let Some(rd) = self.dir.as_ref().and_then(|d| std::fs::read_dir(d).ok()) {
             for de in rd.flatten() {
                 if de.path().extension().and_then(|e| e.to_str()) == Some("jsonl") {
@@ -1417,6 +1436,7 @@ impl EchoStore {
                                 group: group.clone(),
                                 epoch,
                                 io: self.io.clone(),
+                                file_write: self.file_write.clone(),
                             });
                         }
                     }

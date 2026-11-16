@@ -506,15 +506,15 @@ impl<E: Engine> State<E> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .record_deferred(prompt, a, e, msg, &r.tokens, end, session);
-        // audit v0.1.2 N4: the file append and its fsync run after the store's mutex is released,
-        // so the next request's splice never waits for the disk
+        // Keep RAM insertion before the reply (the next request can splice immediately),
+        // but never make the JSON body / final SSE frames await the append and fsync.
         if let Some(p) = pending {
-            p.write();
+            tokio::task::spawn_blocking(move || p.write());
         }
     }
 
     /// HISTORY-REWRITE: keep the history turns this request fed as rendered (see `EchoStore::adopt`);
-    /// the file appends run after the store's mutex is released, as for `echo_record`.
+    /// persist off the async reply path, as for `echo_record`.
     fn echo_adopt(
         &self,
         prompt: &[Token],
@@ -529,8 +529,12 @@ impl<E: Engine> State<E> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .adopt(prompt, turns, msgs, sent, session);
-        for p in pending {
-            p.write();
+        if !pending.is_empty() {
+            tokio::task::spawn_blocking(move || {
+                for p in pending {
+                    p.write();
+                }
+            });
         }
     }
 
