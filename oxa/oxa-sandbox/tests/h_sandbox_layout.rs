@@ -131,6 +131,12 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "GH_CACHE_DIR",
         "/tmp/gh-cache",
         "--setenv",
+        "GH_FORCE_TTY",
+        "80",
+        "--setenv",
+        "GH_PAGER",
+        "cat",
+        "--setenv",
         "MISE_CACHE_DIR",
         "/tmp/mise-cache",
         "--setenv",
@@ -139,6 +145,9 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "--setenv",
         "MISE_STATE_DIR",
         "/tmp/mise-state",
+        "--setenv",
+        "NO_COLOR",
+        "1",
         "--",
         "bash",
         "-c",
@@ -179,9 +188,12 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
         vec![
             "CARGO_HOME",
             "GH_CACHE_DIR",
+            "GH_FORCE_TTY",
+            "GH_PAGER",
             "MISE_CACHE_DIR",
             "MISE_DATA_DIR",
-            "MISE_STATE_DIR"
+            "MISE_STATE_DIR",
+            "NO_COLOR"
         ],
         "no token, no key, nothing unlisted"
     );
@@ -444,6 +456,32 @@ fn real(env: &TestEnv, layout: Layout) -> Option<Bwrap> {
 fn run(b: &Bwrap, command: &str, cwd: &Path) -> (Option<i32>, String) {
     let r = b.run(&spec(command, cwd, true), &CancelToken::new(), &mut |_| {});
     (r.exit, String::from_utf8_lossy(&r.output).into_owned())
+}
+
+/// #298 / #267 / #255: gh's redirected `issue view --comments` output omits the
+/// issue body (and is empty with no comments). Request terminal-style output, but
+/// keep the tool's pipes, disable paging and suppress ANSI colours. These are
+/// defaults only: an explicit per-command environment can restore raw output.
+#[test]
+fn real_gh_output_environment_is_plain_noninteractive_and_overridable() {
+    let env = TestEnv::new();
+    let Some(b) = real(&env, machine(&env)) else {
+        return;
+    };
+    let command = r#"printf 'tty=%s pager=%s color=%s\n' "$GH_FORCE_TTY" "$GH_PAGER" "$NO_COLOR"; test ! -t 0 && test ! -t 1"#;
+    let (exit, out) = run(&b, command, &env.work());
+    assert_eq!(exit, Some(0), "stdin/stdout must remain pipes: {out}");
+    assert_eq!(out, "tty=80 pager=cat color=1\n");
+
+    let mut s = spec(command, &env.work(), true);
+    s.env = vec![
+        ("GH_FORCE_TTY".into(), "".into()),
+        ("GH_PAGER".into(), "cat -u".into()),
+        ("NO_COLOR".into(), "".into()),
+    ];
+    let r = b.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(0));
+    assert_eq!(String::from_utf8_lossy(&r.output), "tty= pager=cat -u color=\n");
 }
 
 #[test]

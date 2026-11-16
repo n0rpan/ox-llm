@@ -9,6 +9,13 @@ bwrap sandbox behind `oxa_proto::Sandbox`. Depends on `oxa-proto`, `libc`. Used 
 
 Contracts: see the crate docs. Tests that need a real bwrap skip when `Bwrap::detect` fails and print why (a failure under `OXA_REQUIRE_BWRAP=1`, see below); argv goldens always run.
 
+The CLI layout sets `GH_FORCE_TTY=80`, `GH_PAGER=cat` and `NO_COLOR=1` so captured
+`gh issue view --comments` output includes the issue body even with no comments,
+without a pager or ANSI colours. stdin/stdout remain pipes; this does not enable
+interactive input. JSON output remains available with `--json`. For gh's raw
+redirected-output behaviour, use `GH_FORCE_TTY= gh ...`; per-command environment
+values override these defaults.
+
 ## What bash sees of the machine (wave H lane `harden`, pre-flight B2 / B3 / B4)
 
 `Bwrap::layout` (`src/layout.rs`, built by the CLI from the user's environment and the USER
