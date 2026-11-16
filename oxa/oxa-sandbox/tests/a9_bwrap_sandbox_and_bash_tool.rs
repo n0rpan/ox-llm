@@ -741,6 +741,7 @@ fn bash_tool_explains_discarded_scratch() {
     std::fs::create_dir_all(&cwd).unwrap();
     let cancel = CancelToken::new();
     let cx = oxa_proto::ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &cwd,
         sandbox: &sb,
