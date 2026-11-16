@@ -461,7 +461,6 @@ fn session_loop(
             Some(Ok(_)) if cmd.kind != "prompt" && settled.is_empty() => RunOutcome::Done,
             _ => *cx.session.outcome(),
         };
-        outcome.include(current);
         for record in &mut settled {
             if let Some(fields) = record.as_object_mut() {
                 fields.insert("result".to_string(), current.record());
@@ -500,9 +499,20 @@ fn session_loop(
             }
         }
         if cx.handle.wrap_up_requested() {
+            // A real prompt failure precedes later reader errors. Cooperative
+            // interruption is deferred so it cannot hide an already-reported error.
+            if current != RunOutcome::Interrupted {
+                outcome.include(current);
+            }
+            for pending in rx.try_iter() {
+                if let Job::Outcome(next) = pending {
+                    outcome.include(next);
+                }
+            }
             outcome.include(RunOutcome::Interrupted);
             break;
         }
+        outcome.include(current);
     }
     let mut ui = RpcUi {
         out: cx.out.clone(),
