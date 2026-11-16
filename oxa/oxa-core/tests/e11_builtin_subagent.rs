@@ -269,16 +269,40 @@ fn env_of(env: &TestEnv, hint: &str, name: &str) -> Option<String> {
 
 fn wait_for(path: &Path) {
     let end = Instant::now() + Duration::from_secs(10);
-    while !path.exists() {
-        assert!(Instant::now() < end, "{} never appeared", path.display());
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if text.ends_with('\n') && text.trim().parse::<u32>().is_ok_and(|pid| pid > 0) {
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < end,
+            "{} never contained a complete PID line",
+            path.display()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
-    // The writer may not have finished the line yet.
-    std::thread::sleep(Duration::from_millis(20));
 }
 
 fn pid_in(path: &Path) -> u32 {
     std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
+}
+
+/// File creation and even a PID prefix are not a completed readiness record.
+#[test]
+fn readiness_waits_for_the_complete_pid_line() {
+    let env = TestEnv::new();
+    let path = env.root().join("partial-pid");
+    std::fs::write(&path, "12").unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // Deliberately slow publication, not a delay used to infer readiness.
+            std::thread::sleep(Duration::from_millis(100));
+            append(&path, "345");
+        });
+        wait_for(&path);
+        assert_eq!(pid_in(&path), 12345, "wait for the newline, not file creation");
+    });
 }
 
 /// `true` while `pid` exists and is not a zombie.
