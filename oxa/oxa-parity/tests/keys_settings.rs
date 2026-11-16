@@ -3459,24 +3459,25 @@ fn key_014() {
     t.wait("f4 cycles", |s| footer(s).ends_with("• minimal"));
 }
 
-/// KEY-015: `app.mode.cycle` (alt+m): plan -> workspace -> ask.
+/// KEY-015: `app.mode.cycle` (alt+m): standard -> auto -> yolo.
 #[test]
 fn key_015() {
-    // invariant: oxa only; the mode order is plan -> workspace -> ask (the default is alt+m).
-    // The mode is display and permission state, never wire text (W3): the system prompt of
-    // the next request is the same in every mode.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    // invariant: oxa only; the cycle is auto -> yolo -> standard (the default is alt+m).
+    // The mode is display and permission state, never wire text (W3). Under yolo the badge
+    // row `YOLO full access` sits below the footer, so look at the bottom two rows.
+    let footer = |s: &Screen| {
+        let n = s.size().0;
+        format!("{}\n{}", s.row(n - 2), s.row(n - 1))
+    };
     let t = Setup::new().replies("ok", 2).start();
-    assert!(footer(&t.screen()).contains("workspace"));
+    assert!(footer(&t.screen()).contains("auto"));
     t.prompt("one", "ok");
     t.key("alt+m");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
+    t.wait("yolo mode", |s| footer(s).contains("yolo"));
     t.key("alt+m");
-    t.wait("plan mode", |s| footer(s).contains(" plan"));
+    t.wait("standard mode", |s| footer(s).contains("standard"));
     t.key("alt+m");
-    t.wait("workspace mode", |s| footer(s).contains("workspace"));
-    t.key("alt+m");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
+    t.wait("auto mode", |s| footer(s).contains("auto"));
     t.type_text("two");
     t.key("enter");
     let chats = t.wait_chats(2);
@@ -3489,9 +3490,9 @@ fn key_015() {
     let t = Setup::new().keys(json!({ "app.mode.cycle": "f3" })).start();
     t.key("alt+m");
     let s = t.settle();
-    assert!(footer(&s).contains("workspace"), "{s:?}");
+    assert!(footer(&s).contains("auto"), "{s:?}");
     t.key("f3");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
+    t.wait("yolo mode", |s| footer(s).contains("yolo"));
 }
 
 /// KEY-016: display and queue: tools expand, message copy, follow-up, dequeue.

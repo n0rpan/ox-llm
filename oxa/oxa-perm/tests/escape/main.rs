@@ -149,18 +149,32 @@ fn project_config_asks_and_plan_denies() {
         decide(&p, Mode::Plan, write(cfg.clone()), &cwd),
         Decision::Deny(oxa_perm::deny_reasons::PLAN_WRITE)
     );
-    // The deny-list still wins in YOLO.
-    let yolo = ModePolicy::new()
-        .with_guard(PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp()))
-        .with_yolo(YoloSwitch::new(true));
+    // Auto keeps the floor; user-selected yolo bypasses it outside plan mode.
+    let with = |level| {
+        ModePolicy::new()
+            .with_guard(PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp()))
+            .with_yolo(YoloSwitch::new(level))
+    };
+    let auto = with(oxa_proto::Autonomy::Auto);
     assert_eq!(
-        decide(&yolo, Mode::Workspace, write(env.home().join(".ssh/id")), &cwd),
+        decide(&auto, Mode::Workspace, write(env.home().join(".ssh/id")), &cwd),
         Decision::Deny(oxa_perm::deny_reasons::SENSITIVE)
     );
     assert_eq!(
-        decide(&yolo, Mode::Workspace, write(cwd.join(".git/config")), &cwd),
+        decide(&auto, Mode::Workspace, write(cwd.join(".git/config")), &cwd),
         Decision::Deny(oxa_perm::deny_reasons::GIT_PROTECTED)
     );
+    let yolo = with(oxa_proto::Autonomy::Yolo);
+    for path in [env.home().join(".ssh/id"), cwd.join(".git/config")] {
+        assert_eq!(
+            decide(&yolo, Mode::Workspace, write(path.clone()), &cwd),
+            Decision::Allow
+        );
+        assert!(matches!(
+            decide(&yolo, Mode::Plan, write(path), &cwd),
+            Decision::Deny(_)
+        ));
+    }
 }
 
 /// Threat: the user grants a directory, the model replaces that directory with a symlink to a

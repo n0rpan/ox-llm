@@ -139,8 +139,8 @@ fn hud_is_one_line_that_fits_every_width() {
 fn hud_snapshot_at_121_columns() {
     let st = full_status();
     let line = strip_ansi(&hud(&st, 121, &colour()));
-    // The full line (121 columns with the location segment) fits: no segment is dropped.
-    let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ workspace │ local";
+    // The full line (with the location segment) fits in 121 columns: no segment is dropped.
+    let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ standard │ local";
     assert_eq!(line, expected);
 }
 
@@ -153,7 +153,7 @@ fn hud_shows_the_model_location() {
         ..full_status()
     };
     let line = plain_hud(&remote, 160);
-    assert!(line.ends_with("workspace │ cloud · anthropic"), "{line:?}");
+    assert!(line.ends_with("standard │ cloud · anthropic"), "{line:?}");
     assert!(!line.contains("local"), "{line:?}");
     let generic = StatusModel {
         model_provider: None,
@@ -177,7 +177,7 @@ fn hud_drop_order_keeps_title_and_state_down_to_40() {
 fn hud_segments_appear_monotonically_as_width_grows() {
     // A segment that shows at some width shows at every wider width (the drop order is fixed).
     let st = full_status();
-    let markers = ["tok/s", "CACHE", "15k/33k", "medium", "workspace"];
+    let markers = ["tok/s", "CACHE", "15k/33k", "medium", "standard"];
     for marker in markers {
         let mut seen = false;
         for width in 20..=200u16 {
@@ -1213,9 +1213,8 @@ fn hud_keeps_location_at_60_columns() {
             line.contains("cloud · anthropic"),
             "location at {width}: {line:?}"
         );
-        if width >= 70 {
-            assert!(line.contains("workspace"), "mode at {width}: {line:?}");
-        }
+        // #202: the mode is never dropped; workspace shows its autonomy level.
+        assert!(line.contains("standard"), "mode at {width}: {line:?}");
         assert!(line.contains("READY"), "state at {width}: {line:?}");
     }
 }
