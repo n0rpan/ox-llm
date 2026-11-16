@@ -74,3 +74,8 @@ Only print records execve. RPC samples are observations, not peak-memory or timi
 benchmarks. TUI proves rendering, not every cancellation/cleanup path. No mode
 claims real-model acceptance, external-network isolation beyond its namespace,
 release-artifact qualification or a substitute for the orchestrator's final read.
+
+Admission-contract update (#780): this same fixture now supplies explicit synthetic
+allocation components instead of the former opaque byte total. At4096 positions
+the anonymous budget is1MiB; the production factory adds the full synthetic GGUF
+file size at cold launch. These are stub test inputs, not real-model qualification.

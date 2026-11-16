@@ -21,7 +21,7 @@ if mode not in ('print','rpc','tui'):
 strace=sys.argv[5] if len(sys.argv)>5 else shutil.which('strace')
 with tempfile.TemporaryDirectory(prefix='native-local-cli-') as raw:
     tmp=pathlib.Path(raw);home=tmp/'home';work=tmp/'project';work.mkdir();settings=home/'.oxa/agent/settings.json';settings.parent.mkdir(parents=True)
-    settings.write_text(json.dumps({'defaultProjectTrust':'always','retry':{'enabled':False},'oxa':{'engine':{'inProcessLocal':True},'local':{'binary':str(engine),'models':{'synthetic':{'model':str(model),'arguments':['--engine','stub','--ctx-size','4096','--reasoning','off','--stub-reply','</think>Synthetic task complete.']}},'limits':{'synthetic':{'context_window':4096,'max_output':64,'required_available_bytes':1048576}}}}}))
+    settings.write_text(json.dumps({'defaultProjectTrust':'always','retry':{'enabled':False},'oxa':{'engine':{'inProcessLocal':True},'local':{'binary':str(engine),'models':{'synthetic':{'model':str(model),'arguments':['--engine','stub','--ctx-size','4096','--reasoning','off','--stub-reply','</think>Synthetic task complete.']}},'limits':{'synthetic':{'context_window':4096,'max_output':64,'allocation_budget':{'kv_bytes_per_position':1,'scratch_bytes':0,'mtp_state_bytes':0,'margin_bytes':1044480}}}}}}))
     files={'membership':'0::/engine\n','meminfo':'MemAvailable: 8388608 kB\nSwapFree: 0 kB\n','pressure':'full avg10=0\n','vmstat':'oom_kill 0\n','cgroup/engine/memory.events':'oom 0\noom_kill 0\noom_group_kill 0\n','cgroup/engine/memory.swap.current':'0\n','cgroup/engine/memory.swap.max':'0\n','cgroup/engine/pids.events':'max 0\n'}
     for name,value in files.items():
         p=tmp/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(value)
