@@ -79,7 +79,7 @@ LAN_NETS = (ipaddress.ip_network((0x0A000000, 8)), ipaddress.ip_network((0xAC100
             ipaddress.ip_network((0xC0A80000, 16)))
 POST_ROUTES = frozenset({'/v1/chat/completions', '/v1/completions'})
 GET_ROUTES = frozenset({'/v1/models'})
-MODEL_ID = re.compile(r'[A-Za-z0-9._:-]{1,128}')
+MODEL_ID = re.compile(r'[A-Za-z0-9._:/-]{1,128}')
 ROUTES = ['POST /v1/chat/completions', 'POST /v1/completions', 'GET /v1/models', 'GET /v1/models/{id}']
 DEFAULT_MAX_TOKENS = 16384  # the largest output limit a shared request may ask for
 IO_TIMEOUT = 60.0  # seconds a shared connection may sit idle, or block in one read or write
@@ -1026,7 +1026,8 @@ class ShareController:
             (method == 'POST' and path in POST_ROUTES)
             or (method in ('GET', 'HEAD') and (path in GET_ROUTES or (
                 path.startswith('/v1/models/') and MODEL_ID.fullmatch(path[len('/v1/models/'):]) is not None
-                and path.strip('./') != 'v1/models'))))  # no '.' or '..' as the id
+                and all(part.strip('.') for part in path[len('/v1/models/'):].split('/'))))))
+        # Namespaced cloud IDs are allowed, but never empty or dot-only path segments.
         if not allowed:
             return self.refuse(handler, 403, 'Only the OpenAI inference routes are shared '
                                '(POST /v1/chat/completions, POST /v1/completions, GET /v1/models).', 'permission_error')

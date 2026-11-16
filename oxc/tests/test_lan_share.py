@@ -419,6 +419,33 @@ class GateTests(ShareBase):
         self.assertEqual(status, 200, data)
         self.assertEqual(json.loads(data)['data'][0]['id'], 'synthetic-classic')
 
+    def test_namespaced_model_metadata_is_shared(self):
+        alias = 'openrouter/vendor/model:variant'
+        self.manager.models = Mock(return_value=[{'id': alias, 'object': 'model', 'remote': True}])
+        for method in ('GET', 'HEAD'):
+            with self.subTest(method=method):
+                status, data = self.send(method, '/v1/models/' + alias + '?unused=1', key=self.key)
+                self.assertEqual(status, 200, data)
+                if method == 'GET':
+                    self.assertEqual(json.loads(data)['id'], alias)
+                else:
+                    self.assertEqual(data, b'')
+        self.manager.models.assert_called_with(remote=True)
+        self.assertEqual(self.send('GET', '/v1/models/openrouter/unknown', key=self.key)[0], 404)
+        self.manager.begin_queued.assert_not_called()
+        self.assertEqual(self.seen, [])
+
+    def test_namespaced_model_routes_reject_unsafe_ids(self):
+        for alias in ('provider/../_local/status', 'provider/./model', 'provider/.../model',
+                      'provider//model', '/provider/model', 'provider/%2e%2e/model',
+                      'provider%2fmodel', 'provider\\model', 'provider/model%00',
+                      'provider/' + 'x' * 120):
+            with self.subTest(alias=alias):
+                self.assertEqual(self.send('GET', '/v1/models/' + alias, key=self.key)[0], 403)
+        self.manager.models.assert_not_called()
+        self.manager.begin_queued.assert_not_called()
+        self.assertEqual(self.seen, [])
+
     def test_rate_limit(self):
         self.share.limiter = lan_share.RateLimiter(1, 2)
         codes = [self.send('GET', '/v1/models', key=self.key)[0] for _ in range(3)]

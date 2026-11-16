@@ -221,8 +221,8 @@ class ModelsMixin:
                 if isinstance(limits[target].get('capabilities'), dict):
                     row.setdefault('context_window', limits[target]['capabilities'].get('context_window'))
 
-    def catalog(self, remote=False):
-        """Chooser rows for eligible profiles; metadata only, never loads a model."""
+    def catalog(self):
+        """Owner-only chooser rows for eligible profiles; metadata only, never loads a model."""
         value = json.loads(ctl.CONFIG.read_text())
         if not isinstance(value, dict): raise ValueError('runtime_object_required')
         base = value.get('model_alias', 'qwen-local')
@@ -242,7 +242,7 @@ class ModelsMixin:
                                               loaded.get('model_alias') == alias else None)))
         rows.sort(key=model_catalog.sort_key)
         if cloud.enabled(value) and not cloud.offline():
-            rows.extend(cloud.catalog_row(item) for item in (cloud.guest_models(value) if remote else cloud.models(value)))
+            rows.extend(cloud.catalog_row(item) for item in cloud.models(value))
         return {'object': 'list', 'default_model': model_catalog.DEFAULT_ALIAS,
                 'selected_model': selected, 'data': rows}
 
