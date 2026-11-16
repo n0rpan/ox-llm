@@ -14,8 +14,9 @@
 //! not matter) with byte-identical result text (success or error alike: a command that fails
 //! the same way every time is still a loop). Only consecutive pairs count; the walk stops at:
 //! * a user message (a new instruction may legitimately need the same call again);
-//! * any other call's result (an edit, a write, another command, another range): this is what
-//!   keeps `cargo test` after an edit, and a read after an edit, from ever being counted;
+//! * any other call's result, except another read/grep/find/ls result when the call itself is one
+//!   of those (#463: the unchanged range is still in context); an edit, a write or a command
+//!   ends the run: this is what keeps `cargo test` after an edit, and a read after an edit, from ever being counted;
 //! * a result of the same call with different text (a polling command whose output changes, a
 //!   test whose output changed): a legitimate re-run.
 //!
@@ -71,11 +72,31 @@ pub(crate) fn judge(
     let Some(args) = parse(args_raw) else {
         return Verdict::Pass;
     };
+    // #439: a blocking poll (`wait_s`) of a job that is still running is not a repeat: it waited
+    // for the job to change. Judged from the status header (first line) only, never from the
+    // job's output, and a poll without a real wait (under 1 s) still trips the guard (#150).
+    if name == "bash"
+        && args.get("job").is_some()
+        && args
+            .get("wait_s")
+            .and_then(|w| w.as_f64())
+            .is_some_and(|w| w >= 1.0)
+        && text
+            .lines()
+            .next()
+            .is_some_and(|h| h.starts_with("Job ") && h.contains(": running ("))
+    {
+        return Verdict::Pass;
+    }
     // The batch first (newest), then the wire, both walked back from the newest.
     let mut found = Found::default();
     for (n, a, t) in in_batch.iter().rev() {
         if !same_call(n, a, name, &args) {
-            // A different call ends the run; the identical suffix found so far still counts.
+            // Another read-only call leaves the earlier copies in context (#463); any other
+            // call may change files and ends the run (the suffix found so far still counts).
+            if READ_ONLY.contains(n) && READ_ONLY.contains(&name) {
+                continue;
+            }
             return finish(found, name, args_raw);
         }
         match step(&mut found, t, text) {
@@ -117,6 +138,9 @@ pub(crate) struct Found {
     pub notices: u32,
 }
 
+/// Tools that never change files: they do not end a run of identical results.
+const READ_ONLY: [&str; 4] = ["read", "grep", "find", "ls"];
+
 enum Step {
     Go,
     Break,
@@ -149,6 +173,11 @@ pub(crate) fn scan(wire: &[WireMsg], name: &str, args: &Value, text: &str, found
                     return;
                 };
                 if !same_call(&call.name, &call.args_raw, name, args) {
+                    // Another read-only call (a different range, a search) leaves the earlier
+                    // copies in context and unchanged; anything else may change files (#463).
+                    if READ_ONLY.contains(&call.name.as_str()) && READ_ONLY.contains(&name) {
+                        continue;
+                    }
                     return;
                 }
                 if let Step::Break = step(found, m.content.as_deref().unwrap_or(""), text) {

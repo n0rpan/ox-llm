@@ -1,6 +1,6 @@
 //! U1: the OXA themes. `oxa` is a fixed built-in palette; `oxa-omarchy` follows the desktop:
 //! it reads the CURRENT Omarchy theme palette (`colors.toml`, read-only) and maps it to oxa's
-//! theme tokens. Owner: task U1. Signatures below are frozen; bodies are yours.
+//! theme tokens.
 //!
 //! Nothing here reads the process environment (P56) or writes anything: the caller passes the
 //! home and XDG directories. No Omarchy file is ever modified.

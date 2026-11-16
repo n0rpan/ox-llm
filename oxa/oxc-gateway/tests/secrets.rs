@@ -16,10 +16,7 @@ impl Home {
         let path = std::env::temp_dir().join(format!(
             "gateway-security-{}-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
@@ -45,11 +42,7 @@ fn credentials_are_fresh_and_debug_never_discloses_them() {
     let path = home.write(br#"{"anthropic":"synthetic-first-credential"}"#);
     let first = secrets::read(&path, "anthropic").unwrap();
     let replacement = home.0.join("replacement.json");
-    fs::write(
-        &replacement,
-        br#"{"anthropic":"synthetic-next-credential"}"#,
-    )
-    .unwrap();
+    fs::write(&replacement, br#"{"anthropic":"synthetic-next-credential"}"#).unwrap();
     fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600)).unwrap();
     fs::rename(replacement, &path).unwrap();
     let next = secrets::read(&path, "anthropic").unwrap();
@@ -190,10 +183,7 @@ fn streaming_redaction_catches_every_split_of_the_credential() {
         let mut output = stream.feed(&input.as_bytes()[..split]);
         output.extend(stream.feed(&input.as_bytes()[split..]));
         output.extend(stream.finish());
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "before [redacted] after"
-        );
+        assert_eq!(String::from_utf8(output).unwrap(), "before [redacted] after");
     }
 }
 
@@ -310,13 +300,7 @@ fn utf8_json_is_accepted_and_other_encodings_or_nonfinite_values_are_refused() {
     for little in [false, true] {
         let utf16: Vec<u8> = text
             .encode_utf16()
-            .flat_map(|n| {
-                if little {
-                    n.to_le_bytes()
-                } else {
-                    n.to_be_bytes()
-                }
-            })
+            .flat_map(|n| if little { n.to_le_bytes() } else { n.to_be_bytes() })
             .collect();
         let utf32: Vec<u8> = text
             .chars()
@@ -328,13 +312,7 @@ fn utf8_json_is_accepted_and_other_encodings_or_nonfinite_values_are_refused() {
                 }
             })
             .collect();
-        formats.push(
-            [
-                if little { b"\xff\xfe" } else { b"\xfe\xff" }.as_slice(),
-                &utf16,
-            ]
-            .concat(),
-        );
+        formats.push([if little { b"\xff\xfe" } else { b"\xfe\xff" }.as_slice(), &utf16].concat());
         formats.push(utf16);
         formats.push(
             [
@@ -382,10 +360,7 @@ fn streaming_buffers_partial_matches_releases_mismatches_and_preserves_unicode()
         let mut output = stream.feed(&input.as_bytes()[..split]);
         output.extend(stream.feed(&input.as_bytes()[split..]));
         output.extend(stream.finish());
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "λ [redacted][redacted] 😀"
-        );
+        assert_eq!(String::from_utf8(output).unwrap(), "λ [redacted][redacted] 😀");
     }
     let mut stream = redaction::Stream::new(&key);
     assert_eq!(stream.feed(b"ordinary text"), b"ordinary text");

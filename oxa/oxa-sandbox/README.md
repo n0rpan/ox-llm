@@ -9,6 +9,27 @@ bwrap sandbox behind `oxa_proto::Sandbox`. Depends on `oxa-proto`, `libc`. Used 
 
 Contracts: see the crate docs. Tests that need a real bwrap skip when `Bwrap::detect` fails and print why (a failure under `OXA_REQUIRE_BWRAP=1`, see below); argv goldens always run.
 
+Captured `gh issue view --comments` output follows gh's redirected-output contract:
+comments only, so an issue with no comments produces no output. To get the issue
+body **and** comments reliably, use the machine-readable form (without `--comments`):
+
+```sh
+gh issue view NUMBER -R OWNER/REPO --json title,body,comments,state
+```
+
+For a human-readable view, scope terminal formatting to that invocation only:
+
+```sh
+GH_FORCE_TTY=80 GH_PAGER=cat NO_COLOR=1 gh issue view NUMBER -R OWNER/REPO --comments
+```
+
+stdin/stdout remain pipes; this does not enable interactive input. The sandbox does
+not set these three variables globally: `GH_FORCE_TTY` changes list/API formatting
+and truncates long table cells, while `NO_COLOR` affects every tool that respects it,
+not just gh. Ordinary `gh issue list | cut -f1` pipelines keep their raw tab-separated
+output. The gh regression test requires gh on PATH and uses only a synthetic API
+on a workspace Unix socket, with no network or real credentials.
+
 ## What bash sees of the machine (wave H lane `harden`, pre-flight B2 / B3 / B4)
 
 `Bwrap::layout` (`src/layout.rs`, built by the CLI from the user's environment and the USER
@@ -28,7 +49,7 @@ masks are sorted by path.
 | `~/go/bin`, `~/.local/share/pipx`, `~/.local/pipx`, `~/.local/share/uv`, `~/.pyenv`, `~/.rbenv` | read-only | go binaries, pipx / uv tools and pythons, pyenv / rbenv |
 | `~/.gitconfig`, `~/.config/git` | read-only | the user's git identity for commits |
 | `~/.cargo/registry`, `~/.cargo/git` | read-write | cargo must download and unpack crates; without it every call re-downloads into a throwaway home |
-| `~/.cache/{pip,uv,go-build,yarn,pnpm,deno,node-gyp}`, `~/.npm`, `~/.bun/install/cache`, `~/go/pkg/mod` | read-write | the package caches of pip, uv, go, yarn, pnpm, deno, node-gyp, npm, bun |
+| `~/.cache/{pip,uv,go-build,sccache,yarn,pnpm,deno,node-gyp}`, `~/.npm`, `~/.bun/install/cache`, `~/go/pkg/mod` | read-write | the package caches of pip, uv, go, sccache (or `$SCCACHE_DIR` when set, judged by its resolved path: only if it lies under `~/.cache`, or entirely outside the home and not in a system directory such as `/`, `/etc`, `/usr` or `/var`, nor a parent of the home; anything else in the home, e.g. `~/.config/sccache`, is never made writable), yarn, pnpm, deno, node-gyp, npm, bun |
 | `oxa.sandbox.readPaths` / `oxa.sandbox.writePaths` (user settings, `~/` expanded) | read-only / read-write | anything else a user's toolchain needs |
 | Toolchain variables (`CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOMODCACHE`, `NVM_DIR`, `npm_config_cache`, `UV_CACHE_DIR`, `MISE_*`, `XDG_*`, ...) | passed when set | they say where the binds above are |
 | Any variable whose name holds `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` | never passed | credentials stay outside |
@@ -39,7 +60,7 @@ masks are sorted by path.
 | The deny-list: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh`, `~/.config/hub`, `~/.config/oxc`, `~/.local/state/oxc`, the agent directory (`~/.oxa/agent`), `~/.pi/agent`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials{,.toml}`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`, `~/.password-store`, `~/.local/share/keyrings`, `~/.config/op`, `~/.config/Bitwarden`, `~/.pki`, browser profiles (`~/.mozilla`, `~/.thunderbird`, `~/.config/{google-chrome,chromium,BraveSoftware,microsoft-edge,vivaldi,opera}`) | masked after every bind: an empty read-only tmpfs over a directory, `/dev/null` over a file | keys, tokens, trust, other projects' sessions; neither readable nor writable whatever the cwd or the settings. The file tools obey the same list (`oxa-perm` `PathGuard`) |
 
 A writable cache is shared with the user's own builds: what the model writes there (an unpacked
-crate under `~/.cargo/registry/src`, a module under `~/go/pkg/mod`) is what the next build of
+crate under `~/.cargo/registry/src`, a module under `~/go/pkg/mod`, a compiled object in `~/.cache/sccache`) is what the next build of
 the user reads. Clear a cache after a session you do not trust; a setting that binds the caches
 read-only is a follow-up.
 

@@ -40,17 +40,12 @@ fn read_salt(path: &Path) -> io::Result<[u8; 32]> {
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
         .open(path)?;
     let info = file.metadata()?;
-    if !info.is_file()
-        || info.uid() != nix::unistd::Uid::current().as_raw()
-        || info.mode() & 0o077 != 0
-    {
+    if !info.is_file() || info.uid() != nix::unistd::Uid::current().as_raw() || info.mode() & 0o077 != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let mut bytes = Vec::new();
     file.take(33).read_to_end(&mut bytes)?;
-    bytes
-        .try_into()
-        .map_err(|_| io::ErrorKind::InvalidData.into())
+    bytes.try_into().map_err(|_| io::ErrorKind::InvalidData.into())
 }
 fn install_salt(directory: &Path) -> io::Result<[u8; 32]> {
     let path = directory.join(".salt");
@@ -163,11 +158,7 @@ impl Ledger {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let path = self.0.directory.join(format!("requests-{day}.jsonl"));
-        let mut budgets = self
-            .0
-            .budgets
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut budgets = self.0.budgets.lock().unwrap_or_else(|error| error.into_inner());
         let budget = budgets
             .entry(day.into())
             .or_insert_with(|| Budget::new(path.clone()))

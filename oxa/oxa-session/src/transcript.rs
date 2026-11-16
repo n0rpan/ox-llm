@@ -1,4 +1,4 @@
-//! A4: the transcript fold (W1). Owner: task A4. Signatures below are frozen; bodies are yours.
+//! A4: the transcript fold (W1).
 use oxa_proto::{rebase_why, Entry, EntryBody, FrozenPrefix, TurnKind, Usage, WireMsg};
 use sha2::{Digest, Sha256};
 

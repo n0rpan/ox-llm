@@ -1,4 +1,4 @@
-//! C1 acceptance tests: Session object, queues, Handle. Owner: task C1.
+//! C1 acceptance tests: Session object, queues, Handle.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -348,7 +348,7 @@ fn image_part_adds_placeholder_line() {
     let user = entries
         .iter()
         .find_map(|e| match &e.body {
-            EntryBody::Msg { wire, parts } if !parts.is_empty() => Some((wire.clone(), parts.clone())),
+            EntryBody::Msg { wire, parts, .. } if !parts.is_empty() => Some((wire.clone(), parts.clone())),
             _ => None,
         })
         .expect("the user message is stored");

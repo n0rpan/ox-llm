@@ -1,4 +1,4 @@
-//! B14 acceptance tests: Fork, clone, picker metadata. Owner: task B14.
+//! B14 acceptance tests: Fork, clone, picker metadata.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -25,6 +25,7 @@ fn user(id: &str, parent: Option<&str>, text: &str) -> Entry {
         body: EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: vec![Part::Text(text.to_string())],
+            tool: None,
         },
     }
 }
@@ -37,6 +38,7 @@ fn assistant(id: &str, parent: Option<&str>, text: &str) -> Entry {
         body: EntryBody::Msg {
             wire: WireMsg::assistant(text),
             parts: vec![],
+            tool: None,
         },
     }
 }

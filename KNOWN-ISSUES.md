@@ -21,9 +21,9 @@ Open items that affect users or contributors. Fixed items move to [CHANGELOG.md]
 
 ## Release and build
 
-- **New binaries need qualification.** The repository layout changed (v0.2.0), so the engine binaries'
+- **New binaries need qualification.** The repository layout changed in v0.2.0, so the engine binaries'
   SHA-256 changes even when the code does not. The install gate pack runs once on the release
-  candidate before v0.2.0 ships.
+  candidate.
 - **Package and bootstrap manifests still name the previous public repositories.** The bootstrap
   fetches pinned engine sources from them. They are updated when the public repository name is chosen
   (ROADMAP, release tooling).

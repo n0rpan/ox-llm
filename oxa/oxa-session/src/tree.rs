@@ -1,4 +1,4 @@
-//! A4: the session tree. Owner: task A4. Signatures below are frozen; bodies are yours.
+//! A4: the session tree.
 use std::collections::HashSet;
 
 use oxa_proto::{Entry, EntryBody};

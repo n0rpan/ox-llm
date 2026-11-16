@@ -1,4 +1,4 @@
-//! B14: session metadata, search and sort for the picker. Owner: task B14. Signatures below are frozen; bodies are yours.
+//! B14: session metadata, search and sort for the picker.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (buildSessionInfo) and modes/interactive/components/session-selector-search.ts
 use crate::{SessionHeader, SessionMeta, SessionRef};
 use oxa_proto::{Entry, EntryBody, Role};
@@ -57,7 +57,7 @@ pub fn meta_of(sref: &SessionRef, header: &SessionHeader, entries: &[Entry]) -> 
 /// Display/search text shared by the standalone metadata builder and both stores' listings.
 /// Without provenance, a trailing note-shaped block may be user-authored and is preserved.
 pub(crate) fn message_text(body: &EntryBody) -> &str {
-    let EntryBody::Msg { wire, parts } = body else {
+    let EntryBody::Msg { wire, parts, .. } = body else {
         return "";
     };
     let text = wire.content.as_deref().unwrap_or("");

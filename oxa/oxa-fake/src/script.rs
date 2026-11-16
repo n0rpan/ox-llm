@@ -1,4 +1,4 @@
-//! A14: the fake-script format. Owner: task A14. Signatures below are frozen; bodies are yours.
+//! A14: the fake-script format.
 use crate::{Fault, ScriptTurn};
 use oxa_proto::{codes, Finish, OxaError, ToolCall, Value};
 use serde_json::{json, Map};
@@ -57,6 +57,7 @@ fn finish_str(f: Finish) -> &'static str {
         Finish::Stop => "stop",
         Finish::ToolCalls => "tool_calls",
         Finish::Length => "length",
+        Finish::ContentFilter => "content_filter",
     }
 }
 
@@ -203,6 +204,7 @@ fn parse_line(line: &str, n: usize) -> Result<ScriptTurn, OxaError> {
             Some("stop") => Finish::Stop,
             Some("tool_calls") => Finish::ToolCalls,
             Some("length") => Finish::Length,
+            Some("content_filter") => Finish::ContentFilter,
             _ => return Err(bad(n, "`finish` must be \"stop\", \"tool_calls\" or \"length\"")),
         },
     };

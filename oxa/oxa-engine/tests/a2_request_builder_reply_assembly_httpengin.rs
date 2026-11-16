@@ -1,4 +1,4 @@
-//! A2 acceptance tests: Request builder, reply assembly, HttpEngine. Owner: task A2.
+//! A2 acceptance tests: Request builder, reply assembly, HttpEngine.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -45,6 +45,7 @@ fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hin
         model: "fake-model",
         max_tokens,
         thinking: false,
+        thinking_budget: None,
         preserve_thinking: true,
         sampling: None,
         hints: h,
@@ -150,34 +151,51 @@ fn args_raw_is_concatenated_deltas() {
     );
 }
 
-/// A gateway can hold a name suffix while redacting a key split across deltas.
+/// A name repeated whole (every delta of a gateway that re-sends it) is not doubled.
 #[test]
-fn fragmented_tool_names_are_appended_and_progress_keeps_the_full_name() {
+fn repeated_identical_tool_names_are_not_doubled() {
+    let mut assembler = ReplyAssembler::new();
+    for (i, args) in ["{\"path\":", "\"oxa\"}"].into_iter().enumerate() {
+        let mut tc = serde_json::json!({"index": 0, "function": {"name": "list_files", "arguments": args}});
+        if i == 0 {
+            tc["id"] = "call_directory".into();
+        }
+        let finish = if i == 1 { "tool_calls" } else { "" };
+        let fr = if finish.is_empty() {
+            serde_json::Value::Null
+        } else {
+            finish.into()
+        };
+        let mut chunk =
+            serde_json::json!({"choices": [{"delta": {"tool_calls": [tc]}, "finish_reason": fr}]});
+        if i == 1 {
+            chunk["usage"] =
+                serde_json::json!({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2});
+        }
+        assembler.chunk(&chunk.to_string()).unwrap();
+    }
+    let turn = assembler.finish(ThinkingLevel::Off).unwrap();
+    assert_eq!(turn.msg.tool_calls[0].name, "list_files");
+    assert_eq!(turn.msg.tool_calls[0].args_raw, "{\"path\":\"oxa\"}");
+}
+
+/// A refusal ends the stream with `content_filter`: the streamed text is kept.
+#[test]
+fn content_filter_finish_keeps_the_streamed_text() {
     let mut assembler = ReplyAssembler::new();
     assembler
-        .chunk(
-            &serde_json::json!({"choices": [{"delta": {"tool_calls": [{
-                "index": 0, "id": "call_directory", "type": "function",
-                "function": {"name": "l", "arguments": "{\"path\":\"oxa\"}"}
-            }]}}]})
-            .to_string(),
-        )
+        .chunk(&serde_json::json!({"choices": [{"delta": {"content": "I can't help"}}]}).to_string())
         .unwrap();
-    let events = assembler
+    assembler
         .chunk(
-            &serde_json::json!({"choices": [{"delta": {"tool_calls": [{
-        "index": 0, "function": {"name": "s"}
-    }]}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 1,
-        "completion_tokens": 1, "total_tokens": 2}})
+            &serde_json::json!({"choices": [{"delta": {}, "finish_reason": "content_filter"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
             .to_string(),
         )
         .unwrap();
     let turn = assembler.finish(ThinkingLevel::Off).unwrap();
-    assert_eq!(turn.msg.tool_calls[0].name, "ls");
-    assert_eq!(turn.msg.tool_calls[0].id, "call_directory");
-    assert_eq!(turn.msg.tool_calls[0].args_raw, "{\"path\":\"oxa\"}");
-    assert!(events.iter().any(|event| matches!(event,
-        StreamEvent::ToolArgs { name: Some(name), .. } if name == "ls")));
+    assert_eq!(turn.finish, Finish::ContentFilter);
+    assert_eq!(turn.msg.content.as_deref(), Some("I can't help"));
 }
 
 /// leading/trailing whitespace survives assembly
@@ -216,6 +234,7 @@ fn body_bytes_golden() {
     let msgs = [WireMsg::user("hi"), WireMsg::assistant("ok")];
     let r = ChatRequest {
         thinking: true,
+        thinking_budget: None,
         ..request(&p, &msgs, 128, hints("", ""))
     };
     let expected = r#"{"model":"fake-model","messages":[{"role":"system","content":"SYS"},{"role":"user","content":"hi"},{"role":"assistant","content":"ok"}],"tools":[{"type":"function","function":{"name":"read"}}],"stream":true,"stream_options":{"include_usage":true},"temperature":0,"cache_prompt":true,"max_tokens":128,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":true}}"#;

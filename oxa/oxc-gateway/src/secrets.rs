@@ -75,8 +75,7 @@ impl KeyFile {
         if !path.is_absolute() {
             return Err(Error::Unavailable);
         }
-        let parent =
-            fs::canonicalize(path.parent().unwrap_or(path)).map_err(|_| Error::Unavailable)?;
+        let parent = fs::canonicalize(path.parent().unwrap_or(path)).map_err(|_| Error::Unavailable)?;
         if parent.ancestors().any(|parent| {
             parent.join(".git").exists()
                 || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
@@ -150,9 +149,7 @@ fn read_file(file: File, provider: &str) -> Result<Key, Error> {
     };
     let key = raw
         .as_str()
-        .filter(|key| {
-            !key.is_empty() && key.len() <= 8192 && key.bytes().all(|b| (33..=126).contains(&b))
-        })
+        .filter(|key| !key.is_empty() && key.len() <= 8192 && key.bytes().all(|b| (33..=126).contains(&b)))
         .ok_or(Error::Unavailable)?;
     Ok(Key(key.into()))
 }

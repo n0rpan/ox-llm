@@ -1,4 +1,4 @@
-//! A9: the bwrap argv. Owner: task A9. Signatures below are frozen; bodies are yours.
+//! A9: the bwrap argv.
 use crate::gitdirs::{
     alias_refusal, configured_hooks_paths, hooks_alias_refusal, is_real_dir, protected_entries,
     unsafe_reason, Mounts,
@@ -1495,6 +1495,26 @@ mod tests {
     }
 
     #[test]
+    fn chatgpt_auth_file_is_masked() {
+        let env = TestEnv::new();
+        // The legacy path: no parent directory mask covers it (`.config/oxc` would hide the
+        // new path even without this entry), so only the dedicated entry can hide it.
+        env.write(
+            "home/.config/local-ai/llm/chatgpt-auth.json",
+            "SYNTH-CHATGPT-TOKEN",
+        );
+        let f = env.home().join(".config/local-ai/llm/chatgpt-auth.json");
+        for online in [false, true] {
+            let on = bwrap_args_homes(&spec(&env.home(), online), &env.home(), &Layout::default(), None);
+            let hidden = f.ancestors().take_while(|a| *a != env.home()).any(|a| {
+                let a = a.to_string_lossy();
+                on.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == a) || on.iter().any(|x| *x == a)
+            });
+            assert!(hidden, "{on:?}");
+        }
+    }
+
+    #[test]
     fn gh_token_store_is_masked_but_benign_config_stays_online() {
         let env = TestEnv::new();
         env.write("home/.config/gh/hosts.yml", "SYNTH-OTHER-HOST-TOKEN");
@@ -1581,6 +1601,31 @@ mod git_files_tests {
         let cfg = work.join(".git/config").to_string_lossy().into_owned();
         assert!(a.windows(3).any(|w| w == ["--ro-bind", &cfg, &cfg]), "{a:?}");
         assert!(!a.iter().any(|x| x == "/dev/null"), "{a:?}");
+    }
+
+    #[test]
+    fn a_vanished_git_dir_is_not_bound() {
+        let env = TestEnv::new();
+        env.write("work/x", "");
+        let gone = env.home().join("main/.git/worktrees/w");
+        let mut layout = Layout::default();
+        layout.git.rw.push(gone.clone());
+        let a = bwrap_args_with(&spec(&env.work(), true), &env.home(), &layout);
+        let g = gone.to_string_lossy().into_owned();
+        assert!(!a.contains(&g), "{a:?}");
+    }
+
+    #[test]
+    fn a_dangling_symlink_git_dir_is_not_bound() {
+        let env = TestEnv::new();
+        env.write("work/x", "");
+        let link = env.home().join("dangling-git");
+        std::os::unix::fs::symlink(env.home().join("nowhere"), &link).expect("symlink");
+        let mut layout = Layout::default();
+        layout.git.rw.push(link.clone());
+        let a = bwrap_args_with(&spec(&env.work(), true), &env.home(), &layout);
+        let g = link.to_string_lossy().into_owned();
+        assert!(!a.contains(&g), "{a:?}");
     }
 
     #[test]

@@ -21,8 +21,8 @@ impl Home {
         let path = std::env::temp_dir().join(format!(
             "oxc-ledger-{:x}",
             u128::from_le_bytes([
-                id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10],
-                id[11], 0, 0, 0, 0
+                id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10], id[11], 0, 0,
+                0, 0
             ])
         ));
         fs::create_dir(&path).unwrap();
@@ -179,10 +179,7 @@ fn append_failure_stops_all_handles_and_is_not_retried() {
     let home = Home::new();
     let ledger = Ledger::open(&home.0).unwrap();
     let daily = ledger.day("20260102").unwrap();
-    let mut hold = daily
-        .budget()
-        .reserve(&json!(1), true, &model(), 1000)
-        .unwrap();
+    let mut hold = daily.budget().reserve(&json!(1), true, &model(), 1000).unwrap();
     let entry = daily.entry("synthetic-alias", Context::default()).unwrap();
     hold.mark_forwarded();
     let path = home.0.join("requests-20260102.jsonl");
@@ -268,10 +265,7 @@ fn salt_is_private_stable_and_published_atomically_during_concurrent_startup() {
             })
         })
         .collect();
-    let sessions: Vec<_> = handles
-        .into_iter()
-        .map(|handle| handle.join().unwrap())
-        .collect();
+    let sessions: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();
     assert!(sessions.iter().all(|value| value == &sessions[0]));
     assert_eq!(fs::read(home.0.join(".salt")).unwrap().len(), 32);
     assert_eq!(fs::read_dir(&home.0).unwrap().count(), 2);
@@ -394,8 +388,5 @@ fn shared_writers_append_complete_rows_without_retaining_request_bodies() {
     assert!(rows
         .iter()
         .all(|row| row["remote"] == true && row["settled"] == "usage"));
-    assert_eq!(
-        ledger.day("20260102").unwrap().budget().spend().unwrap(),
-        0.032
-    );
+    assert_eq!(ledger.day("20260102").unwrap().budget().spend().unwrap(), 0.032);
 }

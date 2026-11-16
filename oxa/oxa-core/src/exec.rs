@@ -1,4 +1,4 @@
-//! B3: one request and one tool batch. Owner: task B3. Signatures below are frozen; bodies are yours.
+//! B3: one request and one tool batch.
 // ported from pi packages/agent/src/agent-loop.ts (executeToolCalls) and stream-fn.ts
 use crate::agent_loop::persist;
 use crate::host::{fire_hook, pumped, serve_level, Serve};
@@ -98,6 +98,7 @@ pub fn request(
         model: &model,
         max_tokens,
         thinking,
+        thinking_budget: crate::think::request_budget(st, thinking),
         // F8: never forced on a model that does not keep reasoning (Flash).
         preserve_thinking: st.info.caps.preserve_thinking != Some(false),
         sampling: match opts.kind {
@@ -177,6 +178,8 @@ pub(crate) struct CallResult {
     pub msg: WireMsg,
     pub tool_name: String,
     pub is_error: bool,
+    /// `ToolOutput::ui`, stored for display on resume.
+    pub ui: Value,
     /// The repeat guard asks to end the run after this batch (`repeat.rs`).
     pub stop: bool,
 }
@@ -234,6 +237,7 @@ pub(crate) fn fail_truncated_calls(
                 msg: WireMsg::tool_result(call.id.clone(), output.text),
                 tool_name: call.name.clone(),
                 is_error: true,
+                ui: Value::Null,
                 stop: false,
             }
         })
@@ -347,6 +351,7 @@ pub(crate) fn run_calls(
             msg: WireMsg::tool_result(p.id.clone(), output.text.clone()),
             tool_name: p.name.clone(),
             is_error: output.is_error,
+            ui: output.ui.clone(),
             stop,
         });
     }
@@ -637,6 +642,7 @@ fn start_tool_prefill(
                 model: &model,
                 max_tokens: 0,
                 thinking,
+                thinking_budget: None,
                 preserve_thinking,
                 sampling: None,
                 hints: Hints {
@@ -717,7 +723,7 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
         return mk(
             Value::Null,
             exec,
-            Plan::Done(ToolOutput::error(tool_errors::BAD_JSON)),
+            Plan::Done(ToolOutput::error(bad_args_text(call))),
         );
     };
 
@@ -1013,6 +1019,20 @@ fn tool_ctx(st: &SessionState) -> ToolCtx<'_> {
         cancel: &st.shared.cancel,
         env: &st.tool_env,
         tune: st.tune,
+    }
+}
+
+/// The error text for arguments that are not a JSON object; an empty string says so, so the
+/// model (and the progress line) can tell why and retry (#483).
+fn bad_args_text(call: &ToolCall) -> String {
+    if call.args_raw.trim().is_empty() {
+        format!(
+            "{} (empty arguments: call `{}` again with its arguments as a JSON object)",
+            tool_errors::BAD_JSON,
+            call.name
+        )
+    } else {
+        tool_errors::BAD_JSON.to_string()
     }
 }
 
@@ -1393,5 +1413,28 @@ pub(crate) fn reply_event(turn: &AssistantTurn, ts_ms: u64) -> EventMessage {
         tool_name: None,
         is_error: false,
         error_message: None,
+    }
+}
+
+#[cfg(test)]
+mod bad_args_tests {
+    use super::*;
+
+    fn call(raw: &str) -> ToolCall {
+        ToolCall {
+            id: "c".into(),
+            name: "read".into(),
+            args_raw: raw.into(),
+        }
+    }
+
+    #[test]
+    fn empty_arguments_get_a_retry_hint() {
+        for raw in ["", "  \n"] {
+            let t = bad_args_text(&call(raw));
+            assert!(t.starts_with(tool_errors::BAD_JSON), "{t}");
+            assert!(t.contains("empty arguments") && t.contains("`read`"), "{t}");
+        }
+        assert_eq!(bad_args_text(&call("[1]")), tool_errors::BAD_JSON);
     }
 }

@@ -129,7 +129,7 @@ fn stored_users(s: &Session) -> Vec<(String, Vec<Part>, String)> {
         .entries()
         .iter()
         .filter_map(|e| match &e.body {
-            EntryBody::Msg { wire, parts } if wire.role == Role::User => Some((
+            EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => Some((
                 wire.content.clone().unwrap_or_default(),
                 parts.clone(),
                 e.id.clone(),

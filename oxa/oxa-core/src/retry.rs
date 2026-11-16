@@ -1,4 +1,4 @@
-//! C2: auto-retry and overflow recovery. Owner: task C2. Signatures below are frozen; bodies are yours.
+//! C2: auto-retry and overflow recovery.
 // ported from pi packages/coding-agent/src/core/agent-session.ts (auto retry, overflow recovery)
 use crate::agent_loop::persist;
 use crate::compaction::compact_now;
@@ -35,8 +35,8 @@ pub fn backoff_ms(attempt: u32, p: &RetryPolicy) -> u64 {
 ///   at `max_delay_ms`), `engine_http` 5xx / 429, `stream_broken` **before any data byte**.
 ///   The same idempotency key is reused. Emits `AutoRetryStart` / `AutoRetryEnd`; the wait is
 ///   interruptible by `Shared::cancel_retry` and `cancel`.
-/// * `stream_broken` after output: not replayed (until the engine has H2); returned as the
-///   error so the loop stores `Shown { why: cut }`. No duplicate body is ever sent on its own.
+/// * `stream_broken` after output: not replayed here; returned as the error. The agent loop
+///   stores the partial as `Shown { why: cut }` and resends a transport cut itself (#456).
 /// * `context_overflow`: once per prompt, `compact_now(.., Overflow)` then one retry; a second
 ///   overflow is returned.
 /// * `aborted` is never retried.
@@ -54,12 +54,22 @@ pub fn chat_with_retry(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<AssistantTurn, OxaError> {
+    chat_with_retry_keyed(st, &mut opts.clone(), sink, ui)
+}
+
+/// As `chat_with_retry`, but the effective idempotency key (fresh after an overflow
+/// compaction) is left in `opts`, so a later replay of the same request reuses it.
+pub(crate) fn chat_with_retry_keyed(
+    st: &mut SessionState,
+    opts: &mut RequestOpts,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<AssistantTurn, OxaError> {
     let policy = retry_policy(st);
     // A `abort_retry` only means something during a wait of this call; a stale one from an
     // earlier call must not cancel this call's wait.
     st.shared.cancel_retry.reset();
 
-    let mut opts = opts.clone();
     if opts.idem_key.is_empty() {
         opts.idem_key = fresh_idem_key(st);
     }
@@ -72,7 +82,7 @@ pub fn chat_with_retry(
     let mut reloaded = false;
     let mut loading_noticed = false; // R2: one "model loading" notice per logical request
     loop {
-        let (res, got_data) = probed_request(st, &opts, sink, ui);
+        let (res, got_data) = probed_request(st, opts, sink, ui);
         let err = match res {
             Ok(turn) if opts.max_tokens != Some(0) && context_full(st, &turn) => {
                 let err = OxaError::new(
@@ -124,6 +134,11 @@ pub fn chat_with_retry(
             return Err(err);
         }
 
+        if st.shared.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+            finish_failed(sink, retries, &err);
+            return Err(err);
+        }
+
         if err.code == codes::CONTEXT_OVERFLOW {
             if !overflowed {
                 overflowed = true;
@@ -138,6 +153,10 @@ pub fn chat_with_retry(
                         let aborted = OxaError::new(codes::ABORTED, "aborted");
                         finish_failed(sink, retries, &aborted);
                         return Err(aborted);
+                    }
+                    if st.shared.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+                        finish_failed(sink, retries, &err);
+                        return Err(err);
                     }
                     // The wire changed under the compaction: this is a new logical request.
                     opts.idem_key = fresh_idem_key(st);
@@ -467,7 +486,7 @@ impl Engine for ProbeEngine {
 }
 
 /// A fresh idempotency key (same construction as `exec`'s, which is private to B3).
-fn fresh_idem_key(st: &SessionState) -> String {
+pub(crate) fn fresh_idem_key(st: &SessionState) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
