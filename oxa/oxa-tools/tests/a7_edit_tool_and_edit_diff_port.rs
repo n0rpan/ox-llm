@@ -570,23 +570,23 @@ fn spec_is_pis_edit_text() {
     assert!(spec.schema_json.contains("oldText"));
 }
 
-/// The edit replaces the file (temp + rename) instead of truncating it in place: another hard link
-/// to the old inode keeps the old, whole content, so a full disk or a kill mid-write cannot lose it.
+/// An open handle to a single-linked file keeps the old, whole content after atomic replacement.
 #[test]
 fn edit_replaces_the_file_atomically_and_keeps_its_mode() {
     let env = TestEnv::new();
     let path = env.work().join("a.txt");
     std::fs::write(&path, "hello world\n").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-    let old_inode = env.work().join("old-inode");
-    std::fs::hard_link(&path, &old_inode).unwrap();
+    let mut old_inode = std::fs::File::open(&path).unwrap();
     let out = run_tool(
         &env.work(),
         &json!({"path": "a.txt", "edits": [{"oldText": "world", "newText": "there"}]}),
     );
     assert!(!out.is_error, "{}", out.text);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello there\n");
-    assert_eq!(std::fs::read_to_string(&old_inode).unwrap(), "hello world\n");
+    let mut old_content = String::new();
+    std::io::Read::read_to_string(&mut old_inode, &mut old_content).unwrap();
+    assert_eq!(old_content, "hello world\n");
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
         0o640
@@ -621,6 +621,8 @@ fn edit_writes_through_a_symlink() {
 }
 
 /// A writable file in a directory that cannot take new files is still editable (in place).
+/// Root can bypass the directory mode; the deterministic save_tests permission-denied test
+/// separately verifies the fallback and inode preservation regardless of the effective uid.
 #[test]
 fn edit_works_in_a_directory_without_write_permission() {
     let env = TestEnv::new();
@@ -635,4 +637,103 @@ fn edit_works_in_a_directory_without_write_permission() {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(!out.is_error, "{}", out.text);
     assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "y\n");
+}
+
+#[test]
+fn edit_supports_a_filename_near_name_max() {
+    let env = TestEnv::new();
+    let name = "a".repeat(250);
+    let path = env.work().join(&name);
+    std::fs::write(&path, "before\n").unwrap();
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": name, "oldText": "before", "newText": "after"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+    assert_eq!(std::fs::read_dir(env.work()).unwrap().count(), 1);
+}
+
+#[test]
+fn edit_keeps_hard_links_connected() {
+    use std::os::unix::fs::MetadataExt;
+    let env = TestEnv::new();
+    let path = env.write("work/original", "before\n");
+    let link = env.work().join("link");
+    std::fs::hard_link(&path, &link).unwrap();
+    let before = std::fs::metadata(&path).unwrap();
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "original", "oldText": "before", "newText": "after"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "after\n");
+    let after = std::fs::metadata(&path).unwrap();
+    assert_eq!(after.ino(), before.ino());
+    assert_eq!(after.nlink(), 2);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn edit_preserves_extended_attributes_and_acl() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    let env = TestEnv::new();
+    let path = env.write("work/metadata", "before\n");
+    let file = std::fs::File::open(&path).unwrap();
+    // Linux POSIX ACL xattr: owner rw, group rw masked to r, other none. The distinct
+    // group/mask permissions make this an extended ACL without requiring mapped named users.
+    let mut acl = 2u32.to_le_bytes().to_vec();
+    for (tag, perm, id) in [
+        (1u16, 6u16, u32::MAX),
+        (4, 6, u32::MAX),
+        (16, 4, u32::MAX),
+        (32, 0, u32::MAX),
+    ] {
+        acl.extend_from_slice(&tag.to_le_bytes());
+        acl.extend_from_slice(&perm.to_le_bytes());
+        acl.extend_from_slice(&id.to_le_bytes());
+    }
+    for (name, value) in [
+        (c"user.oxa-test", b"synthetic metadata".as_slice()),
+        (c"system.posix_acl_access", acl.as_slice()),
+    ] {
+        // SAFETY: fd is open, name is NUL-terminated, and value spans value.len() bytes.
+        let result = unsafe {
+            libc::fsetxattr(
+                file.as_raw_fd(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+            )
+        };
+        assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+    }
+    let before = file.metadata().unwrap();
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "metadata", "oldText": "before", "newText": "after"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    let edited = std::fs::File::open(&path).unwrap();
+    assert_eq!(edited.metadata().unwrap().ino(), before.ino());
+    for (name, value) in [
+        (c"user.oxa-test", b"synthetic metadata".as_slice()),
+        (c"system.posix_acl_access", acl.as_slice()),
+    ] {
+        let mut actual = vec![0u8; value.len()];
+        // SAFETY: fd is open, name is NUL-terminated, and actual is a writable byte buffer.
+        let size = unsafe {
+            libc::fgetxattr(
+                edited.as_raw_fd(),
+                name.as_ptr(),
+                actual.as_mut_ptr().cast(),
+                actual.len(),
+            )
+        };
+        assert_eq!(size, value.len() as isize, "{}", std::io::Error::last_os_error());
+        assert_eq!(actual, value);
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
 }

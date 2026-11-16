@@ -102,16 +102,85 @@ fn io_cause(e: &std::io::Error) -> String {
     }
 }
 
-/// Save the edited content atomically (temp + fsync + rename, mode kept), so a full disk or a
-/// kill mid-write leaves the old file whole. A symlink is written through. In a directory we cannot
-/// create files in, fall back to writing the (writable) file in place.
+/// Save atomically (temp + fsync + rename, mode kept) when replacing the inode is safe.
+/// Symlinks are written through. Preserve the original inode for shared ownership, hard links or
+/// extended metadata, and when the directory disallows replacement; these edits remain in-place.
 fn save(abs: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    save_with(abs, content, crate::write::replace_file)
+}
+
+fn save_with(
+    abs: &std::path::Path,
+    content: &[u8],
+    replace: impl FnOnce(&std::path::Path, &[u8], Option<&std::fs::Metadata>) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let target = std::fs::canonicalize(abs).unwrap_or_else(|_| abs.to_path_buf());
     let meta = std::fs::metadata(&target)?;
-    match crate::write::replace_file(&target, content, Some(&meta)) {
+    if requires_in_place(&target, &meta) {
+        return std::fs::write(abs, content);
+    }
+    match replace(&target, content, Some(&meta)) {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => std::fs::write(abs, content),
         other => other,
     }
+}
+
+#[cfg(unix)]
+fn must_keep_inode(meta: &std::fs::Metadata, uid: u32, gid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.nlink() > 1 || meta.uid() != uid || meta.gid() != gid
+}
+
+#[cfg(unix)]
+fn requires_in_place(target: &std::path::Path, meta: &std::fs::Metadata) -> bool {
+    // SAFETY: these calls have no arguments or memory side effects.
+    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    must_keep_inode(meta, uid, gid) || has_extended_metadata(target)
+}
+
+#[cfg(not(unix))]
+fn requires_in_place(_target: &std::path::Path, _meta: &std::fs::Metadata) -> bool {
+    true
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+))]
+fn has_extended_metadata(target: &std::path::Path) -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = std::fs::File::open(target) else {
+        return true;
+    };
+    // A size-only query catches ACLs, security labels and user attributes without reading them.
+    // SAFETY: fd is open; a null buffer with length zero requests only the list's size.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let size = unsafe { libc::flistxattr(file.as_raw_fd(), std::ptr::null_mut(), 0) };
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let size = unsafe { libc::flistxattr(file.as_raw_fd(), std::ptr::null_mut(), 0, 0) };
+    if size < 0 {
+        // Unsupported xattrs mean there are none; any other uncertainty keeps the inode.
+        !matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ENOTSUP | libc::ENOSYS)
+        )
+    } else {
+        size > 0
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+#[cfg(unix)]
+fn has_extended_metadata(_target: &std::path::Path) -> bool {
+    // Without a metadata query, do not risk dropping attributes on a fresh inode.
+    true
 }
 
 impl Tool for EditTool {
@@ -163,5 +232,49 @@ impl Tool for EditTool {
             is_error: false,
             ui: json!({"diff": outcome.diff, "firstChangedLine": outcome.first_changed_line}),
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod save_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn replacement_permission_denied_falls_back_even_as_root() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/file", "before");
+        let before = std::fs::metadata(&path).unwrap();
+        let mut attempted = false;
+        save_with(&path, b"after", |_, _, _| {
+            attempted = true;
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap();
+        assert!(attempted, "must exercise the replacement failure path");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "after");
+        assert_eq!(std::fs::metadata(path).unwrap().ino(), before.ino());
+    }
+
+    #[test]
+    fn replacement_enospc_does_not_fall_back_or_truncate() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/file", "before");
+        let error = save_with(&path, b"after", |_, _, _| {
+            Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
+        })
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ENOSPC));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "before");
+    }
+
+    #[test]
+    fn replacement_requires_the_same_owner_and_group() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/file", "before");
+        let meta = std::fs::metadata(path).unwrap();
+        assert!(!must_keep_inode(&meta, meta.uid(), meta.gid()));
+        assert!(must_keep_inode(&meta, meta.uid().wrapping_add(1), meta.gid()));
+        assert!(must_keep_inode(&meta, meta.uid(), meta.gid().wrapping_add(1)));
     }
 }
