@@ -110,7 +110,12 @@ enum BashArgs {
         background: bool,
     },
     /// Read the status and output of a background job, after waiting up to `wait` (#150).
-    Job { id: String, wait: Option<Duration> },
+    /// With `kill`, stop the job instead of reading it (#519).
+    Job {
+        id: String,
+        wait: Option<Duration>,
+        kill: bool,
+    },
 }
 
 /// #150 (2): the longest `wait_s` a job read blocks for; a larger value is cut to it.
@@ -143,6 +148,7 @@ const MISSING_COMMAND: &str =
 /// Issue #127 (b): exactly one of `command` / `job` must be given.
 const COMMAND_OR_JOB: &str =
     "Provide exactly one of \"command\" (to run) or \"job\" (to read a background job)";
+const KILL_NEEDS_JOB: &str = "\"kill\" applies to a job; provide \"job\", not \"command\"";
 const BACKGROUND_NEEDS_COMMAND: &str =
     "\"background\" applies to a command; provide \"command\", not \"job\"";
 
@@ -151,12 +157,17 @@ fn parse(args: &Value) -> Result<BashArgs, String> {
     let job = args.get("job").and_then(Value::as_str);
     let background = args.get("background").and_then(Value::as_bool).unwrap_or(false);
 
+    let kill = args.get("kill").and_then(Value::as_bool).unwrap_or(false);
+
     match (command, job) {
         (Some(_), Some(_)) => Err(COMMAND_OR_JOB.to_string()),
         (None, None) => Err(MISSING_COMMAND.to_string()),
         (Some(command), None) => {
             if args.get("wait_s").is_some_and(|v| !v.is_null()) {
                 return Err(WAIT_NEEDS_JOB.to_string());
+            }
+            if kill {
+                return Err(KILL_NEEDS_JOB.to_string());
             }
             let timeout_s = match args.get("timeout") {
                 None | Some(Value::Null) => None,
@@ -182,6 +193,7 @@ fn parse(args: &Value) -> Result<BashArgs, String> {
             Ok(BashArgs::Job {
                 id: id.to_string(),
                 wait: parse_wait(args)?,
+                kill,
             })
         }
     }
@@ -273,11 +285,24 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
 
 /// #494: git keeps `.git/config` read-only in the sandbox (a writable config could run code
 /// outside it), so a command that must rewrite it fails with "Device or resource busy" after
-/// it has done the rest, e.g. `git branch -m` renames the ref first. Say so.
-pub(crate) fn git_config_note(output: &str) -> Option<&'static str> {
-    output
-        .contains("could not write config file")
-        .then_some("git could not write .git/config: it is read-only in the sandbox, so anything git did before that step (for example the branch was renamed) stays done, and only the config update (branch upstream settings, remotes) is missing. Check the result with `git branch`; the config can be edited outside the sandbox")
+/// it has done the rest, e.g. `git branch -m` renames the ref first. Say so. Only git's own
+/// error line counts (it starts with `error: could not write config file`); the same words
+/// quoted in an issue body or a log do not. The note names the file from that line: the
+/// repository config gets the "branch was renamed" wording, any other config (for example the
+/// global `~/.gitconfig`) a plain one.
+pub(crate) fn git_config_note(output: &str) -> Option<String> {
+    const PREFIX: &str = "error: could not write config file ";
+    let rest = output.lines().find_map(|l| l.trim_end().strip_prefix(PREFIX))?;
+    // `<path>: <strerror>`; the path may itself contain ": " only in odd cases, so split at the last one.
+    let path = rest.rsplit_once(": ").map_or(rest, |(p, _)| p).trim();
+    if path.is_empty() {
+        return None;
+    }
+    if path == ".git/config" || path.ends_with("/.git/config") || path.contains("/.git/") {
+        Some(format!("git could not write {path}: it is read-only in the sandbox, so anything git did before that step (for example the branch was renamed) stays done, and only the config update (branch upstream settings, remotes) is missing. Check the result with `git branch`; the config can be edited outside the sandbox"))
+    } else {
+        Some(format!("git could not write {path}: it is not writable in the sandbox, so that config was not changed. Edit it outside the sandbox"))
+    }
 }
 
 /// #253: when stdout is not a terminal, `gh issue view --comments` (also `gh pr view`) prints the
@@ -326,14 +351,15 @@ impl Tool for BashTool {
             Err(e) => return ToolOutput::error(e),
         };
         match a {
-            BashArgs::Job { id, wait } => self.read_job(&id, wait, cx),
+            BashArgs::Job { id, kill: true, .. } => self.kill_job(&id),
+            BashArgs::Job { id, wait, .. } => self.read_job(&id, wait, cx),
             BashArgs::Run {
                 command,
                 timeout_s,
                 background,
             } => {
                 if background {
-                    return self.start_job(&command, cx);
+                    return self.start_job(&command, timeout_s, cx);
                 }
                 self.run_foreground(&command, timeout_s, cx, live)
             }
@@ -374,8 +400,27 @@ impl BashTool {
         }
     }
 
+    /// #519: stop one background job and free its slot.
+    fn kill_job(&self, id: &str) -> ToolOutput {
+        match self.jobs.kill(id) {
+            Ok(k) => {
+                let status = k.status.text();
+                let mut text = format!("Job {id}: {status}");
+                if !k.was_running {
+                    text.push_str(" (already finished)");
+                }
+                ToolOutput {
+                    text,
+                    is_error: false,
+                    ui: json!({ "job": id, "status": status }),
+                }
+            }
+            Err(e) => ToolOutput::error(e),
+        }
+    }
+
     /// Issue #127 (b): start `command` detached and return its job id at once.
-    fn start_job(&self, command: &str, cx: &ToolCtx) -> ToolOutput {
+    fn start_job(&self, command: &str, timeout_s: Option<u32>, cx: &ToolCtx) -> ToolOutput {
         if let Err(e) = cx.sandbox.check() {
             return ToolOutput::error(e.to_string());
         }
@@ -388,8 +433,9 @@ impl BashTool {
             cwd: cx.cwd.to_path_buf(),
             writable: !matches!(cx.mode, Mode::Plan),
             net: net_for(cx.mode, cx.sandbox.network()),
-            // A background job has no timeout: it runs until it exits or the session ends.
-            timeout_s: None,
+            // A background job has no timeout unless the call names one: it runs until it
+            // exits, is killed (`bash {job, kill: true}`) or the session ends.
+            timeout_s,
             env: cx.env.to_vec(),
         };
         match self.jobs.spawn(spec) {
@@ -482,7 +528,7 @@ impl BashTool {
             .sandbox
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
-        let note = note.or_else(|| git_config_note(&output).map(str::to_string));
+        let note = note.or_else(|| git_config_note(&output));
         let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
         let shown = if output.is_empty() {
             match note {
@@ -692,6 +738,30 @@ echo '\''a'\'''"#
         // A real error line, also with a program prefix and trailing whitespace, still gets the note.
         let real = "bash: /home/u/.venv/bin/python: No such file or directory  \n";
         assert!(unmounted_home_note(real, "/home/u", cwd).is_some());
+    }
+
+    #[test]
+    fn git_config_note_needs_git_error_line_and_names_the_file() {
+        // Quoted text (an issue body, a log) is not a failed git command.
+        assert!(
+            git_config_note("the log says error: could not write config file .git/config: x\n").is_none()
+        );
+        assert!(git_config_note(
+            r#"{"body":"error: could not write config file .git/config: Device or resource busy"}"#
+        )
+        .is_none());
+        assert!(git_config_note("a: could not write config file x\n").is_none());
+        // The global config is named as such, without the repository wording.
+        let g = git_config_note(
+            "error: could not write config file /home/u/.gitconfig: Device or resource busy\n",
+        )
+        .expect("note");
+        assert!(g.contains("/home/u/.gitconfig"), "{g}");
+        assert!(!g.contains(".git/config"), "{g}");
+        assert!(!g.contains("renamed"), "{g}");
+        let r = git_config_note("error: could not write config file .git/config: Device or resource busy\n")
+            .expect("note");
+        assert!(r.contains(".git/config") && r.contains("renamed"), "{r}");
     }
 
     #[test]
@@ -1221,6 +1291,71 @@ echo '\''a'\'''"#
         let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
         assert!(out.is_error);
         assert!(out.text.contains("At most 4 background jobs"), "{:?}", out.text);
+        jobs.kill_all();
+    }
+
+    /// #519: `bash {job, kill: true}` stops one job and frees its slot; the others keep running.
+    #[test]
+    fn kill_stops_one_job_and_frees_its_slot() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        for _ in 0..4 {
+            let out = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+            assert!(!out.is_error, "{:?}", out.text);
+        }
+        let full = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+        assert!(full.is_error);
+        let out = run_job_tool(&tool, &*sb, json!({"job": "job-2", "kill": true}));
+        assert!(!out.is_error, "{:?}", out.text);
+        assert_eq!(out.ui, json!({"job": "job-2", "status": "killed"}));
+        assert!(out.text.starts_with("Job job-2: killed"), "{:?}", out.text);
+        assert_eq!(jobs.running(), 3);
+        let again = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+        assert!(!again.is_error, "{:?}", again.text);
+        // Killing a finished job is not an error and says so.
+        let done = run_job_tool(&tool, &*sb, json!({"job": "job-2", "kill": true}));
+        assert!(!done.is_error, "{:?}", done.text);
+        assert!(done.text.contains("already finished"), "{:?}", done.text);
+        let unknown = run_job_tool(&tool, &*sb, json!({"job": "job-99", "kill": true}));
+        assert_eq!(unknown.text, "Unknown job: job-99");
+        jobs.kill_all();
+    }
+
+    /// #519: `kill` only makes sense with `job`.
+    #[test]
+    fn kill_needs_a_job() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let out = run_job_tool(&tool, &*sb, json!({"command": "ls", "kill": true}));
+        assert!(out.is_error);
+        assert!(out.text.contains("\"kill\" applies to a job"), "{:?}", out.text);
+    }
+
+    /// #519: a `timeout` given with `background: true` is the job's lifetime cap; without it
+    /// there is still none.
+    #[test]
+    fn background_job_honours_an_explicit_timeout() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let _ = run_job_tool(
+            &tool,
+            &*sb,
+            json!({"command": "sleep 100", "background": true, "timeout": 1.5}),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(sb.seen.lock().unwrap().as_ref().unwrap().timeout_s, Some(2));
         jobs.kill_all();
     }
 

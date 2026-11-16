@@ -408,6 +408,7 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
     }
     st.tree = tree;
     st.sref = dst.clone();
+    crate::session::attach_ids(st);
     Ok(())
 }
 

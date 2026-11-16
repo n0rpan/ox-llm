@@ -208,6 +208,8 @@ fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
 pub struct ModePolicy {
     grants: Vec<Access>,
     guard: PathGuard,
+    /// Only the active session's output is readable without asking, not all of agent/tmp.
+    spill_dir: Option<PathBuf>,
     /// #517: `guard` for the file tools' directory walks (`None` without a guard).
     hidden: Option<Arc<HiddenPaths>>,
     /// O-182: while on, a question of the table is answered with "allow" (see
@@ -222,7 +224,10 @@ impl PartialEq for ModePolicy {
             (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
-        self.grants == other.grants && self.guard == other.guard && same_switch
+        self.grants == other.grants
+            && self.guard == other.guard
+            && self.spill_dir == other.spill_dir
+            && same_switch
     }
 }
 
@@ -351,8 +356,12 @@ impl Policy for ModePolicy {
             if denied {
                 return Decision::Deny(deny_reasons::SENSITIVE);
             }
-            // #492: the advertised built-in skills are read without asking, wherever the cwd is.
-            if matches!(a, Access::Read(_)) && self.guard.is_builtin_skill(&abs) {
+            // #492, #531: the advertised built-in skills and oxa's own spill files are read
+            // without asking, wherever the cwd is.
+            if matches!(a, Access::Read(_))
+                && (self.guard.is_builtin_skill(&abs)
+                    || self.spill_dir.as_ref().is_some_and(|dir| is_inside(&abs, dir)))
+            {
                 return Decision::Allow;
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.
@@ -379,6 +388,10 @@ impl Policy for ModePolicy {
             },
             d => d,
         }
+    }
+
+    fn set_spill_dir(&mut self, dir: &Path) {
+        self.spill_dir = Some(dir.to_path_buf());
     }
 
     fn remember(&mut self, a: &Access) {

@@ -9,14 +9,73 @@ use oxa_proto::{Access, Decision, Mode, Policy};
 use std::path::PathBuf;
 
 fn guarded(env: &TestEnv) -> ModePolicy {
-    ModePolicy::new().with_guard(PathGuard::new(
+    let mut policy = ModePolicy::new().with_guard(PathGuard::new(
         &env.home(),
         &env.agent_dir(),
         &env.agent_dir().join("tmp"),
-    ))
+    ));
+    policy.set_spill_dir(&env.agent_dir().join("tmp/s1"));
+    policy
 }
 
 const SENSITIVE: Decision = Decision::Deny(deny_reasons::SENSITIVE);
+
+#[test]
+fn spill_read_exception_is_session_scoped_and_resolves_symlinks() {
+    let env = TestEnv::new();
+    let tmp = env.agent_dir().join("tmp");
+    let spill = tmp.join("s1");
+    std::fs::create_dir_all(&spill).unwrap();
+    std::os::unix::fs::symlink(tmp.join("s2"), spill.join("other-session")).unwrap();
+    std::os::unix::fs::symlink(env.home().join(".ssh"), spill.join("keys")).unwrap();
+    let mut p = ModePolicy::new().with_guard(PathGuard::new(&env.home(), &env.agent_dir(), &tmp));
+    let own = Access::Read(spill.join("out.txt"));
+    assert_eq!(
+        p.decide(Mode::Ask, &own, &env.work()),
+        Decision::Ask,
+        "no spill scope until the runtime attaches a session"
+    );
+    p.set_spill_dir(&spill);
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(p.decide(mode, &own, &env.work()), Decision::Allow);
+        for path in [
+            tmp.join("s2/out.txt"),
+            tmp.join("s1-other/out.txt"),
+            tmp.join("codemode/out.txt"),
+            spill.join("../s2/out.txt"),
+            spill.join("other-session/out.txt"),
+        ] {
+            assert_eq!(
+                p.decide(mode, &Access::Read(path.clone()), &env.work()),
+                Decision::Ask,
+                "only this session's spill reads without asking: {path:?} ({mode:?})"
+            );
+        }
+        assert_eq!(
+            p.decide(mode, &Access::Read(spill.join("keys/id_test")), &env.work()),
+            SENSITIVE,
+            "a spill symlink cannot bypass the deny-list"
+        );
+        assert_eq!(
+            p.decide(mode, &Access::Write(spill.join("out.txt")), &env.work()),
+            if mode == Mode::Plan {
+                Decision::Deny(deny_reasons::PLAN_WRITE)
+            } else {
+                Decision::Ask
+            }
+        );
+    }
+    p.set_spill_dir(&tmp.join("s2"));
+    assert_eq!(
+        p.decide(Mode::Ask, &own, &env.work()),
+        Decision::Ask,
+        "switching replaces, rather than accumulates, the spill scope"
+    );
+    assert_eq!(
+        p.decide(Mode::Ask, &Access::Read(tmp.join("s2/out.txt")), &env.work()),
+        Decision::Allow
+    );
+}
 
 #[test]
 fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
@@ -70,14 +129,28 @@ fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
         ),
         SENSITIVE
     );
+    // #531: oxa's own spill file is readable without asking, in every mode (a headless run
+    // answers every ask with "declined", and the truncation notice points the model at it).
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(
+                mode,
+                &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
+                &env.work()
+            ),
+            Decision::Allow,
+            "a spill file reads without asking ({mode:?})"
+        );
+    }
+    // Writing outside the cwd still asks.
     assert_eq!(
         p.decide(
             Mode::Workspace,
-            &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
+            &Access::Write(env.agent_dir().join("tmp/s1/out.txt")),
             &env.work()
         ),
         Decision::Ask,
-        "a spill file reads as before (outside the cwd: ask)"
+        "a spill file is not writable without asking"
     );
     // A plain file of the project is unaffected.
     assert_eq!(
