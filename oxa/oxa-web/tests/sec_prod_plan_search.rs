@@ -7,12 +7,12 @@ mod common;
 use common::*;
 use oxa_perm::{deny_reasons, ModePolicy};
 use oxa_proto::{Access, CancelToken, Decision, Mode, Policy, Tool, ToolCtx};
-use oxa_web::{Brave, SearchProvider, WebSearchTool};
+use oxa_web::{Brave, WebSearchTool};
 use serde_json::json;
 use std::sync::Arc;
 
 fn tool() -> WebSearchTool {
-    let provider: Arc<dyn SearchProvider> = Arc::new(Brave::new(key(), opts("http://127.0.0.1:9")));
+    let provider: Arc<Brave> = Arc::new(Brave::new(key(), opts("http://127.0.0.1:9")));
     WebSearchTool::new(provider)
 }
 

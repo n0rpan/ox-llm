@@ -12,7 +12,7 @@
 //! and request is cancellable. No redirects are followed (the key header stays with the host).
 use crate::key::ApiKey;
 use crate::shape::{normalise, strip_html, Found};
-use crate::tool::{Query, SearchProvider};
+use crate::tool::Query;
 use oxa_proto::{tool_errors, CancelToken, Value};
 use oxa_tools::descriptions::web_search as text;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -394,12 +394,14 @@ fn http_error(reply: &Reply) -> String {
         )
 }
 
-impl SearchProvider for Brave {
-    fn host(&self) -> String {
+impl Brave {
+    /// The host this provider connects to.
+    pub fn host(&self) -> String {
         self.host_of_base()
     }
 
-    fn search(&self, q: &Query, cancel: &CancelToken) -> Result<Vec<Found>, String> {
+    /// Run one search, honoring cancellation.
+    pub fn search(&self, q: &Query, cancel: &CancelToken) -> Result<Vec<Found>, String> {
         if self.opts.isolation && !oxa_proto::is_loopback_host(&self.host_of_base()) {
             return Err(text::TEST_REAL_HOST.to_string());
         }
@@ -426,7 +428,8 @@ impl SearchProvider for Brave {
         parse_json(&reply.body).map(|v| parse_web(&v))
     }
 
-    fn take_notice(&self) -> Option<String> {
+    /// Take the one-time fallback notice, if pending.
+    pub fn take_notice(&self) -> Option<String> {
         self.shared
             .notice_pending
             .swap(false, Ordering::SeqCst)
