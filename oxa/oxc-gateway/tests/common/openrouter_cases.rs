@@ -480,3 +480,68 @@ async fn openrouter_absent_or_invalid_reported_cost_uses_catalog() {
         mock.finish();
     }
 }
+
+
+#[tokio::test]
+async fn openrouter_preserves_catalog_thinking_mapping() {
+    for (effort, expected) in [
+        ("none", json!({"enabled":false})),
+        ("minimal", json!({"enabled":false})),
+        ("low", json!({"effort":"low"})),
+        ("medium", json!({"effort":"medium"})),
+        ("high", json!({"effort":"high"})),
+        ("xhigh", json!({"effort":"high"})),
+    ] {
+        let mock = MockAnthropic::start(vec![wire(chunks(), true)]);
+        let (gateway, _) = gateway(&mock);
+        let mut request = payload(false);
+        request["reasoning_effort"] = json!(effort);
+        gateway.chat_payload(&request, Context::default(), &Cancellation::default(),
+            &mut |_| Control::Continue).await.unwrap();
+        assert_eq!(mock.requests()[0].body["reasoning"], expected, "{effort}");
+        mock.finish();
+    }
+}
+
+#[tokio::test]
+async fn openrouter_length_discards_tools_and_preserves_terminal_metering() {
+    for include_usage in [false, true] {
+        // Even syntactically complete calls cannot execute after a length stop.
+        for arguments in [r#"{"path":"#, r#"{"path":"note.txt"}"#, CREDENTIAL] {
+            let events = vec![
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"synthetic-call",
+                    "function":{"name":"read","arguments":arguments}}]},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}],
+                    "usage":{"prompt_tokens":21,"completion_tokens":5,"cost":0.25}}),
+            ];
+            let mock = MockAnthropic::start(vec![wire(events, true)]);
+            let (gateway, fixture) = gateway(&mock);
+            let mut output = Vec::new();
+            let mut done = 0;
+            let completed = gateway.chat_payload(&payload(include_usage), Context::default(),
+                &Cancellation::default(), &mut |event| {
+                    match event {
+                        Event::Chunk(value) => output.push(value),
+                        Event::Done => {
+                            done += 1;
+                            assert_eq!(rows(&fixture)[0]["cost_usd"], 0.25);
+                        }
+                    }
+                    Control::Continue
+                }).await.unwrap();
+            assert_eq!(done, 1);
+            assert_eq!(completed.finish_reason, "length");
+            assert!(completed.assistant.get("tool_calls").is_none());
+            assert!(output.iter().all(|value| value.pointer("/choices/0/delta/tool_calls").is_none()));
+            assert!(output.iter().any(|value| value.pointer("/choices/0/finish_reason") == Some(&json!("length"))));
+            assert_eq!(output.iter().any(|value| value.get("usage").is_some()), include_usage);
+            assert!(!json!(output).to_string().contains(CREDENTIAL));
+            let row = rows(&fixture).pop().unwrap();
+            assert_eq!(row["settled"], "usage");
+            assert_eq!(row["reported_cost_usd"], 0.25);
+            assert_eq!(row["prompt_tokens"], 21);
+            assert_eq!(row["completion_tokens"], 5);
+            mock.finish();
+        }
+    }
+}
