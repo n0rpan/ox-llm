@@ -137,6 +137,10 @@ impl<E: Engine> State<E> {
             .filter(|t| t.contains("<|im_start|>"))
             .map(|_| tok.encode("<|im_start|>assistant", false, true))
             .filter(|d| d.len() >= 2);
+        let mut echo = crate::echo::EchoStore::new(crate::echo::EchoConfig::from_env());
+        if let Some(store) = &worker.states {
+            echo.track_disk_usage(store.usage.clone());
+        }
         let im_end = tok.token_id("<|im_end|>");
         let speculative = speculative_json(
             worker.engine.spec_max_depth(),
@@ -163,9 +167,7 @@ impl<E: Engine> State<E> {
             sse_keepalive: sse_keepalive_from_env(),
             default_max_tokens: default_max_tokens_from_env(n_ctx),
             speculative,
-            echo: Mutex::new(crate::echo::EchoStore::new(
-                crate::echo::EchoConfig::from_env(),
-            )),
+            echo: Mutex::new(echo),
             asst_delim,
             im_end,
             state_cache,

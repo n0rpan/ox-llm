@@ -439,7 +439,7 @@ pub struct StoreStats {
 /// reconcile external changes; normal writes replace a path's size (never double-count a shared
 /// block or an overwritten snapshot). No file descriptors or state payloads are retained.
 #[derive(Clone, Default)]
-struct DiskUsage(std::sync::Arc<std::sync::Mutex<DiskFiles>>);
+pub(crate) struct DiskUsage(std::sync::Arc<std::sync::Mutex<DiskFiles>>);
 
 #[derive(Default)]
 struct DiskFiles {
@@ -468,7 +468,7 @@ impl DiskUsage {
         self.lock().set(path.to_path_buf(), size);
     }
 
-    fn refresh(&self, path: &Path) {
+    pub(crate) fn refresh(&self, path: &Path) {
         match fs::symlink_metadata(path) {
             Ok(m) if m.is_file() => self.set(path, Some(m.len())),
             Ok(_) => self.set(path, None),
@@ -501,7 +501,7 @@ impl DiskUsage {
 }
 
 pub struct StateStore {
-    usage: DiskUsage,
+    pub(crate) usage: DiskUsage,
     pub root: PathBuf,
     pub dir: PathBuf,
     pub ident: Identity,
@@ -1404,10 +1404,6 @@ impl StateStore {
     /// Store / replace a session's manifest (written last: blocks and snapshots are on disk).
     pub fn put_manifest(&mut self, m: Manifest) -> Result<(), String> {
         self.write_manifest(&m)?;
-        if let Some(h) = m.hint.as_deref().filter(|h| hex_name(h, 32)) {
-            self.usage
-                .refresh(&self.dir.join("echo").join(format!("{h}.jsonl")));
-        }
         self.manifests.insert(m.sid.clone(), m);
         Ok(())
     }
@@ -1649,16 +1645,17 @@ impl StateStore {
                         }
                         remove_manifest_in(&t.dir, &mut t.manifests, s, &self.kill, &self.usage);
                     }
-                    if !gone.is_empty() {
-                        sweep_dir(
-                            &t.dir,
-                            &t.manifests,
-                            &self.kill,
-                            &self.usage,
-                            &self.inflight,
-                            stop,
-                        );
-                    }
+                    // A cancelled eviction may have published a manifest removal (or snapshot
+                    // thinning) without unlinking its files. Reclaim those indexed orphans before
+                    // selecting another live session, even when no manifest expires this pass.
+                    sweep_dir(
+                        &t.dir,
+                        &t.manifests,
+                        &self.kill,
+                        &self.usage,
+                        &self.inflight,
+                        stop,
+                    );
                     tiers.push(t);
                 }
                 used = self.used_bytes();
@@ -2373,6 +2370,150 @@ mod budget_tests {
             0,
             "multi-session eviction"
         );
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unhinted_chat_echo_is_accounted_without_management_resync() {
+        use crate::tests_state::{call, files, sys};
+        use crate::tests_state_p2b::server_echo;
+        use std::sync::atomic::Ordering;
+
+        let root = tmp("budget-unhinted-echo");
+        let srv = server_echo(&root, vec![], 1 << 40);
+        let (code, result) = call(
+            &srv,
+            "POST",
+            "/v1/chat/completions",
+            json!({"messages": [
+                {"role": "system", "content": sys()},
+                {"role": "user", "content": "Synthetic question"}
+            ], "max_tokens": 3, "temperature": 0}),
+        )
+        .await;
+        assert_eq!(code, 200, "{result}");
+        let start = std::time::Instant::now();
+        while srv.persist_done.load(Ordering::SeqCst) == 0 {
+            assert!(start.elapsed().as_secs() < 30, "persist did not finish");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let w = srv.worker.lock().unwrap();
+        let st = w.states.as_ref().unwrap();
+        assert!(!st.manifests.is_empty());
+        assert!(st.manifests.values().all(|m| m.hint.is_none()));
+        assert!(!files(&st.dir.join("echo"), ".jsonl").is_empty());
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn echo_accounting_tracks_deferred_appends_compaction_and_removal() {
+        use crate::echo::TurnEnd;
+        use crate::tests_state_p2b::server_echo;
+
+        let root = tmp("budget-echo-lifecycle");
+        let srv = server_echo(&root, vec![], 1 << 40);
+        let check = || {
+            let w = srv.worker.lock().unwrap();
+            let st = w.states.as_ref().unwrap();
+            assert!(st.manifests.is_empty(), "echo accounting needs no manifest");
+            assert_eq!(st.used_bytes(), dir_bytes(&root));
+            st.used_bytes()
+        };
+        let baseline = check();
+        for hint in [None, Some("synthetic")] {
+            srv.echo.lock().unwrap().cfg.compact_bytes = 0;
+            for _ in 0..5 {
+                let (_, pending) = srv.echo.lock().unwrap().record_deferred(
+                    &[1, 2, 3],
+                    &[2],
+                    99,
+                    &chat::ChatMsg {
+                        content: "synthetic".into(),
+                        ..Default::default()
+                    },
+                    &[4, 99],
+                    TurnEnd::Eog,
+                    hint,
+                );
+                let pending = pending.unwrap();
+                check(); // a deferred append has not changed disk usage yet
+                assert!(pending.write());
+                assert!(check() > baseline);
+            }
+            let before = check();
+            let mut echo = srv.echo.lock().unwrap();
+            let group = hint
+                .map(|h| format!("s:{h}"))
+                .unwrap_or_else(|| format!("k:{}", crate::echo::prefix_key(echo.identity(), &[1])));
+            echo.cfg.compact_bytes = 1;
+            assert!(echo.maybe_compact(&group));
+            assert!(check() < before, "compaction subtracts replaced bytes");
+            let h = hint_hash(hint.unwrap_or(&group));
+            assert_eq!(echo.drop_hint_hash(&h), 1);
+            assert_eq!(check(), baseline);
+        }
+        // Invalidation refuses an outstanding append, without inventing accounted bytes.
+        let (_, pending) = srv.echo.lock().unwrap().record_deferred(
+            &[1, 2, 3],
+            &[2],
+            99,
+            &Default::default(),
+            &[4, 99],
+            TurnEnd::Eog,
+            None,
+        );
+        srv.echo.lock().unwrap().clear();
+        assert!(!pending.unwrap().write());
+        assert_eq!(check(), baseline);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_foreign_eviction_reclaims_orphans_before_evicting_live_sessions() {
+        use crate::tests_state::{ident, open};
+
+        let root = tmp("budget-cancel-foreign");
+        let mut foreign = fill(&root, 1 << 40, &[600, 3000]);
+        let other = foreign.states.as_mut().unwrap();
+        for mut m in other.manifests.values().cloned().collect::<Vec<_>>() {
+            m.atime = now_s() - PIN_SECS - 1;
+            m.snaps.retain(|s| s.class == "head");
+            other.put_manifest(m).unwrap();
+        }
+        other.sweep();
+        let victim = other.manifests.values().min_by_key(|m| m.n_tokens).unwrap();
+        let survivor = other.manifests.values().max_by_key(|m| m.n_tokens).unwrap();
+        let kept = manifest_files(&other.dir, survivor);
+        let orphans: HashSet<_> = manifest_files(&other.dir, victim)
+            .difference(&kept)
+            .cloned()
+            .collect();
+        assert!(!orphans.is_empty());
+        let removed_manifest = other.manifest_path(&victim.sid);
+        let kept_manifest = other.manifest_path(&survivor.sid);
+        let reclaim: u64 = orphans.iter().map(|p| fs::metadata(p).unwrap().len()).sum();
+        let mut st = open(&root, ident("other-synthetic", ""), 1 << 40);
+        st.global_budget = true;
+        st.budget = st.used_bytes() - reclaim - fs::metadata(&removed_manifest).unwrap().len();
+
+        assert!(st.enforce_until(None, &|| !removed_manifest.exists()) > 0);
+        assert!(!removed_manifest.exists());
+        assert!(
+            orphans.iter().all(|p| p.is_file()),
+            "cancel before file cleanup"
+        );
+        assert!(st.used_bytes() > st.budget);
+        assert_eq!(st.used_bytes(), dir_bytes(&root));
+        st.enforce(None);
+        assert!(
+            orphans.iter().all(|p| !p.exists()),
+            "resume foreign cleanup"
+        );
+        assert!(kept_manifest.is_file(), "do not evict another live session");
+        assert!(kept.iter().all(|p| p.is_file()), "keep shared files");
+        assert!(st.used_bytes() <= st.budget);
         assert_eq!(st.used_bytes(), dir_bytes(&root));
         fs::remove_dir_all(root).unwrap();
     }
