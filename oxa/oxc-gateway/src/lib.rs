@@ -5,6 +5,8 @@ mod anthropic_replay;
 #[cfg(feature = "anthropic-gateway")]
 pub mod gateway;
 #[cfg(feature = "anthropic-gateway")]
+mod history;
+#[cfg(feature = "anthropic-gateway")]
 pub mod runtime;
 
 #[cfg(feature = "cloud-only")]

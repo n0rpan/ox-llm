@@ -82,6 +82,14 @@ struct Inner {
     budgets: Mutex<HashMap<String, Budget>>,
     writer: Mutex<()>,
 }
+#[cfg(feature = "anthropic-gateway")]
+impl Ledger {
+    pub(crate) fn history_mac(&self) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.0.salt).expect("fixed-length ledger salt");
+        mac.update(b"oxa-provider-history-v1\0");
+        mac
+    }
+}
 #[derive(Clone)]
 pub struct Ledger(Arc<Inner>);
 #[derive(Clone)]
