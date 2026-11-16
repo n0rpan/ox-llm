@@ -160,12 +160,13 @@ fn dirty_retained_worktree_is_blocked_without_dropping_edits() {
         ],
     );
     assert_eq!(first["outcome"], "done", "{first}");
-    let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
+    std::fs::write(tree(&first).join("notes.txt"), "new retained edits").unwrap();
+    let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json", "--rerun"], None);
     assert_eq!(record["outcome"], "blocked", "{record}");
     assert!(requests.is_empty());
     assert_eq!(
         std::fs::read_to_string(tree(&record).join("notes.txt")).unwrap(),
-        "keep me"
+        "new retained edits"
     );
 }
 #[test]
