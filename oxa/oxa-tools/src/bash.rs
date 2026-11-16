@@ -310,6 +310,12 @@ pub(crate) fn git_config_note(output: &str) -> Option<String> {
 /// failure of the sandbox. Say what happened and how to get the text. Only for a successful
 /// command whose output is empty (tool warnings such as mise's `WARN` lines do not count).
 pub(crate) fn gh_comments_note(command: &str, output: &str, exit: Option<i32>) -> Option<&'static str> {
+    // Output redirected to a file (including by a later pipeline stage) tells us nothing
+    // about the comment count. Conservatively skip redirects, except the common `2>&1`
+    // which only merges stderr into captured stdout and does not hide any comments.
+    if command.replace("2>&1", "").contains('>') {
+        return None;
+    }
     let words: Vec<&str> = command.split_whitespace().collect();
     let viewing = words
         .windows(3)
@@ -853,6 +859,30 @@ echo '\''a'\'''"#
         ] {
             let res = run(cmd, out, exit);
             assert!(!res.text.contains("only the comments"), "{cmd}: {}", res.text);
+        }
+    }
+
+    /// Empty captured output does not imply no comments when stdout went elsewhere.
+    #[test]
+    fn gh_comments_redirected_output_gets_no_note() {
+        for cmd in [
+            "gh issue view 5 --comments > /tmp/comments.txt",
+            "gh issue view 5 --comments >> /tmp/comments.txt",
+            "gh pr view 5 -c >/tmp/comments.txt",
+            "gh pr view 5 --comments 1>/tmp/comments.txt",
+            "gh pr view 5 --comments 2>&1 >/tmp/comments.txt",
+            "gh pr view 5 --comments | tee out >/dev/null",
+            "gh pr view 5 --comments >&2",
+        ] {
+            let sb = Fake::ok(b"", Some(0));
+            let (res, _) = run_with(
+                &sb,
+                json!({ "command": cmd }),
+                Mode::Workspace,
+                &CancelToken::new(),
+            );
+            assert!(!res.is_error);
+            assert_eq!(res.text, "(no output)", "{cmd}");
         }
     }
 
