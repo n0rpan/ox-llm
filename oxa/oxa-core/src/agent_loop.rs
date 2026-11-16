@@ -595,7 +595,8 @@ fn run_inner(
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             continue;
         }
-        if turn.finish == Finish::Length && length_recoverable(st, length_recoveries) {
+        if turn.finish == Finish::Length && !st.info.caps.remote && length_recoverable(st, length_recoveries)
+        {
             length_recoveries += 1;
             push_user(
                 st,
