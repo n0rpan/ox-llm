@@ -17,6 +17,8 @@ pub mod catalog_overlay;
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]
 pub mod openai;
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod opencode;
 #[cfg(feature = "policy")]
 pub mod policy;
 #[cfg(feature = "pricing")]
