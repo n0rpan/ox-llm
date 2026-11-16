@@ -298,7 +298,7 @@ fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
         .collect();
     assert!(programs.contains(&"oxa"), "{trace}");
     assert!(programs.iter().all(|name| !name.starts_with("python")), "{trace}");
-    mock.assert_healthy();
+    mock.finish();
 }
 
 #[test]
