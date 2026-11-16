@@ -1,8 +1,8 @@
 use super::guard::{self, Constraint, ConstraintKind};
 use super::types::{self, EntryState};
 use super::{
-    Action, Answer, AnswerRequest, Ask, Authority, Entry, Kind, Question, Refusal, Rule, Scope, Subject,
-    Value,
+    Action, Answer, AnswerRequest, Ask, Authority, Choice, Entry, Kind, Proposal, Question, Refusal, Rule,
+    Scope, Subject, Value,
 };
 use crate::{events::Facts, facts_io::Root, Result};
 use oxa_proto::work::{Checkpoint, Event, Fact, Incident, IncidentKind, StandingChanged};
@@ -48,6 +48,12 @@ impl Document {
     }
 }
 impl Read {
+    pub fn live_rules(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().filter(|entry| entry.is_live())
+    }
+    pub fn open_asks(&self) -> impl Iterator<Item = &Ask> {
+        self.asks.iter().filter(|ask| ask.answer.is_none())
+    }
     fn validate(&self) -> Result<()> {
         if self.entries.len() + self.asks.len() > MAX_ACTIVE + HISTORY {
             return Err("standing entry capacity exceeded".into());
@@ -59,7 +65,7 @@ impl Read {
             if !ids.insert(&entry.id) {
                 return Err("duplicate standing entry identity".into());
             }
-            if entry.live() {
+            if entry.is_live() {
                 if live
                     .iter()
                     .any(|(kind, scope)| *kind == entry.kind && *scope == &entry.scope)
@@ -98,7 +104,7 @@ impl Read {
         Ok(())
     }
     fn bounded(&mut self) -> Result<()> {
-        while self.entries.iter().filter(|entry| !entry.live()).count()
+        while self.entries.iter().filter(|entry| !entry.is_live()).count()
             + self.asks.iter().filter(|ask| ask.answer.is_some()).count()
             > HISTORY
         {
@@ -110,7 +116,7 @@ impl Read {
         self.validate()
     }
     fn discard_history(&mut self) -> Result<()> {
-        if let Some(index) = self.entries.iter().position(|entry| !entry.live()) {
+        if let Some(index) = self.entries.iter().position(|entry| !entry.is_live()) {
             self.entries.remove(index);
         } else if let Some((index, _)) = self
             .asks
@@ -143,7 +149,7 @@ impl Read {
             .entries
             .iter()
             .find_map(|entry| match (&entry.kind, &entry.value) {
-                (Kind::Goal, Value::Text(value)) if entry.live() && entry.scope == Scope::Repository => {
+                (Kind::Goal, Value::Text(value)) if entry.is_live() && entry.scope == Scope::Repository => {
                     Some(value.clone())
                 }
                 _ => None,
@@ -300,6 +306,9 @@ impl Standing {
             {
                 return Err("pending standing projection disagrees".into());
             }
+            // A prior rename may be visible after directory sync failed. Establish the
+            // prepared policy's durability before committing its separately stored fact.
+            self.root.durable(FILE)?;
             self.facts.append(event.checkpoint, event.at_ms, event.fact)?;
             document.current = pending.after.clone();
             document.pending = None;
@@ -359,10 +368,70 @@ impl Standing {
         let _lock = self.root.lock(LOCK)?;
         let before = self.load()?;
         let mut after = before.next(expected, at)?;
-        let prior = after
+        let entry = Self::stage_rule(&mut after, authority, at, request)?;
+        self.save(before, after, None)?;
+        Ok(entry)
+    }
+    fn stage_rule(after: &mut Read, authority: Authority, at: u64, request: Rule) -> Result<Entry> {
+        request.validate()?;
+        let target = after
             .entries
-            .iter_mut()
-            .find(|entry| entry.live() && entry.kind == request.kind && entry.scope == request.scope);
+            .iter()
+            .position(|entry| entry.is_live() && entry.kind == request.kind && entry.scope == request.scope);
+        let conversion = if target.is_none() && request.kind != Kind::Note {
+            after.entries.iter().position(|entry| {
+                entry.is_live()
+                    && entry.kind == Kind::Note
+                    && entry.scope == request.scope
+                    && request.supersedes.as_deref() == Some(&entry.id)
+            })
+        } else {
+            None
+        };
+        if conversion.is_some() && authority != Authority::Owner {
+            return Err("owner confirmation required to convert an advisory note".into());
+        }
+        let prior = target.or(conversion).map(|index| &mut after.entries[index]);
+        if authority != Authority::Owner {
+            let owner_required = match (&request.kind, &request.value, prior.as_deref()) {
+                (Kind::Reserve, _, _) => true,
+                (
+                    Kind::Budget,
+                    Value::Budget {
+                        daily_usd_micros: new,
+                    },
+                    Some(Entry {
+                        value:
+                            Value::Budget {
+                                daily_usd_micros: old,
+                            },
+                        ..
+                    }),
+                ) => new > old,
+                (Kind::Budget, Value::Budget { daily_usd_micros: 0 }, None) => false,
+                (Kind::Budget, _, _) => true,
+                (
+                    Kind::Gate,
+                    Value::Gate {
+                        tier: new_tier,
+                        evidence: new,
+                    },
+                    Some(Entry {
+                        value:
+                            Value::Gate {
+                                tier: old_tier,
+                                evidence: old,
+                            },
+                        ..
+                    }),
+                ) => new_tier < old_tier || !old.iter().all(|required| new.contains(required)),
+                (Kind::Gate, _, _) => true,
+                _ => false,
+            };
+            if owner_required {
+                return Err("this standing change requires owner authority; propose it instead".into());
+            }
+        }
         let mut protection = authority;
         if let Some(prior) = prior {
             if request.supersedes.as_deref() != Some(&prior.id) {
@@ -370,9 +439,16 @@ impl Standing {
             }
             let releasing = matches!(
                 request.value,
-                Value::Retired | Value::Constraint { active: false }
+                Value::Retired
+                    | Value::Constraint {
+                        active: false,
+                        until: None
+                    }
             );
             if matches!(request.kind, Kind::Hold | Kind::Freeze) && prior.authority == Authority::Owner {
+                if authority != Authority::Owner && prior.value != request.value {
+                    return Err("only the owner changes this release condition".into());
+                }
                 if releasing && authority != Authority::Owner {
                     return Err("only the owner releases this constraint".into());
                 }
@@ -385,7 +461,11 @@ impl Standing {
             }
             if matches!(
                 request.value,
-                Value::Retired | Value::Constraint { active: false }
+                Value::Retired
+                    | Value::Constraint {
+                        active: false,
+                        until: None
+                    }
             ) {
                 return Err("no live standing entry to release".into());
             }
@@ -397,35 +477,48 @@ impl Standing {
             value: request.value,
             said: request.said,
             at,
+            said_by: authority,
             source: request.source,
             supersedes: request.supersedes,
             state: EntryState::Stored,
             reminders: 0,
+            last_reminder: None,
             authority: protection,
         };
         after.entries.push(entry.clone());
-        self.save(before, after, None)?;
         Ok(entry)
     }
-    pub fn remind(&self, expected: u64, entry_id: &str, at: u64) -> Result<Entry> {
+    pub fn remind(
+        &self,
+        expected: u64,
+        authority: Authority,
+        entry_id: &str,
+        at: u64,
+        source: super::Source,
+    ) -> Result<Entry> {
+        if authority != Authority::Owner {
+            return Err("owner reminder context required".into());
+        }
+        source.validate()?;
         let _lock = self.root.lock(LOCK)?;
         let before = self.load()?;
         let mut after = before.next(expected, at)?;
         let entry = after
             .entries
             .iter_mut()
-            .find(|entry| entry.id == entry_id && entry.live())
+            .find(|entry| entry.id == entry_id && entry.is_live())
             .ok_or("standing entry is not live")?;
         entry.reminders = entry
             .reminders
             .checked_add(1)
             .ok_or("standing reminder count exhausted")?;
+        entry.last_reminder = Some(super::Reminder { at, source });
         let result = entry.clone();
         let subject = match &entry.scope {
             Scope::PullRequest(pr) => oxa_proto::work::Subject::PullRequest(*pr),
             Scope::Task(task) => oxa_proto::work::Subject::Task(task.clone()),
             Scope::Host(host) => oxa_proto::work::Subject::Host(host.clone()),
-            Scope::Repository | Scope::Branch(_) => oxa_proto::work::Subject::Repository,
+            Scope::Repository | Scope::Branch(_) | Scope::Path(_) => oxa_proto::work::Subject::Repository,
         };
         let incident = Incident {
             id: format!("{}-reminded-{}", entry.id, after.revision),
@@ -452,7 +545,7 @@ impl Standing {
         let entry = after
             .entries
             .iter_mut()
-            .find(|entry| entry.id == entry_id && entry.live())
+            .find(|entry| entry.id == entry_id && entry.state != EntryState::Superseded)
             .ok_or("standing entry is not live")?;
         let verified = check(entry)?;
         types::text(&verified.evidence, 256)?;
@@ -473,6 +566,26 @@ impl Standing {
         Ok(result)
     }
     pub fn ask(&self, expected: u64, at: u64, request: Question) -> Result<Ask> {
+        self.open_question(expected, at, request, None)
+    }
+    pub fn propose(
+        &self,
+        expected: u64,
+        at: u64,
+        rule: Rule,
+        question: Question,
+        accept_label: String,
+    ) -> Result<Ask> {
+        rule.validate()?;
+        self.open_question(expected, at, question, Some(Proposal { rule, accept_label }))
+    }
+    fn open_question(
+        &self,
+        expected: u64,
+        at: u64,
+        request: Question,
+        proposal: Option<Proposal>,
+    ) -> Result<Ask> {
         request.validate()?;
         let _lock = self.root.lock(LOCK)?;
         let before = self.load()?;
@@ -488,12 +601,15 @@ impl Standing {
             at,
             source: request.source,
             answer: None,
+            proposal,
         };
+        ask.validate()?;
         after.asks.push(ask.clone());
         self.save(before, after, None)?;
         Ok(ask)
     }
-    /// An answer records an owner decision; it never releases a hold or grants tool permission.
+    /// Only acceptance of the exact bound proposal changes a rule. Generic answers grant no
+    /// permission, and storing an accepted rule never claims it is applied to a runtime.
     pub fn answer(
         &self,
         expected: u64,
@@ -505,6 +621,7 @@ impl Standing {
             return Err("only the owner answers standing asks".into());
         }
         request.source.validate()?;
+        types::text(&request.said, 1024)?;
         let _lock = self.root.lock(LOCK)?;
         let before = self.load()?;
         let mut after = before.next(expected, at)?;
@@ -517,14 +634,28 @@ impl Standing {
             return Err("standing question changed or was already answered".into());
         }
         ask.validate_choice(&request.choice)?;
+        let accepted = match (&ask.proposal, &request.choice) {
+            (Some(proposal), Choice::Option(label)) if *label == proposal.accept_label => {
+                Some(proposal.rule.clone())
+            }
+            _ => None,
+        };
+        let owner_source = request.source.clone();
+        let owner_words = request.said.clone();
         ask.answer = Some(Answer {
             revision: after.revision,
             question_revision: request.question_revision,
             choice: request.choice,
             at,
             source: request.source,
+            said: request.said,
         });
         let result = ask.clone();
+        if let Some(mut rule) = accepted {
+            rule.source = owner_source;
+            rule.said = owner_words;
+            Self::stage_rule(&mut after, Authority::Owner, at, rule)?;
+        }
         self.save(before, after, None)?;
         Ok(result)
     }
@@ -537,11 +668,77 @@ impl Standing {
             .entries
             .iter()
             .find(|entry| {
-                entry.live()
+                entry.is_live()
                     && entry.kind == Kind::Hold
                     && (entry.scope == Scope::Repository || entry.scope == Scope::PullRequest(pr))
             })
             .map(|entry| entry.id.clone()))
+    }
+    /// Verify a named immutable merge through a frontend-owned checker. The original condition
+    /// authorizes release; model prose and changed PR heads never supply this proof.
+    pub fn release_when(
+        &self,
+        expected: u64,
+        entry_id: &str,
+        at: u64,
+        check: impl FnOnce(&super::Condition) -> Result<Option<Event>>,
+    ) -> Result<Option<Entry>> {
+        let _lock = self.root.lock(LOCK)?;
+        let before = self.load()?;
+        if before.revision != expected {
+            return Err("standing revision changed; read it again".into());
+        }
+        let entry = before
+            .entries
+            .iter()
+            .find(|entry| entry.id == entry_id && entry.is_live())
+            .ok_or("standing entry is not live")?;
+        let Value::Constraint {
+            active: true,
+            until: Some(condition),
+        } = &entry.value
+        else {
+            return Err("standing entry has no release condition".into());
+        };
+        let Some(observation) = check(condition)? else {
+            return Ok(None);
+        };
+        let Fact::PrMerged(proof) = &observation.fact else {
+            return Err("condition requires a merge observation".into());
+        };
+        let super::Condition::PrMerged(pr) = condition;
+        if *pr != proof.pr.number {
+            return Err("merge proof names a different condition".into());
+        }
+        let previous = observation
+            .seq
+            .checked_sub(1)
+            .ok_or("invalid merge observation sequence")?;
+        let page = self.facts.events_after(previous, 1)?;
+        if page.gap || page.events.first() != Some(&observation) {
+            return Err("merge observation is not retained in this facts store".into());
+        }
+        let mut after = before.next(expected, at)?;
+        let rule = Rule {
+            kind: entry.kind,
+            scope: entry.scope.clone(),
+            value: Value::Constraint {
+                active: false,
+                until: None,
+            },
+            said: entry.said.clone(),
+            source: entry.source.clone(),
+            supersedes: Some(entry.id.clone()),
+        };
+        let mut released = Self::stage_rule(&mut after, entry.authority, at, rule)?;
+        released.said_by = entry.said_by;
+        released.state = EntryState::Applied {
+            verified_at: at,
+            evidence: format!("merged-pr:{pr}:{}", proof.merge_commit),
+        };
+        *after.entries.last_mut().expect("new release entry") = released.clone();
+        self.save(before, after, None)?;
+        Ok(Some(released))
     }
     pub fn with_guard<T>(
         &self,
@@ -552,7 +749,7 @@ impl Standing {
         let _lock = self.root.lock(LOCK)?;
         let read = self.load()?;
         let constraints = read.entries.iter().filter_map(|entry| {
-            if !entry.live() {
+            if !entry.is_live() {
                 return None;
             }
             let kind = match entry.kind {

@@ -1,4 +1,4 @@
-use super::{types, Scope, Source};
+use super::{types, Rule, Scope, Source};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
@@ -38,12 +38,20 @@ pub struct Answer {
     pub choice: Choice,
     pub at: u64,
     pub source: Source,
+    pub said: String,
 }
 pub struct AnswerRequest {
     pub ask_id: String,
     pub question_revision: u64,
     pub choice: Choice,
     pub source: Source,
+    pub said: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proposal {
+    pub rule: Rule,
+    pub accept_label: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +66,7 @@ pub struct Ask {
     pub at: u64,
     pub source: Source,
     pub answer: Option<Answer>,
+    pub proposal: Option<Proposal>,
 }
 impl Question {
     pub(super) fn validate(&self) -> Result<()> {
@@ -112,7 +121,19 @@ impl Ask {
                 return Err("answer names a different question revision".into());
             }
             answer.source.validate()?;
+            types::text(&answer.said, 1024)?;
             self.validate_choice(&answer.choice)?;
+        }
+        if let Some(proposal) = &self.proposal {
+            proposal.rule.validate()?;
+            if proposal.rule.scope != self.scope
+                || !self
+                    .options
+                    .iter()
+                    .any(|option| option.label == proposal.accept_label)
+            {
+                return Err("proposal is not bound to this question".into());
+            }
         }
         Ok(())
     }
@@ -121,7 +142,7 @@ impl Ask {
             Scope::PullRequest(pr) => oxa_proto::work::Subject::PullRequest(*pr),
             Scope::Task(task) => oxa_proto::work::Subject::Task(task.clone()),
             Scope::Host(host) => oxa_proto::work::Subject::Host(host.clone()),
-            Scope::Repository | Scope::Branch(_) => oxa_proto::work::Subject::Repository,
+            Scope::Repository | Scope::Branch(_) | Scope::Path(_) => oxa_proto::work::Subject::Repository,
         };
         oxa_proto::work::Ask {
             id: self.id.clone(),

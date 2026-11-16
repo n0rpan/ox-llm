@@ -23,6 +23,7 @@ pub enum Scope {
     Task(String),
     Branch(String),
     Host(String),
+    Path(String),
 }
 
 /// Identity resolved by the trusted frontend, not tool JSON. None means checked absence.
@@ -69,6 +70,7 @@ impl Scope {
             Self::Task(task) => subject.task == Some(task.as_str()),
             Self::Branch(branch) => subject.branch == Some(branch.as_str()),
             Self::Host(host) => subject.host == Some(host.as_str()),
+            Self::Path(_) => false, // Path selectors are policy data, never hold identities.
         }
     }
 }

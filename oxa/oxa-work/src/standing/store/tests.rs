@@ -39,7 +39,7 @@ fn hold(active: bool, supersedes: Option<&str>) -> Rule {
     Rule {
         kind: Kind::Hold,
         scope: Scope::PullRequest(480),
-        value: Value::Constraint { active },
+        value: Value::Constraint { active, until: None },
         said: "Hold this PR until released".into(),
         source: super::super::Source::Command {
             command: "hold 480".into(),
@@ -171,10 +171,12 @@ fn pending_revisions_recover_before_or_after_the_fact_without_duplicate_delivery
             value: request.value,
             said: request.said,
             at: 9,
+            said_by: Authority::Owner,
             source: request.source,
             supersedes: None,
             state: EntryState::Stored,
             reminders: 0,
+            last_reminder: None,
             authority: Authority::Owner,
         });
         let event = Event {
@@ -259,8 +261,30 @@ fn reminders_create_incidents_and_offer_without_changing_advisory_rules() {
         supersedes: None,
     };
     let note = standing.rule(0, Authority::Owner, 1, request).unwrap();
-    assert!(!standing.remind(1, &note.id, 2).unwrap().needs_conversion_offer());
-    assert!(standing.remind(2, &note.id, 3).unwrap().needs_conversion_offer());
+    assert!(!standing
+        .remind(
+            1,
+            Authority::Owner,
+            &note.id,
+            2,
+            super::super::Source::Command {
+                command: "remind".into()
+            }
+        )
+        .unwrap()
+        .needs_conversion_offer());
+    assert!(standing
+        .remind(
+            2,
+            Authority::Owner,
+            &note.id,
+            3,
+            super::super::Source::Command {
+                command: "remind".into()
+            }
+        )
+        .unwrap()
+        .needs_conversion_offer());
     let read = standing.read().unwrap();
     assert_eq!(read.entries[0].kind, Kind::Note);
     assert_eq!(read.entries[0].reminders, 2);
@@ -296,6 +320,7 @@ fn answer(ask: &Ask) -> super::super::AnswerRequest {
         source: super::super::Source::Command {
             command: "decide Release".into(),
         },
+        said: "Release".into(),
     }
 }
 
@@ -442,10 +467,12 @@ fn recovery_syncs_the_prepared_policy_before_committing_its_fact() {
         value: request.value,
         said: request.said,
         at: 9,
+        said_by: Authority::Owner,
         source: request.source,
         supersedes: None,
         state: EntryState::Stored,
         reminders: 0,
+        last_reminder: None,
         authority: Authority::Owner,
     });
     let event = Event {
@@ -479,4 +506,378 @@ fn recovery_syncs_the_prepared_policy_before_committing_its_fact() {
     assert_eq!(facts.situation().unwrap().standing_revision, 0);
     assert_eq!(standing.read().unwrap().revision, 1);
     assert_eq!(facts.events_after(0, 64).unwrap().events.len(), 1);
+}
+
+#[test]
+fn a_concurrent_owner_hold_waits_for_one_effect_then_blocks_the_next() {
+    const CHILD_ROOT: &str = "OXA_STANDING_GUARD_CHILD";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = PathBuf::from(root);
+        let facts = Facts::open(&root.join("facts")).unwrap();
+        fs::write(root.join("child-ready"), b"ready").unwrap();
+        let standing = Standing::open(&root.join("standing"), facts).unwrap();
+        standing.rule(0, Authority::Owner, 1, hold(true, None)).unwrap();
+        return;
+    }
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts);
+    let mut child = None;
+    let completed = standing.with_guard(Action::Update, subject(), |read| {
+        let process = std::process::Command::new(std::env::current_exe().unwrap())
+            .env_clear().env(CHILD_ROOT, &fixture.0)
+            .args(["--exact", "standing::store::tests::a_concurrent_owner_hold_waits_for_one_effect_then_blocks_the_next"])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        child = Some(Child(process));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !fixture.0.join("child-ready").exists() {
+            assert!(std::time::Instant::now() < until, "child failed to start");
+            assert!(child.as_mut().unwrap().0.try_wait().unwrap().is_none());
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(child.as_mut().unwrap().0.try_wait().unwrap().is_none(), "hold writer passed the live effect guard");
+        let document: Document = serde_json::from_slice(&standing.root.read(FILE, MAX_FILE).unwrap()).unwrap();
+        assert_eq!(document.current.revision, read.revision);
+        Ok(read.revision)
+    }).unwrap();
+    assert_eq!(completed.result.unwrap(), 0);
+    let child = child.as_mut().unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "hold writer did not acquire the released guard"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(standing
+        .with_guard(Action::Update, subject(), |_| Ok(()))
+        .is_err());
+}
+
+fn policy(kind: Kind, scope: Scope, value: Value, supersedes: Option<&str>) -> Rule {
+    Rule {
+        kind,
+        scope,
+        value,
+        said: "Synthetic owner rule".into(),
+        source: super::super::Source::Command {
+            command: "rule".into(),
+        },
+        supersedes: supersedes.map(str::to_owned),
+    }
+}
+
+#[test]
+fn budget_increases_gate_weakening_and_reserves_require_owner_authority() {
+    use super::super::{GateEvidence as E, ReservedClass, ReviewTier as T};
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts);
+    let host = Scope::Host("helper".into());
+    let first = standing
+        .rule(
+            0,
+            Authority::Owner,
+            1,
+            policy(
+                Kind::Budget,
+                host.clone(),
+                Value::Budget {
+                    daily_usd_micros: 200_000_000,
+                },
+                None,
+            ),
+        )
+        .unwrap();
+    let lower = standing
+        .rule(
+            1,
+            Authority::Lead,
+            2,
+            policy(
+                Kind::Budget,
+                host.clone(),
+                Value::Budget {
+                    daily_usd_micros: 100_000_000,
+                },
+                Some(&first.id),
+            ),
+        )
+        .unwrap();
+    assert!(standing
+        .rule(
+            2,
+            Authority::Lead,
+            3,
+            policy(
+                Kind::Budget,
+                host.clone(),
+                Value::Budget {
+                    daily_usd_micros: 150_000_000
+                },
+                Some(&lower.id)
+            )
+        )
+        .is_err());
+    assert!(standing
+        .rule(
+            2,
+            Authority::Lead,
+            3,
+            policy(Kind::Budget, host, Value::Retired, Some(&lower.id))
+        )
+        .is_err());
+    let path = Scope::Path("engine/**".into());
+    let gate = standing
+        .rule(
+            2,
+            Authority::Owner,
+            3,
+            policy(
+                Kind::Gate,
+                path.clone(),
+                Value::Gate {
+                    tier: T::T2,
+                    evidence: vec![E::LocalChecks, E::PrBuild],
+                },
+                None,
+            ),
+        )
+        .unwrap();
+    let stronger = standing
+        .rule(
+            3,
+            Authority::Lead,
+            4,
+            policy(
+                Kind::Gate,
+                path.clone(),
+                Value::Gate {
+                    tier: T::T3,
+                    evidence: vec![E::LocalChecks, E::PrBuild, E::HardwareMeasurement],
+                },
+                Some(&gate.id),
+            ),
+        )
+        .unwrap();
+    for value in [
+        Value::Gate {
+            tier: T::T2,
+            evidence: vec![E::LocalChecks, E::PrBuild, E::HardwareMeasurement],
+        },
+        Value::Gate {
+            tier: T::T3,
+            evidence: vec![E::LocalChecks, E::PrBuild],
+        },
+        Value::Retired,
+    ] {
+        assert!(standing
+            .rule(
+                4,
+                Authority::Lead,
+                5,
+                policy(Kind::Gate, path.clone(), value, Some(&stronger.id))
+            )
+            .is_err());
+    }
+    let reserve = policy(
+        Kind::Reserve,
+        Scope::Repository,
+        Value::Reserve {
+            classes: vec![ReservedClass::Paid],
+        },
+        None,
+    );
+    assert!(standing.rule(4, Authority::Lead, 5, reserve.clone()).is_err());
+    let reserve = standing.rule(4, Authority::Owner, 5, reserve).unwrap();
+    assert!(standing
+        .rule(
+            5,
+            Authority::Lead,
+            6,
+            policy(
+                Kind::Reserve,
+                Scope::Repository,
+                Value::Retired,
+                Some(&reserve.id)
+            )
+        )
+        .is_err());
+    assert_eq!(standing.read().unwrap().revision, 5);
+}
+
+#[test]
+fn only_accepting_the_bound_proposal_applies_its_exact_rule() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts.clone());
+    let prior = standing.rule(0, Authority::Owner, 1, hold(true, None)).unwrap();
+    let ask = standing
+        .propose(1, 2, hold(false, Some(&prior.id)), question(), "Release".into())
+        .unwrap();
+    assert!(standing.is_held(480).unwrap().is_some());
+    assert!(standing.answer(2, Authority::Lead, 3, answer(&ask)).is_err());
+    let mut accepted = answer(&ask);
+    accepted.said = "Yes, release this hold".into();
+    standing.answer(2, Authority::Owner, 3, accepted).unwrap();
+    let read = standing.read().unwrap();
+    let released = read.entries.iter().find(|entry| entry.id == "R-3").unwrap();
+    assert_eq!(released.said, "Yes, release this hold");
+    assert_eq!(
+        released.value,
+        Value::Constraint {
+            active: false,
+            until: None
+        }
+    );
+    assert_eq!(released.state, EntryState::Stored);
+    assert!(standing.is_held(480).unwrap().is_none());
+    assert_eq!(facts.situation().unwrap().standing_revision, 3);
+    assert!(facts.situation().unwrap().asks.is_empty());
+}
+
+#[test]
+fn a_proposal_cannot_replace_a_rule_changed_after_the_question() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts);
+    let prior = standing.rule(0, Authority::Owner, 1, hold(true, None)).unwrap();
+    let ask = standing
+        .propose(1, 2, hold(false, Some(&prior.id)), question(), "Release".into())
+        .unwrap();
+    let current = standing
+        .rule(2, Authority::Owner, 3, hold(true, Some(&prior.id)))
+        .unwrap();
+    assert!(standing.answer(3, Authority::Owner, 4, answer(&ask)).is_err());
+    let read = standing.read().unwrap();
+    assert_eq!(read.revision, 3);
+    assert!(read.asks[0].answer.is_none());
+    assert_eq!(standing.is_held(480).unwrap(), Some(current.id));
+}
+
+#[test]
+fn an_advisory_conversion_requires_an_explicit_owner_decision() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts);
+    let note = standing
+        .rule(
+            0,
+            Authority::Owner,
+            1,
+            policy(
+                Kind::Note,
+                Scope::PullRequest(480),
+                Value::Text("Pause this PR".into()),
+                None,
+            ),
+        )
+        .unwrap();
+    let source = super::super::Source::Command {
+        command: "remind".into(),
+    };
+    assert!(standing
+        .remind(1, Authority::Lead, &note.id, 2, source.clone())
+        .is_err());
+    standing
+        .remind(1, Authority::Owner, &note.id, 2, source.clone())
+        .unwrap();
+    let reminded = standing
+        .remind(2, Authority::Owner, &note.id, 3, source.clone())
+        .unwrap();
+    assert!(reminded.needs_conversion_offer());
+    assert_eq!(reminded.last_reminder.unwrap().source, source);
+    assert!(standing.is_held(480).unwrap().is_none());
+    let conversion = hold(true, Some(&note.id));
+    assert!(standing.rule(3, Authority::Lead, 4, conversion.clone()).is_err());
+    let mut prompt = question();
+    prompt.question = "Enforce the advisory pause?".into();
+    prompt.options[0].label = "Keep advisory".into();
+    prompt.options[0].detail = "Leave the note advisory".into();
+    prompt.options[1].label = "Enforce".into();
+    prompt.options[1].detail = "Create the exact PR hold shown in this proposal".into();
+    prompt.recommended = "Keep advisory".into();
+    let ask = standing
+        .propose(3, 4, conversion, prompt, "Enforce".into())
+        .unwrap();
+    let mut accepted = answer(&ask);
+    accepted.choice = super::super::Choice::Option("Enforce".into());
+    accepted.said = "Enforce".into();
+    standing.answer(4, Authority::Owner, 5, accepted).unwrap();
+    let read = standing.read().unwrap();
+    assert!(!read.live_rules().any(|entry| entry.kind == Kind::Note));
+    assert!(standing.is_held(480).unwrap().is_some());
+}
+
+#[test]
+fn a_named_release_needs_the_matching_durable_merge_observation() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts.clone());
+    let mut request = hold(true, None);
+    request.said = "Hold until PR 478 is merged".into();
+    request.value = Value::Constraint {
+        active: true,
+        until: Some(super::super::Condition::PrMerged(478)),
+    };
+    let entry = standing.rule(0, Authority::Owner, 1, request).unwrap();
+    let mut changed = hold(true, Some(&entry.id));
+    assert!(standing.rule(1, Authority::Lead, 2, changed.clone()).is_err());
+    changed.value = Value::Constraint {
+        active: true,
+        until: Some(super::super::Condition::PrMerged(1)),
+    };
+    assert!(standing.rule(1, Authority::Lead, 2, changed).is_err());
+    assert!(standing
+        .release_when(1, &entry.id, 2, |_| Ok(None))
+        .unwrap()
+        .is_none());
+    let proof = Event {
+        seq: 2,
+        at_ms: 3,
+        checkpoint: Checkpoint {
+            source: "github".into(),
+            revision: 1,
+        },
+        fact: Fact::PrMerged(oxa_proto::work::Landed {
+            pr: oxa_proto::work::PullRequest {
+                number: 478,
+                head: "a".repeat(40),
+            },
+            merge_commit: "b".repeat(40),
+            merged_at_ms: 3,
+        }),
+    };
+    assert!(standing
+        .release_when(1, &entry.id, 3, |_| Ok(Some(proof.clone())))
+        .is_err());
+    assert!(standing.is_held(480).unwrap().is_some());
+    let observed = facts
+        .append(proof.checkpoint.clone(), proof.at_ms, proof.fact.clone())
+        .unwrap();
+    assert_eq!(observed, proof);
+    let release = standing
+        .release_when(1, &entry.id, 4, |condition| {
+            assert_eq!(*condition, super::super::Condition::PrMerged(478));
+            Ok(Some(observed.clone()))
+        })
+        .unwrap()
+        .unwrap();
+    assert!(matches!(release.state, EntryState::Applied { .. }));
+    assert_eq!(release.said, "Hold until PR 478 is merged");
+    assert!(standing.is_held(480).unwrap().is_none());
+    assert_eq!(facts.situation().unwrap().landed[0].pr.number, 478);
 }

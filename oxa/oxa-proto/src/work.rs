@@ -475,6 +475,7 @@ record!(
         if let Fact::StandingChanged(change) = &s.fact {
             require(s.checkpoint.source == "standing" && s.checkpoint.revision == change.revision, "standing checkpoint identity disagrees")?;
         }
+        require(s.checkpoint.source != "standing" || matches!(s.fact, Fact::StandingChanged(_)), "standing source is reserved for standing revisions")?;
         Ok(())
     }
 );
