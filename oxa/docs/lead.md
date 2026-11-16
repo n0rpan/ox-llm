@@ -4,9 +4,26 @@ The lead is an ordinary oxa session with an embedded, lead-only `lead` skill.
 Its instructions are exported as `oxa_resources::LEAD_SKILL` for the preset;
 ordinary sessions neither discover nor install this skill. It does not enable
 runner access by itself.
-`oxa lead`, its restricted session preset, the `work` tool and the commands below
-are pending integration with the runner. Do not use this document as a list of
-commands supported by the current binary.
+`oxa lead --shadow` opens an ordinary TUI or print session restricted to
+`read`, `grep`, `find` and `ls`. It embeds the lead instructions in every prefix
+epoch and enforces the proposal schema. For example:
+
+```console
+$ oxa lead --shadow -p "Read the bounded exports in ./state and propose the next action."
+```
+
+It emits proposals only. `oxa lead` without `--shadow` refuses explicitly until
+live runner coordination is available. The `work` tool, live `/status`, `/asks`,
+`/hold`, `/decide` and event wake-up remain pending. Shadow mode neither executes
+proposals nor establishes that a supplied export is current.
+
+The preset removes mutating tools from the registry, bypasses external hook,
+extension, MCP, subagent and codemode construction, and refuses typed shell
+escapes. It accepts model/session/TUI flags, but owns its schema and resource
+selection; explicit extension/skill/template/schema overrides and mutating tool
+requests are rejected. The same restrictions apply on continuation and reopen.
+Project executable resources are not trusted by this preset. Read tools still
+use ordinary path permissions; no sandbox or secret policy is relaxed.
 
 The preset must work with both the TUI and print driver, using the same session
 store, engine selection, turn loop and result contract as ordinary oxa. It adds

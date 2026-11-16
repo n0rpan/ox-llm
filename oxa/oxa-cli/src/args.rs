@@ -47,6 +47,9 @@ impl std::fmt::Debug for ApiKey {
 /// Every flag of cli.md that oxa keeps. Field comments give the spellings.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
+    /// Explicit lead shadow preset; ordinary sessions retain their existing tools.
+    pub lead: bool,
+    pub shadow: bool,
     pub subcommand: Option<Subcommand>,
     /// Positional prompt words (each is one prompt in print/json mode, as pi).
     pub messages: Vec<String>,
@@ -295,6 +298,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "Disable built-in tools by default, keep extension and custom tools",
     ),
     ("--no-tools, -nt", "Disable all tools by default"),
+    ("--shadow", "Lead preset only: return proposals without executing actions"),
     (
         "--no-mcp",
         "Disable MCP support: no servers connect and no MCP tools",
@@ -514,6 +518,10 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
+        if !stop && i == 1 && arg == "lead" {
+            a.lead = true;
+            continue;
+        }
         if !stop && (i == 1 || (arg == "work" && argv[..i - 1].iter().all(|word| word == "--offline"))) {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
                 a.subcommand = Some(sub);
@@ -538,6 +546,7 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
         parse_flag(&mut a, argv, &mut i, flag, inline, ext_flags)?;
     }
     if !a.help && !a.version {
+        crate::lead_preset::apply(&mut a)?;
         check_conflicts(&a)?;
     }
     Ok(a)
@@ -552,6 +561,10 @@ fn parse_flag(
     ext: &[FlagSpec],
 ) -> Result<(), OxaError> {
     match flag {
+        "--shadow" => {
+            no_value(inline, flag)?;
+            a.shadow = true;
+        }
         "-h" | "--help" => {
             no_value(inline, flag)?;
             a.help = true;
@@ -893,7 +906,7 @@ fn present_flags<'a>(flags: &[(bool, &'a str)]) -> Vec<&'a str> {
 pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
     let mut out = String::new();
     out.push_str("oxa - coding agent with read, bash, edit and write tools\n\n");
-    out.push_str("Usage:\n  oxa [options] [--] [@files...] [messages...]\n\n");
+    out.push_str("Usage:\n  oxa [options] [--] [@files...] [messages...]\n  oxa lead --shadow [options] [messages...]\n\n");
     out.push_str("Commands:\n");
     for (left, desc) in COMMANDS {
         out.push_str(&format!("  {left:<36}{desc}\n"));
