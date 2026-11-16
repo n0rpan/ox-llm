@@ -12,6 +12,9 @@ use crate::{
 use anthropic::{MockAnthropic, Reply};
 
 fn gateway(fixture: &skeleton::Fixture) -> Gateway {
+    gateway_with_cap(fixture, 1.0)
+}
+fn gateway_with_cap(fixture: &skeleton::Fixture, cap: f64) -> Gateway {
     let model = Model::new(
         skeleton::MODEL,
         Provider::Anthropic,
@@ -32,7 +35,7 @@ fn gateway(fixture: &skeleton::Fixture) -> Gateway {
         fixture.ledger_dir.clone(),
         Options {
             access: Access::Enabled,
-            daily_budget_usd: Some(1.0),
+            daily_budget_usd: Some(cap),
             ledger_enabled: true,
         },
     )
@@ -69,6 +72,76 @@ fn metered(row: &Value) {
     assert_eq!(row["cache_write_tokens"], 3);
     assert_eq!(row["settled"], "usage");
     assert!((row["cost_usd"].as_f64().unwrap() - 0.0000459).abs() < 1e-12);
+}
+#[tokio::test]
+async fn http_clean_refusals_do_not_spend_or_retain_the_reservation() {
+    for status in [400, 401, 403, 404, 413, 429] {
+        let mock = MockAnthropic::start(vec![
+            Reply::error(status, "Synthetic refusal"),
+            Reply::error(status, "Synthetic refusal"),
+        ]);
+        let fixture = skeleton::Fixture::new(&mock);
+        // One reservation fits, but two charges at the reservation would not.
+        let gateway = gateway_with_cap(&fixture, 0.003);
+        for attempt in 1..=2 {
+            let error = gateway
+                .chat_payload(
+                    &payload(true),
+                    Context::default(),
+                    &Cancellation::default(),
+                    &mut |_| panic!("an HTTP refusal cannot emit reply data or Done"),
+                )
+                .await
+                .err()
+                .unwrap()
+                .refusal();
+            assert_eq!((error.status, error.code), (status, "cloud_upstream_error"));
+            let rows = rows(&fixture);
+            assert_eq!(rows.len(), attempt);
+            assert_eq!(rows[attempt - 1]["status"], status);
+            assert_eq!(rows[attempt - 1]["error"], "cloud_upstream_error");
+            assert_eq!(rows[attempt - 1]["cost_usd"], 0.0);
+            assert_eq!(rows[attempt - 1]["settled"], "refused");
+            assert_eq!(mock.requests().len(), attempt);
+        }
+    }
+}
+#[tokio::test]
+async fn http_ambiguous_failures_keep_the_conservative_charge() {
+    for status in [408, 500, 503, 529] {
+        let mock = MockAnthropic::start(vec![Reply::error(status, "Synthetic failure")]);
+        let fixture = skeleton::Fixture::new(&mock);
+        let gateway = gateway_with_cap(&fixture, 0.003);
+        let error = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |_| panic!("an HTTP failure cannot emit reply data or Done"),
+            )
+            .await
+            .err()
+            .unwrap()
+            .refusal();
+        assert_eq!((error.status, error.code), (status, "cloud_upstream_error"));
+        let rows = rows(&fixture);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0]["cost_usd"].as_f64().unwrap() > 0.002);
+        assert_eq!(rows[0]["settled"], "reserved");
+        let error = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |_| panic!("the spent budget cannot admit another call"),
+            )
+            .await
+            .err()
+            .unwrap()
+            .refusal();
+        assert_eq!((error.status, error.code), (429, "budget_exceeded"));
+        assert_eq!(mock.requests().len(), 1);
+    }
 }
 #[tokio::test]
 async fn an_invalid_typed_prefix_records_a_refusal_without_reading_a_key() {

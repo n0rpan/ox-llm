@@ -188,7 +188,18 @@ impl Gateway {
             ),
             Err(error) => {
                 let refusal = Error::Upstream(*error).refusal();
-                (Outcome::Failed, refusal.status, Some(refusal.code))
+                // Documented Anthropic request/auth/limit refusals precede
+                // generation. Timeouts, server and transport failures remain
+                // ambiguous and retain their conservative reservation charge.
+                let outcome = if matches!(
+                    *error,
+                    anthropic_client::Error::Http(400 | 401 | 403 | 404 | 413 | 429)
+                ) {
+                    Outcome::Refused
+                } else {
+                    Outcome::Failed
+                };
+                (outcome, refusal.status, Some(refusal.code))
             }
         };
         call.finish(outcome, status, code).map_err(Error::Refused)?;

@@ -112,7 +112,9 @@ refuse cloud use. Discovery borrows public metadata and reads no key or ledger.
 without a request-byte conversion at the engine boundary. Decoded chunks pass
 straight to reply assembly. Only the frozen tools schema needs decoding.
 
-Known refusals write private zero-spend rows. Paid calls retain process-shared
+Known refusals write private zero-spend rows. Documented Anthropic HTTP refusals
+(400, 401, 403, 404, 413, 429) settle at zero as `refused`; timeout, server and
+transport failures retain the conservative charge. Paid calls retain process-shared
 reservations until durable settlement; interrupted guards conservatively record
 unknown paid work. Trusted terminal cache usage settles even if public usage is
 omitted or final delivery cancels. Unknown paid cancellations retain the full

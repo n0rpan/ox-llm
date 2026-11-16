@@ -54,6 +54,8 @@ pub struct Usage {
 #[derive(Clone, Copy)]
 pub enum Outcome {
     Complete,
+    /// The provider explicitly refused before generation.
+    Refused,
     Failed,
     Cancelled {
         request_bytes: usize,
@@ -194,6 +196,11 @@ impl Hold {
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
         let mut row = json!({"remote":true,"remote_provider":model.provider,"remote_model":model.upstream});
+        if matches!(outcome, Outcome::Refused) {
+            row["cost_usd"] = json!(0.0);
+            row["settled"] = json!("refused");
+            return row;
+        }
         for (field, value) in [
             ("prompt_tokens", usage.prompt),
             ("completion_tokens", usage.output),
