@@ -8,13 +8,16 @@ publish.workspace = true
 
 [features]
 default = []
+upstream-anthropic-request = ["dep:serde_json"]
+upstream-anthropic-stream = ["dep:serde_json"]
 cloud-only = ["dep:url"]
 pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
-accounting = ["policy", "pricing", "dep:nix"]
+accounting = ["policy", "pricing", "dep:nix", "dep:getrandom"]
 ledger = ["accounting", "secrets", "dep:chrono", "dep:getrandom", "dep:hmac", "dep:sha2"]
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
-transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
+anthropic-client = ["transport", "secrets", "upstream-anthropic-request", "upstream-anthropic-stream"]
+transport = ["dep:reqwest", "dep:tokio", "dep:futures-util", "dep:url"]
 
 [dependencies]
 bigdecimal = { version = "0.4", optional = true }

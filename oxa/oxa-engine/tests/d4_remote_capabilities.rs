@@ -1,6 +1,6 @@
 //! Wave D D4: per-model cloud capabilities, the offline refusal and the remote request body.
 use oxa_engine::{build_body, build_body_for, parse_info_for};
-use oxa_proto::{codes, ChatRequest, FrozenPrefix, Hints, WireMsg};
+use oxa_proto::{codes, ChatRequest, FrozenPrefix, Hints, ThinkingLevel, WireMsg};
 use serde_json::json;
 use std::sync::Mutex;
 
@@ -26,6 +26,7 @@ fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg], model: &'a str
         max_tokens: 64,
         thinking: true,
         thinking_budget: None,
+        thinking_level: Some(ThinkingLevel::High),
         preserve_thinking: true,
         hints: Hints {
             session: "session",
@@ -124,6 +125,38 @@ fn a_remote_body_skips_local_only_fields_and_uses_reasoning_effort() {
         remote.contains("\"stream_options\":{\"include_usage\":true}"),
         "{remote}"
     );
+}
+
+#[test]
+fn a_remote_body_sends_the_requested_level_as_reasoning_effort() {
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let p = prefix();
+    let messages = vec![WireMsg::user("hi")];
+    let cases = [
+        (ThinkingLevel::Off, "none"),
+        (ThinkingLevel::Minimal, "minimal"),
+        (ThinkingLevel::Low, "low"),
+        (ThinkingLevel::Medium, "medium"),
+        (ThinkingLevel::High, "high"),
+        (ThinkingLevel::Xhigh, "high"),
+        (ThinkingLevel::Max, "high"),
+    ];
+    for (level, effort) in cases {
+        let mut r = request(&p, &messages, "cloud-model");
+        r.thinking = level.enabled();
+        r.thinking_level = Some(level);
+        let mut remote = Vec::new();
+        build_body_for(&r, true, &mut remote);
+        let body: serde_json::Value = serde_json::from_slice(&remote).unwrap();
+        assert_eq!(body["reasoning_effort"], effort, "{level:?}");
+        // A local engine only ever sees the boolean.
+        let mut local = Vec::new();
+        build_body_for(&r, false, &mut local);
+        let local = String::from_utf8(local).unwrap();
+        let on = level.enabled();
+        assert!(local.contains(&format!("\"enable_thinking\":{on}")), "{local}");
+        assert!(!local.contains("reasoning_effort"), "{local}");
+    }
 }
 
 #[test]

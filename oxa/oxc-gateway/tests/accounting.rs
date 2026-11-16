@@ -22,6 +22,8 @@ impl Home {
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
         ));
         fs::create_dir(&path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
     }
     fn ledger(&self) -> PathBuf {

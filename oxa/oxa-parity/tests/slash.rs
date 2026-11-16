@@ -257,9 +257,16 @@ fn base64(data: &[u8]) -> String {
 }
 
 /// The footer's second-to-last row: model, thinking and mode (`fake-model • medium ...`).
+/// The status row: the last row, or the one above it when the `YOLO full access` badge row is
+/// drawn below the footer.
 fn footer_last(s: &Screen) -> String {
     let (rows, _) = s.size();
-    s.row(rows - 1)
+    let last = s.row(rows - 1);
+    if last.trim() == "YOLO full access" {
+        s.row(rows - 2)
+    } else {
+        last
+    }
 }
 
 /// Wait until the editor is empty and the run is over (the state after a selector closes).
@@ -809,8 +816,6 @@ fn slash_027() {
     // in the footer and a value outside the three is refused with the usage line.
     let rig = Rig::start(replies(1), RigOpts::default());
     rig.prompt("hi", "reply 1");
-    rig.slash("/mode");
-    rig.pty.wait_for_text("Mode: workspace").unwrap();
     rig.slash("/mode plan");
     rig.pty
         .wait_for_named("the plan footer", |s| footer_last(s).contains("plan"), WAIT)
@@ -821,7 +826,11 @@ fn slash_027() {
         .unwrap();
     rig.slash("/mode yolo");
     rig.pty
-        .wait_for_text("Usage: /mode [plan|workspace|ask]")
+        .wait_for_named("the yolo footer", |s| footer_last(s).contains("yolo"), WAIT)
+        .unwrap();
+    rig.slash("/mode root");
+    rig.pty
+        .wait_for_text("Usage: /mode [standard|auto|yolo|plan|workspace|ask] [--save]")
         .unwrap();
 }
 
