@@ -29,12 +29,14 @@ are introduced.
 
 ## Deliberately unresolved
 
-Main has no ChatGPT HTTP client yet; that is open PR #680. Its caller must use
-the recovery entry only for a 401 `token_expired`, retry the request at most once,
-and publish credential errors through the status conversion. This patch does
-not claim to wire that client, repair the live route, or test an HTTP retry.
-Loopback tests for the actual OAuth exchange/401 retry belong with that client,
-not a competing transport implemented in this patch.
+Main now includes the ChatGPT HTTP client from PR #680. This merge preserves
+its nonblocking `try_credentials` admission alongside the rejected-generation
+recovery API. The client still needs to call the recovery entry only for a 401
+`token_expired`, retry the request at most once, and publish credential errors
+through the status conversion. This patch does not claim to wire that client,
+repair the live route, or test an HTTP retry. Loopback tests for the actual
+OAuth exchange/401 retry belong with that integration, not a competing
+transport implemented in this patch.
 
 The frozen Python route is unchanged by owner instruction. It already acquires
 credentials per request, refreshes with a 120-second margin, and raises refresh
