@@ -404,3 +404,79 @@ fn a_late_answer_is_retained_even_when_its_question_is_the_oldest() {
         .answer
         .is_some());
 }
+
+#[test]
+fn recovery_syncs_the_prepared_policy_before_committing_its_fact() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no arguments, pointers or failure mode.
+    if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::process::CommandExt;
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .env_clear()
+            .args([
+                "--exact",
+                "standing::store::tests::recovery_syncs_the_prepared_policy_before_committing_its_fact",
+            ])
+            .uid(65534)
+            .gid(65534)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts.clone());
+    let before = standing.read().unwrap();
+    let mut after = before.next(0, 9).unwrap();
+    let request = hold(true, None);
+    after.entries.push(Entry {
+        id: "R-1".into(),
+        kind: request.kind,
+        scope: request.scope,
+        value: request.value,
+        said: request.said,
+        at: 9,
+        source: request.source,
+        supersedes: None,
+        state: EntryState::Stored,
+        reminders: 0,
+        authority: Authority::Owner,
+    });
+    let event = Event {
+        seq: 1,
+        at_ms: 9,
+        checkpoint: Checkpoint {
+            source: "standing".into(),
+            revision: 1,
+        },
+        fact: Fact::StandingChanged(after.change(None)),
+    };
+    let document = Document {
+        version: 1,
+        current: before,
+        pending: Some(Pending {
+            after,
+            observation: serde_json::from_slice(&event.to_json().unwrap()).unwrap(),
+        }),
+    };
+    standing.root.atomic(FILE, &document.bytes().unwrap()).unwrap();
+    let path = fixture.0.join("standing/standing.json");
+    let original = fs::read(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+    let recovered = standing.read();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        recovered.is_err(),
+        "policy was acknowledged before its prepared data could be synced"
+    );
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(facts.situation().unwrap().standing_revision, 0);
+    assert_eq!(standing.read().unwrap().revision, 1);
+    assert_eq!(facts.events_after(0, 64).unwrap().events.len(), 1);
+}
