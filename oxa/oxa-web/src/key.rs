@@ -83,14 +83,16 @@ fn refused(path: &Path, why: &str, fix: &str) -> KeyStatus {
 
 /// The key: `env_key` when set, else the file `<agent dir>/brave-search.key`. The file must be
 /// a regular file (not a symlink), mode 0600 or stricter (no group or other bits) and not
-/// empty after trimming. Under isolation a file below the real home is refused before it is
-/// opened.
+/// empty after trimming. Under isolation an existing file below the real home is refused
+/// before it is opened; a missing one is simply [`KeyStatus::Missing`].
 pub fn load_key(i: &KeyInputs) -> KeyStatus {
     if let Some(k) = &i.env_key {
         return KeyStatus::Found(k.clone(), KeyOrigin::Env);
     }
     let path = i.agent_dir.join(crate::KEY_FILE);
-    if i.isolation {
+    // A file that does not exist is never read, so there is nothing to refuse (an isolated
+    // HOME inside a worktree below the real home has no key and must stay quiet).
+    if i.isolation && std::fs::symlink_metadata(&path).is_ok() {
         match &i.real_home {
             Some(home) if !path.starts_with(home) => {}
             _ => {
