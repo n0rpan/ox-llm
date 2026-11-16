@@ -34,6 +34,111 @@ fn limits() -> Limits {
     }
 }
 
+fn git(home: &Directory, arguments: &[&str]) {
+    assert!(Command::new("git")
+        .args(arguments)
+        .current_dir(&home.0)
+        .env_clear()
+        .env("HOME", &home.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[test]
+fn bare_and_separate_common_worktree_metadata_refuse_private_key_children() {
+    let d = Directory::new();
+    git(&d, &["init", "--bare", "bare"]);
+    git(&d, &["init", "--separate-git-dir=metadata", "checkout"]);
+    git(
+        &d,
+        &[
+            "-C",
+            "checkout",
+            "-c",
+            "user.name=Synthetic",
+            "-c",
+            "user.email=synthetic@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "synthetic",
+        ],
+    );
+    git(
+        &d,
+        &["-C", "checkout", "worktree", "add", "--detach", "../linked"],
+    );
+    for parent in ["bare", "bare/objects", "metadata", "metadata/worktrees/linked"] {
+        let private = d.0.join(parent).join("private");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            Store::open(&private).err(),
+            Some(Error::Unsafe),
+            "Git metadata must be refused"
+        );
+        assert!(fs::read_dir(&private).unwrap().next().is_none());
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn revoke_retry_does_not_acknowledge_a_failed_directory_sync() {
+    if let Some(directory) = std::env::var_os("OXA_SHARE_REVOKE_TEST_DIRECTORY") {
+        let store = Store::open(&PathBuf::from(directory)).unwrap();
+        let c = store.create("Device", limits()).unwrap(); // fsync 1 (file), 2 (directory).
+        assert_eq!(store.revoke(&c.info.id), Err(Error::Unavailable)); // fsync 4 fails after rename.
+        assert!(store.list().unwrap()[0].revoked, "rename is already visible");
+        // Every fsync from ordinal 4 onward fails. A durable acknowledgement is
+        // impossible until the syscall failure is cleared, including on retry.
+        assert_eq!(store.revoke(&c.info.id), Err(Error::Unavailable));
+        return;
+    }
+    let d = Directory::new();
+    let trace = d.0.join("sync-trace");
+    let result = Command::new("strace")
+        .args([
+            "-f",
+            "-qq",
+            "-yy",
+            "--kill-on-exit",
+            "-e",
+            "trace=fsync",
+            "-e",
+            "inject=fsync:error=EIO:when=4+1",
+            "-o",
+        ])
+        .arg(&trace)
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "revoke_retry_does_not_acknowledge_a_failed_directory_sync",
+        ])
+        .env_clear()
+        .env("HOME", &d.0)
+        .env("XDG_CONFIG_HOME", &d.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("OXA_SHARE_REVOKE_TEST_DIRECTORY", &d.0)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "revoke retry acknowledged an injected sync failure: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let syscalls = fs::read_to_string(trace).unwrap();
+    assert!(syscalls.matches("INJECTED").count() >= 2);
+    // A new process/handle can durably revoke once normal I/O is restored.
+    let store = d.store();
+    let id = store.list().unwrap()[0].id.clone();
+    assert!(store.revoke(&id).unwrap());
+    assert!(d.store().list().unwrap()[0].revoked);
+}
+
 #[test]
 fn lifecycle_is_durable_and_only_creation_exposes_the_bearer() {
     let directory = Directory::new();
