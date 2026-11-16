@@ -34,6 +34,9 @@ HOME, cleared environment and an isolated network. No real credentials or cloud
 calls are used. The shared workspace's gateway job also runs formatting and
 strict Clippy; its result is included in `gate`.
 
+Linux accounting tests require `strace` for actual syscall ordering and injected
+sync failures. CI installs it for the isolated gateway suite.
+
 CI creates a synthetic file with a different owner before dropping capabilities
 and passes its path as `OXC_SECRET_OWNER_PATH` to the ownership test. Root test
 runs must supply such a fixture too. Unprivileged Linux runs can use the foreign

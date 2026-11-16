@@ -289,7 +289,7 @@ impl Hold {
         let row = self.record(usage, outcome);
         let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut shared = Shared::open(&self.budget.path).map_err(|_| Refusal::ledger())?;
-        if shared.failed || !shared.holds.contains_key(&self.id) {
+        if !shared.holds.contains_key(&self.id) {
             return Err(Refusal::ledger());
         }
         let result = write(&row);

@@ -53,7 +53,30 @@ struct Worker {
 }
 impl Worker {
     fn new(path: &Path, cap: f64) -> Self {
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        Self::spawn(Command::new(std::env::current_exe().unwrap()), path, cap)
+    }
+    #[cfg(target_os = "linux")]
+    fn traced(path: &Path, cap: f64, trace: &Path, inject: bool) -> Self {
+        let mut command = Command::new("strace");
+        command
+            .args([
+                "-f",
+                "-qq",
+                "-yy",
+                "--kill-on-exit",
+                "-e",
+                "trace=fsync,fdatasync,ftruncate",
+                "-o",
+            ])
+            .arg(trace);
+        if inject {
+            command.args(["-e", "inject=fsync:error=EIO:when=1"]);
+        }
+        command.arg(std::env::current_exe().unwrap());
+        Self::spawn(command, path, cap)
+    }
+    fn spawn(mut command: Command, path: &Path, cap: f64) -> Self {
+        let mut child = command
             .args([
                 "--exact",
                 "processes_share_holds_and_settled_spend",
@@ -100,6 +123,7 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
+        drop(self.child.stdin.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.reader.take().unwrap().join().unwrap();
@@ -125,7 +149,13 @@ fn worker(path: PathBuf) {
             return;
         }
     };
-    match input.next().unwrap().unwrap().as_str() {
+    let mut command = input.next().unwrap().unwrap();
+    if command == "forward" {
+        hold.mark_forwarded();
+        signal("forwarded");
+        command = input.next().unwrap().unwrap();
+    }
+    match command.as_str() {
         "release" => drop(hold),
         "settle" => {
             hold.mark_forwarded();
@@ -354,4 +384,81 @@ fn malformed_or_unsafe_persisted_state_fails_closed() {
             .reserve(&json!(1), true, &model(), 100)
             .is_err());
     }
+}
+
+#[test]
+fn paid_inflight_requests_settle_after_another_process_disables_admission() {
+    for failure in ["fail", "drop"] {
+        let home = Home::new();
+        let mut failing = Worker::new(&home.path(), 1.0);
+        let mut healthy = Worker::new(&home.path(), 1.0);
+        assert_eq!(failing.reserve(), "reserved");
+        assert_eq!(healthy.reserve(), "reserved");
+        healthy.send("forward");
+        assert_eq!(healthy.read(), "forwarded");
+        failing.send(failure);
+        assert_eq!(failing.read(), "done");
+        healthy.send("settle");
+        assert_eq!(healthy.read(), "done");
+        let rows: Vec<Value> = fs::read_to_string(home.path())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["cost_usd"], 0.0001);
+        let snapshot: Value =
+            serde_json::from_slice(&fs::read(home.0.join("requests.jsonl.holds")).unwrap()).unwrap();
+        assert_eq!(snapshot["failed"], true);
+        assert_eq!(snapshot["holds"].as_object().unwrap().len(), 1);
+        let mut next = Worker::new(&home.path(), 1.0);
+        assert_eq!(next.reserve(), "cloud_ledger_unavailable");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn durable_directory_names_precede_release_and_failed_initialization_stays_closed() {
+    let home = Home::new();
+    let trace = home.0.join("syscalls");
+    let mut worker = Worker::traced(&home.path(), 1.0, &trace, false);
+    assert_eq!(worker.reserve(), "reserved");
+    worker.send("settle");
+    assert_eq!(worker.read(), "done");
+    assert!(worker.child.wait().unwrap().success());
+    let text = fs::read_to_string(trace).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    let ledger = format!("<{}>", home.path().display());
+    let holds = format!("<{}.holds>", home.path().display());
+    let directory = format!("<{}>", home.0.display());
+    let data = lines
+        .iter()
+        .position(|line| line.contains("fdatasync(") && line.contains(&ledger) && line.ends_with("= 0"))
+        .expect("ledger data must be synced");
+    let release = lines
+        .iter()
+        .enumerate()
+        .skip(data + 1)
+        .find(|(_, line)| line.contains("ftruncate(") && line.contains(&holds))
+        .unwrap()
+        .0;
+    assert!(
+        lines[data + 1..release]
+            .iter()
+            .any(|line| line.contains("fsync(") && line.contains(&directory) && line.ends_with("= 0")),
+        "ledger directory must be durable before its hold is removed"
+    );
+
+    let home = Home::new();
+    let trace = home.0.join("sync-error");
+    let mut first = Worker::traced(&home.path(), 1.0, &trace, true);
+    assert_eq!(first.reserve(), "cloud_ledger_unavailable");
+    assert!(first.child.wait().unwrap().success());
+    assert!(fs::read_to_string(trace).unwrap().contains("INJECTED"));
+    let mut next = Worker::new(&home.path(), 1.0);
+    assert_eq!(
+        next.reserve(),
+        "cloud_ledger_unavailable",
+        "another process cannot trust a failed initialization"
+    );
 }
