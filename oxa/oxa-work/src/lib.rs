@@ -20,9 +20,11 @@ pub type Result<T> = std::result::Result<T, String>;
 
 // Lead facts consume public observations and never open runner task-state files.
 pub mod events;
+mod facts_adapter;
 mod facts_io;
 pub mod incidents;
 pub mod situation;
+pub use facts_adapter::FactObserver;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -71,7 +73,22 @@ pub struct Record {
     pub head_sha: Option<String>,
     pub tree_sha: Option<String>,
     pub interruption: Option<WorkerInterruption>,
+    pub failure_step: Option<Step>,
+    pub worker_pid: Option<u32>,
+    pub stall: Option<StallObservation>,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StallObservation {
+    pub session_id: String,
+    pub pid: u32,
+    pub last_progress_ms: u64,
+    pub deadline_ms: u64,
+}
+
+/// Front ends read the native bounded status API; the runner never parses transcripts.
+pub type StatusReader = std::sync::Arc<dyn Fn(&Path, &str) -> Result<Vec<u8>> + Send + Sync>;
 
 /// An immutable task/base/check snapshot, built before any task in its batch runs.
 pub struct PlannedTask {
@@ -299,6 +316,7 @@ pub struct RunPolicy {
     pub terminate_binary: Option<PathBuf>,
     pub offline: bool,
     pub storage: PathBuf,
+    pub status_reader: Option<StatusReader>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -443,6 +461,9 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         head_sha: None,
         tree_sha: None,
         interruption: None,
+        failure_step: None,
+        worker_pid: None,
+        stall: None,
     }
 }
 
@@ -544,6 +565,7 @@ pub fn run_task_with_observer(
         state
     };
     let mut writer = state::Writer::new(receipt.clone(), replacing);
+    let mut fresh_attempt = true;
     let mut state = if replacing {
         let old = state::load(&receipt)?;
         if planned
@@ -564,6 +586,7 @@ pub fn run_task_with_observer(
             new.offline |= old.offline;
             new
         } else {
+            fresh_attempt = false;
             old
         }
     } else {
@@ -576,6 +599,11 @@ pub fn run_task_with_observer(
     };
     // Replaying the prior checkpoint precedes this first new checkpoint or action.
     let step = state.record.step;
+    if fresh_attempt {
+        writer
+            .save_kind(&mut state, Step::Preparing, CheckpointKind::Unblocked, observer)
+            .map_err(RunError::Checkpoint)?;
+    }
     writer
         .save(&mut state, step, observer)
         .map_err(RunError::Checkpoint)?;
@@ -592,6 +620,7 @@ pub fn run_task_with_observer(
         Ok(()) => {}
         Err(RunError::Checkpoint(error)) => return Err(RunError::Checkpoint(error)),
         Err(RunError::Blocked(error)) => {
+            state.record.failure_step.get_or_insert(state.record.step);
             state.record.outcome = if state.record.outcome == Outcome::Interrupted
                 || state
                     .record
@@ -610,6 +639,7 @@ pub fn run_task_with_observer(
         .save(&mut state, Step::Saving, observer)
         .map_err(RunError::Checkpoint)?;
     if let Err(error) = execute::save_work(&root, binary, task, &policy, &lock_file, &mut state.record) {
+        state.record.failure_step = Some(Step::Saving);
         if state.record.outcome != Outcome::Interrupted {
             state.record.outcome = Outcome::Blocked;
         }
@@ -617,6 +647,14 @@ pub fn run_task_with_observer(
             state.record.detail.push('\n');
         }
         state.record.detail.push_str(&format!("save: {error}"));
+    }
+    if matches!(
+        state.record.outcome,
+        Outcome::Red | Outcome::Blocked | Outcome::Interrupted
+    ) {
+        writer
+            .save_kind(&mut state, Step::Saving, CheckpointKind::Blocked, observer)
+            .map_err(RunError::Checkpoint)?;
     }
     writer
         .save(&mut state, Step::Finished, observer)

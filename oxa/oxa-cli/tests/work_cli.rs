@@ -1345,7 +1345,7 @@ fn security_failed_receipt_write_never_publishes_a_torn_record() {
     let retained: serde_json::Value =
         serde_json::from_slice(&std::fs::read(storage(&env).join("test.json")).unwrap())
             .expect("the previously durable checkpoint remains complete JSON");
-    assert_eq!(retained["version"], 1);
+    assert_eq!(retained["version"], 2);
     assert_eq!(retained["record"]["step"], "worker", "{retained}");
     assert_eq!(retained["record"]["outcome"], "running", "{retained}");
     assert!(retained["record"]["checkpoint_revision"].as_u64().unwrap() > 0);

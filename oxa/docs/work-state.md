@@ -3,11 +3,11 @@
 The runner is the sole writer of task state. `run_task_with_observer` accepts a
 `CheckpointObserver: Sync` with `checkpoint(&Record) -> Result<()>`. Observers
 consume public typed records; they never read or rewrite private `State` files.
-The CLI currently supplies a no-op while the separately owned facts store is
-integrated. The hook is not itself an event journal or situation implementation.
+The CLI supplies `FactObserver`, which maps each checkpoint to one typed fact in
+the separately owned facts store. It never forwards prompts or diagnostic prose.
 
 Checkpoints live outside writable Git binds in the protected per-repository
-runner root. `<id>.json` stores a versioned private state with its task spec,
+runner root. `<id>.json` stores version 2 private state with its task spec,
 frozen execution inputs, offline policy, deadline and public record. `<id>.lock`
 is a stable inherited kernel lock. Status is read-only and does not acquire it.
 Facts storage receives a separate `facts/` child of this protected root, avoiding
@@ -47,6 +47,30 @@ not restart the worker. A preparing transition can establish a `TaskStarted`
 location; subsequent transitions update the closed step and optional session.
 Worker completion, local acceptance, publication, external acceptance and merge
 remain separate observations. Only a merge is landed work.
+
+`blocked` and `unblocked` kinds each get their own durable revision. A failed
+attempt records its block before the separate finished transition; a new attempt
+explicitly clears that task block before its preparing location. `failure_step`
+preserves a closed stage for terminal classification, including a save failure.
+Changing a PR head does not clear a block or standing hold.
+
+`oxa work situation [--json]` and `oxa work events --after N [--json]` consume the
+public bounded store APIs. Reads recover the one pending checkpoint observation
+before returning a snapshot/page. JSON uses the common versioned documents; event
+pages contain at most 64 entries and expose rotation gaps. Missing/corrupt stores
+fail; reads never initialize an empty situation. Task admission initializes facts
+only before the repository's first checkpoint. An initialized runner with missing
+facts refuses admission rather than recreating history.
+
+The existing stdout reader also reads the native status API at its saved
+15-minute progress deadline. The child receives `--stall-timeout 900` and its
+header checkpoints both the session ID and PID. Identity/phase/deadline validation
+uses `incidents::detect_stall`; missing or stale data stays unavailable. A valid
+stall gets a separate durable `worker_stalled` revision and incident. Repeated
+reads of that same session/PID/progress period do not append it again. The task
+keeps running, with the same wall deadline; no watcher thread or process is added.
+Status and incident I/O stay off the parent's deadline loop. An anonymous socket
+ends the reader when the parent has reaped the child, including after early EOF.
 
 Records expose fixed outcomes and typed deadline interruption. Their `detail`
 is bounded diagnostic context for the owner, not a facts payload: event adapters

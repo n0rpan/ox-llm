@@ -126,3 +126,12 @@ one short line per task.
 The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate
 integration; this slice does not infer facts from worker prose or raw logs.
+
+`oxa work situation [--json]` shows running locations, checked and published work,
+landed pull requests, blocks, asks and recent incidents from the bounded facts
+store. Only a merge observation is landed work. `oxa work events --after N
+[--json]` reads up to 64 sequence-numbered observations after an exclusive cursor;
+a retention gap is explicit and requires reloading the situation. JSON uses the
+shared typed documents. Missing facts fail instead of becoming an empty view.
+These reads recover a pending observation but never start a worker or acquire a
+task lock. Plain task status remains a read-only task-state observation.

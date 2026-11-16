@@ -2,6 +2,8 @@ use oxa_config::{Dirs, Env};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[path = "work_facts.rs"]
+mod facts;
 
 pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
     crate::dispatch::project_trusted(
@@ -92,13 +94,22 @@ pub(crate) fn run(
             Some(&root),
             Some(&dirs.home),
         );
+        let status_dirs = dirs.clone();
+        let status_env = env.clone();
         let policy = oxa_work::RunPolicy {
             git_binary,
             host_path,
             terminate_binary,
             offline: oxa_proto::offline(),
             storage: dirs.agent_dir.join("work").join(key),
+            status_reader: Some(std::sync::Arc::new(move |cwd, id| {
+                let mut bytes = Vec::new();
+                crate::status::run(&[id.to_owned()], &status_dirs, cwd, &status_env, &mut bytes)
+                    .map_err(|_| "worker status unavailable".to_owned())?;
+                Ok(bytes)
+            })),
         };
+        protected_storage(&policy.storage, &root, &common)?;
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
                 [_] => false,
@@ -126,6 +137,9 @@ pub(crate) fn run(
                 }
             }
             return Ok(0);
+        }
+        if let Some(code) = facts::read(args, &policy.storage, out)? {
+            return Ok(code);
         }
         let rerun = args.last().is_some_and(|arg| arg == "--rerun");
         let task_args = if rerun { &args[..args.len() - 1] } else { args };
@@ -176,6 +190,11 @@ pub(crate) fn run(
             })
             .collect();
         let mut code = 0;
+        let observer = if planned.iter().any(Result::is_ok) {
+            Some(oxa_work::FactObserver::for_run(&policy.storage)?)
+        } else {
+            None
+        };
         for task in planned {
             let record = match task {
                 Ok(plan) => {
@@ -185,7 +204,7 @@ pub(crate) fn run(
                         &plan,
                         &policy,
                         rerun,
-                        &|_: &oxa_work::Record| Ok(()),
+                        observer.as_ref().ok_or("runner facts are unavailable")?,
                     ) {
                         Ok(record) => record,
                         Err(oxa_work::RunError::Blocked(detail)) => {
@@ -216,4 +235,51 @@ pub(crate) fn run(
             2
         }
     }
+}
+
+// Owner facts and standing data must not be writable through a worker's Git bind.
+fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
+    if !storage.is_absolute()
+        || storage
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("runner storage must have an absolute canonical path".into());
+    }
+    let existing = storage
+        .ancestors()
+        .find(|path| path.exists())
+        .ok_or("runner storage has no existing parent")?;
+    let resolved = existing
+        .canonicalize()
+        .map_err(|_| "cannot resolve runner storage")?
+        .join(
+            storage
+                .strip_prefix(existing)
+                .map_err(|_| "cannot resolve runner storage")?,
+        );
+    let git_repo = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("Git directory has no parent")?
+    } else {
+        common
+    };
+    let trees = git_repo
+        .parent()
+        .ok_or("repository has no worktree parent")?
+        .join(".oxa-worktrees")
+        .join(git_repo.file_name().ok_or("repository has no name")?);
+    if resolved.starts_with(repo) || resolved.starts_with(common) || resolved.starts_with(trees) {
+        return Err("runner storage must be outside repositories and task worktrees".into());
+    }
+    for parent in resolved.ancestors() {
+        if parent.join(".git").exists()
+            || (parent.join("HEAD").is_file()
+                && parent.join("config").is_file()
+                && parent.join("objects").is_dir()
+                && parent.join("refs").is_dir())
+        {
+            return Err("runner storage must be outside Git metadata and worktrees".into());
+        }
+    }
+    Ok(())
 }

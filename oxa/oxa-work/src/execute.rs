@@ -78,9 +78,33 @@ impl Runner<'_> {
                         self.lock,
                         session.as_deref(),
                         remaining,
-                        &mut |id| {
-                            state.record.session_id = Some(id.to_owned());
-                            self.writer.save(state, step, self.observer)
+                        &mut |observation| match observation {
+                            worker::Observation::Session { id, pid } => {
+                                state.record.session_id = Some(id);
+                                state.record.worker_pid = Some(pid);
+                                self.writer.save(state, step, self.observer)
+                            }
+                            worker::Observation::Stall(stall) => {
+                                if state.record.stall.as_ref().is_some_and(|old| {
+                                    old.session_id == stall.session_id
+                                        && old.pid == stall.pid
+                                        && old.last_progress_ms == stall.last_progress_ms
+                                }) {
+                                    return Ok(());
+                                }
+                                state.record.stall = Some(crate::StallObservation {
+                                    session_id: stall.session_id,
+                                    pid: stall.pid,
+                                    last_progress_ms: stall.last_progress_ms,
+                                    deadline_ms: stall.deadline_ms,
+                                });
+                                self.writer.save_kind(
+                                    state,
+                                    step,
+                                    CheckpointKind::WorkerStalled,
+                                    self.observer,
+                                )
+                            }
                         },
                     );
                     // Session persistence fails while the child is active. Its reader
@@ -114,6 +138,7 @@ impl Runner<'_> {
                         .execution
                         .as_mut()
                         .ok_or("missing task execution checkpoint")?;
+                    state.record.failure_step = error.as_ref().map(|_| step);
                     point.worker_error = error;
                     point.merge_error =
                         tree::ensure_merged(self.policy, &tree, &point.base, &task.branch).err();

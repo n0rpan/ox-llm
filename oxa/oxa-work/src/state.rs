@@ -6,7 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const VERSION: u64 = 1;
+const VERSION: u64 = 2;
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -28,6 +28,9 @@ pub enum CheckpointKind {
     #[default]
     TaskTransition,
     WorkerFinished,
+    Blocked,
+    Unblocked,
+    WorkerStalled,
 }
 
 /// Called after the checkpoint and directory are synced, and again on recovery.
@@ -138,6 +141,9 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         "head_sha",
         "tree_sha",
         "interruption",
+        "failure_step",
+        "worker_pid",
+        "stall",
     ];
     let record = value
         .get("record")
@@ -318,6 +324,7 @@ mod tests {
                 terminate_binary: None,
                 offline: true,
                 storage: fixture.0.clone(),
+                status_reader: None,
             };
             for rerun in [false, true] {
                 let planned = crate::plan_task_for_run(&fixture.0, state.task.clone(), &policy, rerun);
