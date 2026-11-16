@@ -1119,7 +1119,7 @@ fn uuid_v4() -> String {
 
 /// Session ids become file names and are matched by prefix: no separators, no control or
 /// whitespace characters, no leading dot.
-fn validate_session_id(id: &str) -> Result<(), OxaError> {
+pub(crate) fn validate_session_id(id: &str) -> Result<(), OxaError> {
     let bad = id.is_empty()
         || id.len() > 128
         || id.starts_with('.')
@@ -1161,7 +1161,7 @@ fn unsafe_path(path: &Path) -> OxaError {
 }
 
 /// Refuse a session file that is a symlink, or whose directory is one.
-fn check_safe(path: &Path) -> Result<(), OxaError> {
+pub(crate) fn check_safe(path: &Path) -> Result<(), OxaError> {
     if path.parent().is_some_and(is_symlink) || is_symlink(path) {
         return Err(unsafe_path(path));
     }
@@ -1169,7 +1169,7 @@ fn check_safe(path: &Path) -> Result<(), OxaError> {
 }
 
 /// Create a directory (recursively) with mode 0700. A symlink is refused.
-fn ensure_dir(p: &Path) -> Result<(), OxaError> {
+pub(crate) fn ensure_dir(p: &Path) -> Result<(), OxaError> {
     if is_symlink(p) {
         return Err(unsafe_path(p));
     }
@@ -1193,7 +1193,7 @@ fn open_err(path: &Path, e: &io::Error) -> OxaError {
     OxaError::io(&format!("cannot open session file {}", path.display()), e)
 }
 
-fn read_file(path: &Path) -> Result<Vec<u8>, OxaError> {
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, OxaError> {
     let mut f = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -1343,27 +1343,6 @@ pub fn purge_session_file(path: &Path) -> Result<(), OxaError> {
 pub fn remove_spill_dir(tmp_dir: &Path, id: &str) -> Result<usize, OxaError> {
     validate_session_id(id)?;
     remove_tree(&tmp_dir.join(id))
-}
-
-/// #576: [`remove_spill_dir`] for a session that was just removed from `store`, unless another
-/// session was forked or cloned from it (`parentSession`). Fork/clone copy the history byte for
-/// byte, so the copy's tool results still name `<tmp_dir>/<id>/...`; those files stay readable
-/// (see `attach_ids`) for as long as a child exists. Returns the number of files removed.
-pub fn remove_spill_dir_unless_forked(
-    store: &dyn crate::SessionStore,
-    tmp_dir: &Path,
-    removed: &crate::SessionRef,
-) -> Result<usize, OxaError> {
-    validate_session_id(&removed.id)?;
-    let path = removed.path.to_string_lossy();
-    let forked = store
-        .list(None)
-        .iter()
-        .any(|m| m.sref.id != removed.id && m.parent_session.as_deref() == Some(path.as_ref()));
-    if forked {
-        return Ok(0);
-    }
-    remove_spill_dir(tmp_dir, &removed.id)
 }
 
 /// P6: the whole spill directory `tmp_dir` (every session's spill files and the codemode

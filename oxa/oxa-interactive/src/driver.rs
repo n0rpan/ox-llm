@@ -2163,7 +2163,11 @@ impl<'a> Loop<'a> {
         if session.id == self.session.id {
             return (true, "Cannot delete the currently active session".to_string());
         }
-        let removed = match self.opts.store.remove(session) {
+        let removed = match oxa_session::remove_session_preserving_spills(
+            self.opts.store.as_ref(),
+            &self.opts.dirs.tmp_dir,
+            session,
+        ) {
             Ok(removed) => removed,
             Err(e) => return (true, format!("Failed to delete: {}", e.message)),
         };
