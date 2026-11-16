@@ -2417,3 +2417,6 @@ mod toolcall_stream_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod steering_tests;
