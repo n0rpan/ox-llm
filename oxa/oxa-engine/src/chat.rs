@@ -375,6 +375,7 @@ impl ReplyAssembler {
                 content: self.content,
                 reasoning: self.reasoning,
                 tool_calls: self.calls,
+                provider_history: None,
                 tool_call_id: None,
             },
             finish,

@@ -9,3 +9,4 @@ pub mod chatgpt_tokens;
 #[cfg(feature = "anthropic-client")]
 pub mod models;
 pub mod request;
+pub mod stream;
