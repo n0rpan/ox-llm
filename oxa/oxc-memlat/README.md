@@ -6,8 +6,9 @@
 `/etc/local-ai/memlat-boot.json`; the boot mutex remains
 `/run/lock/boot-partition.lock`. No command reboots the machine.
 
-The release stage installs the native executable at the existing hooks' exact
-path, `/usr/local/libexec/local-ai-memlat-boot`. It does not install a policy,
+The release stage installs the native executable at
+`/usr/bin/local-ai-memlat-boot`; the hook templates use the same path.
+It does not install a policy,
 change an ESP, enable MEMLAT, or install new hooks. Existing approved policy
 files continue to work; the legacy `builder` field is retained but no Python
 module is imported. Rebuild uses native unsigned PE32+ validation/patching and
@@ -33,3 +34,8 @@ that write fails. A regression test fails with that ordering and passes with
 the Rust ordering. Ambiguous menus or an unverifiable STOCK image still refuse
 without guessing; the existing pre-transaction hook's `AbortOnFail` prevents
 the kernel update. This difference requires explicit orchestrator review.
+
+Existing manually installed hooks that still reference the old
+`/usr/local/libexec` path must be updated to the supplied templates during the
+owner-approved laptop installation. The package never overwrites a manually
+installed file under `/usr/local` and never changes the ESP during installation.

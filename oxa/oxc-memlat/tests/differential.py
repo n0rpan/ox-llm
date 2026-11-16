@@ -200,7 +200,7 @@ with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:
     (root/'LICENSE').write_text('synthetic license fixture\n')
     destination=Path(directory)/'payload'
     subprocess.run(['/usr/bin/python3','-I',str(root/'packaging/release/stage.py'),str(destination)],check=True)
-    installed=destination/'usr/local/libexec/local-ai-memlat-boot'
+    installed=destination/'usr/bin/local-ai-memlat-boot'
     assert installed.read_bytes()==Path(RUST).read_bytes()
     assert installed.stat().st_mode & 0o777 == 0o755
     assert not list(destination.rglob('memlat_boot.py'))

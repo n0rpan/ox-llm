@@ -16,13 +16,9 @@ dest = args.destination.resolve()
 if dest.exists():
     raise SystemExit('destination must be fresh')
 (dest / 'usr/bin').mkdir(parents=True)
-for workspace, names in [('engine', ('oxe', 'oxe-server')), ('oxa', ('oxa',))]:
+for workspace, names in [('engine', ('oxe', 'oxe-server')), ('oxa', ('oxa', 'local-ai-memlat-boot'))]:
     for name in names:
         shutil.copy2(root / workspace / 'target/release' / name, dest / 'usr/bin' / name)
-# Keep the installed hook ABI; policy/ESP mutation remains an explicit owner action.
-memlat = dest / 'usr/local/libexec/local-ai-memlat-boot'
-memlat.parent.mkdir(parents=True)
-shutil.copy2(root / 'oxa/target/release/local-ai-memlat-boot', memlat)
 for workspace in ('oxc', 'oxc-rs'):
     if (root / workspace / 'Cargo.toml').is_file():
         for binary in sorted((root / workspace / 'target/release').iterdir()):
@@ -77,4 +73,4 @@ for path in dest.rglob('*'):
     if path.is_dir():
         path.chmod(0o755)
     elif path.is_file() and not path.is_symlink():
-        path.chmod(0o755 if path.parent == dest / 'usr/bin' or path == memlat else 0o644)
+        path.chmod(0o755 if path.parent == dest / 'usr/bin' else 0o644)
