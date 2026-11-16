@@ -22,8 +22,10 @@ pub struct Model {
     pub id: String,
     pub context_length: u64,
     pub max_completion_tokens: Option<u64>,
-    pub prompt_price_per_token: BigDecimal,
-    pub completion_price_per_token: BigDecimal,
+    /// `None` when OpenRouter reports the unavailable-price sentinel `-1`.
+    pub prompt_price_per_token: Option<BigDecimal>,
+    /// `None` when OpenRouter reports the unavailable-price sentinel `-1`.
+    pub completion_price_per_token: Option<BigDecimal>,
     pub tools: bool,
 }
 
@@ -149,8 +151,8 @@ impl Client {
                         serde_json::Value::Null => None,
                         value => Some(value.as_u64().ok_or(Error::Protocol)?),
                     },
-                    prompt_price_per_token: parse_decimal(prompt)?,
-                    completion_price_per_token: parse_decimal(completion)?,
+                    prompt_price_per_token: parse_price(prompt)?,
+                    completion_price_per_token: parse_price(completion)?,
                     tools: parameters
                         .iter()
                         .any(|parameter| parameter.as_str() == Some("tools")),
@@ -212,16 +214,25 @@ pub fn classify_refusal(status: u16, body: &[u8], key: &Key) -> Refusal {
         .map(str::to_owned);
     let kind = match (status, limit_source.as_deref()) {
         (429, _) => RefusalKind::RateLimit,
-        (402, Some("key")) => RefusalKind::KeyLimit,
-        (402, Some("account")) => RefusalKind::CreditExhausted,
+        (402, Some("openrouter_key_limit")) => RefusalKind::KeyLimit,
+        (402, Some("openrouter_credits")) => RefusalKind::CreditExhausted,
         _ => RefusalKind::Other,
     };
     Refusal { kind, limit_source }
 }
 
+fn parse_price(raw: &str) -> Result<Option<BigDecimal>, Failure> {
+    // The provider's sentinel is not a free price or a malformed model.
+    if raw == "-1" {
+        Ok(None)
+    } else {
+        parse_decimal(raw).map(Some)
+    }
+}
+
 fn parse_decimal(raw: &str) -> Result<BigDecimal, Failure> {
     // Bound adversarial coefficients/exponents before arithmetic, without ever
-    // passing through f32/f64. Negative prices denote unavailable pricing.
+    // passing through f32/f64. Only parse_price accepts the unavailable sentinel.
     if raw.len() > 1024 {
         return Err(Error::Protocol.into());
     }
@@ -385,12 +396,44 @@ mod tests {
         assert_eq!(models[0].max_completion_tokens, Some(8192));
         assert_eq!(
             models[0].prompt_price_per_token,
-            decimal("0.0000001234567890123456789")
+            Some(decimal("0.0000001234567890123456789"))
         );
-        assert_eq!(models[0].completion_price_per_token, decimal("0.00000025"));
+        assert_eq!(models[0].completion_price_per_token, Some(decimal("0.00000025")));
         assert!(models[0].tools);
         assert!(!models[1].tools);
         assert_eq!(models[1].max_completion_tokens, None);
+        task.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn models_unavailable_prices_do_not_discard_priced_models() {
+        let fixture = Fixture::new();
+        let body = json!({"data": [
+            {"id":"synthetic/router", "context_length":128000,
+             "pricing":{"prompt":"-1", "completion":"-1"}, "supported_parameters":["tools"]},
+            {"id":"synthetic/priced", "context_length":8192,
+             "pricing":{"prompt":"0.000001", "completion":"0"}, "supported_parameters":[]},
+            {"id":"synthetic/partial", "context_length":8192,
+             "pricing":{"prompt":"0", "completion":"-1"}, "supported_parameters":[]}
+        ]})
+        .to_string();
+        let (base, task) = mock(vec![("models/user", 200, body, Duration::ZERO)]);
+        let models = Client::new(&base, Duration::from_secs(2))
+            .unwrap()
+            .models(&fixture.key())
+            .await
+            .unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].id, "synthetic/router");
+        assert_eq!(models[0].prompt_price_per_token, None);
+        assert_eq!(models[0].completion_price_per_token, None);
+        assert!(models[0].tools);
+        assert_eq!(models[1].id, "synthetic/priced");
+        assert_eq!(models[1].prompt_price_per_token, Some(decimal("0.000001")));
+        assert_eq!(models[1].completion_price_per_token, Some(decimal("0")));
+        assert_eq!(models[2].id, "synthetic/partial");
+        assert_eq!(models[2].prompt_price_per_token, Some(decimal("0")));
+        assert_eq!(models[2].completion_price_per_token, None);
         task.join().unwrap();
     }
 
@@ -412,8 +455,9 @@ mod tests {
     async fn non_200_preserves_limit_source_without_echoing_key() {
         let fixture = Fixture::new();
         for (status, source, kind) in [
-            (402, "key", RefusalKind::KeyLimit),
-            (402, "account", RefusalKind::CreditExhausted),
+            (402, "openrouter_key_limit", RefusalKind::KeyLimit),
+            (402, "openrouter_credits", RefusalKind::CreditExhausted),
+            (402, "unknown_limit", RefusalKind::Other),
             (429, "provider", RefusalKind::RateLimit),
             (503, CREDENTIAL, RefusalKind::Other),
         ] {
@@ -458,8 +502,11 @@ mod tests {
         )
         .unwrap();
         assert!(!format!("{client:?}").contains(CREDENTIAL));
-        for raw in ["NaN", "-1", "1e1000000000", "1e-1000000000", "not a price"] {
+        assert_eq!(parse_price("-1").unwrap(), None);
+        assert_eq!(parse_decimal("-1").unwrap_err().error, Error::Protocol);
+        for raw in ["NaN", "-2", "1e1000000000", "1e-1000000000", "not a price"] {
             assert_eq!(parse_decimal(raw).unwrap_err().error, Error::Protocol);
+            assert_eq!(parse_price(raw).unwrap_err().error, Error::Protocol);
         }
         let fixture = Fixture::new();
         let refusal = classify_refusal(402, CREDENTIAL.as_bytes(), &fixture.key());
