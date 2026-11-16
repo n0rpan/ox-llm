@@ -90,12 +90,6 @@ impl PathGuard {
         self.denies(p) && !self.is_builtin_skill(p)
     }
 
-    /// `p` (absolute) is inside the spill directory (`tmp`): oxa's own output files, which its
-    /// truncation notices tell the model to read.
-    pub fn is_spill(&self, p: &Path) -> bool {
-        self.allow.iter().any(|a| is_inside(p, a))
-    }
-
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
     pub fn is_builtin_skill(&self, p: &Path) -> bool {
         self.read_allow.iter().any(|a| is_inside(p, a))
@@ -177,6 +171,8 @@ fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
 pub struct ModePolicy {
     grants: Vec<Access>,
     guard: PathGuard,
+    /// Only the active session's output is readable without asking, not all of agent/tmp.
+    spill_dir: Option<PathBuf>,
     /// O-182: while on, a question of the table is answered with "allow" (see
     /// [`ModePolicy::with_yolo`]).
     yolo: Option<YoloSwitch>,
@@ -189,7 +185,10 @@ impl PartialEq for ModePolicy {
             (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
-        self.grants == other.grants && self.guard == other.guard && same_switch
+        self.grants == other.grants
+            && self.guard == other.guard
+            && self.spill_dir == other.spill_dir
+            && same_switch
     }
 }
 
@@ -320,7 +319,8 @@ impl Policy for ModePolicy {
             // #492, #531: the advertised built-in skills and oxa's own spill files are read
             // without asking, wherever the cwd is.
             if matches!(a, Access::Read(_))
-                && (self.guard.is_builtin_skill(&abs) || self.guard.is_spill(&abs))
+                && (self.guard.is_builtin_skill(&abs)
+                    || self.spill_dir.as_ref().is_some_and(|dir| is_inside(&abs, dir)))
             {
                 return Decision::Allow;
             }
@@ -348,6 +348,10 @@ impl Policy for ModePolicy {
             },
             d => d,
         }
+    }
+
+    fn set_spill_dir(&mut self, dir: &Path) {
+        self.spill_dir = Some(dir.to_path_buf());
     }
 
     fn remember(&mut self, a: &Access) {
