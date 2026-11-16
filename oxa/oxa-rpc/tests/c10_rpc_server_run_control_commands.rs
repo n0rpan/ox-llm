@@ -880,13 +880,13 @@ fn wrap_up_retains_queued_errors_without_running_later_commands() {
             let (outcome, records) = rpc.finish_outcome();
             drop(input);
 
-            let expected = if fail_prompt {
-                RunOutcome::Failed(codes::ENGINE_DOWN)
+            let (expected, expected_code) = if fail_prompt {
+                (RunOutcome::Failed(codes::ENGINE_DOWN), 2)
             } else {
-                RunOutcome::Failed(codes::INVALID)
+                (RunOutcome::Failed(codes::INVALID), 1)
             };
             assert_eq!(outcome, expected, "{reason:?}/fail_prompt={fail_prompt}");
-            assert_eq!(outcome.exit_code(), 1);
+            assert_eq!(outcome.exit_code(), expected_code);
             assert!(!records
                 .iter()
                 .any(|record| record["type"] == "response" && record["id"] == "late"));
