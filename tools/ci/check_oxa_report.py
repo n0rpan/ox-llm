@@ -10,6 +10,8 @@ IGNORED = {
     ('oxa-core::v020_token_dump', 'dump_token_transcripts'),
     ('oxa-interactive::v020_arcade_anim', 'frame_cost'),
     ('oxa-interactive::v020_arcade_pixels', 'pixel_cost_and_previews'),
+    # Owner-requested pre-S7 proof (#681). Remove with its #[ignore] when S7 lands.
+    ('oxa-cli::no_python_in_path', 'print_uses_native_gateway_without_python_or_controller'),
 }
 
 
