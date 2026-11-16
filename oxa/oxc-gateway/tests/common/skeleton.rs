@@ -6,7 +6,7 @@ use std::{
     io::Write,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 pub const MODEL: &str = "synthetic-cloud";
@@ -23,12 +23,19 @@ impl Fixture {
         Self::for_endpoint(&mock.base_url())
     }
     pub fn for_endpoint(endpoint: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "oxc-skeleton-{}-{}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        DirBuilder::new().mode(0o700).create(&root).unwrap();
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = loop {
+            let path = std::env::temp_dir().join(format!(
+                "oxc-skeleton-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match DirBuilder::new().mode(0o700).create(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("cannot create private synthetic fixture: {error}"),
+            }
+        };
         let key_path = root.join("credentials.json");
         let mut key = OpenOptions::new()
             .write(true)
