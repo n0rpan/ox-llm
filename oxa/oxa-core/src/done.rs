@@ -32,7 +32,9 @@ const PROBE_TIMEOUT_S: u64 = 20;
 /// size, times, inode and mode; `None` outside a git repo, without git, or on a timeout.
 /// The probes run on the host, so they only list files (`ls-files`): nothing that can start a
 /// repository-configured program (`status` and `diff` run clean filters, textconv, external
-/// diff). Files are stat-ed here instead of diffed by git.
+/// diff). Files are stat-ed here instead of diffed by git. A same-size in-place rewrite that
+/// restores mtime within one ctime tick can be missed on coarse-timestamp filesystems; file
+/// tools mark edits directly, independently of this best-effort bash probe.
 fn tree_fingerprint(cwd: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     use std::os::unix::ffi::OsStrExt;
@@ -329,6 +331,65 @@ fn tail(s: &str) -> String {
 mod tests {
     use super::tree_fingerprint;
     use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fingerprint_does_not_read_tracked_or_untracked_file_contents() {
+        // Linux counts read(2) bytes even when they hit the page cache. Use this thread's
+        // counter so concurrent tests and the git pipe-reader threads cannot affect it.
+        fn bytes_read() -> u64 {
+            std::fs::read_to_string("/proc/thread-self/io")
+                .unwrap()
+                .lines()
+                .find_map(|line| line.strip_prefix("rchar: "))
+                .unwrap()
+                .parse()
+                .unwrap()
+        }
+
+        let dir = std::env::temp_dir().join(format!("oxa-fp-no-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+        const FILE_SIZE: usize = 64 * 1024;
+        for name in ["tracked.txt", "untracked.txt"] {
+            std::fs::write(dir.join(name), vec![b'x'; FILE_SIZE]).unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["add", "--", "tracked.txt"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+
+        // Prove that the counter detects a real content read before testing the probe.
+        let before = bytes_read();
+        assert_eq!(std::fs::read(dir.join("tracked.txt")).unwrap().len(), FILE_SIZE);
+        assert!(bytes_read() - before >= FILE_SIZE as u64);
+        for age in [0, 3600] {
+            let mtime = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+            for name in ["tracked.txt", "untracked.txt"] {
+                std::fs::File::options()
+                    .write(true)
+                    .open(dir.join(name))
+                    .unwrap()
+                    .set_modified(mtime)
+                    .unwrap();
+            }
+            let before = bytes_read();
+            let fingerprint = tree_fingerprint(&dir);
+            let read = bytes_read() - before;
+            assert!(fingerprint.is_some());
+            // Allow the tiny /proc accounting read itself, but not even one fixture file.
+            assert!(read < FILE_SIZE as u64, "probe read {read} bytes at age {age}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn fingerprint_stays_stable_as_an_unchanged_file_ages() {
