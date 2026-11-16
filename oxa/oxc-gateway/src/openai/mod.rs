@@ -1,4 +1,5 @@
 //! Opt-in, stateless OpenAI Responses helpers and explicitly configured transport.
+pub mod chatgpt_limits;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod client;
 

@@ -94,9 +94,12 @@ pub struct Gateway {
 }
 impl Gateway {
     pub fn new(runtime: Runtime) -> Result<Self, Error> {
+        Self::with_read_timeout(runtime, Some(Duration::from_secs(1800)))
+    }
+    pub fn with_read_timeout(runtime: Runtime, timeout: Option<Duration>) -> Result<Self, Error> {
         Ok(Self {
             runtime,
-            client: Client::new().map_err(Error::Upstream)?,
+            client: Client::with_read_timeout(timeout).map_err(Error::Upstream)?,
             #[cfg(feature = "upstream-openai")]
             openai: crate::openai::client::Client::new().map_err(Error::OpenAi)?,
         })
