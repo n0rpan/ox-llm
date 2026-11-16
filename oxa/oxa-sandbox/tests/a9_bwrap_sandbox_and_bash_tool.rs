@@ -746,6 +746,7 @@ fn bash_tool_explains_discarded_scratch() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let tool = oxa_tools::BashTool::new();
     let run = |command: &str| tool.run(&serde_json::json!({ "command": command }), &cx, &mut |_| {});
