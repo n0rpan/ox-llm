@@ -49,6 +49,62 @@ fn retained_ancestry_is_private_and_only_lives_as_long_as_its_descendant() {
 }
 
 #[test]
+fn cleanup_in_another_session_store_preserves_unchecked_ancestry() {
+    use oxa_session::FsStore;
+
+    for remove_source_from_other_store in [false, true] {
+        let env = oxa_fake::TestEnv::new();
+        let tmp = env.root().join("tmp");
+        let root_a = env.root().join("sessions-a");
+        let store_a = FsStore::new(root_a.clone());
+        let store_b = FsStore::new(env.root().join("sessions-b"));
+        let cwd = Path::new("/work/project");
+        let source = store_a.create(cwd, Some("source"), None).unwrap();
+        let child = store_a.create(cwd, Some("child"), Some(&source.path)).unwrap();
+        let unrelated = store_b.create(cwd, Some("unrelated"), None).unwrap();
+        for session in [&source, &unrelated] {
+            fs::create_dir_all(tmp.join(&session.id)).unwrap();
+            fs::write(tmp.join(&session.id).join("output.txt"), "output").unwrap();
+        }
+        // FsStore can also resolve and delete an explicit path outside its own root.
+        let deleting_store = if remove_source_from_other_store {
+            &store_b
+        } else {
+            &store_a
+        };
+        remove_session_preserving_spills(deleting_store, &tmp, &source).unwrap();
+        assert_eq!(
+            remove_spill_dir_unless_forked(deleting_store, &tmp, &source).unwrap(),
+            0
+        );
+        remove_session_preserving_spills(&store_b, &tmp, &unrelated).unwrap();
+        assert_eq!(
+            remove_spill_dir_unless_forked(&store_b, &tmp, &unrelated).unwrap(),
+            1
+        );
+        assert!(!tmp.join("unrelated").exists());
+        assert_eq!(
+            fs::read_to_string(tmp.join("source/output.txt")).unwrap(),
+            "output"
+        );
+        assert!(tmp.join(".spill-ancestry/source.json").is_file());
+        // Reopening the original store must still grant the child's inherited read scope.
+        let reopened = FsStore::new(root_a);
+        assert_eq!(
+            inherited_spill_dirs(&reopened, &tmp, &child),
+            vec![tmp.join("source")]
+        );
+        remove_session_preserving_spills(&reopened, &tmp, &child).unwrap();
+        assert_eq!(
+            remove_spill_dir_unless_forked(&reopened, &tmp, &child).unwrap(),
+            1
+        );
+        assert!(!tmp.join("source").exists());
+        assert_eq!(fs::read_dir(tmp.join(".spill-ancestry")).unwrap().count(), 0);
+    }
+}
+
+#[test]
 fn retained_ancestry_refuses_symlinked_metadata_before_deleting_the_session() {
     for link_file in [false, true] {
         let env = oxa_fake::TestEnv::new();

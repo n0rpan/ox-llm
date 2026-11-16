@@ -97,6 +97,13 @@ pub trait SessionStore: Send + Sync {
     fn header(&self, s: &SessionRef) -> Result<SessionHeader, OxaError>;
     /// Sessions of `cwd`, or of every directory when `None`; unreadable files are skipped.
     fn list(&self, cwd: Option<&Path>) -> Vec<SessionMeta>;
+    /// Whether `list(None)` covers a session path, even after that session was deleted.
+    /// Resolving an explicit path need not imply coverage: file stores can open sessions
+    /// outside their root. Cleanup must retain spills whose live references it cannot check.
+    /// Unknown store implementations conservatively opt out of spill reclamation.
+    fn lists_path(&self, _path: &Path) -> bool {
+        false
+    }
     /// Resolve a path, a full id or a unique id prefix (`--session`, `--fork`).
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError>;
     /// Delete through the `trash` command when available, else unlink (pi's behaviour).

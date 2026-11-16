@@ -286,6 +286,12 @@ impl SessionStore for FsStore {
         out
     }
 
+    fn lists_path(&self, path: &Path) -> bool {
+        // Match session_files' two-level layout, not a prefix (roots may be nested).
+        path.parent().and_then(Path::parent) == Some(self.root.as_path())
+            && path.extension() == Some(std::ffi::OsStr::new("jsonl"))
+    }
+
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {
         if id_or_path.is_empty() {
             return Err(invalid("empty session reference"));
@@ -415,6 +421,12 @@ impl SessionStore for MemStore {
                 meta_of_parts(sref, h, entries)
             })
             .collect()
+    }
+
+    fn lists_path(&self, path: &Path) -> bool {
+        path.to_str()
+            .and_then(|s| s.strip_prefix("mem:"))
+            .is_some_and(|id| validate_session_id(id).is_ok())
     }
 
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {

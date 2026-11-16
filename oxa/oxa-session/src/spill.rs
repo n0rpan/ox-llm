@@ -161,11 +161,13 @@ pub fn inherited_spill_dirs(store: &dyn SessionStore, tmp_dir: &Path, session: &
         .collect()
 }
 
-/// After deletion, retain the spill directories reachable from ANY surviving session, across
-/// workspaces and through deleted intermediates. Revisit all retained sources, so deleting
-/// the last descendant also reclaims its ancestors' output and the saved headers.
-/// Only the removed session and explicitly retained sources are candidates, not arbitrary
-/// scratch directories. Returns the number of spill files removed (not metadata files).
+/// After deletion, retain the spill directories reachable from ANY surviving session in the
+/// store, across workspaces and through deleted intermediates. Revisit retained sources in
+/// that store, so deleting the last descendant also reclaims its ancestors' output and headers.
+/// Other stores can share `tmp_dir` (via `--session-dir`); their live references have not been
+/// checked, so their retained sources are never candidates. The same applies to an explicit
+/// removed path outside this store. Arbitrary scratch directories are not candidates either.
+/// Returns the number of spill files removed (not metadata files).
 pub fn remove_spill_dir_unless_forked(
     store: &dyn SessionStore,
     tmp_dir: &Path,
@@ -184,8 +186,10 @@ pub fn remove_spill_dir_unless_forked(
     }
     let candidates: HashSet<_> = retained
         .values()
-        .map(|(s, _)| s.id.as_str())
-        .chain(std::iter::once(removed.id.as_str()))
+        .map(|(s, _)| s)
+        .chain(std::iter::once(removed))
+        .filter(|s| store.lists_path(&s.path))
+        .map(|s| s.id.as_str())
         .collect();
     let mut removed_files = 0;
     for id in candidates {
