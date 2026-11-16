@@ -9,8 +9,9 @@ The local engine remains available in offline mode because it uses only an owned
 numeric loopback endpoint. The cloud selector and provider implementation remain
 separate.
 
-The factory's explicit installed-layout input is `binary` plus the `models` launch
-entries. It uses the pure `launch_profile` resolver for literal native arguments
+The factory's installed-layout input is `models` plus an optional absolute `binary`.
+Without that override, oxa locates `oxe-server` beside its own OS-reported
+executable path; there is no PATH/current-directory search. It uses the pure `launch_profile` resolver for literal native arguments
 and environment. No PATH, home, Python trampoline or old runtime file is inferred.
 The following is synthetic test configuration, not a qualified real-model budget:
 
@@ -46,6 +47,32 @@ unload. Missing or unsafe memory metadata still refuses or stops the child. The
 caller and child must already be in an inherited no-swap cgroup; this library
 does not change system configuration or weaken the policy to make loading work.
 Flash-specific swap-tolerant policy is not supported.
+
+Per-model `mtp_max_context` (positive u32) and `sampled_mtp` (boolean) select the
+native MTP launch controls. By the v0.2.1 owner decision (#763), canonical alias
+`ornith-35b-a3b-local` defaults to cutoff 32768 with sampled MTP on, and
+`qwen3.6-35b-a3b-local` to cutoff 16384 with sampled MTP on. These retain the
+published profile crossovers; they do not change engine numerics or kernel defaults.
+Other aliases, including Flash, acquire neither default. Custom aliases can set
+both controls explicitly. Set `sampled_mtp: false` to omit the sampled flag.
+Explicit literal `--mtp-max-ctx`/`--mtp-sampled` arguments remain usable and are
+not duplicated; do not combine a literal flag with its structured counterpart.
+Model context/output limits and literal `--ctx-size` remain separately explicit.
+The existing one-owner load/unload/idle lifecycle is unchanged.
+
+At cold load or model switch, the factory checks that the configured GGUF path
+names a regular file and that the engine path names an executable file, before
+creating child authentication. Missing weights return `not_found` with the
+`oxa.local.models.<alias>.model` setting to fix; no download is attempted. Supply
+an explicit absolute GGUF path as in the example above. Missing/nonexecutable
+engine errors explain the sibling install or `oxa.local.binary` override.
+
+Before admitting generation, the owned/authenticated child's `/props` must carry
+`build_info: "oxe-<oxa version>"`. Missing/mismatched build identity refuses with
+an engine-version diagnostic and retains teardown ownership. The probe is bounded
+and runs on startup/restart, not each resident health poll; no engine CLI or source
+change is required. A resident model reuses its frozen launch snapshot if files
+change; a later cold load validates the paths again.
 
 Construction and typed discovery open no model, authentication file or socket and
 start no thread. Load creates fresh private child authentication under the agent

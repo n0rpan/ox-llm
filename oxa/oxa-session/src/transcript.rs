@@ -49,7 +49,8 @@ impl Transcript {
     /// `Msg` appends its `wire`; in-context `BashExecution` (not `excluded`) and `CustomMessage`
     /// append one user message; the last `Prefix` sets the prefix (a later one is an `epoch`
     /// rebase that keeps the messages); `Compaction` rebases to `[user:<summary>]` + the
-    /// messages from `first_kept` on; `BranchSummary` appends one user message at its position;
+    /// messages from `first_kept` on and the recorded native-tool fresh turn, if any;
+    /// `BranchSummary` appends one user message at its position;
     /// `ContextEdit` rebases by replacing or removing its target message; all other bodies
     /// leave the wire untouched. Summary and bash message texts are produced by the callers of
     /// `rebase`/`push` at run time and by the same pure functions here on replay, so a resumed
@@ -132,6 +133,18 @@ impl Transcript {
                 let mut origins = vec![origin];
                 wire.extend(tail);
                 origins.extend(tail_origins);
+                // Recorded in the same entry as the rebase: a process interruption
+                // cannot leave a saved native tool tail without its fresh-turn boundary.
+                if details
+                    .get("nativeToolContinuation")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                {
+                    wire.push(WireMsg::user(Self::NATIVE_TOOL_CONTINUATION));
+                    // This is not the summary message identified by the entry id.
+                    // A later cut here must persist its tail by value, not alias it.
+                    origins.push(None);
+                }
                 self.install(wire, origins, rebase_why::COMPACTION);
             }
             EntryBody::ContextEdit { target, replacement } => {
@@ -180,9 +193,15 @@ impl Transcript {
                     .collect();
                 self.install(head, origins, rebase_why::EXTENSION);
             }
+            EntryBody::ModelChange(_) => {
+                // Model/route identity is not part of FrozenPrefix. Even an identical
+                // following epoch must not carry authority from the previous route.
+                for message in Arc::make_mut(&mut self.wire) {
+                    message.provider_history = None;
+                }
+            }
             // Never on the wire.
             EntryBody::Shown { .. }
-            | EntryBody::ModelChange(_)
             | EntryBody::ThinkingLevelChange(_)
             | EntryBody::ModeChange(_)
             | EntryBody::Custom { .. }
@@ -190,6 +209,10 @@ impl Transcript {
             | EntryBody::SessionInfo { .. } => {}
         }
     }
+    /// A caller-generated fresh turn after native tool compaction. It carries no new
+    /// user intent or replay authority; the summary and kept results retain the task.
+    pub const NATIVE_TOOL_CONTINUATION: &'static str = "Continue the current task using the compacted context and tool results above. Follow the existing user instructions and do not repeat completed work.";
+
     /// `customType` of the `custom` entry that records a declared extension rebase. Its `data`
     /// carries the rebased wire under `messages` ([`Transcript::encode_rebase`]); the fold
     /// applies it as a rebase with `rebase_why::EXTENSION`.
