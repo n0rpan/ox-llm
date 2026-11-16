@@ -65,6 +65,37 @@ fn builtin_skills_are_valid_and_listed() {
 }
 
 #[test]
+fn lead_skill_is_explicit_only_and_does_not_change_worker_discovery() {
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    install_builtin_skills(&dirs).unwrap();
+    assert!(!builtin_skill_path(&dirs, "lead").exists());
+    let (ordinary, _) = discover_skills(
+        &dirs,
+        &env.work(),
+        &Settings::default(),
+        &DiscoverOpts::default(),
+        &[],
+    );
+    assert!(!ordinary.iter().any(|skill| skill.name == "lead"));
+    let path = env.root().join("lead/SKILL.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, oxa_resources::LEAD_SKILL).unwrap();
+    let opts = DiscoverOpts {
+        no_skills: true,
+        extra_skills: vec![path],
+        ..Default::default()
+    };
+    let (lead, diagnostics) = discover_skills(&dirs, &env.work(), &Settings::default(), &opts, &[]);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(lead.len(), 1);
+    assert_eq!(lead[0].name, "lead");
+    assert!(expand_skill_command(&lead[0], "")
+        .unwrap()
+        .contains("runner's current state"));
+}
+
+#[test]
 fn builtin_files_install_once_and_expand_without_install() {
     let env = TestEnv::new();
     let dirs = Dirs::under(env.root());
