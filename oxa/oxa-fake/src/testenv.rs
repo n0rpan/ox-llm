@@ -15,6 +15,11 @@ pub struct TestEnv {
 
 impl TestEnv {
     pub fn new() -> TestEnv {
+        Self::new_in(&std::env::temp_dir())
+    }
+    /// Create the isolated tree under an explicit temporary directory. Security tests
+    /// that exercise repository exclusion must not inherit a checkout-local TMPDIR.
+    pub fn new_in(base: &Path) -> TestEnv {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -23,7 +28,7 @@ impl TestEnv {
         // Underscores between the numbers: `<pid>-<n>-<nanos>` can read as a date
         // (`6348-10-86`) once a process has made ten directories, and the cwd is part of the
         // system prompt, where the W3 check looks for dates.
-        let root = std::env::temp_dir().join(format!("oxa-test-{}_{}_{}", std::process::id(), n, nanos));
+        let root = base.join(format!("oxa-test-{}_{}_{}", std::process::id(), n, nanos));
         for d in ["home/.oxa/agent", "tmp", "work"] {
             std::fs::create_dir_all(root.join(d)).expect("create test dir");
         }
@@ -93,6 +98,27 @@ impl TestEnv {
 impl Default for TestEnv {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_temp_root_preserves_layout_and_cleanup() {
+        let parent = TestEnv::new();
+        let root;
+        {
+            let env = TestEnv::new_in(&parent.tmp());
+            root = env.root().to_path_buf();
+            assert_eq!(root.parent(), Some(parent.tmp().as_path()));
+            for path in [env.home(), env.agent_dir(), env.tmp(), env.work()] {
+                assert!(path.is_dir());
+            }
+            env.write("work/note.txt", "synthetic fixture");
+        }
+        assert!(!root.exists());
     }
 }
 
