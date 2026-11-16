@@ -9,7 +9,6 @@ pub mod runtime;
 
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
-pub mod discovery_cache;
 #[cfg(feature = "ledger")]
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]
@@ -20,7 +19,6 @@ pub mod policy;
 pub mod pricing;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod rate_limits;
-pub mod refresh;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;
