@@ -410,7 +410,7 @@ fn session_loop(
 ) -> RunOutcome {
     let mut outcome = RunOutcome::NothingToDo;
     loop {
-        let job = if cx.handle.wrap_up_requested() && lock(&gate).pending == 0 {
+        let job = if (cx.handle.wrap_up_requested() || cx.handle.interrupted()) && lock(&gate).pending == 0 {
             match rx.try_recv() {
                 Ok(job) => job,
                 Err(_) => {
@@ -498,7 +498,7 @@ fn session_loop(
                 write_out(&out, &v);
             }
         }
-        if cx.handle.wrap_up_requested() {
+        if cx.handle.wrap_up_requested() || cx.handle.interrupted() {
             // A real prompt failure precedes later reader errors. Cooperative
             // interruption is deferred so it cannot hide an already-reported error.
             if current != RunOutcome::Interrupted {
@@ -620,7 +620,7 @@ pub fn serve_outcome(
         }
     };
     while !worker.is_finished() {
-        if control.wrap_up_requested() {
+        if control.wrap_up_requested() || control.interrupted() {
             router.close();
         }
         thread::sleep(std::time::Duration::from_millis(20));

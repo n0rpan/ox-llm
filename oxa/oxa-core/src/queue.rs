@@ -80,6 +80,8 @@ impl WrapUpReason {
 pub struct Gate {
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
+    /// Sticky headless interruption: abort now, without a final wrap-up turn.
+    pub interrupted: std::sync::atomic::AtomicBool,
     /// Sticky soft termination request: zero, or a `WrapUpReason` discriminant.
     pub wrap_up: std::sync::atomic::AtomicU8,
     /// Remaining uncached prompt + completion tokens for an unattended invocation.
@@ -173,7 +175,7 @@ impl Shared {
     /// at any moment either is seen here or cancels the request.
     pub(crate) fn begin_background(&self) -> bool {
         self.gate.bg_cancel.reset();
-        if self.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+        if self.gate.wrap_up.load(Ordering::SeqCst) != 0 || self.gate.interrupted.load(Ordering::SeqCst) {
             self.gate.bg_cancel.cancel();
             return false;
         }
@@ -300,6 +302,20 @@ impl Handle {
 
     pub fn wrap_up_requested(&self) -> bool {
         self.wrap_up_reason().is_some()
+    }
+
+    /// End a headless invocation cooperatively. Unlike `abort`, this is sticky across
+    /// claims, so SIGINT just before a prompt starts cannot be lost. Unlike wrap-up,
+    /// it cancels generation and tools immediately and requests no final model turn.
+    pub fn interrupt(&self) {
+        self.shared.gate.interrupted.store(true, Ordering::SeqCst);
+        self.abort();
+        self.abort_retry();
+        self.cancel_background();
+    }
+
+    pub fn interrupted(&self) -> bool {
+        self.shared.gate.interrupted.load(Ordering::SeqCst)
     }
 
     /// Abort the current run. The partial reply is shown, never sent (W2). Queued messages stay

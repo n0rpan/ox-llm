@@ -522,3 +522,29 @@ fn live_clone_and_fork_rebind_spill_policy_and_walk_filter() {
     assert_readable_spill(&s, &s.inner().spill_dir.join("out.txt"));
     assert_readable_spill(&s, &old.join("inherited.txt"));
 }
+
+/// #699: a headless SIGINT before the worker claims a prompt must not be reset away.
+#[test]
+fn interrupt_before_claim_is_sticky_and_does_not_generate() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![oxa_fake::ScriptTurn::text("unwanted")]));
+    let mut dependencies = deps(&env, Arc::new(MemStore::new()));
+    dependencies.engine = engine.clone();
+    let mut session = Session::open(dependencies, Open::New).unwrap();
+    let handle = session.handle();
+    handle.interrupt();
+    for _ in 0..2 {
+        let _ = session.prompt(
+            "synthetic".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        );
+        assert!(handle.interrupted());
+        assert_eq!(session.take_outcome(), oxa_core::RunOutcome::Interrupted);
+        // ScriptedEngine records even a request whose token was already cancelled,
+        // but must not consume a scripted generation turn.
+        assert_eq!(engine.remaining(), 1);
+        assert!(!handle.is_busy());
+    }
+}
