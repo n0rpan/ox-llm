@@ -48,6 +48,9 @@ pub struct Reply {
     fragment: usize,
     terminal: bool,
     gate: Option<mpsc::Receiver<()>>,
+    /// Delay the terminal event for the production footprint example. Ordinary
+    /// protocol tests keep this zero; all use this one bounded peer.
+    pub stop_delay: Duration,
 }
 impl Reply {
     /// Cache input is separate from ordinary input on the native wire.
@@ -80,6 +83,7 @@ impl Reply {
             fragment: 7,
             terminal,
             gate: None,
+            stop_delay: Duration::ZERO,
         }
     }
     pub fn error(status: u16, message: &str) -> Self {
@@ -93,6 +97,7 @@ impl Reply {
             fragment: 7,
             terminal: false,
             gate: None,
+            stop_delay: Duration::ZERO,
         }
     }
     /// Malformed/truncated protocol cases use the same fragmented peer.
@@ -105,6 +110,7 @@ impl Reply {
             fragment: 7,
             terminal: false,
             gate: None,
+            stop_delay: Duration::ZERO,
         }
     }
     pub fn redirect(location: &str) -> Self {
@@ -326,11 +332,34 @@ fn write_reply(stream: &mut impl Write, reply: &Reply) -> io::Result<()> {
         write!(stream, "{name}: {value}\r\n")?;
     }
     stream.write_all(b"\r\n")?;
-    let mut chunks = reply.bytes.chunks(reply.fragment).peekable();
+    let split = reply
+        .bytes
+        .windows(b"event: message_stop\n".len())
+        .position(|part| part == b"event: message_stop\n")
+        .unwrap_or(reply.bytes.len());
+    write_fragments(stream, &reply.bytes[..split], reply.fragment, false)?;
+    if reply.stop_delay >= DEADLINE {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    thread::sleep(reply.stop_delay);
+    write_fragments(stream, &reply.bytes[split..], reply.fragment, reply.terminal)?;
+    if reply.terminal {
+        Ok(())
+    } else {
+        stream.write_all(b"0\r\n\r\n")
+    }
+}
+fn write_fragments(
+    stream: &mut impl Write,
+    bytes: &[u8],
+    fragment: usize,
+    terminal: bool,
+) -> io::Result<()> {
+    let mut chunks = bytes.chunks(fragment).peekable();
     while let Some(bytes) = chunks.next() {
         write!(stream, "{:x}\r\n", bytes.len())?;
         stream.write_all(bytes)?;
-        if reply.terminal && chunks.peek().is_none() {
+        if terminal && chunks.peek().is_none() {
             // Client::stream legitimately returns at message_stop, without
             // waiting for HTTP EOF. Only framing remains after its last byte;
             // disconnects before here (including partial stop events) are errors.
@@ -350,7 +379,7 @@ fn write_reply(stream: &mut impl Write, reply: &Reply) -> io::Result<()> {
         stream.write_all(b"\r\n")?;
         stream.flush()?;
     }
-    stream.write_all(b"0\r\n\r\n")
+    Ok(())
 }
 
 #[cfg(test)]

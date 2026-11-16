@@ -1,11 +1,15 @@
-//! Measure a real oxa binary against the existing owned HTTP fixture.
+//! Measure a real oxa binary against the shared owned HTTP or native fixture.
 //! Run in the test sandbox; emits numbers only, never requests or transcripts.
+#[allow(dead_code)]
+#[path = "../../oxc-gateway/tests/common/anthropic.rs"]
+mod anthropic;
+use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
-    net::TcpStream,
+    os::unix::fs::OpenOptionsExt,
     path::Path,
     process::{Child, Command, Stdio},
     sync::mpsc,
@@ -55,45 +59,132 @@ fn text_delta(value: &Value) -> bool {
         _ => false,
     }
 }
-fn direct(url: &str, body: &[u8]) -> f64 {
-    let address = url.strip_prefix("http://").unwrap().trim_end_matches('/');
+fn direct(url: &str, body: &[u8], native: bool) -> f64 {
+    use oxa_engine::{post_sse, Flow, SseEvent, StreamOpts, Url};
+    let url = Url::parse(url).unwrap();
+    let headers = if native {
+        vec![
+            ("x-api-key", CREDENTIAL.to_owned()),
+            ("anthropic-version", "2023-06-01".to_owned()),
+        ]
+    } else {
+        vec![]
+    };
     let started = Instant::now();
-    let mut socket = TcpStream::connect(address).unwrap();
-    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    write!(socket, "POST /v1/chat/completions HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
-    socket.write_all(body).unwrap();
-    for line in BufReader::new(socket).lines() {
-        let line = line.unwrap();
-        if let Some(data) = line.strip_prefix("data: ") {
-            if let Ok(value) = serde_json::from_str::<Value>(data) {
-                if value["choices"][0]["delta"]["content"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty())
-                {
-                    return started.elapsed().as_secs_f64() * 1000.0;
+    let mut first = None;
+    post_sse(
+        &url,
+        if native {
+            "/v1/messages"
+        } else {
+            "/v1/chat/completions"
+        },
+        &headers,
+        body,
+        &StreamOpts::default(),
+        &oxa_proto::CancelToken::new(),
+        &mut |event| {
+            if let SseEvent::Data(data) = event {
+                if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                    let text = if native {
+                        &value["delta"]["text"]
+                    } else {
+                        &value["choices"][0]["delta"]["content"]
+                    };
+                    if first.is_none() && text.as_str().is_some_and(|s| !s.is_empty()) {
+                        first = Some(started.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    if native && value["type"] == "message_stop" {
+                        return Flow::Stop;
+                    }
                 }
             }
-        }
-    }
-    panic!("owned fixture returned no text");
-}
-fn measure(binary: &Path) -> Value {
-    let server = FakeServer::start(
-        vec![ScriptTurn::text("Synthetic footprint reply."); 2],
-        FakeOpts {
-            n_ctx: 64000,
-            done_gap_ms: 250,
-            remote: Some("anthropic"),
-            no_engine: true,
-            ..FakeOpts::default()
+            Flow::Continue
         },
     )
     .unwrap();
+    first.expect("owned fixture returned text")
+}
+
+enum Peer {
+    Http(FakeServer),
+    Native(MockAnthropic),
+}
+impl Peer {
+    fn start(native: bool) -> Self {
+        if native {
+            Self::Native(MockAnthropic::start(
+                (0..2)
+                    .map(|_| {
+                        let mut reply = Reply::text("Synthetic footprint reply.", 11, 7, 3, 5);
+                        reply.stop_delay = Duration::from_millis(250);
+                        reply
+                    })
+                    .collect(),
+            ))
+        } else {
+            Self::Http(
+                FakeServer::start(
+                    vec![ScriptTurn::text("Synthetic footprint reply."); 2],
+                    FakeOpts {
+                        n_ctx: 64000,
+                        done_gap_ms: 250,
+                        remote: Some("anthropic"),
+                        no_engine: true,
+                        ..FakeOpts::default()
+                    },
+                )
+                .unwrap(),
+            )
+        }
+    }
+    fn url(&self) -> String {
+        match self {
+            Self::Http(server) => server.url(),
+            Self::Native(server) => server.base_url(),
+        }
+    }
+    fn body(&self) -> Vec<u8> {
+        match self {
+            Self::Http(server) => {
+                let requests = server.requests();
+                assert_eq!(requests.len(), 1);
+                requests[0].body.clone()
+            }
+            Self::Native(server) => {
+                let requests = server.requests();
+                assert_eq!(requests.len(), 1);
+                serde_json::to_vec(&requests[0].body).unwrap()
+            }
+        }
+    }
+}
+fn measure(binary: &Path, native: bool) -> Value {
+    let server = Peer::start(native);
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"defaultProjectTrust":"always","retry":{"enabled":false}}"#,
+        &json!({"defaultProjectTrust":"always","defaultThinkingLevel":"off",
+        "retry":{"enabled":false},"oxa":{"engine":{"inProcessCloud":native},
+        "cloud":{"daily_budget_usd":1,"models":{"fake-model":{
+            "provider":"anthropic","upstream_model":"synthetic-anthropic",
+            "base_url":server.url(),"context_window":64000,"max_output":16,
+            "pricing":{"input_per_million":2,"output_per_million":3,
+                "cache_read_per_million":0.2,"cache_write_per_million":2.5}
+        }}}}})
+        .to_string(),
     );
+    if native {
+        let path = env.home().join(".config/oxc/llm/cloud-secrets.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .unwrap();
+        write!(file, "{}", json!({"anthropic":{"api_key":CREDENTIAL}})).unwrap();
+    }
     let started = Instant::now();
     let mut child = Running(
         Command::new(binary)
@@ -169,26 +260,27 @@ fn measure(binary: &Path) -> Value {
             break;
         }
     }
+    let after = stats(child.id());
     drop(input);
     assert!(child.wait().unwrap().success());
     reader.join().unwrap();
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    let direct_ms = direct(&server.url(), &requests[0].body);
+    let direct_ms = direct(&server.url(), &server.body(), native);
     let startup_ms = first.duration_since(started).as_secs_f64() * 1000.0;
     json!({"idle_rss_kib":idle.0,"stream_rss_kib":peak.0,"idle_threads":idle.1,
-        "stream_threads":peak.1,"start_to_first_text_ms":startup_ms,
+        "stream_threads":peak.1,"after_rss_kib":after.0,"after_threads":after.1,
+        "start_to_first_text_ms":startup_ms,
         "request_to_first_text_ms":first.duration_since(request_start).as_secs_f64()*1000.0,
         "direct_first_text_ms":direct_ms,"startup_overhead_ms":startup_ms-direct_ms})
 }
 fn main() {
     let binary = std::env::args_os()
         .nth(1)
-        .expect("usage: gateway_footprint /absolute/path/to/oxa");
+        .expect("usage: gateway_footprint /absolute/path/to/oxa [--native]");
+    let native = std::env::args().nth(2).is_some_and(|s| s == "--native");
     let binary = Path::new(&binary).canonicalize().unwrap();
-    let samples: Vec<_> = (0..5).map(|_| measure(&binary)).collect();
+    let samples: Vec<_> = (0..5).map(|_| measure(&binary, native)).collect();
     println!(
         "{}",
-        json!({"binary_bytes":fs::metadata(binary).unwrap().len(),"samples":samples})
+        json!({"binary_bytes":fs::metadata(binary).unwrap().len(),"native":native,"samples":samples})
     );
 }

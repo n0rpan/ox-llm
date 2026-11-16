@@ -30,6 +30,7 @@ publish = false
 # internal
 oxa-proto = { path = "oxa-proto" }
 oxa-engine = { path = "oxa-engine" }
+oxc-gateway = { path = "oxc-gateway", default-features = false }
 oxa-session = { path = "oxa-session" }
 oxa-tools = { path = "oxa-tools" }
 oxa-sandbox = { path = "oxa-sandbox" }
