@@ -61,19 +61,25 @@ impl Drop for Temporary {
     }
 }
 pub fn replace(path: &Path, before: &str, after: &str) -> Result<()> {
-    let info = path.metadata()?;
     let parent = path.parent().ok_or("missing parent")?;
     let tmp = parent.join(format!(
         ".memlat-default-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    replace_with_temporary(path, before, after, &tmp)
+}
+fn replace_with_temporary(path: &Path, before: &str, after: &str, tmp: &Path) -> Result<()> {
+    let info = path.metadata()?;
+    let parent = path.parent().ok_or("missing parent")?;
+    let mut created = false;
     let result = (|| -> Result<()> {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&tmp)?;
+            .open(tmp)?;
+        created = true;
         file.write_all(after.as_bytes())?;
         file.flush()?;
         file.set_permissions(fs::Permissions::from_mode(info.mode() & 0o777))?;
@@ -88,10 +94,28 @@ pub fn replace(path: &Path, before: &str, after: &str) -> Result<()> {
         if read_text(path)? != before {
             return err("boot configuration changed concurrently");
         }
-        fs::rename(&tmp, path)?;
+        fs::rename(tmp, path)?;
         fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
-    let _ = fs::remove_file(tmp);
+    if created {
+        let _ = fs::remove_file(tmp);
+    }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn existing_temporary_is_never_removed_by_failed_replacement() {
+        let dir = Temporary::directory("memlat-replace-test-").unwrap();
+        let path = dir.path.join("config");
+        let temporary = dir.path.join("existing");
+        fs::write(&path, "original menu").unwrap();
+        fs::write(&temporary, "other operation").unwrap();
+        assert!(replace_with_temporary(&path, "original menu", "new menu", &temporary).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original menu");
+        assert_eq!(fs::read_to_string(&temporary).unwrap(), "other operation");
+    }
 }
