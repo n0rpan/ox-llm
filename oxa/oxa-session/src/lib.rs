@@ -85,6 +85,11 @@ pub trait SessionStore: Send + Sync {
     fn create(&self, cwd: &Path, id: Option<&str>, parent: Option<&Path>) -> Result<SessionRef, OxaError>;
     /// Append one entry as one line with a single `write` (O_APPEND, 0600 in 0700, O_NOFOLLOW).
     fn append(&self, s: &SessionRef, e: &Entry) -> Result<(), OxaError>;
+    /// Append `entries` in order. The file store writes them in one write; a failure leaves
+    /// the entries before it written (as `append` in a loop would).
+    fn append_many(&self, s: &SessionRef, entries: &[Entry]) -> Result<(), OxaError> {
+        entries.iter().try_for_each(|e| self.append(s, e))
+    }
     /// All entries in file order. A torn last line is dropped.
     fn load(&self, s: &SessionRef) -> Result<Vec<Entry>, OxaError>;
     fn header(&self, s: &SessionRef) -> Result<SessionHeader, OxaError>;
