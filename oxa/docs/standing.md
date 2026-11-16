@@ -13,6 +13,8 @@ never turns missing, partial, corrupt, unsafe or inconsistent enforcement data i
 The existing private directory/file/no-follow primitives are reused.
 
 `read()` returns the current revision, entries, asks and explicit history-truncation flag.
+`read_facts()` returns that view paired with a shared situation checked at the same standing
+revision. Cards use this pair rather than joining independently read versions.
 `live_rules()` excludes superseded/retired rules and released constraints; `open_asks()`
 excludes answered questions. Active rules and unanswered asks share a 128-item limit. Up to
 16 terminal records are retained; they may shrink to fit the 256 KiB read view. Pending

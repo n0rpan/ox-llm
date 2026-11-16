@@ -274,7 +274,15 @@ impl Standing {
         let _lock = self.root.lock(LOCK)?;
         self.load()
     }
+    /// One revision-consistent view for cards; never join independently read revisions.
+    pub fn read_facts(&self) -> Result<(Read, oxa_proto::work::Snapshot)> {
+        let _lock = self.root.lock(LOCK)?;
+        self.load_facts()
+    }
     fn load(&self) -> Result<Read> {
+        self.load_facts().map(|(read, _)| read)
+    }
+    fn load_facts(&self) -> Result<(Read, oxa_proto::work::Snapshot)> {
         let mut document: Document = serde_json::from_slice(&self.root.read(FILE, MAX_FILE)?)
             .map_err(|_| "invalid standing document")?;
         if document.version != 1 {
@@ -322,7 +330,7 @@ impl Standing {
         {
             return Err("standing file disagrees with facts revision".into());
         }
-        Ok(document.current)
+        Ok((document.current, situation))
     }
     fn save(&self, before: Read, mut after: Read, incident: Option<Incident>) -> Result<Read> {
         after.bounded()?;
