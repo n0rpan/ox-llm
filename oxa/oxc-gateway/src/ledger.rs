@@ -254,6 +254,7 @@ impl Entry {
                 .digest(b"oxa-provider-session-v1\0", identity.as_bytes()),
         )
     }
+    #[cfg(feature = "anthropic-gateway")]
     pub(crate) fn ledger(&self) -> &Ledger {
         &self.daily.ledger
     }

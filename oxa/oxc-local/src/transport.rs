@@ -317,6 +317,17 @@ fn local_event(event: GatewayEvent) -> Result<Option<oxa_proto::Value>, OxaError
         Err(broken("unsupported local gateway event"))
     }
 }
+
+fn aborted() -> OxaError {
+    OxaError::new(codes::ABORTED, "local request cancelled")
+}
+fn down() -> OxaError {
+    OxaError::new(codes::ENGINE_DOWN, "local engine stopped during chat")
+}
+fn broken(message: &str) -> OxaError {
+    OxaError::new(codes::STREAM_BROKEN, message)
+}
+
 #[cfg(test)]
 mod private_completion_tests {
     use super::*;
@@ -337,13 +348,4 @@ mod private_completion_tests {
         assert!(!observed.load(Ordering::SeqCst));
         assert!(!error.message.contains("synthetic_private_authority"));
     }
-}
-fn aborted() -> OxaError {
-    OxaError::new(codes::ABORTED, "local request cancelled")
-}
-fn down() -> OxaError {
-    OxaError::new(codes::ENGINE_DOWN, "local engine stopped during chat")
-}
-fn broken(message: &str) -> OxaError {
-    OxaError::new(codes::STREAM_BROKEN, message)
 }

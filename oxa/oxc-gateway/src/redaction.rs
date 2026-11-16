@@ -6,6 +6,7 @@ use serde_json::Value;
 pub fn value(value: &mut Value, key: &Key) {
     secret(value, key.expose());
 }
+#[cfg(feature = "anthropic-gateway")]
 pub(crate) fn contains_secret(value: &Value, secret: &str) -> bool {
     if secret.is_empty() {
         return false;
