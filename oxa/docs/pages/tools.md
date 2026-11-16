@@ -95,9 +95,11 @@ option labels with details, and use an exact option label for `recommended`.
 
 - Interactive sessions show the existing selection dialog, with details and the recommended
   option marked. Escape dismisses it without approving or selecting the recommendation.
-- RPC emits the existing `extension_ui_request` with `method: "select"`; respond with the
-  chosen option's displayed string using `extension_ui_response`.
-- Print/JSON sessions return immediately with `no owner; proceed on the recommended option`
+- RPC hosts with an owner present opt in with `OXA_RPC_OWNER_PRESENT=1` when launching oxa.
+  Then `ask` emits the existing `extension_ui_request` with `method: "select"`; respond with
+  the chosen option's displayed string using `extension_ui_response`. This capability affects
+  only `ask`, not permission dialogs or extension UI. RPC without this opt-in is unattended.
+- Print/JSON and unattended RPC sessions return immediately with `no owner; proceed on the recommended option`
   and append the question, options, recommendation, working directory and session ID to
   `~/.oxa/agent/asks.jsonl` (under `OXA_AGENT_DIR` if overridden). This private, append-only
   JSON Lines file lets an unattended runner collect questions for later review. A journal

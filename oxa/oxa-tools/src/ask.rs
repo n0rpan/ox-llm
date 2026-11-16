@@ -9,6 +9,7 @@ use std::path::PathBuf;
 pub struct AskTool {
     spec: ToolSpec,
     asks_file: PathBuf,
+    owner_present: bool,
 }
 
 impl AskTool {
@@ -16,6 +17,7 @@ impl AskTool {
     pub fn new(asks_file: PathBuf) -> Self {
         Self {
             asks_file,
+            owner_present: true,
             spec: ToolSpec {
                 name: "ask".into(),
                 description: "Ask the owner a question with 2–4 options and a recommendation. Use only for decisions needing owner input, not routine work. Without an owner, records the question and proceeds on the recommendation. This is not permission to bypass tool policy.".into(),
@@ -39,6 +41,13 @@ impl AskTool {
         }
     }
 
+    /// Runner-owned capability: an RPC transport alone does not imply an owner is listening.
+    /// This affects owner questions only, never permission dialogs or other UI requests.
+    pub fn with_owner_present(mut self, present: bool) -> Self {
+        self.owner_present = present;
+        self
+    }
+
     fn answer(&self, args: &Value, cx: &ToolCtx, ui: Option<&mut dyn Ui>) -> ToolOutput {
         let q = match Question::parse(args) {
             Ok(q) => q,
@@ -47,7 +56,7 @@ impl AskTool {
         if cx.cancel.is_cancelled() {
             return ToolOutput::error(oxa_proto::tool_errors::ABORTED);
         }
-        if let Some(ui) = ui.filter(|ui| ui.interactive()) {
+        if let Some(ui) = ui.filter(|ui| self.owner_present && ui.interactive()) {
             let options: Vec<String> = q
                 .options
                 .iter()

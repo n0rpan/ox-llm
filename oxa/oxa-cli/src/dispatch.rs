@@ -391,6 +391,8 @@ struct Built {
     mode: Option<Mode>,
     /// A supervised subagent keeps SIGTERM as immediate supervisor cancellation.
     supervised_child: bool,
+    /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
+    ask_owner_present: bool,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -422,9 +424,10 @@ impl Built {
         // Owner questions belong to lead sessions (including unattended leads). Keep worker
         // declarations and their small frozen prefixes unchanged.
         if !self.supervised_child {
-            tools.push(Arc::new(oxa_tools::AskTool::new(
-                self.dirs.agent_dir.join("asks.jsonl"),
-            )));
+            tools.push(Arc::new(
+                oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
+                    .with_owner_present(self.ask_owner_present),
+            ));
         }
         Deps {
             engine: self.engine.clone(),
@@ -853,6 +856,7 @@ fn prepare(
         thinking,
         mode: table_mode,
         supervised_child: child.nested(),
+        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
         hook_sets,
         yolo,
         bash_sandbox,
@@ -1910,6 +1914,7 @@ mod session_scratch_tests {
             thinking: None,
             mode: None,
             supervised_child: false,
+            ask_owner_present: true,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
