@@ -124,6 +124,7 @@ pub async fn stream<F>(
 where
     F: FnMut(Event) -> Control + ?Sized,
 {
+    *terminal_usage = None;
     let Chat {
         model,
         alias,
@@ -203,17 +204,15 @@ where
                     finish_reason,
                 });
             }
+            // Final usage must be the last semantic frame before [DONE]. A
+            // conflicting/later frame invalidates its authority for settlement.
+            if terminal_usage.take().is_some() {
+                return Err(Error::Protocol);
+            }
             let mut chunk: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
             drop(data);
             if !chunk.is_object() || chunk.get("error").is_some() {
                 return Err(Error::Protocol);
-            }
-            if let Some(value) = chunk.get("usage").filter(|v| !v.is_null()) {
-                let usage = Usage::parse(value).map_err(|_| Error::Protocol)?;
-                if terminal_usage.as_ref().is_some_and(|old| old != &usage) {
-                    return Err(Error::Protocol);
-                }
-                *terminal_usage = Some(usage);
             }
             let choices = chunk["choices"].as_array().ok_or(Error::Protocol)?;
             if choices.len() > 1 || choices.first().is_some_and(|choice| choice["index"] != 0) {
@@ -278,6 +277,14 @@ where
             chunk["model"] = alias.into();
             crate::redaction::value(&mut chunk, key);
             collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)?;
+            if let Some(value) = chunk.get("usage").filter(|v| !v.is_null()) {
+                // Accept a separate final usage frame or usage on a validated
+                // finish frame, never an interim record during generation.
+                if finish.is_none() && ending.is_none() {
+                    return Err(Error::Protocol);
+                }
+                *terminal_usage = Some(Usage::parse(value).map_err(|_| Error::Protocol)?);
+            }
             if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                 return Err(Error::Cancelled);
             }

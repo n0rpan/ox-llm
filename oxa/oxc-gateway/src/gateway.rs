@@ -315,9 +315,7 @@ impl Gateway {
         use crate::opencode::client::Error as GoError;
         // Parsed terminal usage survives cancellation before public delivery.
         // Meter it privately before consuming the hold, just as for Anthropic.
-        if let Some(usage) = &usage {
-            call.metered_go(usage);
-        }
+        call.metered_go(usage.as_ref());
         let (outcome, status, code) = match &result {
             Ok(_) => (Outcome::Complete, 200, None),
             Err(GoError::Cancelled) => (

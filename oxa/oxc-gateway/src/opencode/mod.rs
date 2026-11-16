@@ -232,6 +232,8 @@ impl SessionHint {
 pub struct Usage {
     pub prompt: u64,
     pub completion: u64,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
     pub allowance: Value,
     pub list_cost: Value,
     pub tokens: BTreeMap<String, u64>,
@@ -258,6 +260,26 @@ impl Usage {
         let prompt = value["prompt_tokens"].as_u64().ok_or(Error::Usage)?;
         let completion = value["completion_tokens"].as_u64().ok_or(Error::Usage)?;
         prompt.checked_add(completion).ok_or(Error::Usage)?;
+        let details = &value["prompt_tokens_details"];
+        if !details.is_null() && !details.is_object() {
+            return Err(Error::Usage);
+        }
+        let cache = |name| {
+            details
+                .get(name)
+                .map(|n| n.as_u64().ok_or(Error::Usage))
+                .transpose()
+        };
+        let cache_read = cache("cached_tokens")?;
+        let cache_write = cache("cache_write_tokens")?;
+        if cache_read
+            .unwrap_or(0)
+            .checked_add(cache_write.unwrap_or(0))
+            .ok_or(Error::Usage)?
+            > prompt
+        {
+            return Err(Error::Usage);
+        }
         let mut tokens = BTreeMap::new();
         for key in [
             "input",
@@ -272,6 +294,8 @@ impl Usage {
         Ok(Self {
             prompt,
             completion,
+            cache_read,
+            cache_write,
             allowance: go["allowance"].clone(),
             list_cost: go["list_cost"].clone(),
             tokens,

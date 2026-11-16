@@ -130,6 +130,18 @@ fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fa
         *value.pointer_mut(pointer).unwrap() = replacement;
         assert_eq!(Usage::parse(&value), Err(Error::Usage));
     }
+    for details in [
+        json!({"cached_tokens":"invalid"}),
+        json!({"cached_tokens":101}),
+        json!({"cached_tokens":80,"cache_write_tokens":21}),
+        json!({"cached_tokens":u64::MAX,"cache_write_tokens":1}),
+        json!({"cache_write_tokens":null}),
+        json!("invalid details"),
+    ] {
+        let mut value = usage();
+        value["prompt_tokens_details"] = details;
+        assert_eq!(Usage::parse(&value), Err(Error::Usage));
+    }
     let mut tiny_paid = usage();
     tiny_paid["cost"] = serde_json::from_str("1e-999").unwrap();
     assert_eq!(Usage::parse(&tiny_paid), Err(Error::Usage));
