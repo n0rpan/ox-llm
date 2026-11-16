@@ -9,7 +9,7 @@ use oxc_gateway::{
     runtime::{Options, Runtime},
 };
 use serde_json::Value;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 
@@ -31,6 +31,7 @@ fn limit(value: &Value, field: &str) -> Result<u32, OxaError> {
 
 pub(crate) fn select(
     user: &Settings,
+    effective: &Settings,
     dirs: &Dirs,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
@@ -40,10 +41,10 @@ pub(crate) fn select(
     if oxa_proto::offline() {
         return Err(oxa_proto::offline_error("the in-process cloud gateway"));
     }
-    open(user, dirs)
+    open(user, effective, dirs)
 }
 
-fn open(user: &Settings, dirs: &Dirs) -> Result<Arc<dyn Engine>, OxaError> {
+fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn Engine>, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
     let models = cloud["models"]
         .as_object()
@@ -86,7 +87,8 @@ fn open(user: &Settings, dirs: &Dirs) -> Result<Arc<dyn Engine>, OxaError> {
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
-    let gateway = Gateway::new(runtime).map_err(|e| {
+    let timeout = crate::dispatch::stream_silence_timeout(effective).map(Duration::from_millis);
+    let gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
         let refusal = e.refusal();
         OxaError::new(refusal.code, refusal.message)
     })?;

@@ -587,6 +587,8 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --component rustfmt --no-self-update
+      - name: Fetch locked workspace dependencies before offline tests
+        run: cargo fetch --locked --manifest-path oxa/Cargo.toml
       - run: cargo fmt --manifest-path oxa/Cargo.toml --all -- --check
       - run: cargo check --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --no-default-features
       - run: cargo check --locked --manifest-path oxa/Cargo.toml -p oxa-engine --no-default-features

@@ -93,6 +93,66 @@ fn success(output: &Output) {
 }
 
 #[test]
+fn native_silence_timeout_honors_effective_settings_and_provider_override() {
+    for (idle, provider, project, times_out) in [
+        (json!(40), None, false, true),
+        (json!(5000), Some(40), false, true),
+        (json!(5000), Some(40), true, true),
+        (json!(0), None, false, false),
+        (json!("disabled"), None, false, false),
+    ] {
+        let env = TestEnv::new();
+        let (reply, release) = Reply::text("delayed native answer", 11, 7, 3, 5).gated();
+        let mock = MockAnthropic::start(vec![reply]);
+        settings(&env, &mock.base_url(), true);
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        value["httpIdleTimeoutMs"] = idle;
+        if !project {
+            if let Some(ms) = provider {
+                value["retry"]["provider"] = json!({"timeoutMs":ms});
+            }
+        }
+        fs::write(path, value.to_string()).unwrap();
+        if project {
+            env.write(
+                "work/.oxa/settings.json",
+                &json!({"retry":{"provider":{"timeoutMs":provider.unwrap()}}}).to_string(),
+            );
+        }
+        write_key(&env, &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string());
+        let output = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                mock.wait_for_requests(1);
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let _ = release.send(());
+            });
+            run(
+                &env,
+                &["--no-session", "--no-tools", "-p", "Synthetic timeout request"],
+                None,
+            )
+        });
+        if times_out {
+            assert!(
+                !output.status.success(),
+                "a configured silence limit must stop the gated stream"
+            );
+            let rows = rows(&env);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["status"], 502);
+            assert_eq!(rows[0]["error"], "cloud_upstream_unavailable");
+            assert_eq!(rows[0]["settled"], "reserved");
+            assert_eq!(rows[0]["cost_usd"], json!(0.320048));
+        } else {
+            success(&output);
+            assert!(String::from_utf8_lossy(&output.stdout).contains("delayed native answer"));
+            assert_eq!(rows(&env)[0]["settled"], "usage");
+        }
+    }
+}
+
+#[test]
 fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
     let env = TestEnv::new();
     env.write("work/note.txt", "SYNTHETIC PROOF\n");
