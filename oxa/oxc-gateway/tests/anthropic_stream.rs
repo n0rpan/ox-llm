@@ -206,19 +206,16 @@ fn public_chunks_and_completion_redact_fields_while_native_replay_stays_opaque()
     let mut chunks = Vec::new();
     for event in [
         json!({"type":"message_start","message":{}}),
-        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}),
-        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"λ synthetic-"}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"λ synthetic-"}}),
         json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"marker tail"}}),
         json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque-signature"}}),
         json!({"type":"content_block_stop","index":0}),
-        json!({"type":"content_block_start","index":1,"content_block":{"type":"text"}}),
-        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello synthetic-"}}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":"Hello synthetic-"}}),
         json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"marker synthetic-"}}),
         json!({"type":"content_block_stop","index":1}),
         json!({"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"id-synthetic-marker","name":"read-synthetic-marker"}}),
-        json!({"type":"content_block_start","index":7,"content_block":{"type":"tool_use","id":"second","name":"list"}}),
+        json!({"type":"content_block_start","index":7,"content_block":{"type":"tool_use","id":"second","name":"list","input":{"path":"synthetic-marker"}}}),
         json!({"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"note\":\"synthetic-"}}),
-        json!({"type":"content_block_delta","index":7,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"other\"}"}}),
         json!({"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"marker\"}"}}),
         json!({"type":"content_block_stop","index":3}),
         json!({"type":"content_block_stop","index":7}),
@@ -249,7 +246,7 @@ fn public_chunks_and_completion_redact_fields_while_native_replay_stays_opaque()
     );
     assert_eq!(
         done.assistant["tool_calls"][1]["function"]["arguments"],
-        "{\"path\":\"other\"}"
+        "{\"path\":\"[redacted]\"}"
     );
     let mut text = String::new();
     let mut arguments = [String::new(), String::new()];
@@ -270,4 +267,65 @@ fn public_chunks_and_completion_redact_fields_while_native_replay_stays_opaque()
     }
     assert_eq!(done.native_blocks[0]["signature"], "opaque-signature");
     assert_eq!(done.native_blocks[2]["input"]["note"], "synthetic-marker");
+    assert_eq!(done.native_blocks[3]["input"]["path"], "synthetic-marker");
+}
+
+#[test]
+fn initial_text_and_thinking_are_not_lost() {
+    for (kind, field, delta, wire) in [
+        ("text", "text", "text_delta", "content"),
+        ("thinking", "thinking", "thinking_delta", "reasoning_content"),
+    ] {
+        let mut stream = Stream::new("alias", 0, false);
+        let mut chunks = Vec::new();
+        for event in [
+            json!({"type":"message_start","message":{}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":kind,field:"λ prefix"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":delta,field:" tail"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_stop"}),
+        ] {
+            chunks.extend(stream.event(&event).unwrap());
+        }
+        let text: String = chunks
+            .iter()
+            .filter_map(|chunk| chunk["choices"][0]["delta"][wire].as_str())
+            .collect();
+        assert_eq!(text, "λ prefix tail");
+        let done = stream.finish().unwrap();
+        assert_eq!(done.assistant[wire], text);
+        assert_eq!(done.native_blocks[0][field], text);
+    }
+}
+
+#[test]
+fn initial_tool_arguments_are_complete_and_not_extended_as_partial_json() {
+    let input = json!({"path":"λ"});
+    let event = json!({"type":"content_block_start","index":0,
+        "content_block":{"type":"tool_use","id":"call_1","name":"read","input":input}});
+    let mut stream = Stream::new("alias", 0, false);
+    for event in [
+        json!({"type":"message_start","message":{}}),
+        event.clone(),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_stop"}),
+    ] {
+        stream.event(&event).unwrap();
+    }
+    let done = stream.finish().unwrap();
+    assert_eq!(done.native_blocks[0]["input"], input);
+    let args = done.assistant["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(args).unwrap(), input);
+    let mut stream = Stream::new("alias", 0, false);
+    stream
+        .event(&json!({"type":"message_start","message":{}}))
+        .unwrap();
+    stream.event(&event).unwrap();
+    assert!(stream
+        .event(&json!({"type":"content_block_delta","index":0,
+        "delta":{"type":"input_json_delta","partial_json":"{}"}}))
+        .is_err());
+    assert!(stream.finish().is_err());
 }

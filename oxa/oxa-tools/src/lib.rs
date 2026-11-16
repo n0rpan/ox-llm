@@ -88,6 +88,18 @@ pub fn builtin_tools_with_shell_and_jobs(shell: ShellConfig, jobs: Arc<JobRegist
     tools
 }
 
+/// #202: [`builtin_tools_with_shell_and_jobs`] with the bash tool running through `sandbox`
+/// (the session's full-access wrapper) instead of `ToolCtx::sandbox`.
+pub fn builtin_tools_with_bash_sandbox(
+    shell: ShellConfig,
+    jobs: Arc<JobRegistry>,
+    sandbox: Arc<dyn oxa_proto::Sandbox>,
+) -> Vec<Arc<dyn Tool>> {
+    let mut tools = builtin_tools();
+    tools[1] = Arc::new(BashTool::with_shell_and_jobs(shell, jobs).with_sandbox(sandbox));
+    tools
+}
+
 /// Resolve a tool path argument against `cwd` and normalise it lexically (`.` and `..` removed
 /// without touching the file system). Shared by every tool's `access` and `run`.
 pub fn resolve_path(cwd: &Path, arg: &str) -> PathBuf {
