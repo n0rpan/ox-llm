@@ -1,8 +1,9 @@
 # Guest sharing (opt-in foundations)
 
-The `share` feature is off by default. This first slice supplies a key registry,
-not a listener or a CLI command. Importing it creates no files, sockets or threads.
-The CLI and real gateway integration follow after the native controller seams.
+The `share` feature is off by default. It supplies private keys, durable guest
+admission and an explicit HTTP listener. There is no CLI command or real gateway
+adapter yet. Importing it creates no files, sockets or threads. The CLI and real
+gateway integration follow after the native controller seams.
 
 `keys::Store::open` binds an existing mode-0700 directory outside repositories.
 Every path component is opened without following links. Registry and lock files
@@ -23,8 +24,57 @@ No automatic repair or recovery of malformed registries enables a key.
 Names are bounded printable ASCII, ids are random, and both daily request and
 token limits must be positive. At most 64 records (including revoked records)
 fit in a registry of at most 64 KiB. This module stores limits; the later
-listener must reserve and enforce them before forwarding. It does not authorize
-cloud models, subscriptions, tools, sessions or file access.
+listener reserves and enforces them before forwarding.
+
+`Store::admit` verifies fresh credentials under the same lock as quota updates.
+It reserves one request and the possible input/output tokens durably in a private
+per-UTC-day file. Its guard settles only trusted usage within the
+reservation; unknown outcomes and process exit retain the conservative charge.
+In-flight settlement stays on its admission day across midnight, even after key
+revocation. There are at most 128 unresolved reservations per day; exhaustion or
+malformed/unsafe state refuses work. Request admission uses nonblocking locks and
+returns Busy rather than parking an I/O thread behind another process.
+Settlement preserves authority on lock contention and retries asynchronously for
+at most the write timeout. Success disables further settlement; an ambiguous
+write failure is never retried. Exhausted retries or storage errors retain the
+conservative charge but do not truncate a successfully generated response.
+
+Listener authentication, admission and settlement use Tokio blocking operations,
+bounded by the connection limit. Each operation owns its slot until completion;
+there is no unbounded detached queue. Filesystem stalls do not block runtime
+network/model timers. Orderly shutdown joins admitted storage work as well as
+backend cleanup; a stalled filesystem can delay that join, since an in-progress
+filesystem syscall cannot safely be cancelled.
+
+`listener::Server` uses its caller's Tokio runtime. A fakeable `Tailnet` adapter
+supplies assigned addresses and optional peer ownership checks; absent/ambiguous
+or unspecified discovery never falls back to wildcard. `Binding::Explicit` is
+the owner's deliberate override, including loopback for `tailscale serve` TLS
+termination. This module does not read certificates or call a real Tailscale API.
+Forwarded headers do not provide peer identity.
+
+Only authenticated GET `/v1/models` and streaming text POST
+`/v1/chat/completions` are served. The `Answer` adapter receives only validated
+guest history and sampling/output limits. Tools, tool messages, file/image
+attachments, session fields and unknown execution fields are refused. Local
+models are visible by default; metered remote aliases require a separate owner
+allowlist. Subscription routes are always excluded. No owner prompt, tool set,
+session store or provider credential enters a guest request.
+
+Headers are capped at 16 KiB/64 fields, bodies at 1 MiB, live connections at the
+configured bound (default eight), peer/key rate tables at 256/64 entries, and
+stream buffering at four 64-KiB text fragments. Read/write deadlines and the
+request deadline are explicit. The backend must honor cancellation and retain
+ownership until its work stops: disconnect, shutdown and deadline request
+cancellation and join cleanup instead of abandoning generation. Streaming
+connections accept one request and treat client EOF/pipelining as cancellation.
+Cancel and await `serve` for orderly shutdown; do not detach it or its backend.
+
+Real gateway routing, owner-priority local leases, native request-ledger rows,
+CLI key commands, actual tailnet detection/LocalAPI, and a status adapter are
+subsequent wiring. The counters here are quota authority, not a second copy of
+cloud billing or a complete request ledger. TLS can terminate at `tailscale
+serve`; direct certificate support is not implemented in this slice.
 
 Tests use only generated synthetic bearers and private throwaway directories,
 including concurrent child processes. No real credential store is consulted.
