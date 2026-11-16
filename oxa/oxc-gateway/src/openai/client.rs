@@ -141,14 +141,23 @@ impl std::error::Error for Error {}
 pub struct Client(reqwest::Client);
 impl Client {
     pub fn new() -> Result<Self, Error> {
-        reqwest::Client::builder()
+        Self::with_read_timeout(Some(Duration::from_secs(1800)))
+    }
+    /// Use the caller's selected silence timeout for each upstream read, never
+    /// a total-generation deadline. None disables the read timeout; connection
+    /// setup and the complete credential-refresh exchange remain bounded.
+    pub fn with_read_timeout(read_timeout: Option<Duration>) -> Result<Self, Error> {
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(1800))
-            .build()
-            .map(Self)
-            .map_err(|_| Error::Setup)
+            .connect_timeout(Duration::from_secs(30));
+        if let Some(timeout) = read_timeout {
+            if std::time::Instant::now().checked_add(timeout).is_none() {
+                return Err(Error::Setup);
+            }
+            builder = builder.read_timeout(timeout);
+        }
+        builder.build().map(Self).map_err(|_| Error::Setup)
     }
     pub async fn stream<F>(
         &self,

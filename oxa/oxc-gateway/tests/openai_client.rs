@@ -378,7 +378,7 @@ async fn refresh_timeout_releases_lock_without_forwarding_or_replacing_tokens() 
     let before = fs::read(&path).unwrap();
     let base = refresh.base_url();
     let cancel = Cancellation::default();
-    let client = Client::new().unwrap();
+    let client = Client::with_read_timeout(None).unwrap();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         client.stream(
@@ -1265,4 +1265,243 @@ async fn credential_in_tool_identity_refuses_before_execution_without_rewriting_
             mock.assert_healthy();
         }
     }
+}
+
+// A test-local peer with independently controlled headers and SSE reads. No
+// changes to the shared fixture, production server, or HTTP client's policy.
+struct HeldResponsesPeer {
+    base: String,
+    send: Option<std::sync::mpsc::Sender<Value>>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+impl HeldResponsesPeer {
+    fn start() -> Self {
+        use std::io::{BufRead, Read};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let (send, receive) = std::sync::mpsc::channel::<Value>();
+        let join = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    _ => return,
+                }
+            };
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut request = std::io::BufReader::new(&mut socket);
+            let mut length = 0;
+            let mut header_bytes = 0;
+            loop {
+                let mut line = String::new();
+                request.read_line(&mut line).unwrap();
+                header_bytes += line.len();
+                assert!(header_bytes <= 32 * 1024 && !line.is_empty());
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+            }
+            assert!(length <= 64 * 1024);
+            request.read_exact(&mut vec![0; length]).unwrap();
+            drop(request);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            socket.flush().unwrap();
+            while let Ok(event) = receive.recv_timeout(std::time::Duration::from_secs(3)) {
+                // A peer closed by cancellation/timeout is an expected control.
+                if write!(socket, "data: {event}\n\n")
+                    .and_then(|_| socket.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Self {
+            base,
+            send: Some(send),
+            join: Some(join),
+        }
+    }
+    fn send(&self, event: Value) {
+        self.send.as_ref().unwrap().send(event).unwrap();
+    }
+}
+impl Drop for HeldResponsesPeer {
+    fn drop(&mut self) {
+        self.send.take();
+        self.join.take().unwrap().join().unwrap();
+    }
+}
+fn held_text() -> Value {
+    json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Visible output."})
+}
+fn held_complete() -> Value {
+    json!({"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":12,"output_tokens":9}}})
+}
+
+#[tokio::test]
+async fn selected_read_timeout_expires_on_held_headers_and_held_sse_in_both_modes() {
+    for subscription in [false, true] {
+        for after_headers in [false, true] {
+            let fixture = Fixture::new();
+            let (reply, _release) = answer().gated();
+            let headers = (!after_headers).then(|| MockOpenAi::start(vec![reply]));
+            let body = after_headers.then(HeldResponsesPeer::start);
+            let base = if let Some(body) = &body {
+                body.send(held_text());
+                body.base.clone()
+            } else {
+                headers.as_ref().unwrap().base_url()
+            };
+            let path = fixture.token_path(true);
+            let auth = if subscription {
+                Auth::Subscription {
+                    token_path: &path,
+                    expected_account_id: "synthetic-account",
+                    refresh: client::Refresh {
+                        endpoint: &base,
+                        client_id: "synthetic-client",
+                        timeout: std::time::Duration::from_secs(1),
+                    },
+                }
+            } else {
+                Auth::ApiKey(&fixture.key)
+            };
+            let client = Client::with_read_timeout(Some(std::time::Duration::from_millis(150))).unwrap();
+            let mut saw_text = false;
+            let mut usage = None;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.stream_with_usage(
+                    chat(&base, &payload(), &[]),
+                    auth,
+                    &Cancellation::default(),
+                    &mut |e| {
+                        if let Event::Chunk(c) = e {
+                            saw_text |= c["choices"][0]["delta"]["content"] == "Visible output.";
+                        }
+                        Control::Continue
+                    },
+                    &mut usage,
+                ),
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "selected silence timeout did not expire while peer was held"
+            );
+            assert!(matches!(result.unwrap(), Err(client::Error::Transport)));
+            assert_eq!(saw_text, after_headers);
+            assert!(usage.is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn read_timeout_resets_on_progress_and_none_keeps_quiet_cancellation() {
+    for subscription in [false, true] {
+        for selected in [Some(std::time::Duration::from_millis(500)), None] {
+            let fixture = Fixture::new();
+            let peer = HeldResponsesPeer::start();
+            peer.send(held_text());
+            let path = fixture.token_path(true);
+            let base = &peer.base;
+            let auth = || {
+                if subscription {
+                    Auth::Subscription {
+                        token_path: &path,
+                        expected_account_id: "synthetic-account",
+                        refresh: client::Refresh {
+                            endpoint: base,
+                            client_id: "synthetic-client",
+                            timeout: std::time::Duration::from_secs(1),
+                        },
+                    }
+                } else {
+                    Auth::ApiKey(&fixture.key)
+                }
+            };
+            let client = Client::with_read_timeout(selected).unwrap();
+            let started = std::time::Instant::now();
+            let body = payload();
+            let cancel = Cancellation::default();
+            let mut callback = |_| Control::Continue;
+            let inference = client.stream(chat(base, &body, &[]), auth(), &cancel, &mut callback);
+            let progress = async {
+                for _ in 0..8 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if selected.is_some() {
+                        peer.send(held_text());
+                    }
+                }
+                peer.send(held_complete());
+            };
+            let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+                tokio::join!(inference, progress)
+            })
+            .await
+            .unwrap();
+            let completed = result.unwrap();
+            assert_eq!(completed.usage.unwrap().output, Some(9));
+            assert!(
+                started.elapsed() > std::time::Duration::from_millis(500),
+                "control must outlive a total-generation deadline"
+            );
+            if selected.is_none() {
+                let quiet = HeldResponsesPeer::start();
+                quiet.send(held_text());
+                let stop = Cancellation::default();
+                let (seen, received) = tokio::sync::oneshot::channel();
+                let mut seen = Some(seen);
+                let mut callback = |e| {
+                    if matches!(e,Event::Chunk(ref c) if c["choices"][0]["delta"]["content"]=="Visible output.")
+                    {
+                        if let Some(seen) = seen.take() {
+                            let _ = seen.send(());
+                        }
+                    }
+                    Control::Continue
+                };
+                let inference = client.stream(chat(&quiet.base, &body, &[]), auth(), &stop, &mut callback);
+                let cancel_quiet = async {
+                    received.await.unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    stop.cancel();
+                };
+                let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    tokio::join!(inference, cancel_quiet)
+                })
+                .await
+                .unwrap();
+                assert!(matches!(result, Err(client::Error::Cancelled)));
+            }
+        }
+    }
+}
+
+#[test]
+fn unrepresentable_read_timeout_is_a_fixed_setup_error() {
+    assert!(matches!(
+        Client::with_read_timeout(Some(std::time::Duration::MAX)),
+        Err(client::Error::Setup)
+    ));
 }

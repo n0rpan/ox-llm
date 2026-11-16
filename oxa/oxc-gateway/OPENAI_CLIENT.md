@@ -96,7 +96,7 @@ rewrites. All 21 stream regressions pass, including failing-first cases. The
 native incomplete/invalid-usage client case now passes as well.
 
 Full gateway tests pass in the normal parallel mode with private HOME, a private
-`/tmp` mount and network namespace. This includes 102 library tests, 21 actual
+`/tmp` mount and network namespace. This includes 102 library tests, 24 actual
 client integration tests, eight token-file tests and four subscription classifier
 tests, plus the remaining gateway suites. Strict all-target/all-feature Clippy,
 formatting and default-off checks pass. Persisted history is serialized to disk
@@ -124,3 +124,14 @@ that identity would invalidate replay. Interrupted mixed-call responses still
 expose all ordered raw items privately, authorize no replay and deliver no calls
 to the real assembler. The consumer is a dev dependency only; its source is
 unchanged.
+
+The caller may construct `Client::with_read_timeout(Option<Duration>)` with its
+selected upstream silence timeout. `Some` resets on each read; `None` disables
+that timer. `Client::new()` retains the 1800-second default through the same
+no-proxy/no-redirect builder and 30-second connection bound. No total-generation
+deadline is installed. Token refresh still has its independent whole-operation
+deadline (including lock acquisition), bounded to 30 seconds even with reads
+disabled, and remains cancellable. Held-peer regressions cover delayed headers,
+quiet SSE after visible output, progress extending beyond the read timeout and
+quiet cancellation, in both auth modes. Settings selection and production
+factory/provider dispatch remain with the owner.
