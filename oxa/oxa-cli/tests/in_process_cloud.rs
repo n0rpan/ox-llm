@@ -17,6 +17,13 @@ use std::{
 const MODEL: &str = "synthetic-cloud";
 const UPSTREAM: &str = "synthetic-anthropic";
 
+fn cloud_env() -> TestEnv {
+    // This Linux-only proof needs credentials outside any repository. Harnesses can
+    // put TMPDIR inside the checkout; honoring it here would correctly trip the
+    // production key-file guard (and inherit repository project settings).
+    TestEnv::new_in(Path::new("/tmp"))
+}
+
 fn settings(env: &TestEnv, base: &str, enabled: bool) {
     env.write(
         "home/.oxa/agent/settings.json",
@@ -102,7 +109,7 @@ fn success(output: &Output) {
 
 #[test]
 fn native_openrouter_discovery_tool_loop_and_settlement() {
-    let env = TestEnv::new();
+    let env = cloud_env();
     env.write("work/note.txt", "SYNTHETIC ROUTER PROOF\n");
     let reply = |delta: Value, reason: &str| {
         let chunks = [
@@ -216,7 +223,7 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
         (json!(0), None, false, false),
         (json!("disabled"), None, false, false),
     ] {
-        let env = TestEnv::new();
+        let env = cloud_env();
         let (reply, release) = Reply::text("delayed native answer", 11, 7, 3, 5).gated();
         let mock = MockAnthropic::start(vec![reply]);
         settings(&env, &mock.base_url(), true);
@@ -269,7 +276,7 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
 
 #[test]
 fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
-    let env = TestEnv::new();
+    let env = cloud_env();
     let mock = MockAnthropic::start(vec![]);
     settings(&env, &mock.base_url(), true);
     let path = env.home().join(".oxa/agent/settings.json");
@@ -299,7 +306,7 @@ fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
 
 #[test]
 fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
-    let env = TestEnv::new();
+    let env = cloud_env();
     env.write("work/note.txt", "SYNTHETIC PROOF\n");
     let tool_reply = Reply::events(vec![
         json!({"type":"message_start","message":{"usage":{"input_tokens":11,
