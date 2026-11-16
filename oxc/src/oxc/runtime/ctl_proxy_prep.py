@@ -154,9 +154,10 @@ def prepare(self, st):
                 if configured is not None:
                     if not cloud.enabled(st.api_value):
                         raise Unavailable('Unknown local model. Choose one listed in /v1/models.')
-                    if remote:  # a LAN-share guest never spends the owner's cloud account
+                    refusal = cloud.guest_refusal(st.api_value, configured) if remote else None
+                    if refusal:  # a LAN-share guest needs the owner's opt-in; never the subscription
                         return answered(self.json_reply(403, {'error': {
-                            'message': 'Cloud models are not available to LAN-share requests.',
+                            'message': refusal,
                             'type': 'permission_error', 'param': 'model', 'code': 'cloud_not_shared'}}))
                     if path != '/v1/chat/completions':
                         return answered(self.json_reply(404, {'error': {
