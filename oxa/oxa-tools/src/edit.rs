@@ -102,6 +102,18 @@ fn io_cause(e: &std::io::Error) -> String {
     }
 }
 
+/// Save the edited content atomically (temp + fsync + rename, mode kept), so a full disk or a
+/// kill mid-write leaves the old file whole. A symlink is written through. In a directory we cannot
+/// create files in, fall back to writing the (writable) file in place.
+fn save(abs: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(abs).unwrap_or_else(|_| abs.to_path_buf());
+    let meta = std::fs::metadata(&target)?;
+    match crate::write::replace_file(&target, content, Some(&meta)) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => std::fs::write(abs, content),
+        other => other,
+    }
+}
+
 impl Tool for EditTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
@@ -142,7 +154,7 @@ impl Tool for EditTool {
             Ok(outcome) => outcome,
             Err(text) => return ToolOutput::error(text),
         };
-        if let Err(e) = std::fs::write(&abs, outcome.content.as_bytes()) {
+        if let Err(e) = save(&abs, outcome.content.as_bytes()) {
             return ToolOutput::error(errors::edit_could_not(&path, &io_cause(&e)));
         }
 

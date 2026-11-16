@@ -9,6 +9,7 @@ use oxa_proto::{
 };
 use oxa_tools::{apply_edits, detect_line_ending, strip_bom, unified_diff, Edit, EditTool};
 use serde_json::json;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// A sandbox that never runs anything: the edit tool does not use it.
@@ -567,4 +568,71 @@ fn spec_is_pis_edit_text() {
     let spec = EditTool::new().spec().clone();
     assert_eq!(spec.name, "edit");
     assert!(spec.schema_json.contains("oldText"));
+}
+
+/// The edit replaces the file (temp + rename) instead of truncating it in place: another hard link
+/// to the old inode keeps the old, whole content, so a full disk or a kill mid-write cannot lose it.
+#[test]
+fn edit_replaces_the_file_atomically_and_keeps_its_mode() {
+    let env = TestEnv::new();
+    let path = env.work().join("a.txt");
+    std::fs::write(&path, "hello world\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let old_inode = env.work().join("old-inode");
+    std::fs::hard_link(&path, &old_inode).unwrap();
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "a.txt", "edits": [{"oldText": "world", "newText": "there"}]}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello there\n");
+    assert_eq!(std::fs::read_to_string(&old_inode).unwrap(), "hello world\n");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o640
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(env.work())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("oxa-tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "temp file left behind");
+}
+
+/// A symlink stays a symlink; its target gets the edit.
+#[test]
+fn edit_writes_through_a_symlink() {
+    let env = TestEnv::new();
+    std::fs::write(env.work().join("real.txt"), "one\n").unwrap();
+    std::os::unix::fs::symlink("real.txt", env.work().join("link.txt")).unwrap();
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "link.txt", "edits": [{"oldText": "one", "newText": "two"}]}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert!(std::fs::symlink_metadata(env.work().join("link.txt"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("real.txt")).unwrap(),
+        "two\n"
+    );
+}
+
+/// A writable file in a directory that cannot take new files is still editable (in place).
+#[test]
+fn edit_works_in_a_directory_without_write_permission() {
+    let env = TestEnv::new();
+    let dir = env.work().join("ro");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("f.txt"), "x\n").unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "ro/f.txt", "edits": [{"oldText": "x", "newText": "y"}]}),
+    );
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "y\n");
 }

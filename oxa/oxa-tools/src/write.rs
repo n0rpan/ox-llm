@@ -88,18 +88,24 @@ fn write_file(args: &Value, cx: &ToolCtx) -> Result<(usize, bool), String> {
     };
     fs::create_dir_all(&parent).map_err(|e| write_io_error(path, &e))?;
 
+    replace_file(&target, content.as_bytes(), existing.as_ref()).map_err(|e| write_io_error(path, &e))?;
+    Ok((content.len(), created))
+}
+
+/// Replace `target` atomically: temp file in the same directory, fsync, rename. `existing` is the
+/// metadata of the file being replaced, whose mode the new file gets. Nothing is left behind on error.
+pub(crate) fn replace_file(target: &Path, content: &[u8], existing: Option<&fs::Metadata>) -> io::Result<()> {
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
     let name = target
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let (tmp, file) = create_temp(&parent, &name).map_err(|e| write_io_error(path, &e))?;
-    match commit(file, &tmp, &target, &parent, content, existing.as_ref()) {
-        Ok(()) => Ok((content.len(), created)),
-        Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            Err(write_io_error(path, &e))
-        }
+    let (tmp, file) = create_temp(parent, &name)?;
+    let res = commit(file, &tmp, target, parent, content, existing);
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
+    res
 }
 
 /// The one I/O failure text of `write`.
@@ -113,10 +119,10 @@ fn commit(
     tmp: &Path,
     target: &Path,
     parent: &Path,
-    content: &str,
+    content: &[u8],
     existing: Option<&fs::Metadata>,
 ) -> io::Result<()> {
-    file.write_all(content.as_bytes())?;
+    file.write_all(content)?;
     if let Some(meta) = existing {
         keep_mode(tmp, meta)?;
     }
