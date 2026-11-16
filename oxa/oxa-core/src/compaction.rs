@@ -398,6 +398,23 @@ mod estimate_tests {
             )
             .unwrap(),
         );
+        let entry = oxa_proto::Entry {
+            id: "synthetic".into(),
+            parent: None,
+            ts_ms: 1,
+            body: oxa_proto::EntryBody::Msg {
+                wire: message,
+                parts: vec![],
+                tool: None,
+            },
+        };
+        let mut bytes = Vec::new();
+        oxa_session::encode_entry(&entry, &mut bytes);
+        let oxa_proto::EntryBody::Msg { wire: message, .. } = oxa_session::decode_entry(&bytes).unwrap().body
+        else {
+            panic!("message")
+        };
+        assert!(message.provider_history.is_some());
         t.push(message);
         assert_eq!(
             estimate_of(&t),
@@ -949,6 +966,7 @@ fn compact_inner(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<Option<Applied>, OxaError> {
+    st.transcript.validate_compaction_cut(cut)?;
     let (instructions, reason) = (spec.instructions, spec.reason);
     // OXA-REBASE-NONE-ORIGIN: a cut on a message without an entry origin (rewritten by a
     // declared extension rebase) keeps its tail by value (`details.keptMessages`).
@@ -1095,6 +1113,7 @@ fn compact_inner(
         }
     }
     head.extend(tail);
+    st.transcript.prepare_rebase(&mut head);
     let entry = EntryBody::Compaction {
         // The fold replays this text verbatim, so it is the wrapped user message itself.
         summary: prompt::summary_user_message(&summary),
