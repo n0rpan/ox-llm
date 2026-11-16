@@ -13,7 +13,6 @@ pub mod share;
 pub mod catalog;
 #[cfg(feature = "pricing")]
 pub mod catalog_overlay;
-pub mod discovery_cache;
 #[cfg(feature = "ledger")]
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]
@@ -24,7 +23,6 @@ pub mod policy;
 pub mod pricing;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod rate_limits;
-pub mod refresh;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;
