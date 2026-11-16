@@ -902,6 +902,16 @@ impl<'a> Loop<'a> {
         if self.scope_from_settings {
             self.scoped = self.resolved_scope();
         }
+        if matches!(self.overlay, Some(Overlay::Model(_) | Overlay::Scoped(_))) {
+            let models = self.model_choices();
+            match self.overlay.as_mut() {
+                Some(Overlay::Model(selector)) => {
+                    selector.set_models(models, &self.vm.status.model, &self.scoped);
+                }
+                Some(Overlay::Scoped(selector)) => selector.set_models(models),
+                _ => {}
+            }
+        }
         if std::mem::take(&mut self.picker_pending) {
             self.open_selector(SelectorKind::Sessions);
         }
