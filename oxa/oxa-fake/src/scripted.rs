@@ -277,6 +277,7 @@ impl Engine for ScriptedEngine {
                     content: None,
                     reasoning: None,
                     tool_calls: Vec::new(),
+                    provider_history: None,
                     tool_call_id: None,
                 },
                 finish: oxa_proto::Finish::Length,
