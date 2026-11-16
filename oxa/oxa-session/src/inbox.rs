@@ -1,8 +1,12 @@
 //! File-based session follow-ups. Only `.msg` files are published messages; writers rename
 //! a private temporary file into place. A single owner watches with inotify, scans once on
 //! startup and after notifications, and removes a message only after its callback accepts it.
-//! Acceptance means admission to the owner's in-memory queue, not durable execution.
-//! A crash can lose an admitted message or replay one whose file wasn't removed yet.
+//! `watch` acceptance means admission to the owner's in-memory queue, not durable
+//! execution. A crash can lose an admitted message or replay one not removed yet.
+//! Library owners needing durable pickup instead use `Inbox::take` and `Inbox::receipt`;
+//! receipts prove pickup, never turn execution. Frontend queue wiring is unchanged.
+mod receipts;
+
 use std::ffi::CString;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -106,8 +110,9 @@ pub fn remove_inbox(agent_dir: &Path, id: Option<&str>) -> Result<usize, oxa_pro
     remove()
 }
 
-/// Publish exactly one message without contacting an engine or requiring a running owner.
-pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
+/// Publish exactly one message and return its id, without contacting an engine or
+/// requiring a running owner. The id can later be queried with `Inbox::receipt`.
+pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<String> {
     if text.len() > INBOX_MESSAGE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -134,7 +139,9 @@ pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<()> {
     let result = (|| {
         file.write_all(text.as_bytes())?;
         file.sync_data()?;
-        fs::rename(&temp, ready)
+        fs::rename(&temp, ready)?;
+        dir.0.sync_all()?;
+        Ok(name)
     })();
     if result.is_err() {
         let _ = fs::remove_file(temp);
@@ -298,6 +305,12 @@ fn scan_batch(
     for path in paths {
         if stopped.load(Ordering::Relaxed) {
             return false;
+        }
+        // A durable pickup can outlive a crash before the message unlink.
+        match receipts::already_taken(dir, &path) {
+            Ok(false) => {}
+            Ok(true) => continue,
+            Err(_) => return false,
         }
         let Ok(file) = OpenOptions::new()
             .read(true)
