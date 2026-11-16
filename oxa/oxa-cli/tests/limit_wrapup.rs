@@ -135,6 +135,8 @@ fn supervised_children_exit_on_the_first_sigterm() {
             }
             if mode == "print" {
                 command.args(["-p", "go"]);
+            } else if mode == "rpc" {
+                command.args(["--mode", "rpc"]);
             } else {
                 command.args(["--mode", mode, "go"]);
             }
@@ -151,6 +153,8 @@ fn supervised_children_exit_on_the_first_sigterm() {
                     .unwrap()
                     .write_all(b"{\"type\":\"prompt\",\"message\":\"go\"}\n")
                     .unwrap();
+            } else {
+                drop(child.stdin.take());
             }
             let started = Instant::now();
             while server.requests().is_empty() {
