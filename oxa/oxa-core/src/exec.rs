@@ -729,6 +729,7 @@ fn start_tool_prefill(
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
     let progress = crate::progress::observer(st);
     let user_abort = st.shared.cancel.clone();
+    let background_abort = st.shared.gate.bg_cancel.clone();
     let goal = st.goal.clone().filter(|g| g.engaged());
     let budget = crate::Handle {
         shared: st.shared.clone(),
@@ -737,9 +738,17 @@ fn start_tool_prefill(
     let spawned = std::thread::Builder::new()
         .name("oxa-tool-prefill".to_string())
         .spawn(move || -> PrefillOutcome {
+            let stop = || {
+                cancel.is_cancelled()
+                    || user_abort.is_cancelled()
+                    || background_abort.is_cancelled()
+                    || goal
+                        .as_ref()
+                        .is_some_and(|goal| !goal.allows_request(budget.run_tokens_used()))
+            };
             let deadline = Instant::now() + after;
             loop {
-                if cancel.is_cancelled() || user_abort.is_cancelled() {
+                if stop() {
                     return Ok(false);
                 }
                 let now = Instant::now();
@@ -767,20 +776,25 @@ fn start_tool_prefill(
                     snapshot_keep,
                 },
             };
-            // The user's abort ends the request at once, not only when the tool returns.
+            // Abort, wrap-up and the stored goal deadline end inference while
+            // the tool still runs; the existing watcher owns cancellation.
             let done = std::sync::atomic::AtomicBool::new(false);
             std::thread::scope(|scope| {
-                let _ = std::thread::Builder::new()
+                let watcher = std::thread::Builder::new()
                     .name("oxa-tool-prefill-watch".to_string())
                     .spawn_scoped(scope, || {
                         while !done.load(Ordering::SeqCst) {
-                            if user_abort.is_cancelled() {
+                            if stop() {
                                 cancel.cancel();
                                 return;
                             }
                             std::thread::sleep(Duration::from_millis(5));
                         }
                     });
+                if watcher.is_err() || stop() {
+                    done.store(true, Ordering::SeqCst);
+                    return Ok(false);
+                }
                 if let Some(progress) = &progress {
                     progress.notify(
                         &session,
