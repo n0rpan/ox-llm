@@ -353,3 +353,67 @@ fn goal_and_output_schema_require_a_valid_final_answer_after_goal_done() {
         }
     }
 }
+
+#[test]
+fn explicit_continue_resumes_a_paused_goal_without_resetting_its_budget_or_objective() {
+    for named in [false, true] {
+        let env = TestEnv::new();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+        );
+        env.write(
+            "work/goal.txt",
+            "Keep reviewing synthetic work and wait between sweeps.",
+        );
+        let first = FakeServer::start(
+            vec![
+                ScriptTurn::text("First idle reply"),
+                ScriptTurn::text("Second idle reply"),
+            ],
+            FakeOpts::default(),
+        )
+        .unwrap();
+        let output = run(&env, &first, &["--goal", "goal.txt", "--max-tokens", "1000000"]);
+        let paused = result(&output);
+        assert_eq!(output.status.code(), Some(9));
+        assert_eq!(paused["goal"]["status"], "paused");
+        assert_eq!(paused["goal"]["turns"], 2);
+        let used = paused["goal"]["tokens_used"].as_u64().unwrap();
+        assert!(used > 0);
+        std::fs::remove_file(env.work().join("goal.txt")).unwrap();
+        let next = FakeServer::start(
+            vec![ScriptTurn::tool(
+                "finish",
+                "goal_done",
+                r#"{"status":"complete","evidence":"Explicit continuation retained prior work."}"#,
+            )],
+            FakeOpts::default(),
+        )
+        .unwrap();
+        let mut args = vec!["--continue"];
+        if named {
+            args.push(paused["session_id"].as_str().unwrap());
+        }
+        let output = run(&env, &next, &args);
+        let resumed = result(&output);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(resumed["goal"]["status"], "done");
+        assert_eq!(resumed["session_id"], paused["session_id"]);
+        assert_eq!(resumed["goal"]["started_ms"], paused["goal"]["started_ms"]);
+        assert_eq!(resumed["goal"]["budget"], paused["goal"]["budget"]);
+        assert!(resumed["goal"]["tokens_used"].as_u64().unwrap() >= used);
+        assert_eq!(resumed["goal"]["turns"], 3);
+        assert_eq!(resumed["goal"]["unknown_requests"], 0);
+        let requests = next.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0]
+            .system
+            .contains("Keep reviewing synthetic work and wait between sweeps."));
+    }
+}
