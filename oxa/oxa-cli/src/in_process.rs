@@ -6,7 +6,7 @@ use oxc_gateway::{
     catalog::{Access, Model, Provider},
     gateway::Gateway,
     pricing::Price,
-    runtime::{Billing,Options, Runtime},
+    runtime::{Billing, Options, Runtime},
 };
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -84,8 +84,8 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
             access: Access::Enabled,
             daily_budget_usd: cap,
             ledger_enabled: true,
-            subscription:None,
-            subscription_limits:None,
+            subscription: None,
+            subscription_limits: None,
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
