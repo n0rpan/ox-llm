@@ -911,3 +911,192 @@ fn quit_with_ctrl_c_twice_on_empty_editor() {
     assert_eq!(d.code, 0);
     assert!(d.cmds.is_empty());
 }
+
+/// Deliver worker/UI messages between polls, like a run finishing after focus-out.
+struct NotificationTerminal {
+    term: TestTerminal,
+    worker: Sender<WorkerMsg>,
+    ui: Sender<UiRequest>,
+    steps: std::collections::VecDeque<(Vec<WorkerMsg>, Vec<UiRequest>)>,
+}
+
+impl oxa_tui::Terminal for NotificationTerminal {
+    fn write(&mut self, bytes: &[u8]) {
+        self.term.write(bytes);
+    }
+    fn flush(&mut self) {
+        self.term.flush();
+    }
+    fn size(&self) -> (u16, u16) {
+        self.term.size()
+    }
+    fn caps(&self) -> TermCaps {
+        self.term.caps()
+    }
+    fn set_mode(&mut self, mode: oxa_tui::TermMode, on: bool) {
+        self.term.set_mode(mode, on);
+    }
+    fn suspend(&mut self) {
+        self.term.suspend();
+    }
+    fn resume(&mut self) {
+        self.term.resume();
+    }
+    fn poll(&mut self, ms: u64) -> Vec<InputEvent> {
+        if let Some((events, requests)) = self.steps.pop_front() {
+            for event in events {
+                self.worker.send(event).unwrap();
+            }
+            for request in requests {
+                self.ui.send(request).unwrap();
+            }
+        }
+        self.term.poll(ms)
+    }
+}
+
+fn notification_output(
+    policy: Option<&str>,
+    fullscreen: bool,
+    focus: Vec<InputEvent>,
+) -> (String, TestTerminal) {
+    let env = TestEnv::new();
+    let session = session(&env);
+    let mut opts = interactive_opts(&env);
+    opts.fullscreen = fullscreen;
+    if let Some(policy) = policy {
+        opts.settings = Settings::from_values(
+            serde_json::json!({"ui": {"notify": policy}}),
+            serde_json::json!({}),
+        );
+    }
+    let (cmd_tx, _cmd_rx) = mpsc::channel();
+    let (msg_tx, msg_rx) = mpsc::channel();
+    let (ui_tx, ui_rx) = mpsc::channel();
+    let (reply, _answer) = mpsc::channel();
+    let mut term = TestTerminal::new(80, 24);
+    term.push_input(focus);
+    term.push_input(vec![]);
+    term.push_input(vec![]);
+    term.push_input(vec![key("escape")]);
+    term.push_input(vec![key("ctrl+d")]);
+    let mut term = NotificationTerminal {
+        term,
+        worker: msg_tx,
+        ui: ui_tx,
+        steps: [
+            (vec![WorkerMsg::Event(AgentEvent::AgentStart)], vec![]),
+            (
+                vec![
+                    WorkerMsg::Event(AgentEvent::AgentSettled { aborted: false }),
+                    WorkerMsg::Done(Ok(())),
+                ],
+                vec![],
+            ),
+            (
+                vec![],
+                vec![UiRequest::AskAccess {
+                    access: Access::Write(env.work().join("file")),
+                    reply,
+                }],
+            ),
+        ]
+        .into(),
+    };
+    assert_eq!(
+        run_loop(
+            &mut term,
+            &mut opts,
+            session.handle(),
+            cmd_tx,
+            msg_rx,
+            ui_rx,
+            ViewModel::default()
+        )
+        .unwrap(),
+        0
+    );
+    (term.term.take_output(), term.term)
+}
+
+#[test]
+fn terminal_notifications_follow_focus_and_policy_in_both_layouts() {
+    for fullscreen in [false, true] {
+        for (policy, focus, expected) in [
+            (None, vec![], 0),
+            (None, vec![InputEvent::FocusLost], 2),
+            (None, vec![InputEvent::FocusLost, InputEvent::FocusGained], 0),
+            (Some("off"), vec![InputEvent::FocusLost], 0),
+            (Some("always"), vec![], 2),
+        ] {
+            let (out, term) = notification_output(policy, fullscreen, focus);
+            assert_eq!(
+                out.matches("\x1b]9;").count(),
+                expected,
+                "policy={policy:?}, fullscreen={fullscreen}"
+            );
+            if expected != 0 {
+                assert!(out.contains("\x1b]9;oxa: Run finished\x07"));
+                assert!(out.contains("\x1b]9;oxa: Permission required\x07"));
+            }
+            assert!(term.modes.contains(&(oxa_tui::TermMode::FocusReporting, true)));
+            assert!(!term.mode_on(oxa_tui::TermMode::FocusReporting));
+        }
+    }
+}
+
+#[test]
+fn terminal_notifications_only_on_new_edges_not_focus_out_or_done() {
+    let env = TestEnv::new();
+    let session = session(&env);
+    let mut opts = interactive_opts(&env);
+    let (cmd_tx, _cmd_rx) = mpsc::channel();
+    let (msg_tx, msg_rx) = mpsc::channel();
+    let (ui_tx, ui_rx) = mpsc::channel();
+    let mut term = TestTerminal::new(80, 24);
+    // Settle while focused, then lose focus: the old completion must not replay.
+    term.push_input(vec![]);
+    term.push_input(vec![]);
+    term.push_input(vec![InputEvent::FocusLost]);
+    term.push_input(vec![]);
+    term.push_input(vec![]);
+    term.push_input(vec![key("ctrl+d")]);
+    let mut term = NotificationTerminal {
+        term,
+        worker: msg_tx,
+        ui: ui_tx,
+        steps: [
+            (
+                vec![WorkerMsg::Event(AgentEvent::AgentSettled { aborted: false })],
+                vec![],
+            ),
+            (vec![], vec![]),
+            (vec![WorkerMsg::Done(Ok(()))], vec![]),
+            (
+                vec![
+                    WorkerMsg::Event(AgentEvent::AgentSettled { aborted: true }),
+                    WorkerMsg::Done(Ok(())),
+                ],
+                vec![],
+            ),
+        ]
+        .into(),
+    };
+    assert_eq!(
+        run_loop(
+            &mut term,
+            &mut opts,
+            session.handle(),
+            cmd_tx,
+            msg_rx,
+            ui_rx,
+            ViewModel::default()
+        )
+        .unwrap(),
+        0
+    );
+    let out = term.term.take_output();
+    assert_eq!(out.matches("\x1b]9;").count(), 1);
+    // The OSC terminator alone is not a bell on terminals which ignore OSC 9.
+    assert!(out.contains("\x1b]9;oxa: Run finished\x07\x07"));
+}
