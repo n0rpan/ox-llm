@@ -395,15 +395,9 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
-<<<<<<< HEAD
-<<<<<<< HEAD
         "send" => Subcommand::Send(rest.to_vec()),
-=======
-=======
         "status" => Subcommand::Status(rest.to_vec()),
->>>>>>> origin/main
         "work" => Subcommand::Work(rest.to_vec()),
->>>>>>> origin/main
         "auth" => return Err(OxaError::unsupported("the auth command")),
         // pi's provider sign-in (`pi login [--api-key] [--no-browser]`, `pi logout`).
         "login" | "logout" => {
