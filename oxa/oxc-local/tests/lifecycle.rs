@@ -348,9 +348,9 @@ fn queued_requests_block_idle_unload_and_owner_drop_wakes_them_closed() {
 
 #[test]
 fn memory_fault_during_switch_cancels_launch_even_if_sampling_recovers() {
-    for missing in [false, true] {
+    for fault_kind in 0..4 {
         let now = Instant::now();
-        let ready = std::env::temp_dir().join(format!("local-switch-{}-{missing}", std::process::id()));
+        let ready = std::env::temp_dir().join(format!("local-switch-{}-{fault_kind}", std::process::id()));
         let mut initial = model("one");
         initial.config.executable = "/bin/sh".into();
         initial.config.arguments = vec![
@@ -370,11 +370,16 @@ fn memory_fault_during_switch_cancels_launch_even_if_sampling_recovers() {
         poll(&mut owner, now, memory());
         owner.load(model("two"), now, Ok(memory())).unwrap();
         let mut fault = memory();
-        fault.oom_events += 1;
+        match fault_kind {
+            0 => fault.oom_events += 1,
+            1 => fault.host_oom_kills += 1,
+            2 => fault.pids_max_events += 1,
+            _ => (),
+        }
         owner
             .poll(
                 now,
-                if missing {
+                if fault_kind == 3 {
                     Err(std::io::Error::other("unavailable"))
                 } else {
                     Ok(fault)
@@ -384,7 +389,7 @@ fn memory_fault_during_switch_cancels_launch_even_if_sampling_recovers() {
             .unwrap();
         assert_eq!(
             owner.status().stop_reason,
-            Some(if missing {
+            Some(if fault_kind == 3 {
                 StopReason::MemoryUnavailable
             } else {
                 StopReason::MemoryPressure
