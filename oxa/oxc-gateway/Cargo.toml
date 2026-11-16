@@ -8,6 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
+upstream-openai = ["dep:serde_json"]
 upstream-anthropic-request = ["dep:serde_json"]
 upstream-anthropic-stream = ["dep:serde_json"]
 cloud-only = ["dep:url"]

@@ -32,7 +32,8 @@ pub struct KeyDef {
 
 /// The built-in tools enabled when no `defaultTools` is set (oxa has seven; pi's `powershell`
 /// is not among them).
-pub(crate) const DEFAULT_TOOLS: &[&str] = &["read", "bash", "edit", "write", "grep", "find", "ls"];
+// Lead-only tools are included in settings patches, but are registered by the CLI only for leads.
+pub(crate) const DEFAULT_TOOLS: &[&str] = &["read", "bash", "edit", "write", "grep", "find", "ls", "ask"];
 
 const fn key(key: &'static str, kind: Kind, default: &'static str) -> KeyDef {
     KeyDef {
