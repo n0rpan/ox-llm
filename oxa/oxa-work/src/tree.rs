@@ -11,6 +11,20 @@ pub(crate) struct Prepared {
     pub prompt: String,
 }
 
+pub(crate) fn location(common: &Path, id: &str) -> Result<PathBuf> {
+    let repo = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("git directory has no parent")?
+    } else {
+        common
+    };
+    Ok(repo
+        .parent()
+        .ok_or("repository has no parent for worktrees")?
+        .join(".oxa-worktrees")
+        .join(repo.file_name().ok_or("repository has no directory name")?)
+        .join(id))
+}
+
 fn git_path(policy: &RunPolicy, tree: &Path, name: &str) -> Result<PathBuf> {
     checked(git(
         policy,

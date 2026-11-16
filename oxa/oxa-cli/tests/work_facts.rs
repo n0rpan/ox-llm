@@ -112,6 +112,32 @@ fn facts_reads_refuse_missing_history_without_initializing_an_empty_situation() 
 }
 
 #[test]
+fn a_new_planning_refusal_is_visible_and_a_fixed_plan_clears_its_block() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tasks =
+        r#"[{"id":"test","branch":"agent/test","base":"missing","model":"fake","prompt":"Finish task"}]"#;
+    env.write("work/tasks.json", tasks);
+    let (refused, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
+    assert_eq!(refused["outcome"], "blocked", "{refused}");
+    assert!(requests.is_empty());
+    assert!(refused["checkpoint_revision"].as_u64().unwrap() > 0);
+    assert!(!std::path::Path::new(refused["worktree"].as_str().unwrap()).exists());
+    let snapshot = situation(&env);
+    assert!(snapshot.running.is_empty());
+    assert_eq!(snapshot.blocked.len(), 1);
+    assert_eq!(snapshot.blocked[0].code, "setup_failed");
+    assert!(events(&env, 0)
+        .events
+        .iter()
+        .all(|event| !matches!(event.fact, Fact::TaskStarted(_) | Fact::WorkerFinished(_))));
+    env.write("work/tasks.json", &tasks.replace("missing", "main"));
+    let completed = run(&env, vec![ScriptTurn::text("done")]);
+    assert_eq!(completed["outcome"], "nothing_to_do", "{completed}");
+    assert!(situation(&env).blocked.is_empty());
+}
+
+#[test]
 fn owner_storage_cannot_be_placed_in_a_worktree_or_bare_git_metadata() {
     use std::fs;
     let env = TestEnv::new();

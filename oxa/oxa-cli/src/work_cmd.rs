@@ -180,17 +180,21 @@ pub(crate) fn run(
             .map(|task| {
                 if is_trusted {
                     oxa_work::plan_task_for_run(&root, task.clone(), &policy, rerun)
-                        .map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail)))
+                        .map_err(|detail| Box::new((task, detail)))
                 } else {
-                    Err(Box::new(oxa_work::blocked_record(
-                        &task,
+                    Err(Box::new((
+                        task,
                         "source project is not trusted; approve it before unattended work".into(),
                     )))
                 }
             })
             .collect();
         let mut code = 0;
-        let observer = if planned.iter().any(Result::is_ok) {
+        let observer = if policy.storage.join("facts").exists()
+            || planned.iter().any(|plan| match plan {
+                Ok(_) => true,
+                Err(refused) => !policy.storage.join(format!("{}.json", refused.0.id)).exists(),
+            }) {
             Some(oxa_work::FactObserver::for_run(&policy.storage)?)
         } else {
             None
@@ -215,7 +219,15 @@ pub(crate) fn run(
                         Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
                     }
                 }
-                Err(record) => *record,
+                Err(refused) => {
+                    let (task, detail) = *refused;
+                    if let Some(observer) = &observer {
+                        oxa_work::checkpoint_plan_refusal(&common, &task, detail, &policy, rerun, observer)
+                            .map_err(|error| error.to_string())?
+                    } else {
+                        oxa_work::blocked_record(&task, detail)
+                    }
+                }
             };
             if matches!(
                 record.outcome,

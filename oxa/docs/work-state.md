@@ -54,6 +54,12 @@ explicitly clears that task block before its preparing location. `failure_step`
 preserves a closed stage for terminal classification, including a save failure.
 Changing a PR head does not clear a block or standing hold.
 
+New planning refusals also get a durable block and separate finished transition,
+without creating a worktree or starting a worker. Once the same task's plan is
+fixed, normal admission clears that block. Refusing a live task, a different task
+specification or an unsupported checkpoint leaves its existing state untouched;
+that rejected input cannot replace the facts of work already in progress.
+
 `oxa work situation [--json]` and `oxa work events --after N [--json]` consume the
 public bounded store APIs. Reads recover the one pending checkpoint observation
 before returning a snapshot/page. JSON uses the common versioned documents; event

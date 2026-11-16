@@ -7,6 +7,8 @@ use std::process::{Command, Output, Stdio};
 
 mod checkpoint;
 mod execute;
+mod refusal;
+pub use refusal::checkpoint_plan_refusal;
 mod state;
 mod status;
 pub use status::{status, Liveness, Status};
@@ -536,17 +538,7 @@ pub fn run_task_with_observer(
     if planned.checkpoint_revision.is_some() && !replacing {
         return Err("task checkpoint disappeared after planning; retry the task file".into());
     }
-    let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
-        common.parent().ok_or("git directory has no parent")?
-    } else {
-        &common
-    };
-    let parent = repo_dir
-        .parent()
-        .ok_or("repository has no parent for worktrees")?;
-    let name = repo_dir.file_name().ok_or("repository has no directory name")?;
-    let trees = parent.join(".oxa-worktrees").join(name);
-    let tree = trees.join(&task.id);
+    let tree = tree::location(&common, &task.id)?;
     let fresh = |revision| {
         let mut record = blocked_record(task, String::new());
         record.worktree = tree.clone();
