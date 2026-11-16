@@ -5,7 +5,5 @@ pub mod client;
 pub mod chatgpt_request;
 #[cfg(feature = "secrets")]
 pub mod chatgpt_tokens;
-#[cfg(feature = "anthropic-client")]
-pub mod models;
 pub mod request;
 pub mod stream;
