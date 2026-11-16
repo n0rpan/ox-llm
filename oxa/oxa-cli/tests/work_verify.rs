@@ -229,6 +229,43 @@ fn later_online_verification_keeps_the_saved_offline_check_policy() {
 }
 
 #[test]
+fn a_shallow_task_keeps_its_verified_boundary_without_fetching_missing_history() {
+    let env = TestEnv::new();
+    setup(
+        &env,
+        r#"["test \"$(git rev-parse --is-shallow-repository)\" = true"]"#,
+    );
+    let project = env.work().join("project");
+    fs::write(project.join("second.txt"), "synthetic shallow head\n").unwrap();
+    git(&env, &project, &["add", "."]);
+    git(&env, &project, &["commit", "-m", "Synthetic shallow child"]);
+    let seed = env.work().join("seed");
+    fs::rename(&project, &seed).unwrap();
+    let url = format!("file://{}", seed.display());
+    git(
+        &env,
+        &env.work(),
+        &["clone", "--depth=1", "--branch", "main", &url, "project"],
+    );
+    git(&env, &project, &["config", "user.name", "Test"]);
+    git(&env, &project, &["config", "user.email", "test@example.invalid"]);
+    let record = run(&env, vec![ScriptTurn::text("done")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let output = verify(&env);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let proof: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(proof["head_sha"], record["head_sha"]);
+    assert_eq!(
+        git(&env, &project, &["rev-parse", "--is-shallow-repository"]),
+        "true"
+    );
+}
+
+#[test]
 fn owner_state_is_refused_inside_worktrees_and_bare_metadata_before_any_task_action() {
     let env = TestEnv::new();
     setup(&env, "[]");
