@@ -156,7 +156,10 @@ impl Transport {
                 .map_err(|_| down())?;
             let mut emitted = false;
             let result = drive(&receive, &mut active, request, monitor, &mut |event| {
-                emitted = true;
+                emitted |= matches!(
+                    event,
+                    StreamEvent::Text(_) | StreamEvent::Reasoning(_) | StreamEvent::ToolArgs { .. }
+                );
                 on(event);
             })
             .map_err(|error| {

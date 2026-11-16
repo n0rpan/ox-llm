@@ -461,3 +461,41 @@ fn local_overflow_uses_the_shared_error_classification() {
     assert_eq!(error.code, codes::CONTEXT_OVERFLOW);
     stopped(&mut owner);
 }
+
+#[test]
+fn progress_before_overflow_preserves_typed_recovery_without_replaying() {
+    let server = FakeServer::start(
+        vec![ScriptTurn::fault(Fault::StreamError {
+            queued: 1,
+            status: 400,
+            error_type: "exceed_context_size_error".into(),
+            event: true,
+        })],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let mut owner = owner();
+    let lease = owner.try_request().unwrap();
+    let prefix = prefix();
+    let mut progress = false;
+    let error = transport(&server)
+        .chat(
+            &mut owner,
+            lease,
+            &ChatRequest::new(&prefix, &[], "fake-model"),
+            &mut Monitor {
+                cancel: &CancelToken::new(),
+                memory: &mut memory,
+                healthy: &mut || Ok(true),
+            },
+            &mut |event| {
+                progress |= matches!(event, StreamEvent::Queued { .. });
+            },
+        )
+        .unwrap_err();
+    assert!(progress);
+    assert_eq!(error.code, codes::CONTEXT_OVERFLOW);
+    assert!(!error.message.starts_with(oxa_proto::CUT_BY_REFUSAL));
+    assert_eq!(server.hits("POST", "/v1/chat/completions"), 1);
+    stopped(&mut owner);
+}
