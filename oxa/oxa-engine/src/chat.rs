@@ -466,11 +466,12 @@ fn retryable(e: &OxaError) -> bool {
     matches!(e.code, codes::ENGINE_DOWN | codes::STREAM_BROKEN | codes::TIMEOUT)
 }
 
-/// Cloud model: a refused connection reached nothing and may be tried again here. A cut or silent
-/// stream may already be a running, billed upstream generation; the core's single retry layer
-/// decides about it, so it is not re-sent from the engine as well (#574).
+/// Cloud model: a failed or timed-out connect sent no request and may be tried again here.
+/// `post_sse` returns TIMEOUT only from connect; after connecting, even silence is STREAM_BROKEN.
+/// A cut or silent stream may already be a running, billed upstream generation; the core's single
+/// retry layer decides about it, so it is not re-sent from the engine as well (#574).
 fn retryable_remote(e: &OxaError) -> bool {
-    e.code == codes::ENGINE_DOWN
+    matches!(e.code, codes::ENGINE_DOWN | codes::TIMEOUT)
 }
 
 /// The headers a cloud model gets: the session and the request's `Idempotency-Key`.
@@ -708,6 +709,26 @@ impl Engine for HttpEngine {
                     return Err(self.abandoned(e, cancel, &key, r.hints.session));
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::retryable_remote;
+    use oxa_proto::{codes, OxaError};
+
+    #[test]
+    fn remote_retries_connect_timeout_but_not_stream_failure() {
+        // post_sse returns TIMEOUT only from connect, before sending the request.
+        for code in [codes::ENGINE_DOWN, codes::TIMEOUT] {
+            assert!(retryable_remote(&OxaError::new(code, "connect failed")), "{code}");
+        }
+        for code in [codes::STREAM_BROKEN, codes::ABORTED, codes::ENGINE_BUSY] {
+            assert!(
+                !retryable_remote(&OxaError::new(code, "request failed")),
+                "{code}"
+            );
         }
     }
 }
