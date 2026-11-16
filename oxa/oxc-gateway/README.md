@@ -82,3 +82,24 @@ owner, mode and size again. No key bytes or key descriptor are cached. Secrets
 use UTF-8 JSON (an optional UTF-8 BOM is accepted); UTF-16/32 and nonfinite JSON
 extensions are refused. The copied conversion/normalization buffers are gone.
 Model endpoints require HTTPS, with HTTP limited to loopback fixtures.
+
+The independent `upstream-anthropic-request` and `upstream-anthropic-stream`
+features supply pure native Messages translation. They start no runtime or I/O.
+Request translation bounds output, translates tools/results, places cache
+breakpoints and preserves opaque thinking blocks. Disabled reasoning does not
+activate adaptive thinking. `translate_with_blocks` accepts private restored
+blocks only for the exact conversation prefix; the caller must scope storage by
+model, endpoint and credential.
+
+The stream translator takes decoded provider events and a caller timestamp.
+`Stream::with_redactor` accepts independent hold-back state for text, thinking
+and each tool's arguments, plus atomic redaction of tool names/IDs. Public chunks
+and the assembled assistant use those same safe fragments. Signature deltas are
+concatenated privately for replay and never emitted. `Stream::new` uses identity
+redaction and is only appropriate without sensitive data.
+
+`finish` rejects truncated/error streams. Only terminal output usage followed by
+`message_stop` is trusted, with input, cache reads and cache writes kept separate.
+Trusted usage remains available when public usage is disabled. Native tests
+cover these contracts without Python peers or byte-exact goldens. Transport and
+the production caller that supplies the redactor follow in S5/S6.

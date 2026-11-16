@@ -5,8 +5,7 @@
 //! request builder and reply assembler; it opens no socket and reads no key.
 use crate::{build_body_for, new_idem_key, parse_info_for, Flow, ReplyAssembler, SseEvent};
 use oxa_proto::{
-    codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, OxaError, StreamEvent, ThinkingLevel,
-    Value,
+    codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, OxaError, StreamEvent, Value,
 };
 use std::{sync::Arc, time::Instant};
 
@@ -192,11 +191,7 @@ impl Engine for EmbeddedEngine {
         for event in assembler.flush() {
             on(event);
         }
-        let level = if request.thinking {
-            ThinkingLevel::Medium
-        } else {
-            ThinkingLevel::Off
-        };
+        let level = request.effective_level();
         let mut turn = assembler.finish(level)?;
         if turn.model.is_empty() {
             turn.model = request.model.to_string();

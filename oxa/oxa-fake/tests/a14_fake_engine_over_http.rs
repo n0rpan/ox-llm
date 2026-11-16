@@ -313,6 +313,7 @@ fn cache_model_matches_scripted_engine() {
             max_tokens,
             thinking: false,
             thinking_budget: None,
+            thinking_level: None,
             preserve_thinking: true,
             sampling: None,
             hints: Hints {
