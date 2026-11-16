@@ -283,3 +283,86 @@ async fn a_failed_paid_append_emits_no_done_and_blocks_later_requests() {
     assert_eq!((error.status, error.code), (503, "cloud_ledger_unavailable"));
     assert_eq!(mock.requests().len(), 1);
 }
+
+#[test]
+fn go_captured_terminal_usage_settles_even_without_public_delivery() {
+    use crate::{billing::SubscriptionLimits, opencode, runtime::Billing};
+    for cancelled in [true, false] {
+        for known in [true, false] {
+            let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+            std::fs::write(
+                &fixture.key_path,
+                json!({"opencode":"synthetic-go-credential"}).to_string(),
+            )
+            .unwrap();
+            let route = Model::new(
+                "synthetic-go",
+                Provider::OpenCode,
+                "synthetic-go",
+                "https://example.invalid",
+                1024,
+                100,
+            )
+            .unwrap();
+            let runtime = Runtime::new(
+                [(route, Some(Billing::Subscription))],
+                fixture.key_path.clone(),
+                fixture.ledger_dir.clone(),
+                Options {
+                    access: Access::Enabled,
+                    daily_budget_usd: None,
+                    ledger_enabled: true,
+                    subscription: None,
+                    subscription_limits: Some(SubscriptionLimits::new(10, 1500).unwrap()),
+                },
+            )
+            .unwrap();
+            let gateway = Gateway::new(runtime).unwrap();
+            let payload = json!({"model":"synthetic-go","max_tokens":100,"messages":[]});
+            let mut call = gateway.runtime.begin(&payload, Context::default()).unwrap();
+            call.mark_forwarded();
+            // Transport already parsed this terminal record, but cancellation
+            // (or protocol rejection) prevented its public Chunk callback.
+            let usage = known.then(|| opencode::Usage::parse(&json!({
+                "prompt_tokens":100,"completion_tokens":5,"cost":0,
+                "opencode":{"billing_source":"go","allowance":0.0008,"list_cost":0.001,
+                "tokens":{"input":20,"output":5,"reasoning":1,"cache_read":80,"cache_write_5m":0,"cache_write_1h":0}}
+            })).unwrap());
+            let error = if cancelled {
+                opencode::client::Error::Cancelled
+            } else {
+                opencode::client::Error::Protocol
+            };
+            assert!(gateway
+                .finish_go(call, Err(error), usage, &mut |_| panic!(
+                    "failed reply must emit no Chunk or Done"
+                ))
+                .is_err());
+            let saved = rows(&fixture);
+            assert_eq!(saved.len(), 1);
+            assert_eq!(saved[0]["subscription_requests"], 1);
+            assert_eq!(saved[0]["cost_usd"], 0.0);
+            assert_eq!(saved[0]["subscription_tokens"], if known { 105 } else { 1124 });
+            assert_eq!(saved[0]["settled"], if known { "usage" } else { "reserved" });
+            if known {
+                assert_eq!(saved[0]["opencode"]["allowance"], 0.0008);
+                assert_eq!(saved[0]["opencode"]["tokens"]["cache_read"], 80);
+                let next = gateway
+                    .runtime
+                    .begin(&payload, Context::default())
+                    .expect("actual usage leaves room for next hold");
+                next.finish(Outcome::Complete, 200, None).unwrap();
+            } else {
+                assert_eq!(
+                    gateway
+                        .runtime
+                        .begin(&payload, Context::default())
+                        .err()
+                        .unwrap()
+                        .code,
+                    "subscription_limit_exceeded"
+                );
+            }
+        }
+    }
+}

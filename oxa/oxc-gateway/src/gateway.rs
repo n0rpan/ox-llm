@@ -300,6 +300,24 @@ impl Gateway {
             &mut usage,
         )
         .await;
+        self.finish_go(call, result, usage, on)
+    }
+    fn finish_go<F>(
+        &self,
+        mut call: crate::runtime::Call<'_>,
+        result: Result<crate::anthropic_stream::Completed, crate::opencode::client::Error>,
+        usage: Option<crate::opencode::Usage>,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
+        use crate::opencode::client::Error as GoError;
+        // Parsed terminal usage survives cancellation before public delivery.
+        // Meter it privately before consuming the hold, just as for Anthropic.
+        if let Some(usage) = &usage {
+            call.metered_go(usage);
+        }
         let (outcome, status, code) = match &result {
             Ok(_) => (Outcome::Complete, 200, None),
             Err(GoError::Cancelled) => (
@@ -318,7 +336,9 @@ impl Gateway {
             ),
             Err(error) => {
                 let refusal = go_refusal(*error);
-                let outcome = if matches!(
+                let outcome = if usage.is_some() {
+                    Outcome::Complete
+                } else if matches!(
                     error,
                     GoError::Refused(
                         crate::opencode::Refusal::RegionBlocked
