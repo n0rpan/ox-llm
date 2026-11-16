@@ -15,6 +15,7 @@ members = [
     "oxa-interactive", "oxa-rpc", "oxa-export",
     "oxa-cli",
     "oxa-fake", "oxa-parity",
+    "oxc-gateway",
 ]
 
 [workspace.package]
@@ -47,7 +48,7 @@ oxa-rpc = { path = "oxa-rpc" }
 oxa-export = { path = "oxa-export" }
 oxa-cli = { path = "oxa-cli" }
 oxa-fake = { path = "oxa-fake" }
-# external (plan sec. 4); no async runtime anywhere
+# Shared oxa dependencies; the optional cloud transport is owned by the gateway.
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"

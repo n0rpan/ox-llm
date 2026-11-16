@@ -16,12 +16,14 @@ class Paths(unittest.TestCase):
     def test_component_source_and_test_changes(self):
         for directory, components in (('engine', {'engine'}), ('oxa', {'oxa'}),
                                       ('oxc', {'lab', 'cli', 'gateway'}), ('oxc-rs', {'cli'}),
-                                      ('conformance', {'cli'}), ('oxc-gateway', {'gateway'}),
+                                      ('conformance', {'cli'}),
+                                      ('oxa/oxc-gateway', {'oxa', 'gateway'}),
                                       ('fuzz/oxa', {'oxa'}), ('fuzz/oxe', {'engine'})):
             for suffix in ('src/code.rs', 'tests/test_unit.py', 'Cargo.lock'):
                 with self.subTest(directory=directory, suffix=suffix):
                     got = paths.classify([directory + '/' + suffix])
-                    self.assertEqual({key for key in KEYS if got[key]}, components)
+                    expected = components | {'gateway'} if directory == 'oxa' and suffix == 'Cargo.lock' else components
+                    self.assertEqual({key for key in KEYS if got[key]}, expected)
                     self.assertFalse(got['full'])
                     self.assertFalse(got['md'])
 
@@ -119,12 +121,13 @@ class GitPaths(unittest.TestCase):
 
     def test_merge_group_classifies_only_the_group_diff(self):
         self.assertEqual(self.group(b'oxa/oxa-core/src/a.rs\0fuzz/oxa/smoke.rs\0'), {'oxa'})
-        self.assertEqual(self.group(b'oxc-gateway/src/a.rs\0oxc-rs/src/a.rs\0conformance/t.py\0'), {'cli', 'gateway'})
+        self.assertEqual(self.group(b'oxc-rs/src/a.rs\0conformance/t.py\0'), {'cli'})
+        self.assertEqual(self.group(b'oxa/oxc-gateway/src/a.rs\0'), {'oxa', 'gateway'})
         self.assertEqual(self.group(b'engine/crates/server/src/a.rs\0fuzz/oxe/smoke.rs\0'), {'engine'})
         self.assertEqual(self.group(b'oxa/src/a.rs\0engine/src/a.rs\0'), {'oxa', 'engine'})
         self.assertEqual(self.group(b'docs/page.md\0'), set())
         for path in (b'.github/workflows/build.yml', b'tools/ci/paths.py', b'packaging/x', b'NOTICE',
-                     b'fuzz/other/x.rs'):
+                     b'fuzz/other/x.rs', b'oxc-gateway/src/a.rs'):
             self.assertEqual(self.group(path + b'\0'), set(KEYS), path)
 
     def test_empty_merge_group_diff_tests_everything(self):
