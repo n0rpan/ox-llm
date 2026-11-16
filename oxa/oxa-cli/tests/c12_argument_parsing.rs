@@ -436,3 +436,14 @@ fn continue_consumes_an_explicit_id_and_leaves_the_new_instruction() {
         assert_eq!(parse_err(&words).code, codes::USAGE);
     }
 }
+
+#[test]
+fn max_time_accepts_fractional_seconds_and_rejects_invalid_durations() {
+    assert_eq!(
+        parse(&["--max-time", "0.25", "-p", "go"]).max_time,
+        Some(std::time::Duration::from_millis(250))
+    );
+    for value in ["0", "-1", "NaN", "inf", "1e100", "invalid"] {
+        assert_eq!(parse_err(&["--max-time", value]).code, codes::USAGE, "{value}");
+    }
+}

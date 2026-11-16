@@ -134,6 +134,11 @@ pub(crate) fn chat_with_retry_keyed(
             return Err(err);
         }
 
+        if st.shared.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+            finish_failed(sink, retries, &err);
+            return Err(err);
+        }
+
         if err.code == codes::CONTEXT_OVERFLOW {
             if !overflowed {
                 overflowed = true;
@@ -148,6 +153,10 @@ pub(crate) fn chat_with_retry_keyed(
                         let aborted = OxaError::new(codes::ABORTED, "aborted");
                         finish_failed(sink, retries, &aborted);
                         return Err(aborted);
+                    }
+                    if st.shared.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+                        finish_failed(sink, retries, &err);
+                        return Err(err);
                     }
                     // The wire changed under the compaction: this is a new logical request.
                     opts.idem_key = fresh_idem_key(st);
