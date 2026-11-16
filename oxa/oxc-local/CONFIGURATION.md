@@ -1,7 +1,7 @@
 # Native local selection
 
 The CLI factory hook uses the user-only `oxa.engine.inProcessLocal` setting,
-default `false`, and calls `configured_engine` with the user `oxa.local` subtree,
+default `true` for the v0.2.1 release, and calls `configured_engine` with the user `oxa.local` subtree,
 the private agent directory and the selected canonical stream timeouts. Project
 settings must never select the executable, model paths, arguments or environment.
 Enabled configuration errors are returned; they do not fall back to a controller.
