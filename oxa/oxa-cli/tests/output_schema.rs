@@ -89,6 +89,35 @@ fn output_schema_repairs_once_and_reports_mismatch() {
 }
 
 #[test]
+fn output_schema_prints_only_validated_answer_after_local_length_recovery() {
+    let env = TestEnv::new();
+    env.write(
+        "work/schema.json",
+        r#"{"type":"object","properties":{"answer":{"type":"number"}},"required":["answer"]}"#,
+    );
+    let args = ["-p", "--no-session", "--output-schema", "schema.json", "answer"];
+    let good = r#"{"answer":42}"#;
+    for needs_repair in [false, true] {
+        let mut cut = ScriptTurn::text(r#"{"outer":"#);
+        cut.finish = oxa_proto::Finish::Length;
+        let mut turns = vec![cut];
+        if needs_repair {
+            turns.push(ScriptTurn::text("invalid continuation"));
+        }
+        turns.push(ScriptTurn::text(good));
+        let (code, out, err) = go(&env, turns, &args);
+        assert_eq!(code, 0, "{out} {err}");
+        assert_eq!(
+            out.trim(),
+            good,
+            "only the validated final message belongs on stdout: {err}"
+        );
+        let value: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        assert_eq!(value["answer"], 42);
+    }
+}
+
+#[test]
 fn output_schema_valid_first_answer_and_invalid_contract() {
     let env = TestEnv::new();
     env.write("work/schema.json", r#"{"type":"string","enum":["ok"]}"#);
