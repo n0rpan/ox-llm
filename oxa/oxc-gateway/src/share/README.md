@@ -81,8 +81,9 @@ including concurrent child processes. No real credential store is consulted.
 
 ## Owner key commands
 
-Build the CLI with its opt-in `share` feature. The default build has no gateway
-key-store dependency enabled and refuses `share` without creating storage.
+Build the CLI with its opt-in `share` feature. Its existing native gateway
+dependency enables sharing only with that feature; the default build refuses
+`share` without creating guest key storage.
 
 ```sh
 oxa share key add Tablet --daily-requests 100 --daily-tokens 100000

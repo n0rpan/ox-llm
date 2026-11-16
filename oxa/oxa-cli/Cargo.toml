@@ -18,10 +18,9 @@ path = "src/main.rs"
 
 [features]
 default = []
-share = ["dep:oxc-gateway"]
+share = ["oxc-gateway/share"]
 
 [dependencies]
-oxc-gateway = { path = "../oxc-gateway", optional = true, features = ["share"] }
 oxa-work.workspace = true
 oxa-proto.workspace = true
 oxa-engine = { workspace = true, features = ["in-process-gateway"] }
