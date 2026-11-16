@@ -212,7 +212,9 @@ impl Budget {
         if !ledger_enabled {
             return Err(Refusal::ledger());
         }
-        if !matches!(model.billing, Billing::Subscription) || model.provider != "chatgpt" {
+        if !matches!(model.billing, Billing::Subscription)
+            || !matches!(model.provider.as_str(), "chatgpt" | "opencode")
+        {
             return Err(invalid_billing());
         }
         if output == 0 || model.max_output == 0 || model.context == 0 {

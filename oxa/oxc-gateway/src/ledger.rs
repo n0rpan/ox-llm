@@ -231,6 +231,16 @@ impl Daily {
     }
 }
 impl Entry {
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn provider_session_hint(&self, provider: &str) -> Option<String> {
+        let session = self.row["session"].as_str()?;
+        let identity = format!("{provider}\0{session}");
+        Some(
+            self.daily
+                .ledger
+                .digest(b"oxa-provider-session-v1\0", identity.as_bytes()),
+        )
+    }
     pub(crate) fn ledger(&self) -> &Ledger {
         &self.daily.ledger
     }
@@ -271,7 +281,7 @@ impl Entry {
         redact: &dyn Fn(&mut Value),
     ) -> io::Result<Value> {
         if fields["remote"] != true
-            || !["anthropic", "openai", "openrouter", "chatgpt"]
+            || !["anthropic", "openai", "openrouter", "chatgpt", "opencode"]
                 .contains(&fields["remote_provider"].as_str().unwrap_or(""))
             || fields["cost_usd"]
                 .as_f64()
@@ -319,7 +329,9 @@ impl Entry {
         }
         match fields.get("billing") {
             Some(value) if value == "subscription" => {
-                if fields["remote_provider"] != "chatgpt" || fields["cost_usd"].as_f64() != Some(0.0) {
+                if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                    || fields["cost_usd"].as_f64() != Some(0.0)
+                {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
                 let requests = fields["subscription_requests"]
@@ -339,7 +351,7 @@ impl Entry {
                 self.row["subscription_tokens"] = json!(tokens);
             }
             None => {
-                if fields["remote_provider"] == "chatgpt"
+                if matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
                     || fields.get("subscription_requests").is_some()
                     || fields.get("subscription_tokens").is_some()
                 {
@@ -347,7 +359,7 @@ impl Entry {
                 }
             }
             Some(value) if value == "metered" => {
-                if fields["remote_provider"] == "chatgpt"
+                if matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
                     || fields.get("subscription_requests").is_some()
                     || fields.get("subscription_tokens").is_some()
                 {

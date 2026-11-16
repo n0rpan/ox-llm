@@ -23,6 +23,7 @@ pub struct Options {
     pub access: Access,
     pub daily_budget_usd: Option<f64>,
     pub ledger_enabled: bool,
+    pub subscription_limits: Option<crate::billing::SubscriptionLimits>,
     pub subscription: Option<Subscription>,
 }
 impl Default for Options {
@@ -31,6 +32,7 @@ impl Default for Options {
             access: Access::Disabled,
             daily_budget_usd: None,
             ledger_enabled: true,
+            subscription_limits: None,
             subscription: None,
         }
     }
@@ -43,6 +45,8 @@ pub struct Runtime {
     ledger: OnceLock<Result<Ledger, Refusal>>,
     cap: Value,
     ledger_enabled: bool,
+    subscription_limits: Option<crate::billing::SubscriptionLimits>,
+    #[cfg(feature = "upstream-openai")]
     subscription: Option<Subscription>,
     #[cfg(feature = "upstream-openai")]
     token_path: PathBuf,
@@ -84,7 +88,7 @@ fn catalog_error(error: catalog::Error) -> Refusal {
     }
 }
 fn supported(provider: Provider) -> bool {
-    provider == Provider::Anthropic
+    matches!(provider, Provider::Anthropic | Provider::OpenCode)
         || (cfg!(feature = "upstream-openai") && matches!(provider, Provider::OpenAi | Provider::ChatGpt))
 }
 fn invalid_billing() -> Refusal {
@@ -138,7 +142,8 @@ impl Runtime {
         let mut billings = BTreeMap::new();
         let mut routes = Vec::new();
         for (model, billing) in models {
-            if (model.info().provider == Provider::ChatGpt) != matches!(billing, Some(Billing::Subscription))
+            if matches!(model.info().provider, Provider::ChatGpt | Provider::OpenCode)
+                != matches!(billing, Some(Billing::Subscription))
             {
                 return Err(invalid_billing());
             }
@@ -161,6 +166,8 @@ impl Runtime {
             ledger: OnceLock::new(),
             cap: json!(options.daily_budget_usd),
             ledger_enabled: options.ledger_enabled,
+            subscription_limits: options.subscription_limits,
+            #[cfg(feature = "upstream-openai")]
             subscription: options.subscription,
             #[cfg(feature = "upstream-openai")]
             token_path,
@@ -183,6 +190,7 @@ impl Runtime {
         Ok((daily, entry))
     }
     pub fn begin(&self, payload: &Value, context: Context<'_>) -> Result<Call<'_>, Refusal> {
+        let owner_origin = matches!(context.origin, crate::ledger::Origin::Oxa);
         let alias = payload["model"].as_str().ok_or_else(|| invalid("model"))?;
         if matches!(self.catalog.resolve(Some(alias)), Err(catalog::Error::Disabled)) {
             return Err(catalog_error(catalog::Error::Disabled));
@@ -203,6 +211,14 @@ impl Runtime {
                     message: "This cloud provider is not available in this build.",
                 });
             }
+            if model.info().provider == Provider::OpenCode && !owner_origin {
+                return Err(Refusal {
+                    status: 403,
+                    code: "cloud_provider_forbidden",
+                    param: "model",
+                    message: "This subscription provider is available only to the owner agent.",
+                });
+            }
             let billing = self.billings.get(alias);
             policy::before_credentials(payload, false, false, billing.is_some())?;
             let billing = billing.expect("policy validated billing");
@@ -219,13 +235,13 @@ impl Runtime {
             }
             if matches!(billing, Billing::Metered(_)) {
                 policy::daily_budget(&self.cap, self.ledger_enabled, Some(0.0), 0.0, 0.0)?;
-            } else if self.subscription.is_none() {
+            } else if self.subscription_limits.is_none() {
                 return Err(crate::billing::SubscriptionLimits::missing());
             } else if !self.ledger_enabled {
                 return Err(Refusal::ledger());
             }
             credential = Some(match model.info().provider {
-                Provider::Anthropic | Provider::OpenAi => Credential::ApiKey(Arc::new(
+                Provider::Anthropic | Provider::OpenAi | Provider::OpenCode => Credential::ApiKey(Arc::new(
                     self.key_file
                         .as_ref()
                         .map_err(|_| Refusal::credentials())?
@@ -256,12 +272,11 @@ impl Runtime {
             };
             let hold = match &billing.billing {
                 Billing::Metered(_) => daily.budget().reserve(&self.cap, true, &billing, output)?,
-                Billing::Subscription => daily.budget().reserve_subscription(
-                    self.subscription.as_ref().map(|s| s.limits),
-                    true,
-                    &billing,
-                    output,
-                )?,
+                Billing::Subscription => {
+                    daily
+                        .budget()
+                        .reserve_subscription(self.subscription_limits, true, &billing, output)?
+                }
             };
             let (_, mut entry) = audit.take().expect("known model")?;
             entry.admitted();
@@ -327,6 +342,14 @@ impl<'a> Call<'a> {
     }
     pub fn provider_account_scope(&self) -> [u8; 32] {
         self.credential.account_scope()
+    }
+    /// Provider-bound conversation hint, distinct from the private ledger's
+    /// session identifier. Neither the raw session id nor the salt leaves here.
+    pub fn provider_session_hint(&self) -> Result<String, Refusal> {
+        self.entry
+            .as_ref()
+            .and_then(|entry| entry.provider_session_hint(self.model.info().provider.as_str()))
+            .ok_or_else(|| invalid("session"))
     }
     pub fn openai_auth_handle(&self) -> Result<OpenAiAuthHandle, Refusal> {
         match (self.model.info().provider, &self.credential) {

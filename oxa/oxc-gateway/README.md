@@ -108,11 +108,29 @@ settles the request before reporting success.
 
 `anthropic-gateway` composes typed catalog configuration, private admission,
 native transport and consuming settlement. `Runtime::new` takes validated model
-routes with optional prices and explicit private paths; its default options
+routes with optional `Billing` and explicit private paths; its default options
 refuse cloud use. Discovery borrows public metadata and reads no key or ledger.
 `Gateway::chat` takes the same borrowed `oxa_proto::ChatRequest` used by the core,
 without a request-byte conversion at the engine boundary. Decoded chunks pass
 straight to reply assembly. Only the frozen tools schema needs decoding.
+
+`Billing::Metered(Price)` requires the USD budget. Explicit
+`Billing::Subscription` is limited to ChatGPT and OpenCode Go and requires both
+positive daily request and token limits in `Options.subscription_limits`.
+Subscription holds reserve one request and the full context/output token bound;
+settlement keeps token usage and writes zero USD. Unknown work retains its hold,
+and the same private cross-process lock protects both billing classes. Missing
+pricing never selects subscription billing. ChatGPT refresh configuration is
+separate in `Options.subscription`; Go reads only `opencode` from the existing
+key file and refuses API/guest origins. There is no paid-balance fallback.
+
+`Call::provider_session_hint()` supplies an opaque, provider-bound conversation
+header from the ledger salt and explicit session context. Its HMAC domain differs
+from private ledger identifiers, and it is stable across process restarts. A
+missing session is refused; raw session IDs and the salt never become headers.
+The owned `OpenAiAuthHandle::as_auth()` keeps credential borrowing separate from
+mutable Sending/usage/settlement callbacks. These library admission hooks do not
+activate an unwired provider transport or change production factory defaults.
 
 Known refusals write private zero-spend rows. Documented Anthropic HTTP refusals
 (400, 401, 403, 404, 413, 429) settle at zero as `refused`; timeout, server and
