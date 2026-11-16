@@ -714,9 +714,24 @@ fn length_recovery_skips_unavailable_or_disabled_prefill() {
         let env = TestEnv::new();
         let mut cut = ScriptTurn::text("part one");
         cut.finish = Finish::Length;
-        let (mut st, eng) =
-            scripted_state(&env, vec![cut, ScriptTurn::text("done")], vec![], Mode::Workspace);
-        st.info.prefill_only = advertised;
+        let server = oxa_fake::FakeServer::start(
+            vec![cut, ScriptTurn::text("done")],
+            oxa_fake::FakeOpts {
+                hints: advertised,
+                ..oxa_fake::FakeOpts::default()
+            },
+        )
+        .unwrap();
+        let engine = Arc::new(oxa_engine::HttpEngine::new(&server.url(), None).unwrap());
+        let mut st = build(
+            &env,
+            engine,
+            Arc::new(MemStore::new()),
+            vec![],
+            Mode::Workspace,
+            vec![],
+        );
+        assert_eq!(st.info.prefill_only, advertised);
         st.settings = Settings::from_values(
             serde_json::json!({"cacheWarming":if advertised { "off" } else { "idle" }}),
             serde_json::json!({}),
@@ -724,8 +739,8 @@ fn length_recovery_skips_unavailable_or_disabled_prefill() {
         say(&mut st, "finish the task");
         let (end, _) = run(&mut st);
         assert_eq!(end, RunEnd::Stopped);
-        assert_eq!(eng.requests().len(), 2);
-        assert!(eng.requests().iter().all(|r| r.max_tokens > 0));
+        assert_eq!(server.requests().len(), 2);
+        assert!(server.requests().iter().all(|r| r.max_tokens > 0));
         assert!(!st.stats.output_truncated);
     }
 }
