@@ -8,6 +8,7 @@ use crate::{
 };
 mod auth;
 pub use crate::billing::Billing;
+pub use crate::history::HistorySeal;
 use auth::Credential;
 pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
@@ -370,6 +371,23 @@ impl<'a> Call<'a> {
     }
     pub fn metered_usage(&mut self, usage: Usage) {
         self.usage = usage;
+    }
+    pub fn prepare_history(
+        &self,
+        request: &oxa_proto::ChatRequest<'_>,
+        items: Arc<[Value]>,
+    ) -> Result<HistorySeal, Refusal> {
+        if items.iter().any(|item| self.credential.contains_secret(item)) {
+            return Err(crate::history::invalid_output());
+        }
+        HistorySeal::prepare(
+            self.entry.as_ref().ok_or_else(Refusal::ledger)?.ledger(),
+            self.model,
+            &self.provider_account_scope(),
+            request.prefix,
+            request.messages,
+            items,
+        )
     }
     pub fn verify_history(&self, request: &oxa_proto::ChatRequest<'_>) -> Result<(), Refusal> {
         self.entry

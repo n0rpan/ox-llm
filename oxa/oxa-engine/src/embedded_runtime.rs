@@ -78,12 +78,13 @@ impl EmbeddedGateway for Backend {
             idempotency_key: Some(context.idempotency_key),
         };
         let mut deliver = |event| {
-            let settled = matches!(event, Event::Done);
             let event = match event {
                 Event::Chunk(chunk) => GatewayEvent::Chunk(chunk),
-                Event::Done => GatewayEvent::Done,
+                // Publish the committed completion with its private binder only
+                // after Gateway::chat returns its settled completion record.
+                Event::Done => return Control::Continue,
             };
-            if !settled && cancel.is_cancelled() {
+            if cancel.is_cancelled() {
                 return Control::Stop;
             }
             if on(event) == Flow::Stop {
@@ -92,9 +93,17 @@ impl EmbeddedGateway for Backend {
                 Control::Continue
             }
         };
-        driver
+        let completed = driver
             .block_on(self.gateway.chat(request, context, cancel, &mut deliver))
-            .map(|_| ())
-            .map_err(normalize)
+            .map_err(normalize)?;
+        let event = match completed.history {
+            None => GatewayEvent::Done,
+            Some(seal) => GatewayEvent::DoneWithHistory(Arc::new(move |message| {
+                seal.seal(message)
+                    .map_err(|error| OxaError::new(error.code, error.message))
+            })),
+        };
+        let _ = on(event);
+        Ok(())
     }
 }
