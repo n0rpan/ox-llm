@@ -356,7 +356,10 @@ impl Client {
         let mut decoder = Decoder::default();
         let mut received = 0usize;
         let mut redactor = Fields::new(sensitive);
-        // No executable call escapes until terminal replay authority is known.
+        // No response data escapes before the whole turn passes inspection.
+        // Coalesce public string fields instead of retaining a Vec of deltas;
+        // preserve the existing tool-call arrival order separately.
+        let mut pending_output = HeldOutput::default();
         let mut pending_tools = Vec::new();
         loop {
             let bytes = tokio::select! {
@@ -412,16 +415,25 @@ impl Client {
                         ..Usage::default()
                     });
                     *terminal_usage = usage.clone();
-                    // Identity must agree with the untouched private replay. Never
-                    // execute a renamed/reidentified call to hide a credential.
-                    if !withheld
-                        && native.assistant["tool_calls"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|call| [call["id"].as_str(), call["function"]["name"].as_str()])
-                            .flatten()
-                            .any(|identity| redactor.secrets.iter().any(|secret| identity.contains(secret)))
+                    // Include done-only text/reasoning in the same aggregate.
+                    for chunk in &chunks {
+                        if response_data(chunk) {
+                            pending_output.push(chunk.clone())?;
+                        }
+                    }
+                    // The exact set is the same one used for this attempt's
+                    // redaction, including retired/current refresh credentials.
+                    // Never rewrite native items to make them safe for authority.
+                    if known_value(&native.assistant, &redactor.secrets)
+                        || native.native_blocks.iter().any(|item| {
+                            known_value(item, &redactor.secrets)
+                                || item["type"] == "function_call"
+                                    && item["arguments"]
+                                        .as_str()
+                                        .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
+                                        .is_some_and(|arguments| known_value(&arguments, &redactor.secrets))
+                        })
+                        || pending_output.known(&redactor.secrets)
                     {
                         return Err(Error::Protocol);
                     }
@@ -430,10 +442,14 @@ impl Client {
                             pending_tools.push(chunk);
                             continue;
                         }
+                        if response_data(&chunk) {
+                            continue; // Already held without a second delta list.
+                        }
                         if chunk
                             .pointer("/choices/0/finish_reason")
                             .is_some_and(|v| !v.is_null())
                         {
+                            pending_output.deliver(&mut redactor, cancel, on)?;
                             for tool in pending_tools.drain(..) {
                                 if !withheld {
                                     redactor.deliver(tool, cancel, on)?;
@@ -473,7 +489,7 @@ impl Client {
                     if chunk.pointer("/choices/0/delta/tool_calls").is_some() {
                         pending_tools.push(chunk);
                     } else {
-                        redactor.deliver(chunk, cancel, on)?;
+                        pending_output.push(chunk)?;
                     }
                 }
             }
@@ -827,6 +843,93 @@ impl<'a> Fields<'a> {
         Ok(())
     }
 }
+// Only normalized response-data chunks enter this aggregate. Terminal/usage
+// controls and executable tool chunks retain their existing caller policy.
+fn response_data(chunk: &Value) -> bool {
+    chunk["choices"]
+        .as_array()
+        .is_some_and(|choices| !choices.is_empty())
+        && chunk
+            .pointer("/choices/0/finish_reason")
+            .is_none_or(Value::is_null)
+        && chunk.pointer("/choices/0/delta/tool_calls").is_none()
+}
+// Retain one header and compact adjacent string-field runs, not a Vec of
+// repeated public JSON deltas. Runs preserve content/reasoning/refusal ordering
+// for the real consumer (including its existing content-marker handling).
+#[derive(Default)]
+struct HeldOutput {
+    header: Option<Value>,
+    runs: Vec<(String, String)>,
+}
+impl HeldOutput {
+    fn push(&mut self, chunk: Value) -> Result<(), Error> {
+        if self.header.is_none() {
+            self.header = Some(chunk);
+            return Ok(());
+        }
+        let delta = chunk
+            .pointer("/choices/0/delta")
+            .and_then(Value::as_object)
+            .ok_or(Error::Protocol)?;
+        for (field, value) in delta {
+            if let Some(text) = value.as_str() {
+                if field != "role" {
+                    if let Some((_, previous)) = self.runs.last_mut().filter(|(key, _)| key == field) {
+                        previous.push_str(text);
+                        continue;
+                    }
+                }
+                self.runs.push((field.clone(), text.to_owned()));
+            } else if !value.is_null() {
+                return Err(Error::Protocol);
+            }
+        }
+        Ok(())
+    }
+    fn known(&self, secrets: &[&str]) -> bool {
+        self.header
+            .as_ref()
+            .is_some_and(|chunk| known_value(&chunk["choices"][0]["delta"], secrets))
+            || self.runs.iter().any(|(field, text)| {
+                secrets
+                    .iter()
+                    .any(|secret| field.contains(secret) || text.contains(secret))
+            })
+    }
+    fn deliver<F: FnMut(Event) -> Control + ?Sized>(
+        &mut self,
+        redactor: &mut Fields<'_>,
+        cancel: &Cancellation,
+        on: &mut F,
+    ) -> Result<(), Error> {
+        let Some(header) = self.header.take() else {
+            return Ok(());
+        };
+        let mut template = header.clone();
+        template["choices"][0]["delta"] = serde_json::json!({});
+        redactor.deliver(header, cancel, on)?;
+        for (field, text) in self.runs.drain(..) {
+            let mut chunk = template.clone();
+            chunk["choices"][0]["delta"][field] = Value::String(text);
+            redactor.deliver(chunk, cancel, on)?;
+        }
+        Ok(())
+    }
+}
+// Exact held values only: no patterns, external discovery or replacement.
+fn known_value(value: &Value, secrets: &[&str]) -> bool {
+    let known = |text: &str| secrets.iter().any(|secret| text.contains(secret));
+    match value {
+        Value::String(text) => known(text),
+        Value::Array(items) => items.iter().any(|item| known_value(item, secrets)),
+        Value::Object(object) => object
+            .iter()
+            .any(|(field, value)| known(field) || known_value(value, secrets)),
+        _ => false,
+    }
+}
+
 fn emit<F: FnMut(Event) -> Control + ?Sized>(
     chunk: Value,
     cancel: &Cancellation,
