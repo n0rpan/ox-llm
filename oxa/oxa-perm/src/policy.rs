@@ -29,6 +29,9 @@ pub struct PathGuard {
     allow: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
+    /// The spill files (`tmp_dir`): the file a truncated tool result names is read without
+    /// asking (#564). Writes outside the cwd still ask.
+    spill: PathBuf,
     /// The home directory and its startup files, keys and agent settings
     /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
     /// directory or above it (O-199 first run: oxa started in `$HOME`).
@@ -65,6 +68,7 @@ impl PathGuard {
             deny,
             allow: vec![tmp_dir.to_path_buf()],
             read_allow: vec![agent_dir.join("builtin-skills")],
+            spill: tmp_dir.to_path_buf(),
             home: home.to_path_buf(),
             home_protected,
         }
@@ -89,6 +93,12 @@ impl PathGuard {
     /// Like [`PathGuard::denies`] for a read: the built-in skills are readable.
     pub fn denies_read(&self, p: &Path) -> bool {
         self.denies(p) && !self.is_builtin_skill(p)
+    }
+
+    /// #564: `p` (absolute) is inside the spill directory, where the full output of a truncated
+    /// tool result is saved.
+    pub fn is_spill(&self, p: &Path) -> bool {
+        !self.spill.as_os_str().is_empty() && is_inside(p, &self.spill)
     }
 
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
@@ -352,7 +362,10 @@ impl Policy for ModePolicy {
                 return Decision::Deny(deny_reasons::SENSITIVE);
             }
             // #492: the advertised built-in skills are read without asking, wherever the cwd is.
-            if matches!(a, Access::Read(_)) && self.guard.is_builtin_skill(&abs) {
+            // #564: so is the spill file a truncated tool result names.
+            if matches!(a, Access::Read(_))
+                && (self.guard.is_builtin_skill(&abs) || self.guard.is_spill(&abs))
+            {
                 return Decision::Allow;
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.

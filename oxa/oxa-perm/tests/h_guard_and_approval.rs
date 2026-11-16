@@ -70,14 +70,27 @@ fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
         ),
         SENSITIVE
     );
+    // #564: the file a truncated tool result names is read without asking (a headless run
+    // answers every ask with "declined"), in any mode; writing it is not covered.
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(
+                mode,
+                &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
+                &env.work()
+            ),
+            Decision::Allow,
+            "a spill file is readable: {mode:?}"
+        );
+    }
     assert_eq!(
         p.decide(
             Mode::Workspace,
-            &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
+            &Access::Write(env.agent_dir().join("tmp/s1/out.txt")),
             &env.work()
         ),
         Decision::Ask,
-        "a spill file reads as before (outside the cwd: ask)"
+        "writing outside the cwd still asks"
     );
     // A plain file of the project is unaffected.
     assert_eq!(
