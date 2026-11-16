@@ -313,6 +313,9 @@ pub(crate) struct Loop<'a> {
     yolo_banner_until: u64,
     /// What was last written as the window title.
     sent_title: Option<String>,
+    /// Assume focus until the terminal reports otherwise (unsupported terminals stay quiet).
+    focused: bool,
+    run_finished: bool,
     pub(crate) dirty: bool,
     /// Ctrl+C was pressed on an empty editor; a second press quits.
     armed: bool,
@@ -356,6 +359,7 @@ impl<'a> Loop<'a> {
             term.set_mode(TermMode::AltScreen, true);
             term.set_mode(TermMode::Mouse, true);
         }
+        term.set_mode(TermMode::FocusReporting, true);
         let scoped = opts.settings.list("enabledModels");
         let wheel = wheel_accel(&opts.settings, &opts.env);
         let clear_on_shrink = match opts
@@ -440,6 +444,8 @@ impl<'a> Loop<'a> {
             yolo_banner_since: 0,
             yolo_banner_until: 0,
             sent_title: None,
+            focused: true,
+            run_finished: false,
             dirty: true,
             armed: false,
             reset_screen: false,
@@ -724,7 +730,13 @@ impl<'a> Loop<'a> {
                     self.vm.status.unknown_misses += 1;
                 }
             }
-            WorkerMsg::Event(e) => apply_event(&mut self.vm, &e),
+            WorkerMsg::Event(e) => {
+                // AgentEnd can occur between tool/follow-up turns; only settled ends a run.
+                if matches!(e, AgentEvent::AgentSettled { .. }) {
+                    self.run_finished = true;
+                }
+                apply_event(&mut self.vm, &e);
+            }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
                 self.draft.wire_changed();
@@ -1118,6 +1130,8 @@ impl<'a> Loop<'a> {
             InputEvent::Key(key) => self.key(term, key),
             InputEvent::Paste(text) => self.paste(&text),
             InputEvent::Mouse(m) => self.mouse(term, m),
+            InputEvent::FocusGained => self.focused = true,
+            InputEvent::FocusLost => self.focused = false,
             InputEvent::Resize { .. } => {
                 self.dirty = true;
                 self.gfx_reset = true;
@@ -2766,6 +2780,28 @@ impl<'a> Loop<'a> {
     /// Draw one frame in the active layout.
     pub(crate) fn draw(&mut self, term: &mut dyn Terminal) {
         self.dirty = false;
+        // Consume edges even when notifications are disabled/focused: never replay them
+        // later on focus-out. Input was polled first, so pending focus reports are current.
+        let finished = std::mem::take(&mut self.run_finished);
+        let permission = self.dialogs.take_permission_opened();
+        let notify = match self.opts.settings.string("ui.notify").as_deref() {
+            Some("off") => false,
+            Some("always") => true,
+            _ => !self.focused,
+        };
+        if notify {
+            for (wanted, text) in [
+                (finished, "oxa: Run finished"),
+                (permission, "oxa: Permission required"),
+            ] {
+                if wanted {
+                    term.write(oxa_tui::notify_sequence(text).as_bytes());
+                    // OSC has no support acknowledgement. A standalone BEL supplies the
+                    // fallback for terminals that ignore OSC 9; no external sound/player.
+                    term.write(b"\x07");
+                }
+            }
+        }
         self.report_status(term);
         if self.gfx_reset {
             self.gfx_reset = false;
@@ -2939,6 +2975,7 @@ impl<'a> Loop<'a> {
             self.handle.abort();
         }
         self.drop_images(term);
+        term.set_mode(TermMode::FocusReporting, false);
         if self.fullscreen {
             self.renderer.clear(term);
             term.set_mode(TermMode::Mouse, false);
