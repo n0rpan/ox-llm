@@ -253,11 +253,16 @@ fn run_inner(
             };
             // #184: thinking ran to the output limit and nothing else came out.
             if !retried && crate::think::reasoning_only_overrun(st, &turn, thinking_on) {
+                crate::think::record_overrun(st, ui);
+                account_discarded(st, &turn);
+                if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                    // The normal fallback is a new request. A pending stop instead
+                    // gets the bounded final instruction from the outer turn loop.
+                    continue 'turns;
+                }
                 retried = true;
                 opts.thinking = Some(false);
                 opts.idem_key = String::new();
-                crate::think::record_overrun(st, ui);
-                account_discarded(st, &turn);
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: crate::think::OVERRUN_NOTICE.to_string(),
@@ -283,6 +288,10 @@ fn run_inner(
                     level: Level::Error,
                     text: e.to_string(),
                 });
+                if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                    wrap_up_failure = Some(e);
+                    continue 'turns;
+                }
                 return Ok(RunEnd::Failed(e));
             }
             break turn;
