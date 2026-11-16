@@ -365,6 +365,82 @@ fn active_capacity_is_an_error_and_only_recent_terminal_history_is_trimmed() {
 }
 
 #[test]
+fn byte_capacity_trims_history_before_refusing_active_asks() {
+    let env = Fixture::new();
+    let facts = env.facts();
+    for id in 0..16 {
+        facts
+            .append(
+                checkpoint("runner", id + 1),
+                0,
+                Fact::Incident(Incident {
+                    id: format!("{id:016}{}", "i".repeat(240)),
+                    subject: Subject::Task("t".repeat(128)),
+                    kind: IncidentKind::NoBuildRequeue,
+                    evidence: Some(Evidence {
+                        kind: EvidenceKind::Gate,
+                        id: "e".repeat(256),
+                    }),
+                }),
+            )
+            .unwrap();
+    }
+    for id in 0..95 {
+        facts
+            .append(
+                checkpoint("runner", id + 17),
+                0,
+                Fact::AskOpened(Ask {
+                    id: format!("ask-{id}"),
+                    subject: Subject::Repository,
+                    question: "q".repeat(512),
+                }),
+            )
+            .unwrap();
+    }
+    let snapshot = facts.situation().unwrap();
+    assert_eq!(snapshot.as_of_seq, 111);
+    assert_eq!(snapshot.asks.len(), 95);
+    assert!(snapshot.history_truncated);
+    assert!(snapshot.incidents.len() < 16);
+    assert!(snapshot.to_json().unwrap().len() <= MAX_SNAPSHOT_BYTES);
+    assert_eq!(Facts::open(&env.root()).unwrap().situation().unwrap(), snapshot);
+}
+
+#[test]
+fn parent_directory_sync_error_blocks_initialization() {
+    const CHILD_ROOT: &str = "OXA_FACTS_TEST_UNREADABLE_PARENT";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let error = Facts::initialize(Path::new(&root)).expect_err("parent cannot be synced");
+        assert!(error.contains("directory"), "{error}");
+        return;
+    }
+    let env = Fixture::new();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child.env_clear().env(CHILD_ROOT, env.root()).args([
+        "--exact",
+        "events::tests::parent_directory_sync_error_blocks_initialization",
+    ]);
+    // Root can read mode 0300. Exercise the same real permission failure as a normal user.
+    // SAFETY: geteuid has no arguments, pointers or failure mode.
+    if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::process::CommandExt;
+        std::os::unix::fs::chown(&env.0, Some(65534), Some(65534)).unwrap();
+        child.uid(65534).gid(65534);
+    }
+    fs::set_permissions(&env.0, fs::Permissions::from_mode(0o300)).unwrap();
+    let output = child.output();
+    fs::set_permissions(&env.0, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = output.unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn head_changes_and_unrelated_facts_do_not_silently_clear_blocks_or_asks() {
     let env = Fixture::new();
     let facts = env.facts();
