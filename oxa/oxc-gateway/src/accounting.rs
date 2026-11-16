@@ -54,6 +54,8 @@ pub struct Usage {
 #[derive(Clone, Copy)]
 pub enum Outcome {
     Complete,
+    /// The provider explicitly refused before generation.
+    Refused,
     Failed,
     Cancelled {
         request_bytes: usize,
@@ -105,6 +107,20 @@ fn exhausted() -> Refusal {
     }
 }
 impl Budget {
+    /// Record an unpaid refusal under the same admission lock. A failed audit
+    /// closes later spending across processes without replacing its original error.
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn write_unpaid(&self, write: impl FnOnce() -> io::Result<()>) -> Result<(), Refusal> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shared = Shared::open(&self.path).map_err(|_| Refusal::ledger())?;
+        let result = write();
+        if result.is_err() {
+            state.failed = true;
+            shared.failed = true;
+            let _ = shared.save();
+        }
+        result.map_err(|_| Refusal::ledger())
+    }
     /// Ledger directories must already be private (0700) and owned by this user.
     /// Independent instances and processes share persisted daily reservations.
     pub fn new(path: PathBuf) -> Self {
@@ -180,6 +196,11 @@ impl Hold {
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
         let mut row = json!({"remote":true,"remote_provider":model.provider,"remote_model":model.upstream});
+        if matches!(outcome, Outcome::Refused) {
+            row["cost_usd"] = json!(0.0);
+            row["settled"] = json!("refused");
+            return row;
+        }
         for (field, value) in [
             ("prompt_tokens", usage.prompt),
             ("completion_tokens", usage.output),
