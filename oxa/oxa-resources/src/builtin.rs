@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// `(name, SKILL.md content)` of every built-in skill, sorted by name.
 pub const BUILTIN_SKILLS: &[(&str, &str)] = &[
+    ("lead", include_str!("../builtin-skills/lead/SKILL.md")),
     ("ox-llm", include_str!("../builtin-skills/ox-llm/SKILL.md")),
     (
         "oxa-extend",

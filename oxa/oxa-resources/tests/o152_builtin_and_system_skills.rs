@@ -32,7 +32,7 @@ fn builtin_skills_are_valid_and_listed() {
     let names: Vec<&str> = BUILTIN_SKILLS.iter().map(|(n, _)| *n).collect();
     assert_eq!(
         names,
-        vec!["ox-llm", "oxa-extend", "pull-request", "report-issue"]
+        vec!["lead", "ox-llm", "oxa-extend", "pull-request", "report-issue"]
     );
     let env = TestEnv::new();
     let dirs = Dirs::under(env.root());
@@ -148,6 +148,7 @@ fn omarchy_system_dir_is_the_lowest_precedence_fallback() {
     assert_eq!(
         names,
         vec![
+            "lead",
             "mine",
             "omarchy",
             "ox-llm",
