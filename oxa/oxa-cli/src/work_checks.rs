@@ -190,13 +190,40 @@ fn inspect(sandbox: &Bwrap, root: &Path) -> Result<i32, String> {
     exit "$work_dirty"
 }
 
+work_probe_status=("${PIPESTATUS[@]}")
+if test "${work_probe_status[0]}" -ne 0; then exit 2; fi
+exit "${work_probe_status[1]}"
+"#
+        .into(),
+        cwd: root.to_path_buf(),
+        writable: false,
+        net: false,
+        timeout_s: Some(600),
+        env: git_environment(),
+    };
+    let mut tail = Vec::new();
+    let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+        keep_tail(&mut tail, bytes, 8192);
+    });
+    match (result.exit, result.timed_out) {
+        (Some(code @ (0 | 1)), false) => Ok(code),
+        _ => Err(format!(
+            "sandboxed Git inspection failed: {}",
+            String::from_utf8_lossy(&tail)
+        )),
+    }
+}
+
 // Compare actual tracked contents using the runner's fresh, protected index.
 // The check-writable index and user Git filters supply no authority here.
 fn inspect_committed(sandbox: &Bwrap, root: &Path, index: &Path) -> Result<i32, String> {
     if index.parent() != root.parent() || index.file_name().is_none_or(|name| name != ".committed-index") {
         return Err("invalid committed inspection index".into());
     }
-    let store = root.parent().ok_or("committed checkout has no parent")?.join("objects.git");
+    let store = root
+        .parent()
+        .ok_or("committed checkout has no parent")?
+        .join("objects.git");
     let mut env = git_environment();
     env.extend([
         ("GIT_INDEX_FILE".into(), index.to_string_lossy().into_owned()),
@@ -221,29 +248,6 @@ fn inspect_committed(sandbox: &Bwrap, root: &Path, index: &Path) -> Result<i32, 
     match (result.exit, result.timed_out) {
         (Some(code @ (0 | 1)), false) => Ok(code),
         _ => Err("committed source inspection failed".into()),
-    }
-}
-work_probe_status=("${PIPESTATUS[@]}")
-if test "${work_probe_status[0]}" -ne 0; then exit 2; fi
-exit "${work_probe_status[1]}"
-"#
-        .into(),
-        cwd: root.to_path_buf(),
-        writable: false,
-        net: false,
-        timeout_s: Some(600),
-        env: git_environment(),
-    };
-    let mut tail = Vec::new();
-    let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
-        keep_tail(&mut tail, bytes, 8192);
-    });
-    match (result.exit, result.timed_out) {
-        (Some(code @ (0 | 1)), false) => Ok(code),
-        _ => Err(format!(
-            "sandboxed Git inspection failed: {}",
-            String::from_utf8_lossy(&tail)
-        )),
     }
 }
 
