@@ -514,7 +514,12 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
-        if !stop && (i == 1 || (arg == "work" && argv[..i - 1].iter().all(|word| word == "--offline"))) {
+        // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
+        // another option or `--` appears, later words retain their positional meaning.
+        if !stop
+            && (i == 1
+                || (matches!(arg, "send" | "work") && argv[..i - 1].iter().all(|word| word == "--offline")))
+        {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
                 a.subcommand = Some(sub);
                 break;
