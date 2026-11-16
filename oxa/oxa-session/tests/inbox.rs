@@ -213,3 +213,81 @@ fn inbox_bounded_scan_advances_past_invalid_batches() {
         "invalid files are retained, not repeatedly scanned"
     );
 }
+
+#[test]
+fn inbox_durable_pickup_receipt_survives_restart_and_stale_message() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let id = send_inbox(&agent, "durable", "follow up").unwrap();
+    assert!(!Inbox::receipt(&agent, "durable", &id).unwrap());
+    assert_eq!(
+        Inbox::take(&agent, "durable").unwrap(),
+        Some((id.clone(), "follow up".into()))
+    );
+    assert!(Inbox::receipt(&agent, "durable", &id).unwrap());
+    assert_eq!(Inbox::take(&agent, "durable").unwrap(), None);
+    // Simulate a crash after the receipt is durable but before unlinking the message.
+    fs::write(agent.join("inbox/durable").join(format!("{id}.msg")), "follow up").unwrap();
+    assert_eq!(Inbox::take(&agent, "durable").unwrap(), None);
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "durable", move |s| tx.send(s).is_ok()).unwrap();
+    send_inbox(&agent, "durable", "next message").unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), "next message");
+    drop(watch);
+    assert!(rx.try_recv().is_err());
+    assert!(Inbox::receipt(&agent, "durable", &id).unwrap());
+}
+
+#[test]
+fn inbox_durable_pickup_respects_owner_lock_and_rejects_unsafe_receipts() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let id = send_inbox(&agent, "durable", "follow up").unwrap();
+    let watch = Inbox::watch(&agent, "durable", |_| false).unwrap();
+    assert!(Inbox::take(&agent, "durable").is_err());
+    drop(watch);
+    assert!(Inbox::receipt(&agent, "durable", "../outside").is_err());
+    let outside = env.root().join("outside");
+    fs::write(&outside, "untouched").unwrap();
+    let receipt = agent.join("inbox/durable").join(format!("{id}.taken"));
+    symlink(&outside, &receipt).unwrap();
+    assert!(Inbox::receipt(&agent, "durable", &id).is_err());
+    assert!(Inbox::take(&agent, "durable").is_err());
+    fs::remove_file(&receipt).unwrap();
+    fs::hard_link(&outside, &receipt).unwrap();
+    assert!(Inbox::receipt(&agent, "durable", &id).is_err());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "untouched");
+}
+
+#[test]
+fn inbox_durable_pickup_is_ordered_bounded_private_and_wipeable() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let first = send_inbox(&agent, "durable", "first").unwrap();
+    let second = send_inbox(&agent, "durable", "second").unwrap();
+    let dir = agent.join("inbox/durable");
+    let outside = env.root().join("outside");
+    fs::write(&outside, "untouched").unwrap();
+    symlink(&outside, dir.join("000-symlink.msg")).unwrap();
+    fs::hard_link(&outside, dir.join("000-hardlink.msg")).unwrap();
+    fs::create_dir(dir.join("000-directory.msg")).unwrap();
+    fs::write(dir.join("000-oversized.msg"), vec![b'x'; 256 * 1024 + 1]).unwrap();
+    fs::write(dir.join("000-invalid.msg"), [0xff]).unwrap();
+    assert_eq!(
+        Inbox::take(&agent, "durable").unwrap(),
+        Some((first.clone(), "first".into()))
+    );
+    assert_eq!(
+        Inbox::take(&agent, "durable").unwrap(),
+        Some((second.clone(), "second".into()))
+    );
+    assert_eq!(Inbox::take(&agent, "durable").unwrap(), None);
+    for id in [first, second] {
+        let marker = fs::metadata(dir.join(format!("{id}.taken"))).unwrap();
+        assert_eq!(marker.len(), 0, "receipts must not retain prompt text");
+        assert_eq!(marker.permissions().mode() & 0o777, 0o600);
+    }
+    oxa_session::remove_inbox(&agent, Some("durable")).unwrap();
+    assert!(!dir.exists());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "untouched");
+}
