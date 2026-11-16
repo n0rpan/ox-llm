@@ -61,9 +61,18 @@ fn session(env: &TestEnv) -> Session {
 
 /// A session on the scripted engine with these turns.
 fn session_with(env: &TestEnv, turns: Vec<oxa_fake::ScriptTurn>) -> Session {
+    session_open(env, turns, Arc::new(MemStore::new()), Open::Ephemeral)
+}
+
+fn session_open(
+    env: &TestEnv,
+    turns: Vec<oxa_fake::ScriptTurn>,
+    store: Arc<dyn SessionStore>,
+    open: Open,
+) -> Session {
     let deps = Deps {
         engine: Arc::new(ScriptedEngine::new(turns)) as Arc<dyn Engine>,
-        store: Arc::new(MemStore::new()) as Arc<dyn SessionStore>,
+        store,
         tools: Vec::new(),
         hooks: Vec::new(),
         policy: Box::new(AllowAll),
@@ -79,7 +88,7 @@ fn session_with(env: &TestEnv, turns: Vec<oxa_fake::ScriptTurn>) -> Session {
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     };
-    Session::open(deps, Open::Ephemeral).expect("open the test session")
+    Session::open(deps, open).expect("open the test session")
 }
 
 fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
@@ -1104,4 +1113,205 @@ fn terminal_notifications_only_on_new_edges_not_focus_out_or_done() {
     assert_eq!(out.matches("\x1b]9;").count(), 1);
     // The OSC terminator alone is not a bell on terminals which ignore OSC 9.
     assert!(out.contains("\x1b]9;oxa: Run finished\x07\x07"));
+}
+
+/// No keyboard input until both the startup backlog and a live file notification ran.
+struct InboxTerminal {
+    term: TestTerminal,
+    agent: std::path::PathBuf,
+    id: String,
+    sent_live: bool,
+    start: std::time::Instant,
+}
+
+impl oxa_tui::Terminal for InboxTerminal {
+    fn write(&mut self, bytes: &[u8]) {
+        self.term.out.extend_from_slice(bytes);
+    }
+    fn flush(&mut self) {}
+    fn size(&self) -> (u16, u16) {
+        (100, 30)
+    }
+    fn caps(&self) -> TermCaps {
+        TermCaps::BASIC
+    }
+    fn set_mode(&mut self, mode: oxa_tui::TermMode, on: bool) {
+        self.term.modes.push((mode, on));
+    }
+    fn suspend(&mut self) {}
+    fn resume(&mut self) {}
+    fn poll(&mut self, _: u64) -> Vec<InputEvent> {
+        let out = String::from_utf8_lossy(&self.term.out);
+        if out.contains("inbox-second-reply") || self.start.elapsed() > std::time::Duration::from_secs(3) {
+            return vec![key("ctrl+d")];
+        }
+        if !self.sent_live && out.contains("inbox-first-reply") {
+            self.sent_live = true;
+            oxa_session::send_inbox(&self.agent, &self.id, "live follow-up").unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        Vec::new()
+    }
+}
+
+#[test]
+fn inbox_wakes_the_real_tui_worker_when_idle() {
+    let env = TestEnv::new();
+    let s = session_with(
+        &env,
+        vec![
+            oxa_fake::ScriptTurn::text("inbox-first-reply"),
+            oxa_fake::ScriptTurn::text("inbox-second-reply"),
+        ],
+    );
+    let id = s.state().session_id;
+    let mut opts = interactive_opts(&env);
+    oxa_session::send_inbox(&opts.dirs.agent_dir, &id, "startup follow-up").unwrap();
+    let mut term = InboxTerminal {
+        term: TestTerminal::new(100, 30),
+        agent: opts.dirs.agent_dir.clone(),
+        id,
+        sent_live: false,
+        start: std::time::Instant::now(),
+    };
+    let (code, _) = oxa_interactive::run_session(&mut term, s, &mut opts);
+    assert_eq!(code, 0);
+    let out = String::from_utf8_lossy(&term.term.out);
+    assert!(
+        out.contains("inbox-first-reply"),
+        "startup inbox was not delivered: {out}"
+    );
+    assert!(
+        out.contains("inbox-second-reply"),
+        "live inbox did not wake idle TUI: {out}"
+    );
+}
+
+/// Keep the UI on the old session until its watcher has admitted a message.
+struct StaleInboxTerminal {
+    cmds: Receiver<SessionCmd>,
+    destination: String,
+    reopen: Option<(Sender<WorkerMsg>, oxa_core::Handle)>,
+}
+
+impl oxa_tui::Terminal for StaleInboxTerminal {
+    fn write(&mut self, _: &[u8]) {}
+    fn flush(&mut self) {}
+    fn size(&self) -> (u16, u16) {
+        (80, 24)
+    }
+    fn caps(&self) -> TermCaps {
+        TermCaps::BASIC
+    }
+    fn set_mode(&mut self, _: oxa_tui::TermMode, _: bool) {}
+    fn suspend(&mut self) {}
+    fn resume(&mut self) {}
+    fn poll(&mut self, _: u64) -> Vec<InputEvent> {
+        assert!(matches!(
+            self.cmds.recv_timeout(std::time::Duration::from_secs(3)),
+            Ok(SessionCmd::Inbox { session_id }) if session_id == self.destination
+        ));
+        if let Some((messages, handle)) = self.reopen.take() {
+            // Reopen creates a fresh Session/Shared, unlike core Session::switch.
+            messages.send(WorkerMsg::Rebind(handle)).unwrap();
+            messages
+                .send(WorkerMsg::Session(oxa_interactive::SessionInfo {
+                    id: self.destination.clone(),
+                    ..Default::default()
+                }))
+                .unwrap();
+            Vec::new()
+        } else {
+            vec![key("ctrl+d")]
+        }
+    }
+}
+
+#[test]
+fn stale_tui_inbox_callback_keeps_messages_with_original_session_after_clone_or_fork() {
+    for fork in [false, true] {
+        let env = TestEnv::new();
+        let mut s = session_with(&env, vec![oxa_fake::ScriptTurn::text("initial reply")]);
+        s.prompt(
+            "initial turn".into(),
+            Vec::new(),
+            &mut oxa_proto::VecSink::default(),
+            &mut oxa_proto::HeadlessUi::default(),
+        )
+        .unwrap();
+        let original = s.inner().sref.clone();
+        let handle = s.handle();
+        if fork {
+            let user = s
+                .inner()
+                .tree
+                .entries()
+                .iter()
+                .find(
+                    |e| matches!(&e.body, EntryBody::Msg { wire, .. } if wire.role == oxa_proto::Role::User),
+                )
+                .unwrap()
+                .id
+                .clone();
+            s.fork(&user).unwrap();
+        } else {
+            s.clone_session().unwrap();
+        }
+        assert_ne!(s.state().session_id, original.id);
+
+        // The worker has changed identity but the UI has not yet processed its Session
+        // notification. Its old watcher still owns this backlog and the shared handle.
+        let mut opts = interactive_opts(&env);
+        oxa_session::send_inbox(&opts.dirs.agent_dir, &original.id, "old destination only").unwrap();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (_ui_tx, ui_rx) = mpsc::channel();
+        msg_tx
+            .send(WorkerMsg::Session(oxa_interactive::SessionInfo {
+                id: original.id.clone(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let mut resumed = session_open(
+            &env,
+            vec![oxa_fake::ScriptTurn::text("resumed reply")],
+            s.inner().store.clone(),
+            Open::Resume(original.clone()),
+        );
+        let resumed_handle = resumed.handle();
+        let mut term = StaleInboxTerminal {
+            cmds: cmd_rx,
+            destination: original.id.clone(),
+            reopen: Some((msg_tx, resumed_handle.clone())),
+        };
+        assert_eq!(
+            run_loop(
+                &mut term,
+                &mut opts,
+                handle.clone(),
+                cmd_tx,
+                msg_rx,
+                ui_rx,
+                ViewModel::default()
+            )
+            .unwrap(),
+            0
+        );
+        assert!(
+            handle.queued().1.is_empty(),
+            "old inbox leaked across session transition"
+        );
+        assert_eq!(resumed_handle.queued().1, ["old destination only"]);
+        resumed
+            .run_queued(
+                &mut oxa_proto::VecSink::default(),
+                &mut oxa_proto::HeadlessUi::default(),
+            )
+            .unwrap();
+        assert!(resumed_handle.queued().1.is_empty());
+        assert!(resumed.inner().tree.entries().iter().any(|entry| {
+            matches!(&entry.body, EntryBody::Msg { wire, .. }
+                if wire.role == oxa_proto::Role::User && wire.content.as_deref() == Some("old destination only"))
+        }));
+    }
 }

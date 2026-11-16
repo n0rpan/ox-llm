@@ -31,6 +31,30 @@ fn spec(name: &str, boolean: bool) -> FlagSpec {
     }
 }
 
+/// Inbox delivery and the commands added on main must all remain subcommands.
+#[test]
+fn send_status_and_work_preserve_subcommand_arguments() {
+    let cases = [
+        (
+            ["send", "session-123", "follow up"],
+            Subcommand::Send(argv(&["session-123", "follow up"])),
+        ),
+        (
+            ["status", "session-123", "--json"],
+            Subcommand::Status(argv(&["session-123", "--json"])),
+        ),
+        (
+            ["work", "task.toml", "--offline"],
+            Subcommand::Work(argv(&["task.toml", "--offline"])),
+        ),
+    ];
+    for (words, expected) in cases {
+        let args = parse(&words);
+        assert_eq!(args.subcommand, Some(expected), "{words:?}");
+        assert!(args.messages.is_empty(), "not a model prompt: {words:?}");
+    }
+}
+
 /// table test, long and short spellings
 #[test]
 fn every_flag_of_cli_md() {

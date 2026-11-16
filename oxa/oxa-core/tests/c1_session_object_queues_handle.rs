@@ -522,3 +522,29 @@ fn live_clone_and_fork_rebind_spill_policy_and_walk_filter() {
     assert_readable_spill(&s, &s.inner().spill_dir.join("out.txt"));
     assert_readable_spill(&s, &old.join("inherited.txt"));
 }
+
+#[test]
+fn session_switch_and_clone_do_not_inherit_another_inbox() {
+    let env = TestEnv::new();
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+    let original = session.inner().sref.clone();
+    let handle = session.handle();
+    handle.follow_up_for(&original.id, "admitted before switch".into());
+    session
+        .switch(Open::New, &mut VecSink::default(), &mut HeadlessUi::default())
+        .unwrap();
+    handle.follow_up_for(&original.id, "late old callback".into());
+    assert!(!handle.has_inbox_input());
+    assert!(handle.queued().1.is_empty());
+    session.clone_session().unwrap();
+    assert!(handle.queued().1.is_empty());
+    session
+        .switch(
+            Open::Resume(original),
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert!(handle.has_inbox_input());
+    assert_eq!(handle.dequeue(), ["admitted before switch", "late old callback"]);
+}
