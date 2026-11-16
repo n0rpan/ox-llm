@@ -452,3 +452,77 @@ async fn disconnect_cancels_a_silent_backend_and_waits_for_its_cleanup() {
     r.close().await;
     assert!(observed.is_ok(), "disconnect did not wake a silent model request");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn successful_stream_retries_contended_settlement_and_finishes() {
+    struct Locked {
+        fake: Fake,
+        path: std::path::PathBuf,
+        lock: Mutex<Option<nix::fcntl::Flock<std::fs::File>>>,
+        ready: Notify,
+    }
+    impl Answer for Locked {
+        fn models(&self) -> &[Model] {
+            self.fake.models()
+        }
+        async fn chat(
+            &self,
+            request: Request,
+            output: Output,
+            cancel: CancelToken,
+        ) -> Result<Completed, Failure> {
+            let file = std::fs::File::open(&self.path).unwrap();
+            *self.lock.lock().unwrap() =
+                Some(nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive).unwrap());
+            let result = self.fake.chat(request, output, cancel).await;
+            self.ready.notify_one();
+            result
+        }
+    }
+    for release_lock in [true, false] {
+        let d = Directory::new();
+        let keys = Arc::new(d.store());
+        let key = keys.create("Device", limits()).unwrap();
+        let backend = Arc::new(Locked {
+            fake: Fake::new(false),
+            path: d.0.join("share-keys.lock"),
+            lock: Mutex::new(None),
+            ready: Notify::new(),
+        });
+        let server = Server::bind(
+            keys.clone(),
+            backend.clone(),
+            Arc::new(Network::local()),
+            config(),
+        )
+        .await
+        .unwrap();
+        let address = server.address().unwrap();
+        let stop = CancelToken::new();
+        let serving = tokio::spawn(server.serve(stop.clone()));
+        let payload = body("local-model").to_string();
+        let request = format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}", key.bearer.expose(), payload.len(), payload);
+        let client = tokio::spawn(exchange(address, request));
+        backend.ready.notified().await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!client.is_finished());
+        if release_lock {
+            backend.lock.lock().unwrap().take();
+        }
+        let reply = client.await.unwrap();
+        assert!(reply.contains("data: [DONE]"), "{reply}");
+        assert!(reply.contains("total_tokens\":8"), "{reply}");
+        let day = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / 86400;
+        backend.lock.lock().unwrap().take();
+        assert_eq!(
+            keys.guest_usage(day, &key.info.id).unwrap(),
+            (1, if release_lock { 8 } else { 110 })
+        );
+        stop.cancel();
+        serving.await.unwrap().unwrap();
+    }
+}

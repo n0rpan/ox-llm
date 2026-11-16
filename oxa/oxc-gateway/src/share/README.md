@@ -28,12 +28,23 @@ listener reserves and enforces them before forwarding.
 
 `Store::admit` verifies fresh credentials under the same lock as quota updates.
 It reserves one request and the possible input/output tokens durably in a private
-per-UTC-day file. Its single-use guard settles only trusted usage within the
+per-UTC-day file. Its guard settles only trusted usage within the
 reservation; unknown outcomes and process exit retain the conservative charge.
 In-flight settlement stays on its admission day across midnight, even after key
 revocation. There are at most 128 unresolved reservations per day; exhaustion or
 malformed/unsafe state refuses work. Request admission uses nonblocking locks and
 returns Busy rather than parking an I/O thread behind another process.
+Settlement preserves authority on lock contention and retries asynchronously for
+at most the write timeout. Success disables further settlement; an ambiguous
+write failure is never retried. Exhausted retries or storage errors retain the
+conservative charge but do not truncate a successfully generated response.
+
+Listener authentication, admission and settlement use Tokio blocking operations,
+bounded by the connection limit. Each operation owns its slot until completion;
+there is no unbounded detached queue. Filesystem stalls do not block runtime
+network/model timers. Orderly shutdown joins admitted storage work as well as
+backend cleanup; a stalled filesystem can delay that join, since an in-progress
+filesystem syscall cannot safely be cancelled.
 
 `listener::Server` uses its caller's Tokio runtime. A fakeable `Tailnet` adapter
 supplies assigned addresses and optional peer ownership checks; absent/ambiguous

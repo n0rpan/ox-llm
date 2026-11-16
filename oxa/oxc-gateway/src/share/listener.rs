@@ -1,6 +1,7 @@
 //! Bounded, explicit guest HTTP serving. Uses the caller's Tokio runtime;
 //! imports start no runtime, listener, refresh worker or model supervisor.
 use super::{
+    admission::Admission,
     keys::{Error as KeyError, Store},
     protocol,
 };
@@ -241,6 +242,10 @@ impl<A: Answer, T: Tailnet> Server<A, T> {
     pub async fn serve(self, stop: CancelToken) -> Result<(), Failure> {
         let permits = Arc::new(Semaphore::new(self.config.connections));
         let rates = Arc::new(Mutex::new(Rates::default()));
+        let storage = Storage {
+            keys: self.keys.clone(),
+            slots: Arc::new(Semaphore::new(self.config.connections)),
+        };
         let mut tasks = JoinSet::new();
         let mut failure = None;
         loop {
@@ -253,20 +258,20 @@ impl<A: Answer, T: Tailnet> Server<A, T> {
                 _ = stop.cancelled() => break,
                 r = self.listener.accept() => match r { Ok(v) => v, Err(_) => { failure = Some(Failure::Failed); break; } },
             };
-            let (keys, answer, tailnet, config, rates) = (
-                self.keys.clone(),
+            let (answer, tailnet, config, rates) = (
                 self.answer.clone(),
                 self.tailnet.clone(),
                 self.config.clone(),
                 rates.clone(),
             );
             let global = stop.clone();
+            let storage = storage.clone();
             tasks.spawn(async move {
                 let _permit = permit;
                 let cancel = CancelToken::new();
                 let future = connection(
                     socket,
-                    &keys,
+                    &storage,
                     answer.as_ref(),
                     tailnet.as_ref(),
                     &config,
@@ -283,6 +288,92 @@ impl<A: Answer, T: Tailnet> Server<A, T> {
         stop.cancel();
         while tasks.join_next().await.is_some() {}
         failure.map_or(Ok(()), Err)
+    }
+}
+
+// A running operation owns its slot even if its waiting connection is cancelled.
+// Thus dropped waits cannot create an unbounded spawn_blocking backlog.
+#[derive(Clone)]
+struct Storage {
+    keys: Arc<Store>,
+    slots: Arc<Semaphore>,
+}
+impl Storage {
+    async fn run<R: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&Store) -> Result<R, KeyError> + Send + 'static,
+    ) -> Result<R, KeyError> {
+        let keys = self.keys.clone();
+        blocking(&self.slots, move || operation(&keys)).await
+    }
+
+    async fn settle(&self, mut admission: Admission, total: u64, limit: Duration) {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            let result = self
+                .run(move |_| {
+                    let result = admission.settle(total);
+                    Ok((admission, result))
+                })
+                .await;
+            match result {
+                Ok((held, Err(KeyError::Busy))) if tokio::time::Instant::now() < deadline => {
+                    admission = held;
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                // Unknown storage outcomes retain the conservative charge. They
+                // must not truncate a successfully generated OpenAI stream.
+                _ => return,
+            }
+        }
+    }
+}
+
+async fn blocking<R: Send + 'static>(
+    slots: &Arc<Semaphore>,
+    operation: impl FnOnce() -> Result<R, KeyError> + Send + 'static,
+) -> Result<R, KeyError> {
+    let permit = slots.clone().try_acquire_owned().map_err(|_| KeyError::Busy)?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        operation()
+    })
+    .await
+    .map_err(|_| KeyError::Unavailable)?
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stalled_storage_preserves_runtime_progress_and_bounds_work() {
+        let slots = Arc::new(Semaphore::new(1));
+        let worker_slots = slots.clone();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let began = Instant::now();
+        let worker = tokio::spawn(async move {
+            blocking(&worker_slots, move || {
+                started.send(()).unwrap();
+                let _ = wait.recv_timeout(Duration::from_secs(1));
+                Ok(())
+            })
+            .await
+        });
+        ready.await.unwrap();
+        // This timer and cancellation must progress on the same single thread
+        // while the filesystem operation is deliberately held elsewhere.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(began.elapsed() < Duration::from_millis(500));
+        let stop = CancelToken::new();
+        stop.cancel();
+        stop.cancelled().await;
+        assert_eq!(blocking(&slots, || Ok(())).await, Err(KeyError::Busy));
+        assert!(!worker.is_finished());
+        release.send(()).unwrap();
+        worker.await.unwrap().unwrap();
+        blocking(&slots, || Ok(())).await.unwrap();
     }
 }
 
@@ -315,7 +406,7 @@ fn eligible(model: &Model, config: &Config) -> bool {
 }
 async fn connection<A: Answer, T: Tailnet>(
     socket: TcpStream,
-    keys: &Store,
+    keys: &Storage,
     answer: &A,
     tailnet: &T,
     config: &Config,
@@ -327,61 +418,74 @@ async fn connection<A: Answer, T: Tailnet>(
         Err(_) => return,
     };
     let mut reader = BufReader::new(socket);
-    let result = async {
-        rate(
-            &mut rates.lock().map_err(|_| Failure::Busy)?.peers,
-            peer,
-            256,
-            config.peer_requests_per_minute,
-        )?;
-        let head = timeout(config.read_timeout, async {
-            let mut bytes = Vec::new();
-            while !bytes.ends_with(b"\r\n\r\n") {
-                if bytes.len() >= 16384 {
-                    return Err(Failure::TooLarge);
+    let result = {
+        let result = async {
+            rate(
+                &mut rates.lock().map_err(|_| Failure::Busy)?.peers,
+                peer,
+                256,
+                config.peer_requests_per_minute,
+            )?;
+            let head = timeout(config.read_timeout, async {
+                let mut bytes = Vec::new();
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    if bytes.len() >= 16384 {
+                        return Err(Failure::TooLarge);
+                    }
+                    bytes.push(reader.read_u8().await.map_err(|_| Failure::BadRequest)?);
                 }
-                bytes.push(reader.read_u8().await.map_err(|_| Failure::BadRequest)?);
-            }
-            protocol::head(&bytes, config.max_body)
-        })
-        .await
-        .map_err(|_| Failure::BadRequest)??;
-        let key = keys
-            .try_authenticate(&head.bearer)?
-            .ok_or(Failure::Unauthorized)?;
-        rate(
-            &mut rates.lock().map_err(|_| Failure::Busy)?.keys,
-            key.id,
-            64,
-            config.requests_per_minute,
-        )?;
-        if config.same_owner
-            && !timeout(config.read_timeout, tailnet.same_owner(peer))
-                .await
-                .map_err(|_| Failure::Forbidden)??
-        {
-            return Err(Failure::Forbidden);
-        }
-        if !head.chat {
-            let models: Vec<_> = answer.models().iter().filter(|m| eligible(m, config))
-                .map(|m| json!({"id":m.alias,"object":"model","context_window":m.context_window,"remote":m.access!=Access::Local})).collect();
-            return Ok((head, None, Some(json!({"object":"list","data":models}))));
-        }
-        let mut body = vec![0; head.length];
-        timeout(config.read_timeout, reader.read_exact(&mut body))
+                protocol::head(&bytes, config.max_body)
+            })
             .await
-            .map_err(|_| Failure::BadRequest)?
-            .map_err(|_| Failure::BadRequest)?;
-        let request = protocol::request(&body, |alias| {
-            answer
-                .models()
-                .iter()
-                .find(|m| m.alias == alias && eligible(m, config))
-                .map(|m| m.max_output)
-        })?;
-        Ok((head, Some(request), None))
+            .map_err(|_| Failure::BadRequest)??;
+            let bearer = head.bearer.clone();
+            let key = keys
+                .run(move |store| store.try_authenticate(&bearer))
+                .await?
+                .ok_or(Failure::Unauthorized)?;
+            rate(
+                &mut rates.lock().map_err(|_| Failure::Busy)?.keys,
+                key.id,
+                64,
+                config.requests_per_minute,
+            )?;
+            if config.same_owner
+                && !timeout(config.read_timeout, tailnet.same_owner(peer))
+                    .await
+                    .map_err(|_| Failure::Forbidden)??
+            {
+                return Err(Failure::Forbidden);
+            }
+            if !head.chat {
+                let models: Vec<_> = answer.models().iter().filter(|m| eligible(m, config))
+                .map(|m| json!({"id":m.alias,"object":"model","context_window":m.context_window,"remote":m.access!=Access::Local})).collect();
+                return Ok((head, None, Some(json!({"object":"list","data":models}))));
+            }
+            let mut body = vec![0; head.length];
+            timeout(config.read_timeout, reader.read_exact(&mut body))
+                .await
+                .map_err(|_| Failure::BadRequest)?
+                .map_err(|_| Failure::BadRequest)?;
+            let request = protocol::request(&body, |alias| {
+                answer
+                    .models()
+                    .iter()
+                    .find(|m| m.alias == alias && eligible(m, config))
+                    .map(|m| m.max_output)
+            })?;
+            Ok((head, Some(request), None))
+        };
+        tokio::pin!(result);
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                // Join any admitted storage operation; shutdown never abandons its
+                // charge ownership. Network reads retain their existing deadline.
+                let _ = result.await;
+                return;
+            },
+            r = &mut result => r,
+        }
     };
-    let result = tokio::select! { _ = cancel.cancelled() => return, r = result => r };
     let mut socket = reader.into_inner();
     let (head, request, models) = match result {
         Ok(value) => value,
@@ -420,7 +524,11 @@ async fn connection<A: Answer, T: Tailnet>(
         created,
         id: random.iter().map(|b| format!("{b:02x}")).collect(),
     };
-    let admission = match keys.admit(&head.bearer, created / 86400, reserved) {
+    let bearer = head.bearer;
+    let admission = match keys
+        .run(move |store| store.admit(&bearer, created / 86400, reserved))
+        .await
+    {
         Ok(Some(a)) => a,
         other => {
             let failure = other.err().map(Failure::from).unwrap_or(Failure::Unauthorized);
@@ -435,7 +543,7 @@ async fn connection<A: Answer, T: Tailnet>(
         }
     };
     if send(&mut socket, b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n", config).await.is_err() {
-        let _ = admission.settle(0);
+        keys.settle(admission, 0, config.write_timeout).await;
         return;
     }
     let (mut incoming, mut socket) = socket.into_split();
@@ -447,7 +555,7 @@ async fn connection<A: Answer, T: Tailnet>(
     .await
     .is_err()
     {
-        let _ = admission.settle(0);
+        keys.settle(admission, 0, config.write_timeout).await;
         return;
     }
     let (tx, mut rx) = mpsc::channel(4);
@@ -514,9 +622,7 @@ async fn connection<A: Answer, T: Tailnet>(
         let Some(total) = usage.input.checked_add(usage.output) else {
             return;
         };
-        if admission.settle(total).is_err() {
-            return;
-        }
+        keys.settle(admission, total, config.write_timeout).await;
     } // Unknown usage leaves the conservative charge in place.
     if delivered.is_err() || cancel.is_cancelled() {
         return;

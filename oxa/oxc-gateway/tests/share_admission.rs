@@ -67,8 +67,8 @@ fn midnight_settlement_stays_on_admission_day_and_revoked_inflight_work_can_sett
     let d = Directory::new();
     let store = d.store();
     let key = store.create("Device", limits()).unwrap();
-    let first = store.admit(key.bearer.expose(), 1, 800).unwrap().unwrap();
-    let second = store.admit(key.bearer.expose(), 2, 800).unwrap().unwrap();
+    let mut first = store.admit(key.bearer.expose(), 1, 800).unwrap().unwrap();
+    let mut second = store.admit(key.bearer.expose(), 2, 800).unwrap().unwrap();
     store.revoke(&key.info.id).unwrap();
     assert!(store.admit(key.bearer.expose(), 2, 1).unwrap().is_none());
     first.settle(250).unwrap();
@@ -82,7 +82,7 @@ fn untrusted_usage_and_busy_storage_never_release_reserved_capacity() {
     let d = Directory::new();
     let store = d.store();
     let key = store.create("Device", limits()).unwrap();
-    let held = store.admit(key.bearer.expose(), 1, 1000).unwrap().unwrap();
+    let mut held = store.admit(key.bearer.expose(), 1, 1000).unwrap().unwrap();
     assert_eq!(held.settle(1001), Err(Error::Invalid));
     assert_eq!(store.guest_usage(1, &key.info.id).unwrap(), (1, 1000));
     let file = fs::File::open(d.0.join("share-keys.lock")).unwrap();
@@ -182,4 +182,19 @@ fn concurrent_processes_cannot_overadmit_one_key() {
         assert!(c.wait().unwrap().success());
     }
     assert_eq!(d.store().guest_usage(1, &key.info.id).unwrap(), (3, 90));
+}
+
+#[test]
+fn busy_settlement_can_retry_without_double_refund() {
+    let d = Directory::new();
+    let store = d.store();
+    let key = store.create("Device", limits()).unwrap();
+    let mut admission = store.admit(key.bearer.expose(), 1, 100).unwrap().unwrap();
+    let file = fs::File::open(d.0.join("share-keys.lock")).unwrap();
+    let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive).unwrap();
+    assert_eq!(admission.settle(8), Err(Error::Busy));
+    drop(lock);
+    admission.settle(8).unwrap();
+    assert_eq!(admission.settle(8), Err(Error::Invalid));
+    assert_eq!(store.guest_usage(1, &key.info.id).unwrap(), (1, 8));
 }

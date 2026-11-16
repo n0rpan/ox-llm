@@ -92,8 +92,9 @@ pub struct Created {
 }
 
 /// Binds an existing trusted private directory. No key bytes are retained here.
+#[derive(Clone)]
 pub struct Store {
-    directory: File,
+    directory: std::sync::Arc<File>,
 }
 impl fmt::Debug for Store {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -139,7 +140,9 @@ impl Store {
         }
         refuse_repository(&parent)?;
         check_directory(&parent)?;
-        Ok(Self { directory: parent })
+        Ok(Self {
+            directory: std::sync::Arc::new(parent),
+        })
     }
 
     /// Each operation takes the same stable lock, including readers, so revoked

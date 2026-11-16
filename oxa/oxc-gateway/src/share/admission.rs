@@ -8,33 +8,34 @@ const MAX_HOLDS: usize = 128;
 
 /// Retain until trusted terminal usage. Dropping this guard never refunds work.
 #[must_use = "settle trusted usage; dropping retains the conservative charge"]
-pub struct Admission<'a> {
-    store: &'a Store,
+pub struct Admission {
+    store: Store,
     key: KeyInfo,
     day: u64,
     nonce: String,
     reserved: u64,
+    settled: bool,
 }
-impl fmt::Debug for Admission<'_> {
+impl fmt::Debug for Admission {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GuestAdmission")
             .field("key", &self.key)
             .finish_non_exhaustive()
     }
 }
-impl Admission<'_> {
+impl Admission {
     pub fn key(&self) -> &KeyInfo {
         &self.key
     }
 
     /// A request is always charged once; only unused reserved tokens are returned.
-    /// This consumes the settlement authority, preventing duplicate refunds.
-    pub fn settle(self, tokens: u64) -> Result<(), Error> {
-        if tokens > self.reserved {
+    /// Busy leaves authority intact for retry; success prevents duplicate refunds.
+    pub fn settle(&mut self, tokens: u64) -> Result<(), Error> {
+        if self.settled || tokens > self.reserved {
             return Err(Error::Invalid);
         }
         let _lock = self.store.try_lock()?;
-        let mut state = State::read(self.store, self.day)?;
+        let mut state = State::read(&self.store, self.day)?;
         let hold = state.holds.remove(&self.nonce).ok_or(Error::Corrupt)?;
         if hold != json!([self.key.id, self.reserved]) {
             return Err(Error::Corrupt);
@@ -45,7 +46,10 @@ impl Admission<'_> {
             .checked_sub(self.reserved - tokens)
             .ok_or(Error::Corrupt)?;
         *row = json!([requests, charged]);
-        state.write(self.store, self.day)
+        // Once persistence begins its outcome may be ambiguous. Never retry a
+        // failed write and risk a second refund. Only lock contention is retryable.
+        self.settled = true;
+        state.write(&self.store, self.day)
     }
 }
 
@@ -53,7 +57,7 @@ impl Store {
     /// `day` is the trusted UTC day number, never a guest request field. Reserve
     /// the complete possible input+output window, before any model work starts.
     /// Busy storage is an explicit refusal; the listener never waits on flock.
-    pub fn admit(&self, bearer: &str, day: u64, tokens: u64) -> Result<Option<Admission<'_>>, Error> {
+    pub fn admit(&self, bearer: &str, day: u64, tokens: u64) -> Result<Option<Admission>, Error> {
         if tokens == 0 {
             return Err(Error::Invalid);
         }
@@ -89,11 +93,12 @@ impl Store {
         state.usage.insert(key.id.clone(), json!([requests, charged]));
         state.write(self, day)?;
         Ok(Some(Admission {
-            store: self,
+            store: self.clone(),
             key,
             day,
             nonce,
             reserved: tokens,
+            settled: false,
         }))
     }
 
