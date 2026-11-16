@@ -247,7 +247,7 @@ impl Entry {
         key: Option<&Key>,
     ) -> io::Result<Value> {
         if fields["remote"] != true
-            || !["anthropic", "openai", "openrouter"]
+            || !["anthropic", "openai", "openrouter", "chatgpt"]
                 .contains(&fields["remote_provider"].as_str().unwrap_or(""))
             || fields["cost_usd"]
                 .as_f64()
@@ -292,6 +292,46 @@ impl Entry {
         if settled == "refused" && (fields["cost_usd"].as_f64() != Some(0.0) || !(400..500).contains(&status))
         {
             return Err(io::ErrorKind::InvalidData.into());
+        }
+        match fields.get("billing") {
+            Some(value) if value == "subscription" => {
+                if fields["remote_provider"] != "chatgpt" || fields["cost_usd"].as_f64() != Some(0.0) {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                let requests = fields["subscription_requests"]
+                    .as_u64()
+                    .filter(|n| *n <= 1)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                let tokens = fields["subscription_tokens"]
+                    .as_u64()
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                if (requests == 0) != (settled == "not_forwarded")
+                    || (matches!(settled, "not_forwarded" | "refused") && tokens != 0)
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                self.row["billing"] = json!("subscription");
+                self.row["subscription_requests"] = json!(requests);
+                self.row["subscription_tokens"] = json!(tokens);
+            }
+            None => {
+                if fields["remote_provider"] == "chatgpt"
+                    || fields.get("subscription_requests").is_some()
+                    || fields.get("subscription_tokens").is_some()
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+            }
+            Some(value) if value == "metered" => {
+                if fields["remote_provider"] == "chatgpt"
+                    || fields.get("subscription_requests").is_some()
+                    || fields.get("subscription_tokens").is_some()
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                self.row["billing"] = json!("metered");
+            }
+            _ => return Err(io::ErrorKind::InvalidData.into()),
         }
         self.row["settled"] = json!(settled);
         if let Some(finish) = fields["finish_reason"].as_str().filter(|value| {

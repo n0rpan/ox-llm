@@ -25,6 +25,8 @@ pub mod refresh;
 #[cfg(feature = "accounting")]
 pub mod accounting;
 #[cfg(feature = "accounting")]
+pub mod billing;
+#[cfg(feature = "accounting")]
 mod reservations;
 #[cfg(feature = "accounting")]
 pub mod spend;

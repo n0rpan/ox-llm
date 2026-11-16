@@ -169,7 +169,7 @@ impl Runtime {
                 upstream: model.upstream().into(),
                 context: u64::from(model.info().context_window),
                 max_output: u64::from(model.info().max_output),
-                price: price.expect("policy validated price").clone(),
+                billing: crate::billing::Billing::Metered(price.expect("policy validated price").clone()),
             };
             let hold = daily.budget().reserve(&self.cap, true, &billing, output)?;
             let (_, mut entry) = audit.take().expect("known model")?;

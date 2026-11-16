@@ -54,6 +54,45 @@ fn fields() -> Value {
         "cached_tokens":80,"cache_write_tokens":10,"finish_reason":"stop"})
 }
 #[test]
+fn subscription_rows_keep_zero_usd_and_checked_request_token_dimensions() {
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let daily = ledger.day("20260102").unwrap();
+    let good = json!({"remote":true,"remote_provider":"chatgpt","remote_model":"synthetic-model",
+        "cost_usd":0.0,"billing":"subscription","settled":"usage",
+        "subscription_requests":1,"subscription_tokens":26,"prompt_tokens":21,"completion_tokens":5});
+    let row = daily
+        .entry("synthetic-model", Context::default())
+        .unwrap()
+        .append(&good, 200, None, None)
+        .unwrap();
+    assert_eq!(row["billing"], "subscription");
+    assert_eq!(row["cost_usd"], 0.0);
+    assert_eq!(row["subscription_requests"], 1);
+    assert_eq!(row["subscription_tokens"], 26);
+    for (field, value) in [
+        ("remote_provider", json!("openai")),
+        ("cost_usd", json!(0.1)),
+        ("billing", json!("metered")),
+        ("billing", Value::Null),
+        ("subscription_requests", json!(0)),
+        ("subscription_requests", json!(2)),
+        ("subscription_tokens", json!(-1)),
+        ("subscription_tokens", Value::Null),
+        ("settled", json!("not_forwarded")),
+        ("settled", json!("refused")),
+    ] {
+        let mut invalid = good.clone();
+        invalid[field] = value;
+        assert!(daily
+            .entry("synthetic-model", Context::default())
+            .unwrap()
+            .append(&invalid, 200, None, None)
+            .is_err());
+    }
+    assert_eq!(home.rows("20260102"), vec![row]);
+}
+#[test]
 fn refused_settlement_requires_zero_cost_and_a_client_error_status() {
     let home = Home::new();
     let ledger = Ledger::open(&home.0).unwrap();
@@ -85,7 +124,9 @@ fn model() -> Model {
         upstream: "synthetic-model".into(),
         context: 1000,
         max_output: 1000,
-        price: Price::from_model(&json!({"pricing":{"input":1,"output":1}})).unwrap(),
+        billing: oxc_gateway::billing::Billing::Metered(
+            Price::from_model(&json!({"pricing":{"input":1,"output":1}})).unwrap(),
+        ),
     }
 }
 fn usage() -> Usage {
