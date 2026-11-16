@@ -332,7 +332,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
         }
         RunMode::Print | RunMode::Json => {
-            let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty || a.goal.is_some()) {
+            let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
                 Ok(t) => t,
                 Err(e) => return report(&mut *stderr, &e),
             };
@@ -1187,7 +1187,12 @@ fn run_headless(
     if let Some(goal) = session.goal() {
         if goal.status == oxa_session::GoalStatus::Pursuing {
             if built.goal.is_some() {
-                prompts.insert(0, (oxa_core::prompt::goal_start(&goal.objective), vec![]));
+                let start = oxa_core::prompt::goal_start(&goal.objective);
+                if let Some((text, _parts)) = prompts.first_mut() {
+                    *text = format!("{start}\n\n{text}");
+                } else {
+                    prompts.push((start, vec![]));
+                }
             } else if prompts.is_empty() {
                 prompts.push((oxa_core::prompt::GOAL_CONTINUE.into(), vec![]));
             }

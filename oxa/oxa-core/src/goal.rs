@@ -260,6 +260,8 @@ pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled
     if pre_cancelled && error.code == codes::ABORTED {
         return false;
     }
+    // A generic ledger error may be a failed settlement after forwarding.
+    // Without authoritative pre-admission evidence its usage remains unknown.
     !matches!(
         error.code,
         codes::OFFLINE
@@ -272,7 +274,6 @@ pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled
             | codes::USAGE
             | codes::UNSUPPORTED_IN_OXA
             | "cloud_credentials_unavailable"
-            | "cloud_ledger_unavailable"
             | "cloud_sdk_unavailable"
     )
 }

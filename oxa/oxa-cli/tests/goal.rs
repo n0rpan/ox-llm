@@ -1,9 +1,13 @@
 //! Exercise the shipped binary through loopback; no provider keys or real HOME.
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use serde_json::Value;
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn run(env: &TestEnv, server: &FakeServer, args: &[&str]) -> std::process::Output {
+    run_input(env, server, args, None)
+}
+fn run_input(env: &TestEnv, server: &FakeServer, args: &[&str], input: Option<&str>) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.current_dir(env.work()).env_clear();
     for (key, value) in env.envs(&server.url()) {
@@ -11,11 +15,18 @@ fn run(env: &TestEnv, server: &FakeServer, args: &[&str]) -> std::process::Outpu
     }
     cmd.args(["-p", "--tools", "goal_done,wait"])
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap()
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    if let Some(input) = input {
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    }
+    child.wait_with_output().unwrap()
 }
 fn result(output: &std::process::Output) -> Value {
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -167,4 +178,113 @@ fn pre_admission_refusal_does_not_turn_the_goal_budget_into_unknown_spend() {
         assert_eq!(result(&output)["outcome"], "done");
         assert_eq!(next.requests().len(), 1);
     }
+}
+
+fn bounded_goal_env() -> TestEnv {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+    );
+    env.write("work/goal.txt", "Finish synthetic work.");
+    env
+}
+fn completed_turn() -> ScriptTurn {
+    ScriptTurn::tool(
+        "done",
+        "goal_done",
+        r#"{"status":"complete","evidence":"Synthetic first-turn proof."}"#,
+    )
+}
+fn user_text(request: &oxa_fake::Recorded) -> String {
+    request
+        .messages
+        .iter()
+        .filter_map(|m| m.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn goal_first_request_contains_positional_instructions_and_attachment() {
+    let env = bounded_goal_env();
+    env.write(
+        "work/constraints.txt",
+        "Attachment restriction: preserve all fixtures.",
+    );
+    let server = FakeServer::start(vec![completed_turn()], FakeOpts::default()).unwrap();
+    let output = run(
+        &env,
+        &server,
+        &[
+            "--goal",
+            "goal.txt",
+            "@constraints.txt",
+            "Only modify files under src/.",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.requests();
+    let first = user_text(&requests[0]);
+    assert!(first.contains("Only modify files under src/."), "{first}");
+    assert!(
+        first.contains("Attachment restriction: preserve all fixtures."),
+        "{first}"
+    );
+    assert_eq!(requests.len(), 1);
+}
+
+#[test]
+fn goal_first_request_preserves_piped_constraints() {
+    let env = bounded_goal_env();
+    let server = FakeServer::start(vec![completed_turn()], FakeOpts::default()).unwrap();
+    let output = run_input(
+        &env,
+        &server,
+        &["--goal", "goal.txt"],
+        Some("Piped restriction: do not change public APIs.\n"),
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.requests();
+    let first = user_text(&requests[0]);
+    assert!(
+        first.contains("Piped restriction: do not change public APIs."),
+        "{first}"
+    );
+    assert_eq!(requests.len(), 1);
+}
+
+#[test]
+fn ambiguous_ledger_error_preserves_unknown_usage_across_process_restart() {
+    let env = bounded_goal_env();
+    let first=FakeServer::start(vec![ScriptTurn::fault(Fault::Http {status:503,body:serde_json::json!({"error":{"type":"cloud_error","code":"cloud_ledger_unavailable","message":"Synthetic ambiguous settlement failure"}}).to_string()})],FakeOpts::default()).unwrap();
+    let output = run(&env, &first, &["--goal", "goal.txt", "--max-tokens", "100000"]);
+    let record = result(&output);
+    assert_eq!(
+        first.requests().len(),
+        1,
+        "an actual HTTP request reached the fake engine"
+    );
+    assert_eq!(record["goal"]["unknown_requests"], 1);
+    assert_eq!(record["goal"]["status"], "blocked");
+    let next = FakeServer::start(vec![completed_turn()], FakeOpts::default()).unwrap();
+    let output = run(
+        &env,
+        &next,
+        &["--continue", record["session_id"].as_str().unwrap()],
+    );
+    let resumed = result(&output);
+    assert_eq!(resumed["goal"]["unknown_requests"], 1);
+    assert_eq!(resumed["outcome"], "blocked");
+    assert!(next.requests().is_empty());
 }
