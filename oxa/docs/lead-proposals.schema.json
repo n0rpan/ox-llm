@@ -1,29 +1,32 @@
 {
   "type": "object",
+  "additionalProperties": false,
   "required": ["mode", "as_of_seq", "proposals"],
   "properties": {
     "mode": {"type": "string", "enum": ["shadow"]},
-    "as_of_seq": {"type": "number"},
+    "as_of_seq": {"type": "integer", "minimum": 0},
     "proposals": {
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": ["action", "subject_kind", "number", "commit", "evidence", "reason"],
         "properties": {
           "action": {"type": "string", "enum": ["approve", "send_back", "hand_out", "ask_owner", "hold"]},
           "subject_kind": {"type": "string", "enum": ["pull_request", "issue"]},
-          "number": {"type": "number"},
-          "commit": {"type": "string"},
+          "number": {"type": "integer", "minimum": 1},
+          "commit": {"type": "string", "minLength": 40},
           "evidence": {
             "type": "object",
+            "additionalProperties": false,
             "required": ["file", "line", "text"],
             "properties": {
-              "file": {"type": "string"},
-              "line": {"type": "number"},
-              "text": {"type": "string"}
+              "file": {"type": "string", "minLength": 1},
+              "line": {"type": "integer", "minimum": 1},
+              "text": {"type": "string", "minLength": 1}
             }
           },
-          "reason": {"type": "string"}
+          "reason": {"type": "string", "minLength": 1}
         }
       }
     }
