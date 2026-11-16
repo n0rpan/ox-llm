@@ -438,6 +438,75 @@ fn rotation_is_bounded_and_cursor_gaps_are_explicit_without_resetting_sequences(
 }
 
 #[test]
+fn large_valid_events_page_by_bytes_and_keep_advancing_across_retention_gaps() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let observation = |revision| {
+        Fact::StandingChanged(StandingChanged {
+            revision,
+            goal: Some("\"".repeat(1024)),
+            ask_opened: Some(Ask {
+                id: "ask".repeat(32),
+                subject: Subject::Repository,
+                question: "\"".repeat(512),
+            }),
+            ask_closed: None,
+            incident: Some(Incident {
+                id: "incident".repeat(32),
+                subject: Subject::Task("t".repeat(128)),
+                kind: IncidentKind::RuleReminder,
+                evidence: Some(Evidence {
+                    kind: EvidenceKind::LocalCheck,
+                    id: "e".repeat(256),
+                }),
+            }),
+        })
+    };
+    for revision in 1..=64 {
+        let event = facts
+            .append(checkpoint("standing", revision), revision, observation(revision))
+            .unwrap();
+        assert!(event.to_json().unwrap().len() <= MAX_EVENT_BYTES);
+    }
+    let first = facts
+        .events_after(0, 64)
+        .expect("healthy large events must return a usable bounded page");
+    assert!(!first.gap);
+    assert!(!first.events.is_empty() && first.events.len() < 64);
+    let mut cursor = 0;
+    let mut seen = Vec::new();
+    while cursor < 64 {
+        let page = facts.events_after(cursor, 64).unwrap();
+        assert!(page.to_json().unwrap().len() <= oxa_proto::work::MAX_PAGE_BYTES);
+        assert_eq!(page.next, page.events.last().unwrap().seq);
+        assert!(page.next > cursor);
+        seen.extend(page.events.iter().map(|event| event.seq));
+        cursor = page.next;
+    }
+    assert_eq!(seen, (1..=64).collect::<Vec<_>>());
+    for revision in 65..=180 {
+        facts
+            .append(checkpoint("standing", revision), revision, observation(revision))
+            .unwrap();
+    }
+    let page = facts.events_after(0, 64).unwrap();
+    assert!(page.gap && page.first_available > 1);
+    let first_retained = page.first_available;
+    cursor = first_retained - 1;
+    seen.clear();
+    while cursor < 180 {
+        let page = facts.events_after(cursor, 64).unwrap();
+        assert!(page.to_json().unwrap().len() <= oxa_proto::work::MAX_PAGE_BYTES);
+        assert!(page.next > cursor);
+        assert_eq!(page.next, page.events.last().unwrap().seq);
+        seen.extend(page.events.iter().map(|event| event.seq));
+        cursor = page.next;
+    }
+    assert_eq!(seen, (first_retained..=180).collect::<Vec<_>>());
+    assert!(facts.events_after(180, 64).unwrap().events.is_empty());
+}
+
+#[test]
 fn concurrent_sources_get_unique_contiguous_repository_sequences() {
     let env = Fixture::new();
     let facts = env.facts();
