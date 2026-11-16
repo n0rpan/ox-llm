@@ -493,7 +493,7 @@ async fn openrouter_preserves_catalog_thinking_mapping() {
         ("xhigh", json!({"effort":"high"})),
     ] {
         let mock = MockAnthropic::start(vec![wire(chunks(), true)]);
-        let (gateway, _) = gateway(&mock);
+        let (gateway, _fixture) = gateway(&mock);
         let mut request = payload(false);
         request["reasoning_effort"] = json!(effort);
         gateway.chat_payload(&request, Context::default(), &Cancellation::default(),
