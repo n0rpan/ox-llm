@@ -29,6 +29,10 @@ In `workspace`, bash runs without asking, in the sandbox described below. Bash h
 
 Paths are resolved before the check: `..` is followed and a symbolic link that points outside the project counts as outside.
 
+Capped tool results are an exception to the outside-project read question: the file tools can read the running session's full-output spill directory without asking, in every mode, including `ask` and unattended runs. This recovers output the session already received, not a new permission to run the tool or read its original inputs. Forks and clones also read their source sessions' spills without asking, following the saved session ancestry so inherited output paths keep working after a resume. Those inherited directories are read-only to the file tools; unrelated sessions and the rest of the agent state remain denied. The bash sandbox is unchanged. When another action needs approval in an unattended run, the refusal says nobody is available to approve it, rather than claiming a user declined.
+
+Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain readable with the ordinary outside-project approval (or an existing session grant / YOLO), not the no-prompt spill exception. This read-only exception covers generated image names directly under the temporary directory, not unrelated sessions, arbitrary temporary files or symlinks into denied state.
+
 ### YOLO: no prompts
 
 `oxa --yolo`, `/yolo [on|off]` or Ctrl+Alt+O switches the questions off: whatever a mode would have asked is allowed at once and counted. Use it when you want a run to go through without stopping, in a project you can restore.
