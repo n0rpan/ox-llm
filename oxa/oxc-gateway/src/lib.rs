@@ -8,6 +8,8 @@ pub mod ledger;
 pub mod policy;
 #[cfg(feature = "pricing")]
 pub mod pricing;
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod rate_limits;
 pub mod refresh;
 
 #[cfg(feature = "accounting")]
