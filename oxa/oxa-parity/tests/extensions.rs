@@ -661,9 +661,11 @@ fn ext_025() {
 }
 
 /// EXT-026 (P): `ui_prompt_start` fires when a UI prompt opens. A permission prompt opens in
-/// standard mode for a read outside the working directory; the default `auto` mode (#202) never
-/// prompts, so the test selects `--standard`. (Not ask mode: there every write asks, the test's
-/// own `log.txt` write included, and print mode answers no.)
+/// workspace table mode for a read outside the working directory. Select it explicitly via
+/// `--permission-mode workspace`: the default `auto` mode (#202) never prompts, and the newer
+/// `--standard` alias is not available in older prebuilt `OXA_BIN` binaries. This tests the
+/// prompt hooks, not that alias. (Not ask mode: there every write asks, the test's own
+/// `log.txt` write included, and print mode answers no.)
 /// invariant: fired around oxa's own permission prompt in every mode (pi has no permission prompt; its print mode has no UI)
 #[test]
 fn ext_026() {
@@ -674,14 +676,19 @@ fn ext_026() {
             "oxa.on('ui_prompt_start', (e, ctx) => note(ctx, 'prompt_start'));",
         )],
         tool_then_text("c1", "read", r#"{"path":"../outside.txt"}"#, "ok"),
-        &["--standard", "-p", "hi"],
+        &["--permission-mode", "workspace", "-p", "hi"],
     );
+    assert_eq!(r.code, Some(0), "stderr: {}", r.err);
+    assert_eq!(r.lines(), ["prompt_start"], "ui_prompt_start fires once");
     assert!(
-        r.has("prompt_start"),
-        "ui_prompt_start fires: exit {:?}, stderr {}, log {}",
-        r.code,
-        r.err,
-        r.log
+        r.req(1).messages.iter().any(|m| {
+            m.tool_call_id.as_deref() == Some("c1")
+                && m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("Permission denied"))
+        }),
+        "print mode refuses the outside read: {:?}",
+        shape(r.req(1))
     );
 }
 
@@ -696,14 +703,19 @@ fn ext_027() {
             "oxa.on('ui_prompt_end', (e, ctx) => note(ctx, 'prompt_end'));",
         )],
         tool_then_text("c1", "read", r#"{"path":"../outside.txt"}"#, "ok"),
-        &["--standard", "-p", "hi"],
+        &["--permission-mode", "workspace", "-p", "hi"],
     );
+    assert_eq!(r.code, Some(0), "stderr: {}", r.err);
+    assert_eq!(r.lines(), ["prompt_end"], "ui_prompt_end fires once");
     assert!(
-        r.has("prompt_end"),
-        "ui_prompt_end fires: exit {:?}, stderr {}, log {}",
-        r.code,
-        r.err,
-        r.log
+        r.req(1).messages.iter().any(|m| {
+            m.tool_call_id.as_deref() == Some("c1")
+                && m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("Permission denied"))
+        }),
+        "print mode refuses the outside read: {:?}",
+        shape(r.req(1))
     );
 }
 
