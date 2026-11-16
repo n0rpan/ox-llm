@@ -888,6 +888,44 @@ fn issue_103_worktree_commit_works_and_hooks_and_config_stay_read_only() {
     );
 }
 
+/// #639: Git updates refs before attempting its protected config write. Refuse the
+/// ordinary rename/copy invocation before Git runs, not after leaving a partial result.
+#[test]
+fn issue_639_branch_rename_refused_before_refs_change() {
+    let env = TestEnv::new();
+    let (main, wt) = real_worktree(&env);
+    let Some(sb) = sandbox(&env, &wt) else { return };
+    let before = fs::read(main.join(".git/config")).unwrap();
+    for command in [
+        "git branch -m renamed",
+        "git branch --move feature renamed",
+        "git -C . branch -M renamed",
+        "git branch -c copied",
+        "git branch --copy feature copied",
+        "git branch -C feature copied",
+        "git branch -vm renamed",
+        "bash -c 'git branch -m renamed'",
+    ] {
+        let (exit, out) = run(&sb, command, &wt, true);
+        assert_ne!(exit, Some(0), "{command}: {out}");
+        assert!(out.contains("before changing refs"), "{command}: {out}");
+        let current = git(&wt, &env, &["branch", "--show-current"]);
+        assert_eq!(String::from_utf8_lossy(&current.stdout).trim(), "feature");
+        let branches = git(&wt, &env, &["branch", "--format=%(refname:short)"]);
+        let branches = String::from_utf8_lossy(&branches.stdout);
+        assert!(!branches.contains("renamed") && !branches.contains("copied"));
+        assert_eq!(fs::read(main.join(".git/config")).unwrap(), before);
+    }
+    // Listing, creating a branch and committing still work without a prompt.
+    let (exit, out) = run(
+        &sb,
+        "git branch --list && git branch normal && git commit -q --allow-empty -m normal",
+        &wt,
+        true,
+    );
+    assert_eq!(exit, Some(0), "{out}");
+}
+
 #[test]
 fn issue_103_worktree_binds_only_what_a_commit_needs_writable() {
     let env = TestEnv::new();
@@ -899,6 +937,32 @@ fn issue_103_worktree_binds_only_what_a_commit_needs_writable() {
         assert!(b.protect.contains(&common.join(rel)), "{rel}: {:?}", b.protect);
     }
     assert!(b.protect.contains(&gitdir.join("hooks")), "{:?}", b.protect);
+}
+
+#[test]
+fn issue_639_plain_repo_preflight_preserves_ordinary_git_commands() {
+    let env = TestEnv::new();
+    let plain = env.work().join("plain");
+    init_repo(&plain, &env);
+    let Some(sb) = sandbox(&env, &plain) else { return };
+    let head = git(&plain, &env, &["symbolic-ref", "HEAD"]).stdout;
+    for command in [
+        "git branch -m renamed",
+        "git branch -fm renamed",
+        "git -c color.ui=false branch --mov renamed",
+    ] {
+        let (exit, out) = run(&sb, command, &plain, true);
+        assert_ne!(exit, Some(0), "{command}: {out}");
+        assert!(out.contains("before changing refs"), "{out}");
+        assert_eq!(git(&plain, &env, &["symbolic-ref", "HEAD"]).stdout, head);
+    }
+    let (exit, out) = run(
+        &sb,
+        "git branch --sort -committerdate && git branch --format '-m' && git branch normal && git branch -d normal && git status --short",
+        &plain,
+        true,
+    );
+    assert_eq!(exit, Some(0), "{out}");
 }
 
 #[test]
