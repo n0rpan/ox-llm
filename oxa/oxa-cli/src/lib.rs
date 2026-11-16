@@ -25,6 +25,7 @@ mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+pub mod lead;
 mod limits;
 mod mcp_cmd;
 mod netguard;
