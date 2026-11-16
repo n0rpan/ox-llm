@@ -77,6 +77,33 @@ impl Probe {
             );
         }
     }
+
+    fn assert_balanced(&self) {
+        let (mut turn, mut message) = (false, false);
+        for event in &self.events {
+            match event {
+                AgentEvent::TurnStart => {
+                    assert!(!turn, "a previous turn is still open");
+                    turn = true;
+                }
+                AgentEvent::MessageStart { message: m } if m.msg.role == oxa_proto::Role::Assistant => {
+                    assert!(!message, "a previous assistant message is still open");
+                    message = true;
+                }
+                AgentEvent::MessageEnd { message: m } if m.msg.role == oxa_proto::Role::Assistant => {
+                    assert!(message, "an assistant message ends without a start");
+                    message = false;
+                }
+                AgentEvent::TurnEnd { .. } => {
+                    assert!(turn, "a turn ends without a start");
+                    assert!(!message, "the turn leaves an open message");
+                    turn = false;
+                }
+                _ => {}
+            }
+        }
+        assert!(!turn && !message, "the operation leaves an open turn/message");
+    }
 }
 
 impl EventSink for Probe {
@@ -114,10 +141,12 @@ struct Trigger {
     host: Mutex<Option<Arc<dyn Host>>>,
     wrap: Mutex<Option<(Handle, oxa_core::WrapUpReason, HookPoint)>>,
     wrap_skip: Mutex<usize>,
+    points: Mutex<Vec<HookPoint>>,
 }
 
 impl Hooks for Trigger {
     fn fire(&self, p: HookPoint, _payload: &Value, _ui: &mut dyn Ui) -> HookReply {
+        self.points.lock().unwrap().push(p);
         let mut wrap = self.wrap.lock().unwrap();
         if wrap.as_ref().is_some_and(|(_, _, point)| *point == p) {
             let mut skip = self.wrap_skip.lock().unwrap();
@@ -419,6 +448,114 @@ fn check_thinking_overrun_wrap_up(stop_request: usize, from_notice: bool) {
                 .iter()
                 .any(|event| matches!(event, AgentEvent::AutoRetryStart { .. })));
             probe.assert_settled_idle(1);
+            probe.assert_balanced();
+        }
+    }
+}
+
+#[test]
+fn wrap_up_before_the_request_closes_started_events() {
+    for reason in [oxa_core::WrapUpReason::TimeLimit, oxa_core::WrapUpReason::Signal] {
+        for point in [HookPoint::TurnStart, HookPoint::MessageStart] {
+            let env = TestEnv::new();
+            let hook = Arc::new(Trigger::default());
+            let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("final summary")]));
+            let mut s = Session::open(deps(&env, engine.clone(), vec![hook.clone()]), Open::New).unwrap();
+            *hook.wrap.lock().unwrap() = Some((s.handle(), reason, point));
+            let mut probe = Probe::new(s.handle());
+            s.prompt("go".into(), vec![], &mut probe, &mut HeadlessUi::default())
+                .unwrap();
+            let requests = engine.requests();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].max_tokens <= 1024);
+            assert!(!requests[0].thinking);
+            probe.assert_balanced();
+            let points = hook.points.lock().unwrap();
+            for (start, end) in [
+                (HookPoint::TurnStart, HookPoint::TurnEnd),
+                (HookPoint::MessageStart, HookPoint::MessageEnd),
+            ] {
+                assert_eq!(
+                    points.iter().filter(|p| **p == start).count(),
+                    points.iter().filter(|p| **p == end).count(),
+                    "{point:?}/{start:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn wrap_up_yields_overflow_recovery_before_compaction_or_resending() {
+    use oxa_core::{RunOutcome, WrapUpReason};
+    for reason in [WrapUpReason::TimeLimit, WrapUpReason::Signal] {
+        for after_compaction in [false, true] {
+            for final_fails in [false, true] {
+                let env = TestEnv::new();
+                let hook = Arc::new(Trigger::default());
+                let mut turns = vec![
+                    ScriptTurn::text("earlier answer"),
+                    ScriptTurn::fault(oxa_fake::Fault::Overflow),
+                ];
+                if after_compaction {
+                    turns.push(ScriptTurn::text("summary of the earlier exchange"));
+                }
+                turns.push(if final_fails {
+                    ScriptTurn::fault(oxa_fake::Fault::Refuse)
+                } else {
+                    ScriptTurn::text("final summary")
+                });
+                turns.push(ScriptTurn::text("unexpected resend"));
+                let engine = Arc::new(ScriptedEngine::new(turns));
+                let mut d = deps(&env, engine.clone(), vec![hook.clone()]);
+                d.settings = Settings::from_values(
+                    serde_json::json!({
+                        "compaction":{"keepRecentTokens":1},
+                        "retry":{"enabled":true,"maxRetries":2,"baseDelayMs":1,"maxAgentDelayMs":5}
+                    }),
+                    serde_json::json!({}),
+                );
+                let mut s = Session::open(d, Open::New).unwrap();
+                s.prompt(
+                    "earlier question".into(),
+                    vec![],
+                    &mut oxa_proto::VecSink::default(),
+                    &mut HeadlessUi::default(),
+                )
+                .unwrap();
+                *hook.wrap.lock().unwrap() = Some((
+                    s.handle(),
+                    reason,
+                    if after_compaction {
+                        HookPoint::SessionCompact
+                    } else {
+                        HookPoint::BeforeProviderRequest
+                    },
+                ));
+                let mut probe = Probe::new(s.handle());
+                s.prompt("go".into(), vec![], &mut probe, &mut HeadlessUi::default())
+                    .unwrap();
+                let requests = engine.requests();
+                assert_eq!(
+                    requests.len(),
+                    if after_compaction { 4 } else { 3 },
+                    "{reason:?}/{after_compaction}/{final_fails}: one final attempt"
+                );
+                assert_eq!(
+                    requests.iter().filter(|r| r.kind == "compaction").count(),
+                    usize::from(after_compaction)
+                );
+                let final_request = requests.last().unwrap();
+                assert_eq!(final_request.kind, "chat");
+                assert!(final_request.max_tokens <= 1024);
+                assert!(!final_request.thinking);
+                assert_eq!(
+                    *s.outcome(),
+                    RunOutcome::Failed(oxa_proto::codes::CONTEXT_OVERFLOW)
+                );
+                probe.assert_settled_idle(1);
+                probe.assert_balanced();
+            }
         }
     }
 }
