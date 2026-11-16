@@ -141,6 +141,13 @@ pub struct Catalog {
     models: Vec<Model>,
 }
 impl Catalog {
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn configured(&self, id: &str) -> Option<&Model> {
+        self.models
+            .binary_search_by(|model| model.id.as_str().cmp(id))
+            .ok()
+            .map(|index| &self.models[index])
+    }
     pub fn new(access: Access, models: impl IntoIterator<Item = Model>) -> Result<Self, Error> {
         let mut models: Vec<_> = models.into_iter().collect();
         models.sort_unstable_by(|a, b| a.id.cmp(&b.id));

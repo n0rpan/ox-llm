@@ -16,8 +16,10 @@ impl LimitWatcher {
     pub fn start(
         handle: Handle,
         max_time: Option<Duration>,
+        max_tokens: Option<u64>,
         supervised_child: bool,
     ) -> Result<Option<Self>, OxaError> {
+        handle.set_token_budget(max_tokens);
         // The parent's abort and kernel parent-death signal both use SIGTERM. A child
         // must exit on that signal, while the root owns cooperative run termination.
         if supervised_child && max_time.is_none() {
@@ -63,7 +65,7 @@ impl LimitWatcher {
                     } else if deadline.is_some_and(|at| Instant::now() >= at) {
                         Some(WrapUpReason::TimeLimit)
                     } else {
-                        None
+                        handle.wrap_up_reason()
                     };
                     if let Some(reason) = reason {
                         terminated.store(true, Ordering::SeqCst);

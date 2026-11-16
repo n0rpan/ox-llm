@@ -219,6 +219,8 @@ fn public_chunks_and_completion_redact_fields_while_native_replay_stays_opaque()
         json!({"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"marker\"}"}}),
         json!({"type":"content_block_stop","index":3}),
         json!({"type":"content_block_stop","index":7}),
+        json!({"type":"content_block_start","index":9,"content_block":{"type":"tool_use","id":"third","name":"empty","input":{}}}),
+        json!({"type":"content_block_stop","index":9}),
         json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}),
         json!({"type":"message_stop"}),
     ] {
@@ -248,8 +250,9 @@ fn public_chunks_and_completion_redact_fields_while_native_replay_stays_opaque()
         done.assistant["tool_calls"][1]["function"]["arguments"],
         "{\"path\":\"[redacted]\"}"
     );
+    assert_eq!(done.assistant["tool_calls"][2]["function"]["arguments"], "{}");
     let mut text = String::new();
-    let mut arguments = [String::new(), String::new()];
+    let mut arguments = [String::new(), String::new(), String::new()];
     for chunk in &chunks {
         let delta = &chunk["choices"][0]["delta"];
         text.push_str(delta["content"].as_str().unwrap_or_default());
@@ -268,6 +271,61 @@ fn public_chunks_and_completion_redact_fields_while_native_replay_stays_opaque()
     assert_eq!(done.native_blocks[0]["signature"], "opaque-signature");
     assert_eq!(done.native_blocks[2]["input"]["note"], "synthetic-marker");
     assert_eq!(done.native_blocks[3]["input"]["path"], "synthetic-marker");
+    assert_eq!(done.native_blocks[4]["input"], json!({}));
+}
+
+#[test]
+fn zero_argument_tools_have_complete_json_in_chunks_and_completion() {
+    for explicit_input in [false, true] {
+        for fragment in [None, Some(""), Some("{}"), Some(" {} ")] {
+            let mut stream = Stream::new("alias", 0, false);
+            stream
+                .event(&json!({"type":"message_start","message":{}}))
+                .unwrap();
+            let mut block = json!({"type":"tool_use","id":"call_1","name":"empty"});
+            if explicit_input {
+                block["input"] = json!({});
+            }
+            let mut chunks = stream
+                .event(&json!({"type":"content_block_start","index":0,"content_block":block}))
+                .unwrap();
+            if let Some(fragment) = fragment {
+                chunks.extend(
+                    stream
+                        .event(&json!({"type":"content_block_delta","index":0,
+                    "delta":{"type":"input_json_delta","partial_json":fragment}}))
+                        .unwrap(),
+                );
+            }
+            chunks.extend(
+                stream
+                    .event(&json!({"type":"content_block_stop","index":0}))
+                    .unwrap(),
+            );
+            chunks.extend(stream.event(&json!({"type":"message_stop"})).unwrap());
+            let arguments: String = chunks
+                .iter()
+                .filter_map(|chunk| {
+                    chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()
+                })
+                .collect();
+            let expected = fragment.filter(|s| !s.is_empty()).unwrap_or("{}");
+            assert_eq!(
+                arguments, expected,
+                "input present: {explicit_input}, fragment: {fragment:?}"
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&arguments).unwrap(),
+                json!({})
+            );
+            let done = stream.finish().unwrap();
+            assert_eq!(
+                done.assistant["tool_calls"][0]["function"]["arguments"],
+                arguments
+            );
+            assert_eq!(done.native_blocks[0]["input"], json!({}));
+        }
+    }
 }
 
 #[test]

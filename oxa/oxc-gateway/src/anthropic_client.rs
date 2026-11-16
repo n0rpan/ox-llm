@@ -13,37 +13,14 @@ use reqwest::{
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt, time::Duration};
-use tokio::sync::watch;
+
+pub mod models;
 
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
-/// One logical request's cancellation. Cancellation is sticky and wakes reads.
-#[derive(Clone)]
-pub struct Cancellation(watch::Sender<bool>);
-impl Default for Cancellation {
-    fn default() -> Self {
-        Self(watch::channel(false).0)
-    }
-}
-impl Cancellation {
-    pub fn cancel(&self) {
-        self.0.send_replace(true);
-    }
-    pub fn is_cancelled(&self) -> bool {
-        *self.0.borrow()
-    }
-    async fn cancelled(&self) {
-        let mut receiver = self.0.subscribe();
-        loop {
-            if *receiver.borrow_and_update() {
-                return;
-            }
-            if receiver.changed().await.is_err() {
-                return;
-            }
-        }
-    }
-}
+/// Shared cancellation across oxa, admission and provider I/O. Async waits wake
+/// directly when cancelled; there is no relay token or polling timer.
+pub type Cancellation = oxa_proto::CancelToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
@@ -172,9 +149,11 @@ impl Client {
         if cancel.is_cancelled() || on(Event::Sending) == Control::Stop {
             return Err(Error::Cancelled);
         }
+        let cancelled = cancel.cancelled();
+        tokio::pin!(cancelled);
         let response = tokio::select! {
             biased;
-            _ = cancel.cancelled() => return Err(Error::Cancelled),
+            _ = &mut cancelled => return Err(Error::Cancelled),
             response = self.0.execute(request) => response.map_err(|_| Error::Transport)?,
         };
         if !response.status().is_success() {
@@ -207,7 +186,7 @@ impl Client {
         loop {
             let next = tokio::select! {
                 biased;
-                _ = cancel.cancelled() => return Err(Error::Cancelled),
+                _ = &mut cancelled => return Err(Error::Cancelled),
                 next = source.next() => next,
             };
             let Some(bytes) = next else {

@@ -244,7 +244,8 @@ pub struct Timings {
     pub tokenize_ms: f64,
     /// the restore phase of `prefill_head`: from its start to the end of the cache / disk restore
     pub restore_ms: f64,
-    /// the summed wall time of the checkpoints this request took on the request path
+    /// the summed wall time of the checkpoints this request took on the request path, and of the
+    /// state-store write of the session it cut back (`park_to_states`)
     pub ckpt_ms: f64,
 }
 
@@ -307,6 +308,8 @@ pub struct Worker<E: Engine> {
     /// requests (temperature > 0). A draft is used only when the seeded sampler draws that same
     /// token from the verified row, so the output at a fixed seed equals speculation off.
     pub mtp_sampled: bool,
+    /// diagnostic env knobs, read once when the worker is built
+    pub diag: DiagKnobs,
     /// repetition-loop watchdog (`--repeat-watchdog N`, 0 = off): stop with finish_reason
     /// "length" when the last N generated tokens end in a loop (see [`repeat_loop`])
     pub repeat_watchdog: usize,
@@ -806,6 +809,32 @@ fn ends_with_partial_stop(text: &str, stops: &[String]) -> bool {
     })
 }
 
+/// Diagnostic env knobs of the decode loop, read once at [`Worker::new`] (not per request):
+/// `OXE_SERVER_LEGACY` (A/B diagnostic: the pre-fast-path loop and full re-parse of the reply),
+/// `OXE_TIMING_DIAG` (per-request split on stderr) and `OXE_TIMING_DIAG_WARMUP` (default 16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiagKnobs {
+    pub legacy: bool,
+    pub timing: bool,
+    pub timing_warmup: usize,
+}
+
+impl DiagKnobs {
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+        DiagKnobs {
+            legacy: get("OXE_SERVER_LEGACY").is_some(),
+            timing: get("OXE_TIMING_DIAG").is_some(),
+            timing_warmup: get("OXE_TIMING_DIAG_WARMUP")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16),
+        }
+    }
+
+    pub fn from_env() -> Self {
+        Self::from_lookup(|k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()))
+    }
+}
+
 impl<E: Engine> Worker<E> {
     pub fn new(engine: E, max_snapshots: usize) -> Self {
         // turn checkpoints use only the slots beyond the 4 anchor/query/tail checkpoints need
@@ -826,6 +855,7 @@ impl<E: Engine> Worker<E> {
             mtp_guard: None,
             mtp_guard_trips: 0,
             mtp_sampled: false,
+            diag: DiagKnobs::from_env(),
             msg_split: false,
             warm: None,
             states: None,
@@ -2100,12 +2130,13 @@ impl<E: Engine> Worker<E> {
     /// Bring the engine to `prompt[..n-1]` (prefix cache, disk stores, grid checkpoints, cancel
     /// checks); returns n_cached. The caller evaluates the last token.
     fn prefill_head(&mut self, prompt: &[Token], p: &GenParams) -> Result<usize, GenError> {
-        self.park_to_states(prompt, p);
+        let park_ms = self.park_to_states(prompt, p);
         self.live_hint = p.session.clone();
         self.state_dirty = true;
         self.snaps_pending = true;
         let t_resume = Instant::now();
-        self.req_ckpt_ms = 0.0;
+        // the park write of the session being left is request-path time too
+        self.req_ckpt_ms = park_ms;
         let unpark0 = self.cache.stats.unpark_ms;
         // P2b preload: the state the preload loaded is adopted when this prompt continues it
         let pre = self.adopt_preloaded(prompt, p.cache_prompt);
@@ -2303,20 +2334,23 @@ impl<E: Engine> Worker<E> {
     /// keeping, at most `--state-snaps`) into the state store first, on the request path, so the
     /// parked session keeps its resume points (a post-reply write a request cut short, an idle
     /// gap too short for the checkpoints). Nothing to do after a complete post-reply write.
-    fn park_to_states(&mut self, prompt: &[Token], p: &GenParams) {
+    ///
+    /// Returns the wall time (ms) the write took on the request path (0 when nothing ran); the
+    /// request reports it in `timings.ckpt_ms` (issue #584).
+    fn park_to_states(&mut self, prompt: &[Token], p: &GenParams) -> f64 {
         if !self.park_write
             || !p.cache_prompt
             || !(self.state_dirty || self.snaps_pending)
             || self.engine.kv_row_bytes() == 0
         {
-            return;
+            return 0.0;
         }
         let Some(st) = self.states.as_ref() else {
-            return;
+            return 0.0;
         };
         let n = self.cache.tokens.len();
         if st.budget == 0 || n < st.min_tokens || self.preloaded.is_some() {
-            return;
+            return 0.0;
         }
         let lcp = self
             .cache
@@ -2326,14 +2360,16 @@ impl<E: Engine> Worker<E> {
             .take_while(|(a, b)| a == b)
             .count();
         if lcp >= n {
-            return;
+            return 0.0;
         }
         let t0 = Instant::now();
         let live = self.live_hint.clone();
         let r = self.persist(live.as_deref(), PersistMode::Reply, p.cancel.as_deref());
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
         if r.head.is_some() || r.snaps > 0 {
-            eprintln!("oxe-server: state cache: the session being left was written first ({}, {} snapshots) in {:.0} ms", r.line(), r.snaps, t0.elapsed().as_secs_f64() * 1e3);
+            eprintln!("oxe-server: state cache: the session being left was written first ({}, {} snapshots) in {ms:.0} ms", r.line(), r.snaps);
         }
+        ms
     }
 
     /// SX-2 idle re-prefill: prefill `hist` (the conversation in the form the next request will
@@ -2858,7 +2894,35 @@ impl<E: Engine> Worker<E> {
         run.stats0.park_evictions += now.park_evictions - s.stats.park_evictions;
         run.stats0.park_ms += now.park_ms - s.stats.park_ms;
         run.stats0.unpark_ms += now.unpark_ms - s.stats.unpark_ms;
+<<<<<<< HEAD
         self.load_suspended(s.local, s.persisted_head)?;
+=======
+        if !self.cache.tokens.is_empty() {
+            let local = GenParams {
+                cache_prompt: true,
+                ..Default::default()
+            };
+            let _ = self.park_to_states(&[], &local);
+            self.cache.park_whole(&mut self.engine)?;
+        }
+        // nothing a preload put into the engine survives the load below
+        self.preloaded = None;
+        let mut l = s.local;
+        let h = l.held.take().expect("a suspended run holds its session");
+        let n = h.len();
+        if self.cache.restore_held(&mut self.engine, h)? != n {
+            return Err(GenError::Engine(EngineError(
+                "a suspended generation could not be loaded back".into(),
+            )));
+        }
+        self.live_blocks = l.live_blocks;
+        self.progress_mark = l.progress_mark;
+        self.state_dirty = l.state_dirty;
+        self.snaps_pending = l.snaps_pending;
+        self.last_first_user = l.last_first_user;
+        self.live_hint = l.live_hint;
+        self.persisted_head = s.persisted_head;
+>>>>>>> origin/main
         // the worker's view of "the last request" is this one again
         self.snap_chosen = run.snap_chosen;
         self.snap_why = run.snap_why;
@@ -2889,7 +2953,7 @@ impl<E: Engine> Worker<E> {
                 cache_prompt: true,
                 ..Default::default()
             };
-            self.park_to_states(&[], &local);
+            let _ = self.park_to_states(&[], &local);
             return None;
         }
         Some(HeldLocal {
@@ -2984,19 +3048,16 @@ impl<E: Engine> Worker<E> {
         // argmax (same lowest-id tie-break as sampling::argmax) instead of copying the row
         // and scanning it again
         // OXE_SERVER_LEGACY=1 (A/B diagnostic only): the pre-fast-path loop (row copy + host argmax)
-        let legacy = std::env::var_os("OXE_SERVER_LEGACY").is_some();
+        let legacy = self.diag.legacy;
         // penalties / logit_bias read an adjusted row: the sampler path (no engine argmax, no MTP)
         let fast = greedy && p.n_probs == 0 && !legacy && !p.sampling.adjusts_logits();
         // speculation depth for this request (MTP auto-tune): see [`GenRun::depth_at`]
         let max_d = self.engine.spec_max_depth();
         // OXE_TIMING_DIAG=1: per-request split of the decode loop (ms): engine calls, logits
         // copies, sampler, text (piece, UTF-8, stop strings), emit (on_partial: JSON + SSE send)
-        let diag = std::env::var_os("OXE_TIMING_DIAG").is_some();
+        let diag = self.diag.timing;
         let dg = DiagSplit {
-            warmup: std::env::var("OXE_TIMING_DIAG_WARMUP")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(16),
+            warmup: self.diag.timing_warmup,
             ..Default::default()
         };
         Ok(GenRun {

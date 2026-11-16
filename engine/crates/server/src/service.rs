@@ -83,6 +83,8 @@ pub struct State<E: Engine> {
     pub work: Arc<std::sync::atomic::AtomicUsize>,
     /// fair time-slicing between generations (`fair.rs`; `OXE_FAIR_QUANTUM_MS`, 0 = off)
     pub fair: crate::fair::Fair,
+    /// the diagnostic env knobs, read once by the worker (`OXE_SERVER_LEGACY` ...)
+    pub diag: crate::generate::DiagKnobs,
 }
 
 /// One unit of [`State::work`] (dropped = done with the worker).
@@ -142,7 +144,9 @@ impl<E: Engine> State<E> {
             worker.engine.spec_max_depth(),
             worker.engine.spec_fallback(),
         );
+        let diag = worker.diag;
         Ok(State {
+            diag,
             cfg,
             tok: Arc::new(tok),
             tmpl,
@@ -1689,7 +1693,6 @@ async fn completion<E: Engine>(
     ephemeral: bool,
     snapshot_keep: bool,
 ) -> Reply {
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -1702,7 +1705,6 @@ async fn completion<E: Engine>(
     }
     gp.ephemeral = ephemeral;
     gp.session = session.clone();
-    gp.req_no = Some(req_no);
     let prompt_json = b
         .get("prompt")
         .cloned()
@@ -1719,6 +1721,9 @@ async fn completion<E: Engine>(
     if prompt.len() >= st.n_ctx {
         return Reply::Json(400, api::exceed_context_json(prompt.len(), st.n_ctx));
     }
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
+    gp.req_no = Some(req_no);
     // H4 on a raw prompt: there are no messages, so the point is the prompt end
     gp.snap_keep = snapshot_keep;
     gp.snap_at = snapshot_keep.then_some(prompt.len());
@@ -1849,7 +1854,6 @@ async fn v1_completion<E: Engine>(
     if let Err(j) = api::check_n(&b) {
         return Reply::Json(400, j);
     }
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -1924,7 +1928,6 @@ async fn v1_completion<E: Engine>(
     }
     gp.ephemeral = ephemeral;
     gp.session = session.clone();
-    gp.req_no = Some(req_no);
     let t_tok = std::time::Instant::now();
     let prompt = match st.tokenize_prompt(&prompt_json, true) {
         Ok(p) => p,
@@ -1945,6 +1948,9 @@ async fn v1_completion<E: Engine>(
     if prompt.len() >= st.n_ctx {
         return Reply::Json(400, api::exceed_context_json(prompt.len(), st.n_ctx));
     }
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
+    gp.req_no = Some(req_no);
     gp.snap_keep = snapshot_keep;
     gp.snap_at = snapshot_keep.then_some(prompt.len());
     let stream = b.get("stream").and_then(Json::as_bool).unwrap_or(false);
@@ -2072,7 +2078,6 @@ async fn chat_completion<E: Engine>(
     if let Err(j) = api::check_n(&b) {
         return Reply::Json(400, j);
     }
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -2181,6 +2186,8 @@ async fn chat_completion<E: Engine>(
         .and_then(Json::as_str)
         == Some("user");
     gp.session = session.clone();
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
     gp.req_no = Some(req_no);
     // H4: the exact end of the last message (`snapshot_point`); none for an ephemeral request
     gp.snap_keep = snapshot_keep && !ephemeral;
@@ -2224,7 +2231,7 @@ async fn chat_completion<E: Engine>(
         };
         r.reasoning_tokens = reasoning_tokens(&st.tok, &r.tokens, &gen_prompt);
         let mut sess = Session::new(pcfg, gen_prompt, Box::new(chat::random_string));
-        sess.incremental = std::env::var_os("OXE_SERVER_LEGACY").is_none();
+        sess.incremental = !st.diag.legacy;
         if !prefill_only {
             if let Err(e) = sess.feed(&r.text, true) {
                 return Reply::Json(500, api::error_json(500, &e));
@@ -2257,7 +2264,7 @@ async fn chat_completion<E: Engine>(
     let tok_r = st.tok.clone();
     let mut sess0 = Session::new(pcfg, gen_prompt, Box::new(chat::random_string));
     // OXE_SERVER_LEGACY=1 (A/B diagnostic only): full re-parse every token
-    sess0.incremental = std::env::var_os("OXE_SERVER_LEGACY").is_none();
+    sess0.incremental = !st.diag.legacy;
     let sess = Arc::new(Mutex::new(sess0));
     let st2 = st.clone();
     let stall = st.stream_stall;

@@ -1167,6 +1167,7 @@ pub(crate) fn generate(turn: &ScriptTurn, limit: u32) -> (oxa_proto::WireMsg, Fi
         content: text,
         reasoning,
         tool_calls: Vec::new(),
+        provider_history: None,
         tool_call_id: None,
     };
     (out, Finish::Length, limit)

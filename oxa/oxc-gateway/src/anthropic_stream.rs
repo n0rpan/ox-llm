@@ -363,13 +363,24 @@ impl<R: Redactor> Stream<R> {
                     .filter(|b| !b.closed)
                     .ok_or(StreamError)?;
                 block.closed = true;
-                if block.slot.is_some() {
+                if let Some(slot) = block.slot {
                     let arguments = std::mem::take(&mut block.arguments);
-                    block.native["input"] = if arguments.is_empty() {
+                    let empty = arguments.is_empty();
+                    block.native["input"] = if empty {
                         json!({})
                     } else {
                         serde_json::from_str(&arguments).unwrap_or_else(|_| json!({"input":arguments}))
                     };
+                    if empty {
+                        let safe = self.redactor.feed(Field::ToolArguments(slot), "{}");
+                        block.safe_arguments.push_str(&safe);
+                        if !safe.is_empty() {
+                            out.push(self.chunk(
+                                json!({"tool_calls":[{"index":slot,"function":{"arguments":safe}}]}),
+                                None,
+                            ));
+                        }
+                    }
                 }
             }
             "message_delta" => {

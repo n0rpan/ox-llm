@@ -1,0 +1,176 @@
+#![cfg(feature = "upstream-openai")]
+
+#[path = "common/openai.rs"]
+mod openai;
+
+use openai::{MockOpenAi, Reply};
+use serde_json::{json, Value};
+use std::{
+    io::{Read, Write},
+    net::TcpStream,
+    time::Duration,
+};
+
+fn request(mock: &MockOpenAi, body: &Value) -> TcpStream {
+    let mut stream = TcpStream::connect(mock.address()).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    let body = body.to_string();
+    write!(stream, "POST /v1/responses HTTP/1.1\r\nHost: localhost\r\nX-Synthetic: captured\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    stream
+}
+
+fn response(mut stream: TcpStream) -> (String, Vec<u8>, usize) {
+    let mut wire = Vec::new();
+    stream.read_to_end(&mut wire).unwrap();
+    let end = wire.windows(4).position(|s| s == b"\r\n\r\n").unwrap() + 4;
+    let headers = String::from_utf8(wire[..end].to_vec()).unwrap();
+    let mut rest = &wire[end..];
+    let mut body = Vec::new();
+    let mut chunks = 0;
+    loop {
+        let end = rest.windows(2).position(|s| s == b"\r\n").unwrap();
+        let length = usize::from_str_radix(std::str::from_utf8(&rest[..end]).unwrap(), 16).unwrap();
+        rest = &rest[end + 2..];
+        if length == 0 {
+            assert_eq!(rest, b"\r\n");
+            break;
+        }
+        assert!(length <= 7, "mock must fragment the SSE wire");
+        body.extend_from_slice(&rest[..length]);
+        assert_eq!(&rest[length..length + 2], b"\r\n");
+        rest = &rest[length + 2..];
+        chunks += 1;
+    }
+    (headers, body, chunks)
+}
+
+fn events(body: &[u8]) -> Vec<Value> {
+    std::str::from_utf8(body)
+        .unwrap()
+        .split("\n\n")
+        .filter(|frame| !frame.is_empty())
+        .map(|frame| {
+            let (event, data) = frame.split_once('\n').unwrap();
+            let value: Value = serde_json::from_str(data.strip_prefix("data: ").unwrap()).unwrap();
+            assert_eq!(event.strip_prefix("event: ").unwrap(), value["type"]);
+            value
+        })
+        .collect()
+}
+
+#[test]
+fn openai_mock_scripted_events_capture_and_gate() {
+    let expected = vec![json!({"type":"response.created","response":{"id":"resp_synthetic"}})];
+    let (reply, release) = Reply::events(expected.clone()).gated();
+    let mock = MockOpenAi::start(vec![reply, Reply::events(vec![])]);
+    assert!(mock.address().ip().is_loopback());
+    assert_eq!(mock.base_url(), format!("http://{}/v1", mock.address()));
+    let body = json!({"model":"synthetic-openai","input":[],"stream":true});
+    let mut stream = request(&mock, &body);
+    let captured = mock.wait_for_requests(1);
+    assert_eq!(captured[0].method, "POST");
+    assert_eq!(captured[0].target, "/v1/responses");
+    assert_eq!(captured[0].body, body);
+    assert_eq!(captured[0].header("X-SYNTHETIC"), Some("captured"));
+    assert_eq!(captured[0].header("absent"), None);
+    let debug = format!("{:?}", captured[0]);
+    assert!(!debug.contains("synthetic-openai"));
+    assert!(!debug.contains("captured\""));
+    stream.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+    let error = stream.read(&mut [0; 1]).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    release.send(()).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let (headers, bytes, chunks) = response(stream);
+    assert!(headers.starts_with("HTTP/1.1 200 "));
+    assert!(headers.contains("Content-Type: text/event-stream\r\n"));
+    assert!(chunks > 1);
+    assert_eq!(events(&bytes), expected);
+    assert!(response(request(&mock, &json!({"input":"second"}))).1.is_empty());
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn openai_mock_450_three_argument_shapes() {
+    let mock = MockOpenAi::start(vec![
+        Reply::multi_tool_full_deltas(),
+        Reply::multi_tool_no_deltas(),
+        Reply::multi_tool_partial_deltas(),
+    ]);
+    for shape in ["full", "none", "partial"] {
+        let (_, bytes, _) = response(request(&mock, &json!({"stream":true,"store":false})));
+        let rows = events(&bytes);
+        assert_eq!(rows.first().unwrap()["type"], "response.created");
+        let completed = rows.last().unwrap();
+        assert_eq!(completed["type"], "response.completed");
+        assert_eq!(completed["response"]["output"], json!([]));
+        assert_eq!(completed["response"]["status"], "completed");
+        for index in 0..3 {
+            let for_call: Vec<_> = rows.iter().filter(|row| row["output_index"] == index).collect();
+            assert_eq!(for_call.first().unwrap()["type"], "response.output_item.added");
+            assert_eq!(for_call.first().unwrap()["item"]["arguments"], "");
+            let done = for_call.last().unwrap();
+            assert_eq!(done["type"], "response.output_item.done");
+            let item = &done["item"];
+            assert_eq!(item["type"], "function_call");
+            assert_eq!(item["call_id"], format!("call_synthetic_{index}"));
+            let arguments = item["arguments"].as_str().unwrap();
+            assert!(serde_json::from_str::<Value>(arguments).unwrap().is_object());
+            let deltas: String = for_call
+                .iter()
+                .filter(|row| row["type"] == "response.function_call_arguments.delta")
+                .map(|row| row["delta"].as_str().unwrap())
+                .collect();
+            match shape {
+                "full" => assert_eq!(deltas, arguments),
+                "none" => assert!(deltas.is_empty()),
+                "partial" => {
+                    assert!(!deltas.is_empty());
+                    assert!(arguments.starts_with(&deltas));
+                    assert!(deltas.len() < arguments.len());
+                }
+                _ => unreachable!(),
+            }
+            let arguments_done = for_call
+                .iter()
+                .find(|row| row["type"] == "response.function_call_arguments.done");
+            if shape == "none" {
+                assert!(
+                    arguments_done.is_none(),
+                    "arguments arrive only in output_item.done"
+                );
+            } else {
+                assert_eq!(arguments_done.unwrap()["arguments"], arguments);
+            }
+        }
+    }
+    assert_eq!(mock.requests().len(), 3);
+    mock.assert_healthy();
+}
+
+#[test]
+fn openai_mock_errors_and_retry_after() {
+    let mock = MockOpenAi::start(vec![
+        Reply::error(503, "server_error", "synthetic unavailable"),
+        Reply::insufficient_quota(17),
+    ]);
+    let (headers, bytes, _) = response(request(&mock, &json!({})));
+    assert!(headers.starts_with("HTTP/1.1 503 "));
+    assert!(headers.contains("Content-Type: application/json\r\n"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap(),
+        json!({"error":{"type":"server_error","code":"server_error","message":"synthetic unavailable"}})
+    );
+    let (headers, bytes, _) = response(request(&mock, &json!({})));
+    assert!(headers.starts_with("HTTP/1.1 429 "));
+    assert!(headers.contains("Retry-After: 17\r\n"));
+    let error: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(error["error"]["type"], "insufficient_quota");
+    assert_eq!(error["error"]["code"], "insufficient_quota");
+    mock.assert_healthy();
+}

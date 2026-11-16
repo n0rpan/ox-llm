@@ -351,6 +351,7 @@ mod estimate_tests {
             content: Some(text.to_string()),
             reasoning: None,
             tool_calls: Vec::new(),
+            provider_history: None,
             tool_call_id: Some("c1".to_string()),
         }
     }
@@ -380,6 +381,28 @@ mod estimate_tests {
         t.push(WireMsg::user("hi"));
         t.push(tool_result(&"x".repeat(3000)));
         assert_eq!(estimate_of(&t), 0);
+    }
+
+    #[test]
+    fn private_provider_history_does_not_inflate_the_token_estimate() {
+        let mut t = Transcript::default();
+        t.push(WireMsg::user("hi"));
+        t.set_usage(&usage(100, 20));
+        let mut message = WireMsg::assistant("visible reply");
+        let visible_bytes = message.to_json().len();
+        message.provider_history = Some(
+            oxa_proto::ProviderHistory::new(
+                [1; 32],
+                [2; 32],
+                vec![serde_json::json!({"type":"reasoning","encrypted_content":"x".repeat(30000)})],
+            )
+            .unwrap(),
+        );
+        t.push(message);
+        assert_eq!(
+            estimate_of(&t),
+            120 + u32::try_from(visible_bytes.div_ceil(3)).unwrap()
+        );
     }
 
     #[test]
@@ -492,6 +515,7 @@ pub(crate) fn prompt_tokens(st: &SessionState, wire: &[WireMsg]) -> (u32, Counte
         snapshot_keep: false,
     };
     let req = oxa_proto::ChatRequest {
+        output_schema: None,
         prefix: &st.prefix,
         messages: wire,
         model: &st.model,

@@ -288,6 +288,11 @@ pub fn state_to_json(s: &State) -> Value {
         },
     );
     put(&mut o, "sessionId", s.session_id.as_str());
+    put(
+        &mut o,
+        "statusFile",
+        s.status_file.as_ref().map(|p| p.to_string_lossy().into_owned()),
+    );
     put_opt(&mut o, "sessionName", s.session_name.as_deref());
     put(&mut o, "autoCompactionEnabled", s.auto_compaction);
     put(&mut o, "autoRetryEnabled", s.auto_retry);
