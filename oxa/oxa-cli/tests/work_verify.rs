@@ -11,11 +11,16 @@ use std::{
 use work::{git, run, run_args, setup};
 
 fn verify(env: &TestEnv) -> std::process::Output {
+    verify_with_home(env, &env.home())
+}
+
+fn verify_with_home(env: &TestEnv, home: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "verify", "test"])
         .current_dir(env.work().join("project"))
         .env_clear()
         .envs(env.envs("http://127.0.0.1:1"))
+        .env("HOME", home)
         .output()
         .unwrap()
 }
@@ -142,12 +147,15 @@ fn checks_cannot_change_the_runners_committed_inspection_index() {
     );
     let record = run(&env, vec![ScriptTurn::text("done")]);
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
-    let output = verify(&env);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    // Cover both an ordinary workspace and a workspace below a masked HOME.
+    for home in [env.home(), env.work()] {
+        let output = verify_with_home(&env, &home);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]

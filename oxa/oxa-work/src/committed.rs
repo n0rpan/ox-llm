@@ -1,7 +1,7 @@
 //! Verify a saved task from an independent, clean, hash-checked Git export.
 use crate::{
-    acceptance, checked, dirty_worktree, git, state, supervise, tree, valid_task_id, Outcome, Record, Result,
-    RunPolicy, Step, SupervisorOperation, SupervisorRequest,
+    acceptance_result, checked, dirty_worktree, git, state, supervise, tree, valid_task_id, Outcome, Record,
+    Result, RunPolicy, Step, SupervisorOperation, SupervisorRequest,
 };
 use std::fs::{self, File};
 use std::io::Write;
@@ -128,7 +128,19 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     );
     prepare_index.env("GIT_INDEX_FILE", &index);
     checked(prepare_index)?;
-    let failed = acceptance(binary, &export.tree, repo, &execution.commands, policy, &lock)?;
+    let failed = acceptance_result(supervise(
+        binary,
+        &export.tree,
+        SupervisorRequest {
+            source: repo.into(),
+            operation: SupervisorOperation::CommittedChecks {
+                commands: execution.commands,
+                index: index.clone(),
+            },
+        },
+        policy,
+        &lock,
+    )?)?;
     if !failed.is_empty() {
         return Err(format!("clean committed acceptance failed: {failed}"));
     }

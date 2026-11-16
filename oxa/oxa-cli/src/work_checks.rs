@@ -22,6 +22,19 @@ pub(crate) fn run(
     let root = cwd.canonicalize().map_err(|e| e.to_string())?;
     let mut b = Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home).map_err(|e| e.to_string())?;
     b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
+    if let SupervisorOperation::CommittedChecks { index, .. }
+    | SupervisorOperation::InspectCommitted { index } = &request.operation
+    {
+        if index.parent() != root.parent()
+            || index.file_name().is_none_or(|name| name != ".committed-index")
+            || !std::fs::symlink_metadata(index).is_ok_and(|metadata| metadata.is_file())
+        {
+            return Err("invalid committed inspection index".into());
+        }
+        // The private index remains readable even when its parent is masked as
+        // part of HOME. This adds only the one immutable generated file.
+        b.layout.read.push(index.clone());
+    }
     let b = b.with_git_dirs(&root);
     b.check().map_err(|e| e.to_string())?;
     let settings = Settings::load(dirs, &source, true);
@@ -118,7 +131,9 @@ git --no-replace-objects commit -m '{message}'
             }
             return Ok(0);
         }
-        SupervisorOperation::Checks { commands } => commands,
+        SupervisorOperation::Checks { commands } | SupervisorOperation::CommittedChecks { commands, .. } => {
+            commands
+        }
     };
     let shell = oxa_tools::ShellConfig {
         shell_path: settings.shell_path(&dirs.home),
