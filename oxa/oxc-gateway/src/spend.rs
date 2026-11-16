@@ -112,8 +112,8 @@ impl SpendReader {
     }
 }
 
-/// Append one private ledger record. Callers serialize writers (Budget does so
-/// while settling), and the reader independently tolerates a partial last write.
+/// Serialize complete private rows across processes. Durable append must precede
+/// releasing a persisted reservation. Readers tolerate an unfinished last write.
 pub fn append_private(path: &Path, row: &Value) -> io::Result<()> {
     use std::{
         fs::{self, OpenOptions},
@@ -123,7 +123,7 @@ pub fn append_private(path: &Path, row: &Value) -> io::Result<()> {
     let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
     fs::create_dir_all(parent)?;
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o600)
@@ -134,7 +134,10 @@ pub fn append_private(path: &Path, row: &Value) -> io::Result<()> {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    let mut file = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, error)| io::Error::from(error))?;
     let mut bytes = serde_json::to_vec(row)?;
     bytes.push(b'\n');
-    file.write_all(&bytes)
+    file.write_all(&bytes)?;
+    file.sync_data()
 }
