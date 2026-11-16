@@ -204,3 +204,20 @@ fn invalid_layout_values_fail_before_any_supervision_work() {
         Err(Error::Alias)
     );
 }
+
+#[test]
+fn short_alias_cannot_replace_selected_identity_from_either_argument_source() {
+    let mut installed = layout();
+    installed.models.get_mut("local-model").unwrap().arguments = vec!["-a".into(), "other-model".into()];
+    assert_eq!(
+        from_user_settings(&json!({}), &installed, "local-model", 8080),
+        Err(Error::OwnedArgument)
+    );
+    let settings = json!({"oxa":{"local":{"models":{"local-model":{
+        "arguments":["-a","other-model"]
+    }}}}});
+    assert_eq!(
+        from_user_settings(&settings, &layout(), "local-model", 8080),
+        Err(Error::OwnedArgument)
+    );
+}
