@@ -582,6 +582,7 @@ mod tests {
                 content: Some(text.to_string()),
                 reasoning: None,
                 tool_calls: Vec::new(),
+                provider_history: None,
                 tool_call_id: None,
             },
             ts_ms: 0,

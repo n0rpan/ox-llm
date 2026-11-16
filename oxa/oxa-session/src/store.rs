@@ -902,6 +902,7 @@ pub(crate) fn decode_wire_value(w: &Value) -> Result<WireMsg, OxaError> {
             content: opt_str(w, "content")?,
             reasoning: opt_str(w, "reasoning_content")?,
             tool_calls,
+            provider_history: None,
             tool_call_id: opt_str(w, "tool_call_id")?,
         })
     }
@@ -924,6 +925,7 @@ fn decode_pi_wire(msg: &Map<String, Value>, role_str: &str) -> Result<WireMsg, O
         } else {
             Vec::new()
         },
+        provider_history: None,
         tool_call_id: if role == Role::Tool {
             msg.get("toolCallId").and_then(Value::as_str).map(String::from)
         } else {

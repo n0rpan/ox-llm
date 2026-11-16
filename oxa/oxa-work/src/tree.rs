@@ -148,7 +148,7 @@ pub(crate) fn prepare(
         });
     }
     if retained && dirty_worktree(binary, tree, repo, policy, lock)? {
-        return Err("retained worktree has uncommitted changes; commit them before continuing".into());
+        return Err("retained worktree has uncommitted changes; worker was not restarted".into());
     }
     let merged = supervise(
         binary,
@@ -216,15 +216,4 @@ pub(crate) fn ensure_merged(policy: &RunPolicy, tree: &Path, base: &str, branch:
             String::from_utf8_lossy(&ancestor.stderr)
         )),
     }
-}
-
-pub(crate) fn check_receipt(receipt: &Path, tree: &Path, task: &Task) -> Result<()> {
-    if receipt.exists() {
-        let record: super::Record = serde_json::from_slice(&fs::read(receipt).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("retained receipt: {e}"))?;
-        if record.id != task.id || record.branch != task.branch || record.worktree != tree {
-            return Err("retained receipt belongs to a different task branch or worktree".into());
-        }
-    }
-    Ok(())
 }

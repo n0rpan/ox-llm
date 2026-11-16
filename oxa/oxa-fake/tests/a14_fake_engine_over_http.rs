@@ -591,6 +591,7 @@ fn record_keeps_raw_tools_and_args() {
             name: "read".to_string(),
             args_raw: "{ \"path\" :  \"a\" }".to_string(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     let msgs = vec![
