@@ -619,3 +619,130 @@ async fn openrouter_reasoning_content_takes_precedence_over_alias() {
         mock.finish();
     }
 }
+
+async fn normalized_tool_reply(calls: Value) -> (Completed, Vec<Value>, Vec<Value>) {
+    let mock = MockAnthropic::start(vec![wire(
+        vec![
+            json!({"choices":[{"index":0,"delta":{"tool_calls":calls},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":21,"completion_tokens":5,"cost":0.25}}),
+        ],
+        true,
+    )]);
+    let (gateway, fixture) = gateway(&mock);
+    let mut output = Vec::new();
+    let completed = gateway
+        .chat_payload(
+            &payload(true),
+            Context::default(),
+            &Cancellation::default(),
+            &mut |event| {
+                match event {
+                    Event::Chunk(value) => output.push(value),
+                    Event::Done => assert_eq!(rows(&fixture)[0]["cost_usd"], 0.25),
+                }
+                Control::Continue
+            },
+        )
+        .await
+        .unwrap();
+    let ledger = rows(&fixture);
+    mock.finish();
+    (completed, output, ledger)
+}
+
+#[tokio::test]
+async fn openrouter_missing_tool_indices_use_array_positions() {
+    let raw = r#"{ "path" : "note.txt" }"#;
+    let calls = json!([
+        {"id":"first-call","function":{"name":"read","arguments":raw}},
+        {"id":"second-call","function":{"name":"read","arguments":raw}},
+    ]);
+    let (completed, output, ledger) = normalized_tool_reply(calls).await;
+    let tools = completed.assistant["tool_calls"].as_array().unwrap();
+    assert_eq!(tools.len(), 2);
+    let streamed = output
+        .iter()
+        .find_map(|v| v.pointer("/choices/0/delta/tool_calls"))
+        .unwrap();
+    for (index, id) in ["first-call", "second-call"].into_iter().enumerate() {
+        assert_eq!(tools[index]["id"], id);
+        assert_eq!(tools[index]["function"]["name"], "read");
+        assert_eq!(tools[index]["function"]["arguments"], raw);
+        assert_eq!(streamed[index]["index"], index);
+        assert_eq!(streamed[index]["id"], id);
+        assert_eq!(streamed[index]["function"]["arguments"], raw);
+    }
+    assert_eq!(ledger[0]["settled"], "usage");
+}
+
+#[tokio::test]
+async fn openrouter_object_tool_arguments_are_encoded_before_execution() {
+    for indexed in [false, true] {
+        let arguments = json!({"path":"note.txt","metadata":{"text":"benign λ"}});
+        let mut call = json!({"id":"object-call","function":{"name":"read","arguments":arguments}});
+        if indexed {
+            call["index"] = json!(7);
+        }
+        let (completed, output, ledger) = normalized_tool_reply(json!([call])).await;
+        let tool = &completed.assistant["tool_calls"][0];
+        assert_eq!(tool["id"], "object-call");
+        assert_eq!(tool["function"]["name"], "read");
+        let raw = tool["function"]["arguments"].as_str().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(raw).unwrap(), arguments);
+        let streamed = output
+            .iter()
+            .find_map(|v| v.pointer("/choices/0/delta/tool_calls/0"))
+            .unwrap();
+        assert_eq!(streamed["index"], 0);
+        assert_eq!(streamed["id"], "object-call");
+        assert_eq!(streamed["function"]["arguments"], raw);
+        assert_eq!(ledger[0]["settled"], "usage");
+        assert_eq!(ledger[0]["reported_cost_usd"], 0.25);
+    }
+}
+
+#[tokio::test]
+async fn openrouter_normalized_tool_objects_still_refuse_held_key_atomically() {
+    for arguments in [
+        json!({"metadata":[{"value":CREDENTIAL}]}),
+        json!({"metadata":[{CREDENTIAL:"value"}]}),
+    ] {
+        let mock = MockAnthropic::start(vec![wire(
+            vec![
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[
+                {"id":"clean-first","function":{"name":"read","arguments":{"path":"note.txt"}}},
+                {"id":"unsafe-second","function":{"name":"read","arguments":arguments}},
+            ]},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":21,"completion_tokens":5,"cost":0.25}}),
+            ],
+            true,
+        )]);
+        let (gateway, fixture) = gateway(&mock);
+        let mut output = Vec::new();
+        let error = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    match event {
+                        Event::Chunk(value) => output.push(value),
+                        Event::Done => panic!("unsafe normalized tools cannot complete"),
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.refusal().code, "cloud_upstream_stream_broken");
+        assert!(output
+            .iter()
+            .all(|v| v.pointer("/choices/0/delta/tool_calls").is_none()));
+        assert!(!json!(output).to_string().contains(CREDENTIAL));
+        assert_eq!(rows(&fixture)[0]["settled"], "reserved");
+        mock.finish();
+    }
+}

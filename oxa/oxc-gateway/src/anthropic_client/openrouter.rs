@@ -257,8 +257,13 @@ impl<'a> Stream<'a> {
             }
         }
         if let Some(calls) = delta.get("tool_calls").filter(|v| !v.is_null()) {
-            for call in calls.as_array().ok_or(Error::Protocol)? {
-                let index = call["index"].as_u64().ok_or(Error::Protocol)?;
+            for (position, call) in calls.as_array().ok_or(Error::Protocol)?.iter().enumerate() {
+                // Legacy normalization supplies array position only for an
+                // absent index; an explicitly invalid identity is still refused.
+                let index = match call.get("index") {
+                    Some(value) => value.as_u64().ok_or(Error::Protocol)?,
+                    None => u64::try_from(position).map_err(|_| Error::Protocol)?,
+                };
                 let tool = self.tools.entry(index).or_insert_with(
                     || json!({"type":"function","id":"","function":{"name":"","arguments":""}}),
                 );
@@ -266,7 +271,15 @@ impl<'a> Stream<'a> {
                 // until completion instead of leaking partial credential matches.
                 for path in ["/id", "/function/name", "/function/arguments"] {
                     if let Some(value) = call.pointer(path) {
-                        let part = value.as_str().ok_or(Error::Protocol)?;
+                        // Normalize argument containers before the existing
+                        // decoded-object and held-key checks at final delivery.
+                        let part = match value {
+                            Value::Object(_) | Value::Array(_) if path == "/function/arguments" => {
+                                value.to_string()
+                            }
+                            Value::Null if path == "/function/arguments" => String::new(),
+                            _ => value.as_str().ok_or(Error::Protocol)?.to_owned(),
+                        };
                         let target = tool.pointer_mut(path).ok_or(Error::Protocol)?;
                         *target = json!(format!("{}{part}", target.as_str().ok_or(Error::Protocol)?));
                     }
