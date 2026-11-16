@@ -415,7 +415,7 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
 /// An entry as pi's session file stores it (the hook events carry entries in that form).
 fn entry_json(e: &Entry) -> Value {
     let mut bytes = Vec::new();
-    oxa_session::encode_entry(e, &mut bytes);
+    oxa_session::encode_visible_entry(e, &mut bytes);
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 

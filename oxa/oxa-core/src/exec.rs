@@ -1418,11 +1418,12 @@ fn guard_hooks(
 /// declared rebase (`None` = not declared: appends only).
 fn apply_rebase(
     st: &mut SessionState,
-    list: Vec<WireMsg>,
+    mut list: Vec<WireMsg>,
     declared_by: Option<&str>,
     point: HookPoint,
     sink: &mut dyn EventSink,
 ) -> Result<(), OxaError> {
+    st.transcript.prepare_rebase(&mut list);
     let wire = st.transcript.wire();
     if list.as_slice() == wire {
         return Ok(());

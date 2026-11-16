@@ -222,3 +222,163 @@ fn compaction_rejects_open_and_split_tool_exchanges_before_writing() {
     }
 }
 
+#[test]
+fn visible_entry_rebase_and_debug_never_disclose_replay() {
+    let e = entry("a", None, assistant());
+    let mut visible = vec![];
+    oxa_session::encode_visible_entry(&e, &mut visible);
+    for text in [
+        String::from_utf8(visible).unwrap(),
+        Transcript::encode_rebase(&[assistant()]).to_string(),
+        format!("{e:?}"),
+    ] {
+        assert!(!text.contains("synthetic-private-replay"));
+        assert!(!text.contains("encrypted_content"));
+    }
+    assert!(!String::from_utf8_lossy(&assistant().to_json()).contains("synthetic-private-replay"));
+}
+
+#[test]
+fn complete_closed_tool_batch_compacts_and_resumes_without_private_rebinding() {
+    let env = TestEnv::new();
+    let store = FsStore::new(env.root().join("sessions"));
+    let s = store.create(&env.work(), None, None).unwrap();
+    let mut call = assistant();
+    call.tool_calls.push(oxa_proto::ToolCall {
+        id: "c".into(),
+        name: "read".into(),
+        args_raw: "{}".into(),
+    });
+    let entries = vec![
+        entry("old", None, WireMsg::user("earlier")),
+        entry("call", Some("old"), call),
+        entry("tool", Some("call"), WireMsg::tool_result("c", "done")),
+        Entry {
+            id: "compact".into(),
+            parent: Some("tool".into()),
+            ts_ms: 1000,
+            body: EntryBody::Compaction {
+                summary: "summary".into(),
+                first_kept: "call".into(),
+                tokens_before: 1,
+                details: Value::Null,
+                from_hook: false,
+            },
+        },
+    ];
+    store.append_many(&s, &entries).unwrap();
+    let loaded = store.load(&s).unwrap();
+    let t = Transcript::project(&loaded);
+    assert_eq!(t.wire().len(), 3);
+    assert!(t.wire().iter().all(|m| m.provider_history.is_none()));
+    assert_eq!(t.wire()[1].tool_calls[0].id, "c");
+    assert_eq!(t.wire()[2].tool_call_id.as_deref(), Some("c"));
+}
+
+#[test]
+fn malformed_nested_replay_is_an_error_and_valid_hook_json_has_no_authority() {
+    for compact in [false, true] {
+        let body = if compact {
+            EntryBody::Compaction {
+                summary: "summary".into(),
+                first_kept: String::new(),
+                tokens_before: 1,
+                details: json!({"keptMessages":[{"role":"assistant","content":"visible","provider_history":null}]}),
+                from_hook: false,
+            }
+        } else {
+            EntryBody::Custom {
+                custom_type: Transcript::EXTENSION_REBASE_ENTRY.into(),
+                data: json!({"messages":[{"role":"assistant","content":"visible","provider_history":null}]}),
+            }
+        };
+        let e = Entry {
+            id: "c".into(),
+            parent: None,
+            ts_ms: 1000,
+            body,
+        };
+        assert!(decode_entry(&serde_json::to_vec(&encoded(&e)).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn malformed_persisted_compaction_cannot_resume_half_a_tool_batch() {
+    let env = TestEnv::new();
+    let store = FsStore::new(env.root().join("sessions"));
+    let s = store.create(&env.work(), None, None).unwrap();
+    let mut call = assistant();
+    call.tool_calls.push(oxa_proto::ToolCall {
+        id: "c".into(),
+        name: "read".into(),
+        args_raw: "{}".into(),
+    });
+    store
+        .append_many(
+            &s,
+            &[
+                entry("call", None, call),
+                entry("tool", Some("call"), WireMsg::tool_result("c", "done")),
+            ],
+        )
+        .unwrap();
+    let c = Entry {
+        id: "compact".into(),
+        parent: Some("tool".into()),
+        ts_ms: 1000,
+        body: EntryBody::Compaction {
+            summary: "summary".into(),
+            first_kept: "tool".into(),
+            tokens_before: 1,
+            details: Value::Null,
+            from_hook: false,
+        },
+    };
+    let mut line = vec![];
+    encode_entry(&c, &mut line);
+    line.push(b'\n');
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&s.path)
+        .unwrap()
+        .write_all(&line)
+        .unwrap();
+    assert!(store.load(&s).is_err());
+}
+
+#[test]
+fn unchanged_epoch_and_visible_prefix_keep_the_original_shared_carrier() {
+    let mut t = Transcript::default();
+    let p = Entry {
+        id: "p".into(),
+        parent: None,
+        ts_ms: 0,
+        body: EntryBody::Prefix(prefix("same")),
+    };
+    t.apply(&p);
+    t.push(assistant());
+    t.apply(&p);
+    let retained = t.wire()[0].provider_history.as_ref().unwrap();
+    let clone = retained.clone();
+    assert!(std::ptr::eq(retained.items().as_ptr(), clone.items().as_ptr()));
+    let mut supplied = t.wire().to_vec();
+    supplied[0].provider_history = Some(ProviderHistory::new([99; 32], [98; 32], vec![]).unwrap());
+    t.rebase(supplied, rebase_why::EXTENSION);
+    assert_eq!(
+        t.wire()[0].provider_history,
+        Some(history()),
+        "supplied tags never replace existing authority"
+    );
+}
+
+#[test]
+fn changed_earlier_message_invalidates_every_later_carrier() {
+    let mut t = Transcript::default();
+    t.push(WireMsg::user("old question"));
+    t.push(assistant());
+    t.rebase(
+        vec![WireMsg::user("new question"), assistant()],
+        rebase_why::CONTEXT_EDIT,
+    );
+    assert!(t.wire()[1].provider_history.is_none());
+}
