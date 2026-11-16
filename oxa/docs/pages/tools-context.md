@@ -70,6 +70,14 @@ usage, so reported reasoning tokens can be one greater than the text cap.
 - **Kept tail after a compaction.** On a small context, the recent messages kept after a
   compaction are about 2000 tokens, unless `compaction.keepRecentTokens` is set. See
   [compaction.md](compaction.md).
+- **Sized by the prefill speed.** On a local model, oxa measures the prefill speed of each
+  reply that prefilled at least 256 new tokens. One hop (a tool result, or the kept tail
+  after a compaction) is then kept to what prefills in `oxa.tune.hopSeconds` (10 seconds
+  unless set; `0` turns it off): the output cap and the first page of `read` at three bytes
+  per token, never below 2 KiB, and the kept tail in tokens, never below 2000. This only
+  lowers the values above, never raises them. Before the first measurement, on a cloud model
+  and when `oxa.toolOutputCap` or `compaction.keepRecentTokens` is set, the values above apply
+  unchanged.
 - **Shaped output.** `oxa.diet.tools` is on by default. It makes `grep` print each file's path
   once, with its matches below it, and it collapses runs of three or more blank lines in bash
   output to two.

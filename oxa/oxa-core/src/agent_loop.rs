@@ -585,6 +585,7 @@ fn account_reply(st: &mut SessionState, timings: Option<oxa_proto::Timings>, usa
         if t.predicted_ms > 0.0 {
             st.stats.last_tok_s = t.predicted_n as f64 / (t.predicted_ms / 1000.0);
         }
+        crate::tune::measure(st, &t);
     }
 }
 

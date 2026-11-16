@@ -96,6 +96,9 @@ pub struct Stats {
     pub epochs: u32,
     /// Tokens per second of the last reply (`predicted_n / predicted_ms`).
     pub last_tok_s: f64,
+    /// #460: prefill tokens per second of the last local reply that prefilled at least
+    /// [`crate::tune::HOP_SAMPLE_MIN`] new tokens (`prompt_n / prompt_ms`); 0 = none measured.
+    pub prefill_tok_s: f64,
     /// T2: repair messages appended for malformed tool calls on the active branch.
     pub tool_repairs: u32,
     /// F11: the token position of the last checkpoint the engine reported kept for an H4
@@ -1280,6 +1283,7 @@ fn start_new(
     st.tree = Tree::new(Vec::new());
     st.transcript = Transcript::default();
     st.stats.last_tok_s = 0.0;
+    st.stats.prefill_tok_s = 0.0;
     st.stats.user_messages = 0;
     st.stats.assistant_messages = 0;
     st.stats.tool_calls = 0;
@@ -1376,12 +1380,12 @@ fn restore_locked(
     match replayed {
         Some(prefix) => {
             st.prefix = prefix;
-            crate::tune::refresh(st);
             let enabled = st.compact.enabled;
             st.compact = CompactPolicy {
                 enabled,
                 ..policy_for_model(&st.info, &st.settings, &st.model)
             };
+            crate::tune::refresh(st);
         }
         None => {
             crate::open_epoch(st, "resume", true, sink)?;
@@ -1793,6 +1797,7 @@ pub(crate) fn switch_model(
     let previous = std::mem::replace(&mut st.model, m.to_string());
     // The speed belongs to the model that produced it.
     st.stats.last_tok_s = 0.0;
+    st.stats.prefill_tok_s = 0.0;
     sink.emit(&AgentEvent::ModelSelect {
         model: m.to_string(),
         previous: Some(previous.clone()),
@@ -1854,11 +1859,9 @@ pub(crate) fn policy_for_model(info: &EngineInfo, settings: &Settings, model: &s
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(default)
     };
-    let keep_set = settings.get("compaction.keepRecentTokens").is_some()
-        || entry.is_some_and(|e| e.get("keepRecentTokens").is_some());
     let keep = crate::tune::keep_tokens(
         info.n_ctx,
-        keep_set,
+        keep_user_set(settings, model),
         num("keepRecentTokens", comp.keep_recent_tokens),
     );
     oxa_compact::policy_from(
@@ -1869,6 +1872,17 @@ pub(crate) fn policy_for_model(info: &EngineInfo, settings: &Settings, model: &s
         comp.soft_tokens.or(info.compact_at),
         comp.enabled,
     )
+}
+
+/// Whether the user set the kept tail: `compaction.keepRecentTokens` in a layer, or in the
+/// `compaction.modelOverrides` entry of `model`.
+pub(crate) fn keep_user_set(settings: &Settings, model: &str) -> bool {
+    settings.get("compaction.keepRecentTokens").is_some()
+        || settings
+            .get("compaction.modelOverrides")
+            .and_then(|o| o.get(model))
+            .filter(|v| v.is_object())
+            .is_some_and(|e| e.get("keepRecentTokens").is_some())
 }
 
 /// S4: the other model a `compaction.modelOverrides` entry of `model` would send the summary

@@ -204,6 +204,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
+    // #460: target prefill seconds per hop of a local model; unset = HOP_SECONDS_DEFAULT; 0 = off.
+    key("oxa.tune.hopSeconds", Kind::Number, "null"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
     key("oxa.webSearch.maxTokens", Kind::Number, "2048"),

@@ -37,6 +37,9 @@ impl ThinkingPolicy {
 pub const SUMMARY_TARGET_DEFAULT: u32 = 700;
 /// `bash` timeout in seconds when the call sets none.
 pub const BASH_TIMEOUT_DEFAULT: u32 = 120;
+/// #460: target prefill seconds per hop of a local model (provisional; the replay of #461
+/// decides it).
+pub const HOP_SECONDS_DEFAULT: u32 = 10;
 
 impl Settings {
     /// `oxa.thinking.policy` as set by a layer; `None` = unset (the default decides).
@@ -99,6 +102,12 @@ impl Settings {
     /// `oxa.bash.defaultTimeout` in seconds (F5); 0 = none. Unset = [`BASH_TIMEOUT_DEFAULT`].
     pub fn bash_default_timeout(&self) -> u32 {
         self.u32("oxa.bash.defaultTimeout", BASH_TIMEOUT_DEFAULT)
+    }
+    /// `oxa.tune.hopSeconds` (#460): the target prefill time of one hop of a local model, which
+    /// sizes the tool results and the kept tail from the measured prefill speed; 0 = off. Unset
+    /// = [`HOP_SECONDS_DEFAULT`].
+    pub fn hop_seconds(&self) -> u32 {
+        self.u32("oxa.tune.hopSeconds", HOP_SECONDS_DEFAULT)
     }
 }
 
@@ -166,13 +175,15 @@ mod tests {
         assert!(none.prefill_tools());
         assert_eq!(none.summary_target(), SUMMARY_TARGET_DEFAULT);
         assert_eq!(none.bash_default_timeout(), BASH_TIMEOUT_DEFAULT);
+        assert_eq!(none.hop_seconds(), HOP_SECONDS_DEFAULT);
 
         let off = Settings::from_values(
             json!({"oxa": {
                 "diet": {"output": false, "tools": false},
                 "compaction": {"idleSummary": false, "turnStart": false, "midRun": false, "summaryTarget": 0},
                 "prefill": {"paste": false, "tools": false},
-                "bash": {"defaultTimeout": 0}
+                "bash": {"defaultTimeout": 0},
+                "tune": {"hopSeconds": 0}
             }}),
             json!({}),
         );
@@ -185,5 +196,6 @@ mod tests {
         assert!(!off.prefill_tools());
         assert_eq!(off.summary_target(), 0);
         assert_eq!(off.bash_default_timeout(), 0);
+        assert_eq!(off.hop_seconds(), 0);
     }
 }
