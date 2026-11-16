@@ -44,7 +44,7 @@ impl std::fmt::Display for OutputValidationError {
 impl std::error::Error for OutputValidationError {}
 
 fn check_schema(schema: &Value, depth: usize) -> Result<(), &'static str> {
-    let bad = "Invalid output schema: unsupported keyword or malformed value (supported: type, properties, items, enum, required, additionalProperties (boolean), minLength, minimum, maximum, $schema (2020-12), title, description)";
+    let bad = "Invalid output schema: unsupported keyword or malformed value (supported: type, properties, items, enum, required, additionalProperties (boolean), minLength, minimum, maximum, $schema (annotation), title, description)";
     let object = schema.as_object().ok_or(bad)?;
     if depth > 64 {
         return Err("Output schema is too deeply nested");
@@ -56,8 +56,8 @@ fn check_schema(schema: &Value, depth: usize) -> Result<(), &'static str> {
                     value.as_str(),
                     Some("object" | "array" | "string" | "number" | "integer")
                 ) => {}
-            "$schema" if value.as_str() == Some("https://json-schema.org/draft/2020-12/schema") => {}
-            "title" | "description" if value.is_string() => {}
+            // Annotations never trigger schema fetching or reference resolution.
+            "$schema" | "title" | "description" if value.is_string() => {}
             "additionalProperties" if value.is_boolean() => {}
             "minLength" if value.as_u64().is_some() => {}
             "minimum" | "maximum" if value.is_number() => {}
@@ -281,4 +281,78 @@ mod tests {
         assert!(OutputSchema::new(json!({"$ref":"https://example.invalid/schema"})).is_err());
         assert!(OutputSchema::new(json!({"required":[1]})).is_err());
     }
+    #[test]
+    fn review_keywords_are_checked_and_enforced() {
+        let schema = OutputSchema::new(json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "Example", "description": "An offline schema",
+            "type": "object", "additionalProperties": false,
+            "properties": {
+                "count": {"type": "integer", "minimum": 1, "maximum": 3},
+                "name": {"type": "string", "minLength": 2}
+            }
+        }))
+        .unwrap();
+        for text in [r#"{"count":1,"name":"é🦀"}"#, r#"{"count":3.0}"#, "{}"] {
+            assert!(schema.matches(text), "rejected {text}");
+        }
+        for text in [
+            r#"{"count":0}"#,
+            r#"{"count":4}"#,
+            r#"{"count":1.5}"#,
+            r#"{"count":"2"}"#,
+            r#"{"name":"é"}"#,
+            r#"{"extra":true}"#,
+        ] {
+            assert!(!schema.matches(text), "accepted {text}");
+        }
+        // These keywords only constrain instances of the applicable type.
+        let schema = OutputSchema::new(json!({
+            "minimum": 1, "maximum": 3, "minLength": 2, "additionalProperties": false
+        }))
+        .unwrap();
+        for text in ["null", "[]", "true", "{}", "2", "\"ok\""] {
+            assert!(schema.matches(text), "rejected {text}");
+        }
+        assert!(OutputSchema::new(json!({"additionalProperties": true}))
+            .unwrap()
+            .matches(r#"{"extra":true}"#));
+        for value in [
+            json!({"$schema": false}),
+            json!({"title": 1}),
+            json!({"description": null}),
+            json!({"additionalProperties": {}}),
+            json!({"minimum": "0"}),
+            json!({"maximum": null}),
+            json!({"minLength": -1}),
+            json!({"minLength": 1.5}),
+            json!({"unknown": true}),
+        ] {
+            assert!(OutputSchema::new(value.clone()).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn numeric_bounds_preserve_large_integer_precision() {
+        for (bound, below, above) in [
+            (
+                json!(9007199254740993_u64),
+                "9007199254740992.0",
+                "9007199254740994",
+            ),
+            (json!(u64::MAX), "18446744073709551614", "18446744073709551616.0"),
+            (json!(-1.5), "-2", "-1"),
+            (json!(1.5), "1", "2"),
+        ] {
+            let min = OutputSchema::new(json!({"minimum": bound})).unwrap();
+            let max = OutputSchema::new(json!({"maximum": bound})).unwrap();
+            assert!(min.matches(&bound.to_string()));
+            assert!(max.matches(&bound.to_string()));
+            assert!(!min.matches(below), "{below} must be below {bound}");
+            assert!(max.matches(below));
+            assert!(min.matches(above));
+            assert!(!max.matches(above), "{above} must be above {bound}");
+        }
+    }
+
 }
