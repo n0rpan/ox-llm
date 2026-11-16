@@ -116,8 +116,9 @@ impl Peer {
             Self::Native(MockAnthropic::start(
                 (0..2)
                     .map(|_| {
-                        Reply::text("Synthetic footprint reply.", 11, 7, 3, 5)
-                            .before_stop_delay(Duration::from_millis(250))
+                        let mut reply = Reply::text("Synthetic footprint reply.", 11, 7, 3, 5);
+                        reply.stop_delay = Duration::from_millis(250);
+                        reply
                     })
                     .collect(),
             ))

@@ -47,7 +47,9 @@ pub struct Reply {
     bytes: Vec<u8>,
     fragment: usize,
     gate: Option<mpsc::Receiver<()>>,
-    stop_delay: Duration,
+    /// Delay the terminal event for the production footprint example. Ordinary
+    /// protocol tests keep this zero; all use this one bounded peer.
+    pub stop_delay: Duration,
 }
 impl Reply {
     /// Cache input is separate from ordinary input on the native wire.
@@ -119,13 +121,6 @@ impl Reply {
         let (tx, rx) = mpsc::channel();
         self.gate = Some(rx);
         (self, tx)
-    }
-    /// Hold the native terminal event briefly so footprint samples cover a live
-    /// stream, using this same owned peer rather than another mock implementation.
-    pub fn before_stop_delay(mut self, delay: Duration) -> Self {
-        assert!(delay < DEADLINE);
-        self.stop_delay = delay;
-        self
     }
 }
 
@@ -323,6 +318,9 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
         .position(|part| part == b"event: message_stop\n")
         .unwrap_or(reply.bytes.len());
     write_fragments(&mut stream, &reply.bytes[..split], reply.fragment)?;
+    if reply.stop_delay >= DEADLINE {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
     thread::sleep(reply.stop_delay);
     write_fragments(&mut stream, &reply.bytes[split..], reply.fragment)?;
     stream.write_all(b"0\r\n\r\n")
