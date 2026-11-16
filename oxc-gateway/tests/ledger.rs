@@ -1,7 +1,7 @@
 #![cfg(feature = "ledger")]
 use oxc_gateway::{
     accounting::{Model, Outcome, Usage},
-    ledger::{Context, Ledger},
+    ledger::{Context, Ledger, Origin},
     pricing::Price,
     secrets,
 };
@@ -71,66 +71,61 @@ fn usage() -> Usage {
 }
 
 #[test]
-fn private_metadata_uses_reference_hmac_domains_and_never_stores_content() {
+fn keyed_identifiers_are_stable_separated_and_no_request_content_is_stored() {
     let home = Home::new();
     home.private(".salt", &[1; 32]);
     let ledger = Ledger::open(&home.0).unwrap();
     let daily = ledger.day("20260102").unwrap();
-    let payload = json!({"messages":[{"role":"system","content":"synthetic instructions"},
-        {"role":"user","content":"synthetic question"},{"role":"tool","content":"λ"}],
-        "tools":[{"function":{"name":"synthetic_tool"}}],"stream":true,"max_tokens":100,"temperature":0.5});
-    let mut entry = daily
-        .entry(
-            "synthetic-alias",
-            &payload,
-            Context {
-                origin: Some(" LAB "),
-                session: Some("synthetic-session"),
-                idempotency_key: Some("synthetic-idempotency"),
-            },
-        )
-        .unwrap();
+    let context = || Context {
+        origin: Origin::Oxa,
+        session: Some("synthetic-private-identifier"),
+        idempotency_key: Some("synthetic-private-identifier"),
+    };
+    let mut entry = daily.entry("synthetic-alias", context()).unwrap();
     entry.admitted();
     entry.observe();
     let mut remote = fields();
-    remote["messages"] = payload["messages"].clone();
-    remote["prompt"] = json!("synthetic question");
+    remote["messages"] = json!([{"content":"synthetic-private-content"}]);
+    remote["prompt"] = json!("synthetic-private-content");
+    remote["session"] = json!("synthetic-private-identifier");
     let row = entry.append(&remote, 200, None, None).unwrap();
-    // Exact vectors computed with Python hmac using request_ledger's domains
-    // and synthetic salt; never an unkeyed content fingerprint.
-    assert_eq!(row["agent"], "0d3f018cdc3d");
-    assert_eq!(row["session"], "5b46e37d166b2534");
-    assert_eq!(row["origin"], "lab");
-    assert_eq!(row["n_messages"], 3);
-    assert_eq!(row["n_tool_msgs"], 1);
-    assert_eq!(row["tool_bytes"], json!([2]));
-    assert_eq!(row["n_tools"], 1);
-    assert_eq!(row["last_role"], "tool");
-    assert_eq!(row["max_tokens"], 100);
-    assert_eq!(row["temperature"], 0.5);
-    assert_eq!(row["gap_ms"], Value::Null);
-    assert_eq!(row["completeness"], "incomplete");
-    assert_eq!(row["id"].as_str().unwrap().len(), 12);
+    assert_eq!(row["origin"], "oxa");
+    assert_eq!(row["id"].as_str().unwrap().len(), 32);
+    assert_eq!(row["session"].as_str().unwrap().len(), 32);
+    assert_ne!(row["session"], row["idempotency"]);
     assert!(row["wall_ms"].as_f64().unwrap() >= 0.0);
     assert!(row["ttfb_ms"].as_f64().unwrap() >= 0.0);
-    let saved = fs::read_to_string(home.0.join("requests-20260102.jsonl")).unwrap();
-    for raw in [
-        "synthetic instructions",
-        "synthetic question",
-        "synthetic-session",
-        "synthetic-idempotency",
-        "synthetic_tool",
-        "λ",
+    for removed in [
+        "agent",
+        "gap_ms",
+        "messages",
+        "prompt",
+        "tool_bytes",
+        "path",
+        "completeness",
     ] {
-        assert!(!saved.contains(raw));
+        assert!(row.get(removed).is_none());
     }
-    assert_eq!(home.rows("20260102"), vec![row]);
+    let saved = fs::read_to_string(home.0.join("requests-20260102.jsonl")).unwrap();
+    assert!(!saved.contains("synthetic-private-content"));
+    assert!(!saved.contains("synthetic-private-identifier"));
+    assert_eq!(home.rows("20260102"), vec![row.clone()]);
+    let reopened = Ledger::open(&home.0).unwrap();
+    let again = reopened
+        .day("20260102")
+        .unwrap()
+        .entry("synthetic-alias", context())
+        .unwrap()
+        .append(&fields(), 200, None, None)
+        .unwrap();
+    assert_eq!(again["session"], row["session"]);
+    assert_eq!(again["idempotency"], row["idempotency"]);
     for path in [
         home.0.clone(),
         home.0.join(".salt"),
         home.0.join("requests-20260102.jsonl"),
     ] {
-        let info = fs::metadata(&path).unwrap();
+        let info = fs::metadata(path).unwrap();
         assert_eq!(info.mode() & 0o077, 0);
         assert_eq!(info.uid(), nix::unistd::Uid::current().as_raw());
     }
@@ -155,9 +150,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         session: Some("synthetic-session"),
         ..Context::default()
     };
-    let entry = first
-        .entry("synthetic-alias", &json!({}), context())
-        .unwrap();
+    let entry = first.entry("synthetic-alias", context()).unwrap();
     hold.mark_forwarded();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
@@ -168,9 +161,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         .budget()
         .reserve(&json!(0.005), true, &model(), 1000)
         .unwrap();
-    let entry = second
-        .entry("synthetic-alias", &json!({}), context())
-        .unwrap();
+    let entry = second.entry("synthetic-alias", context()).unwrap();
     hold.mark_forwarded();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
@@ -178,7 +169,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
     .unwrap();
     let rows = home.rows("20260102");
     assert_eq!(rows.len(), 2);
-    assert!(rows[1]["gap_ms"].as_f64().unwrap() >= 0.0);
+    assert_eq!(rows[0]["session"], rows[1]["session"]);
     assert_ne!(rows[0]["id"], rows[1]["id"]);
     assert_eq!(first.budget().spend().unwrap(), 0.00022);
 }
@@ -192,9 +183,7 @@ fn append_failure_stops_all_handles_and_is_not_retried() {
         .budget()
         .reserve(&json!(1), true, &model(), 1000)
         .unwrap();
-    let entry = daily
-        .entry("synthetic-alias", &json!({}), Context::default())
-        .unwrap();
+    let entry = daily.entry("synthetic-alias", Context::default()).unwrap();
     hold.mark_forwarded();
     let path = home.0.join("requests-20260102.jsonl");
     fs::create_dir(&path).unwrap();
@@ -234,9 +223,7 @@ fn midnight_does_not_move_an_admitted_charge_or_discard_an_outstanding_hold() {
         .budget()
         .reserve(&json!(0.005), true, &model(), 1000)
         .is_err());
-    let entry = before
-        .entry("synthetic-alias", &json!({}), Context::default())
-        .unwrap();
+    let entry = before.entry("synthetic-alias", Context::default()).unwrap();
     held.mark_forwarded();
     held.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
@@ -269,7 +256,6 @@ fn salt_is_private_stable_and_published_atomically_during_concurrent_startup() {
                     .unwrap()
                     .entry(
                         "synthetic-alias",
-                        &json!({}),
                         Context {
                             session: Some("synthetic-session"),
                             ..Context::default()
@@ -321,7 +307,7 @@ fn provider_key_is_redacted_before_the_ledger_is_opened() {
     let entry = ledger
         .day("20260102")
         .unwrap()
-        .entry("synthetic-private-key", &json!({}), Context::default())
+        .entry("synthetic-private-key", Context::default())
         .unwrap();
     let mut fields = fields();
     fields["remote_model"] = json!("prefix synthetic-private-key suffix");
@@ -330,4 +316,86 @@ fn provider_key_is_redacted_before_the_ledger_is_opened() {
     assert_eq!(row["remote_model"], "prefix [redacted] suffix");
     let saved = fs::read_to_string(home.0.join("requests-20260102.jsonl")).unwrap();
     assert!(!saved.contains(key.expose()));
+}
+
+#[test]
+fn invalid_billing_or_identifier_fields_create_no_request_row() {
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let daily = ledger.day("20260102").unwrap();
+    for (name, invalid) in [
+        ("remote", json!(false)),
+        ("remote_provider", json!("unknown")),
+        ("remote_model", json!("")),
+        ("remote_model", json!("x".repeat(1025))),
+        ("cost_usd", json!(-1)),
+        ("cost_usd", json!(true)),
+        ("prompt_tokens", json!(-1)),
+        ("cached_tokens", json!(true)),
+        ("settled", json!("unknown")),
+    ] {
+        let mut raw = fields();
+        raw[name] = invalid;
+        let entry = daily.entry("synthetic-alias", Context::default()).unwrap();
+        assert_eq!(
+            entry.append(&raw, 200, None, None).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+    assert!(daily.entry("", Context::default()).is_err());
+    let long = "x".repeat(4097);
+    assert!(daily
+        .entry(
+            "synthetic-alias",
+            Context {
+                session: Some(&long),
+                ..Context::default()
+            }
+        )
+        .is_err());
+    assert!(!home.0.join("requests-20260102.jsonl").exists());
+    let row = daily
+        .entry(
+            "synthetic-alias",
+            Context {
+                origin: Origin::Api,
+                ..Context::default()
+            },
+        )
+        .unwrap()
+        .append(&fields(), 200, None, None)
+        .unwrap();
+    assert_eq!(row["origin"], "api");
+    assert_eq!(row["session"], Value::Null);
+}
+
+#[test]
+fn shared_writers_append_complete_rows_without_retaining_request_bodies() {
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let barrier = Arc::new(Barrier::new(32));
+    let handles: Vec<_> = (0..32)
+        .map(|_| {
+            let ledger = ledger.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let daily = ledger.day("20260102").unwrap();
+                let entry = daily.entry("synthetic-alias", Context::default()).unwrap();
+                barrier.wait();
+                entry.append(&fields(), 200, None, None).unwrap();
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    let rows = home.rows("20260102");
+    assert_eq!(rows.len(), 32);
+    assert!(rows
+        .iter()
+        .all(|row| row["remote"] == true && row["settled"] == "usage"));
+    assert_eq!(
+        ledger.day("20260102").unwrap().budget().spend().unwrap(),
+        0.032
+    );
 }

@@ -29,21 +29,5 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
 futures-util = { version = "0.3", optional = true }
 
-[[example]]
-name = "catalog_contract"
-required-features = ["cloud-only"]
-
-[[example]]
-name = "policy_contract"
-required-features = ["policy"]
-
-[[example]]
-name = "secrets_contract"
-required-features = ["secrets"]
-
-[[example]]
-name = "pricing_contract"
-required-features = ["accounting"]
-
 [lints.rust]
 unsafe_code = "forbid"

@@ -55,7 +55,7 @@ fn prepared_locations_cannot_be_redirected_into_a_repository() {
     symlink(inside.parent().unwrap(), &link).unwrap();
     assert_eq!(
         secrets::read(&path, "openrouter").unwrap_err(),
-        Error::InsideRepository
+        Error::InRepository
     );
     assert_eq!(
         prepared.read("openrouter").unwrap().expose(),

@@ -11,7 +11,7 @@ use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
 use sha2::Sha256;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -26,7 +26,13 @@ fn random<const N: usize>() -> io::Result<[u8; N]> {
     Ok(bytes)
 }
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        result.push(DIGITS[usize::from(byte >> 4)] as char);
+        result.push(DIGITS[usize::from(byte & 15)] as char);
+    }
+    result
 }
 fn read_salt(path: &Path) -> io::Result<[u8; 32]> {
     let file = OpenOptions::new()
@@ -75,16 +81,11 @@ fn install_salt(directory: &Path) -> io::Result<[u8; 32]> {
     let _ = fs::remove_file(temporary);
     result
 }
-#[derive(Default)]
-struct State {
-    budgets: HashMap<String, Budget>,
-    // Only keyed session identifiers, bounded like the Python reference.
-    ends: VecDeque<(String, Instant)>,
-}
 struct Inner {
     directory: PathBuf,
     salt: [u8; 32],
-    state: Mutex<State>,
+    budgets: Mutex<HashMap<String, Budget>>,
+    writer: Mutex<()>,
 }
 #[derive(Clone)]
 pub struct Ledger(Arc<Inner>);
@@ -94,10 +95,24 @@ pub struct Daily {
     path: PathBuf,
     budget: Budget,
 }
-/// Caller metadata, never provider headers. Raw identifiers are not retained.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Origin {
+    #[default]
+    Oxa,
+    Api,
+}
+impl Origin {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Oxa => "oxa",
+            Self::Api => "api",
+        }
+    }
+}
+/// Explicit caller identifiers are HMACed; request bodies are never accepted.
 #[derive(Default)]
 pub struct Context<'a> {
-    pub origin: Option<&'a str>,
+    pub origin: Origin,
     pub session: Option<&'a str>,
     pub idempotency_key: Option<&'a str>,
 }
@@ -108,27 +123,8 @@ pub struct Entry {
     admitted: Option<Instant>,
     first: Option<Instant>,
 }
-fn text(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Array(parts) => parts
-            .iter()
-            .filter_map(|part| part["text"].as_str())
-            .collect(),
-        _ => String::new(),
-    }
-}
-fn bounded_hint(hint: Option<&str>) -> Option<&str> {
-    hint.filter(|hint| (1..=200).contains(&hint.chars().count()))
-}
-fn number(value: &Value) -> Value {
-    value
-        .as_f64()
-        .filter(|n| n.is_finite())
-        .map_or(Value::Null, |_| value.clone())
-}
 fn millis(start: Instant, end: Instant) -> f64 {
-    (end.duration_since(start).as_secs_f64() * 10_000.0).round_ties_even() / 10.0
+    end.duration_since(start).as_secs_f64() * 1000.0
 }
 impl Ledger {
     /// Explicit opt-in, dedicated directory outside source repositories.
@@ -142,15 +138,16 @@ impl Ledger {
         if !info.is_dir() || info.uid() != nix::unistd::Uid::current().as_raw() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
         let directory = fs::canonicalize(directory)?;
         KeyFile::prepare(&directory.join(".salt"))
             .map_err(|_| io::Error::from(io::ErrorKind::PermissionDenied))?;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         let salt = install_salt(&directory)?;
         Ok(Self(Arc::new(Inner {
             directory,
             salt,
-            state: Mutex::default(),
+            budgets: Mutex::default(),
+            writer: Mutex::default(),
         })))
     }
     pub fn today(&self) -> io::Result<Daily> {
@@ -166,13 +163,12 @@ impl Ledger {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let path = self.0.directory.join(format!("requests-{day}.jsonl"));
-        let mut state = self
+        let mut budgets = self
             .0
-            .state
+            .budgets
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let budget = state
-            .budgets
+        let budget = budgets
             .entry(day.into())
             .or_insert_with(|| Budget::new(path.clone()))
             .clone();
@@ -182,96 +178,42 @@ impl Ledger {
             budget,
         })
     }
-    fn digest(&self, prefix: &[u8], bytes: &[u8], width: usize) -> String {
+    fn digest(&self, prefix: &[u8], bytes: &[u8]) -> String {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.0.salt).expect("fixed HMAC key size");
         mac.update(prefix);
         mac.update(bytes);
-        hex(&mac.finalize().into_bytes())[..width].into()
+        hex(&mac.finalize().into_bytes()[..16])
     }
 }
 impl Daily {
     pub fn budget(&self) -> Budget {
         self.budget.clone()
     }
-    pub fn entry(&self, model: &str, payload: &Value, context: Context<'_>) -> io::Result<Entry> {
+    pub fn entry(&self, model: &str, context: Context<'_>) -> io::Result<Entry> {
+        if model.is_empty() || model.len() > 128 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         let started = Instant::now();
-        let ledger = &self.ledger;
-        let messages = payload["messages"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let session = bounded_hint(context.session)
-            .or_else(|| bounded_hint(payload["prompt_cache_key"].as_str()))
-            .map(|hint| format!("h:{hint}"))
-            .or_else(|| {
-                messages
-                    .iter()
-                    .find(|message| message["role"] == "user")
-                    .map(|message| format!("m:{}", text(&message["content"])))
-            });
-        let session = session.map(|value| ledger.digest(b"", value.as_bytes(), 16));
-        let gap = session.as_ref().and_then(|session| {
-            ledger
-                .0
-                .state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .ends
-                .iter()
-                .find(|(key, _)| key == session)
-                .map(|(_, end)| millis(*end, started))
-        });
-        let agent = messages
-            .iter()
-            .find(|message| message["role"] == "system")
-            .map(|message| {
-                ledger.digest(
-                    b"ledger-agent-v1\0",
-                    text(&message["content"]).as_bytes(),
-                    12,
-                )
-            });
-        let tools: Vec<_> = messages
-            .iter()
-            .filter(|message| message["role"] == "tool")
-            .collect();
-        let last_role = messages
-            .last()
-            .and_then(|message| message["role"].as_str())
-            .filter(|role| {
-                [
-                    "system",
-                    "developer",
-                    "user",
-                    "assistant",
-                    "tool",
-                    "function",
-                ]
-                .contains(role)
-            });
-        let origin = if context
-            .origin
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("lab"))
-        {
-            "lab"
-        } else {
-            "organic"
-        };
         let mut row = json!({
-            "id":hex(&random::<6>()?), "t":(SystemTime::now().duration_since(UNIX_EPOCH)
-                .map_err(|_| io::Error::from(io::ErrorKind::Other))?.as_secs_f64() * 1000.0).round_ties_even() / 1000.0,
-            "path":"/v1/chat/completions", "model":model, "origin":origin, "client":null,
-            "agent":agent, "session":session, "gap_ms":gap, "n_messages":messages.len(),
-            "last_role":last_role, "n_tools":payload["tools"].as_array().map_or(0,Vec::len),
-            "n_tool_msgs":tools.len(), "tool_bytes":tools.iter().take(128)
-                .map(|message| text(&message["content"]).len()).collect::<Vec<_>>(),
-            "stream":payload["stream"].as_bool().unwrap_or(false),
-            "max_tokens":number(payload.get("max_tokens").or_else(|| payload.get("n_predict")).unwrap_or(&Value::Null)),
-            "temperature":number(&payload["temperature"])
+            "id": hex(&random::<16>()?),
+            "t": SystemTime::now().duration_since(UNIX_EPOCH)
+                .map_err(|_| io::Error::from(io::ErrorKind::Other))?.as_secs_f64(),
+            "model": model, "origin": context.origin.as_str(), "session": null
         });
-        if let Some(key) = context.idempotency_key.filter(|key| !key.is_empty()) {
-            row["idempotency"] =
-                json!(ledger.digest(b"ledger-idempotency-v1\0", key.as_bytes(), 12));
+        for (name, domain, value) in [
+            ("session", b"oxc-session-v1\0".as_slice(), context.session),
+            (
+                "idempotency",
+                b"oxc-idempotency-v1\0".as_slice(),
+                context.idempotency_key,
+            ),
+        ] {
+            if let Some(value) = value.filter(|value| !value.is_empty()) {
+                if value.len() > 4096 {
+                    return Err(io::ErrorKind::InvalidInput.into());
+                }
+                row[name] = json!(self.ledger.digest(domain, value.as_bytes()));
+            }
         }
         Ok(Entry {
             daily: self.clone(),
@@ -285,7 +227,6 @@ impl Daily {
 impl Entry {
     pub fn admitted(&mut self) {
         self.admitted = Some(Instant::now());
-        self.row["queue_wait_ms"] = json!(0.0);
         self.row["admit_ms"] = json!(millis(self.started, self.admitted.unwrap()));
     }
     /// Call only for response data (not SSE keepalive comments). No body bytes
@@ -318,6 +259,7 @@ impl Entry {
         self.row["remote_provider"] = fields["remote_provider"].clone();
         self.row["remote_model"] = json!(fields["remote_model"]
             .as_str()
+            .filter(|value| !value.is_empty() && value.len() <= 1024)
             .ok_or(io::ErrorKind::InvalidData)?);
         for name in [
             "prompt_tokens",
@@ -364,27 +306,13 @@ impl Entry {
         if let (Some(admitted), Some(first)) = (self.admitted, self.first) {
             self.row["ttfb_ms"] = json!(millis(admitted, first));
         }
-        // Remote usage has no engine cache/timing tail. Preserve the existing
-        // ledger classification; settlement is represented separately.
-        self.row["completeness"] = json!(if error.is_some() || status != 200 {
-            "errored"
-        } else {
-            "incomplete"
-        });
-        let mut state = self
+        let _writer = self
             .daily
             .ledger
             .0
-            .state
+            .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(session) = self.row["session"].as_str() {
-            state.ends.retain(|(key, _)| key != session);
-            state.ends.push_back((session.into(), now));
-            while state.ends.len() > 512 {
-                state.ends.pop_front();
-            }
-        }
         if let Some(key) = key {
             redaction::value(&mut self.row, key);
         }
