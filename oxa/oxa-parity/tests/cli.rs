@@ -10,7 +10,6 @@ use oxa_fake::{parse_script, FakeModel, FakeOpts, FakeServer, Recorded, TestEnv}
 use oxa_parity::oxa_bin;
 use oxa_proto::Role;
 use std::io::Write;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -40,11 +39,28 @@ fn fake_opts(script: &str, opts: FakeOpts) -> FakeServer {
 }
 
 /// A URL where nothing listens.
+///
+/// The port stays reserved for the life of the test process: a socket that is bound but never
+/// listening refuses connections, and the kernel cannot hand the port to another test's fake
+/// engine (a dropped listener could be, which sent one test's requests to another's server).
 fn closed_url() -> String {
-    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = l.local_addr().expect("addr").port();
-    drop(l);
-    format!("http://127.0.0.1:{port}")
+    // A bound but never listening socket refuses connections and keeps its port reserved for
+    // the life of the test process, so a concurrent test's server cannot be handed the same
+    // port (closing a listener and reusing its number raced with the other tests).
+    // SAFETY: plain socket/bind/getsockname calls on a zeroed, fully initialised sockaddr_in.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        assert!(fd >= 0, "socket");
+        let mut addr: libc::sockaddr_in = std::mem::zeroed();
+        addr.sin_family = libc::AF_INET as libc::sa_family_t;
+        addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
+        let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let sa = std::ptr::addr_of_mut!(addr).cast::<libc::sockaddr>();
+        assert_eq!(libc::bind(fd, sa, len), 0, "bind");
+        let mut got = len;
+        assert_eq!(libc::getsockname(fd, sa, &mut got), 0, "getsockname");
+        format!("http://127.0.0.1:{}", u16::from_be(addr.sin_port))
+    }
 }
 
 /// Run `oxa <args>` with `TestEnv::envs`, extra variables, optional cwd and stdin.
@@ -94,6 +110,16 @@ fn code(o: &Output) -> i32 {
 
 fn ok(o: &Output) {
     assert_eq!(code(o), 0, "exit code; stderr: {}", err(o));
+}
+
+fn terminal_result(o: &Output) -> serde_json::Value {
+    let records: Vec<serde_json::Value> = err(o)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["type"] == "oxa_result")
+        .collect();
+    assert_eq!(records.len(), 1, "exactly one terminal result: {}", err(o));
+    records.into_iter().next().unwrap()
 }
 
 fn user_texts(r: &Recorded) -> Vec<String> {
@@ -689,7 +715,7 @@ fn cli_019() {
     );
     assert_eq!(session_files(&env).len(), 1);
 
-    // The same id from another directory: the fork offer. Declined: "Aborted.", exit 0,
+    // The same id from another directory: the fork offer. Declined: "Aborted.", exit 130,
     // nothing sent, nothing written.
     let other = env.root().join("other-19");
     std::fs::create_dir_all(&other).expect("other dir");
@@ -701,7 +727,11 @@ fn cli_019() {
         &[],
         Some(&other),
     );
-    ok(&no);
+    assert_eq!(code(&no), 130);
+    let result = terminal_result(&no);
+    assert_eq!(result["outcome"], "interrupted");
+    assert_eq!(result["error_class"], "aborted");
+    assert_eq!(result["exit_code"], 130);
     assert!(
         out(&no).contains("Session found in different project:"),
         "{}",
@@ -1699,8 +1729,19 @@ fn cli_064() {
     let o = run(&env, &closed_url(), &["-p", "--no-session", "x"]);
     assert_eq!(code(&o), 2);
     let e = err(&o);
-    assert_eq!(e.trim_end().lines().count(), 1, "one line: {e}");
-    assert!(e.contains("cannot reach the engine"), "{e}");
+    assert_eq!(
+        e.trim_end().lines().count(),
+        2,
+        "one diagnostic and one result: {e}"
+    );
+    assert!(
+        e.lines().next().unwrap().contains("cannot reach the engine"),
+        "{e}"
+    );
+    let result = terminal_result(&o);
+    assert_eq!(result["outcome"], "failed");
+    assert_eq!(result["error_class"], "engine_down");
+    assert_eq!(result["exit_code"], 2);
 }
 
 // ----- MOD rows ------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-//! F8: a Rust RPC client. Owner: task F8. Signatures below are frozen; bodies are yours.
+//! F8: a Rust RPC client.
 // ported from pi packages/coding-agent/src/modes/rpc/rpc-client.ts
 use oxa_proto::{codes, OxaError, Value};
 use serde_json::Map;

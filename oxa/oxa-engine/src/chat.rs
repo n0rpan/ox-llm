@@ -1,4 +1,4 @@
-//! A2: request body, reply assembly and the HTTP `Engine`. Owner: task A2. Signatures below are frozen; bodies are yours.
+//! A2: request body, reply assembly and the HTTP `Engine`.
 use crate::hints::{build_headers, new_idem_key};
 use crate::info::{clear_hint, count_tokens, fetch_info_full, http_error_with, send_cancel, stream_error};
 use crate::{post_sse, Flow, SseEvent, StreamOpts, Url};
@@ -24,12 +24,25 @@ const RETRY_STEP_MS: u64 = 100;
 /// WireMsg::write_json>..],"tools":<prefix.tools_json verbatim>,"stream":true,
 /// "stream_options":{"include_usage":true},"temperature":0,"cache_prompt":true,
 /// "max_tokens":N,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":B}}`.
-/// `"tools"` is omitted when `tools_json` is `[]`. Nothing else is ever added: no date, no
-/// user field, no seed. With `r.sampling` set (opt-in, `oxa.sampling.mode = model`) the
+/// `"tools"` is omitted when `tools_json` is `[]`. The builder adds no automatic date or
+/// user field. With `r.sampling` set (opt-in, `oxa.sampling.mode = model`) the
 /// `0` becomes `T,"top_p":P,"top_k":K,"min_p":M,"presence_penalty":X` (+ `,"seed":S` when
-/// one is fixed), in place, before `"cache_prompt"`.
+/// one is fixed), in place, before `"cache_prompt"`. A non-null `thinking_budget` is
+/// added only for local thinking requests with positive output room.
 pub fn build_body(r: &ChatRequest, out: &mut Vec<u8>) {
     build_body_for(r, false, out);
+}
+
+/// The `reasoning_effort` of a cloud request: the level itself, `xhigh` and `max` capped at the
+/// highest effort the OpenAI-compatible wire has.
+fn reasoning_effort(level: ThinkingLevel) -> &'static str {
+    match level {
+        ThinkingLevel::Off => "none",
+        ThinkingLevel::Minimal => "minimal",
+        ThinkingLevel::Low => "low",
+        ThinkingLevel::Medium => "medium",
+        ThinkingLevel::High | ThinkingLevel::Xhigh | ThinkingLevel::Max => "high",
+    }
 }
 
 /// [`build_body`] for a local engine (`remote == false`) or a cloud model routed through the
@@ -69,10 +82,16 @@ pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
         out.extend_from_slice(b",\"max_tokens\":");
         out.extend_from_slice(r.max_tokens.to_string().as_bytes());
         out.extend_from_slice(b",\"reasoning_effort\":\"");
-        out.extend_from_slice(if r.thinking { b"high" } else { b"none" });
+        out.extend_from_slice(reasoning_effort(r.effective_level()).as_bytes());
         out.push(b'"');
         out.push(b'}');
         return;
+    }
+    if r.thinking && r.max_tokens > 0 {
+        if let Some(budget) = r.thinking_budget {
+            out.extend_from_slice(b",\"thinking_budget\":");
+            out.extend_from_slice(budget.to_string().as_bytes());
+        }
     }
     out.extend_from_slice(b",\"cache_prompt\":true,\"max_tokens\":");
     out.extend_from_slice(r.max_tokens.to_string().as_bytes());
@@ -181,7 +200,13 @@ impl ReplyAssembler {
                         self.calls[slot].id = id.to_string();
                     }
                     if let Some(name) = name {
-                        self.calls[slot].name.push_str(name);
+                        // Names arrive whole: a repeat is idempotent, only a real fragment appends.
+                        let cur = &mut self.calls[slot].name;
+                        if cur.is_empty() || cur == name {
+                            *cur = name.to_string();
+                        } else {
+                            cur.push_str(name);
+                        }
                     }
                     self.calls[slot].args_raw.push_str(args);
                     if id.is_some() || name.is_some() || !args.is_empty() {
@@ -426,6 +451,7 @@ fn parse_finish(v: &Value) -> Result<Finish, OxaError> {
         Some("stop") => Ok(Finish::Stop),
         Some("tool_calls") => Ok(Finish::ToolCalls),
         Some("length") => Ok(Finish::Length),
+        Some("content_filter") => Ok(Finish::ContentFilter),
         _ => Err(broken(format!("unknown finish_reason {v}"))),
     }
 }
@@ -570,11 +596,7 @@ impl Engine for HttpEngine {
         if let Some(k) = self.api_key.as_deref().filter(|k| !k.is_empty()) {
             headers.push(("Authorization", format!("Bearer {k}")));
         }
-        let level = if r.thinking {
-            ThinkingLevel::Medium
-        } else {
-            ThinkingLevel::Off
-        };
+        let level = r.effective_level();
         let started = Instant::now();
         let mut attempt = 0u32;
         // Cancelled before anything was sent: nothing reached the engine, nothing to undo.
@@ -611,8 +633,8 @@ impl Engine for HttpEngine {
                                 Err(e) => {
                                     // An error after reply data is a cut reply, never replayed
                                     // (the core retries `stream_broken` only before data).
-                                    failure = Some(if emitted && e.code != codes::STREAM_BROKEN {
-                                        broken(format!("the reply was cut: {}", e.message))
+                                    failure = Some(if emitted {
+                                        broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, e.message))
                                     } else {
                                         e
                                     });

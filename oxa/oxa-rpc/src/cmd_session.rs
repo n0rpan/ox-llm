@@ -1,4 +1,4 @@
-//! C11: RPC session commands. Owner: task C11. Signatures below are frozen; bodies are yours.
+//! C11: RPC session commands.
 // ported from pi packages/coding-agent/src/modes/rpc/rpc-mode.ts (docs: rpc-commands.md)
 //
 // Every handler runs on the session thread (`serve`), so it may use the `Session` directly.

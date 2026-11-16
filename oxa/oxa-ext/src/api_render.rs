@@ -1,4 +1,4 @@
-//! F3: message, entry and tool renderers; Markdown transformers. Owner: task F3. Signatures below are frozen; bodies are yours.
+//! F3: message, entry and tool renderers; Markdown transformers.
 use crate::{ExtError, ExtId, ExtState, RegisteredRenderer, Registry};
 use oxa_proto::{codes, OxaError, RenderKind, Value};
 use oxa_script::{CallCx, FnRef, Runtime, RuntimeThread, SlotId, Slots};

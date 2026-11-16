@@ -1,6 +1,6 @@
 //! Wave D D4: per-model cloud capabilities, the offline refusal and the remote request body.
 use oxa_engine::{build_body, build_body_for, parse_info_for};
-use oxa_proto::{codes, ChatRequest, FrozenPrefix, Hints, TurnKind, WireMsg};
+use oxa_proto::{codes, ChatRequest, FrozenPrefix, Hints, ThinkingLevel, WireMsg};
 use serde_json::json;
 use std::sync::Mutex;
 
@@ -23,20 +23,18 @@ fn prefix() -> FrozenPrefix {
 
 fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg], model: &'a str) -> ChatRequest<'a> {
     ChatRequest {
-        prefix,
-        messages,
-        model,
         max_tokens: 64,
         thinking: true,
+        thinking_budget: None,
+        thinking_level: Some(ThinkingLevel::High),
         preserve_thinking: true,
-        sampling: None,
         hints: Hints {
             session: "session",
             idem_key: "idem",
-            kind: TurnKind::Chat,
-            background: false,
             snapshot_keep: true,
+            ..Hints::default()
         },
+        ..ChatRequest::new(prefix, messages, model)
     }
 }
 
@@ -127,6 +125,38 @@ fn a_remote_body_skips_local_only_fields_and_uses_reasoning_effort() {
         remote.contains("\"stream_options\":{\"include_usage\":true}"),
         "{remote}"
     );
+}
+
+#[test]
+fn a_remote_body_sends_the_requested_level_as_reasoning_effort() {
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let p = prefix();
+    let messages = vec![WireMsg::user("hi")];
+    let cases = [
+        (ThinkingLevel::Off, "none"),
+        (ThinkingLevel::Minimal, "minimal"),
+        (ThinkingLevel::Low, "low"),
+        (ThinkingLevel::Medium, "medium"),
+        (ThinkingLevel::High, "high"),
+        (ThinkingLevel::Xhigh, "high"),
+        (ThinkingLevel::Max, "high"),
+    ];
+    for (level, effort) in cases {
+        let mut r = request(&p, &messages, "cloud-model");
+        r.thinking = level.enabled();
+        r.thinking_level = Some(level);
+        let mut remote = Vec::new();
+        build_body_for(&r, true, &mut remote);
+        let body: serde_json::Value = serde_json::from_slice(&remote).unwrap();
+        assert_eq!(body["reasoning_effort"], effort, "{level:?}");
+        // A local engine only ever sees the boolean.
+        let mut local = Vec::new();
+        build_body_for(&r, false, &mut local);
+        let local = String::from_utf8(local).unwrap();
+        let on = level.enabled();
+        assert!(local.contains(&format!("\"enable_thinking\":{on}")), "{local}");
+        assert!(!local.contains("reasoning_effort"), "{local}");
+    }
 }
 
 #[test]
@@ -253,4 +283,54 @@ fn openai_http_chat_omits_local_cache_echo_and_prefill_controls() {
         );
     }
     assert_eq!(body["reasoning_effort"], "high");
+}
+
+#[test]
+fn request_budget_is_local_thinking_only_and_discovered_without_model_names() {
+    let p = prefix();
+    let messages = [WireMsg::user("hi")];
+    let mut req = request(&p, &messages, "synthetic");
+    req.thinking_budget = Some(0);
+    let mut body = Vec::new();
+    build_body(&req, &mut body);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["thinking_budget"],
+        0
+    );
+    body.clear();
+    build_body_for(&req, true, &mut body);
+    assert!(serde_json::from_slice::<serde_json::Value>(&body)
+        .unwrap()
+        .get("thinking_budget")
+        .is_none());
+    for (thinking, total) in [(false, 64), (true, 0)] {
+        req.thinking = thinking;
+        req.max_tokens = total;
+        body.clear();
+        build_body(&req, &mut body);
+        assert!(serde_json::from_slice::<serde_json::Value>(&body)
+            .unwrap()
+            .get("thinking_budget")
+            .is_none());
+    }
+    let models = json!({"data":[{"id":"synthetic"}]});
+    for supported in [false, true] {
+        let status =
+            json!({"model_alias":"synthetic","n_ctx":8192,"thinking_budget":supported,"oxe_hints":{}});
+        assert_eq!(
+            parse_info_for("http://127.0.0.1:8092", &models, &status, None)
+                .unwrap()
+                .caps
+                .thinking_budget,
+            supported
+        );
+        let status = json!({"model":"synthetic","context_size":8192,"model_limits":{"synthetic":{"cap":8192,"capabilities":{"thinking_budget":supported}}}});
+        assert_eq!(
+            parse_info_for("http://127.0.0.1:8092", &models, &status, None)
+                .unwrap()
+                .caps
+                .thinking_budget,
+            supported
+        );
+    }
 }

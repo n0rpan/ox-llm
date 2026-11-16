@@ -172,3 +172,156 @@ async fn cancellation_interrupts_a_live_request_waiting_for_provider_headers() {
     assert_eq!(result.err().unwrap(), Error::Cancelled);
     assert_eq!(mock.requests().len(), 1);
 }
+
+#[tokio::test]
+async fn redirects_are_refused_without_contacting_the_redirect_target() {
+    let target = MockAnthropic::start(vec![]);
+    let mock = MockAnthropic::start(vec![Reply::redirect(&format!("{}/messages", target.base_url()))]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let key = secrets::read(&fixture.key_path, "anthropic").unwrap();
+    let mut chunks = 0;
+    let error = Client::new()
+        .unwrap()
+        .stream(
+            chat(&mock.base_url(), &payload()),
+            &key,
+            &Cancellation::default(),
+            &mut |event| {
+                if matches!(event, Event::Chunk(_)) {
+                    chunks += 1;
+                }
+                Control::Continue
+            },
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error, Error::Http(307));
+    assert_eq!(chunks, 0);
+    assert_eq!(mock.requests().len(), 1);
+    assert!(target.requests().is_empty());
+}
+
+#[tokio::test]
+async fn malformed_truncated_and_missing_terminal_usage_never_complete() {
+    let start = json!({"type":"message_start","message":{"usage":{"input_tokens":11,"output_tokens":0}}});
+    let event = |value: Value| format!("data: {value}\n\n");
+    for (mime, wire) in [
+        ("application/json", "{}".to_owned()),
+        (
+            "text/event-stream",
+            "data: {invalid synthetic JSON}\n\n".to_owned(),
+        ),
+        ("text/event-stream", event(start.clone())),
+        (
+            "text/event-stream",
+            format!("{}{}", event(start), event(json!({"type":"message_stop"}))),
+        ),
+        (
+            "text/event-stream",
+            event(json!({"type":"error","error":{"message":CREDENTIAL}})),
+        ),
+    ] {
+        let mock = MockAnthropic::start(vec![Reply::wire(mime, wire.as_bytes())]);
+        let fixture = skeleton::Fixture::new(&mock);
+        let key = secrets::read(&fixture.key_path, "anthropic").unwrap();
+        let error = Client::new()
+            .unwrap()
+            .stream(
+                chat(&mock.base_url(), &payload()),
+                &key,
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, Error::Protocol);
+        assert!(!format!("{error:?} {error}").contains(CREDENTIAL));
+        assert_eq!(mock.requests().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn usage_opt_out_preserves_trusted_private_metering() {
+    let mock = MockAnthropic::start(vec![Reply::text("Synthetic", 11, 7, 3, 5)]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let key = secrets::read(&fixture.key_path, "anthropic").unwrap();
+    let mut payload = payload();
+    payload["stream_options"]["include_usage"] = json!(false);
+    let mut chunks = Vec::new();
+    let done = Client::new()
+        .unwrap()
+        .stream(
+            chat(&mock.base_url(), &payload),
+            &key,
+            &Cancellation::default(),
+            &mut |event| {
+                if let Event::Chunk(chunk) = event {
+                    chunks.push(chunk);
+                }
+                Control::Continue
+            },
+        )
+        .await
+        .unwrap();
+    assert!(chunks.iter().all(|chunk| chunk.get("usage").is_none()));
+    let usage = done.usage.unwrap();
+    assert_eq!(
+        (
+            usage.input_tokens,
+            usage.cache_read_input_tokens,
+            usage.cache_creation_input_tokens,
+            usage.output_tokens
+        ),
+        (11, 7, 3, 5)
+    );
+}
+
+#[tokio::test]
+async fn callback_can_refuse_sending_and_stop_final_delivery() {
+    let mock = MockAnthropic::start(vec![]);
+    let fixture = skeleton::Fixture::new(&mock);
+    let key = secrets::read(&fixture.key_path, "anthropic").unwrap();
+    let error = Client::new()
+        .unwrap()
+        .stream(
+            chat(&mock.base_url(), &payload()),
+            &key,
+            &Cancellation::default(),
+            &mut |event| {
+                assert!(matches!(event, Event::Sending));
+                Control::Stop
+            },
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error, Error::Cancelled);
+    assert!(mock.requests().is_empty());
+    for cancel_in_callback in [false, true] {
+        let mock = MockAnthropic::start(vec![Reply::text("Synthetic", 11, 7, 3, 5)]);
+        let fixture = skeleton::Fixture::new(&mock);
+        let key = secrets::read(&fixture.key_path, "anthropic").unwrap();
+        let cancel = Cancellation::default();
+        let error = Client::new()
+            .unwrap()
+            .stream(chat(&mock.base_url(), &payload()), &key, &cancel, &mut |event| {
+                if let Event::Chunk(chunk) = event {
+                    if chunk.get("usage").is_some() {
+                        if cancel_in_callback {
+                            cancel.cancel();
+                        } else {
+                            return Control::Stop;
+                        }
+                    }
+                }
+                Control::Continue
+            })
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, Error::Cancelled);
+        assert_eq!(mock.requests().len(), 1);
+    }
+}

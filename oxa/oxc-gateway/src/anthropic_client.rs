@@ -105,9 +105,9 @@ impl Client {
         reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            // Match the current native Messages client's per-operation timeout;
-            // an active stream has no total-generation deadline.
-            .connect_timeout(Duration::from_secs(1800))
+            // Bound connection setup while allowing long thinking pauses on a
+            // live stream. There is no total-generation deadline.
+            .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(1800))
             .build()
             .map(Self)
@@ -144,23 +144,7 @@ impl Client {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let mut endpoint = Url::parse(chat.base_url).map_err(|_| Error::Endpoint)?;
-        if !["http", "https"].contains(&endpoint.scheme())
-            || endpoint.host_str().is_none()
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-        {
-            return Err(Error::Endpoint);
-        }
-        let path = endpoint.path().trim_end_matches('/');
-        let path = if path.ends_with("/v1") {
-            format!("{path}/messages")
-        } else {
-            format!("{path}/v1/messages")
-        };
-        endpoint.set_path(&path);
+        let endpoint = messages_endpoint(chat.base_url)?;
         let mut body = anthropic_request::translate_with_blocks(
             chat.payload,
             chat.upstream_model,
@@ -256,6 +240,35 @@ impl Client {
     }
 }
 
+fn messages_endpoint(base_url: &str) -> Result<Url, Error> {
+    let mut endpoint = Url::parse(base_url).map_err(|_| Error::Endpoint)?;
+    let loopback = match endpoint.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+        }
+        Some(url::Host::Domain(host)) => host == "localhost",
+        None => false,
+    };
+    if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
+        || endpoint.host_str().is_none()
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(Error::Endpoint);
+    }
+    let path = endpoint.path().trim_end_matches('/');
+    let path = if path.ends_with("/v1") {
+        format!("{path}/messages")
+    } else {
+        format!("{path}/v1/messages")
+    };
+    endpoint.set_path(&path);
+    Ok(endpoint)
+}
+
 fn deliver<F>(chunks: Vec<Value>, cancel: &Cancellation, on: &mut F) -> Result<(), Error>
 where
     F: FnMut(Event) -> Control + ?Sized,
@@ -338,6 +351,30 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn endpoints_require_https_except_for_owned_loopback_fixtures() {
+        for base in [
+            "http://example.invalid",
+            "http://192.0.2.1/v1",
+            "http://[2001:db8::1]/v1",
+            "https://user:synthetic@example.invalid",
+            "https://example.invalid?key=synthetic",
+            "https://example.invalid#synthetic",
+            "file:///synthetic",
+        ] {
+            assert_eq!(messages_endpoint(base), Err(Error::Endpoint));
+        }
+        for base in [
+            "https://example.invalid",
+            "https://example.invalid/v1/",
+            "http://127.0.0.1/v1",
+            "http://localhost/v1",
+            "http://[::1]/v1",
+            "http://[::ffff:127.0.0.1]/v1",
+        ] {
+            assert_eq!(messages_endpoint(base).unwrap().path(), "/v1/messages");
+        }
+    }
     #[test]
     fn sse_handles_unicode_comments_multiline_data_and_every_byte_boundary() {
         let wire = b": ping\r\nevent: content_block_delta\r\ndata: {\"type\":\r\ndata: \"ping\",\"text\":\"\xce\xbb\"}\r\n\r\n";

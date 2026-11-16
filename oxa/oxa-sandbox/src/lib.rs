@@ -18,6 +18,7 @@ mod layout;
 mod net;
 mod offline;
 mod run;
+mod scratch;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
@@ -30,9 +31,11 @@ pub use offline::{no_network_argv, offline_argv};
 pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
 };
+pub use scratch::{scratch_root, user_cache_home, Scratch};
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The bwrap sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +55,19 @@ impl Bwrap {
     /// names the package and the sysctl to check.
     pub fn detect(path_var: &str, home: &Path) -> Result<Bwrap, OxaError> {
         bwrap::detect_bwrap(path_var, home)
+    }
+
+    /// #457: this sandbox for one session: a fresh session directory under
+    /// [`Layout::scratch_root`] at `/tmp`, removed when the returned sandbox (and every clone
+    /// of it) is dropped. Without a root, or when the directory cannot be created, `/tmp` is a
+    /// fresh tmpfs per command and [`Sandbox::persistence_notice`] says so.
+    pub fn session(&self) -> Bwrap {
+        let mut b = self.clone();
+        b.layout.scratch = None;
+        if let Some(Ok(s)) = self.layout.scratch_root.as_deref().map(Scratch::create) {
+            b.layout = b.layout.with_scratch(s);
+        }
+        b
     }
 
     /// sbx-git: bind the git data of `cwd` that lies outside it (a worktree's gitdir and common
@@ -77,8 +93,19 @@ impl Bwrap {
 }
 
 impl Sandbox for Bwrap {
+    fn home(&self) -> Option<&Path> {
+        Some(&self.home)
+    }
     fn persistence_notice(&self) -> Option<&str> {
-        Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
+        if self.layout.scratch.is_some() {
+            Some(SCRATCH_NOTICE)
+        } else {
+            Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
+        }
+    }
+    fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
+        self.layout.scratch_root.as_ref()?;
+        Some(Arc::new(self.session()))
     }
     fn check(&self) -> Result<(), OxaError> {
         bwrap::check_bwrap(self)
@@ -95,6 +122,8 @@ impl Sandbox for Bwrap {
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
         if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+            // The job reader sees only what went to `live`: give it the reason too.
+            live(why.as_bytes());
             let mut r = refused(why);
             r.output.clear();
             return r;
@@ -116,6 +145,9 @@ impl Sandbox for Bwrap {
         self.launch(s, Some(stdin), c, live, true)
     }
 }
+
+/// #457: the notice with a session directory at `/tmp`.
+pub const SCRATCH_NOTICE: &str = "Sandbox: /tmp is this session's own scratch (also TMPDIR and XDG_CACHE_HOME): it persists between the commands of this session and is deleted when the session ends (/new, /resume, switching session, or quitting oxa); a resumed session starts with an empty /tmp. Save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.";
 
 /// Environment variables that carry a secret: kept out of the bwrap command line (visible to
 /// other processes) and handed over through `bwrap --args <fd>` instead.
@@ -187,7 +219,14 @@ impl Bwrap {
                     insert_args_fd(&mut argv, fd);
                     args_fd = Some(fd);
                 }
-                Err(why) => return refused(why),
+                Err(why) => {
+                    let mut r = refused(why);
+                    if !capture {
+                        live(&r.output);
+                        r.output.clear();
+                    }
+                    return r;
+                }
             }
         }
         let res = run::run_argv_fd(
@@ -259,6 +298,31 @@ mod secret_tests {
         let got = std::fs::read_to_string(&out).unwrap();
         assert!(got.contains("SYNTH_FD_TOKEN"), "{got}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A refused streaming run (a background job) reports why through `live`, so the job's
+    /// output is not empty.
+    #[test]
+    fn refused_streaming_run_reports_the_reason_live() {
+        let sb = Bwrap {
+            bwrap: PathBuf::from("/nonexistent/bwrap"),
+            home: std::env::temp_dir(),
+            layout: Layout::default(),
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: PathBuf::from("/nonexistent/oxa-refused-cwd"),
+            writable: true,
+            net: false,
+            timeout_s: Some(10),
+            env: Vec::new(),
+        };
+        let mut live = Vec::new();
+        let r = sb.run_streaming(&spec, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+        assert_eq!(r.exit, None);
+        assert!(r.output.is_empty());
+        let live = String::from_utf8_lossy(&live);
+        assert!(live.contains("sandbox refused"), "{live}");
     }
 
     /// A fake `bwrap` that records its argv to a file, so the real launcher is exercised.

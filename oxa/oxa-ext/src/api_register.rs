@@ -1,4 +1,4 @@
-//! E3: `oxa.*` part 1 (registerTool / Command / Shortcut / Flag, sendMessage, appendEntry, active tools). Owner: task E3. Signatures below are frozen; bodies are yours.
+//! E3: `oxa.*` part 1 (registerTool / Command / Shortcut / Flag, sendMessage, appendEntry, active tools).
 // ported from pi packages/coding-agent/src/core/extensions/types.ts (ExtensionAPI)
 use crate::{
     serve_upcall, ExtId, ExtState, Handler, RegisteredCommand, RegisteredFlag, RegisteredShortcut,

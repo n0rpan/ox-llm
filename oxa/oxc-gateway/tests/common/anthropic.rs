@@ -43,6 +43,7 @@ impl fmt::Debug for Request {
 pub struct Reply {
     status: u16,
     content_type: &'static str,
+    headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
     gate: Option<mpsc::Receiver<()>>,
@@ -58,6 +59,11 @@ impl Reply {
             json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":output}}),
             json!({"type":"message_stop"}),
         ];
+        Self::events(events.into())
+    }
+    /// Native events for provider-specific continuation regressions, using the
+    /// same bounded, fragmented loopback peer as the walking skeleton.
+    pub fn events(events: Vec<Value>) -> Self {
         let mut bytes = Vec::new();
         for event in events {
             bytes.extend_from_slice(
@@ -67,6 +73,7 @@ impl Reply {
         Self {
             status: 200,
             content_type: "text/event-stream",
+            headers: Vec::new(),
             bytes,
             fragment: 7,
             gate: None,
@@ -76,11 +83,30 @@ impl Reply {
         Self {
             status,
             content_type: "application/json",
+            headers: Vec::new(),
             bytes: json!({"type":"error","error":{"type":"overloaded_error","message":message}})
                 .to_string()
                 .into_bytes(),
             fragment: 7,
             gate: None,
+        }
+    }
+    /// Malformed/truncated protocol cases use the same fragmented peer.
+    pub fn wire(content_type: &'static str, bytes: &[u8]) -> Self {
+        Self {
+            status: 200,
+            content_type,
+            headers: Vec::new(),
+            bytes: bytes.to_vec(),
+            fragment: 7,
+            gate: None,
+        }
+    }
+    pub fn redirect(location: &str) -> Self {
+        Self {
+            status: 307,
+            headers: vec![("Location", location.to_owned())],
+            ..Self::wire("text/event-stream", b"")
         }
     }
     /// The request is captured before this gate is awaited, so admission tests can
@@ -271,7 +297,15 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
             }
         }
     }
-    write!(stream, "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n", reply.status, reply.content_type)?;
+    write!(
+        stream,
+        "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",
+        reply.status, reply.content_type
+    )?;
+    for (name, value) in &reply.headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    stream.write_all(b"\r\n")?;
     for bytes in reply.bytes.chunks(reply.fragment) {
         write!(stream, "{:x}\r\n", bytes.len())?;
         stream.write_all(bytes)?;

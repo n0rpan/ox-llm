@@ -31,6 +31,7 @@ fn run(tool: &dyn Tool, env: &TestEnv, cwd: &Path, args: Value, tune: ToolTune) 
     let cancel = CancelToken::new();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd,
         spill_dir: &spill,
         sandbox: &NoSandbox,
@@ -38,6 +39,7 @@ fn run(tool: &dyn Tool, env: &TestEnv, cwd: &Path, args: Value, tune: ToolTune) 
         cancel: &cancel,
         env: &[],
         tune,
+        hidden: None,
     };
     tool.run(&args, &cx, &mut |_: &str| {})
 }

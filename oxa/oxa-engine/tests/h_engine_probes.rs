@@ -74,6 +74,8 @@ fn count_prompt_equals_the_reported_prompt_tokens() {
         model: "fake-model",
         max_tokens: 64,
         thinking: false,
+        thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: true,
         sampling: None,
         hints: Hints {
@@ -126,6 +128,8 @@ fn count_prompt_without_the_endpoint_is_none_once() {
         model: "m",
         max_tokens: 8,
         thinking: false,
+        thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: true,
         sampling: None,
         hints: Hints {

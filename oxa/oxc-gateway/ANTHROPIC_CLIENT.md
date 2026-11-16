@@ -11,6 +11,9 @@ budget reservations and ledger settlement belong to the composing gateway.
 streaming, disables proxy discovery and redirects, bounds request/response
 bytes, and uses the shared pure translators. Error values contain static
 diagnostics and HTTP status codes, without provider bodies or configured URLs.
+The standalone client enforces HTTPS, permitting HTTP only for loopback
+fixtures, before emitting Sending. Connection setup is bounded to 30 seconds;
+an active stream permits 30-minute read pauses with no total-generation limit.
 
 The client emits `Sending` immediately before a validated network attempt and
 then normalized `Chunk` values. It returns a completion only after terminal
@@ -23,6 +26,8 @@ native signed blocks remain private and must never be logged.
 The shared runner-owned loopback peer is reused for the client contracts:
 native path/headers/body, bounded output, fragmented UTF-8, decoded key-echo
 redaction, separate cache categories, status-only provider errors, invalid or
-pre-cancelled requests with no I/O, and cancellation while awaiting headers.
+pre-cancelled requests with no I/O, refusal before Sending, redirects that never
+reach their target, malformed/truncated streams, public usage opt-out, final
+callback cancellation and cancellation while awaiting headers.
 Tests use synthetic keys in private owner-only files, a cleared environment
 and an isolated network. No SDK or real provider is used.

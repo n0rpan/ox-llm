@@ -1,4 +1,4 @@
-//! A14 acceptance tests: Fake engine over HTTP. Owner: task A14.
+//! A14 acceptance tests: Fake engine over HTTP.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -312,6 +312,8 @@ fn cache_model_matches_scripted_engine() {
             model: "fake-model",
             max_tokens,
             thinking: false,
+            thinking_budget: None,
+            thinking_level: None,
             preserve_thinking: true,
             sampling: None,
             hints: Hints {

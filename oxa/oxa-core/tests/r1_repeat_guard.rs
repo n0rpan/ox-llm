@@ -146,6 +146,7 @@ fn run(st: &mut SessionState, prompt_text: &str) -> (RunEnd, Vec<AgentEvent>) {
         EntryBody::Msg {
             wire: WireMsg::user(prompt_text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();
@@ -186,7 +187,11 @@ fn identical_read_loop_gets_notices_then_stops() {
     let turns: Vec<ScriptTurn> = (0..20).map(|i| read(&format!("c{i}"), RANGE)).collect();
     let (mut st, eng) = state(&env, turns, Settings::default());
     let (end, events) = run(&mut st, "find the bug in a.txt");
-    assert_eq!(end, RunEnd::Stopped);
+    // Giving up is not a finished task: the run ends as failed with its own error class.
+    assert!(
+        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
+        "{end:?}"
+    );
     let res = results(&st);
     let n_notices = NOTICES_BEFORE_STOP as usize + 1;
     assert_eq!(res.len(), LIMIT as usize + n_notices, "{res:#?}");
@@ -424,7 +429,10 @@ fn identical_bash_loop_gets_notices_then_stops() {
         .collect();
     let (mut st, eng) = state(&env, turns, Settings::default());
     let (end, _) = run(&mut st, "fix the failing test");
-    assert_eq!(end, RunEnd::Stopped);
+    assert!(
+        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
+        "{end:?}"
+    );
     let res = results(&st);
     assert_eq!(res.len(), (LIMIT + NOTICES_BEFORE_STOP + 1) as usize, "{res:#?}");
     for r in &res[..LIMIT as usize] {
@@ -585,7 +593,10 @@ fn identical_job_polls_trip_the_guard() {
     let (mut st, _eng) = state_with(&env, turns, Settings::default(), "fake-model", t);
     let (end, _) = run(&mut st, "run it in the background and poll it");
     jobs.kill_all();
-    assert_eq!(end, RunEnd::Stopped);
+    assert!(
+        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
+        "{end:?}"
+    );
     let res = results(&st);
     let polls = &res[1..];
     assert_eq!(
@@ -600,4 +611,311 @@ fn identical_job_polls_trip_the_guard() {
     for r in &polls[LIMIT as usize..] {
         assert!(is_notice(r) && r.contains("(bash {"), "{r}");
     }
+}
+
+fn job_tools(sb: Arc<dyn Sandbox>) -> (Vec<Arc<dyn Tool>>, Arc<oxa_tools::JobRegistry>) {
+    let jobs = Arc::new(oxa_tools::JobRegistry::new());
+    jobs.set_sandbox(sb);
+    let mut t = oxa_tools::builtin_tools_with_shell_and_jobs(oxa_tools::ShellConfig::default(), jobs.clone());
+    t.sort_by(|a, b| a.spec().name.cmp(&b.spec().name));
+    (t, jobs)
+}
+
+fn poll_run(cmd: &str, poll: &str, sb: Arc<dyn Sandbox>) -> Vec<String> {
+    let env = TestEnv::new();
+    let (t, jobs) = job_tools(sb);
+    let mut turns = vec![ScriptTurn::tool(
+        "s",
+        "bash",
+        &format!(r#"{{"command":"{cmd}","background":true}}"#),
+    )];
+    turns.extend((0..LIMIT + 3).map(|i| ScriptTurn::tool(&format!("p{i}"), "bash", poll)));
+    let (mut st, _eng) = state_with(&env, turns, Settings::default(), "fake-model", t);
+    run(&mut st, "poll it");
+    jobs.kill_all();
+    results(&st)
+}
+
+/// #439: blocking polls (`wait_s`) of a job that is still running are not repeats.
+#[test]
+fn waiting_polls_of_a_running_job_are_not_repeats() {
+    let res = poll_run("sleep 100", r#"{"job":"job-1","wait_s":1}"#, Arc::new(Hold));
+    assert!(res.len() > LIMIT as usize + 2, "{res:#?}");
+    for r in &res[1..] {
+        assert!(r.starts_with("Job job-1: running") && !is_notice(r), "{r}");
+    }
+}
+
+/// Codex finding on #441: a finished job whose OUTPUT has a line `Still running.` is no exemption.
+#[test]
+fn output_that_says_still_running_is_no_exemption() {
+    let res = poll_run(
+        "printf 'x\\nStill running.\\n'",
+        r#"{"job":"job-1","wait_s":10}"#,
+        Arc::new(ShSandbox),
+    );
+    let polls = &res[1..];
+    for r in &polls[..LIMIT as usize] {
+        assert!(r.starts_with("Job job-1: exited 0") && !is_notice(r), "{r}");
+    }
+    assert!(polls[LIMIT as usize..].iter().all(|r| is_notice(r)), "{res:#?}");
+}
+
+/// Review on #441: `wait_s` 0 or null does not wait (parse_wait), so it is no exemption (#150).
+#[test]
+fn zero_or_null_wait_polls_still_trip_the_guard() {
+    for poll in [
+        r#"{"job":"job-1","wait_s":0}"#,
+        r#"{"job":"job-1","wait_s":null}"#,
+        r#"{"job":"job-1","wait_s":0.001}"#,
+    ] {
+        let res = poll_run("sleep 100", poll, Arc::new(Hold));
+        assert!(res[1..].iter().any(|r| is_notice(r)), "{poll}: {res:#?}");
+    }
+}
+
+/// A repeat of an unchanged range is still a repeat when other read-only calls (another range)
+/// sit between the copies: the content is still in context (#463). An edit in between breaks it.
+#[test]
+fn identical_reads_interleaved_with_other_reads_trip_the_guard() {
+    let env = TestEnv::new();
+    let other = r#"{"path":"a.txt","offset":20,"limit":3}"#;
+    let mut turns = Vec::new();
+    for i in 0..=LIMIT {
+        turns.push(read(&format!("a{i}"), RANGE));
+        turns.push(read(&format!("b{i}"), other));
+    }
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "look");
+    let res = results(&st);
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+}
+
+fn call(id: &str, name: &str, args: &str) -> oxa_proto::ToolCall {
+    oxa_proto::ToolCall {
+        id: id.to_string(),
+        name: name.to_string(),
+        args_raw: args.to_string(),
+    }
+}
+
+/// Codex P2 on #471: interleaved reads inside ONE batch `[A, B, A, B, A, B, A]` are counted the
+/// same as when spread across turns: the fourth read of A gets the notice.
+#[test]
+fn identical_reads_interleaved_in_one_batch_trip_the_guard() {
+    let env = TestEnv::new();
+    let other = r#"{"path":"a.txt","offset":20,"limit":3}"#;
+    let mut batch = read("x0", RANGE);
+    for i in 0..LIMIT {
+        batch.tool_calls.push(call(&format!("o{i}"), "read", other));
+        batch.tool_calls.push(call(&format!("r{i}"), "read", RANGE));
+    }
+    let turns = vec![batch, ScriptTurn::text("done")];
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "look");
+    let res = results(&st);
+    assert_eq!(res.len(), 2 * LIMIT as usize + 1, "{res:#?}");
+    assert!(!is_notice(&res[2 * LIMIT as usize - 2]), "{res:#?}");
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+}
+
+/// An edit between identical reads (in the batch) ends the run even with read-only calls around it.
+#[test]
+fn an_edit_between_interleaved_batch_reads_breaks_the_run() {
+    let env = TestEnv::new();
+    let other = r#"{"path":"a.txt","offset":20,"limit":3}"#;
+    let edit = r#"{"path":"a.txt","oldText":"line 30\n","newText":"line 30 edited\n"}"#;
+    let mut batch = read("x0", RANGE);
+    for (i, (n, a)) in [
+        ("read", other),
+        ("read", RANGE),
+        ("read", RANGE),
+        ("edit", edit),
+        ("read", other),
+        ("read", RANGE),
+    ]
+    .iter()
+    .enumerate()
+    {
+        batch.tool_calls.push(call(&format!("y{i}"), n, a));
+    }
+    let turns = vec![batch, ScriptTurn::text("done")];
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "edit");
+    let res = results(&st);
+    assert!(res.iter().all(|r| !is_notice(r)), "{res:#?}");
+}
+
+const BAD_EDIT: &str = r#"{"path":"a.txt","oldText":"no such text\n","newText":"x\n"}"#;
+const BAD_WRITE: &str = r#"{"path":"a.txt/child","content":"draft"}"#;
+
+/// PR #563: failed writers still count as repeats themselves, including their notices,
+/// even though they do not interrupt another call's repeat sequence.
+#[test]
+fn identical_failed_writers_in_one_batch_get_notices_then_stop() {
+    for (name, args) in [("edit", BAD_EDIT), ("write", BAD_WRITE)] {
+        let env = TestEnv::new();
+        let count = LIMIT + NOTICES_BEFORE_STOP + 1;
+        let mut batch = ScriptTurn::tool("w0", name, args);
+        for i in 1..count {
+            batch.tool_calls.push(call(&format!("w{i}"), name, args));
+        }
+        let (mut st, eng) = state(
+            &env,
+            vec![batch, ScriptTurn::text("not reached")],
+            Settings::default(),
+        );
+        let end = run(&mut st, "fix a.txt").0;
+        assert!(
+            matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
+            "{name}: {end:?}"
+        );
+        let res = results(&st);
+        assert_eq!(res.len(), count as usize, "{name}: {res:#?}");
+        assert!(
+            res[..LIMIT as usize].iter().all(|r| !is_notice(r)),
+            "{name}: {res:#?}"
+        );
+        assert!(
+            res[LIMIT as usize..].iter().all(|r| is_notice(r)),
+            "{name}: {res:#?}"
+        );
+        assert_eq!(
+            eng.requests().len(),
+            1,
+            "{name}: no request after the stop notice"
+        );
+        assert_eq!(
+            std::fs::read_to_string(env.work().join("a.txt"))
+                .unwrap()
+                .lines()
+                .count(),
+            40
+        );
+    }
+}
+
+/// A command still breaks the run (it may change files), but must not hide the
+/// identical failed writer suffix inside each batch, including later batches.
+#[test]
+fn identical_failed_writer_suffixes_after_commands_get_notices_in_each_batch() {
+    for (name, args) in [("edit", BAD_EDIT), ("write", BAD_WRITE)] {
+        let env = TestEnv::new();
+        let mut turns = Vec::new();
+        for i in 0..2 {
+            let mut batch = bash(&format!("b{i}"), "echo other");
+            for j in 0..=LIMIT {
+                batch.tool_calls.push(call(&format!("w{i}-{j}"), name, args));
+            }
+            turns.push(batch);
+        }
+        turns.push(ScriptTurn::text("done"));
+        let (mut st, eng) = state(&env, turns, Settings::default());
+        assert_eq!(run(&mut st, "fix a.txt").0, RunEnd::Stopped);
+        let res = results(&st);
+        for batch in res.as_chunks::<{ LIMIT as usize + 2 }>().0 {
+            assert!(
+                batch[..=LIMIT as usize].iter().all(|r| !is_notice(r)),
+                "{name}: {batch:#?}"
+            );
+            assert!(is_notice(&batch[LIMIT as usize + 1]), "{name}: {batch:#?}");
+        }
+        assert_eq!(res.len(), 2 * (LIMIT as usize + 2), "{name}: {res:#?}");
+        assert_eq!(eng.requests().len(), 3, "a command still resets the notice count");
+    }
+}
+
+/// #507: an `edit` that failed changed nothing, so it does not end a run of identical reads:
+/// `read, edit (fails), read, edit (fails), ...` is a loop and gets the notice. A successful
+/// edit still ends the run (`rereads_after_an_edit_never_trip_the_guard`).
+#[test]
+fn failed_edits_between_identical_reads_do_not_break_the_run() {
+    let env = TestEnv::new();
+    let mut turns = Vec::new();
+    for i in 0..=LIMIT {
+        turns.push(read(&format!("r{i}"), RANGE));
+        turns.push(ScriptTurn::tool(&format!("e{i}"), "edit", BAD_EDIT));
+    }
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "fix a.txt");
+    let res = results(&st);
+    assert!(res[1].starts_with("Could not find"), "{res:#?}");
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+    assert!(!is_notice(&res[2 * LIMIT as usize - 2]), "{res:#?}");
+}
+
+/// The same inside one batch: the failed edits are not in the way.
+#[test]
+fn failed_edits_between_identical_reads_in_one_batch_do_not_break_the_run() {
+    let env = TestEnv::new();
+    let mut batch = read("x0", RANGE);
+    for i in 0..LIMIT {
+        batch.tool_calls.push(call(&format!("e{i}"), "edit", BAD_EDIT));
+        batch.tool_calls.push(call(&format!("r{i}"), "read", RANGE));
+    }
+    let turns = vec![batch, ScriptTurn::text("done")];
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "fix a.txt");
+    let res = results(&st);
+    assert_eq!(res.len(), 2 * LIMIT as usize + 1, "{res:#?}");
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+}
+
+fn turn_limit_settings(n: u32) -> Settings {
+    Settings::from_values(serde_json::json!({"oxa": {"maxTurns": n}}), Value::Null)
+}
+
+/// #507: `oxa.maxTurns` ends a run that keeps calling tools, however the calls vary (so no
+/// repeat guard can see them). Unset (the default) there is no limit.
+#[test]
+fn max_turns_ends_a_run_that_keeps_calling_tools() {
+    let env = TestEnv::new();
+    let turns: Vec<ScriptTurn> = (0..20)
+        .map(|i| {
+            read(
+                &format!("c{i}"),
+                &format!(r#"{{"path":"a.txt","offset":{},"limit":2}}"#, i + 1),
+            )
+        })
+        .collect();
+    let (mut st, eng) = state(&env, turns, turn_limit_settings(5));
+    let (end, events) = run(&mut st, "look around");
+    match end {
+        RunEnd::Failed(e) => assert_eq!(e.code, "turn_limit", "{e}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(eng.requests().len(), 5);
+    assert_eq!(results(&st).len(), 5);
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("oxa.maxTurns"))));
+    let shown = st
+        .tree
+        .branch(st.tree.leaf())
+        .into_iter()
+        .filter(|e| matches!(&e.body, EntryBody::Shown { why, .. } if *why == shown_why::FAILED))
+        .count();
+    assert_eq!(shown, 1);
+}
+
+/// A run that ends within the limit is not touched; the limit counts per run, not per session.
+#[test]
+fn max_turns_leaves_a_run_within_the_limit_alone() {
+    let env = TestEnv::new();
+    let mut turns: Vec<ScriptTurn> = (0..2)
+        .map(|i| {
+            read(
+                &format!("c{i}"),
+                &format!(r#"{{"path":"a.txt","offset":{},"limit":2}}"#, i + 1),
+            )
+        })
+        .collect();
+    turns.push(ScriptTurn::text("one"));
+    turns.push(read("d0", RANGE));
+    turns.push(ScriptTurn::text("two"));
+    let (mut st, _eng) = state(&env, turns, turn_limit_settings(3));
+    assert_eq!(run(&mut st, "first").0, RunEnd::Stopped);
+    assert_eq!(run(&mut st, "second").0, RunEnd::Stopped);
 }

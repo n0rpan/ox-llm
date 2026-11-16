@@ -1,4 +1,4 @@
-//! A15: ES module loading without ambient fs/net, and the `.ts` gate. Owner: task A15. Signatures below are frozen; bodies are yours.
+//! A15: ES module loading without ambient fs/net, and the `.ts` gate.
 use oxa_proto::{codes, OxaError};
 use std::collections::BTreeMap;
 

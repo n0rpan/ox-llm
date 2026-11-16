@@ -1,4 +1,4 @@
-//! E3 acceptance tests: Registration API. Owner: task E3.
+//! E3 acceptance tests: Registration API.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -169,6 +169,7 @@ fn with_ctx<R>(env: &TestEnv, cancel: &CancelToken, f: impl FnOnce(&ToolCtx) -> 
     let cwd: PathBuf = env.work();
     let spill: PathBuf = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -176,6 +177,7 @@ fn with_ctx<R>(env: &TestEnv, cancel: &CancelToken, f: impl FnOnce(&ToolCtx) -> 
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     f(&cx)
 }

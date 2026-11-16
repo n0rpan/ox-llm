@@ -1,4 +1,6 @@
-use crate::{AssistantTurn, CancelToken, FrozenPrefix, OxaError, StreamEvent, TurnKind, WireMsg};
+use crate::{
+    AssistantTurn, CancelToken, FrozenPrefix, OxaError, StreamEvent, ThinkingLevel, TurnKind, WireMsg,
+};
 
 /// What the engine reports about itself (`/v1/models` + `/_local/status`, M3, plus the
 /// capability block `oxe_hints` of `/props`). See `oxa_engine::parse_info` for the mapping of
@@ -48,6 +50,8 @@ pub struct EngineCaps {
     /// the request must not carry `preserve_thinking` at all; `None` = not published, the W6
     /// default (`true`) is sent.
     pub preserve_thinking: Option<bool>,
+    /// Local request-level reasoning-token cap is supported; unknown/remote defaults false.
+    pub thinking_budget: bool,
     /// `park == "disk"`: a parked session of this model is restored from disk only (Flash).
     pub park_disk_only: bool,
     /// Wave D D4: this model runs at a cloud provider through the controller. Local-only
@@ -113,6 +117,11 @@ pub struct ChatRequest<'a> {
     pub max_tokens: u32,
     /// W6 `enable_thinking`.
     pub thinking: bool,
+    /// The level behind `thinking` (ignored while `thinking` is false). A cloud model gets it as
+    /// `reasoning_effort`; `None` is `Medium`. Local engines only see the boolean.
+    pub thinking_level: Option<ThinkingLevel>,
+    /// Optional local reasoning-token cap; omitted unless thinking is on.
+    pub thinking_budget: Option<u64>,
     /// W6 / F8: send `chat_template_kwargs.preserve_thinking: true`. `false` omits the key (the
     /// server's own default applies; never forced on a model without the capability).
     pub preserve_thinking: bool,
@@ -120,6 +129,51 @@ pub struct ChatRequest<'a> {
     /// sampling key (the engine's MTP speculation runs on greedy requests only).
     pub sampling: Option<Sampling>,
     pub hints: Hints<'a>,
+}
+
+impl Default for Hints<'_> {
+    /// No session, no idempotency key, an ordinary foreground chat turn.
+    fn default() -> Self {
+        Hints {
+            session: "",
+            idem_key: "",
+            kind: TurnKind::Chat,
+            background: false,
+            snapshot_keep: false,
+        }
+    }
+}
+
+impl ChatRequest<'_> {
+    /// The level this request thinks at: `Off` unless `thinking`, else the requested level.
+    pub fn effective_level(&self) -> ThinkingLevel {
+        match (self.thinking, self.thinking_level) {
+            (false, _) => ThinkingLevel::Off,
+            // Thinking forced on while the session level is off: the default level.
+            (true, Some(ThinkingLevel::Off) | None) => ThinkingLevel::Medium,
+            (true, Some(level)) => level,
+        }
+    }
+}
+
+impl<'a> ChatRequest<'a> {
+    /// A request with the required parts and defaults for everything else (1024 output tokens,
+    /// thinking off, greedy, default hints). Build with `ChatRequest { max_tokens: 64,
+    /// ..ChatRequest::new(..) }` so a field added later does not break the caller.
+    pub fn new(prefix: &'a FrozenPrefix, messages: &'a [WireMsg], model: &'a str) -> Self {
+        ChatRequest {
+            prefix,
+            messages,
+            model,
+            max_tokens: 1024,
+            thinking: false,
+            thinking_level: None,
+            thinking_budget: None,
+            preserve_thinking: false,
+            sampling: None,
+            hints: Hints::default(),
+        }
+    }
 }
 
 /// Sampling parameters sent with a request (`oxa.sampling.mode = model`): the model card's

@@ -1,4 +1,4 @@
-//! B2: branch summaries for tree navigation. Owner: task B2. Signatures below are frozen; bodies are yours.
+//! B2: branch summaries for tree navigation.
 // adapted from pi packages/coding-agent/src/core/compaction/branch-summarization.ts
 use oxa_proto::{Entry, EntryBody, WireMsg};
 use oxa_session::{bash_text, Tree};

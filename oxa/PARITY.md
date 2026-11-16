@@ -143,7 +143,7 @@ pi page(s): settings.md. Tests: `oxa-parity/tests/keys_settings.rs`.
 | SET-048 | `markdown.mermaid` `off\|final\|streaming` | A | Mermaid shown as a highlighted code block; setting accepted | `keys_settings.rs::set_048` |
 | SET-050 | `httpProxy` | A | applies to MCP HTTP only; the engine connection is direct | `keys_settings.rs::set_050` |
 | SET-051 | `httpIdleTimeoutMs` | A | silence limit of the engine stream; SSE comments count as liveness; no wall-clock limit | `keys_settings.rs::set_051` |
-| SET-053 | `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs`, `retry.maxAgentDelayMs` | A | replay only before the first data byte until `Idempotency-Key` exists (H2) | `keys_settings.rs::set_053` |
+| SET-053 | `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs`, `retry.maxAgentDelayMs` | A | replay a cut stream (also after data) under the same `Idempotency-Key` while retries allow (#456) | `keys_settings.rs::set_053` |
 | SET-054 | `retry.provider.timeoutMs`, `retry.provider.maxRetries`, `retry.provider.maxRetryDelayMs` | A | same rule; one HTTP layer | `keys_settings.rs::set_054` |
 | SET-055 | `shellPath` | P |  | `keys_settings.rs::set_055` |
 | SET-056 | `shellCommandPrefix` | P | part of the sandboxed command | `keys_settings.rs::set_056` |
@@ -747,7 +747,7 @@ pi page(s): none (oxa only). Source: `OXA-ENGINE-SUPPORT.md`. Every oxa feature 
 | ENG-016 | The tool result is each child's final assistant text only, capped at `oxa.subagent.resultCap` (6 KiB) with a note naming the spill file | A | the result is prefilled at the parent's depth (no timings) | `subagent.rs::eng_016` |
 | ENG-017 | The tool is not declared on a model whose context is below 32000 unless `oxa.subagent.smallContext`; re-evaluated at a model switch | A | Flash: 16K context, disk parks only | `subagent.rs::eng_017` |
 | ENG-018 | Before the first child of a call the parent is parked: one zero-token request with `X-Oxe-Snapshot: keep` (skipped when the engine does not advertise it); the parent's next request reuses exactly the parked tokens. After every child, also a failed or aborted one, its engine state is cleared by its hint; the parent's state and shared blocks stay | A | the park and the hint clear use the snapshot and clear-by-hint requests | `subagent.rs::eng_018` |
-| ENG-019 | Abort or shutdown kills the child's process group (TERM, then KILL after 2 s) and starts no further task; the closed connection cancels the child's engine request | A | cancel propagation | `subagent.rs::eng_019` |
+| ENG-019 | Explicit abort cancels the child's process group (TERM, then KILL after 2 s); forced parent shutdown cancels its engine request and starts no further task. The first SIGTERM lets the active child finish before cooperative wrap-up | A | cancel propagation and cooperative wrap-up | `subagent.rs::eng_019`, `subagent.rs::sigterm_finishes_the_active_subagent_before_wrap_up` |
 
 ## OUT: Out-of-scope pages
 

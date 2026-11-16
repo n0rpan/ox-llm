@@ -1,4 +1,4 @@
-//! G5 PARITY tests (compaction). Owner: task G5.
+//! G5 PARITY tests (compaction).
 //! One test per PARITY.md row of the CMP area, named after the row id (`CMP-012` -> `fn cmp_012()`).
 //! The four meta-checks at the end read PARITY.md and this file (they are the task's acceptance).
 //!

@@ -8,9 +8,47 @@ With no message, `oxa` opens the interface ([usage.md](usage.md)). With a messag
 
 In `-p` mode, standard output holds only the final reply and a newline. Progress goes to standard error as the run goes, flushed per event: the text of each message that is followed by tool calls, and one line per tool call (`[tool] bash: <first 100 characters of the command>`, then `[tool] bash ok 1.2s` or `failed`). A reply that is followed by another turn (a failed `done` check, a steering message) is progress too. The final reply is written once, when the run ends, and not at all when the run failed or was aborted. `--mode json` prints no progress lines; it writes one flushed record per event.
 
-Exit codes: 0 on success, 1 when a command finished with a reported failure (for example `oxa mcp list` with an invalid server entry, or `-p` when the `done` checks still fail at the end), 2 for a usage error or an engine that cannot be reached.
+Print mode saves a session by default and announces its id on stderr before starting the agent. Continue that exact session with a new instruction:
+
+```console
+$ oxa -p "start the task"
+$ oxa -p --continue SESSION_ID "continue with this instruction"
+```
+
+Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word after `--continue` is taken as the id only if a session with that id exists; otherwise it stays part of the prompt and the most recent session continues, as before. The id is never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
+
+Print, JSON and RPC runs write exactly one terminal JSON result on standard error, after diagnostics. For example:
+
+```json
+{"type":"oxa_result","outcome":"blocked","error_class":"budget_exhausted","exit_code":3}
+```
+
+The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. `error_class` is a stable error code (for example `engine_http`, `stream_broken`, `done_checks_failed` or `output_limit`), or `null` for successful and no-op runs. Diagnostics remain human-readable; callers should use the result and exit code instead of matching their wording.
+
+| Exit code | Outcome | Meaning |
+|---|---|---|
+| 0 | `done` | The requested run completed |
+| 1 | `failed` | Runtime failure, failed done checks or truncated output |
+| 2 | `failed` | Usage error, unsupported option or engine unavailable |
+| 3 | `blocked` | Daily cloud budget exhausted (`budget_exhausted`) |
+| 4 | `nothing_to_do` | No agent run occurred, for example input handled by a hook, or RPC EOF without work |
+| 5 | `blocked` | Cloud credentials unavailable (`cloud_credentials_unavailable`) |
+| 6 | `blocked` | Cloud ledger unavailable (`cloud_ledger_unavailable`) |
+| 7 | `blocked` | Offline policy refused the request (`offline`) |
+| 8 | `blocked` | Other setup refusal, such as `cloud_sdk_unavailable` |
+| 130 | `interrupted` | The run was cooperatively cancelled, for example by RPC `abort` |
+
+For multiple prompts, the first unsuccessful outcome is retained even if a later prompt succeeds. RPC continues accepting commands after a run fails; the process reports its aggregate outcome when stdin closes. Reader-side rejections and malformed commands count as failures, and a later valid command does not clear them. Each RPC `agent_settled` record also gains an additive `result` field with that prompt's result. A handled RPC command that starts no agent turn counts as completed work; a handled prompt that starts no turn counts as `nothing_to_do`.
+
+These results cover orderly returns, including startup refusals. A process killed before it can return cannot emit a terminal result. Help, version, export, model listing and standalone subcommands keep their existing output and status conventions (0 success, 1 runtime failure, 2 usage error).
 
 Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. Once output has streamed, a failure is returned without replaying the request. Print mode immediately flushes a one-line `retrying request in ... ms` notice to stderr; JSON and RPC modes emit it as a flushed `notice` record. Provider-level retries (`retry.provider.maxRetries`) are visible too. All attempts for a logical request reuse its idempotency key. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
+
+`--max-time <seconds>` sets a soft runtime limit for print, JSON and RPC modes, measured after startup/session loading. Fractional seconds are accepted. At the limit, or on SIGTERM, oxa lets the active tool batch finish, then gives the agent one final turn (up to 1,024 output tokens, thinking off) to commit changes from this run or summarize its state. That final request is not retried by the agent. The session and completed tool results are retained; the outcome is `interrupted` (130), and later prompts are left unstarted. If an in-flight or final request fails, its typed failure takes precedence over interruption; a final summary cannot hide an earlier blocked or failed request. Resume with the session id and a new instruction. RPC also exits on a limit/SIGTERM while stdin is still open. `--no-session` continues to disable session storage.
+
+For a top-level run, this is a graceful limit: an active tool or model request finishes before the final turn, so elapsed time can exceed the requested duration. The first SIGTERM does not cancel that tool. A further SIGTERM, or SIGTERM after the time limit has requested wrap-up, takes the default termination action so a stuck tool or final request can be stopped. This forced termination cannot guarantee a final result record or session flush. SIGKILL and process/system crashes cannot run a wrap-up turn. Supervised subagents retain immediate SIGTERM cancellation; the parent controls their cooperative completion.
+
+If a local model spends its output budget on thinking without an answer, oxa retries once with thinking off. If that fallback still reaches the output limit without text or tool calls, the run fails with `error_class: "thinking_overrun"` and exit 1 in print, JSON and RPC modes. No further generation is attempted; the terminal result distinguishes this from a broken transport or an empty successful answer.
 
 ## Commands
 
@@ -67,6 +105,7 @@ $ oxa mcp logout <name>
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
+| `--max-time <seconds>` | softly limit a headless run, then allow one final wrap-up turn |
 | `--export <input> [output]` | export a session file to HTML and exit |
 | `--tui-mode <mode>` | `fullscreen` (default) or `regular` |
 | `--verbose` | show more start-up information |
@@ -75,7 +114,7 @@ $ oxa mcp logout <name>
 
 | Option | Meaning |
 |---|---|
-| `--continue`, `-c` | continue the most recent session of the current directory |
+| `--continue [id]`, `-c` | continue the named session; without an id, continue the most recent session of the current directory |
 | `--resume`, `-r` | pick a session to resume |
 | `--session <path\|id>` | open a session by file path, or by full or partial id |
 | `--session-id <id>` | use the current directory's session with this id, creating it if needed |

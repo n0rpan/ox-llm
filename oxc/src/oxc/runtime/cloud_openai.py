@@ -77,6 +77,8 @@ RESPONSES_MODELS = {'gpt-6-astra': False, 'gpt-6.1-sol': False,
 
 
 def endpoint(item):
+    if item.get('provider') == 'chatgpt':
+        return '/responses'  # the subscription backend speaks Responses only
     return '/responses' if item['upstream_model'] in RESPONSES_MODELS else '/chat/completions'
 
 
@@ -153,9 +155,9 @@ def validate(payload):
             _invalid('tool_choice')
 
 
-def request(payload, item, key=None):
+def request(payload, item, key=None, scope=None):
     validate(payload)
-    return responses_request(payload, item, key) if endpoint(item) == '/responses' else chat_request(payload, item)
+    return responses_request(payload, item, key, scope) if endpoint(item) == '/responses' else chat_request(payload, item)
 
 
 # Encrypted reasoning must accompany tool outputs. Keep native output only in bounded,
@@ -207,10 +209,12 @@ def _prune():
         _HISTORY.popitem(last=False)
 
 
-def remember(item, history, assistant, output, key):
+def remember(item, history, assistant, output, key, scope=None):
     # The client sees redacted text, so canonicalize the same text for the next request.
+    # ``scope`` (default: the key) names whose continuation this is; the subscription
+    # provider passes its account, so a token refresh keeps a running tool loop.
     safe = cloud.redact_value(assistant, key)
-    token = _history_key(item, list(history or []) + [safe], key)
+    token = _history_key(item, list(history or []) + [safe], scope or key)
     frozen = json.dumps(output, ensure_ascii=False).encode()
     with _HISTORY_LOCK:
         _HISTORY[token] = (time.monotonic() + _HISTORY_TTL, frozen)
@@ -244,7 +248,7 @@ def _closed_historical_calls(messages, index):
     return not pending
 
 
-def responses_request(payload, item, key=None):
+def responses_request(payload, item, key=None, scope=None):
     limit = _output_limit(payload, item.get('max_output'))
     if payload.get('n') is not None and (type(payload['n']) is not int or payload['n'] != 1):
         raise cloud.CloudError('Cloud requests support one completion.', 400, 'invalid_value', 'n')
@@ -256,7 +260,7 @@ def responses_request(payload, item, key=None):
         effort = 'medium'
     if not isinstance(effort, str) or effort not in EFFORT:
         raise cloud.CloudError('Unsupported reasoning effort.', 400, 'invalid_value', 'reasoning_effort')
-    if effort == 'minimal' or (effort == 'none' and not RESPONSES_MODELS[item['upstream_model']]):
+    if effort == 'minimal' or (effort == 'none' and not RESPONSES_MODELS.get(item['upstream_model'], False)):
         effort = 'low'
     messages = payload.get('messages') or []
     inputs = []
@@ -264,7 +268,7 @@ def responses_request(payload, item, key=None):
         role = message.get('role')
         replay_calls = []
         if role == 'assistant':
-            restored = _restore(item, messages[:index + 1], key)
+            restored = _restore(item, messages[:index + 1], scope or key)
             if restored is not None:
                 inputs.extend(restored)
                 continue
@@ -349,14 +353,23 @@ def _usage(value):
             'completion_tokens_details': usage.get('output_tokens_details') or {'reasoning_tokens': 0}}
 
 
-def response(value, item, history, key):
+def with_streamed_output(value, items):
+    """The final response with its output items. With ``store: false`` (the subscription
+    backend) ``response.completed`` may carry an empty ``output``; the items then exist only
+    as ``response.output_item.done`` events, keyed by output index (#450)."""
+    if isinstance(value, dict) and not value.get('output') and items:
+        value = dict(value, output=[items[index] for index in sorted(items)])
+    return value
+
+
+def response(value, item, history, key, scope=None):
     try:
-        return _response(value, item, history, key)
+        return _response(value, item, history, key, scope)
     except (ValueError, KeyError, TypeError, AttributeError):
         raise cloud.CloudError('Invalid OpenAI response.', 502, 'cloud_upstream_error') from None
 
 
-def _response(value, item, history, key):
+def _response(value, item, history, key, scope=None):
     if value.get('status') not in ('completed', 'incomplete'):
         raise cloud.CloudError('The OpenAI response did not complete.', 502, 'cloud_upstream_error')
     output = value.get('output') or []
@@ -384,7 +397,7 @@ def _response(value, item, history, key):
     if value.get('status') == 'incomplete':
         finish = 'length' if (value.get('incomplete_details') or {}).get('reason') == 'max_output_tokens' else 'content_filter'
     else:
-        remember(item, history, assistant, output, key)
+        remember(item, history, assistant, output, key, scope)
     result = {'id': value.get('id', 'chatcmpl_openai'), 'object': 'chat.completion',
               'created': value.get('created_at', int(time.time())), 'model': item['id'],
               'choices': [{'index': 0, 'message': assistant, 'finish_reason': finish}]}
@@ -397,10 +410,12 @@ def _response(value, item, history, key):
 class ResponsesStream:
     """Responses SSE -> Chat Completions SSE; usage is trusted only at a terminal event."""
 
-    def __init__(self, item, history, key):
-        self.item, self.history, self.key = item, history, key
+    def __init__(self, item, history, key, scope=None):
+        self.item, self.history, self.key, self.scope = item, history, key, scope
         self.parser = cloud.SSEDecoder()
         self.slots = {}
+        self.items = {}
+        self.sent = {}  # output index -> arguments already forwarded to the client
         self.done = False
         self.failed = False
 
@@ -418,6 +433,19 @@ class ResponsesStream:
         except (ValueError, KeyError, TypeError, AttributeError):
             raise cloud.CloudError('Invalid OpenAI stream event.', 502, 'cloud_stream_error') from None
 
+    def _complete(self, index, arguments):
+        """Forward the part of a call's final arguments the deltas did not carry (#450): the
+        backend may send no argument deltas and put the arguments only in the done events,
+        while the continuation cache stores the full arguments."""
+        sent = self.sent.get(index, '')
+        if index not in self.slots or not isinstance(arguments, str) or not arguments.startswith(sent):
+            return b''
+        rest = arguments[len(sent):]
+        if not rest:
+            return b''
+        self.sent[index] = arguments
+        return self._wire({'tool_calls': [{'index': self.slots[index], 'function': {'arguments': rest}}]})
+
     def _translate(self, value):
         kind = value.get('type')
         if self.done:
@@ -431,16 +459,25 @@ class ResponsesStream:
                 self.slots[value['output_index']] = slot
                 return self._wire({'tool_calls': [{'index': slot, 'id': part['call_id'],
                     'type': 'function', 'function': {'name': part['name'], 'arguments': ''}}]})
+        if kind == 'response.output_item.done':
+            self.items[value['output_index']] = value['item']
+            if value['item'].get('type') == 'function_call':
+                return self._complete(value['output_index'], value['item'].get('arguments'))
+            return b''
         if kind == 'response.function_call_arguments.delta':
-            return self._wire({'tool_calls': [{'index': self.slots[value['output_index']],
+            index = value['output_index']
+            self.sent[index] = self.sent.get(index, '') + value['delta']
+            return self._wire({'tool_calls': [{'index': self.slots[index],
                                               'function': {'arguments': value['delta']}}]})
+        if kind == 'response.function_call_arguments.done':
+            return self._complete(value['output_index'], value.get('arguments'))
         if kind in ('response.output_text.delta', 'response.refusal.delta',
                     'response.reasoning_summary_text.delta'):
             field = {'response.output_text.delta': 'content', 'response.refusal.delta': 'refusal',
                      'response.reasoning_summary_text.delta': 'reasoning_content'}[kind]
             return self._wire({field: value['delta']})
         if kind in ('response.completed', 'response.incomplete'):
-            reply = response(value['response'], self.item, self.history, self.key)
+            reply = response(with_streamed_output(value['response'], self.items), self.item, self.history, self.key, self.scope)
             self.done = True
             finish = reply['choices'][0]['finish_reason']
             out = self._wire({}, finish)

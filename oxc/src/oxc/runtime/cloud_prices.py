@@ -136,14 +136,27 @@ def overlay(configured, model):
         return configured
     if configured is None:
         return current
-    def floor(tier):
+    def floor(tier, base):
         out = dict(tier)
         for field, rate in current.items():
-            out[field] = max(out.get(field, rate), rate)
+            # The live list price is the short-context rate; a higher configured tier is never
+            # lowered by it, so long prompts are still reserved at their own rate.
+            if base:
+                # A zero live price never lowers a configured rate (it would disable the budget cap).
+                out[field] = rate if rate > 0 else out.get(field, rate)
+            else:
+                out[field] = max(out.get(field, rate), rate)
         return out
     if 'tiers' in configured:
-        return {'tiers': [floor(tier) for tier in configured['tiers']]}
-    return floor(configured)
+        tiers = []
+        for index, tier in enumerate(configured['tiers']):
+            tier = floor(tier, index == 0)
+            for field, rate in (tiers[-1].items() if tiers else ()):
+                if field.endswith('_per_million'):  # longer prompts never cost less per token
+                    tier[field] = max(tier.get(field, rate), rate)
+            tiers.append(tier)
+        return {'tiers': tiers}
+    return floor(configured, True)
 
 
 class Refresher:
@@ -153,12 +166,22 @@ class Refresher:
         self.thread = threading.Thread(target=self._run, name='public-model-prices', daemon=True)
         self.thread.start()
 
+    RETRY_SECONDS = (60, 300, 1800, 3600)  # after a failure; hourly from then on
+
+    def step(self, now, state):
+        """One scheduling decision.  ``state`` = [next_refresh, failures]; returns nothing."""
+        if not self.allowed() or now < state[0]:
+            return
+        if refresh():
+            state[:] = [now + DAY_SECONDS, 0]
+        else:
+            delay = self.RETRY_SECONDS[min(state[1], len(self.RETRY_SECONDS) - 1)]
+            state[:] = [now + delay, state[1] + 1]
+
     def _run(self):
-        next_refresh = 0
+        state = [0, 0]
         while not self.stop.is_set():
-            if self.allowed() and time.monotonic() >= next_refresh:
-                refresh()
-                next_refresh = time.monotonic() + DAY_SECONDS
+            self.step(time.monotonic(), state)
             if self.stop.wait(min(POLL_SECONDS, DAY_SECONDS)):
                 break
 

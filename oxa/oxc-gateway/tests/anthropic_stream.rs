@@ -1,96 +1,6 @@
 #![cfg(feature = "upstream-anthropic-stream")]
-use oxc_gateway::anthropic_stream::{Field, Redactor, Stream, Usage};
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
-
-fn canonical(mut value: Value) -> Vec<u8> {
-    value.sort_all_objects();
-    serde_json::to_vec(&value).unwrap()
-}
-
-struct FixtureRedactor {
-    marker: Option<String>,
-    held: BTreeMap<Field, String>,
-}
-impl Redactor for FixtureRedactor {
-    fn feed(&mut self, field: Field, text: &str) -> String {
-        let Some(marker) = self.marker.as_ref() else {
-            return text.to_owned();
-        };
-        let data =
-            format!("{}{text}", self.held.remove(&field).unwrap_or_default()).replace(marker, "[redacted]");
-        let hold = (1..marker.len())
-            .rev()
-            .find(|&size| marker.is_char_boundary(size) && data.ends_with(&marker[..size]))
-            .unwrap_or(0);
-        let (safe, tail) = data.split_at(data.len() - hold);
-        self.held.insert(field, tail.to_owned());
-        safe.to_owned()
-    }
-    fn finish(&mut self, field: Field) -> String {
-        self.held.remove(&field).unwrap_or_default()
-    }
-    fn whole(&mut self, value: &str) -> String {
-        self.marker
-            .as_ref()
-            .map_or_else(|| value.to_owned(), |m| value.replace(m, "[redacted]"))
-    }
-}
-
-#[test]
-fn python_stream_contracts() {
-    for row in include_str!("fixtures/anthropic_streams.jsonl").lines() {
-        let row: Value = serde_json::from_str(row).unwrap();
-        let mut stream = Stream::with_redactor(
-            "synthetic-model",
-            1700000000,
-            row["include_usage"] == true,
-            FixtureRedactor {
-                marker: row["redact_marker"].as_str().map(str::to_owned),
-                held: BTreeMap::new(),
-            },
-        );
-        let chunks: Vec<_> = row["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .flat_map(|event| stream.event(event).unwrap())
-            .collect();
-        assert_eq!(
-            canonical(json!(chunks)),
-            canonical(row["expected"].clone()),
-            "{}",
-            row["name"]
-        );
-        let result = stream.finish().unwrap();
-        if row["redact_marker"].is_string() {
-            let assistant = serde_json::to_string(&result.assistant).unwrap();
-            assert!(!assistant.contains("synthetic-redact-marker"));
-            assert_eq!(result.assistant["content"], "Synthetic λ [redacted] synthetic-");
-            assert_eq!(result.assistant["reasoning_content"], "[redacted] synthetic-");
-            assert_eq!(
-                result.assistant["tool_calls"][0]["function"]["name"],
-                "read_[redacted]"
-            );
-            assert_eq!(
-                result.assistant["tool_calls"][0]["function"]["arguments"],
-                "{\"note\":\"[redacted]\"}"
-            );
-        }
-        assert_eq!(
-            json!(result.native_blocks),
-            row["native_blocks"],
-            "{}",
-            row["name"]
-        );
-        assert_eq!(
-            result.usage.map(Usage::openai).unwrap_or(Value::Null),
-            row["final_usage"],
-            "{}",
-            row["name"]
-        );
-    }
-}
+use oxc_gateway::anthropic_stream::{Stream, Usage};
+use serde_json::json;
 
 #[test]
 fn only_complete_streams_provide_final_usage() {
@@ -164,7 +74,7 @@ fn malformed_event_order_fails_without_panicking() {
 }
 
 #[test]
-fn repeated_signatures_replace_and_late_events_do_not_duplicate_output() {
+fn split_signatures_are_complete_and_late_events_do_not_duplicate_output() {
     let mut stream = Stream::new("synthetic", 0, false);
     for event in [
         json!({"type":"message_start", "message":{}}),
@@ -178,7 +88,7 @@ fn repeated_signatures_replace_and_late_events_do_not_duplicate_output() {
     }
     assert!(stream.event(&json!({"type":"message_stop"})).unwrap().is_empty());
     let completed = stream.finish().unwrap();
-    assert_eq!(completed.native_blocks[0]["signature"], "suffix");
+    assert_eq!(completed.native_blocks[0]["signature"], "opaque-suffix");
 }
 
 #[test]
@@ -199,4 +109,165 @@ fn terminal_usage_must_supply_its_own_output_count() {
         assert_eq!(chunks.len(), 1, "provisional usage must not be emitted");
         assert!(stream.finish().unwrap().usage.is_none());
     }
+}
+
+#[test]
+fn final_usage_retains_billing_categories_even_when_public_usage_is_off() {
+    for include_usage in [false, true] {
+        for (native, expected) in [
+            ("end_turn", "stop"),
+            ("stop_sequence", "stop"),
+            ("tool_use", "tool_calls"),
+            ("max_tokens", "length"),
+            ("model_context_window_exceeded", "length"),
+            ("refusal", "content_filter"),
+        ] {
+            let mut stream = Stream::new("public-alias", 42, include_usage);
+            stream.event(&json!({"type":"message_start","message":{"usage":{
+                "input_tokens":11,"cache_read_input_tokens":7,"cache_creation_input_tokens":3,"output_tokens":0}}})).unwrap();
+            stream.event(&json!({"type":"message_delta","delta":{"stop_reason":native},"usage":{"output_tokens":5}})).unwrap();
+            let chunks = stream.event(&json!({"type":"message_stop"})).unwrap();
+            assert_eq!(chunks[0]["model"], "public-alias");
+            assert_eq!(chunks[0]["choices"][0]["finish_reason"], expected);
+            assert_eq!(chunks.len(), if include_usage { 2 } else { 1 });
+            let done = stream.finish().unwrap();
+            assert_eq!(done.finish_reason, expected);
+            let usage = done.usage.unwrap();
+            assert_eq!(
+                (
+                    usage.input_tokens,
+                    usage.cache_read_input_tokens,
+                    usage.cache_creation_input_tokens,
+                    usage.output_tokens
+                ),
+                (11, 7, 3, 5)
+            );
+            assert_eq!(usage.openai()["prompt_tokens"], 21);
+            assert_eq!(usage.openai()["total_tokens"], 26);
+            if include_usage {
+                assert_eq!(chunks[1]["usage"], usage.openai());
+                assert!(chunks[1]["choices"].as_array().unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[cfg(feature = "secrets")]
+#[test]
+fn public_chunks_and_completion_redact_fields_while_native_replay_stays_opaque() {
+    use oxc_gateway::{
+        anthropic_stream::{Field, Redactor},
+        redaction, secrets,
+    };
+    use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
+    struct SafeFields {
+        key: secrets::Key,
+        fields: BTreeMap<Field, redaction::Stream>,
+    }
+    impl Redactor for SafeFields {
+        fn feed(&mut self, field: Field, text: &str) -> String {
+            String::from_utf8(
+                self.fields
+                    .entry(field)
+                    .or_insert_with(|| redaction::Stream::new(&self.key))
+                    .feed(text.as_bytes()),
+            )
+            .unwrap()
+        }
+        fn finish(&mut self, field: Field) -> String {
+            self.fields
+                .remove(&field)
+                .map(|mut stream| String::from_utf8(stream.finish()).unwrap())
+                .unwrap_or_default()
+        }
+        fn whole(&mut self, text: &str) -> String {
+            let mut value = json!(text);
+            redaction::value(&mut value, &self.key);
+            value.as_str().unwrap().to_owned()
+        }
+    }
+    let dir = std::env::temp_dir().join(format!("gateway-native-redaction-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.join("synthetic.json");
+    fs::write(&path, br#"{"anthropic":"synthetic-marker"}"#).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let key = secrets::read(&path, "anthropic").unwrap();
+    fs::remove_dir_all(&dir).unwrap();
+    let mut stream = Stream::with_redactor(
+        "alias",
+        42,
+        true,
+        SafeFields {
+            key,
+            fields: BTreeMap::new(),
+        },
+    );
+    let mut chunks = Vec::new();
+    for event in [
+        json!({"type":"message_start","message":{}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"λ synthetic-"}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"marker tail"}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque-signature"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"text"}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello synthetic-"}}),
+        json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"marker synthetic-"}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"id-synthetic-marker","name":"read-synthetic-marker"}}),
+        json!({"type":"content_block_start","index":7,"content_block":{"type":"tool_use","id":"second","name":"list"}}),
+        json!({"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"note\":\"synthetic-"}}),
+        json!({"type":"content_block_delta","index":7,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"other\"}"}}),
+        json!({"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"marker\"}"}}),
+        json!({"type":"content_block_stop","index":3}),
+        json!({"type":"content_block_stop","index":7}),
+        json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}),
+        json!({"type":"message_stop"}),
+    ] {
+        chunks.extend(stream.event(&event).unwrap());
+    }
+    let done = stream.finish().unwrap();
+    assert!(!serde_json::to_string(&chunks)
+        .unwrap()
+        .contains("synthetic-marker"));
+    assert!(!done.assistant.to_string().contains("synthetic-marker"));
+    assert!(!done.assistant.to_string().contains("opaque-signature"));
+    assert!(!serde_json::to_string(&chunks)
+        .unwrap()
+        .contains("opaque-signature"));
+    assert_eq!(done.assistant["content"], "Hello [redacted] synthetic-");
+    assert_eq!(done.assistant["reasoning_content"], "λ [redacted] tail");
+    assert_eq!(done.assistant["tool_calls"][0]["id"], "id-[redacted]");
+    assert_eq!(
+        done.assistant["tool_calls"][0]["function"]["name"],
+        "read-[redacted]"
+    );
+    assert_eq!(
+        done.assistant["tool_calls"][0]["function"]["arguments"],
+        "{\"note\":\"[redacted]\"}"
+    );
+    assert_eq!(
+        done.assistant["tool_calls"][1]["function"]["arguments"],
+        "{\"path\":\"other\"}"
+    );
+    let mut text = String::new();
+    let mut arguments = [String::new(), String::new()];
+    for chunk in &chunks {
+        let delta = &chunk["choices"][0]["delta"];
+        text.push_str(delta["content"].as_str().unwrap_or_default());
+        for call in delta["tool_calls"].as_array().into_iter().flatten() {
+            arguments[call["index"].as_u64().unwrap() as usize]
+                .push_str(call["function"]["arguments"].as_str().unwrap_or_default());
+        }
+    }
+    assert_eq!(json!(text), done.assistant["content"]);
+    for (slot, argument) in arguments.iter().enumerate() {
+        assert_eq!(
+            json!(argument),
+            done.assistant["tool_calls"][slot]["function"]["arguments"]
+        );
+    }
+    assert_eq!(done.native_blocks[0]["signature"], "opaque-signature");
+    assert_eq!(done.native_blocks[2]["input"]["note"], "synthetic-marker");
 }
