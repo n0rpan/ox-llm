@@ -41,6 +41,12 @@ jobs:
             echo "$name=${!name}" >> "$GITHUB_ENV"
           done
           echo "$RUSTUP_HOME/toolchains/1.99.1-aarch64-apple-darwin/bin" >> "$GITHUB_PATH"
+      - name: Check release test targets before linking
+        working-directory: oxa
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" CARGO_HOME="$CARGO_HOME" \
+            RUSTUP_HOME="$RUSTUP_HOME" TMPDIR="$TMPDIR" CARGO_BUILD_JOBS=3 \
+            cargo check --release --locked --workspace --tests
       - name: Build release workspace (Linux release default features)
         working-directory: oxa
         run: |
