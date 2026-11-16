@@ -1,5 +1,5 @@
 use crate::{Access, CancelToken, Mode, Sandbox, Ui, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Permission class of a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -125,6 +125,24 @@ pub struct ToolCtx<'a> {
     /// How the built-ins shape their results in this epoch ([`ToolTune::default`] = the
     /// unshaped baseline; `diet` and the page caps shape it further).
     pub tune: ToolTune,
+    /// #518: for each path the call's `Tool::access` named and the permission check allowed,
+    /// the real location the check judged (symlinks resolved, [`Policy::decide_pinned`]). A file
+    /// tool opens only that location: a link swapped after the check is refused, not followed.
+    /// Empty when nothing was checked (a direct call).
+    ///
+    /// [`Policy::decide_pinned`]: crate::Policy::decide_pinned
+    pub checked: &'a [(PathBuf, PathBuf)],
+}
+
+impl ToolCtx<'_> {
+    /// #518: the real location the permission check judged for `path` (as `Tool::access`
+    /// reported it), if it was checked.
+    pub fn checked_real(&self, path: &Path) -> Option<&Path> {
+        self.checked
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, real)| real.as_path())
+    }
 }
 
 /// Per-epoch tuning of the built-in tools (V020-OPTIMIZE #2, OXA-LOCAL-FIRST T7, T8, F5, R5).

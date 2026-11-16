@@ -170,6 +170,7 @@ fn run(tool: &dyn Tool, args: Value) -> ToolOutput {
     let cancel = CancelToken::new();
     let envs: Vec<(String, String)> = Vec::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,

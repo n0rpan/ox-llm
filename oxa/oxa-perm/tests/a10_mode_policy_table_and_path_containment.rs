@@ -249,6 +249,29 @@ fn symlink_escape_is_outside() {
     assert!(!is_inside(&cwd.join("link2/../x"), &cwd));
 }
 
+/// #518: the verdict comes with the real location it covers, which the tool then opens.
+#[test]
+fn decide_pinned_returns_the_real_location_it_judged() {
+    let env = TestEnv::new();
+    let cwd = env.work();
+    let real_cwd = std::fs::canonicalize(&cwd).unwrap();
+    std::fs::create_dir_all(cwd.join("real")).unwrap();
+    std::fs::write(cwd.join("real/f.txt"), "x").unwrap();
+    std::os::unix::fs::symlink(cwd.join("real/f.txt"), cwd.join("link")).unwrap();
+    let p = ModePolicy::new();
+    let (d, pin) = p.decide_pinned(Mode::Workspace, &Access::Write(cwd.join("link")), &cwd);
+    assert_eq!(d, Decision::Allow);
+    assert_eq!(pin, Some(real_cwd.join("real/f.txt")));
+    // A file that does not exist yet keeps its tail; the decision is the same as `decide`'s.
+    let new = Access::Write(cwd.join("real/sub/new.txt"));
+    let (d, pin) = p.decide_pinned(Mode::Workspace, &new, &cwd);
+    assert_eq!(d, decide(&p, Mode::Workspace, &new, &cwd));
+    assert_eq!(pin, Some(real_cwd.join("real/sub/new.txt")));
+    // Only file accesses are pinned.
+    let (_, pin) = p.decide_pinned(Mode::Workspace, &exec("ls", false), &cwd);
+    assert_eq!(pin, None);
+}
+
 #[test]
 fn symlink_inside_stays_inside() {
     let env = TestEnv::new();

@@ -1,9 +1,10 @@
 //! A6: the `write` tool.
 // ported from pi packages/coding-agent/src/core/tools/write.ts
+use crate::checked;
 use crate::descriptions::errors;
 use crate::read::arg_path;
 use oxa_proto::{Access, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -68,6 +69,12 @@ fn write_file(args: &Value, cx: &ToolCtx) -> Result<(usize, bool), String> {
     }
 
     let mut target = crate::resolve_path(cx.cwd, path);
+    // #518: the location the permission check judged (symlinks resolved): written there or not
+    // at all, whatever a link points at by now.
+    let pin = cx.checked_real(&target).map(Path::to_path_buf);
+    if let Some(real) = &pin {
+        target = real.clone();
+    }
     let existing = match fs::metadata(&target) {
         Ok(m) if m.is_dir() => return Err(format!("Path is a directory: {path}")),
         Ok(m) => Some(m),
@@ -75,7 +82,7 @@ fn write_file(args: &Value, cx: &ToolCtx) -> Result<(usize, bool), String> {
         Err(e) => return Err(write_io_error(path, &e)),
     };
     // A symlink is written through: the link stays, its target gets the content.
-    if existing.is_some() {
+    if pin.is_none() && existing.is_some() {
         if let Ok(real) = fs::canonicalize(&target) {
             target = real;
         }
@@ -87,16 +94,22 @@ fn write_file(args: &Value, cx: &ToolCtx) -> Result<(usize, bool), String> {
         None => return Err(format!("Path has no parent directory: {path}")),
     };
     fs::create_dir_all(&parent).map_err(|e| write_io_error(path, &e))?;
+    // The temp file and the rename go through this directory, opened once and checked: a
+    // directory swapped for a link later does not move the write.
+    let dir = File::open(&parent).map_err(|e| write_io_error(path, &e))?;
+    if pin.is_some() {
+        checked::verify_at(&parent, &dir).map_err(|e| write_io_error(path, &e))?;
+    }
 
     let name = target
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let (tmp, file) = create_temp(&parent, &name).map_err(|e| write_io_error(path, &e))?;
-    match commit(file, &tmp, &target, &parent, content, existing.as_ref()) {
+    let (tmp, file) = create_temp(&dir, &name).map_err(|e| write_io_error(path, &e))?;
+    match commit(file, &dir, &tmp, &name, content, existing.as_ref()) {
         Ok(()) => Ok((content.len(), created)),
         Err(e) => {
-            let _ = fs::remove_file(&tmp);
+            checked::remove_in(&dir, &tmp);
             Err(write_io_error(path, &e))
         }
     }
@@ -107,33 +120,34 @@ fn write_io_error(shown: &str, e: &io::Error) -> String {
     format!("Could not write file: {shown}. {e}")
 }
 
-/// Write the temp file, give it the old file's mode, fsync, and rename it over the target.
+/// Write the temp file, give it the old file's mode, fsync, and rename it over the target, both
+/// names in `dir`.
 fn commit(
     mut file: File,
-    tmp: &Path,
-    target: &Path,
-    parent: &Path,
+    dir: &File,
+    tmp: &str,
+    name: &str,
     content: &str,
     existing: Option<&fs::Metadata>,
 ) -> io::Result<()> {
     file.write_all(content.as_bytes())?;
     if let Some(meta) = existing {
-        keep_mode(tmp, meta)?;
+        keep_mode(&file, meta)?;
     }
     file.sync_all()?;
     drop(file);
-    fs::rename(tmp, target)?;
-    sync_dir(parent);
+    checked::rename_in(dir, tmp, name)?;
+    sync_dir(dir);
     Ok(())
 }
 
-/// A new file in `dir`, named after `name`, that does not exist yet.
-fn create_temp(dir: &Path, name: &str) -> io::Result<(PathBuf, File)> {
+/// A new file in `dir`, named after `name`, that does not exist yet; returns its name.
+fn create_temp(dir: &File, name: &str) -> io::Result<(String, File)> {
     let pid = std::process::id();
     for _ in 0..100 {
         let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(format!(".{name}.oxa-tmp-{pid}-{seq}"));
-        match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+        let tmp = format!(".{name}.oxa-tmp-{pid}-{seq}");
+        match checked::create_new_in(dir, &tmp) {
             Ok(file) => return Ok((tmp, file)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -147,25 +161,12 @@ fn create_temp(dir: &Path, name: &str) -> io::Result<(PathBuf, File)> {
 
 /// The permission bits of the existing file, on the temp file (set explicitly: the umask does not
 /// apply to it).
-#[cfg(unix)]
-fn keep_mode(tmp: &Path, existing: &fs::Metadata) -> io::Result<()> {
+fn keep_mode(tmp: &File, existing: &fs::Metadata) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(
-        tmp,
-        fs::Permissions::from_mode(existing.permissions().mode() & 0o7777),
-    )
-}
-
-#[cfg(not(unix))]
-fn keep_mode(_tmp: &Path, _existing: &fs::Metadata) -> io::Result<()> {
-    Ok(())
+    tmp.set_permissions(fs::Permissions::from_mode(existing.permissions().mode() & 0o7777))
 }
 
 /// Best effort: make the rename durable.
-#[cfg(unix)]
-fn sync_dir(dir: &Path) {
-    let _ = File::open(dir).and_then(|d| d.sync_all());
+fn sync_dir(dir: &File) {
+    let _ = dir.sync_all();
 }
-
-#[cfg(not(unix))]
-fn sync_dir(_dir: &Path) {}

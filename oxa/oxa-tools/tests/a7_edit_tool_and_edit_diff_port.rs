@@ -42,6 +42,7 @@ fn run_tool_with_cancel(cwd: &Path, args: &Value, cancel: &CancelToken) -> ToolO
     let sandbox = NoBash;
     let env: Vec<(String, String)> = Vec::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd,
         spill_dir: cwd,
         sandbox: &sandbox,
@@ -543,6 +544,7 @@ fn access_is_write_of_the_normalised_path() {
     let cancel = CancelToken::new();
     let no_env: Vec<(String, String)> = Vec::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &env.work(),
         spill_dir: &env.tmp(),
         sandbox: &sandbox,

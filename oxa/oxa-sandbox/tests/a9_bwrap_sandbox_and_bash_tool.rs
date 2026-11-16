@@ -599,6 +599,7 @@ fn bash_tool_refuses_without_sandbox() {
     let cancel = CancelToken::new();
     let sb = oxa_sandbox::NoSandbox;
     let cx = oxa_proto::ToolCtx {
+        checked: &[],
         cwd: &home,
         spill_dir: &home,
         sandbox: &sb,
@@ -628,6 +629,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
     std::fs::create_dir_all(&cwd).unwrap();
     let cancel = CancelToken::new();
     let cx = oxa_proto::ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &cwd,
         sandbox: &sb,

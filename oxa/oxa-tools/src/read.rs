@@ -2,7 +2,6 @@
 // ported from pi packages/coding-agent/src/core/tools/read.ts
 use crate::descriptions::{self, diet, errors, limits};
 use oxa_proto::{image_placeholder, Access, Tool, ToolCtx, ToolOutput, ToolSpec, ToolTune, Value};
-use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 
@@ -92,8 +91,8 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
     }
 
     // Images first: their headers contain NUL bytes, so the binary test must not see them.
-    let probe = read_probe(&abs, path)?;
-    if let Some((w, h)) = image_size(&abs, &probe).map_err(|e| read_io_error(path, &e))? {
+    let probe = read_probe(&abs, path, cx)?;
+    if let Some((w, h)) = image_size(&abs, &probe, cx).map_err(|e| read_io_error(path, &e))? {
         return Ok(image_placeholder(path, w, h));
     }
     if probe.contains(&0) {
@@ -231,8 +230,8 @@ fn with_hint(notice: &str, hint: &str) -> String {
 }
 
 /// The first bytes of a file, enough for the image and binary tests.
-fn read_probe(abs: &Path, shown: &str) -> Result<Vec<u8>, String> {
-    let file = File::open(abs).map_err(|e| read_io_error(shown, &e))?;
+fn read_probe(abs: &Path, shown: &str, cx: &ToolCtx) -> Result<Vec<u8>, String> {
+    let file = crate::checked::open(cx, abs).map_err(|e| read_io_error(shown, &e))?;
     let mut probe = Vec::new();
     file.take(BINARY_PROBE)
         .read_to_end(&mut probe)
@@ -329,7 +328,7 @@ fn scan_lines(
     cap: usize,
     max_lines: usize,
 ) -> Result<Scan, String> {
-    let file = File::open(abs).map_err(|e| read_io_error(shown, &e))?;
+    let file = crate::checked::open(cx, abs).map_err(|e| read_io_error(shown, &e))?;
     let mut reader = BufReader::with_capacity(SCAN_CHUNK, file);
     let mut sc = Scan::new(start, end, cap, max_lines);
     let mut line = 0usize;
@@ -466,10 +465,12 @@ fn be(b: &[u8], i: usize, n: usize) -> Option<u32> {
 
 /// Width and height of a PNG, GIF, BMP or WebP image from its header; JPEG is read further.
 /// `None` when the file is not one of these, or its header is cut short.
-fn image_size(abs: &Path, head: &[u8]) -> io::Result<Option<(u32, u32)>> {
+fn image_size(abs: &Path, head: &[u8], cx: &ToolCtx) -> io::Result<Option<(u32, u32)>> {
     if head.starts_with(&[0xFF, 0xD8, 0xFF]) {
         let mut buf = Vec::new();
-        File::open(abs)?.take(JPEG_HEADER_MAX).read_to_end(&mut buf)?;
+        crate::checked::open(cx, abs)?
+            .take(JPEG_HEADER_MAX)
+            .read_to_end(&mut buf)?;
         return Ok(jpeg_frame(&buf));
     }
     Ok(header_size(head))

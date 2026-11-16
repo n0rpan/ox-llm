@@ -420,6 +420,7 @@ fn ask(host: &ExtensionHost, env: &TestEnv, ui: &mut ScriptUi, args: Value) -> (
     let cwd = env.work();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,

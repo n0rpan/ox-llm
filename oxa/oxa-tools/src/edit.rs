@@ -5,7 +5,7 @@ use crate::diff::{apply_edits_tolerant, Edit};
 use oxa_proto::{tool_errors, Access, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::fs::OpenOptions;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom, Write};
 
 /// Fixed for `path` missing or not a string (not in the frozen text table; see notes).
 const INVALID_PATH: &str = "Edit tool input is invalid. path must be a string.";
@@ -89,6 +89,13 @@ fn parse_args(args: &Value) -> Result<(String, Vec<Edit>), String> {
     Ok((path.to_string(), edits))
 }
 
+/// Replace the whole content of the open `file` (what `fs::write` does to a name).
+fn rewrite(file: &mut std::fs::File, content: &[u8]) -> std::io::Result<()> {
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(content)
+}
+
 /// pi's error cause for an I/O failure: `Error code: X` for the codes pi names, else the message.
 fn io_cause(e: &std::io::Error) -> String {
     match e.kind() {
@@ -123,7 +130,14 @@ impl Tool for EditTool {
 
         // Opening for read and write checks both, as pi's access(R_OK | W_OK) does, and does
         // not truncate.
-        let mut file = match OpenOptions::new().read(true).write(true).open(&abs) {
+        // #518: the file must be the one the permission check judged; the new content goes
+        // through this same handle, so the name is never followed a second time.
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&abs)
+            .and_then(|f| crate::checked::verify(cx, &abs, &f).map(|()| f));
+        let mut file = match opened {
             Ok(f) => f,
             Err(e) => return ToolOutput::error(errors::edit_could_not(&path, &io_cause(&e))),
         };
@@ -131,7 +145,6 @@ impl Tool for EditTool {
         if let Err(e) = file.read_to_end(&mut bytes) {
             return ToolOutput::error(errors::edit_could_not(&path, &io_cause(&e)));
         }
-        drop(file);
         if cx.cancel.is_cancelled() {
             return ToolOutput::error(errors::ABORTED);
         }
@@ -142,7 +155,7 @@ impl Tool for EditTool {
             Ok(outcome) => outcome,
             Err(text) => return ToolOutput::error(text),
         };
-        if let Err(e) = std::fs::write(&abs, outcome.content.as_bytes()) {
+        if let Err(e) = rewrite(&mut file, outcome.content.as_bytes()) {
             return ToolOutput::error(errors::edit_could_not(&path, &io_cause(&e)));
         }
 
