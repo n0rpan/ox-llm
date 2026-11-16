@@ -800,7 +800,7 @@ fn identical_failed_writer_suffixes_after_commands_get_notices_in_each_batch() {
         let (mut st, eng) = state(&env, turns, Settings::default());
         assert_eq!(run(&mut st, "fix a.txt").0, RunEnd::Stopped);
         let res = results(&st);
-        for batch in res.chunks_exact(LIMIT as usize + 2) {
+        for batch in res.as_chunks::<{ LIMIT as usize + 2 }>().0 {
             assert!(
                 batch[..=LIMIT as usize].iter().all(|r| !is_notice(r)),
                 "{name}: {batch:#?}"
