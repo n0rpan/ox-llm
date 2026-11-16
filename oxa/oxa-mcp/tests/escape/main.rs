@@ -32,46 +32,56 @@ impl Drop for Offline {
     }
 }
 
-/// Ambient proxy variables for one test: every variable ureq reads is cleared, the test's
-/// values are set, and the previous values are restored on drop. The offline tests serialize
-/// on [`NET_LOCK`], so no other transport reads these variables in the meantime.
-struct ProxyEnv {
-    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl ProxyEnv {
-    fn set(proxy: &str, no_proxy: Option<&str>) -> ProxyEnv {
-        const VARS: [&str; 8] = [
-            "ALL_PROXY",
-            "all_proxy",
-            "HTTPS_PROXY",
-            "https_proxy",
-            "HTTP_PROXY",
-            "http_proxy",
-            "NO_PROXY",
-            "no_proxy",
-        ];
-        let saved = VARS.iter().map(|name| (*name, std::env::var_os(name))).collect();
+/// Configure ambient proxies at process creation, never in the multithreaded test runner.
+/// Returns true only in the single-test child; the parent checks its result and returns.
+fn proxy_child(test_name: &str, no_proxy: Option<&str>) -> bool {
+    const CHILD: &str = "OXA_MCP_PROXY_TEST_CHILD";
+    const VARS: [&str; 8] = [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ];
+    if let Some(child) = std::env::var_os(CHILD) {
+        assert_eq!(child, test_name, "only the selected test runs in the child");
         for name in VARS {
-            std::env::remove_var(name);
+            let expected = match name {
+                "ALL_PROXY" => Some("http://192.0.2.1:9"),
+                "NO_PROXY" => no_proxy,
+                _ => None,
+            };
+            assert_eq!(std::env::var(name).ok().as_deref(), expected, "{name}");
         }
-        std::env::set_var("ALL_PROXY", proxy);
-        if let Some(no_proxy) = no_proxy {
-            std::env::set_var("NO_PROXY", no_proxy);
-        }
-        ProxyEnv { saved }
+        return true;
     }
-}
 
-impl Drop for ProxyEnv {
-    fn drop(&mut self) {
-        for (name, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
+    let mut command = std::process::Command::new(std::env::current_exe().expect("test executable"));
+    command.args(["--exact", test_name, "--test-threads=1"]);
+    for name in VARS {
+        command.env_remove(name);
     }
+    command
+        .env(CHILD, test_name)
+        .env("ALL_PROXY", "http://192.0.2.1:9");
+    if let Some(no_proxy) = no_proxy {
+        command.env("NO_PROXY", no_proxy);
+    }
+    let output = command.output().expect("run isolated proxy test");
+    assert!(
+        output.status.success(),
+        "{test_name}: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "the exact child test must run, not silently match zero tests"
+    );
+    false
 }
 
 /// A one-shot HTTP server on loopback: reads the request, writes `response`, returns its URL.
@@ -135,8 +145,18 @@ fn offline_refuses_a_remote_proxy() {
 /// Expected: allowed — ureq routes the excluded target direct, so the loopback call succeeds.
 #[test]
 fn offline_allows_a_loopback_target_excluded_by_no_proxy() {
+    if !proxy_child(
+        "offline_allows_a_loopback_target_excluded_by_no_proxy",
+        Some("127.0.0.1"),
+    ) {
+        return;
+    }
+    assert_eq!(
+        std::env::var("OXA_MCP_PROXY_TEST_CHILD").as_deref(),
+        Ok("offline_allows_a_loopback_target_excluded_by_no_proxy"),
+        "ambient proxy cases must run in a dedicated child process"
+    );
     let _offline = Offline::on();
-    let _env = ProxyEnv::set("http://192.0.2.1:9", Some("127.0.0.1"));
     let (url, server) = respond_once(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 127\r\nConnection: close\r\n\r\n\
          {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"serverInfo\":{\"name\":\"mock\",\"version\":\"1\"}}}",
@@ -158,8 +178,10 @@ fn offline_allows_a_loopback_target_excluded_by_no_proxy() {
 /// Expected refusal: the standard offline error, before any connection.
 #[test]
 fn offline_refuses_an_ambient_remote_proxy_when_not_excluded() {
+    if !proxy_child("offline_refuses_an_ambient_remote_proxy_when_not_excluded", None) {
+        return;
+    }
     let _offline = Offline::on();
-    let _env = ProxyEnv::set("http://192.0.2.1:9", None);
     let mut t = transport(
         "http://127.0.0.1:9/mcp".to_string(),
         None,

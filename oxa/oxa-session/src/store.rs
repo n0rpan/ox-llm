@@ -902,6 +902,7 @@ pub(crate) fn decode_wire_value(w: &Value) -> Result<WireMsg, OxaError> {
             content: opt_str(w, "content")?,
             reasoning: opt_str(w, "reasoning_content")?,
             tool_calls,
+            provider_history: None,
             tool_call_id: opt_str(w, "tool_call_id")?,
         })
     }
@@ -924,6 +925,7 @@ fn decode_pi_wire(msg: &Map<String, Value>, role_str: &str) -> Result<WireMsg, O
         } else {
             Vec::new()
         },
+        provider_history: None,
         tool_call_id: if role == Role::Tool {
             msg.get("toolCallId").and_then(Value::as_str).map(String::from)
         } else {
@@ -1382,6 +1384,7 @@ fn find_session_path(root: &Path, id: &str) -> Option<PathBuf> {
 /// terminal; `--` before a path that starts with `-`); a success, or the file being gone
 /// afterwards, counts as trashed. Otherwise unlink.
 fn remove_session_file(path: &Path) -> Result<crate::Removed, OxaError> {
+    remove_status_sibling(path)?;
     let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut cmd = std::process::Command::new("trash");
     if absolute.to_string_lossy().starts_with('-') {
@@ -1421,6 +1424,7 @@ pub fn session_files_under(root: &Path) -> Vec<(PathBuf, Option<SessionHeader>)>
 /// `Ok` (the wipe is idempotent).
 pub fn purge_session_file(path: &Path) -> Result<(), OxaError> {
     check_safe(path)?;
+    remove_status_sibling(path)?;
     let _ = fs::remove_file(crate::lock_path_of(path));
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1429,6 +1433,16 @@ pub fn purge_session_file(path: &Path) -> Result<(), OxaError> {
             &format!("cannot delete session {}", path.display()),
             &e,
         )),
+    }
+}
+
+/// Only the status artifact belonging to this session. Unlink never follows a final symlink;
+/// a directory or other removal error is reported rather than broadening the deletion.
+fn remove_status_sibling(session: &Path) -> Result<(), OxaError> {
+    match fs::remove_file(session.with_extension("status.json")) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(OxaError::io("cannot delete session status", &e)),
     }
 }
 

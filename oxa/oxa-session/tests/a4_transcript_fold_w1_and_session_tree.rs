@@ -113,6 +113,7 @@ fn random_body(rng: &mut Rng, ids: &[String], prefix_seen: bool) -> EntryBody {
                     name: "read".into(),
                     args_raw: "{\"path\":\"x\"}".into(),
                 }],
+                provider_history: None,
                 tool_call_id: None,
             },
             parts: Vec::new(),
