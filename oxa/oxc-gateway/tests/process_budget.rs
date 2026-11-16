@@ -201,7 +201,14 @@ fn worker(path: PathBuf) {
             hold
         }
         Err(error) => {
-            signal(error.code);
+            // Keep this subprocess protocol finite; never forward arbitrary
+            // refusal fields into captured child output.
+            match error.code {
+                "budget_exceeded" => signal("budget_exceeded"),
+                "subscription_limit_exceeded" => signal("subscription_limit_exceeded"),
+                "cloud_ledger_unavailable" => signal("cloud_ledger_unavailable"),
+                _ => panic!("unexpected admission refusal"),
+            }
             return;
         }
     };
