@@ -5,8 +5,8 @@
 //! Never unlink the lock: independent opens of that inode serialize threads and processes.
 //! Available with `upstream-openai` + `secrets`; unused code adds no default-binary code.
 use nix::{
-    fcntl::{openat, renameat, Flock, FlockArg, OFlag},
-    sys::stat::Mode,
+    fcntl::{openat, renameat, renameat2, Flock, FlockArg, OFlag, RenameFlags},
+    sys::stat::{mkdirat, Mode},
     unistd::{getuid, unlinkat, UnlinkatFlags},
 };
 use serde_json::{json, Value};
@@ -16,7 +16,7 @@ use std::{
     fs::{File, Metadata, OpenOptions, Permissions},
     io::{Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -33,6 +33,8 @@ pub enum Error {
     TooLarge,
     InvalidRecord,
     Refresh,
+    Exists,
+    Account,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,6 +44,8 @@ impl fmt::Display for Error {
             Self::TooLarge => "token record exceeds size limit",
             Self::InvalidRecord => "invalid token record",
             Self::Refresh => "token refresh failed",
+            Self::Exists => "already signed in; replacement requires explicit consent",
+            Self::Account => "sign-in account does not match the configured account",
         })
     }
 }
@@ -228,6 +232,40 @@ pub fn record(reply: &Value, previous: &TokenRecord, now: f64) -> Result<TokenRe
     TokenRecord::new(access.to_owned(), refresh.to_owned(), account, expires_at)
 }
 
+/// Fresh authorization-code reply, never a refresh fallback. The authenticated
+/// issuer supplies account metadata; these decoded claims are not JWT proof.
+/// Neither an ID token nor the reply is stored in the resulting record.
+pub fn login_record(reply: &Value, now: f64) -> Result<TokenRecord, Error> {
+    let text = |field| reply.get(field).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let access = text("access_token").ok_or(Error::InvalidRecord)?;
+    let refresh = text("refresh_token").ok_or(Error::InvalidRecord)?;
+    let account = text("id_token")
+        .map(claims)
+        .and_then(|c| {
+            c["https://api.openai.com/auth"]["chatgpt_account_id"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            claims(access)["https://api.openai.com/auth"]["chatgpt_account_id"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .filter(|s| !s.is_empty())
+        .ok_or(Error::InvalidRecord)?;
+    let expires = reply["expires_in"]
+        .as_f64()
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map(|n| now + n)
+        .or_else(|| access_expiry(access))
+        .ok_or(Error::InvalidRecord)?;
+    let record = TokenRecord::new(access.to_owned(), refresh.to_owned(), account, expires)?;
+    if !record.is_fresh_at(now) {
+        return Err(Error::InvalidRecord);
+    }
+    Ok(record)
+}
+
 // A small bounded base64url decoder avoids adding a dependency for metadata-only
 // JWT inspection. Invalid payloads behave like absent claims, as in Python.
 fn claims(token: &str) -> Value {
@@ -323,6 +361,9 @@ impl Directory {
         )
     }
     fn replace(&self, record: &TokenRecord) -> Result<(), Error> {
+        self.publish(record, false)
+    }
+    fn publish(&self, record: &TokenRecord, create_only: bool) -> Result<(), Error> {
         let bytes = serde_json::to_vec(&json!({
             "access_token": record.access_token, "refresh_token": record.refresh_token,
             "account_id": record.account_id, "expires_at": record.expires_at,
@@ -332,7 +373,9 @@ impl Directory {
             return Err(Error::TooLarge);
         }
         // Check the target again, never write through a replaced link.
-        self.read()?;
+        if !create_only {
+            self.read()?;
+        }
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = OsString::from(format!(
             ".chatgpt-auth-{}-{}.tmp",
@@ -345,8 +388,25 @@ impl Directory {
                 .map_err(|_| Error::Unavailable)?;
             file.write_all(&bytes).map_err(|_| Error::Unavailable)?;
             file.sync_all().map_err(|_| Error::Unavailable)?;
-            renameat(&self.file, name.as_os_str(), &self.file, self.name.as_os_str())
-                .map_err(|_| Error::Unavailable)?;
+            if create_only {
+                renameat2(
+                    &self.file,
+                    name.as_os_str(),
+                    &self.file,
+                    self.name.as_os_str(),
+                    RenameFlags::RENAME_NOREPLACE,
+                )
+                .map_err(|e| {
+                    if e == nix::errno::Errno::EEXIST {
+                        Error::Exists
+                    } else {
+                        Error::Unavailable
+                    }
+                })?;
+            } else {
+                renameat(&self.file, name.as_os_str(), &self.file, self.name.as_os_str())
+                    .map_err(|_| Error::Unavailable)?;
+            }
             self.file.sync_all().map_err(|_| Error::Unavailable)
         })();
         if result.is_err() {
@@ -365,6 +425,107 @@ fn check_file(meta: &Metadata) -> Result<(), Error> {
 /// Read a private, bounded Python token record without refreshing it.
 pub fn read(path: &Path) -> Result<TokenRecord, Error> {
     Directory::open(path)?.read()
+}
+
+/// Fixed owner location, beside the existing cloud key file. Create only the
+/// fixed private directories; refuse links/foreign or writable ancestors and
+/// never relax an existing directory's permissions. Reads no credential bytes.
+pub fn prepare_login_path(home: &Path) -> Result<PathBuf, Error> {
+    let mut directory = OpenOptions::new().read(true)
+        .custom_flags((FLAGS | OFlag::O_DIRECTORY).bits()).open(home).map_err(|_| Error::Unavailable)?;
+    let mut path = home.to_owned();
+    for component in [".config", "oxc", "llm"] {
+        let meta = directory.metadata().map_err(|_| Error::Unavailable)?;
+        if meta.uid() != getuid().as_raw() || meta.mode() & 0o022 != 0 { return Err(Error::UnsafeFile); }
+        match mkdirat(&directory, component, Mode::S_IRWXU) {
+            Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+            Err(_) => return Err(Error::Unavailable),
+        }
+        directory = File::from(openat(&directory, component, FLAGS | OFlag::O_RDONLY | OFlag::O_DIRECTORY, Mode::empty()).map_err(|_| Error::UnsafeFile)?);
+        path.push(component);
+    }
+    let meta = directory.metadata().map_err(|_| Error::Unavailable)?;
+    if meta.uid() != getuid().as_raw() || meta.mode() & 0o022 != 0 { return Err(Error::UnsafeFile); }
+    Ok(path.join("chatgpt-auth.json"))
+}
+
+fn try_lock(dir: &Directory) -> Result<Option<Flock<File>>, Error> {
+    let file = dir.open_file(OsStr::new(LOCK), OFlag::O_RDWR | OFlag::O_CREAT)?;
+    check_file(&file.metadata().map_err(|_| Error::Unavailable)?)?;
+    match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+        Ok(lock) => Ok(Some(lock)),
+        Err((_, e)) if e == nix::errno::Errno::EWOULDBLOCK => Ok(None),
+        Err(_) => Err(Error::Unavailable),
+    }
+}
+
+/// Owner login only. Nonblocking admission shares the permanent refresh lock;
+/// `None` means retry under the caller's deadline/cancellation. Creation never
+/// replaces an existing entry. Explicit replacement still cannot switch account.
+pub fn try_install(
+    path: &Path,
+    record: &TokenRecord,
+    replace: bool,
+    expected_accounts: &[&str],
+) -> Result<Option<()>, Error> {
+    if expected_accounts
+        .iter()
+        .any(|expected| *expected != record.account_id())
+    {
+        return Err(Error::Account);
+    }
+    if !record.fresh()? {
+        return Err(Error::InvalidRecord);
+    }
+    let dir = Directory::open(path)?;
+    let Some(_lock) = try_lock(&dir)? else {
+        return Ok(None);
+    };
+    // Inspect the entry without following links; do not mistake an unsafe or
+    // malformed existing record for an absent record.
+    let present = match nix::sys::stat::fstatat(
+        &dir.file,
+        dir.name.as_os_str(),
+        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+    ) {
+        Ok(_) => true,
+        Err(nix::errno::Errno::ENOENT) => false,
+        Err(_) => return Err(Error::Unavailable),
+    };
+    if present {
+        let previous = dir.read()?;
+        if !replace {
+            return Err(Error::Exists);
+        }
+        if previous.account_id() != record.account_id() {
+            return Err(Error::Account);
+        }
+    }
+    dir.publish(record, !present)?;
+    Ok(Some(()))
+}
+
+/// Owner logout only; remove the checked record under the SAME lock as refresh.
+/// Never remove the lock inode. A waiting old refresher must re-read and fails.
+pub fn try_logout(path: &Path) -> Result<Option<()>, Error> {
+    let dir = Directory::open(path)?;
+    let Some(_lock) = try_lock(&dir)? else {
+        return Ok(None);
+    };
+    match nix::sys::stat::fstatat(
+        &dir.file,
+        dir.name.as_os_str(),
+        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+    ) {
+        Err(nix::errno::Errno::ENOENT) => return Ok(Some(())),
+        Err(_) => return Err(Error::Unavailable),
+        Ok(_) => {}
+    }
+    let file = dir.open_file(&dir.name, OFlag::O_RDONLY)?;
+    check_file(&file.metadata().map_err(|_| Error::Unavailable)?)?;
+    unlinkat(&dir.file, dir.name.as_os_str(), UnlinkatFlags::NoRemoveDir).map_err(|_| Error::Unavailable)?;
+    dir.file.sync_all().map_err(|_| Error::Unavailable)?;
+    Ok(Some(()))
 }
 
 /// Re-read under an exclusive flock before calling the injected refresher.
