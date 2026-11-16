@@ -343,3 +343,56 @@ fn signed_out_is_permanent_and_releases_subscription_tokens_without_paid_fallbac
     assert_eq!(row["subscription_tokens"], 0);
     assert_eq!(peer.requests().len(), 1);
 }
+
+#[test]
+fn dropping_changed_context_authority_requires_a_fresh_user_turn_for_a_tool_tail() {
+    let peer = mock::MockOpenAi::start(vec![mock::Reply::multi_tool_no_deltas(), final_reply()]);
+    let fixture = skeleton::Fixture::for_endpoint(&peer.base_url());
+    install(&fixture, false);
+    let engine = engine(&fixture, &peer.base_url(), false);
+    let prefix = prefix();
+    let first = [WireMsg::user("Synthetic task")];
+    let turn = engine
+        .chat(
+            &ChatRequest::new(&prefix, &first, skeleton::MODEL),
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    let calls = turn.msg.tool_calls.clone();
+    let mut messages = vec![
+        WireMsg::user("Compacted synthetic context"),
+        first[0].clone(),
+        turn.msg,
+    ];
+    for call in calls {
+        messages.push(WireMsg::tool_result(call.id, "Synthetic completed result"));
+    }
+    // The merged session rebase contract drops changed-prefix authority;
+    // no stale carrier is rebound or silently accepted in this probe.
+    for message in &mut messages {
+        message.provider_history = None;
+    }
+    let continued = engine.chat(
+        &ChatRequest::new(&prefix, &messages, skeleton::MODEL),
+        &CancelToken::new(),
+        &mut |_| {},
+    );
+    assert_eq!(continued.unwrap_err().code, codes::ENGINE_HTTP);
+    assert_eq!(peer.requests().len(), 1);
+    let refused = rows(&fixture).pop().unwrap();
+    assert_eq!(refused["status"], 400);
+    assert_eq!(refused["error"], "invalid_value");
+    assert_eq!(refused["settled"], "not_forwarded");
+    assert_eq!(refused["cost_usd"], 0.0);
+    messages.push(WireMsg::user("Continue the synthetic task in this fresh context"));
+    let continued = engine
+        .chat(
+            &ChatRequest::new(&prefix, &messages, skeleton::MODEL),
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert_eq!(continued.msg.content.as_deref(), Some("Done"));
+    assert_eq!(peer.requests().len(), 2);
+}
