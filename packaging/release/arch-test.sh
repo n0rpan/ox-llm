@@ -66,7 +66,7 @@ for variant in ox-llm ox-llm-bin; do
   while read -r path; do
     [[ ! -e $path && ! -L $path ]] || { echo "left behind: $path"; exit 1; }
   done < /tmp/installed-files
-  for path in /usr/bin/oxc /usr/bin/oxa /usr/bin/oxe /usr/bin/oxe-server /usr/share/ox-llm /usr/share/licenses/ox-llm /usr/share/licenses/ox-llm-bin; do
+  for path in /usr/bin/oxc /usr/bin/oxa /usr/bin/oxe /usr/bin/oxe-server /usr/share/ox-llm /usr/share/doc/ox-llm /usr/share/licenses/ox-llm /usr/share/licenses/ox-llm-bin; do
     [[ ! -e $path && ! -L $path ]] || { echo "left behind: $path"; exit 1; }
   done
   cd /build
