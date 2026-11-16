@@ -99,3 +99,72 @@ fn continue_restores_a_pursuing_goal_without_rereading_the_objective_file() {
         .system
         .contains("Finish synthetic work after restart."));
 }
+
+#[test]
+fn broken_request_usage_survives_restart_without_granting_another_goal_allowance() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+    );
+    env.write("work/goal.txt", "Finish synthetic work.");
+    let mut cut = ScriptTurn::text(&"synthetic partial output ".repeat(100));
+    cut.chunk = 1;
+    cut.fault = Some(Fault::DropAt { bytes: 300 });
+    let first = FakeServer::start(vec![cut], FakeOpts::default()).unwrap();
+    let output = run(&env, &first, &["--goal", "goal.txt", "--max-tokens", "100000"]);
+    let record = result(&output);
+    assert_eq!(record["goal"]["unknown_requests"], 1);
+    assert_eq!(record["goal"]["status"], "blocked");
+    let next = FakeServer::start(
+        vec![ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Must not get a fresh allowance"}"#,
+        )],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = run(
+        &env,
+        &next,
+        &["--continue", record["session_id"].as_str().unwrap()],
+    );
+    let resumed = result(&output);
+    assert_eq!(resumed["outcome"], "blocked");
+    assert_eq!(resumed["goal"]["unknown_requests"], 1);
+    assert!(next.requests().is_empty());
+}
+
+#[test]
+fn pre_admission_refusal_does_not_turn_the_goal_budget_into_unknown_spend() {
+    for (status, code) in [(429, "budget_exceeded"), (503, "cloud_credentials_unavailable")] {
+        let env = TestEnv::new();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+        );
+        env.write("work/goal.txt", "Finish synthetic work.");
+        let refused = FakeServer::start(vec![ScriptTurn::fault(Fault::Http { status, body: serde_json::json!({"error":{"type":"cloud_error","code":code,"message":"Synthetic pre-admission refusal"}}).to_string() })], FakeOpts::default()).unwrap();
+        let output = run(&env, &refused, &["--goal", "goal.txt", "--max-tokens", "100000"]);
+        let record = result(&output);
+        assert_eq!(record["goal"]["unknown_requests"], 0);
+        assert_eq!(record["goal"]["status"], "pursuing");
+        let next = FakeServer::start(
+            vec![ScriptTurn::tool(
+                "done",
+                "goal_done",
+                r#"{"status":"complete","evidence":"Known refusal used no generation allowance"}"#,
+            )],
+            FakeOpts::default(),
+        )
+        .unwrap();
+        let output = run(
+            &env,
+            &next,
+            &["--continue", record["session_id"].as_str().unwrap()],
+        );
+        assert_eq!(result(&output)["outcome"], "done");
+        assert_eq!(next.requests().len(), 1);
+    }
+}

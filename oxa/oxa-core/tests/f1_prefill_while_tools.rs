@@ -1057,3 +1057,47 @@ fn advancing_tool_prefill_counts_as_progress_while_a_quiet_tool_runs() {
         .iter()
         .all(|reference| reference.id == inner.requests()[1].session));
 }
+
+#[test]
+fn cancelled_sent_prefill_marks_goal_usage_unknown_before_another_generation() {
+    let _g = serial(SHORT);
+    let env = TestEnv::new();
+    let scripted = Arc::new(ScriptedEngine::new(script(reads_then_slow())));
+    let logged = Logged::new(scripted.clone(), true);
+    let (tx, rx) = mpsc::channel();
+    *logged.entered.lock().unwrap() = Some(tx);
+    let rx = Mutex::new(rx);
+    let until: Until = Arc::new(move |_cx: &ToolCtx| {
+        rx.lock().unwrap().recv_timeout(Duration::from_secs(10)).unwrap();
+    });
+    let mut session = open(&env, logged.clone(), tools(1500, until), tools_on(true), false);
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    session
+        .set_goal(
+            Some(
+                oxa_session::Goal::new(
+                    "Synthetic bounded goal".into(),
+                    oxa_session::GoalBudget {
+                        max_tokens: Some(100000),
+                        ..Default::default()
+                    },
+                    0,
+                )
+                .unwrap(),
+            ),
+            &mut sink,
+        )
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut ui)
+        .unwrap();
+    assert_eq!(
+        scripted.requests().len(),
+        1,
+        "An uncertain prefill must stop the next generation"
+    );
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.unknown_requests, 1);
+    assert_eq!(goal.status, oxa_session::GoalStatus::Blocked);
+}

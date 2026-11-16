@@ -63,6 +63,7 @@ impl ResultFacts {
             serde_json::json!({
                 "status":g.status.as_str(), "evidence":g.evidence, "turns":g.turns,
                 "tokens_used":g.tokens_used, "elapsed_ms":g.elapsed_ms,
+            "unknown_requests":g.unknown_requests,
             })
         });
     }

@@ -69,6 +69,13 @@ impl GoalRuntime {
             state.goal.evidence = Some("Project done checks failed; completion refused.".into());
         }
     }
+    pub(crate) fn uncertain_request(&self) -> Result<(), oxa_proto::OxaError> {
+        if self.engaged() {
+            self.lock().goal.charge(None, 0, false)?;
+            self.enforce_budget();
+        }
+        Ok(())
+    }
     pub(crate) fn enforce_budget(&self) {
         let mut state = self.lock();
         if state.goal.status == GoalStatus::Pursuing && state.goal.exhausted() {
@@ -240,4 +247,32 @@ pub(crate) fn checkpoint(
 }
 pub(crate) fn terminal(st: &crate::SessionState) -> bool {
     st.goal.as_ref().is_some_and(|g| g.engaged() && !g.pursuing())
+}
+
+/// Without terminal usage, a failed attempted generation has no exact spend.
+/// Only stable pre-admission classes prove no generation, unless output was
+/// already observed. Transport failures remain uncertain even before output.
+pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled: bool) -> bool {
+    use oxa_proto::codes;
+    if output {
+        return true;
+    }
+    if pre_cancelled && error.code == codes::ABORTED {
+        return false;
+    }
+    !matches!(
+        error.code,
+        codes::OFFLINE
+            | codes::BUDGET_EXHAUSTED
+            | codes::ENGINE_DOWN
+            | codes::ENGINE_BUSY
+            | codes::CONTEXT_OVERFLOW
+            | codes::DENIED
+            | codes::INVALID
+            | codes::USAGE
+            | codes::UNSUPPORTED_IN_OXA
+            | "cloud_credentials_unavailable"
+            | "cloud_ledger_unavailable"
+            | "cloud_sdk_unavailable"
+    )
 }

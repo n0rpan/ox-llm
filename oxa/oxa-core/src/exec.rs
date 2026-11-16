@@ -53,6 +53,12 @@ pub fn request(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<AssistantTurn, OxaError> {
+    if crate::goal::terminal(st) {
+        return Err(OxaError::new(
+            codes::BUDGET_EXHAUSTED,
+            "The stored goal cannot make another request.",
+        ));
+    }
     // OXA-LOCAL-FIRST F1: a tool-result prefill still running (a host request served while a
     // tool runs, e.g. the park before a subagent) ends first: one request in flight at a time.
     // Nothing is sent while it is still registered (deferred, then `engine_busy`).
@@ -127,7 +133,15 @@ pub fn request(
         );
     }
     let mut prefilled = 0;
+    let mut generated = false;
     let mut on = |ev: StreamEvent| {
+        generated |= match &ev {
+            StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
+            StreamEvent::ToolArgs { id, name, delta, .. } => {
+                id.is_some() || name.is_some() || !delta.is_empty()
+            }
+            _ => false,
+        };
         if let Some(progress) = &progress {
             let advanced = match &ev {
                 StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
@@ -145,6 +159,7 @@ pub fn request(
         hooks.raw(st, &ev, sink, ui);
         stream.handle(ev, &mut hooks.sink(st, sink, ui), opts.events)
     };
+    let pre_cancelled = cancel.is_cancelled();
     let turn = engine.chat(&req, &cancel, &mut on);
     if let Some(progress) = &progress {
         progress.notify(
@@ -155,7 +170,18 @@ pub fn request(
             },
         );
     }
-    let turn = turn?;
+    let turn = match turn {
+        Ok(turn) => turn,
+        Err(error) => {
+            if crate::goal::uncertain(&error, generated, pre_cancelled) {
+                if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+                    goal.uncertain_request()?;
+                    crate::goal::checkpoint(st, false, sink)?;
+                }
+            }
+            return Err(error);
+        }
+    };
     crate::Handle {
         shared: st.shared.clone(),
     }
@@ -704,6 +730,7 @@ fn start_tool_prefill(
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
     let progress = crate::progress::observer(st);
     let user_abort = st.shared.cancel.clone();
+    let goal = st.goal.clone().filter(|g| g.engaged());
     let budget = crate::Handle {
         shared: st.shared.clone(),
     };
@@ -765,7 +792,8 @@ fn start_tool_prefill(
                     );
                 }
                 let mut prefilled = 0;
-                let res = engine.chat(&req, &cancel, &mut |event| {
+                let pre_cancelled = cancel.is_cancelled();
+                let mut res = engine.chat(&req, &cancel, &mut |event| {
                     if let (Some(progress), StreamEvent::Prefill { done, .. }) = (&progress, event) {
                         if done > prefilled {
                             prefilled = done;
@@ -787,6 +815,15 @@ fn start_tool_prefill(
                         u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
                             + u64::from(turn.usage.completion),
                     );
+                }
+                if let Err(error) = &res {
+                    if crate::goal::uncertain(error, false, pre_cancelled) {
+                        if let Some(goal) = &goal {
+                            if let Err(error) = goal.uncertain_request() {
+                                res = Err(error);
+                            }
+                        }
+                    }
                 }
                 done.store(true, Ordering::SeqCst);
                 res.map(|_| true)

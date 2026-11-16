@@ -1194,6 +1194,21 @@ fn run_headless(
         }
     }
     if prompts.is_empty() {
+        if let Some(goal) = session.goal() {
+            let outcome = match goal.status {
+                oxa_session::GoalStatus::Done => oxa_core::RunOutcome::Done,
+                oxa_session::GoalStatus::Blocked => oxa_core::RunOutcome::Blocked("goal_blocked"),
+                oxa_session::GoalStatus::Paused => oxa_core::RunOutcome::Stalled,
+                oxa_session::GoalStatus::Pursuing => oxa_core::RunOutcome::NothingToDo,
+            };
+            built.result_facts.goal(Some(goal));
+            session.shutdown(&mut oxa_proto::HeadlessUi::default());
+            let result = built
+                .status
+                .as_ref()
+                .map_or(Ok(outcome), |status| status.finish(Ok(outcome), stderr));
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
+        }
         return finish_outcome_facts(
             Err(OxaError::new(codes::USAGE, "No prompt or pursuing stored goal.")),
             stderr,
