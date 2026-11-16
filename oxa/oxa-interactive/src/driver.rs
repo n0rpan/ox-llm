@@ -3426,3 +3426,6 @@ mod block_cache_tests {
         assert_eq!(c.starts[0], 1);
     }
 }
+
+#[cfg(test)]
+mod catalog_tests;
