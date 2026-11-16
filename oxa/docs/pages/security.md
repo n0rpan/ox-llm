@@ -72,6 +72,8 @@ What a command sees:
 
 Tools that insist on "owned by root or the caller" (stat/ownership checks, some wrappers, sudo-like or ssh strict-mode checks) fail only inside the sandbox because of this uid mapping. That is an artifact of the user namespace, not a repo bug, and no flag maps host root without extra privilege; report such failures as environmental.
 
+The same mapping limits what a command can write as metadata. Setting a POSIX ACL (`setfacl`, or `fsetxattr` on `system.posix_acl_access`) that names a user id or group id other than the mapped ones fails with `EINVAL`, because the kernel cannot represent an unmapped id in the namespace; the same goes for `chown` to another id. Named entries for your own uid and gid, and ACLs with only owner, group, mask and other entries, work. A test or script that needs a foreign named uid in an ACL has to run outside the sandbox.
+
 The environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM` and `AI_AGENT`, the toolchain variables that are set (for example `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `NVM_DIR`, `UV_CACHE_DIR`, and the `MISE_*` variables), and the variables oxa sets for the session (`OXA_SESSION_ID`, and `OXA_SESSION_FILE` unless the session is ephemeral). Every other variable is dropped, including your API keys and tokens. A toolchain variable whose name contains `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` is never passed.
 
 ### Starting in your home directory
@@ -89,10 +91,11 @@ Writable package caches are shared with your own builds. A crate or Go module th
 
 ### The deny-list
 
-These paths are masked inside the sandbox, and the file tools refuse them in every mode, whatever the grants or settings say. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
+These paths are masked inside the sandbox, and the file tools refuse them in every mode, whatever the grants or settings say. `grep`, `find` and `ls` on a folder above them (your home directory, `~/.config`) skip them: their names and contents are not shown. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
 
-- SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`.
-- Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`.
+- SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`, `~/.s3cfg`, `~/.config/rclone`, `~/.config/hcloud`, `~/.config/doctl`, `~/.config/sops/age`.
+- Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`, `~/.gem/credentials`, `~/.m2/settings.xml`, `~/.gradle/gradle.properties`, `~/.config/github-copilot`.
+- Container registry logins: `~/.config/containers/auth.json`, `~/.local/share/containers/auth.json` (and `~/.docker/config.json`, below).
 - oxa Cloud keys: `~/.config/oxc/llm/cloud-secrets.json`.
 - Password stores and keyrings: `~/.password-store`, `~/.local/share/keyrings`, `~/.config/op`, `~/.config/Bitwarden`, `~/.pki`.
 - Browser profiles: Firefox, Thunderbird, Chrome, Chromium, Brave, Edge, Vivaldi and Opera profile directories.
