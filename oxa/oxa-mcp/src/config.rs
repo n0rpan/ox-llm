@@ -1,4 +1,4 @@
-//! E9: `mcp.json` (read, merge, expand, edit in place). Owner: task E9. Signatures below are frozen; bodies are yours.
+//! E9: `mcp.json` (read, merge, expand, edit in place).
 // ported from pi packages/mcp/src/config.ts and packages/coding-agent/src/core/mcp-servers.ts
 use crate::names::{pattern_matches, same_server, valid_server_name};
 use crate::{

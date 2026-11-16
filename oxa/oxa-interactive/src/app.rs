@@ -1,4 +1,4 @@
-//! D1: the interactive main loop and the pure event reducer. Owner: task D1. Signatures below are frozen; bodies are yours.
+//! D1: the interactive main loop and the pure event reducer.
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts
 use crate::driver::Loop;
 use crate::{

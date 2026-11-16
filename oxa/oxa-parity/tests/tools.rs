@@ -1,4 +1,4 @@
-//! G1 PARITY tests (tools). Owner: task G1.
+//! G1 PARITY tests (tools).
 //! One test per PARITY.md row of this area, named after the row id (`CLI-012` -> `fn cli_012()`).
 //! The four tests below are the meta-checks of the task; the row tests are added by the task.
 //! Helpers: `oxa_parity::{oxa_bin, fake_bin, run_oxa, fixture}`, `oxa_fake::TestEnv`.

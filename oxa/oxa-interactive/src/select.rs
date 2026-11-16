@@ -1,4 +1,4 @@
-//! D3: mouse text selection and copy in fullscreen mode. Owner: task D3. Signatures below are frozen; bodies are yours.
+//! D3: mouse text selection and copy in fullscreen mode.
 // ported from pi packages/coding-agent/src/modes/interactive/chat-viewport.ts (selection)
 use oxa_tui::{
     cluster_boundaries, slice_by_column, strip_ansi, visible_width, Mouse, MouseButton, MouseKind, Theme,

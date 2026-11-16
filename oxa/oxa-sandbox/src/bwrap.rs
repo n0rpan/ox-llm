@@ -1,4 +1,4 @@
-//! A9: the bwrap argv. Owner: task A9. Signatures below are frozen; bodies are yours.
+//! A9: the bwrap argv.
 use crate::gitdirs::{
     alias_refusal, configured_hooks_paths, hooks_alias_refusal, is_real_dir, protected_entries,
     unsafe_reason, Mounts,
@@ -1496,6 +1496,26 @@ mod tests {
             Some(&real),
         );
         assert!(!binds_src(&on, &gh), "{on:?}");
+    }
+
+    #[test]
+    fn chatgpt_auth_file_is_masked() {
+        let env = TestEnv::new();
+        // The legacy path: no parent directory mask covers it (`.config/oxc` would hide the
+        // new path even without this entry), so only the dedicated entry can hide it.
+        env.write(
+            "home/.config/local-ai/llm/chatgpt-auth.json",
+            "SYNTH-CHATGPT-TOKEN",
+        );
+        let f = env.home().join(".config/local-ai/llm/chatgpt-auth.json");
+        for online in [false, true] {
+            let on = bwrap_args_homes(&spec(&env.home(), online), &env.home(), &Layout::default(), None);
+            let hidden = f.ancestors().take_while(|a| *a != env.home()).any(|a| {
+                let a = a.to_string_lossy();
+                on.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == a) || on.iter().any(|x| *x == a)
+            });
+            assert!(hidden, "{on:?}");
+        }
     }
 
     #[test]
