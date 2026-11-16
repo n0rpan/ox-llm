@@ -97,6 +97,7 @@ fn fixture() -> TestEnv {
     let sessions = "home/.oxa/agent/sessions";
     for id in [A, B, C] {
         write_session(&env, sessions, id);
+        oxa_session::send_inbox(&env.agent_dir(), id, &format!("pending private words of {id}")).unwrap();
         env.write(
             &format!("home/.oxa/agent/tmp/{id}/bash-1.log"),
             &format!("output of {id}"),
