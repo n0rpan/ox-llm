@@ -523,6 +523,49 @@ fn live_clone_and_fork_rebind_spill_policy_and_walk_filter() {
     assert_readable_spill(&s, &old.join("inherited.txt"));
 }
 
+/// #744: queued RPC bash jobs must not run after a headless SIGINT, even on a later claim.
+#[test]
+fn interrupt_before_user_bash_claim_is_sticky_and_does_not_execute() {
+    let env = TestEnv::new();
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+    let handle = session.handle();
+    handle.interrupt();
+    for _ in 0..2 {
+        let _ = session.user_bash(
+            "printf unwanted > bash-started",
+            false,
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        );
+        assert!(!env.work().join("bash-started").exists(), "interrupted bash ran");
+        assert!(handle.interrupted());
+        assert!(!handle.is_busy());
+    }
+}
+
+/// An ordinary idle abort must still leave the next interactive !cmd usable.
+#[test]
+fn idle_abort_does_not_prevent_user_bash() {
+    let env = TestEnv::new();
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new())), Open::New).unwrap();
+    let handle = session.handle();
+    handle.abort();
+    session
+        .user_bash(
+            "printf expected > bash-started",
+            false,
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("bash-started")).unwrap(),
+        "expected"
+    );
+    assert!(!handle.interrupted());
+    assert!(!handle.is_busy());
+}
+
 /// #699: a headless SIGINT before the worker claims a prompt must not be reset away.
 #[test]
 fn interrupt_before_claim_is_sticky_and_does_not_generate() {

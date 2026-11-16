@@ -23,7 +23,7 @@ impl Process {
             cmd
         } else {
             let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
-            cmd.arg("--yolo");
+            cmd.env_clear().arg("--yolo");
             if mode == "print" {
                 cmd.args(["-p", "synthetic cancellation check"]);
             } else {
