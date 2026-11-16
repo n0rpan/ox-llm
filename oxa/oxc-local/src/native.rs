@@ -712,6 +712,38 @@ mod tests {
         drop(engine);
     }
     #[test]
+    fn cancellation_reaps_the_child_before_a_fresh_request_reuses_the_queue() {
+        let env = TestEnv::new();
+        let engine = engine(&env, Policy::default());
+        let prefix = prefix();
+        let cancel = CancelToken::new();
+        let mut interrupted_pid = None;
+        let result = engine.chat(
+            &ChatRequest::new(&prefix, &[], "fake-model"),
+            &cancel,
+            &mut |_| {
+                interrupted_pid = engine.status().pid;
+                cancel.cancel();
+            },
+        );
+        assert_eq!(result.unwrap_err().code, codes::ABORTED);
+        let interrupted_pid = interrupted_pid.expect("stream callback observed the owned child");
+        // Reuse the same gate while the interrupted child may still be stopping.
+        let next = engine
+            .chat(
+                &ChatRequest::new(&prefix, &[], "fake-model"),
+                &CancelToken::new(),
+                &mut |_| {
+                    assert!(!PathBuf::from(format!("/proc/{interrupted_pid}")).exists());
+                },
+            )
+            .unwrap();
+        assert_eq!(next.finish, Finish::ToolCalls);
+        assert_ne!(engine.status().pid, Some(interrupted_pid));
+        drop(engine);
+        assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
+    }
+    #[test]
     fn model_switch_reaps_the_previous_child_and_engine_drop_reaps_the_last() {
         let env = TestEnv::new();
         let engine = engine(&env, Policy::default());
