@@ -476,7 +476,17 @@ fn deny_path() {
     say(&mut st2, "write again");
     let (end2, _) = run(&mut st2);
     assert_eq!(end2, RunEnd::Stopped);
-    assert_eq!(tool_text(&st2.transcript.wire()[2]), tool_errors::DENIED_BY_USER);
+    // #554: nobody was asked, so the text must not claim that "the user declined"; it names the
+    // action and says why it was refused.
+    let unasked = tool_text(&st2.transcript.wire()[2]);
+    assert_ne!(unasked, tool_errors::DENIED_BY_USER);
+    assert!(
+        unasked.starts_with(tool_errors::DENIED_PREFIX)
+            && unasked.contains("write ")
+            && unasked.contains("needs approval")
+            && unasked.contains("cannot ask"),
+        "{unasked}"
+    );
     assert_eq!(eng2.requests().len(), 2);
     assert_eq!(runs.load(Ordering::SeqCst), 0);
 }

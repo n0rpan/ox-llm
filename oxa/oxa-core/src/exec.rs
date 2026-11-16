@@ -760,11 +760,13 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
                 Answer::Once => {}
                 Answer::Session => st.policy.remember(a),
                 Answer::Deny => {
-                    return mk(
-                        args,
-                        exec,
-                        Plan::Done(ToolOutput::error(tool_errors::DENIED_BY_USER)),
-                    );
+                    // #554: with no one to ask, nobody declined; say what was refused and why.
+                    let text = if ui.interactive() {
+                        tool_errors::DENIED_BY_USER.to_string()
+                    } else {
+                        tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a))
+                    };
+                    return mk(args, exec, Plan::Done(ToolOutput::error(text)));
                 }
             },
         }
