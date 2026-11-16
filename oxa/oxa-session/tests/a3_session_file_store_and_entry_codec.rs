@@ -715,3 +715,42 @@ fn tool_result_display_meta_round_trips() {
     encode_entry(&e, &mut line);
     assert_eq!(decode_entry(&line).unwrap().body, e.body);
 }
+
+/// #577: a reply without `cached_tokens` must not come back from the file as a full cache miss.
+#[test]
+fn usage_without_cached_tokens_round_trips_as_missing() {
+    let e = Entry {
+        id: "a1b2c3d4".into(),
+        parent: None,
+        ts_ms: 1_700_000_000_000,
+        body: EntryBody::Usage {
+            kind: "chat".into(),
+            usage: Usage {
+                prompt: 900,
+                completion: 12,
+                cached: 0,
+                cached_missing: true,
+            },
+        },
+    };
+    let line = line_of(&e);
+    let v: serde_json::Value = serde_json::from_slice(&line).unwrap();
+    assert!(v["usage"].get("cacheRead").is_none(), "{v}");
+    assert_eq!(decode_entry(&line).unwrap().body, e.body);
+
+    // A reported zero stays a reported zero.
+    let miss = Entry {
+        body: EntryBody::Usage {
+            kind: "chat".into(),
+            usage: Usage {
+                prompt: 900,
+                completion: 12,
+                cached: 0,
+                cached_missing: false,
+            },
+        },
+        ..e
+    };
+    let line = line_of(&miss);
+    assert_eq!(decode_entry(&line).unwrap().body, miss.body);
+}

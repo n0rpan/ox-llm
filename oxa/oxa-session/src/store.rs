@@ -526,7 +526,10 @@ fn body_fields(body: &EntryBody, ts_ms: u64) -> (&'static str, Map<String, Value
             let mut u = Map::new();
             u.insert("input".into(), Value::from(usage.prompt));
             u.insert("output".into(), Value::from(usage.completion));
-            u.insert("cacheRead".into(), Value::from(usage.cached));
+            // Not reported is not a miss: leave `cacheRead` out (decoded as `cached_missing`).
+            if !usage.cached_missing {
+                u.insert("cacheRead".into(), Value::from(usage.cached));
+            }
             u.insert("cacheWrite".into(), Value::from(0u32));
             u.insert(
                 "totalTokens".into(),
@@ -930,7 +933,7 @@ fn decode_usage(o: &Map<String, Value>) -> Usage {
         prompt: num("input"),
         completion: num("output"),
         cached: num("cacheRead"),
-        cached_missing: false,
+        cached_missing: o.get("cacheRead").and_then(Value::as_u64).is_none(),
     }
 }
 
