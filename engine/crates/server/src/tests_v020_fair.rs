@@ -493,6 +493,44 @@ fn held_and_parked_sessions_share_one_tight_budget() {
     );
 }
 
+/// A suspended run that is aborted (client gone, SIGTERM) parks its held session in RAM; its state
+/// was never written to the state store, so a RAM eviction would lose it. The abort writes it
+/// first, as a session switch does for the live session it puts away (issue #588).
+#[test]
+fn abort_of_a_suspended_run_writes_its_unwritten_state_to_the_store() {
+    let tok = synthetic_tokenizer();
+    let dir = crate::tests_state::tmp("fair-abort");
+    let mut w = stub_worker(&tok, 8192);
+    w.states = Some(crate::tests_state::open(
+        &dir,
+        crate::tests_state::ident("sha256:m", ""),
+        1 << 40,
+    ));
+    let a = prompt(
+        &tok,
+        &format!("A{}", " the sliced conversation.".repeat(20)),
+    );
+    assert!(a.len() > 300, "above the store's minimum");
+    let mut sr = w.generate_start(&a, &greedy(60)).unwrap();
+    let r = w
+        .generate_slice(&tok, &a, &greedy(60), &mut sr, &mut |_| true, &mut || true)
+        .unwrap();
+    assert!(r.is_none(), "the run yielded");
+    assert!(w.states.as_ref().unwrap().manifests.is_empty());
+    w.generate_abort(sr);
+    let held = *w.cache.parked_lengths().last().expect("parked in RAM");
+    assert!(held > a.len(), "the parked session has decoded tokens");
+    let st = w.states.as_ref().unwrap();
+    assert!(
+        st.manifests
+            .values()
+            .any(|m| m.snaps.iter().any(|x| x.pos == held)),
+        "the held session's head is on disk"
+    );
+    assert_eq!(w.cache.reserved, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- service level ----
 
 fn fair_state(quantum_ms: u64, decode_us: u64, park_budget: usize) -> Arc<State<StubEngine>> {

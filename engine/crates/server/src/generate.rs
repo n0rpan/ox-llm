@@ -2522,12 +2522,42 @@ impl<E: Engine> Worker<E> {
 
     /// A suspended generation that will not continue (its client left, SIGTERM): its session
     /// joins the parked sessions in RAM (budget permitting) like the consistent prefix a cancel
-    /// leaves live, so the next turn of that conversation can reuse it.
+    /// leaves live, so the next turn of that conversation can reuse it. With the state store on,
+    /// what of it is not on disk yet is written first (issue #588).
     pub fn generate_abort(&mut self, sr: SlicedRun<E::Snapshot>) {
         if let Some(s) = sr.held {
             self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
             self.cache.reserved = self.held_bytes;
-            if let Some(h) = s.local.held {
+            let l = s.local;
+            // its unwritten state goes to the state store first, as a session switch writes the
+            // live session it puts away: a RAM eviction of the parked copy must not lose it
+            if (l.state_dirty || l.snaps_pending) && self.park_write && self.states.is_some() {
+                // a failed load drops that session (the engine says why); nothing else to do
+                if let Err(e) = self.load_suspended(l, s.persisted_head) {
+                    eprintln!("oxe-server: an aborted generation could not be written: {e:?}");
+                    self.cache.reset(&mut self.engine);
+                    return;
+                }
+                let local = GenParams {
+                    cache_prompt: true,
+                    ..Default::default()
+                };
+                self.park_to_states(&[], &local);
+                // the whole session to the RAM park, the engine empty as after a suspension
+                if self.cache.park_whole(&mut self.engine).is_err() {
+                    eprintln!("oxe-server: an aborted generation could not be parked");
+                }
+                self.cache.reset(&mut self.engine);
+                self.live_blocks.clear();
+                self.progress_mark = 0;
+                self.state_dirty = false;
+                self.snaps_pending = false;
+                self.last_first_user = None;
+                self.live_hint = None;
+                self.persisted_head = None;
+                return;
+            }
+            if let Some(h) = l.held {
                 self.cache.park_held(h);
             }
         }
@@ -2601,6 +2631,41 @@ impl<E: Engine> Worker<E> {
         })
     }
 
+    /// Put whatever is live away as a session switch does (its unwritten state to the state store,
+    /// then the whole session to the RAM park) and load a suspended session back as the live one,
+    /// bit for bit, with its worker fields.
+    fn load_suspended(
+        &mut self,
+        mut l: HeldLocal<E::Snapshot>,
+        persisted_head: Option<String>,
+    ) -> Result<(), GenError> {
+        if !self.cache.tokens.is_empty() {
+            let local = GenParams {
+                cache_prompt: true,
+                ..Default::default()
+            };
+            self.park_to_states(&[], &local);
+            self.cache.park_whole(&mut self.engine)?;
+        }
+        // nothing a preload put into the engine survives the load below
+        self.preloaded = None;
+        let h = l.held.take().expect("a suspended run holds its session");
+        let n = h.len();
+        if self.cache.restore_held(&mut self.engine, h)? != n {
+            return Err(GenError::Engine(EngineError(
+                "a suspended generation could not be loaded back".into(),
+            )));
+        }
+        self.live_blocks = l.live_blocks;
+        self.progress_mark = l.progress_mark;
+        self.state_dirty = l.state_dirty;
+        self.snaps_pending = l.snaps_pending;
+        self.last_first_user = l.last_first_user;
+        self.live_hint = l.live_hint;
+        self.persisted_head = persisted_head;
+        Ok(())
+    }
+
     /// Bring a suspended run back: whatever is live now is put away as a session switch does (its
     /// unwritten state to the state store, then the whole session to the RAM park), the held
     /// session is loaded back bit for bit with its worker fields, the engine gets the request's
@@ -2622,31 +2687,7 @@ impl<E: Engine> Worker<E> {
         run.stats0.park_evictions += now.park_evictions - s.stats.park_evictions;
         run.stats0.park_ms += now.park_ms - s.stats.park_ms;
         run.stats0.unpark_ms += now.unpark_ms - s.stats.unpark_ms;
-        if !self.cache.tokens.is_empty() {
-            let local = GenParams {
-                cache_prompt: true,
-                ..Default::default()
-            };
-            self.park_to_states(&[], &local);
-            self.cache.park_whole(&mut self.engine)?;
-        }
-        // nothing a preload put into the engine survives the load below
-        self.preloaded = None;
-        let mut l = s.local;
-        let h = l.held.take().expect("a suspended run holds its session");
-        let n = h.len();
-        if self.cache.restore_held(&mut self.engine, h)? != n {
-            return Err(GenError::Engine(EngineError(
-                "a suspended generation could not be loaded back".into(),
-            )));
-        }
-        self.live_blocks = l.live_blocks;
-        self.progress_mark = l.progress_mark;
-        self.state_dirty = l.state_dirty;
-        self.snaps_pending = l.snaps_pending;
-        self.last_first_user = l.last_first_user;
-        self.live_hint = l.live_hint;
-        self.persisted_head = s.persisted_head;
+        self.load_suspended(s.local, s.persisted_head)?;
         // the worker's view of "the last request" is this one again
         self.snap_chosen = run.snap_chosen;
         self.snap_why = run.snap_why;
