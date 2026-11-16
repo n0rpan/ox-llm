@@ -310,3 +310,54 @@ fn budget_exhausted_by_wait_still_runs_checks_for_earlier_edits() {
     assert!(session.stats().done_failed);
     assert_eq!(session.goal().unwrap().status, GoalStatus::Blocked);
 }
+
+#[test]
+fn goal_completion_obeys_the_existing_final_answer_schema_repair() {
+    use oxa_core::output_schema::OutputSchema;
+    for (initial, repair, accepted) in [
+        (Some(r#"{"done":true}"#), None, true),
+        (None, Some(r#"{"done":true}"#), true),
+        (None, Some("still invalid"), false),
+    ] {
+        let env = TestEnv::new();
+        let mut complete = ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic completion proof."}"#,
+        );
+        complete.text = initial.map(str::to_owned);
+        let mut script = vec![complete];
+        if let Some(text) = repair {
+            script.push(ScriptTurn::text(text));
+        }
+        let engine = Arc::new(ScriptedEngine::new(script));
+        let store = Arc::new(MemStore::new());
+        let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+        session.set_output_schema(Some(OutputSchema::new(serde_json::json!({"type":"object","required":["done"],"properties":{"done":{"enum":[true]}}})).unwrap()));
+        let mut sink = VecSink::default();
+        session
+            .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+            .unwrap();
+        let result = session.prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default());
+        assert_eq!(
+            engine.requests().iter().filter(|r| r.max_tokens != 0).count(),
+            if repair.is_some() { 2 } else { 1 }
+        );
+        if accepted {
+            result.unwrap();
+            assert_eq!(session.stats().outcome, RunOutcome::Done);
+            assert_eq!(session.goal().unwrap().status, GoalStatus::Done);
+            assert_eq!(
+                session.goal().unwrap().evidence.as_deref(),
+                Some("Synthetic completion proof.")
+            );
+        } else {
+            assert_eq!(result.unwrap_err().code, oxa_proto::codes::SCHEMA_MISMATCH);
+            assert_ne!(session.goal().unwrap().status, GoalStatus::Done);
+        }
+        assert_eq!(
+            Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+            session.goal()
+        );
+    }
+}

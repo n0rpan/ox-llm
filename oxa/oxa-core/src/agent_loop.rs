@@ -67,15 +67,7 @@ pub fn run_loop(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
-    if let Some(goal) = &st.goal {
-        goal.begin(
-            *st.shared
-                .gate
-                .run_tokens_used
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()),
-        );
-    }
+    crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
     sink.emit(&AgentEvent::AgentStart);
     observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
@@ -104,6 +96,7 @@ fn run_inner(
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
     let mut schema_repaired = None;
+    let mut pending_completion = None;
     let mut done = crate::done::DoneState::default();
     done.begin(st);
     let mut wrapping_up = false;
@@ -575,6 +568,21 @@ fn run_inner(
                         goal.reject_completion();
                     }
                 }
+                if let Some(goal) = st
+                    .goal
+                    .clone()
+                    .filter(|goal| goal.snapshot().status == oxa_session::GoalStatus::Done)
+                {
+                    match crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink) {
+                        Ok(false) => {}
+                        repair => {
+                            pending_completion = goal.defer_completion();
+                            crate::goal::checkpoint(st, false, sink)?;
+                            repair?;
+                            continue;
+                        }
+                    }
+                }
                 crate::goal::checkpoint(st, false, sink)?;
                 return Ok(RunEnd::Stopped);
             }
@@ -676,6 +684,13 @@ fn run_inner(
         }
         if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
             crate::goal::checkpoint(st, false, sink)?;
+            if let Some(evidence) = pending_completion.take() {
+                if goal.pursuing() {
+                    goal.finish_completion(evidence)?;
+                }
+                crate::goal::checkpoint(st, false, sink)?;
+                return Ok(RunEnd::Stopped);
+            }
             let snapshot = goal.stopped();
             persist(st, snapshot.body(), sink)?;
             if goal.pursuing() {

@@ -288,3 +288,51 @@ fn ambiguous_ledger_error_preserves_unknown_usage_across_process_restart() {
     assert_eq!(resumed["outcome"], "blocked");
     assert!(next.requests().is_empty());
 }
+
+#[test]
+fn goal_and_output_schema_require_a_valid_final_answer_after_goal_done() {
+    for (answer, success) in [(r#"{"done":true}"#, true), ("not JSON", false)] {
+        let env = TestEnv::new();
+        env.write("work/goal.txt", "Finish synthetic work with a structured answer.");
+        env.write(
+            "work/answer.schema.json",
+            r#"{"type":"object","required":["done"],"properties":{"done":{"enum":[true]}}}"#,
+        );
+        let server = FakeServer::start(
+            vec![
+                ScriptTurn::tool(
+                    "done",
+                    "goal_done",
+                    r#"{"status":"complete","evidence":"Synthetic proof."}"#,
+                ),
+                ScriptTurn::text(answer),
+            ],
+            FakeOpts::default(),
+        )
+        .unwrap();
+        let output = run(
+            &env,
+            &server,
+            &["--goal", "goal.txt", "--output-schema", "answer.schema.json"],
+        );
+        let terminal = result(&output);
+        assert_eq!(server.requests().iter().filter(|r| r.max_tokens != 0).count(), 2);
+        if success {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(terminal["outcome"], "done");
+            assert_eq!(terminal["goal"]["status"], "done");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap()["done"],
+                true
+            );
+        } else {
+            assert!(!output.status.success());
+            assert_eq!(terminal["error_class"], "schema_mismatch");
+            assert_ne!(terminal["goal"]["status"], "done");
+        }
+    }
+}

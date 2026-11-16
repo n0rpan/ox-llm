@@ -943,6 +943,7 @@ impl Session {
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
         self.st.stats.output_truncated = false;
+        crate::goal::begin(&self.st);
         Ok(guard)
     }
 
@@ -1002,7 +1003,7 @@ impl Session {
 
         // L5 (`oxa.compaction.turnStart`): an aborted turn left its tool result uncounted; the
         // prompt is compacted first when the context is already above the soft limit.
-        crate::compaction::compact_at_turn_start(st, sink, ui);
+        let can_run = compact_before_run(st, sink, ui)?;
         for wire in next_turn {
             persist(
                 st,
@@ -1029,6 +1030,10 @@ impl Session {
             },
             sink,
         )?;
+
+        if !can_run {
+            return Ok(Some(RunEnd::Stopped));
+        }
 
         let payload = crate::fire::before_agent_start_payload(st, &text, images);
         match first_reply(st, HookPoint::BeforeAgentStart, &payload, sink, ui) {
@@ -1059,6 +1064,23 @@ impl Session {
 
         run_from_wire(st, sink, ui).map(Some)
     }
+}
+
+/// Keep accepted input, but stop before another request when compaction spends
+/// the stored goal allowance. Queued and direct prompts use the same boundary.
+fn compact_before_run(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<bool, OxaError> {
+    crate::goal::ensure_begin(st);
+    crate::goal::checkpoint(st, false, sink)?;
+    if crate::goal::terminal(st) {
+        return Ok(false);
+    }
+    crate::compaction::compact_at_turn_start(st, sink, ui);
+    crate::goal::checkpoint(st, false, sink)?;
+    Ok(!crate::goal::terminal(st))
 }
 
 /// Settle a claimed session (see [`serve_idle`]): apply what hook sets asked for and, when
@@ -1272,12 +1294,13 @@ fn queued_run(
     if taken.is_empty() {
         return Ok(None);
     }
-    if turn_start {
-        crate::compaction::compact_at_turn_start(st, sink, ui);
-    }
+    let can_run = !turn_start || compact_before_run(st, sink, ui)?;
     flush_queue(st, sink);
     for msg in taken {
         push_user(st, msg, sink)?;
+    }
+    if !can_run {
+        return Ok(Some(RunEnd::Stopped));
     }
     run_loop(st, sink, ui).map(Some)
 }
