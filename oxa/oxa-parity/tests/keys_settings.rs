@@ -3477,30 +3477,41 @@ fn key_015() {
         let n = s.size().0;
         format!("{}\n{}", s.row(n - 2), s.row(n - 1))
     };
-    let t = Setup::new().replies("ok", 2).start();
-    assert!(footer(&t.screen()).contains("auto"));
-    t.prompt("one", "ok");
-    t.key("alt+m");
-    t.wait("yolo mode", |s| footer(s).contains("yolo"));
-    t.key("alt+m");
-    t.wait("standard mode", |s| footer(s).contains("standard"));
-    t.key("alt+m");
-    t.wait("auto mode", |s| footer(s).contains("auto"));
-    t.type_text("two");
-    t.key("enter");
-    let chats = t.wait_chats(2);
-    assert_eq!(
-        chats[0].system, chats[1].system,
-        "no mode text in the frozen prefix"
-    );
-    drop(t);
+    let is_mode = |s: &Screen, mode: &str| footer(s).split_whitespace().any(|word| word == mode);
+    // Also keep the auto-compaction marker visible at a wider size: it must not be
+    // mistaken for auto mode. Retain the normal 80-column layout (including its YOLO row).
+    for cols in [80, 120] {
+        let t = Setup::new().size(24, cols).replies("ok", 2).start();
+        assert!(is_mode(&t.screen(), "auto"));
+        t.prompt("one", "ok");
+        // Each transition changes the footer's height under YOLO. Observe a complete, quiet
+        // frame before sending another key, not a matching substring during the repaint.
+        t.key("alt+m");
+        t.wait_steady("yolo mode", |s| is_mode(s, "yolo"));
+        t.key("alt+m");
+        let standard = t.wait_steady("standard mode", |s| is_mode(s, "standard"));
+        assert!(
+            !is_mode(&standard, "auto"),
+            "auto-compaction is not auto permission mode: {standard:?}"
+        );
+        t.key("alt+m");
+        t.wait_steady("auto mode", |s| is_mode(s, "auto"));
+        t.type_text("two");
+        t.key("enter");
+        let chats = t.wait_chats(2);
+        assert_eq!(
+            chats[0].system, chats[1].system,
+            "no mode text in the frozen prefix"
+        );
+        drop(t);
+    }
     // Rebound: f3 cycles; alt+m does not.
     let t = Setup::new().keys(json!({ "app.mode.cycle": "f3" })).start();
     t.key("alt+m");
     let s = t.settle();
-    assert!(footer(&s).contains("auto"), "{s:?}");
+    assert!(is_mode(&s, "auto"), "{s:?}");
     t.key("f3");
-    t.wait("yolo mode", |s| footer(s).contains("yolo"));
+    t.wait_steady("yolo mode", |s| is_mode(s, "yolo"));
 }
 
 /// KEY-016: display and queue: tools expand, message copy, follow-up, dequeue.
