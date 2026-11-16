@@ -736,3 +736,99 @@ fn an_edit_between_interleaved_batch_reads_breaks_the_run() {
     let res = results(&st);
     assert!(res.iter().all(|r| !is_notice(r)), "{res:#?}");
 }
+
+const BAD_EDIT: &str = r#"{"path":"a.txt","oldText":"no such text\n","newText":"x\n"}"#;
+
+/// #507: an `edit` that failed changed nothing, so it does not end a run of identical reads:
+/// `read, edit (fails), read, edit (fails), ...` is a loop and gets the notice. A successful
+/// edit still ends the run (`rereads_after_an_edit_never_trip_the_guard`).
+#[test]
+fn failed_edits_between_identical_reads_do_not_break_the_run() {
+    let env = TestEnv::new();
+    let mut turns = Vec::new();
+    for i in 0..=LIMIT {
+        turns.push(read(&format!("r{i}"), RANGE));
+        turns.push(ScriptTurn::tool(&format!("e{i}"), "edit", BAD_EDIT));
+    }
+    turns.push(ScriptTurn::text("done"));
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "fix a.txt");
+    let res = results(&st);
+    assert!(res[1].starts_with("Could not find"), "{res:#?}");
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+    assert!(!is_notice(&res[2 * LIMIT as usize - 2]), "{res:#?}");
+}
+
+/// The same inside one batch: the failed edits are not in the way.
+#[test]
+fn failed_edits_between_identical_reads_in_one_batch_do_not_break_the_run() {
+    let env = TestEnv::new();
+    let mut batch = read("x0", RANGE);
+    for i in 0..LIMIT {
+        batch.tool_calls.push(call(&format!("e{i}"), "edit", BAD_EDIT));
+        batch.tool_calls.push(call(&format!("r{i}"), "read", RANGE));
+    }
+    let turns = vec![batch, ScriptTurn::text("done")];
+    let (mut st, _eng) = state(&env, turns, Settings::default());
+    run(&mut st, "fix a.txt");
+    let res = results(&st);
+    assert_eq!(res.len(), 2 * LIMIT as usize + 1, "{res:#?}");
+    assert!(is_notice(&res[2 * LIMIT as usize]), "{res:#?}");
+}
+
+fn turn_limit_settings(n: u32) -> Settings {
+    Settings::from_values(serde_json::json!({"oxa": {"maxTurns": n}}), Value::Null)
+}
+
+/// #507: `oxa.maxTurns` ends a run that keeps calling tools, however the calls vary (so no
+/// repeat guard can see them). Unset (the default) there is no limit.
+#[test]
+fn max_turns_ends_a_run_that_keeps_calling_tools() {
+    let env = TestEnv::new();
+    let turns: Vec<ScriptTurn> = (0..20)
+        .map(|i| {
+            read(
+                &format!("c{i}"),
+                &format!(r#"{{"path":"a.txt","offset":{},"limit":2}}"#, i + 1),
+            )
+        })
+        .collect();
+    let (mut st, eng) = state(&env, turns, turn_limit_settings(5));
+    let (end, events) = run(&mut st, "look around");
+    match end {
+        RunEnd::Failed(e) => assert_eq!(e.code, "turn_limit", "{e}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(eng.requests().len(), 5);
+    assert_eq!(results(&st).len(), 5);
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains("oxa.maxTurns"))));
+    let shown = st
+        .tree
+        .branch(st.tree.leaf())
+        .into_iter()
+        .filter(|e| matches!(&e.body, EntryBody::Shown { why, .. } if *why == shown_why::FAILED))
+        .count();
+    assert_eq!(shown, 1);
+}
+
+/// A run that ends within the limit is not touched; the limit counts per run, not per session.
+#[test]
+fn max_turns_leaves_a_run_within_the_limit_alone() {
+    let env = TestEnv::new();
+    let mut turns: Vec<ScriptTurn> = (0..2)
+        .map(|i| {
+            read(
+                &format!("c{i}"),
+                &format!(r#"{{"path":"a.txt","offset":{},"limit":2}}"#, i + 1),
+            )
+        })
+        .collect();
+    turns.push(ScriptTurn::text("one"));
+    turns.push(read("d0", RANGE));
+    turns.push(ScriptTurn::text("two"));
+    let (mut st, _eng) = state(&env, turns, turn_limit_settings(3));
+    assert_eq!(run(&mut st, "first").0, RunEnd::Stopped);
+    assert_eq!(run(&mut st, "second").0, RunEnd::Stopped);
+}

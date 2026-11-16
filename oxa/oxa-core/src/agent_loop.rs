@@ -97,7 +97,25 @@ fn run_inner(
     done.begin(st);
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
+    // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
+    let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
+        if max_turns > 0 && turn_index >= max_turns && !wrapping_up {
+            let e = crate::repeat::turn_limit_error(max_turns);
+            persist(
+                st,
+                EntryBody::Shown {
+                    text: e.to_string(),
+                    why: shown_why::FAILED,
+                },
+                sink,
+            )?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Error,
+                text: e.to_string(),
+            });
+            return Ok(RunEnd::Failed(e));
+        }
         if !wrapping_up {
             let reason = match st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
                 1 => Some(crate::WrapUpReason::TimeLimit),

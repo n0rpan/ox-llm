@@ -200,6 +200,8 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["auto", "on", "off"]),
         "\"auto\"",
     ),
+    // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
+    key("oxa.maxTurns", Kind::Number, "null"),
     key("oxa.toolOutputCap", Kind::Number, "16384"),
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).

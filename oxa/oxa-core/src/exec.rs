@@ -344,7 +344,10 @@ pub(crate) fn run_calls(
                 }
             }
         }
-        batch.push((p.name.clone(), call.args_raw.clone(), output.text.clone()));
+        // A failed edit or write changed nothing: it does not end a run of identical calls (#507).
+        if !(output.is_error && crate::repeat::WRITERS.contains(&p.name.as_str())) {
+            batch.push((p.name.clone(), call.args_raw.clone(), output.text.clone()));
+        }
         let ms = Some(dur.as_millis() as u64);
         crate::fire::tool_end(st, &p.id, &p.name, &output, ms, sink, ui);
         out.push(CallResult {
