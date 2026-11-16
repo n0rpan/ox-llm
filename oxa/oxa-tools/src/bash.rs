@@ -853,14 +853,17 @@ echo '\''a'\'''"#
         for out in [&b""[..], b"mise WARN  read-only file system\n"] {
             let res = run(cmd, out, 0);
             assert!(!res.is_error);
+            // Keep tool output out of panic diagnostics; these assertions need only a static hint.
             assert!(
                 res.text.contains("--json title,body,comments,state"),
-                "{}",
-                res.text
+                "empty gh comments should explain how to retrieve the issue text"
             );
         }
         let res = run("gh pr view 5 --comments 2>&1 | head -80", b"", 0);
-        assert!(res.text.contains("only the comments"), "{}", res.text);
+        assert!(
+            res.text.contains("only the comments"),
+            "captured PR comments should get the same explanation"
+        );
         for (cmd, out, exit) in [
             (cmd, &b"author:\ttester\n"[..], 0),
             (cmd, b"", 1),
@@ -869,7 +872,10 @@ echo '\''a'\'''"#
             ("true", b"", 0),
         ] {
             let res = run(cmd, out, exit);
-            assert!(!res.text.contains("only the comments"), "{cmd}: {}", res.text);
+            assert!(
+                !res.text.contains("only the comments"),
+                "{cmd} (exit {exit}) must not receive a comments hint"
+            );
         }
     }
 
