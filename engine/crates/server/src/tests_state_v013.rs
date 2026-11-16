@@ -406,6 +406,31 @@ fn a_session_being_left_keeps_its_resume_points_on_disk() {
     }
 }
 
+/// The park write of a session being left runs on the new request's path: its wall time is part of
+/// that request's `timings.ckpt_ms` (issue #584), and only when the park write ran.
+#[test]
+fn the_park_write_shows_in_the_request_timings() {
+    for on in [true, false] {
+        let dir = tmp(&format!("v013-park-ms-{on}"));
+        let mut w = worker(&dir);
+        w.persist_every = 0;
+        w.park_write = on;
+        session_with_points(&mut w, 1);
+        w.engine.save_sleep = Duration::from_millis(40);
+        let r = gen(&mut w, &toks(1400, 9), &greedy(3));
+        if on {
+            assert!(
+                r.timings.ckpt_ms >= 40.0,
+                "the head snapshot write of the left session: {}",
+                r.timings.ckpt_ms
+            );
+        } else {
+            assert!(r.timings.ckpt_ms < 40.0, "{}", r.timings.ckpt_ms);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Item 4: echo files are compacted: a retry loop (the same turn again and again) leaves one line,
 /// and a store that reads the compacted file back splices exactly the ids the first one did.
 #[test]
