@@ -504,20 +504,22 @@ fn keymap_diagnostics_reported_in_print_mode() {
 
 #[test]
 fn send_writes_an_inbox_message_without_contacting_the_engine() {
-    let env = TestEnv::new();
-    let r = go(
-        &env,
-        &closed_url(),
-        &["send", "session-638", "task finished, red"],
-    );
-    assert_eq!(r.code, 0, "{}", r.err);
-    let dirs = oxa_config::Dirs::under(env.root());
-    let files: Vec<_> = std::fs::read_dir(dirs.agent_dir.join("inbox/session-638"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect();
-    assert_eq!(files.len(), 1);
-    assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "task finished, red");
+    for words in [
+        vec!["send", "session-638", "task finished, red"],
+        vec!["--offline", "send", "session-638", "task finished, red"],
+    ] {
+        let env = TestEnv::new();
+        let r = go(&env, &closed_url(), &words);
+        assert_eq!(r.code, 0, "{words:?}: {}", r.err);
+        assert!(r.out.is_empty());
+        let dirs = oxa_config::Dirs::under(env.root());
+        let files: Vec<_> = std::fs::read_dir(dirs.agent_dir.join("inbox/session-638"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "task finished, red");
+    }
 }
 
 #[test]
