@@ -42,6 +42,16 @@ fn bearer(key: &Key) -> Result<HeaderValue, Error> {
     header.set_sensitive(true);
     Ok(header)
 }
+fn echoes_credential(value: &Value, key: &Key) -> bool {
+    match value {
+        Value::String(text) => text.contains(key.expose()),
+        Value::Array(items) => items.iter().any(|item| echoes_credential(item, key)),
+        Value::Object(map) => map
+            .iter()
+            .any(|(name, item)| name.contains(key.expose()) || echoes_credential(item, key)),
+        _ => false,
+    }
+}
 async fn bounded(
     mut response: reqwest::Response,
     max: usize,
@@ -81,6 +91,12 @@ pub async fn models(
         let value: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
         if status != 200 {
             return Err(Error::Refused(super::refusal(status, &value)));
+        }
+        // Discovery becomes public catalog metadata. Reject an echoed secret
+        // anywhere in decoded fields, including names and nested hints; never
+        // redact/rewrite an upstream routing identifier into another model.
+        if echoes_credential(&value, key) {
+            return Err(Error::Protocol);
         }
         super::models(&value, base).map_err(|_| Error::Protocol)
     };
