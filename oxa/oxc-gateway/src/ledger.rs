@@ -304,6 +304,21 @@ impl Entry {
         }
         self.row["remote"] = json!(true);
         self.row["remote_provider"] = fields["remote_provider"].clone();
+        if let Some(value) = fields.get("opencode") {
+            if fields["remote_provider"] != "opencode" || fields["billing"] != "subscription" {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            #[cfg(feature = "anthropic-client")]
+            {
+                self.row["opencode"] =
+                    crate::opencode::ledger_metadata(value).map_err(|_| io::ErrorKind::InvalidData)?;
+            }
+            #[cfg(not(feature = "anthropic-client"))]
+            {
+                let _ = value;
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
         self.row["remote_model"] = json!(fields["remote_model"]
             .as_str()
             .filter(|value| !value.is_empty() && value.len() <= 1024)
