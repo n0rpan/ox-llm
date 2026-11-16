@@ -1,4 +1,6 @@
 //! #332 step 3: a print run's announced id identifies the exact session to continue.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use oxa_session::{FsStore, SessionStore};
 use std::process::{Command, Output};
@@ -6,7 +8,7 @@ use std::process::{Command, Output};
 fn run(env: &TestEnv, server: &FakeServer, args: &[&str]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command.current_dir(env.work()).env_clear().args(args);
-    for (key, value) in env.envs(&server.url()) {
+    for (key, value) in http::envs(env, &server.url()) {
         command.env(key, value);
     }
     command.output().unwrap()

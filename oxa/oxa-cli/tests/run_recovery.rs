@@ -1,4 +1,6 @@
 //! Runner contract: a broken stream and a length cut can still finish useful work.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use oxa_proto::Finish;
 use serde_json::Value;
@@ -43,7 +45,7 @@ fn print_preserves_the_complete_local_answer_across_length_cuts() {
                 "answer",
             ])
             .env_clear()
-            .envs(env.envs(&srv.url()))
+            .envs(http::envs(&env, &srv.url()))
             .current_dir(env.work())
             .stdin(Stdio::null())
             .output()
@@ -102,7 +104,7 @@ fn all_headless_modes_complete_after_byte_and_length_cuts() {
             command
                 .current_dir(env.work())
                 .env_clear()
-                .envs(env.envs(&server.url()))
+                .envs(http::envs(&env, &server.url()))
                 .args(["--no-session", "--permission-mode", "workspace", "--yolo"]);
             match mode {
                 "print" => {

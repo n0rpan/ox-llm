@@ -106,7 +106,7 @@ fn run_paced(env: &TestEnv, server: &FakeServer, args: &[&str], steps: Vec<(u64,
         .args(args)
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(oxa_parity::http_envs(env, &server.url()))
         .envs(oxa_parity::note_off_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

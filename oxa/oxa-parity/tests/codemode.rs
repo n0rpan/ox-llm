@@ -88,14 +88,14 @@ fn call(id: &str, name: &str, args: Value) -> ScriptTurn {
     ScriptTurn::tool(id, name, &args.to_string())
 }
 
-/// Run `oxa <args>` in `env.work()` with only `env.envs(url)` and `extra` as
+/// Run `oxa <args>` in `env.work()` with only `oxa_parity::http_envs(&env, url)` and `extra` as
 /// environment (the pattern of `oxa_parity::run_oxa`, plus variables a row needs).
 fn spawn(env: &TestEnv, url: &str, args: &[&str], extra: &[(&str, &str)]) -> Output {
     Command::new(oxa_bin())
         .args(args)
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(url))
+        .envs(oxa_parity::http_envs(env, url))
         .envs(oxa_parity::note_off_env())
         .envs(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())))
         .stdin(Stdio::null())

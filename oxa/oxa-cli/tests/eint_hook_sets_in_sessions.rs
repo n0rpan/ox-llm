@@ -6,6 +6,8 @@
 //! session that does not serve its host (E-INT 1 / 2) fails fast instead of hanging.
 //! Isolation: `oxa_fake::TestEnv` for every file and directory; never the real home.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_cli::{run, Stdio};
 use oxa_config::Env;
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
@@ -55,7 +57,7 @@ fn go(env: &TestEnv, engine_url: &str, words: &[&str]) -> Captured {
         .unwrap_or_else(|_| serde_json::json!({}));
     settings["oxa"]["envNote"] = serde_json::json!(false);
     write(&settings_path, &serde_json::to_string(&settings).unwrap());
-    let owned = env.envs(engine_url);
+    let owned = http::envs(env, engine_url);
     let cwd = env.work();
     let argv: Vec<String> = words.iter().map(|s| s.to_string()).collect();
     let (tx, rx) = std::sync::mpsc::channel();

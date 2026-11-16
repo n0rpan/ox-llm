@@ -38,9 +38,9 @@ fn red(row: &str, reason: &str) -> ! {
     panic!("RED ({row}): {reason}");
 }
 
-/// `oxa <args>` run in `cwd` with `env.envs(url)` plus `extra` variables, stdin closed.
+/// `oxa <args>` run in `cwd` with `oxa_parity::http_envs(&env, url)` plus `extra` variables, stdin closed.
 fn oxa_in(env: &TestEnv, cwd: &Path, url: &str, extra: &[(&str, &str)], args: &[&str]) -> Output {
-    let mut envs = env.envs(url);
+    let mut envs = oxa_parity::http_envs(env, url);
     for (k, v) in extra {
         envs.push(((*k).to_string(), (*v).to_string()));
     }
@@ -195,7 +195,7 @@ impl Rpc {
             .args(["--mode", "rpc"])
             .current_dir(env.work())
             .env_clear()
-            .envs(env.envs(url))
+            .envs(oxa_parity::http_envs(env, url))
             .envs(oxa_parity::note_off_env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

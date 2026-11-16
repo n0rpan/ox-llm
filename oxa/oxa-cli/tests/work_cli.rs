@@ -1,4 +1,6 @@
 //! Real child oxa with fake engine and local bare git remote; no network.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use std::{
     path::{Path, PathBuf},
@@ -82,7 +84,7 @@ fn run_records(
         .args(args)
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()));
+        .envs(http::envs(env, &server.url()));
     if let Some(path) = path {
         command.env("PATH", path);
     }
@@ -172,7 +174,7 @@ fn retry_can_make_acceptance_green() {
         .args(["work", "../tasks.json"])
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .output()
         .unwrap();
     let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -307,7 +309,7 @@ fn child_can_create_a_commit_with_the_real_sandbox() {
         .args(["status", "--porcelain"])
         .current_dir(tree)
         .env_clear()
-        .envs(env.envs("http://127.0.0.1:1"))
+        .envs(http::envs(&env, "http://127.0.0.1:1"))
         .output()
         .unwrap();
     assert!(status.status.success());
@@ -320,7 +322,7 @@ fn child_can_create_a_commit_with_the_real_sandbox() {
         .args(["log", "-1", "--format=%s"])
         .current_dir(tree)
         .env_clear()
-        .envs(env.envs("http://127.0.0.1:1"))
+        .envs(http::envs(&env, "http://127.0.0.1:1"))
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&subject.stdout).trim(), "task");
@@ -388,7 +390,7 @@ fn command_line_offline_policy_reaches_child_agent() {
         .args(["--offline", "work", "../tasks.json"])
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .output()
         .unwrap();
     let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -414,7 +416,7 @@ fn batch_reports_one_task_error_and_runs_later_tasks() {
         .args(["work", "../tasks.json"])
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .output()
         .unwrap();
     assert_eq!(
@@ -528,7 +530,7 @@ fn blocked_worker_keeps_its_result_and_does_not_start_a_repair() {
         .args(["work", "../tasks.json"])
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .output()
         .unwrap();
     let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1147,7 +1149,7 @@ fn security_repair_does_not_load_new_project_resources() {
         .args(["work", "../tasks.json"])
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1322,7 +1324,7 @@ fn security_failed_receipt_write_never_publishes_a_torn_record() {
         ])
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1340,7 +1342,7 @@ fn security_failed_receipt_write_never_publishes_a_torn_record() {
     let limit = Command::new("/usr/bin/prlimit")
         .args(["--pid", &child.id().to_string(), "--fsize=0"])
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .output()
         .unwrap();
     assert!(

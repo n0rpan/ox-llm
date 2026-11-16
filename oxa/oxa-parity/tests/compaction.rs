@@ -140,7 +140,7 @@ fn rpc(env: &TestEnv, url: &str, extra: &[&str], cmds: &[Value]) -> Run {
         .args(extra)
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(url))
+        .envs(oxa_parity::http_envs(env, url))
         .envs(oxa_parity::note_off_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

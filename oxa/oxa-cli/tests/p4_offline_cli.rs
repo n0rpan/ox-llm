@@ -2,6 +2,8 @@
 //! (pi's truthy values) and `oxa.offline`; `gh` for report-issue is refused before anything is
 //! asked or run. The tests share the process network policy, so they hold one lock each.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_cli::{run, submit, ScrubCtx, Stdio};
 use oxa_config::{Env, Settings};
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
@@ -25,7 +27,7 @@ impl Write for Sink {
 }
 
 fn go(env: &TestEnv, engine_url: &str, extra_env: &[(&str, &str)], words: &[&str]) -> (i32, String, String) {
-    let mut owned = env.envs(engine_url);
+    let mut owned = http::envs(env, engine_url);
     owned.extend(extra_env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (out, err) = (Sink::default(), Sink::default());

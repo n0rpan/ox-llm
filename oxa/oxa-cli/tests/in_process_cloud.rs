@@ -310,19 +310,54 @@ fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
 }
 
 #[test]
-fn absent_disabled_wrong_type_and_project_only_settings_keep_http() {
-    for (enabled, project) in [
-        (None, false),
-        (Some(json!(false)), true),
-        (None, true),
-        (Some(json!("true")), true),
-    ] {
+fn missing_user_switch_selects_native_despite_project_selection() {
+    for project_selection in [None, Some(false), Some(true)] {
         let env = TestEnv::new();
-        let mut settings = json!({"defaultProjectTrust":"always","retry":{"enabled":false},
-            "oxa":{"cloud":"invalid if the factory is opened"}});
-        if let Some(value) = enabled {
-            settings["oxa"]["engine"]["inProcessCloud"] = value;
+        let mock = MockAnthropic::start(vec![Reply::text("Native by default", 11, 7, 3, 5)]);
+        settings(&env, &mock.base_url(), true);
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        value["oxa"]["engine"]
+            .as_object_mut()
+            .unwrap()
+            .remove("inProcessCloud");
+        fs::write(path, value.to_string()).unwrap();
+        if let Some(enabled) = project_selection {
+            env.write(
+                "work/.oxa/settings.json",
+                &json!({"oxa":{"engine":{"inProcessCloud":enabled}}}).to_string(),
+            );
         }
+        write_key(&env, &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string());
+        let http = FakeServer::start(vec![ScriptTurn::text("unexpected HTTP")], FakeOpts::default()).unwrap();
+        let result = run_to(
+            &env,
+            &http.url(),
+            &["--no-session", "--no-tools", "-p", "Synthetic default selection"],
+            None,
+        );
+        success(&result);
+        assert!(String::from_utf8_lossy(&result.stdout).contains("Native by default"));
+        assert!(
+            http.requests().is_empty(),
+            "project selection must not redirect the user default"
+        );
+        assert_eq!(mock.requests().len(), 1);
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["status"], 200);
+        assert_eq!(ledger[0]["settled"], "usage");
+        mock.finish();
+    }
+}
+
+#[test]
+fn explicit_false_keeps_http_despite_project_opt_in() {
+    for project in [false, true] {
+        let env = TestEnv::new();
+        let settings = json!({"defaultProjectTrust":"always","retry":{"enabled":false},
+            "oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false},
+            "cloud":"invalid if the factory is opened"}});
         env.write("home/.oxa/agent/settings.json", &settings.to_string());
         if project {
             env.write(
@@ -370,21 +405,25 @@ fn offline_refuses_before_invalid_factory_configuration() {
 
 #[test]
 fn invalid_enabled_factory_refuses_without_http_fallback() {
-    let env = TestEnv::new();
-    env.write(
-        "home/.oxa/agent/settings.json",
-        &json!({"defaultProjectTrust":"always",
-        "oxa":{"engine":{"inProcessCloud":true},"cloud":{}}})
-        .to_string(),
-    );
-    let http = FakeServer::start(vec![ScriptTurn::text("unexpected fallback")], FakeOpts::default()).unwrap();
-    let result = run_to(
-        &env,
-        &http.url(),
-        &["--no-session", "--no-tools", "-p", "Synthetic prompt"],
-        None,
-    );
-    assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("Invalid user cloud configuration"));
-    assert!(http.requests().is_empty());
+    for enabled in [json!(true), json!("true")] {
+        let env = TestEnv::new();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &json!({"defaultProjectTrust":"always",
+        "oxa":{"engine":{"inProcessCloud":enabled},"cloud":{}}})
+            .to_string(),
+        );
+        let http =
+            FakeServer::start(vec![ScriptTurn::text("unexpected fallback")], FakeOpts::default()).unwrap();
+        let result = run_to(
+            &env,
+            &http.url(),
+            &["--no-session", "--no-tools", "-p", "Synthetic prompt"],
+            None,
+        );
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("Invalid user cloud configuration"));
+        assert!(http.requests().is_empty());
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+    }
 }

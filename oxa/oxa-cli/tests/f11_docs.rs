@@ -3,6 +3,8 @@
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{parse_script, FakeOpts, FakeServer, TestEnv};
 use regex::Regex;
 use std::fs::{self, File};
@@ -143,7 +145,7 @@ fn run_doc_command(args: &[String]) -> Result<(), String> {
         .args(args)
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .stdin(Stdio::null())
         .stdout(out_file)
         .stderr(err_file)

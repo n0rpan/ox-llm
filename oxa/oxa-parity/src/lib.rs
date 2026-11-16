@@ -150,6 +150,32 @@ pub fn note_off_env() -> Vec<(String, String)> {
     vec![("OXA_ENV_NOTE".to_string(), "0".to_string())]
 }
 
+/// Explicit private settings for HTTP-only behavior fixtures; native selectors are tested separately.
+pub fn http_envs(env: &TestEnv, url: &str) -> Vec<(String, String)> {
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: serde_json::Value = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).expect("valid private HTTP fixture settings"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => panic!("read private HTTP fixture settings: {error}"),
+    };
+    // Repeated launches must not rewrite an already configured fixture's settings.
+    if settings
+        .pointer("/oxa/engine/inProcessCloud")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+        && settings
+            .pointer("/oxa/engine/inProcessLocal")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+    {
+        return env.envs(url);
+    }
+    settings["oxa"]["engine"]["inProcessCloud"] = serde_json::json!(false);
+    settings["oxa"]["engine"]["inProcessLocal"] = serde_json::json!(false);
+    env.write("home/.oxa/agent/settings.json", &settings.to_string());
+    env.envs(url)
+}
+
 /// Run `oxa <args>` in `env.work()` with only `env.envs(engine_url)` and [`note_off_env`] as
 /// environment, feeding `stdin`, and return its output.
 pub fn run_oxa(env: &TestEnv, engine_url: &str, args: &[&str], stdin: &str) -> Output {
@@ -158,7 +184,7 @@ pub fn run_oxa(env: &TestEnv, engine_url: &str, args: &[&str], stdin: &str) -> O
         .args(args)
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(engine_url))
+        .envs(http_envs(env, engine_url))
         .envs(crate::note_off_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

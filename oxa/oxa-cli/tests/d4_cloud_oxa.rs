@@ -1,13 +1,15 @@
 //! Wave D D4/D5: oxa sees a remote model's capabilities before the first request, skips the
 //! local-only wire features, runs a tool loop through the controller mock, and refuses the
 //! model under `OXA_OFFLINE`.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeModel, FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use std::process::{Command, Output};
 
 fn run(env: &TestEnv, engine_url: &str, args: &[&str], extra: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command.args(args).current_dir(env.work()).env_clear();
-    for (name, value) in env.envs(engine_url) {
+    for (name, value) in http::envs(env, engine_url) {
         command.env(name, value);
     }
     for (name, value) in extra {

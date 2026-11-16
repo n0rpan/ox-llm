@@ -1,3 +1,5 @@
+#[path = "http.rs"]
+pub(crate) mod http;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use std::{path::Path, process::Command};
 pub fn git(env: &TestEnv, dir: &Path, args: &[&str]) -> String {
@@ -60,7 +62,7 @@ pub fn run_observed(
         .args(args)
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()));
+        .envs(http::envs(env, &server.url()));
     if let Some(path) = path {
         command.env("PATH", path);
     }

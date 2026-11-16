@@ -1,4 +1,6 @@
 //! Worker status is a bounded snapshot, usable without reading the event stream.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use oxa_proto::Finish;
 use oxa_session::{FsStore, SessionStore};
@@ -10,7 +12,7 @@ use std::time::{Duration, Instant};
 
 fn command(env: &TestEnv, url: &str) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
-    cmd.env_clear().envs(env.envs(url)).current_dir(env.work());
+    cmd.env_clear().envs(http::envs(env, url)).current_dir(env.work());
     cmd
 }
 

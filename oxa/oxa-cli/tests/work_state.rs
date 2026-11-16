@@ -9,7 +9,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
-use work::{git, run, run_args, run_observed, setup};
+use work::{git, http, run, run_args, run_observed, setup};
 
 fn project(env: &TestEnv) -> PathBuf {
     env.work().join("project")
@@ -266,7 +266,7 @@ fn a_parent_crash_during_saving_keeps_the_task_locked_until_the_commit_finishes(
         .args(["work", "../tasks.json"])
         .current_dir(project(&env))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -316,7 +316,7 @@ fn a_parent_crash_retains_session_and_child_lock_then_resumes_the_same_session()
         .args(["work", "../tasks.json"])
         .current_dir(project(&env))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -377,7 +377,7 @@ fn persistence_failure_aborts_the_batch_before_checks_or_saving() {
         .args(["work", "../tasks.json"])
         .current_dir(project(&env))
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -436,7 +436,7 @@ fn offline_policy_survives_a_later_online_invocation() {
             .args(args)
             .current_dir(project(&env))
             .env_clear()
-            .envs(env.envs(&server.url()))
+            .envs(http::envs(&env, &server.url()))
             .output()
             .unwrap();
         let record: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();

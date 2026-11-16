@@ -1,4 +1,6 @@
 //! #332 step 2: bounded, visible retries before output, using only the local fake gateway.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use serde_json::json;
 use std::io::Write;
@@ -17,7 +19,7 @@ fn run(mode: &str, turns: Vec<ScriptTurn>, provider_retries: u32) -> (Output, us
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command.current_dir(env.work()).env_clear();
-    for (key, value) in env.envs(&server.url()) {
+    for (key, value) in http::envs(&env, &server.url()) {
         command.env(key, value);
     }
     command.args(["--no-session", "--no-tools"]);
@@ -194,7 +196,7 @@ fn print_flushes_the_retry_notice_before_sending_the_next_request() {
         )
         .unwrap(),
     );
-    let owned = env.envs(&server.url());
+    let owned = http::envs(&env, &server.url());
     let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let observed = Arc::new(Mutex::new(Vec::new()));
     let code = oxa_cli::run(

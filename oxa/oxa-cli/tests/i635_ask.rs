@@ -1,4 +1,6 @@
 //! Ask is an owner interaction, not a worker-prefix feature. Fake engine only.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -20,7 +22,7 @@ fn run(child: bool) -> (TestEnv, FakeServer, std::process::Output) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.args(["-p", "Choose a format"])
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .current_dir(env.work());
     if child {
         cmd.env("OXA_SUBAGENT_DEPTH", "1");
@@ -85,7 +87,7 @@ fn rpc_ask(owner_present: bool) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["--mode", "rpc"])
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .envs(owner_present.then_some(("OXA_RPC_OWNER_PRESENT", "1")))
         .current_dir(env.work())
         .stdin(Stdio::piped())
@@ -174,7 +176,7 @@ fn settings_patches_preserve_ask_unless_explicitly_removed_and_never_add_it_to_w
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
         cmd.args(["-p", "Choose a format"])
             .env_clear()
-            .envs(env.envs(&server.url()))
+            .envs(http::envs(&env, &server.url()))
             .current_dir(env.work());
         if worker {
             cmd.env("OXA_SUBAGENT_DEPTH", "1");

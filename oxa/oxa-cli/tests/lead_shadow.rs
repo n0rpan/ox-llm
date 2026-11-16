@@ -69,6 +69,11 @@ fn documented_shadow_invocation_loads_lead_and_only_read_tools() {
         .to_owned();
     env.write("work/state/verdicts.txt", &evidence);
     std::fs::create_dir(env.root().join("agent")).unwrap();
+    // This invocation explicitly selects a separate agent directory for its HTTP fixture.
+    env.write(
+        "agent/settings.json",
+        r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}}}"#,
+    );
     let answer = proposal().to_string();
     let mut invalid = proposal();
     invalid["proposals"][0]["action"] = json!("merge");

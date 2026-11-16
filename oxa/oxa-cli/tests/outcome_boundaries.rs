@@ -1,4 +1,6 @@
 //! Review regressions: independent prompt outcomes and argument-error mode boundaries.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
@@ -95,7 +97,7 @@ fn a_read_only_prompt_after_failed_done_checks_reports_its_own_success() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .args(["--mode", "rpc"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -152,7 +154,7 @@ fn successful_builtins_are_done_in_every_headless_mode() {
         command
             .current_dir(env.work())
             .env_clear()
-            .envs(env.envs(&server.url()));
+            .envs(http::envs(&env, &server.url()));
         match mode {
             "print" => {
                 command.args(["-p", "/session"]);
@@ -218,7 +220,7 @@ fn reader_handled_rpc_controls_count_as_done_and_keep_earlier_failures() {
             let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
                 .current_dir(env.work())
                 .env_clear()
-                .envs(env.envs(&server.url()))
+                .envs(http::envs(&env, &server.url()))
                 .args(["--mode", "rpc", "--no-session", "--no-tools"])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -292,7 +294,7 @@ fn json_output_errors_preserve_the_completed_prompt_failure() {
             ScriptTurn::text("finished")
         };
         let server = FakeServer::start(vec![turn], FakeOpts::default()).unwrap();
-        let owned = env.envs(&server.url());
+        let owned = http::envs(&env, &server.url());
         let pairs: Vec<(&str, &str)> = owned
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))

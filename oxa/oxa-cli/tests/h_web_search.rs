@@ -2,6 +2,8 @@
 //! a loopback mock of the Brave API (`OXA_BRAVE_BASE_URL`). No real call, no real key
 //! (`test-key-not-real`); `TestEnv::envs` after `env_clear()`.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
 use oxa_proto::Role;
 use std::io::{BufRead, BufReader, Write};
@@ -56,7 +58,7 @@ fn oxa(env: &TestEnv, engine: &str, extra_env: &[(&str, &str)], words: &[&str], 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.args(words)
         .env_clear()
-        .envs(env.envs(engine))
+        .envs(http::envs(env, engine))
         .envs(extra_env.iter().map(|(k, v)| (k.to_string(), v.to_string())))
         .current_dir(env.work())
         .stdin(Stdio::piped())

@@ -2,6 +2,8 @@
 //! still fail after the repair rounds, and the notice when an untrusted project's `done` is
 //! not run. Isolation: `oxa_fake::TestEnv` for every file and directory.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_cli::{run, Stdio};
 use oxa_config::Env;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
@@ -37,7 +39,7 @@ fn go_env(
     extra: &[(&str, &str)],
 ) -> (i32, String, String) {
     let server = FakeServer::start(turns, FakeOpts::default()).expect("fake engine");
-    let mut owned = env.envs(&server.url());
+    let mut owned = http::envs(env, &server.url());
     owned.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let cwd = env.work();
     let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();

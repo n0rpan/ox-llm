@@ -1,4 +1,6 @@
 //! #332 step 4: limits finish active tools, save a final commit/session, and exit interrupted.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use oxa_session::{FsStore, SessionStore};
 use std::io::Write;
@@ -51,7 +53,7 @@ fn start_with_limits(env: &TestEnv, server: &FakeServer, mode: &str, limit: Opti
     command
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(env, &server.url()))
         .args(["--permission-mode", "workspace", "--yolo"]);
     if mode == "print" {
         command.args(["-p", "edit the file"]);
@@ -137,7 +139,7 @@ fn supervised_children_exit_on_the_first_sigterm() {
             command
                 .current_dir(env.work())
                 .env_clear()
-                .envs(env.envs(&server.url()));
+                .envs(http::envs(&env, &server.url()));
             if identity == "hint" {
                 command.env("OXA_SESSION_HINT", "fixture.s1");
             } else {
@@ -273,7 +275,7 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
     let output = command
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .args([
             "--yolo",
             "-p",

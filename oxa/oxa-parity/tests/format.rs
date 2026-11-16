@@ -99,14 +99,14 @@ impl Ran {
     }
 }
 
-/// `oxa <args>` in `cwd` with `env.envs(url)` + `extra`, `stdin` fed and
+/// `oxa <args>` in `cwd` with `oxa_parity::http_envs(&env, url)` + `extra`, `stdin` fed and
 /// closed; killed and failed after [`LIMIT`].
 fn oxa_in(env: &TestEnv, cwd: &Path, url: &str, args: &[&str], stdin: &str, extra: &[(&str, &str)]) -> Ran {
     let mut child = Command::new(oxa_bin())
         .args(args)
         .current_dir(cwd)
         .env_clear()
-        .envs(env.envs(url))
+        .envs(oxa_parity::http_envs(env, url))
         .envs(oxa_parity::note_off_env())
         .envs(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())))
         .stdin(Stdio::piped())
@@ -321,7 +321,7 @@ impl Rpc {
             .args(["--mode", "rpc"])
             .current_dir(env.work())
             .env_clear()
-            .envs(env.envs(url))
+            .envs(oxa_parity::http_envs(env, url))
             .envs(oxa_parity::note_off_env())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

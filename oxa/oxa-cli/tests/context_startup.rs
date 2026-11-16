@@ -1,4 +1,6 @@
 //! Context-file budget warnings use the selected model's window, without blocking startup.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeModel, FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use std::process::Command;
 
@@ -36,7 +38,7 @@ fn startup(args: &[&str], cap: u32, files: bool) -> String {
         .args(args)
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .output()
         .unwrap();
     let err = String::from_utf8(out.stderr).unwrap();

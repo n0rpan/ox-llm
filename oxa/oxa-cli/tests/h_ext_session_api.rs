@@ -2,6 +2,8 @@
 //! extension swap the session (print mode), and an extension tool's `details` survive a resume. Runs `oxa_cli::run` in-process
 //! against `oxa-fake`; the files live under `oxa_fake::TestEnv`.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_cli::{run, Stdio};
 use oxa_config::Env;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
@@ -39,7 +41,7 @@ export default function (oxa) {
 
 /// Run the program with `stdin` and `words`; returns (code, stdout, stderr).
 fn go(env: &TestEnv, url: &str, words: &[&str], stdin: &str) -> (i32, String, String) {
-    let owned = env.envs(url);
+    let owned = http::envs(env, url);
     let cwd = env.work();
     let argv: Vec<String> = words.iter().map(|s| s.to_string()).collect();
     let input = stdin.as_bytes().to_vec();

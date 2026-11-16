@@ -4,6 +4,8 @@
 //! request), the child's session hint, priority and turn kind, and the parent's cache after the
 //! children ran. Isolation: `oxa_fake::TestEnv`; never the real home.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -26,7 +28,7 @@ fn oxa(env: &TestEnv, url: &str, words: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.args(words)
         .env_clear()
-        .envs(env.envs(url))
+        .envs(http::envs(env, url))
         .current_dir(env.work());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

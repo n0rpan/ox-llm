@@ -6,6 +6,8 @@
 //! true` saves it, `undecided` falls through. Project extensions are not loaded before.
 //! Isolation: `oxa_fake::TestEnv` for every file and directory.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_cli::{run, Stdio};
 use oxa_config::Env;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
@@ -29,7 +31,7 @@ impl Write for Sink {
 /// Run `oxa -p hi` in-process; returns the exit code and stderr.
 fn go(env: &TestEnv) -> (i32, String) {
     let server = FakeServer::start(vec![ScriptTurn::text("ok")], FakeOpts::default()).expect("fake engine");
-    let owned = env.envs(&server.url());
+    let owned = http::envs(env, &server.url());
     let cwd = env.work();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

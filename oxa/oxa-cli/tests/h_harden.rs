@@ -9,6 +9,8 @@
 //! an unusable bwrap fails the tests, otherwise they are skipped with a notice cargo shows.
 //! Isolation: `oxa_fake::TestEnv` for every file and directory.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_cli::{run, Stdio};
 use oxa_config::Env;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
@@ -34,7 +36,7 @@ impl Write for Sink {
 /// Run `oxa <argv>` in-process in `cwd` against a fake engine with `turns`; exit code + stderr.
 fn go(env: &TestEnv, cwd: PathBuf, argv: &[&str], turns: Vec<ScriptTurn>) -> (i32, String) {
     let server = FakeServer::start(turns, FakeOpts::default()).expect("fake engine");
-    let owned = env.envs(&server.url());
+    let owned = http::envs(env, &server.url());
     let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

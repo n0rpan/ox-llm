@@ -1,4 +1,6 @@
 //! #332: unattended callers get a stable result without interpreting human diagnostics.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
 use std::io::Write;
@@ -7,7 +9,7 @@ use std::process::{Command, Stdio};
 fn run(env: &TestEnv, server: &FakeServer, args: &[&str], input: &[u8]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command.current_dir(env.work()).env_clear();
-    for (key, value) in env.envs(&server.url()) {
+    for (key, value) in http::envs(env, &server.url()) {
         command.env(key, value);
     }
     let mut child = command
@@ -365,7 +367,7 @@ fn a_later_broken_output_pipe_keeps_the_first_failure() {
         FakeOpts::default(),
     )
     .unwrap();
-    let owned = env.envs(&server.url());
+    let owned = http::envs(&env, &server.url());
     let pairs: Vec<(&str, &str)> = owned
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))

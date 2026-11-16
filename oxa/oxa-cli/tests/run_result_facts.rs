@@ -1,4 +1,6 @@
 //! Terminal facts describe this invocation, without guessing workspace effects from prose.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use serde_json::Value;
 use std::io::Write;
@@ -6,7 +8,10 @@ use std::process::{Command, Stdio};
 
 fn command(env: &TestEnv, url: &str) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
-    command.env_clear().envs(env.envs(url)).current_dir(env.work());
+    command
+        .env_clear()
+        .envs(http::envs(env, url))
+        .current_dir(env.work());
     command
 }
 fn terminal(bytes: &[u8]) -> Value {

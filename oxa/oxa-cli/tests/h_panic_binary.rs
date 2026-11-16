@@ -6,6 +6,8 @@
 //!
 //! Also a guard that the release profile never says `panic = "abort"` again.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -25,7 +27,7 @@ fn command(env: &TestEnv, url: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.args(args)
         .env_clear()
-        .envs(env.envs(url))
+        .envs(http::envs(env, url))
         .env("OXA_TEST_ISOLATION", "1")
         .env("OXA_TEST_PANIC", "host_function")
         .current_dir(env.work());

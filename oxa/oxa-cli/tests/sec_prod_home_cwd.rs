@@ -2,6 +2,8 @@
 //! print mode (interactive asks, default No), unless the user opted in (`oxa.allowHomeCwd` in
 //! the user settings, or `OXA_ALLOW_HOME_CWD`). A project below home is fine. Refusals happen
 //! before the engine is contacted, so the refusal tests need no server.
+#[path = "common/http.rs"]
+mod http;
 use oxa_cli::{run, Stdio};
 use oxa_config::Env;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
@@ -36,7 +38,7 @@ fn go(
     stdin: &str,
     tty: bool,
 ) -> (i32, String, String) {
-    let mut owned = env.envs(engine_url);
+    let mut owned = http::envs(env, engine_url);
     owned.extend(extra_env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (out, err) = (Sink::default(), Sink::default());

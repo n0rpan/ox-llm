@@ -39,6 +39,11 @@ fn go_recorded(
     args: &[&str],
     extra: &[(&str, &str)],
 ) -> (i32, String, String, Vec<oxa_fake::Recorded>) {
+    // This fixture exercises the HTTP engine contract, not native provider selection.
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}}}"#,
+    );
     let server = FakeServer::start(turns, FakeOpts::default()).expect("fake engine");
     let mut owned = env.envs(&server.url());
     owned.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));

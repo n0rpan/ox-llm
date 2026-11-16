@@ -1041,7 +1041,7 @@ fn tools_024() {
         cmd.args(["-p", "--no-session", "go"])
             .current_dir(env.work())
             .env_clear()
-            .envs(env.envs(&srv.url()))
+            .envs(oxa_parity::http_envs(&env, &srv.url()))
             .envs(oxa_parity::note_off_env())
             .env("OXA_BRAVE_BASE_URL", &brave_url)
             .stdin(Stdio::null())

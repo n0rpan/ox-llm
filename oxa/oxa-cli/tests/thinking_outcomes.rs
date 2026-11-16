@@ -1,4 +1,6 @@
 //! #332 step 5 / #184: one thinking fallback, then an explicit terminal failure class.
+#[path = "common/http.rs"]
+mod http;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use oxa_proto::Finish;
 use serde_json::Value;
@@ -28,7 +30,7 @@ fn run(mode: &str, second: ScriptTurn) -> (std::process::Output, FakeServer) {
     command
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs(&server.url()))
+        .envs(http::envs(&env, &server.url()))
         .args(["--no-session", "--no-tools", "--thinking", "medium"]);
     if mode == "print" {
         command.args(["-p", "explain the task"]);

@@ -77,7 +77,7 @@ fn exec(
         .args(args)
         .current_dir(dir)
         .env_clear()
-        .envs(env.envs(url))
+        .envs(oxa_parity::http_envs(env, url))
         .envs(oxa_parity::note_off_env())
         .envs(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())))
         .stdin(Stdio::piped())
@@ -1948,6 +1948,11 @@ fn env_004() {
     let server = fake(&turns(&["a"]));
     let env = TestEnv::new();
     let dir = env.tmp().join("agent-dir-004");
+    // The HTTP fixture must opt out in the directory this case actually selects.
+    env.write(
+        "tmp/agent-dir-004/settings.json",
+        r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}}}"#,
+    );
     ok(&exec(
         &env,
         &server.url(),

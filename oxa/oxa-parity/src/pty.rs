@@ -995,7 +995,7 @@ impl PtySession {
         cmd.args(args)
             .current_dir(env.work())
             .env_clear()
-            .envs(env.envs(engine_url))
+            .envs(crate::http_envs(env, engine_url))
             .envs(crate::note_off_env())
             // The PARITY rows describe pi's interface: they drive the plain look
             // (`OXA_SKIN=pi`). OXA's own look has its own pty tests (`oxa_skin.rs`), which

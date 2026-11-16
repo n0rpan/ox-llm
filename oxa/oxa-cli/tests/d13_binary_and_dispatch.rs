@@ -3,6 +3,8 @@
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
+#[path = "common/http.rs"]
+mod http;
 use oxa_cli::{choose_mode, parse_args, run, RunMode, Stdio};
 use oxa_config::Env;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
@@ -40,7 +42,7 @@ struct Captured {
 
 /// The complete environment of a child `oxa` (TestEnv::envs), as the `Env` that `run` takes.
 fn env_of(env: &TestEnv, engine_url: &str) -> Env {
-    let owned = env.envs(engine_url);
+    let owned = http::envs(env, engine_url);
     let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     Env::from_pairs(&pairs)
 }
@@ -460,7 +462,7 @@ fn continue_resume_session_flags() {
 fn no_sandbox_notice() {
     let env = TestEnv::new();
     let server = FakeServer::start(vec![ScriptTurn::text("still runs")], FakeOpts::default()).expect("fake");
-    let mut pairs = env.envs(&server.url());
+    let mut pairs = http::envs(&env, &server.url());
     for (k, v) in pairs.iter_mut() {
         if k == "PATH" {
             // An empty PATH holds no bwrap, so the sandbox is missing.
