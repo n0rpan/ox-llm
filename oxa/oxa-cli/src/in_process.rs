@@ -126,50 +126,17 @@ fn subscription_options(
     cloud: &Value,
     needed: bool,
 ) -> Result<(Option<Subscription>, Option<SubscriptionLimits>), OxaError> {
-    let limits = cloud
-        .get("subscription_limits")
-        .map(|value| {
-            SubscriptionLimits::new(
-                value["daily_requests"].as_u64().ok_or_else(invalid)?,
-                value["daily_tokens"].as_u64().ok_or_else(invalid)?,
-            )
-            .map_err(|_| invalid())
-        })
+    let parsed = oxc_gateway::openai::subscription_config::parse(cloud, needed).map_err(|_| invalid())?;
+    let subscription = parsed.refresh.map(|refresh| Subscription {
+        client_id: refresh.client_id.into(),
+        refresh_endpoint: refresh.endpoint.into(),
+        timeout: refresh.timeout,
+    });
+    let limits = parsed
+        .limits
+        .map(|(requests, tokens)| SubscriptionLimits::new(requests, tokens).map_err(|_| invalid()))
         .transpose()?;
-    if !needed {
-        return Ok((None, limits));
-    }
-    let config = cloud.get("subscription");
-    if config.is_some_and(|value| !value.is_object() || value.get("refresh_endpoint").is_some()) {
-        return Err(invalid());
-    }
-    // Public experimental identity approved in #252/#726, not a credential.
-    let client_id = match config.and_then(|value| value.get("client_id")) {
-        None => "app_EMoamEEZ73f0CkXaXp7hrann",
-        Some(value) => value.as_str().ok_or_else(invalid)?,
-    };
-    if client_id.is_empty()
-        || client_id.len() > 128
-        || !client_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
-    {
-        return Err(invalid());
-    }
-    let timeout = match config.and_then(|value| value.get("refresh_timeout_ms")) {
-        None => 15_000,
-        Some(value) => value.as_u64().filter(|n| *n > 0).ok_or_else(invalid)?,
-    };
-    Ok((
-        Some(Subscription {
-            client_id: client_id.into(),
-            // Production refresh cannot send a token to a setting-selected origin.
-            // The client contract's loopback injection belongs only to its tests.
-            refresh_endpoint: "https://auth.openai.com/oauth/token".into(),
-            timeout: Duration::from_millis(timeout.min(30_000)),
-        }),
-        limits,
-    ))
+    Ok((subscription, limits))
 }
 
 #[cfg(test)]
