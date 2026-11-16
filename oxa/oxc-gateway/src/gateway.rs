@@ -437,6 +437,7 @@ fn go_refusal(error: crate::opencode::client::Error) -> Refusal {
             "cloud_upstream_error",
             "The Go upstream request failed.",
         ),
+        E::Discovery(problem) => (502, "cloud_discovery_invalid", problem.message()),
         E::Cancelled => (499, "request_cancelled", "Request cancelled."),
         E::Request => (400, "invalid_value", "Invalid Go configuration or request."),
         E::Endpoint => (

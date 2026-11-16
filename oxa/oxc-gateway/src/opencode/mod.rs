@@ -37,6 +37,39 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+/// Finite discovery diagnostics: never carry an identifier, URL or response value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscoveryProblem {
+    Json,
+    Envelope,
+    Id,
+    CanonicalId,
+    Context,
+    Output,
+    OutputExceedsContext,
+    Api,
+    Endpoint,
+    Duplicate,
+    CredentialEcho,
+}
+impl DiscoveryProblem {
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Self::Json => "Go model discovery returned invalid JSON.",
+            Self::Envelope => "Go model discovery has an invalid data envelope.",
+            Self::Id => "Go model discovery has an invalid model id.",
+            Self::CanonicalId => "Go model discovery has an invalid canonical id.",
+            Self::Context => "Go model discovery has an invalid context limit.",
+            Self::Output => "Go model discovery has an invalid output limit.",
+            Self::OutputExceedsContext => "Go model discovery output limit exceeds context.",
+            Self::Api => "Go model discovery has invalid API metadata.",
+            Self::Endpoint => "Go model discovery has an unsafe API endpoint.",
+            Self::Duplicate => "Go model discovery repeats a model id.",
+            Self::CredentialEcho => "Go model discovery contained a credential; metadata was refused.",
+        }
+    }
+}
+
 /// Unknown API shapes and their hints survive discovery for later adapters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Api {
@@ -78,14 +111,21 @@ fn endpoint(base: &str) -> Result<Url, Error> {
 /// The trusted Go origin constrains every discovered API URL before any key
 /// can be sent. A malformed record never yields a partial catalog.
 pub fn models(value: &Value, trusted_base: &str) -> Result<Vec<Model>, Error> {
-    let base = endpoint(trusted_base)?;
+    models_diagnostic(value, trusted_base).map_err(|(error, _)| error)
+}
+pub(crate) fn models_diagnostic(
+    value: &Value,
+    trusted_base: &str,
+) -> Result<Vec<Model>, (Error, DiscoveryProblem)> {
+    use DiscoveryProblem as P;
+    let base = endpoint(trusted_base).map_err(|error| (error, P::Endpoint))?;
     let data = value["data"]
         .as_array()
         .filter(|v| v.len() <= MAX_MODELS)
-        .ok_or(Error::Discovery)?;
+        .ok_or((Error::Discovery, P::Envelope))?;
     let mut out = BTreeMap::new();
     for item in data {
-        let text = |key| {
+        let text = |key, problem| {
             item[key]
                 .as_str()
                 .filter(|s| {
@@ -95,36 +135,36 @@ pub fn models(value: &Value, trusted_base: &str) -> Result<Vec<Model>, Error> {
                             .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
                 })
                 .map(str::to_owned)
-                .ok_or(Error::Discovery)
+                .ok_or((Error::Discovery, problem))
         };
-        let limit = |key| {
+        let limit = |key, problem| {
             item["limit"][key]
                 .as_u64()
                 .and_then(|n| u32::try_from(n).ok())
                 .filter(|n| *n > 0)
-                .ok_or(Error::Discovery)
+                .ok_or((Error::Discovery, problem))
         };
-        let context_window = limit("context")?;
-        let max_output = limit("output")?;
+        let context_window = limit("context", P::Context)?;
+        let max_output = limit("output", P::Output)?;
         if max_output > context_window {
-            return Err(Error::Discovery);
+            return Err((Error::Discovery, P::OutputExceedsContext));
         }
         let mut api = BTreeMap::new();
         for (shape, hints) in item["api"]
             .as_object()
             .filter(|v| !v.is_empty() && v.len() <= 32)
-            .ok_or(Error::Discovery)?
+            .ok_or((Error::Discovery, P::Api))?
         {
             if shape.is_empty() || shape.len() > 64 || shape.chars().any(char::is_control) {
-                return Err(Error::Discovery);
+                return Err((Error::Discovery, P::Api));
             }
-            let raw = hints["base_url"].as_str().ok_or(Error::Discovery)?;
-            let url = endpoint(raw)?;
+            let raw = hints["base_url"].as_str().ok_or((Error::Discovery, P::Api))?;
+            let url = endpoint(raw).map_err(|error| (error, P::Endpoint))?;
             let prefix = base.path().trim_end_matches('/');
             if url.origin() != base.origin()
                 || !(url.path() == prefix || url.path().starts_with(&format!("{prefix}/")))
             {
-                return Err(Error::Endpoint);
+                return Err((Error::Endpoint, P::Endpoint));
             }
             api.insert(
                 shape.clone(),
@@ -135,8 +175,8 @@ pub fn models(value: &Value, trusted_base: &str) -> Result<Vec<Model>, Error> {
             );
         }
         let model = Model {
-            id: text("id")?,
-            canonical_id: text("canonical_id")?,
+            id: text("id", P::Id)?,
+            canonical_id: text("canonical_id", P::CanonicalId)?,
             context_window,
             max_output,
             api,
@@ -145,7 +185,7 @@ pub fn models(value: &Value, trusted_base: &str) -> Result<Vec<Model>, Error> {
             modalities: item["modalities"].clone(),
         };
         if out.insert(model.id.clone(), model).is_some() {
-            return Err(Error::Discovery);
+            return Err((Error::Discovery, P::Duplicate));
         }
     }
     Ok(out.into_values().collect())

@@ -27,6 +27,7 @@ pub enum Error {
     Request,
     Transport,
     Protocol,
+    Discovery(super::DiscoveryProblem),
     TooLarge,
     Cancelled,
     Refused(Refusal),
@@ -88,17 +89,19 @@ pub async fn models(
         let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
         let status = response.status().as_u16();
         let bytes = bounded(response, MAX_DISCOVERY, cancel).await?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
         if status != 200 {
+            let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             return Err(Error::Refused(super::refusal(status, &value)));
         }
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|_| Error::Discovery(super::DiscoveryProblem::Json))?;
         // Discovery becomes public catalog metadata. Reject an echoed secret
         // anywhere in decoded fields, including names and nested hints; never
         // redact/rewrite an upstream routing identifier into another model.
         if echoes_credential(&value, key) {
-            return Err(Error::Protocol);
+            return Err(Error::Discovery(super::DiscoveryProblem::CredentialEcho));
         }
-        super::models(&value, base).map_err(|_| Error::Protocol)
+        super::models_diagnostic(&value, base).map_err(|(_, problem)| Error::Discovery(problem))
     };
     tokio::time::timeout(timeout, operation)
         .await
