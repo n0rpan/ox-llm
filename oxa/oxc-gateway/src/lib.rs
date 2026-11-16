@@ -8,6 +8,7 @@ pub mod ledger;
 pub mod policy;
 #[cfg(feature = "pricing")]
 pub mod pricing;
+pub mod refresh;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;
