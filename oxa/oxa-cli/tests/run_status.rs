@@ -282,3 +282,66 @@ fn status_lookup_respects_the_configured_session_directory() {
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["outcome"]["outcome"], "done");
 }
+
+#[test]
+fn wipe_removes_the_session_status_snapshot() {
+    let env = TestEnv::new();
+    let srv = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let output = command(&env, &srv.url())
+        .args(["-p", "--no-tools", "go"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let sref = session(&env);
+    let path = sref.path.with_extension("status.json");
+    assert!(path.exists());
+    let output = command(&env, "http://127.0.0.1:1")
+        .args(["wipe", "--session", &sref.id, "--yes"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !path.exists(),
+        "wipe must remove the status artifact with its session"
+    );
+}
+
+#[test]
+fn status_refuses_malformed_oversized_mismatched_and_symlinked_snapshots() {
+    use std::os::unix::fs::symlink;
+    let env = TestEnv::new();
+    let store = FsStore::new(env.agent_dir().join("sessions"));
+    let sref = store.create(&env.work(), None, None).unwrap();
+    let path = sref.path.with_extension("status.json");
+    for bytes in [
+        b"not JSON".to_vec(),
+        vec![b'x'; 4097],
+        serde_json::to_vec(&json!({"type":"oxa_status","version":2,"session_id":sref.id})).unwrap(),
+        serde_json::to_vec(&json!({"type":"oxa_status","version":1,"session_id":"another"})).unwrap(),
+    ] {
+        std::fs::write(&path, bytes).unwrap();
+        let output = command(&env, "http://127.0.0.1:1")
+            .args(["status", &sref.id])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+    }
+    std::fs::remove_file(&path).unwrap();
+    let other = env.work().join("unrelated");
+    std::fs::write(&other, "PRIVATE_TEST_CONTENT").unwrap();
+    symlink(&other, &path).unwrap();
+    let output = command(&env, "http://127.0.0.1:1")
+        .args(["status", &sref.id])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE_TEST_CONTENT"));
+    assert_eq!(std::fs::read_to_string(other).unwrap(), "PRIVATE_TEST_CONTENT");
+}
