@@ -270,3 +270,43 @@ fn goal_done_cannot_bypass_project_done_checks() {
     assert_eq!(session.stats().outcome, RunOutcome::Failed("done_checks_failed"));
     assert_eq!(session.goal().unwrap().status, GoalStatus::Blocked);
 }
+
+#[test]
+fn budget_exhausted_by_wait_still_runs_checks_for_earlier_edits() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "edit",
+            "write",
+            r#"{"path":"result.txt","content":"Synthetic result"}"#,
+        ),
+        ScriptTurn::tool(
+            "wait",
+            "wait",
+            r#"{"seconds":1,"reason":"Spend remaining synthetic budget"}"#,
+        ),
+    ]));
+    let mut dependencies = deps(&env, Arc::new(MemStore::new()), engine);
+    dependencies.tools = oxa_tools::builtin_tools();
+    dependencies.settings = Settings::from_values(
+        serde_json::json!({"done":["exit 1"], "oxa":{"envNote":false}}),
+        serde_json::json!({}),
+    );
+    let mut session = Session::open(dependencies, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_time_ms: Some(100),
+                ..GoalBudget::default()
+            })),
+            &mut sink,
+        )
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Failed("done_checks_failed"));
+    assert!(session.stats().done_failed);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Blocked);
+}

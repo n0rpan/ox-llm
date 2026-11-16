@@ -213,11 +213,8 @@ fn wait_cancelled(cancel: &oxa_proto::CancelToken, interrupt: &oxa_proto::Cancel
     }
 }
 
-pub(crate) fn checkpoint(
-    st: &mut crate::SessionState,
-    turn: bool,
-    sink: &mut dyn oxa_proto::EventSink,
-) -> Result<(), oxa_proto::OxaError> {
+/// Account before choosing a terminal path; publish only after project checks.
+pub(crate) fn account(st: &mut crate::SessionState, turn: bool) -> Result<(), oxa_proto::OxaError> {
     if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
         let tokens = *st
             .shared
@@ -227,6 +224,16 @@ pub(crate) fn checkpoint(
             .unwrap_or_else(|p| p.into_inner());
         goal.charge(tokens, turn)?;
         goal.enforce_budget();
+    }
+    Ok(())
+}
+pub(crate) fn checkpoint(
+    st: &mut crate::SessionState,
+    turn: bool,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    account(st, turn)?;
+    if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
         crate::agent_loop::persist(st, goal.snapshot().body(), sink)?;
     }
     Ok(())

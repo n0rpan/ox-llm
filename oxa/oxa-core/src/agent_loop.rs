@@ -567,6 +567,7 @@ fn run_inner(
             );
             turn_index += 1;
 
+            crate::goal::account(st, false)?;
             if crate::goal::terminal(st) {
                 let _ = crate::done::check(st, &mut done, sink, ui);
                 if st.stats.done_failed {
