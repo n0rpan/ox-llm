@@ -458,7 +458,14 @@ mod tests {
             "occupied fixed port cannot choose another redirect"
         );
         drop(first);
-        let second = Login::new().unwrap();
+        // Other unit controls spawn child processes concurrently. A fork can
+        // briefly retain the first CLOEXEC listener until exec; keep the second
+        // entropy check on an ephemeral test listener rather than racing a
+        // second bind of the global production port.
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut random = [0; 96];
+        getrandom::fill(&mut random).unwrap();
+        let second = Login::start(listener, ISSUER.into(), REDIRECT.into(), &random, DEADLINE).unwrap();
         assert_ne!(state, second.state);
         assert_ne!(verifier, second.verifier);
         for id in ["", "bad id", "bad/id", "λ", &"x".repeat(129)] {
