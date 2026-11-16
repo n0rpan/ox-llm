@@ -137,7 +137,7 @@ impl Facts {
     /// a lost acknowledgement, a torn last line or an interrupted snapshot replacement.
     pub fn append(&self, checkpoint: Checkpoint, at_ms: u64, fact: Fact) -> Result<Event> {
         let _lock = self.root.lock(LOCK)?;
-        let (mut state, mut snapshot, _) = self.recover()?;
+        let (mut state, mut snapshot, journal) = self.recover()?;
         let sources = state.sources()?;
         if let Some(previous) = sources
             .iter()
@@ -162,14 +162,23 @@ impl Facts {
             checkpoint,
             fact,
         };
-        if event.to_json().map_err(|error| error.to_string())?.len() + 1 > self.journal_bytes {
+        let mut bytes = event.to_json().map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        if bytes.len() > self.journal_bytes {
             return Err("event exceeds journal capacity".into());
         }
         // Fail capacity/semantic checks before durably reserving an observation.
         situation::apply(&mut snapshot, &event)?;
         state.pending = Some(event_value(&event)?);
         self.root.atomic(STATE, &state.bytes()?)?;
-        self.recover()?;
+        if journal.current_bytes + bytes.len() > self.journal_bytes {
+            self.root.rotate(CURRENT, PREVIOUS)?;
+        }
+        self.root.append(CURRENT, &bytes)?;
+        state.committed(&event)?;
+        self.root.atomic(STATE, &state.bytes()?)?;
+        self.root
+            .atomic(SITUATION, &snapshot.to_json().map_err(|error| error.to_string())?)?;
         Ok(event)
     }
     pub fn situation(&self) -> Result<Snapshot> {
