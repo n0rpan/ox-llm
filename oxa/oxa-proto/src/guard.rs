@@ -24,10 +24,8 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".config/gh",
     ".config/hub",
     ".config/oxc",
-    ".config/oxc/llm/cloud-secrets.json",
     ".config/local-ai/llm/cloud-secrets.json",
-    // #252: the experimental ChatGPT subscription tokens, beside the cloud keys.
-    ".config/oxc/llm/chatgpt-auth.json",
+    // Legacy paths (#237, #252): no parent entry covers them; `.config/oxc` covers the new ones.
     ".config/local-ai/llm/chatgpt-auth.json",
     ".local/state/oxc",
     ".oxa/agent",
@@ -227,6 +225,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn sensitive_home_has_no_entry_covered_by_another() {
+        // #527: a child of a listed directory adds nothing (the legacy `local-ai` paths do).
+        for a in SENSITIVE_HOME {
+            for b in SENSITIVE_HOME {
+                assert!(
+                    a == b || !Path::new(a).starts_with(b),
+                    "{a} is already covered by {b}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_walk_stops_at_home_and_never_goes_above_it() {
