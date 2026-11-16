@@ -30,6 +30,7 @@ mod netguard;
 mod pkg_cmd;
 mod report_cmd;
 mod sandbox_layout;
+mod status;
 mod themes;
 mod wipe_cmd;
 mod work_checks;
