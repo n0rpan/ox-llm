@@ -78,6 +78,7 @@ impl std::error::Error for Error {}
 #[derive(Clone)]
 pub struct Client(reqwest::Client);
 impl Client {
+    #[cfg(feature = "anthropic-gateway")]
     pub(crate) fn transport(&self) -> &reqwest::Client {
         &self.0
     }
@@ -191,10 +192,7 @@ impl Client {
             return Err(Error::Protocol);
         }
         let include_usage = chat.payload.pointer("/stream_options/include_usage") == Some(&Value::Bool(true));
-        let redactor = KeyRedactor {
-            key,
-            fields: BTreeMap::new(),
-        };
+        let redactor = KeyRedactor::new(key);
         let mut translated =
             anthropic_stream::Stream::with_redactor(chat.alias, chat.created, include_usage, redactor);
         let mut source = response.bytes_stream();
