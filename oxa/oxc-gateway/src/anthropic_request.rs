@@ -108,8 +108,7 @@ pub fn translate_with_blocks(
             continue;
         }
         let blocks = if role == "tool" {
-            // The Python reference stringifies arrays and sends empty text for empty
-            // results. Preserve text parts and use a nonempty placeholder instead (#334).
+            // Preserve structured text and represent empty tool results explicitly.
             let mut parts = text_parts(&message["content"]);
             parts.retain(|part| part["text"].as_str().is_some_and(|s| !s.is_empty()));
             if parts.is_empty() {
@@ -226,7 +225,7 @@ pub fn translate_with_blocks(
     if let Some(effort) = effort {
         let mapped = match effort {
             "low" | "medium" | "high" | "xhigh" => Some(effort),
-            "none" | "minimal" => Some("low"),
+            "none" | "minimal" => None,
             _ => None,
         };
         if let Some(mapped) = mapped {

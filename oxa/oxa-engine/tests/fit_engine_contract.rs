@@ -40,6 +40,7 @@ fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hin
         model: "fake-model",
         max_tokens,
         thinking: false,
+        thinking_budget: None,
         preserve_thinking: true,
         sampling: None,
         hints: h,

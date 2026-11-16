@@ -1,4 +1,4 @@
-//! C8 acceptance tests: Prefix epochs. Owner: task C8.
+//! C8 acceptance tests: Prefix epochs.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -321,6 +321,7 @@ fn w3_constant_within_epoch() {
         EntryBody::Msg {
             wire: WireMsg::user("hello"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("user");
@@ -336,6 +337,7 @@ fn w3_constant_within_epoch() {
         EntryBody::Msg {
             wire: WireMsg::user("again"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("user");

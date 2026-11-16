@@ -26,7 +26,26 @@ fn sibling(name: &str, var: &str) -> PathBuf {
     if p.ends_with("deps") {
         p.pop();
     }
-    p.join(name)
+    let bin = p.join(name);
+    if !bin.exists() {
+        build_binaries(&p);
+    }
+    bin
+}
+
+/// Build `oxa` and `oxa-fake` once when a bare `cargo test -p oxa-parity` finds them missing.
+fn build_binaries(profile_dir: &std::path::Path) {
+    use std::sync::Once;
+    static BUILD: Once = Once::new();
+    BUILD.call_once(|| {
+        let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        cmd.args(["build", "-p", "oxa-cli", "-p", "oxa-fake"]);
+        if profile_dir.file_name().is_some_and(|n| n == "release") {
+            cmd.arg("--release");
+        }
+        let ok = cmd.status().map(|s| s.success()).unwrap_or(false);
+        assert!(ok, "building oxa and oxa-fake failed");
+    });
 }
 
 /// The `oxa` binary: `$OXA_BIN` or `target/<profile>/oxa`.

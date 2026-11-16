@@ -1,4 +1,4 @@
-//! B11: Markdown to terminal lines. Owner: task B11. Signatures below are frozen; bodies are yours.
+//! B11: Markdown to terminal lines.
 // ported from pi packages/tui/src/components/markdown.ts
 //
 // The parser is a small line-based block parser plus a delimiter-run inline scanner. It is

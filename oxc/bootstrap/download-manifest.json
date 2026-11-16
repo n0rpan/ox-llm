@@ -5,7 +5,7 @@
     "src/oxc/bootstrap_download.py": "05387b6cd08ed2009b01122ab2980eaf8c327e4dfa045575c7fb18e63ecffa27",
     "src/oxc/bootstrap_transfer.py": "a58dbdd2db77d64c9e4ba3fc1967fdba225aec8c8a1d134f444e74c679d2dec4",
     "src/oxc/bootstrap_guard.py": "37778922d8bde5af04de2c2ec1c1e4e79f1d5ca9cbc7b0222f3301c949969349",
-    "src/oxc/bootstrap.py": "e5f9b5245a5a8d54586bd74ff02efe8fc5dd12e3f291f1265e2f4e058829c230",
+    "src/oxc/bootstrap.py": "b04b85eec966b753674803d0746eb5576ef08f540529609d07fa72773134d162",
     "src/oxc/power.py": "a453ebd095a2347ccc49bbb1be0086e18cf5bc5fa9773654b179cab72f38d4f5",
     "dependencies/model-artifacts.json": "14bb621b4eb3b7b34abd2f816c9d87f40521f033775292185a77515bbaa8d53c",
     "tests/test_bootstrap_transfer.py": "3763f6e34869c0f2607db12043ca1bfec929916ca3455deee9e0fad9e33e4095",

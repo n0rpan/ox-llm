@@ -54,6 +54,10 @@ impl std::error::Error for OxaError {}
 /// Process exit code for a spent daily cloud budget (`codes::BUDGET_EXHAUSTED`).
 pub const EXIT_BUDGET: i32 = 3;
 
+/// Message prefix of a `stream_broken` that wraps a refusal arriving after reply data (budget,
+/// settlement, malformed chunk): never replayed, unlike a plain transport cut (#456).
+pub const CUT_BY_REFUSAL: &str = "the reply was cut: ";
+
 /// Stable error codes. A new code is added here by the architect; tasks pick from this list.
 pub mod codes {
     /// The engine endpoint refused the connection or is not reachable. Always carries a hint.
@@ -100,6 +104,8 @@ pub mod codes {
     /// An MCP server needs an OAuth sign-in (`oxa mcp login <server>`).
     pub const MCP_NEEDS_AUTH: &str = "mcp_needs_auth";
     pub const TIMEOUT: &str = "timeout";
+    /// The run reached `oxa.maxTurns` model replies (#507).
+    pub const TURN_LIMIT: &str = "turn_limit";
     /// The project is not trusted and the resource is trust-gated.
     pub const UNTRUSTED: &str = "untrusted";
     /// A bug: an internal assumption did not hold.

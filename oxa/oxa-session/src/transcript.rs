@@ -1,6 +1,7 @@
-//! A4: the transcript fold (W1). Owner: task A4. Signatures below are frozen; bodies are yours.
+//! A4: the transcript fold (W1).
 use oxa_proto::{rebase_why, Entry, EntryBody, FrozenPrefix, TurnKind, Usage, WireMsg};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 /// One recorded rebase.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +29,7 @@ pub struct RebaseLog {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Transcript {
     prefix: Option<FrozenPrefix>,
-    wire: Vec<WireMsg>,
+    wire: Arc<Vec<WireMsg>>,
     /// Entry id that produced each wire message (`None` for a synthetic head).
     origins: Vec<Option<String>>,
     chain: [u8; 32],
@@ -69,7 +70,7 @@ impl Transcript {
                 let later_epoch = self.prefix.is_some();
                 self.prefix = Some(p.clone());
                 if later_epoch {
-                    let (wire, origins) = (self.wire.clone(), self.origins.clone());
+                    let (wire, origins) = (self.wire.to_vec(), self.origins.clone());
                     self.install(wire, origins, rebase_why::EPOCH);
                 }
             }
@@ -135,7 +136,7 @@ impl Transcript {
                     .iter()
                     .position(|o| o.as_deref() == Some(target.as_str()))
                 {
-                    let mut wire = self.wire.clone();
+                    let mut wire = self.wire.to_vec();
                     let mut origins = self.origins.clone();
                     match replacement {
                         Some(text) => wire[i].content = Some(text.clone()),
@@ -233,6 +234,12 @@ impl Transcript {
     pub fn wire(&self) -> &[WireMsg] {
         &self.wire
     }
+    /// The wire as a shared handle, so a request can hold it while the session state is used
+    /// elsewhere, without copying the messages. A later `push` or rebase leaves a held handle
+    /// unchanged (copy on write).
+    pub fn wire_shared(&self) -> Arc<Vec<WireMsg>> {
+        Arc::clone(&self.wire)
+    }
     /// Append a message; returns its index. Never changes existing messages.
     pub fn push(&mut self, m: WireMsg) -> usize {
         self.push_from(m, None)
@@ -294,7 +301,7 @@ impl Transcript {
     fn push_from(&mut self, m: WireMsg, origin: Option<String>) -> usize {
         let idx = self.wire.len();
         self.chain = chain_step(&self.chain, &m);
-        self.wire.push(m);
+        Arc::make_mut(&mut self.wire).push(m);
         self.origins.push(origin);
         idx
     }
@@ -304,7 +311,7 @@ impl Transcript {
     fn install(&mut self, wire: Vec<WireMsg>, origins: Vec<Option<String>>, why: &'static str) {
         assert!(rebase_why::ALL.contains(&why), "unknown rebase cause: {why:?}");
         let before = self.wire.len();
-        self.wire = wire;
+        self.wire = Arc::new(wire);
         self.origins = origins;
         self.chain = chain_of(&self.wire);
         self.usage = None;

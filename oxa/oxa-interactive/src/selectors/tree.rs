@@ -1,4 +1,4 @@
-//! D9: the session tree navigator (`/tree`) and the fork-point picker (`/fork`). Owner: task D9. Signatures below are frozen; bodies are yours.
+//! D9: the session tree navigator (`/tree`) and the fork-point picker (`/fork`).
 // ported from pi packages/coding-agent/src/modes/interactive/components/{tree-selector.ts,user-message-selector.ts}
 //
 // Design notes (D9):

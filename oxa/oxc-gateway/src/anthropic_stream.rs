@@ -99,7 +99,7 @@ pub trait Redactor {
     fn whole(&mut self, value: &str) -> String;
 }
 
-/// Explicit identity transform for callers without sensitive data and parity tests.
+/// Explicit identity transform for callers without sensitive data.
 pub struct Identity;
 impl Redactor for Identity {
     fn feed(&mut self, _: Field, fragment: &str) -> String {
@@ -302,13 +302,13 @@ impl<R: Redactor> Stream<R> {
                         if block.native["type"] != if field == "text" { "text" } else { "thinking" } {
                             return Err(StreamError);
                         }
-                        if field == "signature" {
-                            // Match the reference's opaque replacement semantics.
-                            block.native[field] = json!(text);
-                            return Ok(out);
-                        }
                         let existing = block.native[field].as_str().ok_or(StreamError)?;
                         block.native[field] = json!(format!("{existing}{text}"));
+                        if field == "signature" {
+                            // Signature deltas are fragments of one opaque replay value.
+                            // Keep every fragment private and in its original order.
+                            return Ok(out);
+                        }
                         let safe = self.redactor.feed(
                             if field == "text" {
                                 Field::Content
