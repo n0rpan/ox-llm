@@ -12,7 +12,7 @@
 //! * **Whole tree.** The export contains every entry of the file (all branches), like pi; the
 //!   template draws the tree sidebar from `id` / `parentId`.
 //! * **pi JSON shape.** The embedded session data is pi's v3 JSON (the bytes
-//!   `oxa_session::encode_entry` writes), base64-encoded into `{{SESSION_DATA}}`.
+//!   `oxa_session::encode_visible_entry` writes), base64-encoded into `{{SESSION_DATA}}`.
 //! * **No wire involvement.** Export never touches the transcript or the engine (W1 is not at
 //!   stake); `ToolOutput::ui` data may be shown.
 //! * No third-party upload (`/share` is omitted in oxa).

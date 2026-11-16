@@ -360,3 +360,40 @@ fn parser_private_number_maps_cannot_panic_numeric_checks() {
         .validate(r#"{"$serde_json::private::Number":"1e400"}"#)
         .is_err());
 }
+
+#[test]
+fn numeric_enum_rejects_private_number_maps_inside_arrays() {
+    let schema = OutputSchema::new(json!({"enum":[[1]]})).unwrap();
+    assert!(schema
+        .validate(r#"[{"$serde_json::private::Number":"1"}]"#)
+        .is_err());
+    assert!(schema.matches("[1.000]"));
+    assert!(schema.matches("[10e-1]"));
+    assert!(!schema.matches("[1.0000000000000001]"));
+    assert!(!schema.matches(r#"["1"]"#));
+}
+
+#[test]
+fn numeric_enum_rejects_private_number_maps_inside_objects() {
+    let schema = OutputSchema::new(json!({"enum":[{"outer":{"number":1}}]})).unwrap();
+    assert!(schema
+        .validate(r#"{"outer":{"number":{"$serde_json::private::Number":"1"}}}"#)
+        .is_err());
+    assert!(schema.matches(r#"{"outer":{"number":1.000}}"#));
+    assert!(schema.matches(r#"{"outer":{"number":10e-1}}"#));
+    assert!(!schema.matches(r#"{"outer":{"number":1.0000000000000001}}"#));
+    assert!(!schema.matches(r#"{"outer":{"number":"1"}}"#));
+}
+
+#[test]
+fn numeric_enum_preserves_mixed_nested_values_and_diagnostic_path() {
+    let schema = OutputSchema::new(json!({"properties":{"answer":{"enum":[[1,{"n":2}]]}}})).unwrap();
+    assert!(schema.matches(r#"{"answer":[1.00,{"n":20e-1}]}"#));
+    assert!(schema.matches(r#"{"answer":[10e-1,{"n":2.000}]}"#));
+    assert!(!schema.matches(r#"{"answer":[1,{"n":2.0000000000000001}]}"#));
+    let error = schema
+        .validate(r#"{"answer":[1,{"n":{"$serde_json::private::Number":"2"}}]}"#)
+        .unwrap_err();
+    assert_eq!(error.instance_path, "/answer");
+    assert_eq!(error.message, "Value is not in enum");
+}

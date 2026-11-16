@@ -24,7 +24,8 @@ share = ["dep:oxc-gateway"]
 oxc-gateway = { path = "../oxc-gateway", optional = true, features = ["share"] }
 oxa-work.workspace = true
 oxa-proto.workspace = true
-oxa-engine.workspace = true
+oxa-engine = { workspace = true, features = ["in-process-gateway"] }
+oxc-gateway.workspace = true
 oxa-session.workspace = true
 oxa-tools.workspace = true
 oxa-sandbox.workspace = true

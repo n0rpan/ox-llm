@@ -79,16 +79,24 @@ impl std::error::Error for Error {}
 pub struct Client(reqwest::Client);
 impl Client {
     pub fn new() -> Result<Self, Error> {
-        reqwest::Client::builder()
+        Self::with_read_timeout(Some(Duration::from_secs(1800)))
+    }
+    /// A silence limit, reset by incoming bytes; None disables it. There is no
+    /// total-generation deadline, so provider liveness can keep a long call alive.
+    pub fn with_read_timeout(timeout: Option<Duration>) -> Result<Self, Error> {
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             // Bound connection setup while allowing long thinking pauses on a
             // live stream. There is no total-generation deadline.
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(1800))
-            .build()
-            .map(Self)
-            .map_err(|_| Error::Setup)
+            .connect_timeout(Duration::from_secs(30));
+        if let Some(timeout) = timeout {
+            if std::time::Instant::now().checked_add(timeout).is_none() {
+                return Err(Error::Setup);
+            }
+            builder = builder.read_timeout(timeout);
+        }
+        builder.build().map(Self).map_err(|_| Error::Setup)
     }
 
     pub async fn stream<F>(
