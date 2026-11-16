@@ -3,10 +3,11 @@ use oxa_config::{Dirs, Settings};
 use oxa_engine::EmbeddedEngine;
 use oxa_proto::{codes, Engine, OxaError};
 use oxc_gateway::{
+    billing::SubscriptionLimits,
     catalog::{Access, Model, Provider},
     gateway::Gateway,
     pricing::Price,
-    runtime::{Options, Runtime},
+    runtime::{Billing, Options, Runtime, Subscription},
 };
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -35,6 +36,17 @@ pub(crate) fn select(
     dirs: &Dirs,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
+    if user.bool(oxc_local::LOCAL_SETTING, false) {
+        return oxc_local::configured_engine(
+            user.get("oxa.local"),
+            dirs.agent_dir.join("local-engine"),
+            oxa_engine::StreamOpts {
+                silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
+                    .unwrap_or(365 * 24 * 3600 * 1000),
+                ..oxa_engine::StreamOpts::default()
+            },
+        );
+    }
     if !user.bool(SETTING, false) {
         return http();
     }
@@ -51,25 +63,65 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
         .filter(|m| !m.is_empty())
         .ok_or_else(invalid)?;
     let mut routes = Vec::with_capacity(models.len());
+    let mut needs_subscription = false;
     for (alias, value) in models {
-        if text(value, "provider")? != "anthropic" {
-            return Err(OxaError::unsupported("this in-process cloud provider"));
-        }
+        let (provider, default_endpoint) = match text(value, "provider")? {
+            "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
+            "openai" => (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
+            "chatgpt" => (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
+            _ => return Err(OxaError::unsupported("this in-process cloud provider")),
+        };
         let endpoint = match value.get("base_url") {
-            None => "https://api.anthropic.com",
+            None => default_endpoint,
             Some(value) => value.as_str().ok_or_else(invalid)?,
         };
         let model = Model::new(
             alias,
-            Provider::Anthropic,
+            provider,
             text(value, "upstream_model")?,
             endpoint,
             limit(value, "context_window")?,
             limit(value, "max_output")?,
         )
         .map_err(|_| invalid())?;
-        routes.push((model, Price::from_model(value)));
+        let billing = if provider == Provider::ChatGpt {
+            needs_subscription = true;
+            Some(Billing::Subscription)
+        } else {
+            Price::from_model(value).map(Billing::Metered)
+        };
+        routes.push((model, billing));
     }
+    let subscription_config = cloud.get("subscription").filter(|value| !value.is_null());
+    let subscription_limits = subscription_config
+        .map(|value| {
+            SubscriptionLimits::new(
+                value["daily_requests"].as_u64().ok_or_else(invalid)?,
+                value["daily_tokens"].as_u64().ok_or_else(invalid)?,
+            )
+            .map_err(|_| invalid())
+        })
+        .transpose()?;
+    let subscription = if needs_subscription {
+        subscription_config
+            .map(|value| {
+                Ok::<_, OxaError>(Subscription {
+                    client_id: text(value, "client_id")?.into(),
+                    refresh_endpoint: match value.get("refresh_endpoint") {
+                        None => "https://auth.openai.com/oauth/token",
+                        Some(value) => value.as_str().ok_or_else(invalid)?,
+                    }
+                    .into(),
+                    timeout: Duration::from_millis(match value.get("refresh_timeout_ms") {
+                        None => 15_000,
+                        Some(value) => value.as_u64().ok_or_else(invalid)?,
+                    }),
+                })
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
@@ -84,6 +136,8 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
             access: Access::Enabled,
             daily_budget_usd: cap,
             ledger_enabled: true,
+            subscription,
+            subscription_limits,
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;

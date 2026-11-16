@@ -4,14 +4,33 @@ use crate::secrets::Key;
 use serde_json::Value;
 
 pub fn value(value: &mut Value, key: &Key) {
+    secret(value, key.expose());
+}
+pub(crate) fn contains_secret(value: &Value, secret: &str) -> bool {
+    if secret.is_empty() {
+        return false;
+    }
     match value {
-        Value::String(text) => *text = text.replace(key.expose(), "[redacted]"),
-        Value::Array(items) => items.iter_mut().for_each(|item| self::value(item, key)),
+        Value::String(text) => text.contains(secret),
+        Value::Array(items) => items.iter().any(|item| contains_secret(item, secret)),
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, item)| key.contains(secret) || contains_secret(item, secret)),
+        _ => false,
+    }
+}
+pub(crate) fn secret(value: &mut Value, secret: &str) {
+    if secret.is_empty() {
+        return;
+    }
+    match value {
+        Value::String(text) => *text = text.replace(secret, "[redacted]"),
+        Value::Array(items) => items.iter_mut().for_each(|item| self::secret(item, secret)),
         Value::Object(map) => {
             let old = std::mem::take(map);
             for (name, mut item) in old {
-                self::value(&mut item, key);
-                map.insert(name.replace(key.expose(), "[redacted]"), item);
+                self::secret(&mut item, secret);
+                map.insert(name.replace(secret, "[redacted]"), item);
             }
         }
         _ => {}
