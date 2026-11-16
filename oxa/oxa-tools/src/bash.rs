@@ -274,10 +274,16 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
 /// #494: git keeps `.git/config` read-only in the sandbox (a writable config could run code
 /// outside it), so a command that must rewrite it fails with "Device or resource busy" after
 /// it has done the rest, e.g. `git branch -m` renames the ref first. Say so.
-pub(crate) fn git_config_note(output: &str) -> Option<&'static str> {
-    output
-        .contains("could not write config file")
-        .then_some("git could not write .git/config: it is read-only in the sandbox, so anything git did before that step (for example the branch was renamed) stays done, and only the config update (branch upstream settings, remotes) is missing. Check the result with `git branch`; the config can be edited outside the sandbox")
+///
+/// #565: only a failed command with git's own error line (`error: could not write config file`
+/// at the start of a line) gets the note; the same words quoted in an issue body or a log of a
+/// successful command do not.
+pub(crate) fn git_config_note(output: &str, exit: Option<i32>) -> Option<&'static str> {
+    (exit != Some(0)
+        && output
+            .lines()
+            .any(|l| l.starts_with("error: could not write config file")))
+    .then_some("git could not write .git/config: it is read-only in the sandbox, so anything git did before that step (for example the branch was renamed) stays done, and only the config update (branch upstream settings, remotes) is missing. Check the result with `git branch`; the config can be edited outside the sandbox")
 }
 
 /// O-167(b): the network of a bash command. `sandbox_net` is the sandbox's answer
@@ -463,7 +469,7 @@ impl BashTool {
             .sandbox
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
-        let note = note.or_else(|| git_config_note(&output).map(str::to_string));
+        let note = note.or_else(|| git_config_note(&output, res.exit).map(str::to_string));
         let shown = if output.is_empty() {
             errors::BASH_NO_OUTPUT.to_string()
         } else if let Some(n) = note {
@@ -723,6 +729,31 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(!res.text.contains("sandbox"), "{}", res.text);
+    }
+
+    /// #565: the phrase inside quoted data of a successful command is not a git failure.
+    #[test]
+    fn git_config_note_ignores_quoted_text_in_successful_command() {
+        let out = b"{\"body\":\"git said: could not write config file\"}\n";
+        let sb = Fake::ok(out, Some(0));
+        let (res, _) = run_with(
+            &sb,
+            json!({"command": "gh issue view 494"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!res.is_error);
+        assert!(!res.text.contains("read-only in the sandbox"), "{}", res.text);
+        assert_eq!(res.text.trim_end().lines().count(), 1, "{}", res.text);
+        // Even a line starting with git's words does not count when the command succeeded.
+        let sb = Fake::ok(b"error: could not write config file x\n", Some(0));
+        let (res, _) = run_with(
+            &sb,
+            json!({"command": "echo"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!res.text.contains("read-only in the sandbox"), "{}", res.text);
     }
 
     #[test]
