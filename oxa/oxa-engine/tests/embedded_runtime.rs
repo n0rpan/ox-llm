@@ -155,11 +155,11 @@ fn a_waiting_request_does_not_serialize_other_calls_on_the_same_engine() {
 fn refusal_classes_survive_the_typed_bridge_without_provider_contact() {
     let mock = MockAnthropic::start(vec![]);
     let fixture = skeleton::Fixture::new(&mock);
+    let budget_error = chat(&engine(&fixture, 1e-9), &CancelToken::new()).unwrap_err();
+    assert_eq!(budget_error.code, codes::BUDGET_EXHAUSTED);
     assert_eq!(
-        chat(&engine(&fixture, 1e-9), &CancelToken::new())
-            .unwrap_err()
-            .code,
-        codes::BUDGET_EXHAUSTED
+        budget_error.hint.as_deref(),
+        Some("wait for the next spend day; this is not retried")
     );
     std::fs::remove_file(&fixture.key_path).unwrap();
     assert_eq!(

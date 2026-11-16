@@ -616,9 +616,7 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
             codes::BUDGET_EXHAUSTED,
             format!("the cloud gateway refused the request (budget_exceeded): {detail}"),
         )
-        .with_hint(
-            "raise cloud.daily_budget_usd in oxc, or wait for the next spend day; this is not retried",
-        );
+        .with_hint("wait for the next spend day; this is not retried");
     }
     if status == 503 {
         if let Some(code) = err
@@ -732,6 +730,11 @@ mod cloud_refusal_tests {
             e.message.contains("daily cloud budget is exhausted"),
             "{}",
             e.message
+        );
+        assert_eq!(
+            e.hint.as_deref(),
+            Some("wait for the next spend day; this is not retried"),
+            "shared normalization must not point native cloud users to a controller setting"
         );
         let plain = http_error_with(429, br#"{"error":{"message":"slow down"}}"#, None);
         assert_eq!(plain.code, codes::ENGINE_HTTP, "other 429s stay retryable");
