@@ -289,22 +289,40 @@ fn status_lookup_expands_tilde_like_session_creation() {
         let env = TestEnv::new();
         let dir = "~/saved-status";
         if source == "settings" {
-            env.write("home/.oxa/agent/settings.json", &json!({"sessionDir":dir}).to_string());
+            env.write(
+                "home/.oxa/agent/settings.json",
+                &json!({"sessionDir":dir}).to_string(),
+            );
         }
         let srv = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
         let mut run = command(&env, &srv.url());
         run.args(["-p", "--no-tools"]);
-        if source == "flag" { run.args(["--session-dir", dir]); }
-        if source == "env" { run.env("OXA_SESSION_DIR", dir); }
+        if source == "flag" {
+            run.args(["--session-dir", dir]);
+        }
+        if source == "env" {
+            run.env("OXA_SESSION_DIR", dir);
+        }
         let output = run.arg("go").stdin(Stdio::null()).output().unwrap();
         assert_eq!(output.status.code(), Some(0));
-        let sref = FsStore::new(env.home().join("saved-status")).list(None).remove(0).sref;
+        let sref = FsStore::new(env.home().join("saved-status"))
+            .list(None)
+            .remove(0)
+            .sref;
         let mut read = command(&env, "http://127.0.0.1:1");
         read.args(["status", &sref.id]);
-        if source == "flag" { read.args(["--session-dir", dir]); }
-        if source == "env" { read.env("OXA_SESSION_DIR", dir); }
+        if source == "flag" {
+            read.args(["--session-dir", dir]);
+        }
+        if source == "env" {
+            read.env("OXA_SESSION_DIR", dir);
+        }
         let output = read.output().unwrap();
-        assert!(output.status.success(), "{source}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{source}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 

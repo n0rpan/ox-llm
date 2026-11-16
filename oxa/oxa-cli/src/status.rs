@@ -1,5 +1,5 @@
 //! One small atomic snapshot per saved session. Progress never serializes model/tool text.
-use oxa_config::{Dirs, Env, Settings};
+use oxa_config::{dirs_from_env, Dirs, Env, Settings};
 use oxa_core::{Progress, ProgressObserver, RunOutcome, Session};
 use oxa_proto::{codes, OxaError, TurnKind};
 use oxa_session::{FsStore, SessionStore};
@@ -341,14 +341,17 @@ pub(crate) fn run(
     let Some(id) = words.first().filter(|id| !id.starts_with('-')) else {
         return Err(usage());
     };
-    let mut sessions = env
-        .get("OXA_SESSION_DIR")
-        .map(PathBuf::from)
-        .or_else(|| Settings::load(dirs, cwd, false).session_dir(&dirs.home, cwd))
-        .unwrap_or_else(|| dirs.sessions_dir.clone());
+    let mut sessions = dirs.sessions_dir.clone();
+    if env.get("OXA_SESSION_DIR").is_none() {
+        if let Some(configured) = Settings::load(dirs, cwd, false).session_dir(&dirs.home, cwd) {
+            sessions = configured;
+        }
+    }
     match &words[1..] {
         [] => {}
-        [flag, dir] if flag == "--session-dir" => sessions = PathBuf::from(dir),
+        [flag, dir] if flag == "--session-dir" => {
+            sessions = dirs_from_env(env, Some(Path::new(dir)))?.sessions_dir;
+        }
         _ => return Err(usage()),
     }
     let sref = FsStore::new(sessions).resolve(id)?;
@@ -502,6 +505,18 @@ mod tests {
         let old = read_snapshot(&one.with_extension("status.json")).unwrap();
         assert_eq!(old["tokens"]["complete"], false);
         assert_eq!(old["tokens"]["unreported_requests"], 1);
+    }
+
+    #[test]
+    fn a_reused_id_does_not_alias_a_different_session_file() {
+        let env = TestEnv::new();
+        let one = env.work().join("one.jsonl");
+        let two = env.work().join("two.jsonl");
+        let writer = StatusWriter::new(None);
+        writer.notify("same", Progress::Session { file:Some(&one) });
+        writer.notify("same", Progress::Session { file:Some(&two) });
+        assert_eq!(read_snapshot(&two.with_extension("status.json")).unwrap()["session_id"], "same");
+        assert_eq!(read_snapshot(&one.with_extension("status.json")).unwrap()["phase"], "finished");
     }
 
     #[test]
