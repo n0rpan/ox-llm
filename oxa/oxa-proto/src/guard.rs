@@ -24,8 +24,12 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".config/gh",
     ".config/hub",
     ".config/oxc",
+    // Keep explicit credential entries even below a denied directory: file tools and the
+    // sandbox resolve each entry separately to protect symlink targets outside that directory.
+    ".config/oxc/llm/cloud-secrets.json",
     ".config/local-ai/llm/cloud-secrets.json",
-    // Legacy paths (#237, #252): no parent entry covers them; `.config/oxc` covers the new ones.
+    // #252: the experimental ChatGPT subscription tokens, beside the cloud keys.
+    ".config/oxc/llm/chatgpt-auth.json",
     ".config/local-ai/llm/chatgpt-auth.json",
     ".local/state/oxc",
     ".oxa/agent",
@@ -209,35 +213,16 @@ mod tests {
             ".config/oxc/llm/chatgpt-auth.json",
             ".config/local-ai/llm/chatgpt-auth.json",
         ] {
-            let p = home.join(rel);
+            // Each file must be resolved independently even when its lexical parent is
+            // denied: it (or `llm`) may link to a target outside that parent (#544).
             assert!(
-                deny.iter().any(|d| p.starts_with(d)),
-                "{rel} is not denied: {deny:?}"
+                deny.contains(&home.join(rel)),
+                "{rel} is not explicitly denied: {deny:?}"
             );
         }
-        // #252 review: `.config/oxc` already covers the new-path token file, so assert the
-        // legacy one, which no parent entry covers, on its own.
-        let legacy = home.join(".config/local-ai/llm/chatgpt-auth.json");
-        assert!(
-            deny.iter().all(|d| d == &legacy || !legacy.starts_with(d)) && deny.contains(&legacy),
-            "{deny:?}"
-        );
     }
 
     use super::*;
-
-    #[test]
-    fn sensitive_home_has_no_entry_covered_by_another() {
-        // #527: a child of a listed directory adds nothing (the legacy `local-ai` paths do).
-        for a in SENSITIVE_HOME {
-            for b in SENSITIVE_HOME {
-                assert!(
-                    a == b || !Path::new(a).starts_with(b),
-                    "{a} is already covered by {b}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn the_walk_stops_at_home_and_never_goes_above_it() {
