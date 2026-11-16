@@ -90,6 +90,12 @@ impl PathGuard {
         self.denies(p) && !self.is_builtin_skill(p)
     }
 
+    /// `p` (absolute) is inside the spill directory (`tmp`): oxa's own output files, which its
+    /// truncation notices tell the model to read.
+    pub fn is_spill(&self, p: &Path) -> bool {
+        self.allow.iter().any(|a| is_inside(p, a))
+    }
+
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
     pub fn is_builtin_skill(&self, p: &Path) -> bool {
         self.read_allow.iter().any(|a| is_inside(p, a))
@@ -311,8 +317,11 @@ impl Policy for ModePolicy {
             if denied {
                 return Decision::Deny(deny_reasons::SENSITIVE);
             }
-            // #492: the advertised built-in skills are read without asking, wherever the cwd is.
-            if matches!(a, Access::Read(_)) && self.guard.is_builtin_skill(&abs) {
+            // #492, #531: the advertised built-in skills and oxa's own spill files are read
+            // without asking, wherever the cwd is.
+            if matches!(a, Access::Read(_))
+                && (self.guard.is_builtin_skill(&abs) || self.guard.is_spill(&abs))
+            {
                 return Decision::Allow;
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.

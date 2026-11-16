@@ -70,14 +70,28 @@ fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
         ),
         SENSITIVE
     );
+    // #531: oxa's own spill file is readable without asking, in every mode (a headless run
+    // answers every ask with "declined", and the truncation notice points the model at it).
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(
+                mode,
+                &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
+                &env.work()
+            ),
+            Decision::Allow,
+            "a spill file reads without asking ({mode:?})"
+        );
+    }
+    // Writing outside the cwd still asks.
     assert_eq!(
         p.decide(
             Mode::Workspace,
-            &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
+            &Access::Write(env.agent_dir().join("tmp/s1/out.txt")),
             &env.work()
         ),
         Decision::Ask,
-        "a spill file reads as before (outside the cwd: ask)"
+        "a spill file is not writable without asking"
     );
     // A plain file of the project is unaffected.
     assert_eq!(
