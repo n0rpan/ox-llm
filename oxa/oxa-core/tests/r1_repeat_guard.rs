@@ -766,7 +766,11 @@ fn identical_failed_writers_in_one_batch_get_notices_then_stop() {
             vec![batch, ScriptTurn::text("not reached")],
             Settings::default(),
         );
-        assert_eq!(run(&mut st, "fix a.txt").0, RunEnd::Stopped);
+        let end = run(&mut st, "fix a.txt").0;
+        assert!(
+            matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
+            "{name}: {end:?}"
+        );
         let res = results(&st);
         assert_eq!(res.len(), count as usize, "{name}: {res:#?}");
         assert!(
