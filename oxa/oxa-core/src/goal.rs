@@ -40,6 +40,24 @@ impl GoalRuntime {
     pub(crate) fn engaged(&self) -> bool {
         self.lock().engaged
     }
+    /// Read-only admission for the delayed prefill helper. The session thread
+    /// remains the sole owner of charging/checkpointing known usage and time.
+    pub(crate) fn allows_request(&self, tokens: u64) -> bool {
+        let state = self.lock();
+        state.engaged
+            && state.goal.status == GoalStatus::Pursuing
+            && !state.goal.exhausted()
+            && state.goal.budget.max_tokens.is_none_or(|cap| {
+                tokens
+                    .checked_sub(state.last_tokens)
+                    .and_then(|pending| state.goal.tokens_used.checked_add(pending))
+                    .is_some_and(|used| used < cap)
+            })
+            && state.goal.budget.max_time_ms.is_none_or(|cap| {
+                u128::from(state.goal.elapsed_ms) + state.clock.map_or(0, |clock| clock.elapsed().as_millis())
+                    < u128::from(cap)
+            })
+    }
     pub(crate) fn charge(&self, tokens: u64, turn: bool) -> Result<Goal, oxa_proto::OxaError> {
         let mut state = self.lock();
         let now = Instant::now();
