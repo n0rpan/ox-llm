@@ -712,3 +712,44 @@ fn tree_change_made_by_a_check_is_not_blamed_on_the_model() {
     );
     assert_eq!(rec.checks().len(), 1, "{:?}", rec.checks());
 }
+
+/// A run the repeat guard stopped is a failed run (exit 1, class `repeat_guard`), and the done
+/// checks still run over the files it edited before it got stuck.
+#[test]
+fn repeat_guard_stop_is_a_failure_and_still_runs_the_done_checks() {
+    let env = TestEnv::new();
+    std::fs::write(env.work().join("b.txt"), "x").unwrap();
+    let mut turns = vec![write("w1", "a.txt")];
+    turns.extend((0..8).map(|i| ScriptTurn::tool(&format!("r{i}"), "read", r#"{"path":"b.txt"}"#)));
+    let engine = Arc::new(ScriptedEngine::new(turns));
+    let settings = Settings::from_values(json!({ "done": ["echo CHECKED; exit 1"] }), json!({}));
+    let deps = Deps {
+        engine: engine.clone(),
+        store: Arc::new(MemStore::new()),
+        tools: oxa_tools::builtin_tools(),
+        hooks: Vec::new(),
+        policy: Box::new(ModePolicy::new()),
+        sandbox: Arc::new(Direct),
+        settings,
+        dirs: Dirs::under(env.root()),
+        cwd: env.work(),
+        selection: ToolSelection::default(),
+        resources: Resources::default(),
+        model: None,
+        thinking: None,
+        mode: None,
+        session_id: None,
+        jobs: oxa_core::fresh_jobs(),
+    };
+    let mut s = Session::open(deps, Open::New).expect("open");
+    let mut rec = Rec::default();
+    s.prompt("go".into(), Vec::new(), &mut rec, &mut HeadlessUi::default())
+        .expect("prompt");
+    assert_eq!(*s.outcome(), oxa_core::RunOutcome::Failed("repeat_guard"));
+    assert_eq!(s.outcome().exit_code(), 1);
+    let checks = rec.checks();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert!(checks[0].contains("CHECKED"), "{checks:?}");
+    // The failure is reported; nothing is sent back to the model after the stop.
+    assert_eq!(engine.requests().len(), 7);
+}
