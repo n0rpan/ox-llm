@@ -965,6 +965,49 @@ fn issue_639_plain_repo_preflight_preserves_ordinary_git_commands() {
     assert_eq!(exit, Some(0), "{out}");
 }
 
+/// Review #643: attached short-option values are not rename/copy flags.
+#[test]
+fn issue_643_branch_preflight_parses_short_option_values() {
+    let env = TestEnv::new();
+    let plain = env.work().join("plain");
+    init_repo(&plain, &env);
+    let Some(sb) = sandbox(&env, &plain) else { return };
+    for command in [
+        "git branch -tdirect --list",
+        "git branch -vtdirect --list",
+        "git branch -tinherit --list",
+    ] {
+        let (exit, out) = run(&sb, command, &plain, true);
+        assert_eq!(exit, Some(0), "{command}: {out}");
+    }
+    // Required -u values (attached or separate) also belong to Git, not to
+    // the preflight. A missing upstream fails normally without writing config.
+    for command in [
+        "git branch -umissing",
+        "git branch -vu missing",
+        "git branch -u -m",
+    ] {
+        let (exit, out) = run(&sb, command, &plain, true);
+        assert_ne!(exit, Some(0), "{command}: {out}");
+        assert!(out.contains("does not exist"), "{command}: {out}");
+        assert!(!out.contains("before changing refs"), "{command}: {out}");
+    }
+    // A value must not hide a genuine rename option in another argument, nor
+    // may a later value hide a rename flag earlier in the same cluster.
+    for command in [
+        "git branch -tdirect -m renamed",
+        "git branch -mtdirect renamed",
+        "git branch -vM renamed",
+        "git branch -vc copied",
+        "git branch -vC copied",
+    ] {
+        let (exit, out) = run(&sb, command, &plain, true);
+        assert_ne!(exit, Some(0), "{command}: {out}");
+        assert!(out.contains("before changing refs"), "{command}: {out}");
+        assert_eq!(git(&plain, &env, &["branch", "--show-current"]).stdout, b"main\n");
+    }
+}
+
 #[test]
 fn issue_103_plain_clone_keeps_hooks_and_config_read_only() {
     let env = TestEnv::new();

@@ -25,10 +25,21 @@ git() {
                 --format|--sort) ((i+=2)); continue;;
                 --*) ((i+=1)); continue;;
                 -*)
-                    if [[ $arg != *[mMcC]* ]]; then
-                        ((i+=1)); continue
-                    fi
-                    break;;
+                    arg=${arg:1}
+                    while [[ -n $arg ]]; do
+                        case ${arg:0:1} in
+                            m|M|c|C) break 2;;
+                            # -t has an optional attached value; -u requires
+                            # a value (attached or in the following argument).
+                            # Neither value is a cluster of short options.
+                            t) break;;
+                            u)
+                                if (( ${#arg} == 1 )); then ((i+=1)); fi
+                                break;;
+                        esac
+                        arg=${arg:1}
+                    done
+                    ((i+=1)); continue;;
                 *) ((i+=1)); continue;;
             esac
         done
