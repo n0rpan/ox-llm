@@ -93,6 +93,9 @@ struct Network {
     addresses: Vec<IpAddr>,
     owner: AtomicBool,
     peers: Mutex<Vec<IpAddr>>,
+    hold_check: AtomicBool,
+    check_started: Notify,
+    check_release: Notify,
 }
 impl Network {
     fn local() -> Self {
@@ -100,6 +103,9 @@ impl Network {
             addresses: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
             owner: AtomicBool::new(true),
             peers: Mutex::new(Vec::new()),
+            hold_check: AtomicBool::new(false),
+            check_started: Notify::new(),
+            check_release: Notify::new(),
         }
     }
 }
@@ -109,6 +115,10 @@ impl Tailnet for Network {
     }
     async fn same_owner(&self, peer: IpAddr) -> Result<bool, Failure> {
         self.peers.lock().unwrap().push(peer);
+        self.check_started.notify_one();
+        if self.hold_check.load(Ordering::SeqCst) {
+            self.check_release.notified().await;
+        }
         Ok(self.owner.load(Ordering::SeqCst))
     }
 }
@@ -116,6 +126,7 @@ struct Running {
     address: SocketAddr,
     stop: CancelToken,
     task: tokio::task::JoinHandle<Result<(), Failure>>,
+    status: oxc_gateway::share::status::Status,
     keys: Arc<Store>,
     fake: Arc<Fake>,
     network: Arc<Network>,
@@ -133,12 +144,14 @@ impl Running {
             .await
             .unwrap();
         let address = server.address().unwrap();
+        let status = server.status();
         let stop = CancelToken::new();
         let task = tokio::spawn(server.serve(stop.clone()));
         Self {
             address,
             stop,
             task,
+            status,
             keys,
             fake,
             network,
@@ -154,6 +167,9 @@ impl Running {
             .unwrap()
             .unwrap()
             .unwrap();
+        let snapshot = self.status.snapshot().unwrap();
+        assert_eq!(snapshot.connections, 0);
+        assert!(snapshot.keys.is_empty());
     }
     fn header(&self, method: &str, path: &str, extra: &str) -> String {
         format!(
@@ -210,6 +226,7 @@ async fn authenticated_stream_is_guest_only_settles_usage_and_revocation_is_fres
     let models = r.models().await;
     assert!(models.starts_with("HTTP/1.1 200"));
     assert!(models.contains("local-model"));
+    assert!(!models.contains("Device") && !models.contains(&r.id));
     assert!(!models.contains("metered-model") && !models.contains("subscription-model"));
     let stream = r.chat(body("local-model")).await;
     assert!(stream.starts_with("HTTP/1.1 200"));
@@ -415,6 +432,9 @@ async fn tailnet_absence_or_unspecified_detection_never_falls_back_to_wildcard()
             addresses,
             owner: AtomicBool::new(true),
             peers: Mutex::new(Vec::new()),
+            hold_check: AtomicBool::new(false),
+            check_started: Notify::new(),
+            check_release: Notify::new(),
         });
         assert!(
             Server::bind(keys.clone(), Arc::new(Fake::new(false)), network, config())
@@ -444,13 +464,136 @@ async fn disconnect_cancels_a_silent_backend_and_waits_for_its_cleanup() {
     tokio::time::timeout(Duration::from_secs(2), r.fake.started.notified())
         .await
         .unwrap();
+    let live = r.status.snapshot().unwrap();
+    assert_eq!(live.connections, 1);
+    assert_eq!(live.keys.len(), 1);
+    assert_eq!(live.keys[0].id, r.id);
+    assert_eq!(live.keys[0].name, "Device");
+    assert_eq!(live.keys[0].active_requests, 1);
+    assert!(!format!("{live:?}").contains(&r.bearer));
     drop(socket);
     let observed = tokio::time::timeout(Duration::from_secs(2), r.fake.cancelled.notified()).await;
     assert!(!r.task.is_finished());
+    assert_eq!(r.status.snapshot().unwrap(), live);
     r.stop.cancel();
     r.fake.release.notify_one();
     r.close().await;
     assert!(observed.is_ok(), "disconnect did not wake a silent model request");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn owner_status_groups_by_key_id_and_releases_each_request_after_cleanup() {
+    for distinct in [false, true] {
+        let r = Running::start(
+            Config {
+                connections: 2,
+                ..config()
+            },
+            limits(),
+            true,
+        )
+        .await;
+        assert_eq!(r.status.snapshot().unwrap().connections, 0);
+        let second = if distinct {
+            Some(r.keys.create("Tablet", limits()).unwrap())
+        } else {
+            None
+        };
+        let second_id = second.as_ref().map(|k| &k.info.id).unwrap_or(&r.id);
+        let mut clients = Vec::new();
+        for bearer in [
+            &r.bearer[..],
+            second.as_ref().map(|k| k.bearer.expose()).unwrap_or(&r.bearer),
+        ] {
+            let body = body("local-model").to_string();
+            let header = r
+                .header(
+                    "POST",
+                    "/v1/chat/completions",
+                    &format!(
+                        "Content-Type: application/json\r\nContent-Length: {}\r\n",
+                        body.len()
+                    ),
+                )
+                .replace(&r.bearer, bearer);
+            let mut socket = TcpStream::connect(r.address).await.unwrap();
+            socket
+                .write_all(format!("{header}\r\n{body}").as_bytes())
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), r.fake.started.notified())
+                .await
+                .unwrap();
+            clients.push(socket);
+        }
+        let live = r.status.snapshot().unwrap();
+        assert_eq!(live.connections, 2);
+        assert_eq!(live.keys.len(), if distinct { 2 } else { 1 });
+        assert!(live
+            .keys
+            .iter()
+            .all(|key| key.name == if key.id == r.id { "Device" } else { "Tablet" }));
+        assert_eq!(live.keys.iter().map(|key| key.active_requests).sum::<usize>(), 2);
+        assert_eq!(
+            live.keys
+                .iter()
+                .map(|key| key.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            [&r.id[..], &second_id[..]].into_iter().collect()
+        );
+        drop(clients.remove(0));
+        tokio::time::timeout(Duration::from_secs(2), r.fake.cancelled.notified())
+            .await
+            .unwrap();
+        assert_eq!(r.status.snapshot().unwrap(), live);
+        r.fake.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while r.status.snapshot().unwrap().connections != 1 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let remaining = r.status.snapshot().unwrap();
+        assert_eq!(remaining.keys.len(), 1);
+        assert_eq!(&remaining.keys[0].id, second_id);
+        assert_eq!(remaining.keys[0].active_requests, 1);
+        drop(clients);
+        tokio::time::timeout(Duration::from_secs(2), r.fake.cancelled.notified())
+            .await
+            .unwrap();
+        r.stop.cancel();
+        r.fake.release.notify_one();
+        r.close().await;
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn owner_status_never_attributes_a_key_before_optional_peer_authorization() {
+    let r = Running::start(
+        Config {
+            same_owner: true,
+            ..config()
+        },
+        limits(),
+        false,
+    )
+    .await;
+    r.network.hold_check.store(true, Ordering::SeqCst);
+    r.network.owner.store(false, Ordering::SeqCst);
+    let address = r.address;
+    let request = format!("{}\r\n", r.header("GET", "/v1/models", ""));
+    let client = tokio::spawn(exchange(address, request));
+    tokio::time::timeout(Duration::from_secs(2), r.network.check_started.notified())
+        .await
+        .unwrap();
+    let pending = r.status.snapshot().unwrap();
+    assert_eq!(pending.connections, 1);
+    assert!(pending.keys.is_empty());
+    r.network.check_release.notify_one();
+    assert!(client.await.unwrap().starts_with("HTTP/1.1 403"));
+    assert!(r.status.snapshot().unwrap().keys.is_empty());
+    r.close().await;
 }
 
 #[tokio::test(flavor = "current_thread")]
