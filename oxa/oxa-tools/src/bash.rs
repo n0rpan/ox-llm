@@ -308,6 +308,31 @@ pub(crate) fn git_config_note(output: &str, exit: Option<i32>) -> Option<String>
     }
 }
 
+/// #253: when stdout is not a terminal, `gh issue view --comments` (also `gh pr view`) prints the
+/// comments only, so an issue without comments gives an empty, successful result that reads as a
+/// failure of the sandbox. Say what happened and how to get the text. Only for a successful
+/// command whose output is empty (tool warnings such as mise's `WARN` lines do not count).
+pub(crate) fn gh_comments_note(command: &str, output: &str, exit: Option<i32>) -> Option<&'static str> {
+    // Redirects and pipelines can hide real comments. Skip both rather than guessing
+    // whether later stages preserve output (even `head` can discard it with `-n 0`).
+    // `2>&1` only merges stderr into captured stdout and does not hide any comments.
+    if command.replace("2>&1", "").contains('>') || command.contains('|') {
+        return None;
+    }
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let viewing = words
+        .windows(3)
+        .any(|w| w[0] == "gh" && matches!(w[1], "issue" | "pr") && w[2] == "view");
+    let comments = words.iter().any(|w| *w == "--comments" || *w == "-c");
+    let json = words
+        .iter()
+        .any(|w| w.starts_with("--json") || w.starts_with("--jq") || *w == "-q");
+    let silent = output
+        .lines()
+        .all(|l| l.trim().is_empty() || l.trim_start().starts_with("mise WARN"));
+    (exit == Some(0) && viewing && comments && !json && silent).then_some("gh prints only the comments when its output is captured, so an issue or pull request without comments gives no output; the issue text is not missing. Use `gh issue view N -R OWNER/REPO --json title,body,comments,state` (or `gh pr view`) to get the body and the comments")
+}
+
 /// O-167(b): the network of a bash command. `sandbox_net` is the sandbox's answer
 /// (`oxa.sandbox.net`, default on, and never on while offline). Per mode: plan = never (a
 /// read-only mode does not gain the network silently); workspace = `sandbox_net`; ask =
@@ -513,8 +538,12 @@ impl BashTool {
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
         let note = note.or_else(|| git_config_note(&output, res.exit));
+        let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
         let shown = if output.is_empty() {
-            errors::BASH_NO_OUTPUT.to_string()
+            match note {
+                Some(n) if res.exit == Some(0) => format!("{}\n[{n}]", errors::BASH_NO_OUTPUT),
+                _ => errors::BASH_NO_OUTPUT.to_string(),
+            }
         } else if let Some(n) = note {
             format!("{}\n[{n}]", output.trim_end())
         } else {
@@ -804,6 +833,99 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(!res.text.contains("sandbox"), "{}", res.text);
+    }
+
+    /// #253: an issue without comments prints nothing under `--comments` when piped; the result
+    /// explains it. Output with real text, `--json` and other commands get no note.
+    #[test]
+    fn gh_comments_with_empty_output_is_explained() {
+        let run = |cmd: &str, out: &[u8], exit: i32| {
+            let sb = Fake::ok(out, Some(exit));
+            run_with(
+                &sb,
+                json!({ "command": cmd }),
+                Mode::Workspace,
+                &CancelToken::new(),
+            )
+            .0
+        };
+        let cmd = "gh issue view 253 -R oxstack/ox-llm --comments";
+        for out in [&b""[..], b"mise WARN  read-only file system\n"] {
+            let res = run(cmd, out, 0);
+            assert!(!res.is_error);
+            // Keep tool output out of panic diagnostics; these assertions need only a static hint.
+            assert!(
+                res.text.contains("--json title,body,comments,state"),
+                "empty gh comments should explain how to retrieve the issue text"
+            );
+        }
+        let res = run("gh pr view 5 -c 2>&1", b"", 0);
+        assert!(
+            res.text.contains("only the comments"),
+            "captured PR comments should get the same explanation"
+        );
+        for (cmd, out, exit) in [
+            (cmd, &b"author:\ttester\n"[..], 0),
+            (cmd, b"", 1),
+            ("gh issue view 253 --json body", b"", 0),
+            ("gh issue list --comments", b"", 0),
+            ("true", b"", 0),
+        ] {
+            let res = run(cmd, out, exit);
+            assert!(
+                !res.text.contains("only the comments"),
+                "{cmd} (exit {exit}) must not receive a comments hint"
+            );
+        }
+    }
+
+    /// Empty captured output does not imply no comments when stdout went elsewhere.
+    #[test]
+    fn gh_comments_redirected_output_gets_no_note() {
+        for cmd in [
+            "gh issue view 5 --comments > /tmp/comments.txt",
+            "gh issue view 5 --comments >> /tmp/comments.txt",
+            "gh pr view 5 -c >/tmp/comments.txt",
+            "gh pr view 5 --comments 1>/tmp/comments.txt",
+            "gh pr view 5 --comments 2>&1 >/tmp/comments.txt",
+            "gh pr view 5 --comments | tee out >/dev/null",
+            "gh pr view 5 --comments >&2",
+        ] {
+            let sb = Fake::ok(b"", Some(0));
+            let (res, _) = run_with(
+                &sb,
+                json!({ "command": cmd }),
+                Mode::Workspace,
+                &CancelToken::new(),
+            );
+            assert!(!res.is_error);
+            assert_eq!(res.text, "(no output)", "{cmd}");
+        }
+    }
+
+    /// A successful pipeline can hide real comments, so its empty output is inconclusive.
+    #[test]
+    fn gh_comments_filtered_output_gets_no_note() {
+        for cmd in [
+            "gh issue view 5 --comments | grep -i deploy || true",
+            "gh pr view 5 -c | sed -n '/x/p'",
+            "gh pr view 5 --comments | grep -v author",
+            "gh issue view 5 --comments|sed -n '/x/p'",
+            "gh pr view 5 --comments | head -n 0",
+        ] {
+            let sb = Fake::ok(b"", Some(0));
+            let (res, _) = run_with(
+                &sb,
+                json!({ "command": cmd }),
+                Mode::Workspace,
+                &CancelToken::new(),
+            );
+            assert!(!res.is_error);
+            assert!(
+                res.text == "(no output)",
+                "a pipeline's empty output must not receive a comments hint"
+            );
+        }
     }
 
     /// #565: even verbatim git diagnostics printed by a successful inspection are just data.

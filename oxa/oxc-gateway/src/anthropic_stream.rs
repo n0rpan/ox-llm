@@ -44,8 +44,7 @@ impl Usage {
     }
 
     pub fn openai(self) -> Value {
-        let prompt =
-            self.input_tokens + self.cache_read_input_tokens + self.cache_creation_input_tokens;
+        let prompt = self.input_tokens + self.cache_read_input_tokens + self.cache_creation_input_tokens;
         json!({"prompt_tokens":prompt, "completion_tokens":self.output_tokens,
             "total_tokens":prompt + self.output_tokens,
             "prompt_tokens_details":{"cached_tokens":self.cache_read_input_tokens,
@@ -100,7 +99,7 @@ pub trait Redactor {
     fn whole(&mut self, value: &str) -> String;
 }
 
-/// Explicit identity transform for callers without sensitive data and parity tests.
+/// Explicit identity transform for callers without sensitive data.
 pub struct Identity;
 impl Redactor for Identity {
     fn feed(&mut self, _: Field, fragment: &str) -> String {
@@ -142,12 +141,7 @@ impl<R: Redactor> Stream<R> {
     /// Production gateways supply their stateful redactor here. Completed.assistant
     /// is assembled from the same safe fragments as emitted chunks. Native blocks
     /// stay opaque/unmodified and must remain inside the exact-prefix private store.
-    pub fn with_redactor(
-        model: impl Into<String>,
-        created: u64,
-        include_usage: bool,
-        redactor: R,
-    ) -> Self {
+    pub fn with_redactor(model: impl Into<String>, created: u64, include_usage: bool, redactor: R) -> Self {
         Self {
             redactor,
             model: model.into(),
@@ -214,9 +208,7 @@ impl<R: Redactor> Stream<R> {
             if let Some(usage) = value["message"].get("usage") {
                 self.merge_usage(usage)?;
             }
-            return Ok(vec![
-                self.chunk(json!({"role":"assistant", "content":null}), None)
-            ]);
+            return Ok(vec![self.chunk(json!({"role":"assistant", "content":null}), None)]);
         }
         if !self.started {
             return Err(StreamError);
@@ -228,10 +220,7 @@ impl<R: Redactor> Stream<R> {
                 if self.blocks.contains_key(&index) {
                     return Err(StreamError);
                 }
-                let mut native = value["content_block"]
-                    .as_object()
-                    .ok_or(StreamError)?
-                    .clone();
+                let mut native = value["content_block"].as_object().ok_or(StreamError)?.clone();
                 let (mut safe_id, mut safe_name) = (String::new(), String::new());
                 let slot = match native.get("type").and_then(Value::as_str) {
                     Some("tool_use") => {
@@ -246,12 +235,8 @@ impl<R: Redactor> Stream<R> {
                             return Err(StreamError);
                         }
                         native.entry("input").or_insert(json!({}));
-                        safe_id = self
-                            .redactor
-                            .whole(native["id"].as_str().ok_or(StreamError)?);
-                        safe_name = self
-                            .redactor
-                            .whole(native["name"].as_str().ok_or(StreamError)?);
+                        safe_id = self.redactor.whole(native["id"].as_str().ok_or(StreamError)?);
+                        safe_name = self.redactor.whole(native["name"].as_str().ok_or(StreamError)?);
                         out.push(self.chunk(
                             json!({"tool_calls":[{"index":slot, "id":safe_id,
                             "type":"function", "function":{"name":safe_name, "arguments":""}}]}),
@@ -314,17 +299,16 @@ impl<R: Redactor> Stream<R> {
                             ));
                         }
                     } else {
-                        if block.native["type"] != if field == "text" { "text" } else { "thinking" }
-                        {
+                        if block.native["type"] != if field == "text" { "text" } else { "thinking" } {
                             return Err(StreamError);
-                        }
-                        if field == "signature" {
-                            // Match the reference's opaque replacement semantics.
-                            block.native[field] = json!(text);
-                            return Ok(out);
                         }
                         let existing = block.native[field].as_str().ok_or(StreamError)?;
                         block.native[field] = json!(format!("{existing}{text}"));
+                        if field == "signature" {
+                            // Signature deltas are fragments of one opaque replay value.
+                            // Keep every fragment private and in its original order.
+                            return Ok(out);
+                        }
                         let safe = self.redactor.feed(
                             if field == "text" {
                                 Field::Content

@@ -97,6 +97,7 @@ pub fn request(
         model: &model,
         max_tokens,
         thinking,
+        thinking_level: Some(st.thinking),
         thinking_budget: crate::think::request_budget(st, thinking),
         // F8: never forced on a model that does not keep reasoning (Flash).
         preserve_thinking: st.info.caps.preserve_thinking != Some(false),
@@ -661,6 +662,7 @@ fn start_tool_prefill(
                 model: &model,
                 max_tokens: 0,
                 thinking,
+                thinking_level: None,
                 thinking_budget: None,
                 preserve_thinking,
                 sampling: None,
