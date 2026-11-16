@@ -62,7 +62,7 @@ fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Outp
         Some(path) => exec_trace::output(&mut cmd, path),
         None => cmd.output(),
     }
-    .expect("run the real oxa binary")
+    .unwrap_or_else(|error| panic!("failed to launch {cmd:?}: {error}"))
 }
 fn rows(env: &TestEnv) -> Vec<Value> {
     fs::read_dir(env.home().join(".oxa/agent/cloud-ledger"))
@@ -403,7 +403,7 @@ fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
         .collect();
     assert!(programs.contains(&"oxa"), "{trace}");
     assert!(programs.iter().all(|name| !name.starts_with("python")), "{trace}");
-    mock.assert_healthy();
+    mock.finish();
 }
 
 #[test]

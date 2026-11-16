@@ -20,8 +20,11 @@
 mod clock;
 mod durable;
 mod goal;
+mod inbox;
 mod lifecycle;
 mod lock;
+
+pub use inbox::{remove_inbox, send_inbox, valid_inbox_id, Inbox, INBOX_MESSAGE_BYTES};
 mod meta;
 mod ops;
 mod spill;

@@ -32,6 +32,12 @@ Each product has its own guide with the details:
 
 ## Tests
 
+Linux oxa integration tests require `bubblewrap` and `strace` on `PATH` (Arch:
+`sudo pacman -S bubblewrap strace`; Debian/Ubuntu: `sudo apt-get install bubblewrap strace`).
+The native cloud tool-loop test uses `strace -f -e trace=execve` to verify that the real binary
+and its descendants never launch Python; running without the tracer is not a valid substitute.
+Hosted CI installs both prerequisites too.
+
 ```sh
 cd oxc && ./tools/run_lab_tests.sh                       # lab
 cd engine && cargo test --release --locked --workspace --exclude qwen4exp   # engine (Flash: see engine/CONTRIBUTING.md)
