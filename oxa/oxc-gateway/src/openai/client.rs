@@ -605,6 +605,12 @@ impl Client {
         }
     }
 
+    // Only an already-hardened native transport may be reused here.
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn from_messages_transport(messages: &crate::anthropic_client::Client) -> Self {
+        Self(messages.shared_transport())
+    }
+
     async fn refresh(
         &self,
         endpoint: Url,
