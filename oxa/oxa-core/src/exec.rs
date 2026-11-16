@@ -760,10 +760,11 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
                 Answer::Once => {}
                 Answer::Session => st.policy.remember(a),
                 Answer::Deny => {
+                    // #554: with no one to ask, nobody declined; say what was refused and why.
                     let text = if ui.interactive() {
-                        tool_errors::DENIED_BY_USER
+                        tool_errors::DENIED_BY_USER.to_string()
                     } else {
-                        tool_errors::DENIED_UNATTENDED
+                        tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a))
                     };
                     return mk(args, exec, Plan::Done(ToolOutput::error(text)));
                 }

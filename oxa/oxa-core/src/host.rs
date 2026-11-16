@@ -977,9 +977,10 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
                 st.policy.remember(a);
                 Ok(())
             }
-            Answer::Deny if !ui.interactive() => {
-                Err(OxaError::new(codes::DENIED, tool_errors::DENIED_UNATTENDED))
-            }
+            Answer::Deny if !ui.interactive() => Err(OxaError::new(
+                codes::DENIED,
+                tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a)),
+            )),
             Answer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
         },
     }
@@ -1379,6 +1380,38 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         handle.join().expect("caller thread")
+    }
+
+    /// #554 / #557: host writes use the same truthful unattended refusal as built-in tools,
+    /// without promising workarounds that Ask mode or protected paths would refuse too.
+    #[test]
+    fn host_unattended_write_requires_approval() {
+        let mut f = fixture();
+        for (mode, path) in [
+            (Mode::Ask, f.st.cwd.join("out.txt")),
+            (Mode::Workspace, f.st.cwd.join(".oxa/settings.json")),
+            (Mode::Workspace, f.env.tmp().join("scratch.txt")),
+        ] {
+            f.st.mode = mode;
+            let host = f.host.clone();
+            let target = path.clone();
+            let caller = std::thread::spawn(move || {
+                host.call(HostAction::WriteFile {
+                    path: target,
+                    data: "must not be written".into(),
+                })
+            });
+            let err = serve_until_done(&mut f, caller).expect_err("approval is unavailable");
+            assert_eq!(err.code, codes::DENIED);
+            assert_eq!(
+                err.message,
+                format!(
+                    "Permission denied: write {} needs approval, but this run cannot ask (non-interactive), so it was refused; nobody declined it.",
+                    path.display()
+                )
+            );
+            assert!(!path.exists(), "an unattended refusal must not write the file");
+        }
     }
 
     /// Queries answer during a run: the caller blocks until the next poll, which runs mid-run.
