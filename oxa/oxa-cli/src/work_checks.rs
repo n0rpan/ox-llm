@@ -27,13 +27,14 @@ pub(crate) fn run(
     let settings = Settings::load(dirs, &source, true);
     let commands = match request.operation {
         SupervisorOperation::Inspect => return inspect(&b, &root),
-        SupervisorOperation::Checkout { branch } => {
+        SupervisorOperation::Checkout { branch, create } => {
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
             let spec = ExecSpec {
-                command: format!(
-                    "git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b '{}' HEAD",
-                    branch.replace('\'', "'\\''")
-                ),
+                command: if create {
+                    format!("git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b '{}' HEAD", branch.replace('\'', "'\\''"))
+                } else {
+                    "git --no-replace-objects checkout HEAD -- .".into()
+                },
                 cwd: root,
                 writable: true,
                 net: sandbox.network(),
@@ -53,6 +54,29 @@ pub(crate) fn run(
                 ));
             }
             return Ok(0);
+        }
+        SupervisorOperation::Merge { base } => {
+            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            let spec = ExecSpec {
+                command: format!(
+                    "git --no-replace-objects merge --no-edit -- '{}'",
+                    base.replace('\'', "'\\''")
+                ),
+                cwd: root,
+                writable: true,
+                net: sandbox.network(),
+                timeout_s: Some(600),
+                env: git_environment(),
+            };
+            let mut tail = Vec::new();
+            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+                keep_tail(&mut tail, bytes, 8192);
+            });
+            err.write_all(&tail).map_err(|e| e.to_string())?;
+            if result.timed_out || result.exit.is_none() {
+                return Err("sandboxed base merge did not complete; worktree retained".into());
+            }
+            return Ok(i32::from(result.exit != Some(0)));
         }
         SupervisorOperation::Checks { commands } => commands,
     };

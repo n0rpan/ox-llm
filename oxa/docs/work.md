@@ -8,8 +8,9 @@ Run it inside the project repository. The JSON file is an array:
 ```
 
 `base` defaults to `main`. IDs contain letters, digits, hyphens or underscores.
-IDs and branches must be unique; branches must be new. For a GitHub issue use
-`oxa work --issue 123 --model your-model`. This explicitly invokes your installed,
+IDs and branches must be unique within one file. Existing task branches can be
+continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
+This explicitly invokes your installed,
 authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
 when the environment or user settings enable offline mode.
 Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
@@ -59,21 +60,34 @@ JSON lines include the worker result, session ID and captured `base_sha` and rep
 commits or file changes), `red` (checks still fail), or `blocked` (setup or agent
 execution failed). Exit codes are 0 for success, 1 if any task is red or blocked,
 and 2 for invalid input or output errors. A task setup failure produces a blocked
-JSON line and does not skip later tasks. If a task cannot be locked or already has
-a receipt, its existing state is preserved; a pre-worktree failure has an empty
-`worktree` in the result. Locks use kernel ownership, so an abandoned lock file
+JSON line and does not skip later tasks. If a task cannot be locked or has an
+incompatible receipt, its existing state is preserved; a pre-worktree failure has
+an empty `worktree` in the result. Locks use kernel ownership, so an abandoned lock file
 after process death does not permanently block a task.
 
 Worktrees and uncommitted changes remain in `.oxa-worktrees/<repository>/<id>`
 beside the repository (or the separate git directory). Private result receipts and
 locks live under `~/.oxa/agent/work/<repository-hash>/` (or the configured agent
-directory), outside the worker's writable Git bind. Receipts are published atomically
-without overwriting an existing receipt. Worktrees stay outside that git
+directory), outside the worker's writable Git bind. New receipts are published
+atomically without overwriting an existing receipt; a validated matching receipt
+is replaced atomically under the task lock when continuing. Worktrees stay outside that git
 directory so the normal sandbox can bind git objects and refs for commits. No automatic
-cleanup, commit, push, PR creation or continuation is implemented yet. Inspect
+cleanup, commit, push or PR creation is implemented yet. Inspect
 retained work before removing it with `git worktree remove`. Review task prompts
 and bases before running them.
 
 `done` here describes accepted local work, which may be uncommitted. This slice
 does not publish it. The saving/publication slices must bind acceptance to a clean
 committed tree and verify its recorded commit before pushing.
+
+To continue a task, run the same task file again. A matching retained receipt and
+linked worktree are reused. The source checkout is never used as the task worktree.
+An existing branch checked out elsewhere is blocked. Dirty retained work is kept
+and blocked until committed. A clean retained branch gets an ordinary sandboxed
+merge of the captured base; no reset, stash, force checkout or automatic fetch runs.
+
+An unfinished merge is passed to the worker with its old pending commit, the
+captured current base and at most twenty conflicted paths. The worker must finish
+that merge and merge the captured base too. Aborted or unresolved merges and branch
+switches remain blocked even if acceptance passes. Worker, merge and acceptance
+failures are retained together. Receipt replacement keeps private modes.
