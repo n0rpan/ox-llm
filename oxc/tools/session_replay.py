@@ -1005,8 +1005,12 @@ def cmd_compare(args):
         for q in ('p50', 'p90'):
             x, y = ra[key][q], rb[key][q]
             print(f"{key} {q}: A {fmt(x, '.1f')}  B {fmt(y, '.1f')}  delta {fmt(pct_delta(x, y), '+.2f')}%")
+    na, nb = max(len(a['repeats']), 1), max(len(b['repeats']), 1)
+    print(f"n_requests: A {ra['n_requests']} ({na} repeat{'s' * (na != 1)})  "
+          f"B {rb['n_requests']} ({nb} repeat{'s' * (nb != 1)})")
     for key in ('reused_tokens', 'new_tokens', 'generated_tokens'):
-        print(f"{key}: A {ra[key]}  B {rb[key]}  delta {fmt(pct_delta(ra[key], rb[key]), '+.2f')}%")
+        x, y = ra[key] / na, rb[key] / nb
+        print(f"{key} (per repeat): A {x:.1f}  B {y:.1f}  delta {fmt(pct_delta(x, y), '+.2f')}%")
     print(f"gate {args.gate_pct:g}%: {'WITHIN' if within else 'OUTSIDE'}")
     return 0 if within else 1
 

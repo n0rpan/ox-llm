@@ -409,6 +409,23 @@ class CompareTests(RecorderFixture):
         self.assertRegex(out, r'ttft_ms p90: A \S+ +B \S+ +delta \+100\.00%')
         self.assertIn('reused_tokens', out)
 
+    def test_token_deltas_are_per_repeat_and_requests_shown(self):
+        result = json.loads(self.a_path.read_text())
+        one = copy.deepcopy(result)
+        one['repeats'] = one['repeats'][:1]
+        two = copy.deepcopy(one)
+        dup = copy.deepcopy(two['repeats'][0])
+        dup['repeat'] = 2
+        two['repeats'].append(dup)
+        pa, pb = self.tmp / 'one.json', self.tmp / 'two.json'
+        pa.write_text(json.dumps(one))
+        pb.write_text(json.dumps(two))
+        code, out, _ = run_main(['compare', str(pa), str(pb), '--gate-pct', '100'])
+        self.assertRegex(out, r'reused_tokens \(per repeat\): A \S+ +B \S+ +delta \+0\.00%')
+        self.assertRegex(out, r'new_tokens \(per repeat\): A \S+ +B \S+ +delta \+0\.00%')
+        self.assertRegex(out, r'generated_tokens \(per repeat\): A \S+ +B \S+ +delta \+0\.00%')
+        self.assertIn('n_requests: A 6 (1 repeat)  B 12 (2 repeats)', out)
+
     def test_different_recordings_are_refused(self):
         result = json.loads(self.a_path.read_text())
         result['recording_sha256'] = 'f' * 64
