@@ -112,6 +112,79 @@ fn check(env: &TestEnv, server: &FakeServer, output: Output) {
 }
 
 #[test]
+fn supervised_children_exit_on_the_first_sigterm() {
+    use std::os::unix::process::ExitStatusExt;
+    for mode in ["print", "json", "rpc"] {
+        for identity in ["depth", "hint", "malformed-depth"] {
+            let env = fixture();
+            let mut held = ScriptTurn::text("never sent");
+            held.fault = Some(oxa_fake::Fault::HoldHeaders { ms: 60_000 });
+            let server = FakeServer::start(vec![held], FakeOpts::default()).unwrap();
+            let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+            command
+                .current_dir(env.work())
+                .env_clear()
+                .envs(env.envs(&server.url()));
+            if identity == "hint" {
+                command.env("OXA_SESSION_HINT", "fixture.s1");
+            } else {
+                command.env(
+                    "OXA_SUBAGENT_DEPTH",
+                    if identity == "depth" { "1" } else { "child" },
+                );
+            }
+            if mode == "print" {
+                command.args(["-p", "go"]);
+            } else {
+                command.args(["--mode", mode, "go"]);
+            }
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            if mode == "rpc" {
+                child
+                    .stdin
+                    .as_mut()
+                    .unwrap()
+                    .write_all(b"{\"type\":\"prompt\",\"message\":\"go\"}\n")
+                    .unwrap();
+            }
+            let started = Instant::now();
+            while server.requests().is_empty() {
+                if started.elapsed() > Duration::from_secs(10) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("the supervised request did not start: {mode}/{identity}");
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status()
+                .unwrap()
+                .success());
+            let sent = Instant::now();
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if sent.elapsed() > Duration::from_secs(2) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("supervisor SIGTERM was treated as cooperative wrap-up: {mode}/{identity}");
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            assert_eq!(status.signal(), Some(15), "{mode}/{identity}");
+            assert_eq!(server.requests().len(), 1, "no child final turn");
+        }
+    }
+}
+
+#[test]
 fn max_time_finishes_the_active_tool_then_allows_one_final_commit() {
     for mode in ["print", "json", "rpc"] {
         let env = fixture();
