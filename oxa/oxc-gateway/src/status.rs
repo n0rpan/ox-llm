@@ -5,6 +5,8 @@ pub use bigdecimal::BigDecimal as Decimal;
 use std::time::SystemTime;
 
 pub mod chatgpt_usage;
+#[cfg(feature = "ledger")]
+pub mod disposition;
 
 /// Provenance of the monetary figure, not of a refusal state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,9 +27,20 @@ pub enum State {
     SignedOut,
 }
 
+/// A subscription window percentage is not a monetary balance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Remaining {
+    Usd(Decimal),
+    WindowPercent {
+        percent: Decimal,
+        window_minutes: u64,
+        resets_at: SystemTime,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderStatus {
-    pub remaining_usd: Option<Decimal>,
+    pub remaining: Option<Remaining>,
     pub source: Source,
     pub state: State,
     pub checked_at: SystemTime,
@@ -46,7 +59,7 @@ impl From<(openrouter::Balance, SystemTime)> for ProviderStatus {
             State::Ok
         };
         Self {
-            remaining_usd: Some(remaining),
+            remaining: Some(Remaining::Usd(remaining)),
             source: Source::ProviderApi,
             state,
             checked_at,
@@ -85,9 +98,57 @@ impl ProviderStatus {
         Some(Self::refused(state, checked_at))
     }
 
+    /// API refusals use the same typed credit/rate-limit classification as
+    /// Anthropic. Neither overload nor a credit refusal reports a balance.
+    pub fn from_openai_refusal(refusal: models::Refusal, checked_at: SystemTime) -> Option<Self> {
+        Self::from_anthropic_refusal(refusal, checked_at)
+    }
+
+    pub fn signed_out(checked_at: SystemTime) -> Self {
+        Self::refused(State::SignedOut, checked_at)
+    }
+
+    /// Show the most consumed live, valid window (secondary wins ties).
+    /// Preserve its duration/reset, rather than combining distinct allowances
+    /// or interpreting a percentage as dollars. Expired windows are unknown,
+    /// not evidence that an allowance has replenished.
+    #[cfg(feature = "upstream-openai")]
+    pub fn from_chatgpt(
+        allowance: &crate::openai::chatgpt_limits::Allowance,
+        checked_at: SystemTime,
+    ) -> Self {
+        let window = [allowance.primary.as_ref(), allowance.secondary.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter(|window| {
+                window.used_percent.is_finite()
+                    && (0.0..=100.0).contains(&window.used_percent)
+                    && window.window_minutes > 0
+                    && window.resets_at > checked_at
+            })
+            .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent));
+        let mut status = Self::refused(State::Ok, checked_at);
+        if let Some(window) = window {
+            // Convert the provider decimal representation before subtracting,
+            // so floating-point subtraction cannot introduce display artifacts.
+            if let Ok(used) = window.used_percent.to_string().parse::<Decimal>() {
+                status.remaining = Some(Remaining::WindowPercent {
+                    percent: Decimal::from(100) - used,
+                    window_minutes: window.window_minutes,
+                    resets_at: window.resets_at,
+                });
+                status.source = Source::ProviderApi;
+                if window.used_percent == 100.0 {
+                    status.state = State::RateLimitedUntil(Some(window.resets_at));
+                }
+            }
+        }
+        status
+    }
+
     fn refused(state: State, checked_at: SystemTime) -> Self {
         Self {
-            remaining_usd: None,
+            remaining: None,
             source: Source::NotReported,
             state,
             checked_at,
@@ -109,10 +170,10 @@ impl ProviderStatus {
             Source::LedgerEstimate => "ledger estimate",
             Source::NotReported => "not reported",
         };
-        let remaining = self
-            .remaining_usd
-            .as_ref()
-            .map_or_else(|| "not reported".to_owned(), ToString::to_string);
+        let remaining = match &self.remaining {
+            Some(Remaining::Usd(value)) => value.to_string(),
+            _ => "not reported".to_owned(),
+        };
         let until = match self.state {
             State::RateLimitedUntil(Some(time)) => unix_seconds(time),
             _ => "not reported".to_owned(),
@@ -133,6 +194,79 @@ impl ProviderStatus {
             unix_seconds(self.checked_at)
         )
     }
+}
+
+/// Fixed labels prevent provider-controlled text from introducing card lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provider {
+    OpenRouter,
+    Anthropic,
+    OpenAi,
+    ChatGpt,
+}
+
+pub struct CardRow<'a> {
+    pub provider: Provider,
+    pub status: &'a ProviderStatus,
+    /// Caller-supplied today's spend, not inferred from a remaining balance.
+    /// `None` means the caller has no spend figure.
+    pub today_spend_usd: Option<&'a Decimal>,
+}
+
+/// One newline-terminated line per row, capped at twelve, in caller order.
+/// The caller supplies the clock and spend; no ledger, refresh or I/O is used.
+/// A future check time has unknown age, never a fabricated zero age.
+pub fn render_cards(rows: &[CardRow<'_>], now: SystemTime) -> String {
+    const UNKNOWN: &str = "not reported by the provider";
+    let mut card = String::new();
+    for row in rows.iter().take(12) {
+        let provider = match row.provider {
+            Provider::OpenRouter => "OpenRouter",
+            Provider::Anthropic => "Anthropic",
+            Provider::OpenAi => "OpenAI",
+            Provider::ChatGpt => "ChatGPT",
+        };
+        let remaining = || {
+            let amount = match &row.status.remaining {
+                Some(Remaining::Usd(value)) => format!("${value}"),
+                Some(Remaining::WindowPercent {
+                    percent,
+                    window_minutes,
+                    resets_at,
+                }) => {
+                    format!(
+                        "{percent}% of {window_minutes}-minute window (resets at Unix {})",
+                        unix_seconds(*resets_at)
+                    )
+                }
+                None => UNKNOWN.to_owned(),
+            };
+            if row.status.source == Source::LedgerEstimate && row.status.remaining.is_some() {
+                format!("{amount} (ledger estimate)")
+            } else {
+                amount
+            }
+        };
+        let state = match row.status.state {
+            State::Ok => format!("remaining: {}", remaining()),
+            State::Low => format!("low; remaining: {}", remaining()),
+            State::OutOfCredit => "out of credit".to_owned(),
+            State::SignedOut => "signed out".to_owned(),
+            State::RateLimitedUntil(None) => format!("rate limited; reset: {UNKNOWN}"),
+            State::RateLimitedUntil(Some(time)) => format!("rate limited until Unix {}", unix_seconds(time)),
+        };
+        let spend = row
+            .today_spend_usd
+            .map_or_else(|| "unknown".to_owned(), |value| format!("${value}"));
+        let age = now.duration_since(row.status.checked_at).map_or_else(
+            |_| "unknown age".to_owned(),
+            |age| format!("{}s ago", age.as_secs()),
+        );
+        card.push_str(&format!(
+            "{provider} | {state} | today: {spend} | checked: {age}\n"
+        ));
+    }
+    card
 }
 
 fn unix_seconds(time: SystemTime) -> String {
@@ -172,7 +306,7 @@ mod tests {
             ("1", Some("5"), "1"),
         ] {
             let status = ProviderStatus::from((balance(account, key), checked_at()));
-            assert_eq!(status.remaining_usd, Some(expected.parse().unwrap()));
+            assert_eq!(status.remaining, Some(Remaining::Usd(expected.parse().unwrap())));
             assert_eq!(status.source, Source::ProviderApi);
             assert_eq!(status.state, State::Ok);
             assert_eq!(status.checked_at, checked_at());
@@ -199,7 +333,7 @@ mod tests {
                 continue;
             }
             let status = status.unwrap();
-            assert_eq!(status.remaining_usd, None);
+            assert_eq!(status.remaining, None);
             assert_eq!(status.source, Source::NotReported);
             assert_eq!(status.checked_at, checked_at());
             assert_eq!(
@@ -235,7 +369,7 @@ mod tests {
         ] {
             let status = ProviderStatus::from_anthropic_refusal(refusal, checked_at()).unwrap();
             assert_eq!(status.state, state);
-            assert_eq!(status.remaining_usd, None);
+            assert_eq!(status.remaining, None);
             assert_eq!(status.source, Source::NotReported);
             assert_eq!(status.checked_at, checked_at());
         }
@@ -248,7 +382,7 @@ mod tests {
     #[test]
     fn card_is_twelve_plain_text_lines_and_labels_estimates() {
         let status = ProviderStatus {
-            remaining_usd: Some("1.25".parse().unwrap()),
+            remaining: Some(Remaining::Usd("1.25".parse().unwrap())),
             source: Source::LedgerEstimate,
             state: State::Low,
             checked_at: checked_at(),
@@ -283,7 +417,7 @@ mod tests {
             (State::RateLimitedUntil(Some(checked_at())), "rate limited", "100"),
         ] {
             let status = ProviderStatus {
-                remaining_usd: None,
+                remaining: None,
                 source: Source::NotReported,
                 state,
                 checked_at: SystemTime::UNIX_EPOCH - Duration::from_secs(1),
