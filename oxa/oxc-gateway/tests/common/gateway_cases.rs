@@ -29,7 +29,8 @@ fn gateway_with_cap(fixture: &skeleton::Fixture, cap: f64) -> Gateway {
     let runtime = Runtime::new(
         [(
             model,
-            Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]),
+            Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL])
+                .map(crate::runtime::Billing::Metered),
         )],
         fixture.key_path.clone(),
         fixture.ledger_dir.clone(),
@@ -37,6 +38,7 @@ fn gateway_with_cap(fixture: &skeleton::Fixture, cap: f64) -> Gateway {
             access: Access::Enabled,
             daily_budget_usd: Some(cap),
             ledger_enabled: true,
+            subscription: None,
         },
     )
     .unwrap();

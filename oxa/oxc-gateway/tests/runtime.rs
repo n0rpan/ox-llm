@@ -29,7 +29,9 @@ fn runtime(fixture: &skeleton::Fixture, access: Access, priced: bool, ledger: bo
     Runtime::new(
         [(
             model,
-            priced.then(|| Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).unwrap()),
+            priced
+                .then(|| Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).unwrap())
+                .map(oxc_gateway::runtime::Billing::Metered),
         )],
         fixture.key_path.clone(),
         fixture.ledger_dir.clone(),
@@ -37,6 +39,7 @@ fn runtime(fixture: &skeleton::Fixture, access: Access, priced: bool, ledger: bo
             access,
             daily_budget_usd: Some(1.0),
             ledger_enabled: ledger,
+            subscription: None,
         },
     )
     .unwrap()
@@ -120,7 +123,10 @@ fn dropped_guards_record_zero_before_forwarding_and_reserve_unknown_paid_work() 
     let payload = json!({"model":skeleton::MODEL,"max_tokens":1000});
     let mut call = rt.begin(&payload, Context::default()).unwrap();
     assert_eq!(call.max_output(), 16);
-    assert!(std::sync::Arc::ptr_eq(&call.key_handle(), &call.key_handle()));
+    assert!(std::sync::Arc::ptr_eq(
+        &call.key_handle().unwrap(),
+        &call.key_handle().unwrap()
+    ));
     call.observe(&json!({"usage":{"prompt_tokens":1,"completion_tokens":1}}));
     drop(call);
     assert_eq!(rows(&fixture)[0]["cost_usd"], 0.0);

@@ -126,7 +126,20 @@ impl Gateway {
         }
         let mut call = self.runtime.begin(payload, context).map_err(Error::Refused)?;
         let model = call.model();
-        let key = call.key_handle();
+        // Transport dispatch is added with the provider client; an admitted
+        // foreign route must never be sent using the Anthropic protocol.
+        if model.info().provider != crate::catalog::Provider::Anthropic {
+            let error = Refusal {
+                status: 503,
+                code: "cloud_provider_unavailable",
+                param: "model",
+                message: "This provider transport is not available in this build.",
+            };
+            call.finish(Outcome::Complete, error.status, Some(error.code))
+                .map_err(Error::Refused)?;
+            return Err(Error::Refused(error));
+        }
+        let key = call.key_handle().map_err(Error::Refused)?;
         let history = History::new(model, key.expose(), payload);
         let mut terminal_usage = None;
         let request = Chat {

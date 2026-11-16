@@ -10,6 +10,7 @@ pub enum Provider {
     Anthropic,
     OpenRouter,
     OpenAi,
+    ChatGpt,
 }
 impl Provider {
     pub fn as_str(self) -> &'static str {
@@ -17,6 +18,7 @@ impl Provider {
             Self::Anthropic => "anthropic",
             Self::OpenRouter => "openrouter",
             Self::OpenAi => "openai",
+            Self::ChatGpt => "chatgpt",
         }
     }
 }

@@ -231,6 +231,9 @@ impl Daily {
     }
 }
 impl Entry {
+    pub(crate) fn ledger(&self) -> &Ledger {
+        &self.daily.ledger
+    }
     pub fn admitted(&mut self) {
         let admitted = *self.admitted.get_or_insert_with(Instant::now);
         self.row["admit_ms"] = json!(millis(self.started, admitted));
@@ -248,11 +251,24 @@ impl Entry {
     /// be injected through the supplied object. Pass the provider key to redact
     /// even catalog labels or provider finish strings before the append.
     pub fn append(
-        mut self,
+        self,
         fields: &Value,
         status: u16,
         error: Option<&'static str>,
         key: Option<&Key>,
+    ) -> io::Result<Value> {
+        self.append_redacting(fields, status, error, &|row| {
+            if let Some(key) = key {
+                redaction::value(row, key);
+            }
+        })
+    }
+    pub(crate) fn append_redacting(
+        mut self,
+        fields: &Value,
+        status: u16,
+        error: Option<&'static str>,
+        redact: &dyn Fn(&mut Value),
     ) -> io::Result<Value> {
         if fields["remote"] != true
             || !["anthropic", "openai", "openrouter", "chatgpt"]
@@ -365,9 +381,7 @@ impl Entry {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(key) = key {
-            redaction::value(&mut self.row, key);
-        }
+        redact(&mut self.row);
         append_private(&self.daily.path, &self.row)?;
         Ok(self.row)
     }

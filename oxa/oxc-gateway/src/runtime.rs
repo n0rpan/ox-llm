@@ -4,10 +4,15 @@ use crate::{
     catalog::{self, Access, Catalog, Model, ModelInfo, Provider},
     ledger::{Context, Daily, Entry, Ledger},
     policy::{self, Refusal},
-    pricing::Price,
     secrets::{Key, KeyFile},
 };
+mod auth;
+pub use crate::billing::Billing;
+use auth::Credential;
+pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
+#[cfg(feature = "upstream-openai")]
+use std::path::Path;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -18,6 +23,7 @@ pub struct Options {
     pub access: Access,
     pub daily_budget_usd: Option<f64>,
     pub ledger_enabled: bool,
+    pub subscription: Option<Subscription>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -25,23 +31,31 @@ impl Default for Options {
             access: Access::Disabled,
             daily_budget_usd: None,
             ledger_enabled: true,
+            subscription: None,
         }
     }
 }
 pub struct Runtime {
     catalog: Catalog,
-    prices: BTreeMap<String, Price>,
+    billings: BTreeMap<String, Billing>,
     key_file: Result<KeyFile, crate::secrets::Error>,
     ledger_dir: PathBuf,
     ledger: OnceLock<Result<Ledger, Refusal>>,
     cap: Value,
     ledger_enabled: bool,
+    subscription: Option<Subscription>,
+    #[cfg(feature = "upstream-openai")]
+    token_path: PathBuf,
 }
 /// An admitted call owns its reservation until a durable row is committed.
 pub struct Call<'a> {
     model: &'a Model,
     output: u64,
-    key: Arc<Key>,
+    credential: Credential,
+    #[cfg(feature = "upstream-openai")]
+    subscription: Option<&'a Subscription>,
+    #[cfg(feature = "upstream-openai")]
+    token_path: &'a Path,
     usage: Usage,
     hold: Option<Hold>,
     entry: Option<Entry>,
@@ -69,40 +83,91 @@ fn catalog_error(error: catalog::Error) -> Refusal {
         param: "model",
     }
 }
+fn supported(provider: Provider) -> bool {
+    provider == Provider::Anthropic
+        || (cfg!(feature = "upstream-openai") && matches!(provider, Provider::OpenAi | Provider::ChatGpt))
+}
+fn invalid_billing() -> Refusal {
+    Refusal {
+        status: 400,
+        code: "invalid_billing",
+        param: "model",
+        message: "The provider and billing class do not match.",
+    }
+}
+fn unpaid(model: &Model, billing: Option<&Billing>) -> Value {
+    let mut fields = json!({"remote":true,"remote_provider":model.info().provider.as_str(),"remote_model":model.upstream(),
+        "cost_usd":0.0,"settled":"not_forwarded"});
+    if matches!(billing, Some(Billing::Subscription)) {
+        fields["billing"] = json!("subscription");
+        fields["subscription_requests"] = json!(0);
+        fields["subscription_tokens"] = json!(0);
+    } else {
+        fields["billing"] = json!("metered");
+    }
+    fields
+}
 impl Runtime {
     /// Trusted, typed configuration. Preparing a path reads no key bytes;
     /// construction/discovery open no ledger and start no provider/runtime.
     pub fn new(
-        models: impl IntoIterator<Item = (Model, Option<Price>)>,
+        models: impl IntoIterator<Item = (Model, Option<Billing>)>,
         key_path: PathBuf,
         ledger_dir: PathBuf,
         options: Options,
     ) -> Result<Self, Refusal> {
-        let mut prices = BTreeMap::new();
-        let catalog = Catalog::new(
-            options.access,
-            models.into_iter().map(|(model, price)| {
-                if let Some(price) = price {
-                    prices.insert(model.info().id.to_owned(), price);
-                }
-                model
-            }),
-        )
-        .map_err(catalog_error)?;
+        if let Some(config) = &options.subscription {
+            if config.client_id.is_empty()
+                || config.client_id.len() > 1024
+                || config.client_id.chars().any(char::is_control)
+                || config.timeout.is_zero()
+                || std::time::Instant::now().checked_add(config.timeout).is_none()
+            {
+                return Err(invalid("subscription"));
+            }
+            Model::new(
+                "subscription-refresh",
+                Provider::OpenAi,
+                "token",
+                &config.refresh_endpoint,
+                1,
+                1,
+            )
+            .map_err(|_| invalid("subscription"))?;
+        }
+        let mut billings = BTreeMap::new();
+        let mut routes = Vec::new();
+        for (model, billing) in models {
+            if (model.info().provider == Provider::ChatGpt) != matches!(billing, Some(Billing::Subscription))
+            {
+                return Err(invalid_billing());
+            }
+            if let Some(billing) = billing {
+                billings.insert(model.info().id.to_owned(), billing);
+            }
+            routes.push(model);
+        }
+        let catalog = Catalog::new(options.access, routes).map_err(catalog_error)?;
+        #[cfg(feature = "upstream-openai")]
+        let token_path = key_path
+            .parent()
+            .ok_or_else(Refusal::credentials)?
+            .join("chatgpt-auth.json");
         Ok(Self {
             catalog,
-            prices,
+            billings,
             key_file: KeyFile::prepare(&key_path),
             ledger_dir,
             ledger: OnceLock::new(),
             cap: json!(options.daily_budget_usd),
             ledger_enabled: options.ledger_enabled,
+            subscription: options.subscription,
+            #[cfg(feature = "upstream-openai")]
+            token_path,
         })
     }
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
-        self.catalog
-            .models()
-            .filter(|model| model.provider == Provider::Anthropic)
+        self.catalog.models().filter(|model| supported(model.provider))
     }
     fn audit(&self, model: &str, context: Context<'_>) -> Result<(Daily, Entry), Refusal> {
         if !self.ledger_enabled {
@@ -125,21 +190,22 @@ impl Runtime {
         let known = self
             .catalog
             .configured(alias)
-            .filter(|model| model.info().provider == Provider::Anthropic);
+            .filter(|model| supported(model.info().provider));
         let mut audit = known.map(|_| self.audit(alias, context));
-        let mut key = None;
+        let mut credential: Option<Credential> = None;
         let result = (|| {
             let model = self.catalog.resolve(Some(alias)).map_err(catalog_error)?;
-            if model.info().provider != Provider::Anthropic {
+            if !supported(model.info().provider) {
                 return Err(Refusal {
                     status: 503,
                     code: "cloud_provider_unavailable",
                     param: "model",
-                    message: "This gateway currently supports Anthropic models.",
+                    message: "This cloud provider is not available in this build.",
                 });
             }
-            let price = self.prices.get(alias);
-            policy::before_credentials(payload, false, false, price.is_some())?;
+            let billing = self.billings.get(alias);
+            policy::before_credentials(payload, false, false, billing.is_some())?;
+            let billing = billing.expect("policy validated billing");
             let mut output = u64::from(model.info().max_output);
             for field in ["max_tokens", "max_completion_tokens", "n_predict"] {
                 if let Some(value) = payload.get(field) {
@@ -151,33 +217,62 @@ impl Runtime {
                     break;
                 }
             }
-            policy::daily_budget(&self.cap, self.ledger_enabled, Some(0.0), 0.0, 0.0)?;
-            key = Some(
-                self.key_file
-                    .as_ref()
-                    .map_err(|_| Refusal::credentials())?
-                    .read("anthropic")
-                    .map_err(|_| Refusal::credentials())?,
-            );
+            if matches!(billing, Billing::Metered(_)) {
+                policy::daily_budget(&self.cap, self.ledger_enabled, Some(0.0), 0.0, 0.0)?;
+            } else if self.subscription.is_none() {
+                return Err(crate::billing::SubscriptionLimits::missing());
+            } else if !self.ledger_enabled {
+                return Err(Refusal::ledger());
+            }
+            credential = Some(match model.info().provider {
+                Provider::Anthropic | Provider::OpenAi => Credential::ApiKey(Arc::new(
+                    self.key_file
+                        .as_ref()
+                        .map_err(|_| Refusal::credentials())?
+                        .read(model.info().provider.as_str())
+                        .map_err(|_| Refusal::credentials())?,
+                )),
+                #[cfg(feature = "upstream-openai")]
+                Provider::ChatGpt => {
+                    self.key_file.as_ref().map_err(|_| Refusal::credentials())?;
+                    Credential::Subscription(
+                        crate::openai::chatgpt_tokens::read(&self.token_path)
+                            .map_err(|_| Refusal::credentials())?,
+                    )
+                }
+                _ => return Err(Refusal::credentials()),
+            });
             let (daily, _) = audit
                 .as_ref()
                 .ok_or_else(Refusal::ledger)?
                 .as_ref()
                 .map_err(Clone::clone)?;
             let billing = accounting::Model {
-                provider: "anthropic".into(),
+                provider: model.info().provider.as_str().into(),
                 upstream: model.upstream().into(),
                 context: u64::from(model.info().context_window),
                 max_output: u64::from(model.info().max_output),
-                billing: crate::billing::Billing::Metered(price.expect("policy validated price").clone()),
+                billing: billing.clone(),
             };
-            let hold = daily.budget().reserve(&self.cap, true, &billing, output)?;
+            let hold = match &billing.billing {
+                Billing::Metered(_) => daily.budget().reserve(&self.cap, true, &billing, output)?,
+                Billing::Subscription => daily.budget().reserve_subscription(
+                    self.subscription.as_ref().map(|s| s.limits),
+                    true,
+                    &billing,
+                    output,
+                )?,
+            };
             let (_, mut entry) = audit.take().expect("known model")?;
             entry.admitted();
             Ok(Call {
                 model,
                 output,
-                key: Arc::new(key.take().expect("fresh key")),
+                credential: credential.take().expect("fresh credentials"),
+                #[cfg(feature = "upstream-openai")]
+                token_path: &self.token_path,
+                #[cfg(feature = "upstream-openai")]
+                subscription: self.subscription.as_ref(),
                 usage: Usage::default(),
                 hold: Some(hold),
                 entry: Some(entry),
@@ -186,11 +281,14 @@ impl Runtime {
         })();
         if let Err(error) = &result {
             if let (Some(model), Some(Ok((daily, entry)))) = (known, audit) {
-                let fields = json!({"remote":true,"remote_provider":"anthropic","remote_model":model.upstream(),
-                    "cost_usd":0.0,"settled":"not_forwarded"});
+                let fields = unpaid(model, self.billings.get(alias));
                 let _ = daily.budget().write_unpaid(|| {
                     entry
-                        .append(&fields, error.status, Some(error.code), key.as_ref())
+                        .append_redacting(&fields, error.status, Some(error.code), &|value| {
+                            if let Some(credential) = &credential {
+                                credential.redact(value);
+                            }
+                        })
                         .map(|_| ())
                 });
             }
@@ -204,11 +302,10 @@ impl Runtime {
         if let Some(model) = self
             .catalog
             .configured(alias)
-            .filter(|model| model.info().provider == Provider::Anthropic)
+            .filter(|model| supported(model.info().provider))
         {
             if let Ok((daily, entry)) = self.audit(alias, context) {
-                let fields = json!({"remote":true,"remote_provider":"anthropic","remote_model":model.upstream(),
-                    "cost_usd":0.0,"settled":"not_forwarded"});
+                let fields = unpaid(model, self.billings.get(alias));
                 let _ = daily.budget().write_unpaid(|| {
                     entry
                         .append(&fields, error.status, Some(error.code), None)
@@ -225,8 +322,62 @@ impl<'a> Call<'a> {
     pub fn max_output(&self) -> u64 {
         self.output
     }
-    pub fn key_handle(&self) -> Arc<Key> {
-        Arc::clone(&self.key)
+    pub fn key_handle(&self) -> Result<Arc<Key>, Refusal> {
+        self.credential.key()
+    }
+    pub fn provider_account_scope(&self) -> [u8; 32] {
+        self.credential.account_scope()
+    }
+    pub fn openai_auth_handle(&self) -> Result<OpenAiAuthHandle, Refusal> {
+        match (self.model.info().provider, &self.credential) {
+            (Provider::OpenAi, Credential::ApiKey(key)) => Ok(OpenAiAuthHandle::ApiKey(Arc::clone(key))),
+            #[cfg(feature = "upstream-openai")]
+            (Provider::ChatGpt, Credential::Subscription(record)) => {
+                let config = self.subscription.ok_or_else(Refusal::credentials)?;
+                Ok(OpenAiAuthHandle::Subscription {
+                    token_path: self.token_path.into(),
+                    expected_account_id: record.account_id().into(),
+                    refresh_endpoint: config.refresh_endpoint.clone(),
+                    client_id: config.client_id.clone(),
+                    timeout: config.timeout,
+                })
+            }
+            _ => Err(invalid_billing()),
+        }
+    }
+    pub fn metered_usage(&mut self, usage: Usage) {
+        self.usage = usage;
+    }
+    pub fn verify_history(&self, request: &oxa_proto::ChatRequest<'_>) -> Result<(), Refusal> {
+        self.entry
+            .as_ref()
+            .ok_or_else(Refusal::ledger)?
+            .ledger()
+            .verify_provider_history(
+                self.model,
+                &self.provider_account_scope(),
+                request.prefix,
+                request.messages,
+            )
+    }
+    pub fn seal_history(
+        &self,
+        request: &oxa_proto::ChatRequest<'_>,
+        assistant: &oxa_proto::WireMsg,
+        items: Vec<Value>,
+    ) -> Result<oxa_proto::ProviderHistory, Refusal> {
+        self.entry
+            .as_ref()
+            .ok_or_else(Refusal::ledger)?
+            .ledger()
+            .seal_provider_history(
+                self.model,
+                &self.provider_account_scope(),
+                request.prefix,
+                request.messages,
+                assistant,
+                items,
+            )
     }
     pub fn mark_forwarded(&mut self) {
         self.forwarded = true;
@@ -276,7 +427,7 @@ impl<'a> Call<'a> {
             if !self.forwarded {
                 fields["settled"] = json!("not_forwarded");
             }
-            saved = entry.append(&fields, status, error, Some(&self.key))?;
+            saved = entry.append_redacting(&fields, status, error, &|value| self.credential.redact(value))?;
             Ok(())
         })?;
         Ok(saved)
