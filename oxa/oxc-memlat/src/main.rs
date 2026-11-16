@@ -109,8 +109,10 @@ fn execute(action: &str, policy_path: &Path, no_lock: bool, dry: bool, force: bo
         Ok(result)
     }
 }
+const USAGE: &str = "usage: local-ai-memlat-boot [-h] [--policy POLICY] [--no-lock] [--dry-run]\n                            [--force]\n                            {enable,fallback,check,prepare-update,rebuild}";
+const HELP: &str = "usage: local-ai-memlat-boot [-h] [--policy POLICY] [--no-lock] [--dry-run]\n                            [--force]\n                            {enable,fallback,check,prepare-update,rebuild}\n\nExplicit MEMLAT default selection and fail-safe stock fallback (no reboot).\nInstall a root-owned copy and policy outside the checkout before selecting it.\nThe ALPM pre-transaction hook uses prepare-update, not check: the installed\nkernel has not changed yet. Post hooks rebuild and restore the approved\ndefault.\n\npositional arguments:\n  {enable,fallback,check,prepare-update,rebuild}\n\noptions:\n  -h, --help            show this help message and exit\n  --policy POLICY\n  --no-lock             only inside limine-entry-tool mutex\n  --dry-run             build and verify in temporary files; do not\n                        select/install\n  --force               explicitly rebuild even without an update marker";
 fn usage_error(message: &str) -> ! {
-    eprintln!("usage: local-ai-memlat-boot [-h] [--policy POLICY] [--no-lock] [--dry-run] [--force]\n                            {{enable,fallback,check,prepare-update,rebuild}}\nlocal-ai-memlat-boot: error: {message}");
+    eprintln!("{USAGE}\nlocal-ai-memlat-boot: error: {message}");
     std::process::exit(2)
 }
 fn main() {
@@ -122,7 +124,7 @@ fn main() {
     while i < args.len() {
         match args[i].as_str() {
             "-h" | "--help" => {
-                println!("usage: local-ai-memlat-boot [-h] [--policy POLICY] [--no-lock] [--dry-run] [--force]\n                            {{enable,fallback,check,prepare-update,rebuild}}\n\nExplicit MEMLAT default selection and fail-safe stock fallback (no reboot).\n\npositional arguments:\n  {{enable,fallback,check,prepare-update,rebuild}}\n\noptions:\n  -h, --help       show this help message and exit\n  --policy POLICY\n  --no-lock        only inside limine-entry-tool mutex\n  --dry-run        build and verify in temporary files; do not select/install\n  --force          explicitly rebuild even without an update marker");
+                println!("{HELP}");
                 return;
             }
             "--no-lock" => no_lock = true,
@@ -141,6 +143,7 @@ fn main() {
             {
                 action = Some(s.to_string())
             }
+            s if !s.starts_with('-') && action.is_none() => usage_error(&format!("argument action: invalid choice: '{s}' (choose from 'enable', 'fallback', 'check', 'prepare-update', 'rebuild')")),
             s => usage_error(&format!("unrecognized arguments: {s}")),
         }
         i += 1;

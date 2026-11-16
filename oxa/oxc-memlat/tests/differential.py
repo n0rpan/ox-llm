@@ -57,12 +57,14 @@ def execute(root, implementation, args):
                '--ro-bind', str(root/'modules'), '/usr/lib/modules',
                '--bind', str(root/'locks'), '/run/lock', '--unshare-net',
                '--setenv', 'HOME', str(root/'home'), '--setenv', 'PATH', str(root/'bin')+':/usr/bin:/bin']
-    command += implementation + args + ['--policy', '/boot/policy.json']
+    implementation = [str(root/'oracle/local-ai-memlat-boot') if x == PYTHON else x for x in implementation]
+    command += implementation + args + ([] if args in (['--help'], ['bogus'], ['enable','extra'], ['--policy']) else ['--policy', '/boot/policy.json'])
     return subprocess.run(command, capture_output=True, timeout=30)
 
 def fixture(root, case):
-    for name in ('esp/EFI/Linux', 'esp/EFI/LocalAI', 'modules/fixture-kernel/build', 'sys/firmware/efi/efivars', 'locks', 'bin', 'home'):
+    for name in ('esp/EFI/Linux', 'esp/EFI/LocalAI', 'modules/fixture-kernel/build', 'sys/firmware/efi/efivars', 'locks', 'bin', 'home', 'oracle'):
         (root/name).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PYTHON,root/'oracle/local-ai-memlat-boot')
     (root/'sys/firmware/efi/efivars/SecureBoot-fixture').write_bytes(b'\0'*5)
     (root/'modules/fixture-kernel/build/.config').write_text('CONFIG_SCMI_QCOM_MEMLAT_DEVFREQ=y\n')
     (root/'esp/EFI/Linux/stock.efi').write_bytes(uki())
@@ -153,6 +155,7 @@ SCENARIOS = [
     ('duplicate-cmdline', [['check']]),
     ('numeric', [['prepare-update'], ['rebuild']]),
     ('crlf', [['prepare-update'], ['rebuild']]),
+    ('ordinary', [['--help'], ['bogus'], ['enable','extra'], ['--policy']]),
 ]
 with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
     root=Path(directory)
@@ -171,9 +174,10 @@ with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
             rust=execute(root, [RUST], args)
             actual=snapshot(root/'esp')
             assert py.stderr == rust.stderr, (case,args,py.stderr,rust.stderr)
-            expected_code = 1 if case in ('duplicate','remember','include','duplicate-cmdline') or (case in ('modules','hash','bad-image') and args[0]=='enable') or (case in ('build-failure','secure-boot','signed','missing-driver','overflow-dtb') and args[0]=='rebuild') or (args[0]=='enable' and '--force' in args) else 0
+            expected_code = 2 if args in (['bogus'], ['enable','extra'], ['--policy']) else 1 if case in ('duplicate','remember','include','duplicate-cmdline') or (case in ('modules','hash','bad-image') and args[0]=='enable') or (case in ('build-failure','secure-boot','signed','missing-driver','overflow-dtb') and args[0]=='rebuild') or (args[0]=='enable' and '--force' in args) else 0
             assert py.returncode == expected_code, (case,args,expected_code,py.returncode,py.stdout,py.stderr)
             assert py.returncode==rust.returncode, (case,args,py.returncode,rust.returncode,py.stderr,rust.stderr)
+            if args == ['--help']: assert py.stdout == rust.stdout, (py.stdout,rust.stdout)
             if py.returncode == 0:
                 assert py.stdout.splitlines()[-1] == rust.stdout.splitlines()[-1], (case,args,py.stdout,rust.stdout)
             assert actual==expected, (case,args, {k for k in actual.keys()|expected.keys() if actual.get(k)!=expected.get(k)},py.stdout,rust.stdout,py.stderr,rust.stderr)
