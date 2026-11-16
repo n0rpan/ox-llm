@@ -19,6 +19,7 @@
 
 mod clock;
 mod durable;
+mod goal;
 mod inbox;
 mod lifecycle;
 mod lock;
@@ -32,6 +33,7 @@ mod transcript;
 mod tree;
 
 pub use clock::{local_time, LocalTime};
+pub use goal::{Goal, GoalBudget, GoalStatus, GOAL_ENTRY};
 pub use lifecycle::SpillLifecycleLock;
 pub use lock::{lock_path_of, SessionLock, LOCKED};
 pub use meta::{search_sessions, sort_sessions, SessionSort};
