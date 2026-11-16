@@ -53,6 +53,7 @@ fn assistant_calls(text: Option<&str>, calls: &[(&str, &str)]) -> WireMsg {
                 args_raw: (*args).to_owned(),
             })
             .collect(),
+        provider_history: None,
         tool_call_id: None,
     }
 }

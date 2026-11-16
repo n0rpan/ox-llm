@@ -58,12 +58,22 @@ fn trusted_gh_for(
     cwd: Option<&Path>,
     home: Option<&Path>,
 ) -> Option<std::path::PathBuf> {
+    trusted_executable_for("gh", path, cwd, home)
+}
+
+/// Host tools use the same project/PATH checks as the GitHub credential helper.
+pub(crate) fn trusted_executable_for(
+    program: &str,
+    path: Option<&std::ffi::OsStr>,
+    cwd: Option<&Path>,
+    home: Option<&Path>,
+) -> Option<std::path::PathBuf> {
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let Some(h) = home.map(canon) else {
-        return trusted_gh(path, cwd);
+        return trusted_executable(program, path, cwd);
     };
     if !cwd.is_some_and(|c| canon(c) == h) {
-        return trusted_gh(path, cwd);
+        return trusted_executable(program, path, cwd);
     }
     let allowed: Vec<std::path::PathBuf> = USER_BIN.iter().map(|d| h.join(d)).collect();
     // Allowed by where it resolves to, so a symlink from `~/.local/bin` into a project is refused.
@@ -80,7 +90,7 @@ fn trusted_gh_for(
     };
     std::env::split_paths(path?)
         .filter(|d| ok(d))
-        .filter_map(|d| trusted_gh(Some(d.as_os_str()), None))
+        .filter_map(|d| trusted_executable(program, Some(d.as_os_str()), None))
         .find(|f| file_ok(f))
 }
 
@@ -134,10 +144,14 @@ fn gh_token_from(exe: &Path, deadline: std::time::Duration) -> Option<String> {
     (!t.is_empty() && !t.chars().any(char::is_whitespace)).then(|| t.to_string())
 }
 
-/// The `gh` to run: the first executable file named `gh` in an absolute `PATH` entry that is
+/// The host tool to run: the first executable with the requested name in an absolute `PATH` entry that is
 /// not inside the project (`cwd`) and not a group- or world-writable directory. Relative
 /// entries (`.`, `bin`, empty) are ignored, so a project shim never runs outside the sandbox.
-fn trusted_gh(path: Option<&std::ffi::OsStr>, cwd: Option<&Path>) -> Option<std::path::PathBuf> {
+fn trusted_executable(
+    program: &str,
+    path: Option<&std::ffi::OsStr>,
+    cwd: Option<&Path>,
+) -> Option<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let cwd_c = cwd.and_then(|c| std::fs::canonicalize(c).ok());
     std::env::split_paths(path?)
@@ -148,7 +162,7 @@ fn trusted_gh(path: Option<&std::ffi::OsStr>, cwd: Option<&Path>) -> Option<std:
                 && !cwd_c.as_ref().is_some_and(|c| dc.starts_with(c))
                 && std::fs::metadata(&dc).is_ok_and(|m| m.permissions().mode() & 0o022 == 0)
         })
-        .map(|d| d.join("gh"))
+        .map(|d| d.join(program))
         .find(|p| {
             // The file's own resolved target must not lie in the project either.
             let pc = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
@@ -156,6 +170,49 @@ fn trusted_gh(path: Option<&std::ffi::OsStr>, cwd: Option<&Path>) -> Option<std:
                 && !cwd_c.as_ref().is_some_and(|c| pc.starts_with(c))
                 && std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         })
+}
+
+/// Keep repository code out of host lookups in workers and check supervisors,
+/// while preserving the order of the user's installed tool directories.
+pub(crate) fn trusted_work_path(
+    path: &std::ffi::OsStr,
+    project: &Path,
+    home: &Path,
+) -> Option<std::ffi::OsString> {
+    use std::os::unix::fs::PermissionsExt;
+    let home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+    let project = project.canonicalize().ok()?;
+    let is_worker = |p: &Path| p.components().any(|part| part.as_os_str() == ".oxa-worktrees");
+    let allowed: Vec<_> = USER_BIN.iter().map(|d| home.join(d)).collect();
+    let entries = std::env::split_paths(path).filter(|dir| {
+        if !dir.is_absolute() || is_worker(dir) {
+            return false;
+        }
+        let Ok(real) = dir.canonicalize() else {
+            return false;
+        };
+        if is_worker(&real)
+            || !std::fs::metadata(&real).is_ok_and(|m| m.is_dir() && m.permissions().mode() & 0o022 == 0)
+        {
+            return false;
+        }
+        if project == home {
+            if real.starts_with(&home) && !allowed.iter().any(|p| real.starts_with(p)) {
+                return false;
+            }
+        } else if dir.starts_with(&project) || real.starts_with(&project) {
+            return false;
+        }
+        ["git", "gh", "bwrap"].iter().all(|name| {
+            let exe = dir.join(name);
+            if std::fs::symlink_metadata(&exe).is_err() {
+                return true;
+            }
+            trusted_executable_for(name, Some(dir.as_os_str()), Some(&project), Some(&home))
+                .is_some_and(|p| p.canonicalize().is_ok_and(|p| !is_worker(&p)))
+        })
+    });
+    std::env::join_paths(entries).ok()
 }
 
 /// The setting that allows an engine host that is not loopback (P3). Read from the user's
@@ -365,7 +422,7 @@ mod tests {
         script(&proj, "gh", "echo EVIL");
         std::os::unix::fs::symlink(proj.join("gh"), good.join("gh")).unwrap();
         let p = std::env::join_paths([good.to_str().unwrap()]).unwrap();
-        assert_eq!(trusted_gh(Some(&p), Some(&proj)), None);
+        assert_eq!(trusted_executable("gh", Some(&p), Some(&proj)), None);
     }
 
     #[test]
@@ -380,12 +437,18 @@ mod tests {
         let sep = |v: &[&str]| std::env::join_paths(v).unwrap();
         // Relative entries are skipped.
         let rel = sep(&["bin", ".", "", good.to_str().unwrap()]);
-        assert_eq!(trusted_gh(Some(&rel), Some(&proj)), Some(good.join("gh")));
+        assert_eq!(
+            trusted_executable("gh", Some(&rel), Some(&proj)),
+            Some(good.join("gh"))
+        );
         // An absolute entry inside the project directory is skipped too.
         let p = sep(&[proj.to_str().unwrap(), good.to_str().unwrap()]);
-        assert_eq!(trusted_gh(Some(&p), Some(&proj)), Some(good.join("gh")));
+        assert_eq!(
+            trusted_executable("gh", Some(&p), Some(&proj)),
+            Some(good.join("gh"))
+        );
         // Only untrusted entries: nothing.
         let only = sep(&[proj.to_str().unwrap(), "rel"]);
-        assert_eq!(trusted_gh(Some(&only), Some(&proj)), None);
+        assert_eq!(trusted_executable("gh", Some(&only), Some(&proj)), None);
     }
 }

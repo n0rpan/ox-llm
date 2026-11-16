@@ -19,6 +19,65 @@ use oxa_sandbox::NoSandbox;
 use oxa_session::MemStore;
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn progress_does_not_report_idle_or_finished_before_lifecycle_hooks_return() {
+    #[derive(Debug, Default)]
+    struct Trace(Mutex<Vec<&'static str>>);
+    impl oxa_core::ProgressObserver for Trace {
+        fn notify(&self, _: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
+            match progress {
+                oxa_core::Progress::Settled(_) => self.0.lock().unwrap().push("idle"),
+                oxa_core::Progress::Finished(_) => self.0.lock().unwrap().push("finished"),
+                _ => {}
+            }
+        }
+    }
+    impl Hooks for Trace {
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![]
+        }
+        fn commands(&self) -> Vec<CommandSpec> {
+            vec![]
+        }
+        fn run_command(&self, _: &str, _: &str, _: &mut dyn Ui) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn prompt_sections(&self) -> Vec<(String, String)> {
+            vec![]
+        }
+        fn fire(&self, point: HookPoint, _: &Value, _: &mut dyn Ui) -> HookReply {
+            match point {
+                HookPoint::AgentSettled => self.0.lock().unwrap().push("settled_hook"),
+                HookPoint::SessionShutdown => self.0.lock().unwrap().push("shutdown_hook"),
+                _ => {}
+            }
+            HookReply::Continue
+        }
+        fn shutdown(&self) {
+            self.0.lock().unwrap().push("shutdown_return");
+        }
+    }
+    let env = TestEnv::new();
+    let trace = Arc::new(Trace::default());
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("done")]));
+    let mut session = Session::open(deps(&env, engine, vec![trace.clone()]), Open::New).unwrap();
+    session.set_progress_observer(trace.clone());
+    session
+        .prompt(
+            "go".into(),
+            vec![],
+            &mut oxa_proto::VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    session.shutdown(&mut HeadlessUi::default());
+    assert_eq!(
+        *trace.0.lock().unwrap(),
+        vec!["settled_hook", "idle", "shutdown_hook", "shutdown_return"],
+        "the front end owns the final result after shutdown; hooks remain active work"
+    );
+}
+
 fn deps(env: &TestEnv, engine: Arc<dyn oxa_proto::Engine>, hooks: Vec<Arc<dyn Hooks>>) -> Deps {
     Deps {
         engine,
@@ -169,7 +228,10 @@ impl Hooks for Trigger {
             source: oxa_proto::Source::Extension(String::new()),
         }]
     }
-    fn run_command(&self, _name: &str, _args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+    fn run_command(&self, _name: &str, args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+        if args == "quiet" {
+            return Ok(());
+        }
         let host = self.host.lock().unwrap().clone().expect("attached");
         host.call(trigger("from the command")).map(|_| ())
     }
@@ -178,6 +240,69 @@ impl Hooks for Trigger {
     }
     fn attach(&self, host: Arc<dyn Host>) {
         *self.host.lock().unwrap() = Some(host);
+    }
+    fn shortcuts(&self) -> Vec<oxa_proto::ShortcutSpec> {
+        vec![oxa_proto::ShortcutSpec {
+            key: oxa_proto::KeyId::parse("ctrl+y").unwrap(),
+            description: "quiet shortcut".into(),
+        }]
+    }
+    fn run_shortcut(&self, _: &oxa_proto::KeyId, ui: &mut dyn Ui) -> Result<(), OxaError> {
+        self.run_command("go", "quiet", ui)
+    }
+}
+
+#[derive(Debug, Default)]
+struct OperationProgress(Mutex<Vec<&'static str>>);
+impl oxa_core::ProgressObserver for OperationProgress {
+    fn notify(&self, _: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
+        match progress {
+            oxa_core::Progress::RunStart => self.0.lock().unwrap().push("working"),
+            oxa_core::Progress::Settled(_) => self.0.lock().unwrap().push("idle"),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn empty_queue_returns_progress_to_idle_without_an_agent_settled_event() {
+    let env = TestEnv::new();
+    let mut session = open(&env, vec![], vec![]);
+    let trace = Arc::new(OperationProgress::default());
+    session.set_progress_observer(trace.clone());
+    let mut sink = oxa_proto::VecSink::default();
+    assert_eq!(
+        session.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap(),
+        None
+    );
+    assert!(!sink
+        .0
+        .iter()
+        .any(|event| matches!(event, AgentEvent::AgentSettled { .. })));
+    assert_eq!(*trace.0.lock().unwrap(), ["working", "idle"]);
+}
+
+#[test]
+fn quiet_extension_operations_return_progress_to_idle_without_an_agent_settled_event() {
+    for shortcut in [false, true] {
+        let env = TestEnv::new();
+        let mut session = open(&env, vec![], vec![Arc::new(Trigger::default())]);
+        let trace = Arc::new(OperationProgress::default());
+        session.set_progress_observer(trace.clone());
+        let mut sink = oxa_proto::VecSink::default();
+        let mut ui = HeadlessUi::default();
+        if shortcut {
+            session
+                .run_shortcut(&oxa_proto::KeyId::parse("ctrl+y").unwrap(), &mut sink, &mut ui)
+                .unwrap();
+        } else {
+            session.run_command("go", "quiet", &mut sink, &mut ui).unwrap();
+        }
+        assert!(!sink
+            .0
+            .iter()
+            .any(|event| matches!(event, AgentEvent::AgentSettled { .. })));
+        assert_eq!(*trace.0.lock().unwrap(), ["working", "idle"]);
     }
 }
 
@@ -556,6 +681,33 @@ fn wrap_up_yields_overflow_recovery_before_compaction_or_resending() {
                 probe.assert_settled_idle(1);
                 probe.assert_balanced();
             }
+        }
+    }
+}
+
+#[test]
+fn a_pending_wrap_up_skips_length_recovery_and_prefill() {
+    for reason in [oxa_core::WrapUpReason::TimeLimit, oxa_core::WrapUpReason::Signal] {
+        for remote in [false, true] {
+            let env = TestEnv::new();
+            let hook = Arc::new(Trigger::default());
+            let mut cut = ScriptTurn::text("part one");
+            cut.finish = oxa_proto::Finish::Length;
+            let scripted = ScriptedEngine::new(vec![cut, ScriptTurn::text("final summary")]);
+            let engine = Arc::new(if remote { scripted.with_remote() } else { scripted });
+            let mut s = Session::open(deps(&env, engine.clone(), vec![hook.clone()]), Open::New).unwrap();
+            *hook.wrap.lock().unwrap() = Some((s.handle(), reason, HookPoint::BeforeProviderRequest));
+            let mut probe = Probe::new(s.handle());
+            s.prompt("go".into(), vec![], &mut probe, &mut HeadlessUi::default())
+                .unwrap();
+            let requests = engine.requests();
+            assert_eq!(requests.len(), 2);
+            assert!(requests.iter().all(|r| r.max_tokens > 0));
+            assert!(requests[1].max_tokens <= 1024);
+            assert!(!requests[1].thinking);
+            assert_eq!(*s.outcome(), oxa_core::RunOutcome::Interrupted);
+            probe.assert_balanced();
+            probe.assert_settled_idle(1);
         }
     }
 }

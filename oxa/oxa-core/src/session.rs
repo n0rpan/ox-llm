@@ -57,6 +57,8 @@ pub enum Open {
 pub struct State {
     pub session_id: String,
     pub session_file: Option<PathBuf>,
+    /// Optional live status sidecar installed by the front end.
+    pub status_file: Option<PathBuf>,
     pub session_name: Option<String>,
     pub model: String,
     /// Wave D D4b: the model runs at a cloud provider through the controller; `None` = local.
@@ -247,6 +249,7 @@ impl Session {
             mode,
         };
         let mut st = SessionState {
+            output_schema: None,
             engine,
             store,
             hooks,
@@ -356,6 +359,18 @@ impl Session {
         }
     }
 
+    /// Install a progress observer for this session and subsequent in-process switches.
+    pub fn set_progress_observer(&mut self, observer: Arc<dyn crate::ProgressObserver>) {
+        *self
+            .st
+            .shared
+            .gate
+            .progress
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(observer);
+        crate::progress::session(&self.st);
+    }
+
     /// S1 / ENG-002: run the steering and follow-up messages that are queued, as one run, when
     /// the session is idle; `Ok(None)` when nothing is queued. A front end calls it after an
     /// operation that is not a prompt (a navigation, `/compact`), because input typed during
@@ -395,6 +410,8 @@ impl Session {
         };
         if let Some(aborted) = ran {
             crate::fire::agent_settled(&mut self.st, aborted, sink, ui);
+        } else {
+            crate::progress::notify(&self.st, crate::Progress::Settled(self.st.stats.outcome));
         }
         drop(guard);
         emit_settled(sink, ran);
@@ -682,6 +699,9 @@ impl Session {
         };
         State {
             session_id: st.sref.id.clone(),
+            status_file: crate::progress::observer(st)
+                .and_then(|_| crate::progress::session_file(st))
+                .map(|p| p.with_extension("status.json")),
             session_file,
             session_name: session_name(st),
             model: st.model.clone(),
@@ -707,6 +727,11 @@ impl Session {
         self.st.stats
     }
 
+    /// Set an opt-in, process-local final answer contract without changing the prefix.
+    pub fn set_output_schema(&mut self, schema: Option<crate::output_schema::OutputSchema>) {
+        self.st.output_schema = schema;
+    }
+
     pub fn commands(&self) -> Vec<CommandSpec> {
         crate::all_commands(&self.st)
     }
@@ -720,6 +745,7 @@ impl Session {
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
+        crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
             &mut self.st,
@@ -888,6 +914,7 @@ impl Session {
     /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
     fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
         let guard = self.begin()?;
+        crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
         self.st.stats.output_truncated = false;
         Ok(guard)
@@ -1064,6 +1091,8 @@ fn settle_and_report(
         if let Some(aborted) = ran {
             crate::fire::agent_settled(st, aborted, sink, ui);
         }
+    } else {
+        crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
     }
     (triggered.map(|_| ()), ran)
 }
@@ -1475,32 +1504,9 @@ pub(crate) fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
-    // Fork/clone copy history verbatim: its spill paths still belong to the source sessions.
-    // Follow store headers, never paths suggested by model/tool text. Only that ancestry is
-    // readable, and only for reads; unrelated sessions remain on the deny-list.
-    let mut inherited = Vec::new();
-    let mut seen = std::collections::HashSet::from([st.sref.path.clone()]);
-    let mut source = st.sref.clone();
-    while let Ok(header) = st.store.header(&source) {
-        let Some(parent) = header.parent_session else {
-            break;
-        };
-        let Ok(parent) = st.store.resolve(&parent) else {
-            break;
-        };
-        if !seen.insert(parent.path.clone()) {
-            break; // A malformed ancestry cycle must not hang opening a session.
-        }
-        // Header ids from old/hand-written files have not necessarily been validated. An
-        // id must be one normal path component, never an escape from the spill root.
-        let mut components = std::path::Path::new(&parent.id).components();
-        if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some()
-        {
-            break;
-        }
-        inherited.push(st.dirs.tmp_dir.join(&parent.id));
-        source = parent;
-    }
+    // Fork/clone history still names its ancestors' spills, even after those sessions are
+    // deleted. Follow trusted live/retained headers, never paths suggested by tool/model text.
+    let inherited = oxa_session::inherited_spill_dirs(st.store.as_ref(), &st.dirs.tmp_dir, &st.sref);
     st.policy.set_inherited_spill_dirs(&inherited);
     refresh_tool_env(st);
 }
@@ -2147,6 +2153,57 @@ mod tests {
         }
         let s = Session::open(guarded_deps(), Open::Fork(original.clone())).expect("fork");
         check(&s, &[&second.id, &cloned.id, "other-session"], &[&original.id]);
+    }
+
+    /// #576: reopening a descendant after deleting an ancestor must not add read prompts.
+    #[test]
+    fn spill_reads_survive_deleted_ancestors() {
+        let env = oxa_fake::TestEnv::new();
+        let store = Arc::new(MemStore::new());
+        let guarded_deps = || {
+            let mut d = deps(&env, store.clone());
+            d.dirs.tmp_dir = d.dirs.agent_dir.join("tmp");
+            d.policy = Box::new(oxa_perm::ModePolicy::new().with_guard(oxa_perm::PathGuard::new(
+                &d.dirs.home,
+                &d.dirs.agent_dir,
+                &d.dirs.tmp_dir,
+            )));
+            d
+        };
+        let mut s = Session::open(guarded_deps(), Open::New).unwrap();
+        let original = s.inner().sref.clone();
+        s.clone_session().unwrap();
+        let middle = s.inner().sref.clone();
+        s.clone_session().unwrap();
+        let leaf = s.inner().sref.clone();
+        let tmp_dir = s.inner().dirs.tmp_dir.clone();
+        drop(s);
+        for removed in [&middle, &original] {
+            oxa_session::remove_session_preserving_spills(store.as_ref(), &tmp_dir, removed).unwrap();
+            oxa_session::remove_spill_dir_unless_forked(store.as_ref(), &tmp_dir, removed).unwrap();
+            let reopened = Session::open(guarded_deps(), Open::Resume(leaf.clone())).unwrap();
+            let st = reopened.inner();
+            for mode in Mode::ALL {
+                for ancestor in [&original, &middle] {
+                    let path = tmp_dir.join(&ancestor.id).join("out.txt");
+                    assert_eq!(
+                        st.policy.decide(mode, &Access::Read(path.clone()), &st.cwd),
+                        Decision::Allow,
+                        "deleted ancestry must remain readable: {}",
+                        ancestor.id
+                    );
+                    assert_eq!(
+                        st.policy.decide(mode, &Access::Write(path), &st.cwd),
+                        Decision::Deny(oxa_perm::deny_reasons::SENSITIVE)
+                    );
+                }
+                assert_eq!(
+                    st.policy
+                        .decide(mode, &Access::Read(tmp_dir.join("unrelated/out.txt")), &st.cwd),
+                    Decision::Deny(oxa_perm::deny_reasons::SENSITIVE)
+                );
+            }
+        }
     }
 
     /// The speed belongs to the model that produced it: a switch drops it for every later status.

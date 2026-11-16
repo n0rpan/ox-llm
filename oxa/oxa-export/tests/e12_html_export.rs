@@ -51,6 +51,7 @@ fn fixture() -> Vec<Entry> {
             name: "read".to_string(),
             args_raw: "{\"path\":\"a.txt\"}".to_string(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     let custom = WireMsg {
@@ -62,6 +63,7 @@ fn fixture() -> Vec<Entry> {
             name: "mytool".to_string(),
             args_raw: "{}".to_string(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     vec![

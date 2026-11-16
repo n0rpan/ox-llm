@@ -31,6 +31,9 @@ pub struct PathGuard {
     /// The current session's spill directory: the full output of a capped result is read from
     /// here without asking (#522).
     spill: Option<PathBuf>,
+    /// #597: the session's scratch directory, the host side of `/tmp` in the bash sandbox: what
+    /// bash wrote there is read without asking.
+    scratch: Option<PathBuf>,
     /// Source sessions of a fork/clone: copied history still points at these outputs.
     inherited_spills: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
@@ -90,6 +93,7 @@ impl PathGuard {
             deny,
             allow: vec![tmp_dir.join("codemode")],
             spill: None,
+            scratch: None,
             inherited_spills: Vec::new(),
             read_allow: vec![agent_dir.join("builtin-skills")],
             cargo_configs: std::iter::once(home)
@@ -112,6 +116,18 @@ impl PathGuard {
             && (!is_inside(p, cwd)
                 || is_home_or_above(cwd, &self.home)
                 || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
+    }
+
+    /// #597: read the session's scratch directory `dir` without asking. Reads only: it is not
+    /// on the deny-list, so a link out of it is judged at its target like any other path.
+    pub fn with_scratch(mut self, dir: &Path) -> PathGuard {
+        self.scratch = Some(dir.to_path_buf());
+        self
+    }
+
+    /// `p` (absolute) is inside the session's scratch directory.
+    fn is_scratch(&self, p: &Path) -> bool {
+        self.scratch.as_ref().is_some_and(|s| is_inside(p, s))
     }
 
     /// Point the exception at the spill directory of the session now running. Switching
@@ -466,12 +482,13 @@ impl ModePolicy {
             if denied {
                 return Verdict::Is(Decision::Deny(deny_reasons::SENSITIVE));
             }
-            // #492, #522, #531, #611: advertised built-in skills, this session's output
-            // (including fork/clone ancestry), and Cargo configs read without asking.
-            // Cargo configs are not exceptions to the deny-list checked above.
+            // #492, #522, #531, #597, #611: advertised built-in skills, this session's
+            // output (including fork/clone ancestry), scratch directory and Cargo configs
+            // are read without asking. The deny-list above still applies.
             if matches!(a, Access::Read(_))
                 && (self.guard.is_builtin_skill(&abs)
                     || self.guard.is_readable_spill(&abs)
+                    || self.guard.is_scratch(&abs)
                     || self.guard.is_cargo_config(&abs))
             {
                 return Verdict::Is(Decision::Allow);

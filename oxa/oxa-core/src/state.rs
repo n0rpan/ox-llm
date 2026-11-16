@@ -21,6 +21,8 @@ use std::sync::Arc;
 /// * `model`, `thinking`, `mode` change only through `Session::set_*`, which also append the
 ///   matching entry.
 pub struct SessionState {
+    /// Process-local final-answer contract, never inherited by workers or stored in settings.
+    pub output_schema: Option<crate::output_schema::OutputSchema>,
     pub engine: Arc<dyn Engine>,
     pub store: Arc<dyn SessionStore>,
     pub hooks: Vec<Arc<dyn Hooks>>,

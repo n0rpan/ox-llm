@@ -844,7 +844,15 @@ fn apply(
             };
             Ok(serde_json::json!({ "model": model, "remote": remote }))
         }
+        HostAction::AccountRunTokens(tokens) => {
+            crate::Handle {
+                shared: st.shared.clone(),
+            }
+            .account_tokens(tokens);
+            Ok(Value::Null)
+        }
         HostAction::EngineLimits => Ok(serde_json::json!({
+            "remainingTokens": crate::Handle { shared: st.shared.clone() }.remaining_tokens(),
             "sessionId": st.sref.id,
             "model": st.model,
             "remote": st.info.caps.remote,
@@ -1313,6 +1321,7 @@ mod tests {
         let (host, rx) = CoreHost::new(shared.clone());
         let compact = crate::session::policy_for(&info, &settings);
         let st = SessionState {
+            output_schema: None,
             engine: Arc::new(engine),
             store,
             hooks: Vec::new(),

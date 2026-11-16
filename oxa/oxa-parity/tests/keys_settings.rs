@@ -1355,11 +1355,10 @@ fn set_017() {
         "a project-level defaultProjectTrust is ignored: {}",
         stderr(&out)
     );
-    // oxa's default set on the fake's default (large, non-Flash) model: the seven built-ins and
-    // `subagent` (O-146, SET-018), not the project's `["ls"]`.
+    // The lead defaults include ask and subagent, not the untrusted project's ["ls"].
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
         "the project's defaultTools is not applied"
     );
 }
@@ -1367,15 +1366,15 @@ fn set_017() {
 /// SET-018: `defaultTools`: plain names replace the defaults, `+name` adds, `-name` removes.
 #[test]
 fn set_018() {
-    // invariant: the default set is all seven built-ins (oxa has no powershell) plus `subagent`
+    // invariant: the lead defaults include ask (oxa has no powershell) plus subagent
     // where O-146 offers it (not on the Rust Flash engine, not below a 32K window); the selection
     // is resolved once per prefix epoch (W3), so it is visible on the first request.
     let rig = Rig::new(&[text("ok")]);
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
-        "the default set on a large non-Flash model: the seven built-ins and subagent"
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
+        "the default set on a large non-Flash model: eight lead built-ins and subagent"
     );
     let flash = ["--model", "flash", "--model-row", "flash:65536:2048:flash"];
     let small = ["--n-ctx", "16384"];
@@ -1384,8 +1383,8 @@ fn set_018() {
         ok(&rig.print(&[]));
         assert_eq!(
             tools(&rig.bodies()[0]),
-            ["bash", "edit", "find", "grep", "ls", "read", "write"],
-            "{what}: the default set is the seven built-ins"
+            ["ask", "bash", "edit", "find", "grep", "ls", "read", "write"],
+            "{what}: the default set is the eight lead built-ins"
         );
     }
 
@@ -1395,7 +1394,7 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["edit", "find", "grep", "ls", "read", "subagent", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "subagent", "write"],
         "-name removes"
     );
     let rig = Rig::with_fake(&[text("ok")], &small);
@@ -1403,7 +1402,7 @@ fn set_018() {
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["edit", "find", "grep", "ls", "read", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "write"],
         "-name removes (below 32K)"
     );
 
@@ -3338,7 +3337,13 @@ fn key_013() {
     let t = Setup::new()
         .profile(TermProfile::kitty())
         .fake(three_models())
-        .replies("model answer", 3)
+        .script(&[
+            text("model answer"),
+            // The visible answer is not an idle-session witness: hold the stream open after
+            // its content delta, longer than the harness's 250 ms screen-quiet interval.
+            json!({"text": "model answer", "fault": {"kind": "stall", "bytes": 350, "ms": 1500}}),
+            text("model answer"),
+        ])
         .start();
     assert!(footer(&t.screen()).contains("model-a"), "{:?}", t.screen());
     t.key("ctrl+l");
@@ -3364,13 +3369,15 @@ fn key_013() {
     t.type_text("two");
     t.key("enter");
     assert_eq!(t.wait_chats(2)[1].model, "model-a");
-    // The selector needs an idle session: wait until the reply to "two" is on the screen
-    // below its prompt, then for a settled screen.
-    t.wait("the second reply", |s| {
+    // The selector needs an idle session: answer text and even a quiet screen can precede
+    // the stream's end. Wait for the busy indicator to clear, just as Tui::prompt does.
+    t.wait("the second reply and idle session", |s| {
         let rows = s.rows();
-        rows.iter()
-            .position(|r| r.trim() == "two")
-            .is_some_and(|i| rows[i..].iter().any(|r| r.contains("model answer")))
+        !s.contains("Working")
+            && rows
+                .iter()
+                .position(|r| r.trim() == "two")
+                .is_some_and(|i| rows[i..].iter().any(|r| r.contains("model answer")))
     });
     t.settle();
     // ctrl+s in the selector: select and save as the default model.
@@ -3469,30 +3476,41 @@ fn key_015() {
         let n = s.size().0;
         format!("{}\n{}", s.row(n - 2), s.row(n - 1))
     };
-    let t = Setup::new().replies("ok", 2).start();
-    assert!(footer(&t.screen()).contains("auto"));
-    t.prompt("one", "ok");
-    t.key("alt+m");
-    t.wait("yolo mode", |s| footer(s).contains("yolo"));
-    t.key("alt+m");
-    t.wait("standard mode", |s| footer(s).contains("standard"));
-    t.key("alt+m");
-    t.wait("auto mode", |s| footer(s).contains("auto"));
-    t.type_text("two");
-    t.key("enter");
-    let chats = t.wait_chats(2);
-    assert_eq!(
-        chats[0].system, chats[1].system,
-        "no mode text in the frozen prefix"
-    );
-    drop(t);
+    let is_mode = |s: &Screen, mode: &str| footer(s).split_whitespace().any(|word| word == mode);
+    // Also keep the auto-compaction marker visible at a wider size: it must not be
+    // mistaken for auto mode. Retain the normal 80-column layout (including its YOLO row).
+    for cols in [80, 120] {
+        let t = Setup::new().size(24, cols).replies("ok", 2).start();
+        assert!(is_mode(&t.screen(), "auto"));
+        t.prompt("one", "ok");
+        // Each transition changes the footer's height under YOLO. Observe a complete, quiet
+        // frame before sending another key, not a matching substring during the repaint.
+        t.key("alt+m");
+        t.wait_steady("yolo mode", |s| is_mode(s, "yolo"));
+        t.key("alt+m");
+        let standard = t.wait_steady("standard mode", |s| is_mode(s, "standard"));
+        assert!(
+            !is_mode(&standard, "auto"),
+            "auto-compaction is not auto permission mode: {standard:?}"
+        );
+        t.key("alt+m");
+        t.wait_steady("auto mode", |s| is_mode(s, "auto"));
+        t.type_text("two");
+        t.key("enter");
+        let chats = t.wait_chats(2);
+        assert_eq!(
+            chats[0].system, chats[1].system,
+            "no mode text in the frozen prefix"
+        );
+        drop(t);
+    }
     // Rebound: f3 cycles; alt+m does not.
     let t = Setup::new().keys(json!({ "app.mode.cycle": "f3" })).start();
     t.key("alt+m");
     let s = t.settle();
-    assert!(footer(&s).contains("auto"), "{s:?}");
+    assert!(is_mode(&s, "auto"), "{s:?}");
     t.key("f3");
-    t.wait("yolo mode", |s| footer(s).contains("yolo"));
+    t.wait_steady("yolo mode", |s| is_mode(s, "yolo"));
 }
 
 /// KEY-016: display and queue: tools expand, message copy, follow-up, dequeue.

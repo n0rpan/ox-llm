@@ -287,8 +287,12 @@ impl Entry {
         }
         let settled = fields["settled"]
             .as_str()
-            .filter(|value| ["usage", "reserved", "estimated", "not_forwarded"].contains(value))
+            .filter(|value| ["usage", "reserved", "estimated", "not_forwarded", "refused"].contains(value))
             .ok_or(io::ErrorKind::InvalidData)?;
+        if settled == "refused" && (fields["cost_usd"].as_f64() != Some(0.0) || !(400..500).contains(&status))
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
         self.row["settled"] = json!(settled);
         if let Some(finish) = fields["finish_reason"].as_str().filter(|value| {
             !value.is_empty()

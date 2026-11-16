@@ -44,14 +44,17 @@ fn standard_refuses_auto_and_yolo_approve_what_would_have_asked() {
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("out.txt");
+    // Explicit absolute /tmp paths now name session scratch (#597). A cwd-relative path
+    // still names this host file outside the workspace, which is what this test exercises.
+    let tool_path = Path::new("../elsewhere/out.txt");
 
-    let (out, reqs) = run(&env, write_call(&target), &["-p", "--standard", "write it"]);
+    let (out, reqs) = run(&env, write_call(tool_path), &["-p", "--standard", "write it"]);
     assert!(out.status.success());
     assert!(
         !target.exists(),
         "--standard does not approve the write outside the work tree"
     );
-    assert!(!tool_result(&reqs).is_empty());
+    assert!(tool_result(&reqs).contains("Permission denied"));
 
     for args in [
         &["-p", "write it"][..],
@@ -59,7 +62,7 @@ fn standard_refuses_auto_and_yolo_approve_what_would_have_asked() {
         &["-p", "--yolo", "write it"],
     ] {
         let _ = std::fs::remove_file(&target);
-        let (out, _) = run(&env, write_call(&target), args);
+        let (out, _) = run(&env, write_call(tool_path), args);
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert_eq!(
             std::fs::read_to_string(&target).ok().as_deref(),
@@ -80,8 +83,10 @@ fn the_saved_default_mode_applies_and_a_flag_wins() {
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("out.txt");
+    // Exercise the host write permission, not an absolute /tmp session-scratch path.
+    let tool_path = Path::new("../elsewhere/out.txt");
 
-    let (out, _) = run(&env, write_call(&target), &["-p", "write it"]);
+    let (out, _) = run(&env, write_call(tool_path), &["-p", "write it"]);
     assert!(out.status.success());
     assert!(
         !target.exists(),
@@ -93,7 +98,7 @@ fn the_saved_default_mode_applies_and_a_flag_wins() {
         "the mode is logged on stderr: {err}"
     );
 
-    let (out, _) = run(&env, write_call(&target), &["-p", "--auto", "write it"]);
+    let (out, _) = run(&env, write_call(tool_path), &["-p", "--auto", "write it"]);
     assert!(out.status.success());
     assert!(target.exists(), "--auto wins over the saved default for one run");
     assert!(String::from_utf8_lossy(&out.stderr).contains("permission mode auto"));
@@ -145,6 +150,83 @@ fn auto_keeps_bash_in_the_sandbox_and_yolo_does_not() {
         Some("leaked\n"),
         "--yolo runs bash without the sandbox"
     );
+}
+
+/// #602: absolute /tmp names use bash's active filesystem view, not always scratch.
+#[test]
+fn bash_and_file_tools_share_tmp_paths_in_auto_and_yolo() {
+    for flag in ["--auto", "--yolo"] {
+        let env = TestEnv::new();
+        let target = env.root().join("outside/result.txt");
+        assert!(target.starts_with("/tmp"));
+        let turns = vec![
+            ScriptTurn::tool(
+                "bash",
+                "bash",
+                &json!({"command": format!(
+                    "mkdir -p '{}' && printf 'before\\n' > '{}'",
+                    target.parent().unwrap().display(), target.display()
+                )})
+                .to_string(),
+            ),
+            ScriptTurn::tool("read1", "read", &json!({"path": target}).to_string()),
+            ScriptTurn::tool(
+                "edit",
+                "edit",
+                &json!({"path": target, "oldText": "before", "newText": "edited"}).to_string(),
+            ),
+            ScriptTurn::tool(
+                "bash2",
+                "bash",
+                &json!({"command": format!("cat '{}'", target.display())}).to_string(),
+            ),
+            ScriptTurn::tool(
+                "write",
+                "write",
+                &json!({"path": target, "content": "written\n"}).to_string(),
+            ),
+            ScriptTurn::tool(
+                "bash3",
+                "bash",
+                &json!({"command": format!("cat '{}'", target.display())}).to_string(),
+            ),
+            ScriptTurn::text("ok"),
+        ];
+        let srv = FakeServer::start(turns, FakeOpts::default()).unwrap();
+        let out = run_oxa(&env, &srv.url(), &["-p", flag, "use the tools"], "");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let reqs = srv.requests();
+        assert_eq!(reqs.len(), 7, "{flag}: the complete tool loop must run");
+        let latest_result = |index: usize| {
+            reqs[index]
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::Tool)
+                .and_then(|m| m.content.as_deref())
+                .unwrap_or_default()
+        };
+        assert!(
+            latest_result(2).contains("before\n"),
+            "{flag}: read bash output: {}",
+            latest_result(2)
+        );
+        assert!(
+            latest_result(4).contains("edited\n"),
+            "{flag}: bash sees edit: {}",
+            latest_result(4)
+        );
+        assert!(
+            latest_result(6).contains("written\n"),
+            "{flag}: bash sees write: {}",
+            latest_result(6)
+        );
+        if flag == "--yolo" {
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "written\n");
+        } else {
+            assert!(!target.exists(), "auto must leave the host namesake untouched");
+        }
+    }
 }
 
 #[test]
@@ -225,11 +307,13 @@ fn child_inherits_the_parents_mode() {
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("child.txt");
+    // As above, name the outside host file relative to cwd, not through session /tmp.
+    let tool_path = Path::new("../elsewhere/child.txt");
 
     let (out, _) = subagent_run(
         &env,
         "write",
-        write_call(&target),
+        write_call(tool_path),
         &["-p", "--yolo", "delegate it"],
     );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -246,7 +330,7 @@ fn child_inherits_the_parents_mode() {
     let (out, reqs) = subagent_run(
         &env,
         "write",
-        write_call(&target),
+        write_call(tool_path),
         &["-p", "--standard", "delegate it"],
     );
     assert!(out.status.success());

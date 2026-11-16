@@ -53,6 +53,32 @@ fn fields() -> Value {
         "cost_usd":0.001,"settled":"usage","prompt_tokens":100,"completion_tokens":10,
         "cached_tokens":80,"cache_write_tokens":10,"finish_reason":"stop"})
 }
+#[test]
+fn refused_settlement_requires_zero_cost_and_a_client_error_status() {
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let daily = ledger.day("20260102").unwrap();
+    let mut refused = fields();
+    refused["settled"] = json!("refused");
+    for (status, cost) in [(200, 0.0), (503, 0.0), (429, 0.1)] {
+        refused["cost_usd"] = json!(cost);
+        assert!(daily
+            .entry("synthetic-alias", Context::default())
+            .unwrap()
+            .append(&refused, status, Some("cloud_upstream_error"), None)
+            .is_err());
+    }
+    assert!(!home.0.join("requests-20260102.jsonl").exists());
+    refused["cost_usd"] = json!(0.0);
+    let row = daily
+        .entry("synthetic-alias", Context::default())
+        .unwrap()
+        .append(&refused, 429, Some("cloud_upstream_error"), None)
+        .unwrap();
+    assert_eq!(row["cost_usd"], 0.0);
+    assert_eq!(row["settled"], "refused");
+    assert_eq!(home.rows("20260102"), vec![row]);
+}
 fn model() -> Model {
     Model {
         provider: "anthropic".into(),
