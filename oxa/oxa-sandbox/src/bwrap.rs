@@ -621,9 +621,6 @@ pub(crate) fn create_missing_git_files_homes(
 /// (`gitdirs::alias_refusal`) against what the command could still write (the writable cwd, the
 /// layout's read-write binds), with the git directories read-only.
 pub(crate) fn refusal(s: &ExecSpec, home: &Path, layout: &Layout) -> Option<String> {
-    if !cfg!(target_os = "linux") {
-        return Some("sandbox unavailable: bubblewrap isolation is supported only on Linux".into());
-    }
     // sbx-symhome: the masks are decided on canonical paths; without them, nothing runs.
     for (what, p) in [("working directory", s.cwd.as_path()), ("home directory", home)] {
         if let Err(e) = std::fs::canonicalize(p) {

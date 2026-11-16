@@ -134,14 +134,14 @@ impl Sandbox for Bwrap {
         bwrap_args_with(s, &self.home, &self.layout)
     }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
             return refused(why);
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
         self.launch(s, None, c, live, true)
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
             // The job reader sees only what went to `live`: give it the reason too.
             live(why.as_bytes());
             let mut r = refused(why);
@@ -158,7 +158,7 @@ impl Sandbox for Bwrap {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
-        if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+        if let Some(why) = platform_refusal().or_else(|| bwrap::refusal(s, &self.home, &self.layout)) {
             return refused(why);
         }
         bwrap::create_missing_git_files(s, &self.home, &self.layout);
@@ -411,6 +411,13 @@ mod secret_tests {
         assert_eq!(&argv[n - 6..n - 4], ["--args", "7"]);
         assert_eq!(&argv[n - 4..n - 1], ["--", "bash", "-c"]);
     }
+}
+
+// Reject execution before any filesystem preparation. Pure policy/argv helpers stay
+// testable on other platforms; they cannot turn an unsupported backend into a launcher.
+fn platform_refusal() -> Option<String> {
+    (!cfg!(target_os = "linux"))
+        .then(|| "sandbox unavailable: bubblewrap isolation is supported only on Linux".into())
 }
 
 /// sbx-gitsym: a command the sandbox refuses to run (`bwrap::refusal`): nothing ran.
