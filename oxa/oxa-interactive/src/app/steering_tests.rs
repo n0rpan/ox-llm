@@ -3,7 +3,7 @@ use super::*;
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, ToolSelection};
 use oxa_engine::HttpEngine;
-use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use oxa_proto::{
     Access, CancelToken, Decision, Engine, ExecResult, ExecSpec, HeadlessUi, Mode, Policy, Sandbox, VecSink,
 };
@@ -37,17 +37,32 @@ enum Window {
     AfterEmptyTake,
     BeforeDoneObserved,
     DoneObserved,
+    FailingPrompt,
 }
 const GATE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Test-only scheduling gate at the existing post-empty-drain progress observation.
+/// Test-only gates at existing post-empty-drain or foreground-request observations.
 /// It never calls back into the session and adds no production hook or event.
 #[derive(Debug)]
-struct EmptyTakeGate(Mutex<Option<(Sender<()>, Receiver<()>)>>);
-impl oxa_core::ProgressObserver for EmptyTakeGate {
+struct OperationGate {
+    at_request: bool,
+    pause: Mutex<Option<(Sender<()>, Receiver<()>)>>,
+}
+impl oxa_core::ProgressObserver for OperationGate {
     fn notify(&self, _: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
-        if matches!(progress, oxa_core::Progress::Settled(_)) {
-            let pause = self.0.lock().unwrap().take();
+        let reached = if self.at_request {
+            matches!(
+                progress,
+                oxa_core::Progress::RequestStart {
+                    kind: oxa_proto::TurnKind::Chat,
+                    ..
+                }
+            )
+        } else {
+            matches!(progress, oxa_core::Progress::Settled(_))
+        };
+        if reached {
+            let pause = self.pause.lock().unwrap().take();
             if let Some((reached, release)) = pause {
                 let _ = reached.send(());
                 let _ = release.recv_timeout(GATE_TIMEOUT);
@@ -79,18 +94,21 @@ fn deps(env: &TestEnv, engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, se
 
 fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, rebind: bool) {
     let env = TestEnv::new();
-    let server = FakeServer::start(
-        ["one", "two", "summary text", "three"]
-            .into_iter()
-            .map(ScriptTurn::text)
-            .collect(),
-        FakeOpts::default(),
-    )
-    .unwrap();
+    let mut turns: Vec<_> = ["one", "two", "summary text", "three"]
+        .into_iter()
+        .map(ScriptTurn::text)
+        .collect();
+    if window == Window::FailingPrompt {
+        turns[2] = ScriptTurn::fault(Fault::Http {
+            status: 400,
+            body: "synthetic invalid request".into(),
+        });
+    }
+    let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     let engine: Arc<dyn Engine> = Arc::new(HttpEngine::new(&server.url(), None).unwrap());
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     let settings = Settings::from_values(
-        json!({"compaction":{"keepRecentTokens":1},"oxa":{"envNote":false}}),
+        json!({"compaction":{"keepRecentTokens":1},"retry":{"enabled":false},"oxa":{"envNote":false}}),
         json!({}),
     );
     let mut session = Session::open(
@@ -150,24 +168,35 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
     let worker_ui = ui_tx.clone();
     let worker = thread::spawn(move || {
         let mut release = Some(release_rx);
-        if window == Window::AfterEmptyTake {
-            session.set_progress_observer(Arc::new(EmptyTakeGate(Mutex::new(Some((
-                reached_tx.clone(),
-                release.take().unwrap(),
-            ))))));
+        if matches!(window, Window::AfterEmptyTake | Window::FailingPrompt) {
+            session.set_progress_observer(Arc::new(OperationGate {
+                at_request: window == Window::FailingPrompt,
+                pause: Mutex::new(Some((reached_tx.clone(), release.take().unwrap()))),
+            }));
         }
         let mut sink = ChanSink(worker_out.clone());
         let (result, _) = execute(
             &mut session,
-            SessionCmd::Compact { instructions },
+            if window == Window::FailingPrompt {
+                SessionCmd::Prompt {
+                    text: "failing primary".into(),
+                    parts: Vec::new(),
+                }
+            } else {
+                SessionCmd::Compact { instructions }
+            },
             &mut sink,
             &mut HeadlessUi::default(),
             &worker_ui,
             &worker_out,
         );
-        result.unwrap();
-        worker_out.send(WorkerMsg::Done(Ok(()))).unwrap();
-        if window != Window::AfterEmptyTake {
+        if window == Window::FailingPrompt {
+            assert!(matches!(session.outcome(), oxa_core::RunOutcome::Failed(_)));
+        } else {
+            assert!(result.is_ok());
+        }
+        worker_out.send(WorkerMsg::Done(result)).unwrap();
+        if matches!(window, Window::BeforeDoneObserved | Window::DoneObserved) {
             reached_tx.send(()).unwrap();
             release
                 .take()
@@ -192,7 +221,10 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
             lp.worker_msg(message);
         }
     }
-    assert_eq!(control.is_busy(), window == Window::AfterEmptyTake);
+    assert_eq!(
+        control.is_busy(),
+        matches!(window, Window::AfterEmptyTake | Window::FailingPrompt)
+    );
     if window == Window::BeforeDoneObserved {
         assert_eq!(held_done.len(), 1);
         assert_ne!(
@@ -244,6 +276,7 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         );
         return;
     }
+    let stopped_outcome = *session.outcome();
     let mut reply = VecSink::default();
     for command in commands {
         execute(&mut session, command, &mut reply, &mut ui, &ui_tx, &out_tx)
@@ -255,6 +288,28 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         .into_iter()
         .filter(|r| r.max_tokens > 0)
         .collect();
+    if window == Window::FailingPrompt {
+        assert_eq!(
+            requests.len(),
+            3,
+            "a failed prompt must not automatically launch its retained follow-up"
+        );
+        assert_eq!(
+            *session.outcome(),
+            stopped_outcome,
+            "wake must preserve the unsuccessful outcome"
+        );
+        assert_eq!(
+            session.handle().queued(),
+            if follow_up {
+                (Vec::new(), vec!["third".into()])
+            } else {
+                (vec!["third".into()], Vec::new())
+            },
+            "retain input for explicit user recovery"
+        );
+        return;
+    }
     assert_eq!(requests.len(), 4, "exactly one next chat request");
     assert!(requests[3]
         .messages
@@ -302,4 +357,14 @@ fn follow_up_after_empty_take_has_a_worker_consumer() {
 #[test]
 fn stale_steering_wake_preserves_rebound_destination() {
     gated_prompt(Window::BeforeDoneObserved, None, false, true);
+}
+
+#[test]
+fn failed_prompt_retains_follow_up_without_automatic_retry() {
+    gated_prompt(Window::FailingPrompt, None, true, false);
+}
+
+#[test]
+fn failed_prompt_retains_steering_without_automatic_retry() {
+    gated_prompt(Window::FailingPrompt, None, false, false);
 }
