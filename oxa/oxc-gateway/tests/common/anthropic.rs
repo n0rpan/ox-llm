@@ -146,9 +146,7 @@ impl MockAnthropic {
                         let shared = worker.clone();
                         let replies = replies.clone();
                         peers.push(thread::spawn(move || {
-                            if serve(stream, &shared, &replies).is_err()
-                                && !shared.stopping.load(Ordering::Acquire)
-                            {
+                            if serve(stream, &shared, &replies).is_err() {
                                 shared
                                     .errors
                                     .lock()
@@ -167,7 +165,9 @@ impl MockAnthropic {
                 }
             }
             for peer in peers {
-                let _ = peer.join();
+                if peer.join().is_err() {
+                    worker.errors.lock().unwrap().push("mock upstream peer panicked");
+                }
             }
         });
         Self {
@@ -199,19 +199,30 @@ impl MockAnthropic {
         );
         requests.clone()
     }
-    pub fn assert_healthy(&self) {
-        assert!(
-            self.shared.errors.lock().unwrap().is_empty(),
-            "mock upstream reported a connection failure"
-        );
+    /// Stop accepting, drain every peer, then check health. A snapshot before
+    /// joining cannot certify success: a peer may still be reading or writing.
+    pub fn finish(mut self) {
+        self.drain();
+        let healthy = self.shared.errors.lock().unwrap().is_empty();
+        assert!(healthy, "mock upstream reported a connection failure");
+    }
+    fn drain(&mut self) {
+        self.shared.stopping.store(true, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            if join.join().is_err() {
+                self.shared
+                    .errors
+                    .lock()
+                    .unwrap()
+                    .push("mock upstream listener panicked");
+            }
+        }
     }
 }
 impl Drop for MockAnthropic {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::Release);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
+        // Cleanup is not a success verdict, especially during unwinding.
+        self.drain();
     }
 }
 
@@ -288,7 +299,7 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
         let start = Instant::now();
         loop {
             if shared.stopping.load(Ordering::Acquire) {
-                return Ok(());
+                return Err(io::ErrorKind::Interrupted.into());
             }
             match gate.recv_timeout(Duration::from_millis(20)) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -313,4 +324,143 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
         stream.flush()?;
     }
     stream.write_all(b"0\r\n\r\n")
+}
+
+#[cfg(test)]
+mod mock_health {
+    use super::*;
+    use std::{
+        net::Shutdown,
+        panic::{catch_unwind, AssertUnwindSafe},
+    };
+
+    fn request(mock: &MockAnthropic, body: &[u8]) -> TcpStream {
+        let mut client = TcpStream::connect(mock.address()).unwrap();
+        write!(
+            client,
+            "POST /v1/messages HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        client.write_all(body).unwrap();
+        client
+            .set_read_timeout(Some(DEADLINE + Duration::from_secs(1)))
+            .unwrap();
+        client
+    }
+
+    fn rejects(mock: MockAnthropic) {
+        assert!(catch_unwind(AssertUnwindSafe(|| mock.finish())).is_err());
+    }
+
+    #[test]
+    fn finish_accepts_complete_replies() {
+        let mock = MockAnthropic::start(vec![
+            Reply::events(vec![json!({"type":"message_stop"})]),
+            Reply::text("Synthetic", 1, 0, 0, 1),
+        ]);
+        for _ in 0..2 {
+            let mut response = Vec::new();
+            request(&mock, b"{}").read_to_end(&mut response).unwrap();
+            assert!(response.ends_with(b"0\r\n\r\n"));
+        }
+        assert_eq!(mock.requests().len(), 2);
+        mock.finish();
+    }
+
+    #[test]
+    fn finish_rejects_malformed_and_unexpected_requests() {
+        for body in [b"{".as_slice(), b"{}".as_slice()] {
+            let mock = MockAnthropic::start(vec![]);
+            let _ = request(&mock, body).read_to_end(&mut Vec::new());
+            rejects(mock);
+        }
+    }
+
+    #[test]
+    fn finish_rejects_unfinished_gate_instead_of_certifying_shutdown() {
+        let (reply, _gate) = Reply::text("Synthetic", 1, 0, 0, 1).gated();
+        let mock = MockAnthropic::start(vec![reply]);
+        let _client = request(&mock, b"{}");
+        mock.wait_for_requests(1);
+        rejects(mock);
+    }
+
+    #[test]
+    fn finish_rejects_gate_timeout() {
+        let (reply, _gate) = Reply::text("Synthetic", 1, 0, 0, 1).gated();
+        let mock = MockAnthropic::start(vec![reply]);
+        // EOF comes from the peer's bounded timeout, not from shutdown.
+        let mut response = Vec::new();
+        request(&mock, b"{}").read_to_end(&mut response).unwrap();
+        assert!(response.is_empty());
+        rejects(mock);
+    }
+
+    #[test]
+    fn finish_rejects_disconnect_during_response() {
+        let mock = MockAnthropic::start(vec![Reply::wire("text/event-stream", &vec![b'x'; 1024 * 1024])]);
+        let mut client = request(&mock, b"{}");
+        client.read_exact(&mut [0]).unwrap();
+        client.shutdown(Shutdown::Both).unwrap();
+        rejects(mock);
+    }
+
+    #[test]
+    fn finish_records_listener_panic() {
+        let mut mock = MockAnthropic::start(vec![]);
+        mock.drain();
+        mock.join = Some(thread::spawn(|| panic!("synthetic listener failure")));
+        rejects(mock);
+    }
+
+    #[test]
+    fn shutdown_records_in_flight_read_failure() {
+        let mock = MockAnthropic::start(vec![Reply::text("Synthetic", 1, 0, 0, 1)]);
+        let mut client = TcpStream::connect(mock.address()).unwrap();
+        client.write_all(b"POST /v1/messages HTTP/1.1\r\n").unwrap();
+        // Acceptance is serial: observing a later connection's request proves
+        // the listener already handed the incomplete connection to a peer.
+        let mut later = TcpStream::connect(mock.address()).unwrap();
+        later
+            .write_all(b"POST /v1/messages HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+        mock.wait_for_requests(1);
+        later.read_to_end(&mut Vec::new()).unwrap();
+        let shared = mock.shared.clone();
+        let closer = thread::spawn(move || {
+            while !shared.stopping.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            client.shutdown(Shutdown::Both).unwrap();
+        });
+        let shared = mock.shared.clone();
+        rejects(mock);
+        closer.join().unwrap();
+        assert!(
+            !shared.errors.lock().unwrap().is_empty(),
+            "shutdown hid a peer read failure"
+        );
+    }
+
+    #[test]
+    fn shutdown_records_peer_panic() {
+        let mut reply = Reply::text("Synthetic", 1, 0, 0, 1);
+        // A broken fixture must not turn a panicking peer into a passing test.
+        reply.fragment = 0;
+        let mock = MockAnthropic::start(vec![reply]);
+        let mut client = TcpStream::connect(mock.address()).unwrap();
+        client
+            .write_all(b"POST /v1/messages HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+        mock.wait_for_requests(1);
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        let shared = mock.shared.clone();
+        rejects(mock);
+        assert!(
+            !shared.errors.lock().unwrap().is_empty(),
+            "shutdown hid a peer panic"
+        );
+    }
 }
