@@ -86,6 +86,11 @@ pub trait Sandbox: Send + Sync {
     fn home(&self) -> Option<&std::path::Path> {
         None
     }
+    /// #597: the host directory this session's sandbox mounts at `/tmp`, if it has one. The file
+    /// tools read a path under `/tmp` there, as the bash tool sees it. Default: none.
+    fn scratch_dir(&self) -> Option<&std::path::Path> {
+        None
+    }
     /// #457: the sandbox for one new or reopened session: the same machine view, with the
     /// state that belongs to a single session (its scratch directory at `/tmp`) of its own,
     /// released when the session drops it. `None` (the default) = share `self` unchanged.

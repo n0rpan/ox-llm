@@ -397,6 +397,15 @@ struct Built {
     yolo: oxa_proto::YoloSwitch,
 }
 
+/// #597: `guard` plus the session's scratch directory (`/tmp` in its sandbox), which the file
+/// tools read without asking.
+fn session_guard(guard: oxa_perm::PathGuard, sandbox: &dyn Sandbox) -> oxa_perm::PathGuard {
+    match sandbox.scratch_dir() {
+        Some(dir) => guard.with_scratch(dir),
+        None => guard,
+    }
+}
+
 impl Built {
     /// Fresh `Deps` (the policy and built-in tools are not `Clone`).
     fn deps(&self, session_id: Option<String>) -> Deps {
@@ -424,11 +433,14 @@ impl Built {
             // O-182: YOLO answers the policy's questions; the guard above it is untouched.
             policy: Box::new(
                 ModePolicy::new()
-                    .with_guard(oxa_perm::PathGuard::with_real_home(
-                        &self.dirs.home,
-                        oxa_sandbox::account_home().as_deref(),
-                        &self.dirs.agent_dir,
-                        &self.dirs.tmp_dir,
+                    .with_guard(session_guard(
+                        oxa_perm::PathGuard::with_real_home(
+                            &self.dirs.home,
+                            oxa_sandbox::account_home().as_deref(),
+                            &self.dirs.agent_dir,
+                            &self.dirs.tmp_dir,
+                        ),
+                        sandbox.as_ref(),
                     ))
                     .with_yolo(self.yolo.clone()),
             ),
@@ -1888,6 +1900,27 @@ mod session_scratch_tests {
             .persistence_notice()
             .unwrap()
             .contains("discarded after each command"));
+        // #597: the model names that directory as `/tmp`; the file tools read it unasked, the
+        // other session's directory still asks.
+        use oxa_proto::{Access, Decision, Mode};
+        let cwd = env.work();
+        assert_eq!(
+            first.sandbox.scratch_dir(),
+            Some(a.as_path()),
+            "the file tools and the sandbox name one directory"
+        );
+        assert_eq!(
+            first
+                .policy
+                .decide(Mode::Workspace, &Access::Read(a.join("left-by-first")), &cwd),
+            Decision::Allow
+        );
+        assert_eq!(
+            first
+                .policy
+                .decide(Mode::Workspace, &Access::Read(b.join("left-by-first")), &cwd),
+            Decision::Ask
+        );
         drop(first);
         assert!(!a.exists(), "the first session's scratch outlived it");
         assert!(b.is_dir(), "ending one session removed another's scratch");

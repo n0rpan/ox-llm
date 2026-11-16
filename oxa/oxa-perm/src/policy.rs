@@ -31,6 +31,9 @@ pub struct PathGuard {
     /// The current session's spill directory: the full output of a capped result is read from
     /// here without asking (#522).
     spill: Option<PathBuf>,
+    /// #597: the session's scratch directory, the host side of `/tmp` in the bash sandbox: what
+    /// bash wrote there is read without asking.
+    scratch: Option<PathBuf>,
     /// Source sessions of a fork/clone: copied history still points at these outputs.
     inherited_spills: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
@@ -87,6 +90,7 @@ impl PathGuard {
             deny,
             allow: vec![tmp_dir.join("codemode")],
             spill: None,
+            scratch: None,
             inherited_spills: Vec::new(),
             read_allow: vec![agent_dir.join("builtin-skills")],
             paste_dir: Some(tmp_dir.to_path_buf()),
@@ -105,6 +109,18 @@ impl PathGuard {
             && (!is_inside(p, cwd)
                 || is_home_or_above(cwd, &self.home)
                 || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
+    }
+
+    /// #597: read the session's scratch directory `dir` without asking. Reads only: it is not
+    /// on the deny-list, so a link out of it is judged at its target like any other path.
+    pub fn with_scratch(mut self, dir: &Path) -> PathGuard {
+        self.scratch = Some(dir.to_path_buf());
+        self
+    }
+
+    /// `p` (absolute) is inside the session's scratch directory.
+    fn is_scratch(&self, p: &Path) -> bool {
+        self.scratch.as_ref().is_some_and(|s| is_inside(p, s))
     }
 
     /// Point the exception at the spill directory of the session now running. Switching
@@ -446,10 +462,13 @@ impl ModePolicy {
             if denied {
                 return Verdict::Is(Decision::Deny(deny_reasons::SENSITIVE));
             }
-            // #492, #522, #531: advertised built-in skills and this session's output
-            // (including fork/clone ancestry) are read without asking, wherever the cwd is.
+            // #492, #522, #531, #597: advertised built-in skills, this session's output
+            // (including fork/clone ancestry) and its scratch directory are read without
+            // asking, wherever the cwd is.
             if matches!(a, Access::Read(_))
-                && (self.guard.is_builtin_skill(&abs) || self.guard.is_readable_spill(&abs))
+                && (self.guard.is_builtin_skill(&abs)
+                    || self.guard.is_readable_spill(&abs)
+                    || self.guard.is_scratch(&abs))
             {
                 return Verdict::Is(Decision::Allow);
             }

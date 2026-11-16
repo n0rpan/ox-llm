@@ -103,6 +103,9 @@ impl Sandbox for Bwrap {
             Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
         }
     }
+    fn scratch_dir(&self) -> Option<&Path> {
+        self.layout.scratch.as_ref().map(|s| s.path())
+    }
     fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
         self.layout.scratch_root.as_ref()?;
         Some(Arc::new(self.session()))

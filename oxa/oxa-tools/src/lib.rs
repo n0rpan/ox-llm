@@ -108,3 +108,15 @@ pub fn resolve_path(cwd: &Path, arg: &str) -> PathBuf {
     }
     out
 }
+
+/// #597: [`resolve_path`] for the tools that only read. The bash sandbox mounts the session's
+/// scratch directory at `/tmp`, so a path under `/tmp` names a file there, never one in the
+/// host's `/tmp` (which the sandbox does not show). Without a session scratch directory the
+/// path is unchanged.
+pub fn resolve_tool_path(cx: &oxa_proto::ToolCtx, arg: &str) -> PathBuf {
+    let abs = resolve_path(cx.cwd, arg);
+    match (cx.sandbox.scratch_dir(), abs.strip_prefix("/tmp")) {
+        (Some(scratch), Ok(rest)) => scratch.join(rest),
+        _ => abs,
+    }
+}
