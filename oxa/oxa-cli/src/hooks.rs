@@ -206,11 +206,18 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         match std::env::current_exe() {
             Ok(bin) => {
                 let agents = discover_agents(i.dirs, i.cwd, i.trusted);
-                sets.hooks.push(Arc::new(
-                    SubagentHooks::new(bin, agents)
-                        .with_settings(i.settings)
-                        .with_yolo(i.yolo.clone()),
-                ));
+                let mut subagent = SubagentHooks::new(bin, agents)
+                    .with_settings(i.settings)
+                    .with_yolo(i.yolo.clone());
+                // #508: children get the time that is left of the parent's `--max-time`.
+                if let Some(at) = i
+                    .args
+                    .max_time
+                    .and_then(|d| std::time::Instant::now().checked_add(d))
+                {
+                    subagent = subagent.with_deadline(at);
+                }
+                sets.hooks.push(Arc::new(subagent));
             }
             Err(e) => notices.push((
                 Level::Warning,

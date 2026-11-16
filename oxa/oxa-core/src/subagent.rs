@@ -304,6 +304,9 @@ struct Inner {
     /// while it is on gets `--yolo`. Not a global: the process hands its own switch in
     /// (`with_yolo`); `None` = no `--yolo` ever.
     yolo: Mutex<Option<YoloSwitch>>,
+    /// The parent's `--max-time` deadline (#508): a child gets the time left as its own
+    /// `--max-time`, and none starts after it. `None` = no limit.
+    deadline: Mutex<Option<Instant>>,
 }
 
 /// The built-in subagent hook set. O-146: on by default for every model but the Rust Flash
@@ -339,6 +342,7 @@ impl SubagentHooks {
             child_pgid: Mutex::new(Vec::new()),
             abort: AtomicBool::new(false),
             yolo: Mutex::new(None),
+            deadline: Mutex::new(None),
         });
         let tool: Arc<dyn Tool> = Arc::new(SubagentTool {
             spec: ToolSpec {
@@ -372,6 +376,14 @@ impl SubagentHooks {
     /// are for the parent); a child started while it is off gets the argv it always had.
     pub fn with_yolo(self, switch: YoloSwitch) -> SubagentHooks {
         *lock(&self.inner.yolo) = Some(switch);
+        self
+    }
+
+    /// #508: the parent's `--max-time` deadline. Every child is started with the time that is
+    /// left as its own `--max-time` (it wraps up by itself, so a looping child cannot outlive
+    /// the parent's limit), and no child is started once the deadline has passed.
+    pub fn with_deadline(self, deadline: Instant) -> SubagentHooks {
+        *lock(&self.inner.deadline) = Some(deadline);
         self
     }
 
@@ -1149,7 +1161,8 @@ impl Run<'_, '_> {
     /// Prepare task `k`: its agent, model, hint and argv; park the parent before the first
     /// child. `Err` is the task's finished result (unknown agent, aborted before start).
     fn prepare(&mut self, k: usize, item: &Item, task: &str) -> Result<Prepared, Box<ChildResult>> {
-        if self.stopped() {
+        let left = (*lock(&self.inner.deadline)).map(|at| at.saturating_duration_since(Instant::now()));
+        if self.stopped() || left.is_some_and(|left| left.is_zero()) {
             let r = ChildResult::unstarted(&item.agent, Status::Aborted, NOT_STARTED.to_string());
             return Err(Box::new(self.finish(k, r)));
         }
@@ -1226,6 +1239,11 @@ impl Run<'_, '_> {
         if !agent.system_prompt.trim().is_empty() {
             argv.push("--append-system-prompt".into());
             argv.push(agent.system_prompt.clone());
+        }
+        if let Some(left) = left {
+            // At least a millisecond: `--max-time` takes a positive number of seconds.
+            argv.push("--max-time".into());
+            argv.push(format!("{:.3}", left.as_secs_f64().max(0.001)));
         }
         argv.push(T::TASK.replace("{task}", task));
         let env = vec![

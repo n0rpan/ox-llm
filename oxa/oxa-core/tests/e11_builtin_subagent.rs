@@ -1072,6 +1072,53 @@ fn cancel_stops_queued_tasks() {
     assert_eq!(host.clears(), ["sess.s1"]);
 }
 
+/// #508: the parent's `--max-time` reaches every child as its own `--max-time` (the time that
+/// is left), so a looping child wraps up by itself.
+#[test]
+fn child_gets_the_remaining_max_time() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host).with_deadline(Instant::now() + Duration::from_secs(60));
+    let o = run(&env, &h, json!({"agent": "scout", "task": "look"}));
+    assert!(!o.out.is_error, "{}", o.out.text);
+    let words = argv(&env, "sess.s1");
+    let at = words
+        .iter()
+        .position(|w| w == "--max-time")
+        .expect("--max-time in argv");
+    let secs: f64 = words[at + 1].parse().expect("seconds");
+    assert!(secs > 30.0 && secs <= 60.0, "{secs}");
+    assert_eq!(words.last().unwrap(), "Task: look", "the task stays last");
+
+    // No parent limit: the argv is what it always was.
+    let h = hooks(&env, OK_BODY, &host);
+    run(&env, &h, json!({"agent": "scout", "task": "again"}));
+    assert_eq!(argv(&env, "sess.s1").last().unwrap(), "Task: again");
+    assert!(!argv(&env, "sess.s1").iter().any(|w| w == "--max-time"));
+}
+
+/// #508: a child that would start after the parent's deadline does not start.
+#[test]
+fn queued_children_do_not_start_after_the_deadline() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    // The first child takes longer than the time left, as a child that wraps up at the deadline.
+    let h = hooks(&env, "sleep 0.6\n", &host).with_deadline(Instant::now() + Duration::from_millis(300));
+    let o = run(
+        &env,
+        &h,
+        json!({"tasks": [{"agent": "scout", "task": "1"}, {"agent": "scout", "task": "2"}]}),
+    );
+    assert!(o.out.is_error);
+    assert!(
+        o.out.text.contains("Subagent was aborted before starting"),
+        "{}",
+        o.out.text
+    );
+    let starts: Vec<String> = log(&env).into_iter().filter(|l| l.starts_with("start")).collect();
+    assert_eq!(starts, ["start sess.s1"], "the queued task never started");
+}
+
 // ---- O-146: the eight-children cap over the whole tree of a parent session ----
 
 fn items(n: usize) -> Vec<Value> {
