@@ -188,6 +188,7 @@ fn calls(list: Vec<(&str, &str, &str)>) -> WireMsg {
                 args_raw: args.to_string(),
             })
             .collect(),
+        provider_history: None,
         tool_call_id: None,
     }
 }

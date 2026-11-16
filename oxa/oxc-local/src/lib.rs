@@ -4,6 +4,7 @@
 mod child_auth;
 mod configured;
 pub use configured::{configured_engine, LOCAL_SETTING};
+pub mod launch_profile;
 pub mod lifecycle;
 pub mod memory;
 pub mod native;

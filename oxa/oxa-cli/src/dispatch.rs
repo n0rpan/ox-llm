@@ -422,9 +422,7 @@ fn open_named(
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
-    if let Some(status) = &built.status {
-        status.attach(&mut session)?;
-    }
+    built.result_facts.attach(&mut session)?;
     Ok(session)
 }
 
@@ -433,6 +431,7 @@ fn open_named(
 #[derive(Clone)]
 struct Built {
     status: Option<Arc<crate::status::StatusWriter>>,
+    result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
     engine: Arc<dyn Engine>,
     store: Arc<dyn SessionStore>,
@@ -829,8 +828,11 @@ fn prepare(
         no_tools: a.no_tools,
         default_edits: settings.default_tools_edits(),
     };
+    let status = (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout)));
+    let result_facts = Arc::new(crate::result_facts::ResultFacts::new(status.clone()));
     let built = Built {
-        status: (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout))),
+        status,
+        result_facts,
         output_schema,
         engine,
         store,
@@ -1167,7 +1169,7 @@ fn run_headless(
     } = prep;
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
-        Err(e) => return finish_outcome(Err(e), stderr),
+        Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
@@ -1194,7 +1196,7 @@ fn run_headless(
                 Some(status) => status.finish(Err(error), stderr),
                 None => Err(error),
             };
-            return finish_outcome(result, stderr);
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
         }
     };
     let result = match mode {
@@ -1218,7 +1220,7 @@ fn run_headless(
         });
         let _ = writeln!(stdout, "{usage}");
     }
-    finish_outcome(result, stderr)
+    finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
 
 /// `--mode rpc`: the protocol owns stdin and stdout; notices go to stderr.
@@ -1241,7 +1243,7 @@ fn run_rpc(
     } = prep;
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
-        Err(e) => return finish_outcome(Err(e), stderr),
+        Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
@@ -1257,7 +1259,7 @@ fn run_rpc(
                 Some(status) => status.finish(Err(error), stderr),
                 None => Err(error),
             };
-            return finish_outcome(result, stderr);
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
         }
     };
     let out: Out = Arc::new(Mutex::new(stdout));
@@ -1267,7 +1269,7 @@ fn run_rpc(
         Some(status) => status.finish(result, stderr),
         None => result,
     };
-    finish_outcome(result, stderr)
+    finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
 
 /// The interactive terminal: the first prompt and the further messages come from the command
@@ -1337,9 +1339,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
-        if let Some(status) = &base.status {
-            status.attach(&mut session)?;
-        }
+        base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
     });
@@ -1755,6 +1755,14 @@ fn report(err: &mut dyn Write, e: &OxaError) -> i32 {
 }
 
 fn finish_outcome(result: Result<oxa_core::RunOutcome, OxaError>, err: &mut dyn Write) -> i32 {
+    finish_outcome_facts(result, err, None)
+}
+
+fn finish_outcome_facts(
+    result: Result<oxa_core::RunOutcome, OxaError>,
+    err: &mut dyn Write,
+    facts: Option<&crate::result_facts::ResultFacts>,
+) -> i32 {
     let outcome = match result {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -1762,7 +1770,11 @@ fn finish_outcome(result: Result<oxa_core::RunOutcome, OxaError>, err: &mut dyn 
             oxa_core::RunOutcome::from_error(&error)
         }
     };
-    let _ = writeln!(err, "{}", outcome.record());
+    let _ = writeln!(
+        err,
+        "{}",
+        crate::result_facts::ResultFacts::record(outcome, facts)
+    );
     let _ = err.flush();
     outcome.exit_code()
 }
@@ -2058,6 +2070,7 @@ mod session_scratch_tests {
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
             status: None,
+            result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),
