@@ -3,8 +3,8 @@
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
-use oxa_perm::{ModePolicy, PathGuard};
-use oxa_proto::{HeadlessUi, Mode, Role, VecSink};
+use oxa_perm::{deny_reasons, ModePolicy, PathGuard};
+use oxa_proto::{tool_errors, HeadlessUi, Mode, Role, VecSink};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
@@ -87,6 +87,13 @@ fn call(session: &mut Session, engine: &ScriptedEngine, tool: &str, path: &Path)
         .unwrap()
 }
 
+fn assert_sensitive_denial(out: &str) {
+    assert_eq!(
+        out,
+        format!("{}{}", tool_errors::DENIED_PREFIX, deny_reasons::SENSITIVE)
+    );
+}
+
 #[test]
 fn headless_spill_reads_are_limited_to_the_active_session() {
     for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
@@ -107,7 +114,14 @@ fn headless_spill_reads_are_limited_to_the_active_session() {
             std::fs::write(&path, "spill-marker").unwrap();
             for tool in ["read", "grep"] {
                 let out = call(&mut session, &engine, tool, &path);
-                assert!(out.contains("declined"), "{mode:?} {tool} {rel}: {out}");
+                if rel == "tmp/codemode/source.js" {
+                    // Shared codemode output needs approval; other sessions and loose tmp
+                    // files remain sensitive even if approval could be requested.
+                    assert!(out.starts_with(tool_errors::DENIED_PREFIX), "{out}");
+                    assert!(out.contains("cannot ask (non-interactive)"), "{out}");
+                } else {
+                    assert_sensitive_denial(&out);
+                }
                 assert!(!out.contains("spill-marker"), "{out}");
             }
         }
@@ -126,7 +140,7 @@ fn switching_and_resuming_replaces_the_spill_read_exception() {
     session.set_mode(Mode::Ask, &mut VecSink::default());
     let second = spill(&env, &session);
     assert_ne!(first, second);
-    assert!(call(&mut session, &engine, "read", &first).contains("declined"));
+    assert_sensitive_denial(&call(&mut session, &engine, "read", &first));
     assert!(call(&mut session, &engine, "read", &second).contains("spill-marker"));
     session
         .switch(
@@ -135,6 +149,6 @@ fn switching_and_resuming_replaces_the_spill_read_exception() {
             &mut HeadlessUi::default(),
         )
         .unwrap();
-    assert!(call(&mut session, &engine, "read", &second).contains("declined"));
+    assert_sensitive_denial(&call(&mut session, &engine, "read", &second));
     assert!(call(&mut session, &engine, "read", &first).contains("spill-marker"));
 }
