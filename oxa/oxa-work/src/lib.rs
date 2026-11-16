@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 mod checkpoint;
+mod committed;
+pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
 mod state;
 mod status;
