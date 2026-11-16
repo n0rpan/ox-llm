@@ -20,3 +20,8 @@ pub mod spend;
 pub mod redaction;
 #[cfg(feature = "secrets")]
 pub mod secrets;
+
+#[cfg(feature = "upstream-anthropic-request")]
+pub mod anthropic_request;
+#[cfg(feature = "upstream-anthropic-stream")]
+pub mod anthropic_stream;
