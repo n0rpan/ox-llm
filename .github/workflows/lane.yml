@@ -1,0 +1,129 @@
+name: lane
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['agent/**', 'codex/**', 'air/**', 'runner/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lane-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTUP_TOOLCHAIN: '1.99.1'
+  CARGO_BUILD_JOBS: '3'
+  CARGO_TERM_COLOR: never
+
+jobs:
+  plan:
+    name: lane plan
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      workspaces: ${{ steps.select.outputs.workspaces }}
+      packages: ${{ steps.select.outputs.packages }}
+      has_tests: ${{ steps.select.outputs.has_tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Runner queue time
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I tools/ci/lane_queue.py --job-name 'lane plan'
+      - name: Selector and CI policy controls
+        run: python3 -I -m unittest discover -s tools/ci/tests
+      - name: Select the branch diff against main
+        id: select
+        run: python3 -I tools/ci/lane_select.py --base origin/main
+
+  test:
+    name: lane (${{ matrix.workspace }}, ${{ matrix.runner }})
+    needs: plan
+    if: needs.plan.outputs.has_tests == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        workspace: ${{ fromJSON(needs.plan.outputs.workspaces) }}
+        exclude:
+          # Native engine CPU qualification stays on the existing Oryon runner.
+          - workspace: engine
+            runner: ubuntu-24.04-arm
+    env:
+      PACKAGES_JSON: ${{ toJSON(fromJSON(needs.plan.outputs.packages)[matrix.workspace]) }}
+      LANE_JOB_NAME: lane (${{ matrix.workspace }}, ${{ matrix.runner }})
+      LANE_WORKSPACE: ${{ matrix.workspace }}
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Runner queue time
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I tools/ci/lane_queue.py --job-name "$LANE_JOB_NAME"
+      - name: Isolated toolchain and disk-backed caches
+        shell: bash
+        run: |
+          lane_cache="$HOME/.cache/ox-llm-lane"
+          mkdir -p "$lane_cache"/{home,cargo,rustup,scratch,tools,artifacts}
+          export HOME="$lane_cache/home" CARGO_HOME="$lane_cache/cargo" RUSTUP_HOME="$lane_cache/rustup"
+          export TMPDIR="$lane_cache/scratch" LANE_TOOLS_DIR="$lane_cache/tools" LANE_ARTIFACTS_DIR="$lane_cache/artifacts"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/$LANE_WORKSPACE/target"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+          for name in HOME CARGO_HOME RUSTUP_HOME TMPDIR CARGO_TARGET_DIR LANE_TOOLS_DIR LANE_ARTIFACTS_DIR; do
+            echo "$name=${!name}" >> "$GITHUB_ENV"
+          done
+          host=$(rustup run "$RUSTUP_TOOLCHAIN" rustc -vV | sed -n 's/^host: //p')
+          echo "$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN-$host/bin" >> "$GITHUB_PATH"
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.16.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        id: cache
+        with:
+          workspaces: '${{ matrix.workspace }} -> target'
+          shared-key: lane-${{ matrix.workspace }}-${{ runner.arch }}
+          cache-provider: github
+          cache-on-failure: true
+          cache-bin: false
+          cache-workspace-crates: false
+      - name: Required sandbox and syscall tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-all --ro-bind / / true
+      - name: Pinned nextest
+        run: tools/ci/install_nextest.sh "$LANE_TOOLS_DIR"
+      - name: Affected crates with release-relevant features
+        env:
+          WORKSPACE: ${{ matrix.workspace }}
+        run: python3 -I tools/ci/lane_run.py --workspace "$WORKSPACE" --packages-json "$PACKAGES_JSON"
+      - name: Cache statistics
+        if: always()
+        run: |
+          echo '## Compiler cache' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Cargo dependency cache exact hit: ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${SCCACHE_PATH:-}" ]; then
+            "$SCCACHE_PATH" --show-stats >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'sccache setup did not complete' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
