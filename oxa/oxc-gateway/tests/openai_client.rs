@@ -378,7 +378,7 @@ async fn refresh_timeout_releases_lock_without_forwarding_or_replacing_tokens() 
     let before = fs::read(&path).unwrap();
     let base = refresh.base_url();
     let cancel = Cancellation::default();
-    let client = Client::new().unwrap();
+    let client = Client::with_read_timeout(None).unwrap();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         client.stream(
@@ -398,7 +398,7 @@ async fn refresh_timeout_releases_lock_without_forwarding_or_replacing_tokens() 
     )
     .await
     .unwrap();
-    assert!(matches!(result, Err(client::Error::Credentials)));
+    assert!(matches!(result, Err(client::Error::SignedOut)));
     assert_eq!(fs::read(&path).unwrap(), before);
     assert_eq!(refresh.requests().len(), 1);
     // A second real request must acquire the same lock and refresh successfully.
@@ -648,6 +648,7 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
         json!({"access_token":KEY,"expires_in":0,"error":"synthetic-refresh"}),
         json!({"access_token":"","refresh_token":"synthetic-refresh","expires_in":3600}),
         json!({"access_token":KEY,"expires_in":"synthetic-refresh"}),
+        json!({"access_token":"e30.eyJleHAiOjEwMDB9.synthetic","refresh_token":"synthetic-refresh","expires_in":3600}),
     ] {
         let refresh = MockOpenAi::start(vec![Reply::json(reply)]);
         let base = refresh.base_url();
@@ -673,7 +674,14 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
             .await
             .err()
             .unwrap();
-        assert_eq!(error, client::Error::Credentials);
+        assert_eq!(error, client::Error::SignedOut);
+        let status = oxc_gateway::status::ProviderStatus {
+            remaining_usd: None,
+            source: oxc_gateway::status::Source::NotReported,
+            state: error.subscription_state().unwrap(),
+            checked_at: UNIX_EPOCH,
+        };
+        assert!(status.render_card().contains("State: signed out"));
         assert_eq!(fs::read(&path).unwrap(), before);
         let diagnostic = format!("{error:?} {error}");
         assert!(!diagnostic.contains(KEY) && !diagnostic.contains("synthetic-refresh"));
@@ -1263,6 +1271,592 @@ async fn credential_in_tool_identity_refuses_before_execution_without_rewriting_
                 .iter()
                 .all(|c| c.pointer("/choices/0/delta/tool_calls").is_none()));
             mock.assert_healthy();
+        }
+    }
+}
+
+// A test-local peer with independently controlled headers and SSE reads. No
+// changes to the shared fixture, production server, or HTTP client's policy.
+struct HeldResponsesPeer {
+    base: String,
+    send: Option<std::sync::mpsc::Sender<Value>>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+impl HeldResponsesPeer {
+    fn start() -> Self {
+        use std::io::{BufRead, Read};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let (send, receive) = std::sync::mpsc::channel::<Value>();
+        let join = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    _ => return,
+                }
+            };
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut request = std::io::BufReader::new(&mut socket);
+            let mut length = 0;
+            let mut header_bytes = 0;
+            loop {
+                let mut line = String::new();
+                request.read_line(&mut line).unwrap();
+                header_bytes += line.len();
+                assert!(header_bytes <= 32 * 1024 && !line.is_empty());
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+            }
+            assert!(length <= 64 * 1024);
+            request.read_exact(&mut vec![0; length]).unwrap();
+            drop(request);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            socket.flush().unwrap();
+            while let Ok(event) = receive.recv_timeout(std::time::Duration::from_secs(3)) {
+                // A peer closed by cancellation/timeout is an expected control.
+                if write!(socket, "data: {event}\n\n")
+                    .and_then(|_| socket.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Self {
+            base,
+            send: Some(send),
+            join: Some(join),
+        }
+    }
+    fn send(&self, event: Value) {
+        self.send.as_ref().unwrap().send(event).unwrap();
+    }
+}
+impl Drop for HeldResponsesPeer {
+    fn drop(&mut self) {
+        self.send.take();
+        self.join.take().unwrap().join().unwrap();
+    }
+}
+fn held_text() -> Value {
+    json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Visible output."})
+}
+fn held_complete() -> Value {
+    json!({"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":12,"output_tokens":9}}})
+}
+
+#[tokio::test]
+async fn selected_read_timeout_expires_on_held_headers_and_held_sse_in_both_modes() {
+    for subscription in [false, true] {
+        for after_headers in [false, true] {
+            let fixture = Fixture::new();
+            let (reply, _release) = answer().gated();
+            let headers = (!after_headers).then(|| MockOpenAi::start(vec![reply]));
+            let body = after_headers.then(HeldResponsesPeer::start);
+            let base = if let Some(body) = &body {
+                body.send(held_text());
+                body.base.clone()
+            } else {
+                headers.as_ref().unwrap().base_url()
+            };
+            let path = fixture.token_path(true);
+            let auth = if subscription {
+                Auth::Subscription {
+                    token_path: &path,
+                    expected_account_id: "synthetic-account",
+                    refresh: client::Refresh {
+                        endpoint: &base,
+                        client_id: "synthetic-client",
+                        timeout: std::time::Duration::from_secs(1),
+                    },
+                }
+            } else {
+                Auth::ApiKey(&fixture.key)
+            };
+            let client = Client::with_read_timeout(Some(std::time::Duration::from_millis(150))).unwrap();
+            let mut saw_text = false;
+            let mut usage = None;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                client.stream_with_usage(
+                    chat(&base, &payload(), &[]),
+                    auth,
+                    &Cancellation::default(),
+                    &mut |e| {
+                        if let Event::Chunk(c) = e {
+                            saw_text |= c["choices"][0]["delta"]["content"] == "Visible output.";
+                        }
+                        Control::Continue
+                    },
+                    &mut usage,
+                ),
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "selected silence timeout did not expire while peer was held"
+            );
+            assert!(matches!(result.unwrap(), Err(client::Error::Transport)));
+            assert_eq!(saw_text, after_headers);
+            assert!(usage.is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn read_timeout_resets_on_progress_and_none_keeps_quiet_cancellation() {
+    for subscription in [false, true] {
+        for selected in [Some(std::time::Duration::from_millis(500)), None] {
+            let fixture = Fixture::new();
+            let peer = HeldResponsesPeer::start();
+            peer.send(held_text());
+            let path = fixture.token_path(true);
+            let base = &peer.base;
+            let auth = || {
+                if subscription {
+                    Auth::Subscription {
+                        token_path: &path,
+                        expected_account_id: "synthetic-account",
+                        refresh: client::Refresh {
+                            endpoint: base,
+                            client_id: "synthetic-client",
+                            timeout: std::time::Duration::from_secs(1),
+                        },
+                    }
+                } else {
+                    Auth::ApiKey(&fixture.key)
+                }
+            };
+            let client = Client::with_read_timeout(selected).unwrap();
+            let started = std::time::Instant::now();
+            let body = payload();
+            let cancel = Cancellation::default();
+            let mut callback = |_| Control::Continue;
+            let inference = client.stream(chat(base, &body, &[]), auth(), &cancel, &mut callback);
+            let progress = async {
+                for _ in 0..8 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if selected.is_some() {
+                        peer.send(held_text());
+                    }
+                }
+                peer.send(held_complete());
+            };
+            let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+                tokio::join!(inference, progress)
+            })
+            .await
+            .unwrap();
+            let completed = result.unwrap();
+            assert_eq!(completed.usage.unwrap().output, Some(9));
+            assert!(
+                started.elapsed() > std::time::Duration::from_millis(500),
+                "control must outlive a total-generation deadline"
+            );
+            if selected.is_none() {
+                let quiet = HeldResponsesPeer::start();
+                quiet.send(held_text());
+                let stop = Cancellation::default();
+                let (seen, received) = tokio::sync::oneshot::channel();
+                let mut seen = Some(seen);
+                let mut callback = |e| {
+                    if matches!(e,Event::Chunk(ref c) if c["choices"][0]["delta"]["content"]=="Visible output.")
+                    {
+                        if let Some(seen) = seen.take() {
+                            let _ = seen.send(());
+                        }
+                    }
+                    Control::Continue
+                };
+                let inference = client.stream(chat(&quiet.base, &body, &[]), auth(), &stop, &mut callback);
+                let cancel_quiet = async {
+                    received.await.unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    stop.cancel();
+                };
+                let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                    tokio::join!(inference, cancel_quiet)
+                })
+                .await
+                .unwrap();
+                assert!(matches!(result, Err(client::Error::Cancelled)));
+            }
+        }
+    }
+}
+
+#[test]
+fn unrepresentable_read_timeout_is_a_fixed_setup_error() {
+    assert!(matches!(
+        Client::with_read_timeout(Some(std::time::Duration::MAX)),
+        Err(client::Error::Setup)
+    ));
+}
+
+fn subscription_auth<'a>(path: &'a std::path::Path, refresh: &'a str) -> Auth<'a> {
+    Auth::Subscription {
+        token_path: path,
+        expected_account_id: "synthetic-account",
+        refresh: client::Refresh {
+            endpoint: refresh,
+            client_id: "synthetic-client",
+            timeout: std::time::Duration::from_secs(2),
+        },
+    }
+}
+
+#[tokio::test]
+async fn codex_shaped_refresh_without_expires_in_is_stored_before_forwarding() {
+    let fixture = Fixture::new();
+    let path = fixture.token_path(false);
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"e30.eyJleHAiOjQxMDI0NDQ4MDB9.synthetic", "refresh_token":"synthetic-rotated-refresh"}),
+    )]);
+    let upstream = MockOpenAi::start(vec![answer()]);
+    let base = upstream.base_url();
+    let endpoint = refresh.base_url();
+    let mut forwarded = false;
+    let result = Client::new()
+        .unwrap()
+        .stream(
+            chat(&base, &payload(), &[]),
+            subscription_auth(&path, &endpoint),
+            &Cancellation::default(),
+            &mut |e| {
+                if matches!(e, Event::Sending) {
+                    let record = chatgpt_tokens::read(&path).unwrap();
+                    assert_eq!(record.access_token(), "e30.eyJleHAiOjQxMDI0NDQ4MDB9.synthetic");
+                    assert_eq!(record.refresh_token(), "synthetic-rotated-refresh");
+                    forwarded = true;
+                }
+                Control::Continue
+            },
+        )
+        .await;
+    assert!(result.is_ok(), "Codex-shaped token-only refresh must succeed");
+    assert!(forwarded);
+    assert_eq!(refresh.requests().len(), 1);
+    assert_eq!(upstream.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn token_expired_401_refreshes_and_retries_once_in_the_same_session() {
+    let fixture = Fixture::new();
+    let path = fixture.token_path(true);
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}),
+    )]);
+    let upstream = MockOpenAi::start(vec![
+        answer(),
+        Reply::error(401, "token_expired", "synthetic expiry"),
+        answer(),
+    ]);
+    let base = upstream.base_url();
+    let endpoint = refresh.base_url();
+    let client = Client::new().unwrap();
+    for _ in 0..2 {
+        let result = client
+            .stream(
+                chat(&base, &payload(), &[]),
+                subscription_auth(&path, &endpoint),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await;
+        assert!(result.is_ok(), "token expiry in a running session must recover");
+    }
+    assert_eq!(refresh.requests().len(), 1);
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].body_bytes, requests[2].body_bytes);
+    assert_eq!(
+        requests[1].header("authorization"),
+        Some("Bearer synthetic-openai-credential")
+    );
+    assert_eq!(
+        requests[2].header("authorization"),
+        Some("Bearer synthetic-recovered-access")
+    );
+    assert_eq!(
+        chatgpt_tokens::read(&path).unwrap().refresh_token(),
+        "synthetic-rotated-refresh"
+    );
+}
+
+#[tokio::test]
+async fn expired_recovery_is_bounded_and_excludes_api_keys_and_other_refusals() {
+    for (subscription, code, expected_refreshes, expected_requests) in [
+        (true, "token_expired", 1, 2),
+        (true, "invalid_api_key", 0, 1),
+        (false, "token_expired", 0, 1),
+    ] {
+        let fixture = Fixture::new();
+        let path = fixture.token_path(true);
+        let before = fs::read(&path).unwrap();
+        let refresh = MockOpenAi::start(vec![Reply::json(
+            json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}),
+        )]);
+        let upstream = MockOpenAi::start(vec![
+            Reply::error(401, code, "synthetic refusal"),
+            Reply::error(401, code, "synthetic repeated refusal"),
+        ]);
+        let endpoint = refresh.base_url();
+        let base = upstream.base_url();
+        let auth = if subscription {
+            subscription_auth(&path, &endpoint)
+        } else {
+            Auth::ApiKey(&fixture.key)
+        };
+        let mut delivered = false;
+        let error = Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &payload(), &[]),
+                auth,
+                &Cancellation::default(),
+                &mut |e| {
+                    delivered |= matches!(e, Event::Chunk(_));
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap_err();
+        if subscription {
+            assert_eq!(error, client::Error::SignedOut);
+            assert_eq!(
+                error.subscription_state(),
+                Some(oxc_gateway::status::State::SignedOut)
+            );
+        } else {
+            assert!(matches!(error, client::Error::Http { status: 401, .. }));
+        }
+        assert!(!delivered);
+        assert_eq!(refresh.requests().len(), expected_refreshes);
+        assert_eq!(upstream.requests().len(), expected_requests);
+        if expected_refreshes == 0 {
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        assert!(!format!("{error:?} {error}").contains(KEY));
+    }
+}
+
+#[tokio::test]
+async fn running_client_rechecks_proactive_expiry_without_a_restart() {
+    let fixture = Fixture::new();
+    let path = fixture.token_path(true);
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}),
+    )]);
+    let upstream = MockOpenAi::start(vec![answer(), answer()]);
+    let base = upstream.base_url();
+    let endpoint = refresh.base_url();
+    let client = Client::new().unwrap();
+    client
+        .stream(
+            chat(&base, &payload(), &[]),
+            subscription_auth(&path, &endpoint),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    assert!(refresh.requests().is_empty());
+    // Advance the owned synthetic record into the proactive window; same client,
+    // process and route. No wall-clock sleeps or real credential files.
+    fixture.token_path(false);
+    client
+        .stream(
+            chat(&base, &payload(), &[]),
+            subscription_auth(&path, &endpoint),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    assert_eq!(refresh.requests().len(), 1);
+    assert_eq!(
+        upstream.requests()[1].header("authorization"),
+        Some("Bearer synthetic-recovered-access")
+    );
+}
+
+#[test]
+fn forced_refresh_child() {
+    let Some(path) = std::env::var_os("OPENAI_FORCE_REFRESH_FIXTURE") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let base = std::env::var("OPENAI_FORCE_UPSTREAM").unwrap();
+    let endpoint = std::env::var("OPENAI_FORCE_ENDPOINT").unwrap();
+    let mut sends = 0;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Client::new().unwrap().stream(
+                    chat(&base, &payload(), &[]),
+                    subscription_auth(&path, &endpoint),
+                    &Cancellation::default(),
+                    &mut |e| {
+                        if matches!(e, Event::Sending) {
+                            sends += 1;
+                            if sends == 2 {
+                                assert_eq!(
+                                    chatgpt_tokens::read(&path).unwrap().refresh_token(),
+                                    "synthetic-rotated-refresh"
+                                );
+                            }
+                        }
+                        Control::Continue
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        });
+    assert_eq!(sends, 2);
+}
+
+#[tokio::test]
+async fn concurrent_processes_refresh_a_rejected_generation_once() {
+    let fixture = Fixture::new();
+    let path = fixture.token_path(true);
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}),
+    )]);
+    let (first, release_first) = Reply::error(401, "token_expired", "synthetic expiry").gated();
+    let (second, release_second) = Reply::error(401, "token_expired", "synthetic expiry").gated();
+    let upstream = MockOpenAi::start(vec![first, second, answer(), answer()]);
+    let children: Vec<_> = (0..2)
+        .map(|_| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "forced_refresh_child"])
+                .env_clear()
+                .env("HOME", &fixture.root)
+                .env("PATH", "/usr/bin:/bin")
+                .env("OPENAI_FORCE_REFRESH_FIXTURE", &path)
+                .env("OPENAI_FORCE_UPSTREAM", upstream.base_url())
+                .env("OPENAI_FORCE_ENDPOINT", refresh.base_url())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(upstream.wait_for_requests(2).len(), 2);
+    release_first.send(()).unwrap();
+    release_second.send(()).unwrap();
+    for child in children {
+        assert!(
+            child.wait_with_output().unwrap().status.success(),
+            "synthetic refresh child failed"
+        );
+    }
+    assert_eq!(refresh.requests().len(), 1);
+    let requests = upstream.wait_for_requests(4);
+    assert_eq!(requests.len(), 4);
+    assert!(requests[..2]
+        .iter()
+        .all(|r| r.header("authorization") == Some("Bearer synthetic-openai-credential")));
+    assert!(requests[2..]
+        .iter()
+        .all(|r| r.header("authorization") == Some("Bearer synthetic-recovered-access")));
+    assert_eq!(
+        chatgpt_tokens::read(&path).unwrap().refresh_token(),
+        "synthetic-rotated-refresh"
+    );
+    refresh.assert_healthy();
+    upstream.assert_healthy();
+}
+
+#[tokio::test]
+async fn rejected_nonterminal_event_fails_before_a_held_peer_is_released() {
+    for subscription in [false, true] {
+        for read_timeout in [Some(std::time::Duration::from_secs(5)), None] {
+            let fixture = Fixture::new();
+            let path = fixture.token_path(true);
+            let peer = HeldResponsesPeer::start();
+            peer.send(held_text());
+            peer.send(json!({"type":"response.output_item.done","output_index":1,"item":{
+                "type":"function_call","id":"fc_pending","call_id":"call_pending","name":"read","arguments":"{}","status":"completed"
+            }}));
+            // No item99 exists: the real translator rejects this nonterminal
+            // argument delta. The peer then deliberately holds its socket open.
+            peer.send(
+                json!({"type":"response.function_call_arguments.delta","output_index":99,"delta":"{}"}),
+            );
+            let auth = if subscription {
+                subscription_auth(&path, &peer.base)
+            } else {
+                Auth::ApiKey(&fixture.key)
+            };
+            let client = Client::with_read_timeout(read_timeout).unwrap();
+            let body = payload();
+            let cancel = Cancellation::default();
+            let mut chunks = Vec::new();
+            let mut usage = None;
+            let mut callback = |event| {
+                if let Event::Chunk(chunk) = event {
+                    chunks.push(chunk);
+                }
+                Control::Continue
+            };
+            let mut inference = Box::pin(client.stream_with_usage(
+                chat(&peer.base, &body, &[]),
+                auth,
+                &cancel,
+                &mut callback,
+                &mut usage,
+            ));
+            let prompt =
+                tokio::time::timeout(std::time::Duration::from_millis(500), inference.as_mut()).await;
+            let before_release = prompt.is_ok();
+            let result = match prompt {
+                Ok(result) => result,
+                Err(_) => {
+                    // Negative control is bounded: release the peer and await
+                    // the old path's terminal check, rather than hanging forever.
+                    peer.send(held_complete());
+                    tokio::time::timeout(std::time::Duration::from_secs(2), inference.as_mut())
+                        .await
+                        .unwrap()
+                }
+            };
+            drop(inference);
+            assert!(before_release,"translator rejection waited for the held peer; subscription={subscription}, reads_disabled={}",read_timeout.is_none());
+            assert_eq!(result.unwrap_err(), client::Error::Protocol);
+            assert!(usage.is_none());
+            assert!(chunks
+                .iter()
+                .any(|c| c["choices"][0]["delta"]["content"] == "Visible output."));
+            assert!(chunks
+                .iter()
+                .all(|c| c.get("error").is_none() && c.pointer("/choices/0/delta/tool_calls").is_none()));
         }
     }
 }
