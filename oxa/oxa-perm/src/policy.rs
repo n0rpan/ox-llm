@@ -29,8 +29,8 @@ pub struct PathGuard {
     allow: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
-    /// The spill files (`tmp_dir`): the file a truncated tool result names is read without
-    /// asking (#564). Writes outside the cwd still ask.
+    /// Only the active session's spill directory, attached by `Policy::set_spill_dir`.
+    /// Its truncated output is read without asking (#564). Writes outside the cwd still ask.
     spill: PathBuf,
     /// The home directory and its startup files, keys and agent settings
     /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
@@ -68,7 +68,7 @@ impl PathGuard {
             deny,
             allow: vec![tmp_dir.to_path_buf()],
             read_allow: vec![agent_dir.join("builtin-skills")],
-            spill: tmp_dir.to_path_buf(),
+            spill: PathBuf::new(),
             home: home.to_path_buf(),
             home_protected,
         }
@@ -392,6 +392,10 @@ impl Policy for ModePolicy {
             },
             d => d,
         }
+    }
+
+    fn set_spill_dir(&mut self, dir: &Path) {
+        self.guard.spill = dir.to_path_buf();
     }
 
     fn remember(&mut self, a: &Access) {
