@@ -130,7 +130,7 @@ pub fn resolve_tool_path(cx: &oxa_proto::ToolCtx, arg: &str) -> PathBuf {
     let Ok(rest) = abs.strip_prefix("/tmp") else {
         return abs;
     };
-    let Some(scratch) = cx.sandbox.scratch_dir() else {
+    let Some(scratch) = cx.sandbox.file_scratch_dir(cx.mode) else {
         return abs;
     };
     if !Path::new(arg).is_absolute()

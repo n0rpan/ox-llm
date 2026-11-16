@@ -449,7 +449,9 @@ impl Built {
                     ))
                     .with_yolo(self.yolo.clone()),
             ),
-            sandbox,
+            // File names follow bash's current view, without giving hooks/extensions the
+            // bash-only execution bypass. The shared switch also handles live /yolo changes.
+            sandbox: self.bash_sandbox.file_view(sandbox),
             settings: self.settings.clone(),
             dirs: self.dirs.clone(),
             cwd: self.cwd.clone(),

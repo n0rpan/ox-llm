@@ -91,6 +91,11 @@ pub trait Sandbox: Send + Sync {
     fn scratch_dir(&self) -> Option<&std::path::Path> {
         None
     }
+    /// The scratch backing an absolute `/tmp` name in this mode's active filesystem view.
+    /// Full access uses host paths in workspace mode, but plan still uses sandbox scratch.
+    fn file_scratch_dir(&self, _mode: Mode) -> Option<&Path> {
+        self.scratch_dir()
+    }
     /// Paths deliberately named on the host (explicit mounts, git data and agent outputs)
     /// must not be reinterpreted as session `/tmp`. This is path identity, not a permission
     /// grant: the file tools still check the resulting host path with the policy.

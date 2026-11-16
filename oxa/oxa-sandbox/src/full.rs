@@ -47,6 +47,15 @@ impl FullAccess {
         }
     }
 
+    /// The session's file-tool view follows bash's full-access switch. Process execution
+    /// still delegates to `inner`: exec hooks/extensions must not acquire bash's bypass.
+    pub fn file_view(&self, inner: Arc<dyn Sandbox>) -> Arc<dyn Sandbox> {
+        Arc::new(FileView {
+            inner,
+            switch: self.switch.clone(),
+        })
+    }
+
     /// `s` bypasses the sandbox: full access is on and the spec may write (not plan mode).
     fn bypass(&self, s: &ExecSpec) -> bool {
         self.switch.full() && s.writable
@@ -132,6 +141,66 @@ impl Sandbox for FullAccess {
     }
     /// Only exec hooks pass standard input; they are the user's own configuration, not the
     /// model's bash, and stay in the wrapped sandbox at every level (no full-access bypass).
+    fn run_with_stdin(
+        &self,
+        s: &ExecSpec,
+        stdin: &[u8],
+        c: &CancelToken,
+        live: &mut dyn FnMut(&[u8]),
+    ) -> ExecResult {
+        self.inner.run_with_stdin(s, stdin, c, live)
+    }
+}
+
+/// Only path identity varies with full access; all execution stays in the inner sandbox.
+struct FileView {
+    inner: Arc<dyn Sandbox>,
+    switch: YoloSwitch,
+}
+
+impl Sandbox for FileView {
+    fn check(&self) -> Result<(), OxaError> {
+        self.inner.check()
+    }
+    fn network(&self) -> bool {
+        self.inner.network()
+    }
+    fn persistence_notice(&self) -> Option<&str> {
+        self.inner.persistence_notice()
+    }
+    fn home(&self) -> Option<&std::path::Path> {
+        self.inner.home()
+    }
+    fn scratch_dir(&self) -> Option<&std::path::Path> {
+        self.inner.scratch_dir()
+    }
+    fn file_scratch_dir(&self, mode: oxa_proto::Mode) -> Option<&std::path::Path> {
+        if self.switch.full() && mode != oxa_proto::Mode::Plan {
+            None
+        } else {
+            self.inner.file_scratch_dir(mode)
+        }
+    }
+    fn preserves_host_path(&self, path: &std::path::Path) -> bool {
+        self.inner.preserves_host_path(path)
+    }
+    fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
+        self.inner.for_session().map(|inner| {
+            Arc::new(FileView {
+                inner,
+                switch: self.switch.clone(),
+            }) as Arc<dyn Sandbox>
+        })
+    }
+    fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
+        self.inner.bwrap_args(s)
+    }
+    fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        self.inner.run(s, c, live)
+    }
+    fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        self.inner.run_streaming(s, c, live)
+    }
     fn run_with_stdin(
         &self,
         s: &ExecSpec,

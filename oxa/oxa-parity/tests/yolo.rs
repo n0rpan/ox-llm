@@ -152,6 +152,83 @@ fn auto_keeps_bash_in_the_sandbox_and_yolo_does_not() {
     );
 }
 
+/// #602: absolute /tmp names use bash's active filesystem view, not always scratch.
+#[test]
+fn bash_and_file_tools_share_tmp_paths_in_auto_and_yolo() {
+    for flag in ["--auto", "--yolo"] {
+        let env = TestEnv::new();
+        let target = env.root().join("outside/result.txt");
+        assert!(target.starts_with("/tmp"));
+        let turns = vec![
+            ScriptTurn::tool(
+                "bash",
+                "bash",
+                &json!({"command": format!(
+                    "mkdir -p '{}' && printf 'before\\n' > '{}'",
+                    target.parent().unwrap().display(), target.display()
+                )})
+                .to_string(),
+            ),
+            ScriptTurn::tool("read1", "read", &json!({"path": target}).to_string()),
+            ScriptTurn::tool(
+                "edit",
+                "edit",
+                &json!({"path": target, "oldText": "before", "newText": "edited"}).to_string(),
+            ),
+            ScriptTurn::tool(
+                "bash2",
+                "bash",
+                &json!({"command": format!("cat '{}'", target.display())}).to_string(),
+            ),
+            ScriptTurn::tool(
+                "write",
+                "write",
+                &json!({"path": target, "content": "written\n"}).to_string(),
+            ),
+            ScriptTurn::tool(
+                "bash3",
+                "bash",
+                &json!({"command": format!("cat '{}'", target.display())}).to_string(),
+            ),
+            ScriptTurn::text("ok"),
+        ];
+        let srv = FakeServer::start(turns, FakeOpts::default()).unwrap();
+        let out = run_oxa(&env, &srv.url(), &["-p", flag, "use the tools"], "");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let reqs = srv.requests();
+        assert_eq!(reqs.len(), 7, "{flag}: the complete tool loop must run");
+        let latest_result = |index: usize| {
+            reqs[index]
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::Tool)
+                .and_then(|m| m.content.as_deref())
+                .unwrap_or_default()
+        };
+        assert!(
+            latest_result(2).contains("before\n"),
+            "{flag}: read bash output: {}",
+            latest_result(2)
+        );
+        assert!(
+            latest_result(4).contains("edited\n"),
+            "{flag}: bash sees edit: {}",
+            latest_result(4)
+        );
+        assert!(
+            latest_result(6).contains("written\n"),
+            "{flag}: bash sees write: {}",
+            latest_result(6)
+        );
+        if flag == "--yolo" {
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "written\n");
+        } else {
+            assert!(!target.exists(), "auto must leave the host namesake untouched");
+        }
+    }
+}
+
 #[test]
 fn help_lists_the_modes_and_there_is_no_separate_sandbox_off_switch() {
     let env = TestEnv::new();
