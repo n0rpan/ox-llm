@@ -77,10 +77,14 @@ async fn assigned_addresses_and_same_owner_use_fresh_daemon_state_and_numeric_pe
     ]);
     let api = mock.api();
     assert_eq!(format!("{api:?}"), "TailnetLocalApi([private])");
-    let ips = api.addresses().await.unwrap();
+    let ips = oxc_gateway::share::listener::Tailnet::addresses(&api)
+        .await
+        .unwrap();
     assert_eq!(ips.len(), 2);
     assert!(ips.contains(&"100.80.1.1".parse().unwrap()));
-    assert!(api.same_owner(peer).await.unwrap());
+    assert!(oxc_gateway::share::listener::Tailnet::same_owner(&api, peer)
+        .await
+        .unwrap());
     assert!(!api.same_owner(peer).await.unwrap());
     let requests = mock.finish().await;
     assert_eq!(requests.len(), 5);
@@ -98,6 +102,8 @@ async fn absent_stopped_userspace_or_invalid_addresses_never_produce_a_binding()
         ("TUN", json!(false)),
         ("TailscaleIPs", json!([])),
         ("TailscaleIPs", json!(["0.0.0.0"])),
+        ("TailscaleIPs", json!(["255.255.255.255"])),
+        ("TailscaleIPs", json!(["::ffff:0.0.0.0"])),
         ("TailscaleIPs", json!(["127.0.0.1"])),
         ("TailscaleIPs", json!(["ff02::1"])),
         ("TailscaleIPs", json!(["not-an-address"])),
@@ -260,4 +266,34 @@ fn construction_is_inert_and_rejects_unbounded_or_invalid_configuration() {
     }
     assert!(fs::read_dir(&root).unwrap().next().is_none());
     fs::remove_dir(root).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn real_listener_adapter_refuses_unavailable_tailnet_without_fallback() {
+    use oxc_gateway::share::{keys::Store, listener::*};
+    struct Backend;
+    impl Answer for Backend {
+        fn models(&self) -> &[Model] {
+            &[]
+        }
+        async fn chat(&self, _: Request, _: Output, _: CancelToken) -> Result<Completed, Failure> {
+            panic!("discovery must refuse before any backend work")
+        }
+    }
+    let mut unavailable = status();
+    unavailable["BackendState"] = json!("Stopped");
+    let mock = Mock::start(vec![response(unavailable)]);
+    let keys = mock.root.join("keys");
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir(&keys).unwrap();
+    fs::set_permissions(&keys, fs::Permissions::from_mode(0o700)).unwrap();
+    let result = Server::bind(
+        std::sync::Arc::new(Store::open(&keys).unwrap()),
+        std::sync::Arc::new(Backend),
+        std::sync::Arc::new(mock.api()),
+        Config::default(),
+    )
+    .await;
+    assert!(matches!(result, Err(Failure::Busy)));
+    assert_eq!(mock.finish().await.len(), 1);
 }

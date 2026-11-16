@@ -41,6 +41,18 @@ impl fmt::Debug for LocalApi {
         f.write_str("TailnetLocalApi([private])")
     }
 }
+impl super::listener::Tailnet for LocalApi {
+    async fn addresses(&self) -> Result<Vec<IpAddr>, super::listener::Failure> {
+        LocalApi::addresses(self)
+            .await
+            .map_err(|_| super::listener::Failure::Busy)
+    }
+    async fn same_owner(&self, peer: IpAddr) -> Result<bool, super::listener::Failure> {
+        LocalApi::same_owner(self, peer)
+            .await
+            .map_err(|_| super::listener::Failure::Forbidden)
+    }
+}
 impl LocalApi {
     pub fn new(socket: PathBuf, deadline: Duration) -> Result<Self, Error> {
         if !socket.is_absolute() || deadline.is_zero() || deadline > Duration::from_secs(30) {
@@ -141,7 +153,14 @@ impl LocalApi {
 }
 
 fn usable(ip: IpAddr) -> bool {
-    !ip.is_unspecified() && !ip.is_multicast() && !ip.is_loopback()
+    !ip.is_unspecified()
+        && !ip.is_multicast()
+        && !ip.is_loopback()
+        && match ip {
+            IpAddr::V4(ip) => !ip.is_broadcast(),
+            // The daemon returns canonical addresses, never mapped IPv4.
+            IpAddr::V6(ip) => ip.to_ipv4_mapped().is_none(),
+        }
 }
 fn untagged(tags: &Value) -> bool {
     tags.is_null() || tags.as_array().is_some_and(Vec::is_empty)

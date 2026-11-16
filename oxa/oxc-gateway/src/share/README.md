@@ -71,7 +71,7 @@ connections accept one request and treat client EOF/pipelining as cancellation.
 Cancel and await `serve` for orderly shutdown; do not detach it or its backend.
 
 Real gateway routing, owner-priority local leases, native request-ledger rows,
-CLI key commands, actual tailnet detection/LocalAPI, and a status adapter are
+CLI key commands and a status adapter are
 subsequent wiring. The counters here are quota authority, not a second copy of
 cloud billing or a complete request ledger. TLS can terminate at `tailscale
 serve`; direct certificate support is not implemented in this slice.
@@ -89,7 +89,8 @@ or project settings. The caller must choose a trusted local daemon socket.
 
 `addresses()` obtains assigned addresses from a fresh `status?peers=false`
 response. Only Running state with a real TUN interface is usable; missing,
-malformed, wildcard, multicast or loopback addresses fail closed. The adapter
+malformed, wildcard, broadcast, multicast, loopback or IPv4-mapped addresses
+fail closed. The adapter
 returns assigned addresses, never another interface as a fallback. Listener
 address selection remains the separate listener's responsibility.
 
@@ -114,5 +115,5 @@ Contract references: Tailscale's [LocalAPI client](https://github.com/tailscale/
 [whois response](https://github.com/tailscale/tailscale/blob/main/client/tailscale/apitype/apitype.go),
 and [node ownership/address fields](https://github.com/tailscale/tailscale/blob/main/tailcfg/tailcfg.go).
 Tests use synthetic Unix-socket servers only; they never contact the installed
-daemon. The thin implementation of the listener's Tailnet trait follows when
-that listener slice is on main.
+daemon. The adapter implements the listener's Tailnet trait directly. Its errors refuse
+startup or optional peer authorization; they never trigger another interface.
