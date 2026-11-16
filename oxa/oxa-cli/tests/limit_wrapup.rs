@@ -115,7 +115,12 @@ fn check(env: &TestEnv, server: &FakeServer, output: Output) {
 fn supervised_children_exit_on_the_first_sigterm() {
     use std::os::unix::process::ExitStatusExt;
     for mode in ["print", "json", "rpc"] {
-        for identity in ["depth", "hint", "malformed-depth"] {
+        for (identity, deadline) in [
+            ("depth", false),
+            ("hint", false),
+            ("malformed-depth", false),
+            ("depth", true),
+        ] {
             let env = fixture();
             let mut held = ScriptTurn::text("never sent");
             held.fault = Some(oxa_fake::Fault::HoldHeaders { ms: 60_000 });
@@ -139,6 +144,9 @@ fn supervised_children_exit_on_the_first_sigterm() {
                 command.args(["--mode", "rpc"]);
             } else {
                 command.args(["--mode", mode, "go"]);
+            }
+            if deadline {
+                command.args(["--max-time", "60"]);
             }
             let mut child = command
                 .stdin(Stdio::piped())
