@@ -367,10 +367,43 @@ struct Prep {
     name: Option<String>,
 }
 
-/// The one-line handshake warning of the engine (read by the `info` call of the session open;
-/// no request of its own).
-fn handshake_notice(built: &Built) -> Option<(Level, String)> {
-    built.engine.handshake_warning().map(|w| (Level::Warning, w))
+/// Startup warnings after opening the session, so restored/selected model limits are final.
+/// No extra engine requests: context tokens are a cheap estimate (four UTF-8 bytes per token).
+fn startup_notices(built: &Built, session: &Session) -> Vec<(Level, String)> {
+    const CONTEXT_WARNING_PERCENT: u64 = 5;
+    let mut notices: Vec<_> = built
+        .engine
+        .handshake_warning()
+        .map(|w| (Level::Warning, w))
+        .into_iter()
+        .collect();
+    let state = session.state();
+    let mut total = 0_u64;
+    let mut largest = None;
+    for file in &session.inner().resources.context_files {
+        let tokens = file.content.len().div_ceil(4) as u64;
+        total = total.saturating_add(tokens);
+        if largest.is_none_or(|(_, size)| tokens > size) {
+            largest = Some((file.path.as_path(), tokens));
+        }
+    }
+    let window = u64::from(state.n_ctx);
+    if window > 0 && total.saturating_mul(100) > window * CONTEXT_WARNING_PERCENT {
+        if let Some((path, tokens)) = largest {
+            let shown = if let Ok(rel) = path.strip_prefix(&built.cwd) {
+                rel.display().to_string()
+            } else if let Ok(rel) = path.strip_prefix(&built.dirs.home) {
+                format!("~/{}", rel.display())
+            } else {
+                path.display().to_string()
+            };
+            notices.push((Level::Warning, format!(
+                "context files use ~{total} tokens ({:.1}% of {}'s {window}-token window); largest: {shown} (~{tokens} tokens)",
+                total as f64 * 100.0 / window as f64, state.model,
+            )));
+        }
+    }
+    notices
 }
 
 /// `Session::open`, then pi's `--name` (`appendSessionInfo`).
@@ -1079,7 +1112,7 @@ fn run_headless(
         Ok(s) => s,
         Err(e) => return finish_outcome(Err(e), stderr),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     if mode == RunMode::Print {
         // Printed before the run so a driver that kills a long task still knows what to resume.
@@ -1143,7 +1176,7 @@ fn run_rpc(
         Ok(s) => s,
         Err(e) => return finish_outcome(Err(e), stderr),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     let _limit = match crate::limits::LimitWatcher::start(
         session.handle(),
@@ -1185,7 +1218,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
