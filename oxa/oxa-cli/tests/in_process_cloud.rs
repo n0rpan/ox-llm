@@ -3,6 +3,8 @@
 #[allow(dead_code)]
 #[path = "../../oxc-gateway/tests/common/anthropic.rs"]
 mod anthropic;
+#[path = "support/exec_trace.rs"]
+mod exec_trace;
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
@@ -51,20 +53,16 @@ fn run(env: &TestEnv, args: &[&str], trace: Option<&Path>) -> Output {
     run_to(env, "http://127.0.0.1:9", args, trace)
 }
 fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Output {
-    let mut cmd = if let Some(path) = trace {
-        let mut cmd = Command::new("strace");
-        cmd.args(["-f", "-e", "trace=execve", "-o"])
-            .arg(path)
-            .arg(env!("CARGO_BIN_EXE_oxa"));
-        cmd
-    } else {
-        Command::new(env!("CARGO_BIN_EXE_oxa"))
-    };
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
     cmd.args(args).current_dir(env.work()).env_clear();
     for (key, value) in env.envs(url) {
         cmd.env(key, value);
     }
-    cmd.output().expect("run the real oxa binary")
+    match trace {
+        Some(path) => exec_trace::output(&mut cmd, path),
+        None => cmd.output(),
+    }
+    .expect("run the real oxa binary")
 }
 fn rows(env: &TestEnv) -> Vec<Value> {
     fs::read_dir(env.home().join(".oxa/agent/cloud-ledger"))
