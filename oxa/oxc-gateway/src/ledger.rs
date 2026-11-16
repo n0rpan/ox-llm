@@ -110,6 +110,10 @@ pub struct Context<'a> {
     pub origin: Origin,
     pub session: Option<&'a str>,
     pub idempotency_key: Option<&'a str>,
+    /// Validated owner key name, never a bearer/header. API callers only;
+    /// persisted in `guest_key` as a separate-domain ledger-salted digest,
+    /// never raw text or a session/provider identity. None preserves owner calls.
+    pub guest_key_name: Option<&'a str>,
 }
 pub struct Entry {
     daily: Daily,
@@ -121,6 +125,7 @@ pub struct Entry {
 fn millis(start: Instant, end: Instant) -> f64 {
     end.duration_since(start).as_secs_f64() * 1000.0
 }
+
 impl Ledger {
     /// Explicit opt-in, dedicated directory outside source repositories.
     /// Keep one Ledger for the gateway lifetime; cloning preserves all holds.
@@ -128,6 +133,12 @@ impl Ledger {
         if !directory.is_absolute() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let mut ancestor = directory;
+        while !ancestor.try_exists()? {
+            ancestor = ancestor.parent().ok_or(io::ErrorKind::InvalidInput)?;
+        }
+        KeyFile::prepare(&ancestor.join(".salt"))
+            .map_err(|_| io::Error::from(io::ErrorKind::PermissionDenied))?;
         fs::create_dir_all(directory)?;
         let info = fs::symlink_metadata(directory)?;
         if !info.is_dir() || info.uid() != nix::unistd::Uid::current().as_raw() {
@@ -181,7 +192,11 @@ impl Daily {
         self.budget.clone()
     }
     pub fn entry(&self, model: &str, context: Context<'_>) -> io::Result<Entry> {
-        if model.is_empty() || model.len() > 128 {
+        if model.is_empty()
+            || model.len() > 128
+            || context.guest_key_name.is_some_and(|name| name.is_empty())
+            || (context.guest_key_name.is_some() && !matches!(context.origin, Origin::Api))
+        {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let started = Instant::now();
@@ -197,6 +212,11 @@ impl Daily {
                 "idempotency",
                 b"oxc-idempotency-v1\0".as_slice(),
                 context.idempotency_key,
+            ),
+            (
+                "guest_key",
+                b"oxc-guest-key-name-v1\0".as_slice(),
+                context.guest_key_name,
             ),
         ] {
             if let Some(value) = value.filter(|value| !value.is_empty()) {
@@ -217,13 +237,15 @@ impl Daily {
 }
 impl Entry {
     pub fn admitted(&mut self) {
-        self.admitted = Some(Instant::now());
-        self.row["admit_ms"] = json!(millis(self.started, self.admitted.unwrap()));
+        let admitted = *self.admitted.get_or_insert_with(Instant::now);
+        self.row["admit_ms"] = json!(millis(self.started, admitted));
     }
     /// Call only for response data (not SSE keepalive comments). No body bytes
     /// are retained here; provider accounting observes usage separately.
     pub fn observe(&mut self) {
-        self.first.get_or_insert_with(Instant::now);
+        if self.admitted.is_some() {
+            self.first.get_or_insert_with(Instant::now);
+        }
     }
     /// Consume exactly once inside Hold::finish's callback. Failure propagates
     /// into the shared budget's fail-closed state before admission is released.
@@ -278,8 +300,12 @@ impl Entry {
         }
         let settled = fields["settled"]
             .as_str()
-            .filter(|value| ["usage", "reserved", "estimated", "not_forwarded"].contains(value))
+            .filter(|value| ["usage", "reserved", "estimated", "not_forwarded", "refused"].contains(value))
             .ok_or(io::ErrorKind::InvalidData)?;
+        if settled == "refused" && (fields["cost_usd"].as_f64() != Some(0.0) || !(400..500).contains(&status))
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
         self.row["settled"] = json!(settled);
         if let Some(finish) = fields["finish_reason"].as_str().filter(|value| {
             !value.is_empty()
@@ -309,5 +335,36 @@ impl Entry {
         }
         append_private(&self.daily.path, &self.row)?;
         Ok(self.row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_timing_notifications_preserve_the_first_transition() {
+        // Timing notifications do not perform IO. Use a daily handle without
+        // opening a ledger or creating any salt or request file.
+        let ledger = Ledger(Arc::new(Inner {
+            directory: PathBuf::new(),
+            salt: [0; 32],
+            budgets: Mutex::default(),
+            writer: Mutex::default(),
+        }));
+        let mut entry = ledger
+            .day("20260102")
+            .unwrap()
+            .entry("synthetic", Context::default())
+            .unwrap();
+        entry.admitted();
+        let admitted = entry.admitted;
+        entry.observe();
+        let first = entry.first;
+        entry.admitted();
+        entry.observe();
+        assert_eq!(entry.admitted, admitted);
+        assert_eq!(entry.first, first);
+        assert!(first >= admitted);
     }
 }

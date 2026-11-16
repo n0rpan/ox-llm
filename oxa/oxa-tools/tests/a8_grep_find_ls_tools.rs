@@ -37,6 +37,7 @@ fn call_raw(tool: &dyn Tool, env: &TestEnv, cwd: &Path, args: Value) -> ToolOutp
     let cancel = CancelToken::new();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd,
         spill_dir: &spill,
         sandbox: &NoSandbox,
@@ -444,6 +445,7 @@ fn no_matches_text_and_access_is_the_search_root() {
     let cancel = CancelToken::new();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &work,
         spill_dir: &spill,
         sandbox: &NoSandbox,

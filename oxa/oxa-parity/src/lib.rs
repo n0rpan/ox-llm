@@ -13,8 +13,10 @@
 pub mod pty;
 
 use oxa_fake::TestEnv;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 fn sibling(name: &str, var: &str) -> PathBuf {
     if let Ok(p) = std::env::var(var) {
@@ -48,14 +50,97 @@ fn build_binaries(profile_dir: &std::path::Path) {
     });
 }
 
-/// The `oxa` binary: `$OXA_BIN` or `target/<profile>/oxa`.
+/// The `oxa` binary: `$OXA_BIN`, or a snapshot of `target/<profile>/oxa` (built first when out
+/// of date).
 pub fn oxa_bin() -> PathBuf {
-    sibling("oxa", "OXA_BIN")
+    fresh_bins().0.clone()
 }
 
-/// The `oxa-fake` binary: `$OXA_FAKE_BIN` or `target/<profile>/oxa-fake`.
+/// The `oxa-fake` binary: `$OXA_FAKE_BIN`, or a snapshot of `target/<profile>/oxa-fake` (built
+/// first when out of date).
 pub fn fake_bin() -> PathBuf {
-    sibling("oxa-fake", "OXA_FAKE_BIN")
+    fresh_bins().1.clone()
+}
+
+/// A private copy of `bin` in `dir` (a hard link, else a copy): the inode this process built.
+/// A target directory shared with another checkout gets its binaries replaced by that
+/// checkout's builds while this process still runs tests; cargo unlinks and relinks the file,
+/// so the snapshot keeps testing this checkout's code.
+fn snapshot(bin: &Path, dir: &Path) -> PathBuf {
+    let _ = std::fs::create_dir_all(dir);
+    let name = bin.file_name().expect("binary file name");
+    let out = dir.join(name);
+    let _ = std::fs::remove_file(&out);
+    if std::fs::hard_link(bin, &out).is_err() {
+        std::fs::copy(bin, &out).unwrap_or_else(|e| panic!("snapshot {}: {e}", bin.display()));
+    }
+    out
+}
+
+/// Remove the snapshots of test processes that have ended.
+fn prune_snapshots(parent: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let pid = e.file_name().to_string_lossy().parse::<u32>().ok();
+        if pid.is_some_and(|p| p != std::process::id() && !Path::new(&format!("/proc/{p}")).exists()) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+fn fresh_bins() -> &'static (PathBuf, PathBuf) {
+    static BINS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    BINS.get_or_init(|| {
+        ensure_fresh_bins();
+        let oxa = sibling("oxa", "OXA_BIN");
+        let fake = sibling("oxa-fake", "OXA_FAKE_BIN");
+        if std::env::var_os("OXA_BIN").is_some() || std::env::var_os("OXA_FAKE_BIN").is_some() {
+            return (oxa, fake);
+        }
+        let parent = oxa.with_file_name("parity-bin");
+        prune_snapshots(&parent);
+        let dir = parent.join(std::process::id().to_string());
+        (snapshot(&oxa, &dir), snapshot(&fake, &dir))
+    })
+}
+
+/// Bring `oxa` and `oxa-fake` up to date once per test process, unless `$OXA_BIN` or
+/// `$OXA_FAKE_BIN` points at a prebuilt binary (CI archives set their own). A `cargo test -p
+/// oxa-parity` does not build the binaries of other packages, so a leftover binary would test
+/// old code. Cargo decides what is stale: its fingerprints also catch a binary that is newer
+/// than the sources but was built from another checkout sharing the target directory, which a
+/// modification-time comparison takes for fresh. When nothing changed the build is a no-op.
+fn ensure_fresh_bins() {
+    {
+        if std::env::var_os("OXA_BIN").is_some() || std::env::var_os("OXA_FAKE_BIN").is_some() {
+            return;
+        }
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let oxa = sibling("oxa", "OXA_BIN");
+        // target/<profile>/oxa: `debug` is cargo's `dev` profile.
+        let profile = oxa
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "debug".to_string());
+        let profile = if profile == "debug" {
+            "dev".to_string()
+        } else {
+            profile
+        };
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = Command::new(cargo)
+            .args(["build", "--profile", &profile, "-p", "oxa-cli", "-p", "oxa-fake"])
+            .current_dir(&workspace)
+            .status();
+        assert!(
+            matches!(status, Ok(s) if s.success()),
+            "the oxa / oxa-fake binaries could not be built: {status:?}; \
+             run `cargo build -p oxa-cli -p oxa-fake`"
+        );
+    }
 }
 
 /// The environment every PARITY `oxa` child gets after `TestEnv::envs`: the per-prompt
@@ -91,4 +176,28 @@ pub fn fixture(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("fixtures")
         .join(rel)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::snapshot;
+
+    /// A target directory shared with another checkout: its build replaces `target/<profile>/oxa`
+    /// (cargo unlinks and relinks it) while this process still runs tests. The snapshot keeps
+    /// the binary this process built.
+    #[test]
+    fn a_replaced_target_binary_does_not_change_the_snapshot() {
+        let root = std::env::temp_dir().join(format!("oxa-parity-snap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let built = root.join("oxa");
+        std::fs::write(&built, b"this checkout").unwrap();
+        let snap = snapshot(&built, &root.join("snap"));
+        let other = root.join("oxa.other");
+        std::fs::write(&other, b"another checkout").unwrap();
+        std::fs::rename(&other, &built).unwrap();
+        assert_eq!(std::fs::read(&snap).unwrap(), b"this checkout");
+        assert_ne!(snap, built);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

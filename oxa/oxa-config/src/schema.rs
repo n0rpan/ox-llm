@@ -32,7 +32,8 @@ pub struct KeyDef {
 
 /// The built-in tools enabled when no `defaultTools` is set (oxa has seven; pi's `powershell`
 /// is not among them).
-pub(crate) const DEFAULT_TOOLS: &[&str] = &["read", "bash", "edit", "write", "grep", "find", "ls"];
+// Lead-only tools are included in settings patches, but are registered by the CLI only for leads.
+pub(crate) const DEFAULT_TOOLS: &[&str] = &["read", "bash", "edit", "write", "grep", "find", "ls", "ask"];
 
 const fn key(key: &'static str, kind: Kind, default: &'static str) -> KeyDef {
     KeyDef {
@@ -140,6 +141,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
+    key("oxa.cloud", Kind::Object, "{}"),
     // V020-OPTIMIZE #7: unset = on.
     key("oxa.compaction.idleSummary", Kind::Bool, "null"),
     // L5 mid-run: unset = on.
@@ -153,8 +155,11 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
+    key("oxa.maxTurns", Kind::Number, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
@@ -213,6 +218,13 @@ const SCHEMA: &[KeyDef] = &[
         "\"brave\"",
     ),
     key("packages", Kind::Any, "[]"),
+    // #202: the permission mode at start; a project's value may only lower it
+    // (`Settings::default_permission_mode`).
+    key(
+        "permissions.defaultMode",
+        Kind::Enum(&["standard", "auto", "yolo", "plan"]),
+        "\"auto\"",
+    ),
     key("prompts", Kind::StringList, "[]"),
     key("quietStartup", Kind::Any, "false"),
     key("retry.baseDelayMs", Kind::Number, "2000"),
@@ -268,6 +280,11 @@ const SCHEMA: &[KeyDef] = &[
         "ui.animationScene",
         Kind::Enum(&["graphics", "stack", "stars", "charge"]),
         "null",
+    ),
+    key(
+        "ui.notify",
+        Kind::Enum(&["off", "unfocused", "always"]),
+        "\"unfocused\"",
     ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa", "ascii"]), "\"auto\""),

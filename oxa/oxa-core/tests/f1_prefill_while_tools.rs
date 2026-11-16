@@ -277,6 +277,20 @@ fn shape(r: &Recorded) -> (&str, bool) {
     (r.kind.as_str(), r.max_tokens == 0)
 }
 
+/// Independent sessions compared below must see the same date/minute, even across midnight.
+fn fixed_time<R>(run: impl FnOnce() -> R) -> R {
+    oxa_core::envnote::with_time_for_tests(
+        oxa_session::LocalTime {
+            date: "2026-01-02".into(),
+            weekday: "Friday",
+            hm: "03:04".into(),
+            zone: "UTC".into(),
+            offset_min: 0,
+        },
+        run,
+    )
+}
+
 /// Runs the 3-call scenario; the slow call returns once a prefill was recorded (feature on) or
 /// after a while (off). Returns the requests and the events.
 fn scenario(env: &TestEnv, on: bool, host: bool) -> (Vec<Recorded>, VecSink) {
@@ -289,8 +303,10 @@ fn scenario(env: &TestEnv, on: bool, host: bool) -> (Vec<Recorded>, VecSink) {
     };
     let mut s = open(env, eng.clone(), tools(1500, until), tools_on(on), host);
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
-    s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
-        .expect("prompt");
+    fixed_time(|| {
+        s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
+            .expect("prompt");
+    });
     assert_eq!(s.stats().cache_misses, 0);
     (eng.requests(), sink)
 }
@@ -337,6 +353,22 @@ fn prefill_while_slow_tool_runs_golden() {
         );
         assert_eq!(misses(&sink), 0, "more cached than expected is silent");
     }
+}
+
+/// The scenario really uses the pinned clock, not wall time. Keep notes enabled so the
+/// byte-identity test below still compares the full environment block.
+#[test]
+fn scenario_env_note_uses_fixed_clock() {
+    let _g = serial(SHORT);
+    let (reqs, _) = scenario(&TestEnv::new(), true, false);
+    let user = reqs[0].messages.iter().find(|m| m.role == Role::User).unwrap();
+    assert!(
+        user.content
+            .as_deref()
+            .unwrap()
+            .contains("<env>\nDate: Friday 2026-01-02, local time 03:04 UTC (UTC)"),
+        "scenario must use the fixed environment-note clock: {user:?}"
+    );
 }
 
 /// The follow-up request is byte-identical with the feature on and off; off sends today's
@@ -605,8 +637,10 @@ fn tool_prefill_records_nothing() {
         };
         let mut s = open(&env, eng.clone(), tools(1500, until), tools_on(on), false);
         let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
-        s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
-            .expect("prompt");
+        fixed_time(|| {
+            s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
+                .expect("prompt");
+        });
         assert_eq!(has_prefill(&eng), on);
         let kinds: Vec<String> = s
             .inner()
@@ -887,4 +921,139 @@ fn http_prefill_blocked_writing_ends_on_cancel_before_the_follow_up() {
         after_call < Duration::from_secs(2),
         "the follow-up waited {after_call:?} after the call returned"
     );
+}
+
+#[test]
+fn run_token_budget_counts_new_tokens_from_tool_prefill() {
+    let _g = serial(SHORT);
+    let env = TestEnv::new();
+    let (baseline, _) = scenario(&env, true, true);
+    let spent: u64 = baseline[..2]
+        .iter()
+        .map(|r| {
+            let u = r.usage.unwrap();
+            u64::from(u.prompt.saturating_sub(u.cached)) + u64::from(u.completion)
+        })
+        .sum();
+    let eng = Arc::new(ScriptedEngine::new(script(reads_then_slow())));
+    let e = eng.clone();
+    let mut session = open(
+        &env,
+        eng.clone(),
+        tools(1500, wait_for(move || has_prefill(&e))),
+        tools_on(true),
+        true,
+    );
+    session.handle().set_token_budget(Some(spent - 1));
+    let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
+    session
+        .prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
+        .unwrap();
+    let reqs = eng.requests();
+    assert_eq!(reqs.len(), 3);
+    assert_eq!(reqs[1].max_tokens, 0);
+    assert!(
+        reqs[2].max_tokens <= 1024,
+        "the prefill must consume the run budget before the follow-up"
+    );
+    assert_eq!(
+        session.handle().wrap_up_reason(),
+        Some(oxa_core::WrapUpReason::TokenLimit)
+    );
+    let total: u64 = reqs
+        .iter()
+        .map(|r| {
+            let u = r.usage.unwrap();
+            u64::from(u.prompt.saturating_sub(u.cached)) + u64::from(u.completion)
+        })
+        .sum();
+    assert!(total > spent, "includes final-turn overspend");
+    assert_eq!(session.handle().run_tokens_used(), total);
+}
+
+#[test]
+fn advancing_tool_prefill_counts_as_progress_while_a_quiet_tool_runs() {
+    struct Prefilling(Arc<ScriptedEngine>);
+    impl Engine for Prefilling {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            self.0.info(target)
+        }
+        fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+            self.0.count_tokens(text)
+        }
+        fn count_prompt(&self, request: &ChatRequest) -> Result<Option<u64>, OxaError> {
+            self.0.count_prompt(request)
+        }
+        fn chat(
+            &self,
+            request: &ChatRequest,
+            cancel: &CancelToken,
+            on: &mut dyn FnMut(StreamEvent),
+        ) -> Result<oxa_proto::AssistantTurn, OxaError> {
+            if request.max_tokens != 0 {
+                return self.0.chat(request, cancel, on);
+            }
+            for done in [0, 1, 1, 0, 2] {
+                on(StreamEvent::Prefill {
+                    done,
+                    total: 2,
+                    secs: 0,
+                });
+                on(StreamEvent::Queued {
+                    pos: None,
+                    wait_s: done,
+                });
+            }
+            // Keep the real scripted request/result/usage, with only the progress script replaced.
+            self.0.chat(request, cancel, &mut |_| {})
+        }
+    }
+    #[derive(Debug, Default)]
+    struct Trace(Mutex<(bool, Vec<oxa_session::SessionRef>)>);
+    impl oxa_core::ProgressObserver for Trace {
+        fn notify(&self, session: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
+            let mut state = self.0.lock().unwrap();
+            match progress {
+                oxa_core::Progress::RequestStart {
+                    kind: oxa_proto::TurnKind::Prefill,
+                    ..
+                } => state.0 = true,
+                oxa_core::Progress::RequestEnd { .. } => state.0 = false,
+                oxa_core::Progress::Advanced if state.0 => state.1.push(session.clone()),
+                _ => {}
+            }
+        }
+    }
+    let _g = serial(SHORT);
+    let env = TestEnv::new();
+    let inner = Arc::new(ScriptedEngine::new(script(reads_then_slow())));
+    let waiter = inner.clone();
+    let mut session = open(
+        &env,
+        Arc::new(Prefilling(inner.clone())),
+        tools(1500, wait_for(move || has_prefill(&waiter))),
+        tools_on(true),
+        true,
+    );
+    let trace = Arc::new(Trace::default());
+    session.set_progress_observer(trace.clone());
+    session
+        .prompt(
+            "look around".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(inner.requests().len(), 3, "chat, overlapping prefill, follow-up");
+    let state = trace.0.lock().unwrap();
+    assert_eq!(
+        state.1.len(),
+        2,
+        "only increasing prefill counts advance the stall clock"
+    );
+    assert!(state
+        .1
+        .iter()
+        .all(|reference| reference.id == inner.requests()[1].session));
 }

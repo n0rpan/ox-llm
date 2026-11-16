@@ -1,4 +1,6 @@
-use crate::{AssistantTurn, CancelToken, FrozenPrefix, OxaError, StreamEvent, TurnKind, WireMsg};
+use crate::{
+    AssistantTurn, CancelToken, FrozenPrefix, OxaError, StreamEvent, ThinkingLevel, TurnKind, WireMsg,
+};
 
 /// What the engine reports about itself (`/v1/models` + `/_local/status`, M3, plus the
 /// capability block `oxe_hints` of `/props`). See `oxa_engine::parse_info` for the mapping of
@@ -56,6 +58,8 @@ pub struct EngineCaps {
     /// features (prefix hints, cache warming, engine-side state and the X-Oxe-* headers) are
     /// not sent to it.
     pub remote: bool,
+    /// Cloud endpoint explicitly advertises JSON Schema response formatting.
+    pub response_format: bool,
     /// The provider name of a remote model (`openrouter`, `anthropic`); `None` when local.
     pub remote_provider: Option<&'static str>,
     /// The engine echoes a previous reply (CACHE-PERFECT ECHO); local only.
@@ -110,11 +114,16 @@ pub struct Hints<'a> {
 pub struct ChatRequest<'a> {
     pub prefix: &'a FrozenPrefix,
     pub messages: &'a [WireMsg],
+    /// JSON schema, only populated for a cloud model advertising response_format.
+    pub output_schema: Option<&'a crate::Value>,
     pub model: &'a str,
     /// `0` = prefill + checkpoint only (H6): usage and timings, no decode.
     pub max_tokens: u32,
     /// W6 `enable_thinking`.
     pub thinking: bool,
+    /// The level behind `thinking` (ignored while `thinking` is false). A cloud model gets it as
+    /// `reasoning_effort`; `None` is `Medium`. Local engines only see the boolean.
+    pub thinking_level: Option<ThinkingLevel>,
     /// Optional local reasoning-token cap; omitted unless thinking is on.
     pub thinking_budget: Option<u64>,
     /// W6 / F8: send `chat_template_kwargs.preserve_thinking: true`. `false` omits the key (the
@@ -139,6 +148,18 @@ impl Default for Hints<'_> {
     }
 }
 
+impl ChatRequest<'_> {
+    /// The level this request thinks at: `Off` unless `thinking`, else the requested level.
+    pub fn effective_level(&self) -> ThinkingLevel {
+        match (self.thinking, self.thinking_level) {
+            (false, _) => ThinkingLevel::Off,
+            // Thinking forced on while the session level is off: the default level.
+            (true, Some(ThinkingLevel::Off) | None) => ThinkingLevel::Medium,
+            (true, Some(level)) => level,
+        }
+    }
+}
+
 impl<'a> ChatRequest<'a> {
     /// A request with the required parts and defaults for everything else (1024 output tokens,
     /// thinking off, greedy, default hints). Build with `ChatRequest { max_tokens: 64,
@@ -148,8 +169,10 @@ impl<'a> ChatRequest<'a> {
             prefix,
             messages,
             model,
+            output_schema: None,
             max_tokens: 1024,
             thinking: false,
+            thinking_level: None,
             thinking_budget: None,
             preserve_thinking: false,
             sampling: None,

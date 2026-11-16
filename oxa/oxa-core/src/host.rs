@@ -844,7 +844,15 @@ fn apply(
             };
             Ok(serde_json::json!({ "model": model, "remote": remote }))
         }
+        HostAction::AccountRunTokens(tokens) => {
+            crate::Handle {
+                shared: st.shared.clone(),
+            }
+            .account_tokens(tokens);
+            Ok(Value::Null)
+        }
         HostAction::EngineLimits => Ok(serde_json::json!({
+            "remainingTokens": crate::Handle { shared: st.shared.clone() }.remaining_tokens(),
             "sessionId": st.sref.id,
             "model": st.model,
             "remote": st.info.caps.remote,
@@ -968,15 +976,29 @@ fn clear_engine_hint(st: &mut SessionState, hint: &str) -> Result<Value, OxaErro
 
 /// Policy verdict for `a`; an `Ask` goes to the user, `Session` grants are remembered.
 fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaError> {
-    match st.policy.decide(st.mode, a, &st.cwd) {
-        Decision::Allow => Ok(()),
+    gate_pinned(st, a, ui).map(|_| ())
+}
+
+/// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
+fn gate_pinned(
+    st: &mut SessionState,
+    a: &Access,
+    ui: &mut dyn Ui,
+) -> Result<Option<std::path::PathBuf>, OxaError> {
+    let (decision, pin) = st.policy.decide_pinned(st.mode, a, &st.cwd);
+    match decision {
+        Decision::Allow => Ok(pin),
         Decision::Deny(reason) => Err(OxaError::new(codes::DENIED, reason)),
         Decision::Ask => match ui.ask_access(a) {
-            Answer::Once => Ok(()),
+            Answer::Once => Ok(pin),
             Answer::Session => {
                 st.policy.remember(a);
-                Ok(())
+                Ok(pin)
             }
+            Answer::Deny if !ui.interactive() => Err(OxaError::new(
+                codes::DENIED,
+                tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a)),
+            )),
             Answer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
         },
     }
@@ -1094,6 +1116,7 @@ fn call_tool(
     let accesses = {
         let cancel = st.shared.cancel.clone();
         let cx = ToolCtx {
+            checked: &[],
             cwd: &st.cwd,
             spill_dir: &st.spill_dir,
             sandbox: st.sandbox.as_ref(),
@@ -1101,15 +1124,18 @@ fn call_tool(
             cancel: &cancel,
             env: &st.tool_env,
             tune: st.tune,
-            hidden: st.policy.path_filter(),
+            hidden: st.policy.path_filter_for_mode(st.mode),
         };
         tool.access(args, &cx)
             .map_err(|m| OxaError::new(codes::INVALID, m))?
     };
+    let mut checked = Vec::new();
     for a in &accesses {
-        gate(st, a, ui)?;
+        if let (Access::Read(p) | Access::Write(p), Some(real)) = (a, gate_pinned(st, a, ui)?) {
+            checked.push((p.clone(), real));
+        }
     }
-    let out = crate::exec::run_tool(st, &tool, args, "", sink, ui, &mut |_, _| {});
+    let out = crate::exec::run_tool(st, &tool, args, "", &checked, sink, ui, &mut |_, _| {});
     let text = oxa_tools::shape(
         out.text.as_bytes(),
         crate::tune::output_cap(st),
@@ -1295,6 +1321,7 @@ mod tests {
         let (host, rx) = CoreHost::new(shared.clone());
         let compact = crate::session::policy_for(&info, &settings);
         let st = SessionState {
+            output_schema: None,
             engine: Arc::new(engine),
             store,
             hooks: Vec::new(),
@@ -1376,6 +1403,38 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         handle.join().expect("caller thread")
+    }
+
+    /// #554 / #557: host writes use the same truthful unattended refusal as built-in tools,
+    /// without promising workarounds that Ask mode or protected paths would refuse too.
+    #[test]
+    fn host_unattended_write_requires_approval() {
+        let mut f = fixture();
+        for (mode, path) in [
+            (Mode::Ask, f.st.cwd.join("out.txt")),
+            (Mode::Workspace, f.st.cwd.join(".oxa/settings.json")),
+            (Mode::Workspace, f.env.tmp().join("scratch.txt")),
+        ] {
+            f.st.mode = mode;
+            let host = f.host.clone();
+            let target = path.clone();
+            let caller = std::thread::spawn(move || {
+                host.call(HostAction::WriteFile {
+                    path: target,
+                    data: "must not be written".into(),
+                })
+            });
+            let err = serve_until_done(&mut f, caller).expect_err("approval is unavailable");
+            assert_eq!(err.code, codes::DENIED);
+            assert_eq!(
+                err.message,
+                format!(
+                    "Permission denied: write {} needs approval, but this run cannot ask (non-interactive), so it was refused; nobody declined it.",
+                    path.display()
+                )
+            );
+            assert!(!path.exists(), "an unattended refusal must not write the file");
+        }
     }
 
     /// Queries answer during a run: the caller blocks until the next poll, which runs mid-run.

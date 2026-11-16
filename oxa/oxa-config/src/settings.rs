@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/src/core/settings-manager.ts
 use crate::schema::{check_root, find_key, kind_matches, kind_name, merge_settings, warn, DEFAULT_TOOLS};
 use crate::{Diagnostic, Dirs};
-use oxa_proto::{codes, OxaError, ThinkingLevel, Value};
+use oxa_proto::{codes, OxaError, PermissionMode, ThinkingLevel, Value};
 use serde_json::Map;
 use std::path::{Path, PathBuf};
 
@@ -125,6 +125,23 @@ impl Settings {
     pub fn string(&self, key: &str) -> Option<String> {
         self.get(key).and_then(Value::as_str).map(str::to_string)
     }
+    /// #202: the permission mode at start (`permissions.defaultMode`): the user's value, else
+    /// `auto`. A project's value counts only when it does not allow more than that (it may
+    /// lower the mode towards `standard` or `plan`, never raise it).
+    pub fn default_permission_mode(&self) -> PermissionMode {
+        let read = |layer: &Value| {
+            layer
+                .get("permissions")
+                .and_then(|p| p.get("defaultMode"))
+                .and_then(Value::as_str)
+                .and_then(PermissionMode::parse)
+        };
+        let user = read(&self.user).unwrap_or(PermissionMode::DEFAULT);
+        match read(&self.project) {
+            Some(p) if p.rank() <= user.rank() => p,
+            _ => user,
+        }
+    }
     /// A string list; `+x` / `-x` patch entries are already applied over the lower layer.
     pub fn list(&self, key: &str) -> Vec<String> {
         self.get(key)
@@ -235,7 +252,7 @@ impl Settings {
     pub fn tool_output_cap(&self) -> usize {
         self.u32("oxa.toolOutputCap", 16384) as usize
     }
-    /// `defaultTools` after patches; `None` = oxa's default (all seven built-ins), i.e. no
+    /// `defaultTools` after patches; `None` = oxa's default built-ins, i.e. no
     /// layer sets `defaultTools`.
     pub fn default_tools(&self) -> Option<Vec<String>> {
         if self.user.get("defaultTools").is_none() && self.project.get("defaultTools").is_none() {
@@ -245,7 +262,7 @@ impl Settings {
     }
     /// The `+x` / `-x` entries of `defaultTools` when every layer that sets it only edits the
     /// default selection (no layer gives a plain list), user layer first; `None` otherwise.
-    /// [`Settings::default_tools`] resolves such edits against the seven built-ins; the tool
+    /// [`Settings::default_tools`] resolves such edits against the default built-ins; the tool
     /// selection uses these entries to edit the members of oxa's default selection that come
     /// from hook sets (the `subagent` tool, O-146). Within one layer an exclusion wins, as in
     /// the merge, so a `+x` of a layer that also has `-x` is left out.

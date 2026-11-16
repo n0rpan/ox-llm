@@ -42,6 +42,7 @@ pub enum SwapRequest {
 pub enum WrapUpReason {
     TimeLimit = 1,
     Signal = 2,
+    TokenLimit = 3,
 }
 
 impl WrapUpReason {
@@ -49,6 +50,7 @@ impl WrapUpReason {
         match self {
             Self::TimeLimit => "time limit reached; one final turn to commit or summarize",
             Self::Signal => "SIGTERM received; one final turn to commit or summarize",
+            Self::TokenLimit => "token limit reached; one final turn to commit or summarize",
         }
     }
 }
@@ -76,9 +78,14 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky soft termination request: zero, or a `WrapUpReason` discriminant.
     pub wrap_up: std::sync::atomic::AtomicU8,
+    /// Remaining uncached prompt + completion tokens for an unattended invocation.
+    pub token_budget: Mutex<Option<u64>>,
+    /// Total charged usage, including non-chat requests and final-turn overspend.
+    pub run_tokens_used: Mutex<u64>,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -237,6 +244,40 @@ impl Handle {
         }
         steering
     }
+    /// Set an invocation-wide soft budget before accepting prompts (not restored from a session).
+    pub fn set_token_budget(&self, tokens: Option<u64>) {
+        *lock(&self.shared.gate.token_budget) = tokens;
+    }
+
+    pub(crate) fn remaining_tokens(&self) -> Option<u64> {
+        *lock(&self.shared.gate.token_budget)
+    }
+
+    /// Invocation-wide uncached prompt + completion usage, not capped at the budget.
+    /// Includes compaction and tool prefill, which emit no assistant message events.
+    pub fn run_tokens_used(&self) -> u64 {
+        *lock(&self.shared.gate.run_tokens_used)
+    }
+
+    pub(crate) fn account_tokens(&self, tokens: u64) {
+        {
+            let mut used = lock(&self.shared.gate.run_tokens_used);
+            *used = used.saturating_add(tokens);
+        }
+        let exhausted = {
+            let mut budget = lock(&self.shared.gate.token_budget);
+            if let Some(left) = budget.as_mut() {
+                *left = left.saturating_sub(tokens);
+                *left == 0
+            } else {
+                false
+            }
+        };
+        if exhausted {
+            self.request_wrap_up(WrapUpReason::TokenLimit);
+        }
+    }
+
     /// Finish the active tool batch, then allow one short final turn. Never cancels tools.
     pub fn request_wrap_up(&self, reason: WrapUpReason) {
         let _ =
@@ -252,6 +293,7 @@ impl Handle {
         match self.shared.gate.wrap_up.load(Ordering::SeqCst) {
             1 => Some(WrapUpReason::TimeLimit),
             2 => Some(WrapUpReason::Signal),
+            3 => Some(WrapUpReason::TokenLimit),
             _ => None,
         }
     }

@@ -51,6 +51,7 @@ fn build(
         gate: Default::default(),
     });
     SessionState {
+        output_schema: None,
         engine,
         store,
         hooks,
@@ -423,5 +424,99 @@ fn cut_on_a_rewritten_message_is_stored_by_value() {
         .expect("compaction entry");
     assert_eq!(details.1, "");
     assert!(details.0.get("keptMessages").is_some(), "{:?}", details.0);
+    assert_replays(&st);
+}
+
+#[derive(Default)]
+struct ReplayHook(Mutex<Vec<Value>>);
+impl Hooks for ReplayHook {
+    fn fire(
+        &self,
+        _: oxa_proto::HookPoint,
+        payload: &Value,
+        _: &mut dyn oxa_proto::Ui,
+    ) -> oxa_proto::HookReply {
+        self.0.lock().unwrap().push(payload.clone());
+        oxa_proto::HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+    fn commands(&self) -> Vec<oxa_proto::CommandSpec> {
+        vec![]
+    }
+    fn run_command(&self, _: &str, _: &str, _: &mut dyn oxa_proto::Ui) -> Result<(), oxa_proto::OxaError> {
+        Ok(())
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+}
+
+#[test]
+fn resumed_private_replay_is_absent_from_hooks_and_engine_wire_then_dropped_on_compaction() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state(
+        &env,
+        vec![ScriptTurn::text("next answer"), ScriptTurn::text("SUMMARY")],
+        CompactPolicy {
+            soft: u32::MAX,
+            hard: u32::MAX,
+            keep_tokens: 1,
+            summary_max: 64,
+            enabled: false,
+        },
+    );
+    let hooks = Arc::new(ReplayHook::default());
+    st.hooks.push(hooks.clone());
+    say(&mut st, "previous question");
+    let mut reply = WireMsg::assistant("previous answer");
+    reply.provider_history = Some(
+        oxa_proto::ProviderHistory::new(
+            [1; 32],
+            [2; 32],
+            vec![serde_json::json!({
+        "type":"reasoning","encrypted_content":"synthetic-private-replay"})],
+        )
+        .unwrap(),
+    );
+    let e = oxa_proto::Entry {
+        id: "a".into(),
+        parent: None,
+        ts_ms: 1,
+        body: EntryBody::Msg {
+            wire: reply,
+            parts: vec![],
+            tool: None,
+        },
+    };
+    let mut bytes = vec![];
+    oxa_session::encode_entry(&e, &mut bytes);
+    let EntryBody::Msg { wire, .. } = oxa_session::decode_entry(&bytes).unwrap().body else {
+        panic!("message")
+    };
+    assert!(wire.provider_history.is_some());
+    push(&mut st, wire);
+    say(&mut st, "next question");
+    assert_eq!(run(&mut st), RunEnd::Stopped);
+    assert!(!hooks.0.lock().unwrap().is_empty());
+    for value in hooks.0.lock().unwrap().iter() {
+        assert!(!value.to_string().contains("synthetic-private-replay"));
+    }
+    for request in eng.requests() {
+        for message in request.messages {
+            assert!(!String::from_utf8_lossy(&message.to_json()).contains("synthetic-private-replay"));
+        }
+    }
+    compact_now(
+        &mut st,
+        None,
+        CompactReason::Manual,
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    )
+    .unwrap();
+    assert_eq!(compactions(&st), 1);
+    assert!(st.transcript.wire().iter().all(|m| m.provider_history.is_none()));
     assert_replays(&st);
 }

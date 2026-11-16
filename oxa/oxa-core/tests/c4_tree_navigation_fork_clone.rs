@@ -61,6 +61,7 @@ fn state_with(
         gate: Default::default(),
     });
     let st = SessionState {
+        output_schema: None,
         engine,
         store,
         hooks,
@@ -744,5 +745,93 @@ fn branch_summary_budget_from_its_reserve_setting() {
             .find(|r| r.kind == "branch_summary")
             .expect("a summary request");
         assert_eq!(req.max_tokens, want.min(st.info.max_output), "{reserve:?}");
+    }
+}
+
+fn replay_reply(st: &mut SessionState, text: &str, tag: u8) -> String {
+    let mut wire = WireMsg::assistant(text);
+    wire.provider_history = Some(
+        oxa_proto::ProviderHistory::new(
+            [tag; 32],
+            [tag + 1; 32],
+            vec![json!({"type":"reasoning","encrypted_content":format!("synthetic-replay-{tag}")})],
+        )
+        .unwrap(),
+    );
+    append_entry(
+        st,
+        EntryBody::Msg {
+            wire,
+            parts: vec![],
+            tool: None,
+        },
+    )
+    .unwrap()
+    .id
+}
+
+fn replay_navigation_state(file_backed: bool) -> (TestEnv, SessionState, String) {
+    let env = TestEnv::new();
+    let (mut st, _, _) = state_with(&env, vec![], vec![]);
+    if file_backed {
+        let store = Arc::new(oxa_session::FsStore::new(env.root().join("replay-sessions")));
+        st.sref = store.create(&env.work(), None, None).unwrap();
+        st.store = store;
+    }
+    say(&mut st, "common question");
+    let common = replay_reply(&mut st, "common answer", 1);
+    say(&mut st, "branch A question");
+    replay_reply(&mut st, "branch A answer", 3);
+    say(&mut st, "longer branch A question");
+    let target = replay_reply(&mut st, "longer branch A answer", 5);
+    go(&mut st, &common, false).unwrap();
+    say(&mut st, "branch B question");
+    replay_reply(&mut st, "branch B answer", 7);
+    (env, st, target)
+}
+
+fn persisted_replay_target(st: &SessionState, target: &str) -> Vec<WireMsg> {
+    let tree = Tree::new(st.store.load(&st.sref).unwrap());
+    let branch: Vec<_> = tree.branch(target).into_iter().cloned().collect();
+    let wire = Transcript::project(&branch).wire().to_vec();
+    assert_eq!(wire.iter().filter(|m| m.provider_history.is_some()).count(), 3);
+    assert!(
+        wire.len() > st.transcript.wire().len(),
+        "also cover destination carriers beyond outgoing length"
+    );
+    wire
+}
+
+#[test]
+fn divergent_leaf_restores_the_persisted_destination_replay_exactly() {
+    for file_backed in [true, false] {
+        let (_env, mut st, target) = replay_navigation_state(file_backed);
+        let expected = persisted_replay_target(&st, &target);
+        go(&mut st, &target, false).unwrap();
+        assert_eq!(
+            st.transcript.wire(),
+            expected.as_slice(),
+            "leaf move must match direct destination projection"
+        );
+    }
+}
+
+#[test]
+fn switch_file_restores_the_persisted_destination_replay_exactly() {
+    for file_backed in [true, false] {
+        let (_env, mut st, target) = replay_navigation_state(file_backed);
+        let source = st.sref.clone();
+        let expected = persisted_replay_target(&st, &target);
+        let forked = fork_from(&mut st, &target, ForkPosition::At, &mut HeadlessUi::default()).unwrap();
+        assert_ne!(forked.sref, source);
+        assert_eq!(st.sref, forked.sref);
+        assert_eq!(
+            st.transcript.wire(),
+            expected.as_slice(),
+            "switch_file must match direct destination projection"
+        );
+        let tree = Tree::new(st.store.load(&st.sref).unwrap());
+        let branch: Vec<_> = tree.branch(tree.leaf()).into_iter().cloned().collect();
+        assert_eq!(st.transcript.wire(), Transcript::project(&branch).wire());
     }
 }

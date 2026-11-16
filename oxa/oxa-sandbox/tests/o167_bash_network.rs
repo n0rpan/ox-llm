@@ -44,6 +44,7 @@ fn bash_argv(env: &TestEnv, mode: Mode, setting: Option<&str>, offline: bool) ->
     let cwd = env.work();
     let cancel = CancelToken::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &cwd,
         sandbox: &sb,

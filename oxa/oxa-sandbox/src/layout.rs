@@ -217,18 +217,6 @@ pub fn expand_home(raw: &str, home: &Path) -> PathBuf {
     }
 }
 
-/// System directories a custom cache directory must never be or lie in.
-const SYSTEM_DIRS: &[&str] = &[
-    "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/boot", "/dev", "/proc", "/sys", "/run",
-    "/root", "/var", "/opt", "/srv", "/home", "/mnt", "/media", "/snap", "/nix",
-];
-
-/// Whether `p` is `/`, a top-level directory, or lies in a system directory (`/var/tmp` is not).
-fn system_dir(p: &Path) -> bool {
-    p.components().count() <= 2
-        || (SYSTEM_DIRS.iter().any(|s| p.starts_with(s)) && !p.starts_with("/var/tmp"))
-}
-
 fn denied(p: &Path, deny: &[PathBuf]) -> bool {
     deny.iter().any(|d| p.starts_with(d))
 }
@@ -271,20 +259,36 @@ impl Layout {
         if !i.exe_in_workspace {
             read.extend(i.exe.iter().cloned());
         }
-        let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
+        let cache_home = i
+            .home
+            .canonicalize()
+            .unwrap_or_else(|_| i.home.clone())
+            .join(".cache");
+        let mut write: Vec<PathBuf> = CACHE_WRITE
+            .iter()
+            .filter(|w| {
+                **w != ".cache/sccache"
+                    || i.home
+                        .join(w)
+                        .canonicalize()
+                        .is_ok_and(|d| d.starts_with(&cache_home) && d != cache_home)
+            })
+            .map(|w| i.home.join(w))
+            .collect();
         write.extend(i.write_extra.iter().cloned());
-        // A user-chosen sccache directory is the same cache as `~/.cache/sccache`.
+        // Only the established cache area gets implicit sccache binds. A name, an empty
+        // directory, or a snapshot of cache contents cannot prove that an outside tree
+        // will never contain checkouts and their executable git hooks (#530).
         if let Some((_, d)) = i.env.iter().find(|(k, _)| k == "SCCACHE_DIR") {
-            // Judge the resolved path: `..` or a symlink must not lead out of the cache.
             let home = i.home.canonicalize().unwrap_or_else(|_| i.home.clone());
-            let d = Path::new(d).canonicalize().unwrap_or_default();
-            // Only under `~/.cache`, or entirely outside the home and not a system directory.
-            // Anything else in the home (e.g. `~/.config/sccache`, sccache's own config) is never
-            // made writable, whatever its name.
-            let in_cache = d.starts_with(home.join(".cache")) && d != home.join(".cache");
-            let outside = !d.starts_with(&home) && !home.starts_with(&d) && !system_dir(&d);
-            if d.is_absolute() && (in_cache || outside) {
-                write.push(d);
+            if let Some(d) = Path::new(d)
+                .canonicalize()
+                .ok()
+                .filter(|_| Path::new(d).is_absolute())
+            {
+                if d.is_dir() && d.starts_with(home.join(".cache")) && d != home.join(".cache") {
+                    write.push(d);
+                }
             }
         }
         let keep = |p: &PathBuf| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), p);
@@ -340,9 +344,38 @@ impl Layout {
         // the session directory at `/tmp`. Never a host cache path, which is read-only here;
         // the user's own `XDG_CACHE_HOME` keeps its read-write bound caches through the links
         // `with_scratch` makes (`cache_home`).
-        env.retain(|(n, _)| n != "TMPDIR" && n != "XDG_CACHE_HOME");
+        // Preserve a custom sccache location only if the final layout already grants it
+        // write access (including an explicit user writePaths bind). Otherwise redirect
+        // transparently to the writable session cache, even on a fresh home or with a
+        // differently named wrapper. Never create host directories just to build a layout.
+        let sccache_dir = env
+            .iter()
+            .find(|(n, _)| n == "SCCACHE_DIR")
+            .map(|(_, d)| Path::new(d))
+            .filter(|d| d.is_absolute())
+            .and_then(|d| d.canonicalize().ok())
+            .filter(|d| {
+                d.is_dir()
+                    && write
+                        .iter()
+                        .any(|w| w.canonicalize().is_ok_and(|w| d.starts_with(w)))
+            })
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "/tmp/.cache/sccache".to_string());
+        // #435: with the host network shared, every sandbox (and the user's own builds) would
+        // meet the same sccache server on its default loopback port, and that server runs the
+        // compile in its own mount namespace, where this checkout may not exist. A Unix socket
+        // in the private `/tmp` gives each sandbox its own server.
+        env.retain(|(n, _)| {
+            !matches!(
+                n.as_str(),
+                "TMPDIR" | "XDG_CACHE_HOME" | "SCCACHE_DIR" | "SCCACHE_SERVER_UDS" | "SCCACHE_SERVER_PORT"
+            )
+        });
+        env.push(("SCCACHE_SERVER_UDS".to_string(), "/tmp/.sccache.sock".to_string()));
         env.push(("TMPDIR".to_string(), "/tmp".to_string()));
         env.push(("XDG_CACHE_HOME".to_string(), "/tmp/.cache".to_string()));
+        env.push(("SCCACHE_DIR".to_string(), sccache_dir));
         if let Some(exe) = i
             .exe
             .as_ref()
@@ -478,10 +511,10 @@ mod tests {
 
     #[test]
     fn custom_sccache_dir_is_bound_and_passed() {
-        // A directory entirely outside the home (and not a system directory) is accepted.
+        // A custom cache under the cache home stays shared after it is populated.
         let root = std::env::temp_dir().join(format!("oxa-sccache2-{}", std::process::id()));
         let home = root.join("home/u");
-        let dir = root.join("outside/build-cache");
+        let dir = home.join(".cache/build-cache");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
@@ -504,6 +537,175 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
         assert!(bound, "SCCACHE_DIR must be bound read-write");
         assert!(passed, "SCCACHE_DIR must be passed through");
+    }
+
+    #[test]
+    fn unrelated_outside_sccache_dir_is_not_bound() {
+        // #530: neither names nor emptiness establish that a tree is safe to bind.
+        let root = std::env::temp_dir().join(format!("oxa-sccache5-{}", std::process::id()));
+        let home = root.join("home/u");
+        let work = root.join("data/work");
+        std::fs::create_dir_all(work.join("checkout/.git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join("src/sccache/.git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join("data/sccache-work/checkout/.git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join("data/fresh")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let work = work.canonicalize().unwrap();
+        let mut bad = vec![
+            work.clone(),
+            work.join("checkout"),
+            root.join("src/sccache").canonicalize().unwrap(),
+            root.join("data/sccache-work").canonicalize().unwrap(),
+            root.join("data/fresh").canonicalize().unwrap(),
+        ];
+        bad.push(PathBuf::from("/var/tmp"));
+        for b in bad {
+            let l = Layout::build(&LayoutInputs {
+                home: home.clone(),
+                agent_dir: None,
+                path_var: String::new(),
+                env: vec![("SCCACHE_DIR".into(), b.display().to_string())],
+                read_extra: vec![],
+                write_extra: vec![],
+                allow_home_write: false,
+                exe: None,
+                exe_in_workspace: false,
+            });
+            assert!(!l.write.contains(&b), "{} must not be writable", b.display());
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn outside_sccache_dir_uses_a_stable_fallback_unless_explicitly_bound() {
+        let env = oxa_fake::TestEnv::new();
+        let dir = env.root().join("data/build-cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let mut inputs = LayoutInputs {
+            home: env.home(),
+            env: vec![("SCCACHE_DIR".into(), dir.display().to_string())],
+            ..Default::default()
+        };
+        // Neither the implicit fallback nor the explicit sharing depends on cache contents.
+        for populated in [false, true] {
+            if populated {
+                std::fs::create_dir_all(dir.join("a/b")).unwrap();
+                std::fs::write(dir.join("a/b/object"), "cached object").unwrap();
+            }
+            inputs.write_extra.clear();
+            let l = Layout::build(&inputs);
+            assert!(!l.write.iter().any(|w| dir.starts_with(w)));
+            assert!(l
+                .env
+                .contains(&("SCCACHE_DIR".into(), "/tmp/.cache/sccache".into())));
+
+            inputs.write_extra.push(dir.clone());
+            let l = Layout::build(&inputs);
+            assert!(l.write.contains(&dir));
+            assert!(l.env.contains(&("SCCACHE_DIR".into(), dir.display().to_string())));
+        }
+    }
+
+    /// #435: sandboxes that share the host network (bash network on) also shared the sccache
+    /// server's loopback port, so one sandbox's compile ran in another sandbox's server, whose
+    /// mount namespace has no such checkout ("error writing dependencies ... No such file or
+    /// directory"). The server socket lives in the private `/tmp`, whatever the caller set.
+    #[test]
+    fn sccache_server_socket_is_private_to_the_sandbox() {
+        for user in [
+            vec![],
+            vec![(
+                "SCCACHE_SERVER_UDS".to_string(),
+                "/run/user/1000/shared.sock".to_string(),
+            )],
+            vec![("SCCACHE_SERVER_PORT".to_string(), "4226".to_string())],
+        ] {
+            let env = oxa_fake::TestEnv::new();
+            let l = Layout::build(&LayoutInputs {
+                home: env.home(),
+                env: user,
+                ..Default::default()
+            });
+            let uds: Vec<_> = l.env.iter().filter(|(k, _)| k == "SCCACHE_SERVER_UDS").collect();
+            assert_eq!(
+                uds,
+                [&("SCCACHE_SERVER_UDS".to_string(), "/tmp/.sccache.sock".to_string())]
+            );
+            assert!(
+                !l.env.iter().any(|(k, _)| k == "SCCACHE_SERVER_PORT"),
+                "{:?}",
+                l.env
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_sccache_uses_session_cache_without_host_mutation_for_any_wrapper() {
+        for wrapper in [
+            None,
+            Some("/usr/bin/sccache"),
+            Some("/usr/bin/sccache-dist"),
+            Some("/usr/bin/rust-shim"),
+        ] {
+            let env = oxa_fake::TestEnv::new();
+            let l = Layout::build(&LayoutInputs {
+                home: env.home(),
+                env: wrapper
+                    .map(|w| vec![("RUSTC_WRAPPER".into(), w.into())])
+                    .unwrap_or_default(),
+                ..Default::default()
+            });
+            assert!(
+                !env.home().join(".cache").exists(),
+                "build must not mutate the host"
+            );
+            assert!(l
+                .env
+                .contains(&("SCCACHE_DIR".into(), "/tmp/.cache/sccache".into())));
+        }
+    }
+
+    #[test]
+    fn sccache_default_symlink_must_not_expose_an_outside_tree() {
+        let env = oxa_fake::TestEnv::new();
+        let outside = env.root().join("data/sccache-work");
+        std::fs::create_dir_all(outside.join("checkout/.git/hooks")).unwrap();
+        std::fs::create_dir_all(env.home().join(".cache")).unwrap();
+        let alias = env.home().join(".cache/sccache");
+        std::os::unix::fs::symlink(&outside, &alias).unwrap();
+        for user_env in [vec![], vec![("SCCACHE_DIR".into(), alias.display().to_string())]] {
+            let l = Layout::build(&LayoutInputs {
+                home: env.home(),
+                env: user_env,
+                ..Default::default()
+            });
+            assert!(!l.write.iter().any(|w| w.canonicalize().unwrap() == outside));
+            assert!(l
+                .env
+                .contains(&("SCCACHE_DIR".into(), "/tmp/.cache/sccache".into())));
+        }
+    }
+
+    #[test]
+    fn custom_home_sccache_stays_shared_after_population() {
+        let env = oxa_fake::TestEnv::new();
+        let dir = env.home().join(".cache/build-cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let inputs = LayoutInputs {
+            home: env.home(),
+            env: vec![("SCCACHE_DIR".into(), dir.display().to_string())],
+            ..Default::default()
+        };
+        for populated in [false, true] {
+            if populated {
+                std::fs::create_dir_all(dir.join("a/b")).unwrap();
+                std::fs::write(dir.join("a/b/object"), "cached object").unwrap();
+            }
+            let l = Layout::build(&inputs);
+            assert!(l.write.contains(&dir));
+            assert!(l.env.contains(&("SCCACHE_DIR".into(), dir.display().to_string())));
+        }
     }
 
     #[test]

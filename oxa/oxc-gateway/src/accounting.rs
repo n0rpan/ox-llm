@@ -1,8 +1,9 @@
-//! Per-process reservations and settlement fields. A hold remains reserved until
+//! Process-shared reservations and settlement fields. A hold remains reserved until
 //! its row is written to the ledger; write failures stop spending.
 use crate::{
     policy::{self, Refusal},
     pricing::{Cache, Price},
+    reservations::Shared,
     spend::SpendReader,
 };
 use serde_json::{json, Value};
@@ -24,7 +25,6 @@ pub struct Model {
 #[derive(Default)]
 struct State {
     reader: SpendReader,
-    reserved: f64,
     failed: bool,
 }
 #[derive(Clone)]
@@ -39,6 +39,7 @@ pub struct Hold {
     output: u64,
     forwarded: bool,
     settled: bool,
+    id: String,
 }
 #[derive(Clone, Default, Debug)]
 pub struct Usage {
@@ -53,6 +54,8 @@ pub struct Usage {
 #[derive(Clone, Copy)]
 pub enum Outcome {
     Complete,
+    /// The provider explicitly refused before generation.
+    Refused,
     Failed,
     Cancelled {
         request_bytes: usize,
@@ -104,7 +107,22 @@ fn exhausted() -> Refusal {
     }
 }
 impl Budget {
-    /// One instance per daily ledger path; share it across all request tasks.
+    /// Record an unpaid refusal under the same admission lock. A failed audit
+    /// closes later spending across processes without replacing its original error.
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn write_unpaid(&self, write: impl FnOnce() -> io::Result<()>) -> Result<(), Refusal> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shared = Shared::open(&self.path).map_err(|_| Refusal::ledger())?;
+        let result = write();
+        if result.is_err() {
+            state.failed = true;
+            shared.failed = true;
+            let _ = shared.save();
+        }
+        result.map_err(|_| Refusal::ledger())
+    }
+    /// Ledger directories must already be private (0700) and owned by this user.
+    /// Independent instances and processes share persisted daily reservations.
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -114,6 +132,10 @@ impl Budget {
     pub fn spend(&self) -> Result<f64, Refusal> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.failed {
+            return Err(Refusal::ledger());
+        }
+        let shared = Shared::open(&self.path).map_err(|_| Refusal::ledger())?;
+        if shared.failed {
             return Err(Refusal::ledger());
         }
         state.reader.read(&self.path).map_err(|_| Refusal::ledger())
@@ -145,9 +167,14 @@ impl Budget {
         if state.failed {
             return Err(Refusal::ledger());
         }
+        let mut shared = Shared::open(&self.path).map_err(|_| Refusal::ledger())?;
+        if shared.failed {
+            return Err(Refusal::ledger());
+        }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        policy::daily_budget(cap, ledger_enabled, Some(spent), state.reserved, required)?;
-        state.reserved += required;
+        policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
+        let id = shared.insert(required).map_err(|_| Refusal::ledger())?;
+        shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
             budget: self.clone(),
             model: model.clone(),
@@ -155,6 +182,7 @@ impl Budget {
             output,
             forwarded: false,
             settled: false,
+            id,
         })
     }
 }
@@ -168,6 +196,11 @@ impl Hold {
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
         let mut row = json!({"remote":true,"remote_provider":model.provider,"remote_model":model.upstream});
+        if matches!(outcome, Outcome::Refused) {
+            row["cost_usd"] = json!(0.0);
+            row["settled"] = json!("refused");
+            return row;
+        }
         for (field, value) in [
             ("prompt_tokens", usage.prompt),
             ("completion_tokens", usage.output),
@@ -266,7 +299,8 @@ impl Hold {
         row
     }
     /// The writer merges these fixed remote fields with its private request
-    /// metadata and appends one complete row. Never put prompts/replies in it.
+    /// metadata and durably appends one complete row to this daily ledger
+    /// (for example with spend::append_private). Never put prompts/replies in it.
     pub fn finish(
         mut self,
         usage: &Usage,
@@ -275,12 +309,22 @@ impl Hold {
     ) -> Result<Value, Refusal> {
         let row = self.record(usage, outcome);
         let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shared = Shared::open(&self.budget.path).map_err(|_| Refusal::ledger())?;
+        if !shared.holds.contains_key(&self.id) {
+            return Err(Refusal::ledger());
+        }
         let result = write(&row);
         if result.is_err() {
             state.failed = true;
+            shared.failed = true;
+        } else {
+            shared.holds.remove(&self.id);
         }
-        state.reserved = (state.reserved - self.reserved).max(0.0);
         self.settled = true;
+        if shared.save().is_err() {
+            state.failed = true;
+            return Err(Refusal::ledger());
+        }
         result.map(|()| row).map_err(|_| Refusal::ledger())
     }
 }
@@ -292,9 +336,18 @@ impl Drop for Hold {
         let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
         // Before forwarding it is safe to release an abandoned admission. A
         // potentially paid request without a recorded settlement fails closed.
-        if self.forwarded {
+        let result = (|| {
+            let mut shared = Shared::open(&self.budget.path)?;
+            if self.forwarded || !shared.holds.contains_key(&self.id) {
+                state.failed = true;
+                shared.failed = true;
+            } else {
+                shared.holds.remove(&self.id);
+            }
+            shared.save()
+        })();
+        if result.is_err() {
             state.failed = true;
         }
-        state.reserved = (state.reserved - self.reserved).max(0.0);
     }
 }

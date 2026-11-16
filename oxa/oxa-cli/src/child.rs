@@ -212,12 +212,14 @@ mod tests {
         };
         let send = |kind: TurnKind, snapshot_keep: bool| {
             let r = ChatRequest {
+                output_schema: None,
                 prefix: &prefix,
                 messages: &[],
                 model: "m",
                 max_tokens: 1,
                 thinking: false,
                 thinking_budget: None,
+                thinking_level: None,
                 preserve_thinking: false,
                 sampling: None,
                 hints: Hints {

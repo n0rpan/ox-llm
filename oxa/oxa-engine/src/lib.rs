@@ -7,8 +7,9 @@
 //! ## Contracts
 //! * [`build_body`] and [`build_headers`] are pure. W1 (messages byte-append), W2 (exact echo),
 //!   W3 (prefix bytes) and W6 (explicit sampling) are tested on their output; nothing else in
-//!   the workspace builds a request.
-//! * No HTTP library: HTTP/1.1 over `std::net::TcpStream`, plain HTTP (local or LAN engine).
+//!   the default HTTP transport builds a request.
+//! * The default HTTP transport uses `std::net::TcpStream`. The optional native gateway
+//!   borrows [`ChatRequest`] directly and owns its provider transport.
 //! * **Liveness.** SSE comments (`: prefill`, `: queued`) count as liveness. There is one silence
 //!   limit (no byte for `silence_limit_ms`) and no wall-clock limit: 16 minutes of comments is
 //!   not an error.
@@ -19,6 +20,8 @@
 
 mod chat;
 mod embedded;
+#[cfg(feature = "in-process-gateway")]
+mod embedded_runtime;
 mod handshake;
 mod hints;
 mod http;
@@ -26,11 +29,22 @@ mod info;
 mod sse;
 
 pub use chat::{build_body, build_body_for, HttpEngine, ReplyAssembler};
-pub use embedded::{EmbeddedEngine, EmbeddedGateway, GatewayContext, GatewayDiscovery};
+pub use embedded::{EmbeddedEngine, EmbeddedGateway, GatewayContext, GatewayDiscovery, GatewayEvent};
 pub use handshake::{handshake_warning, NEEDED_CAPABILITIES, PROTOCOL_UNDERSTOOD};
 pub use hints::{build_headers, new_idem_key};
 pub use http::{http_request, HttpRequest, HttpResponse, Url};
 pub use info::{count_tokens, fetch_info, fetch_info_for, parse_info, parse_info_for, DEFAULT_MAX_OUTPUT};
-pub use sse::{post_sse, Flow, SseEnd, SseEvent, SseParser, StreamOpts};
+pub use sse::{post_sse, post_sse_bounded, BoundedStreamOpts, Flow, SseEnd, SseEvent, SseParser, StreamOpts};
 
 pub use oxa_proto::{ChatRequest, Engine, EngineInfo, Hints};
+
+/// Classify an OpenAI-compatible status reply using the same rules as HttpEngine.
+/// This keeps owned local transports on the shared context/busy/refusal contract.
+pub fn normalize_http_error(status: u16, body: &[u8], retry_after: Option<u32>) -> oxa_proto::OxaError {
+    info::http_error_with(status, body, retry_after)
+}
+#[cfg(feature = "in-process-gateway")]
+pub use oxc_gateway::{
+    gateway::Gateway,
+    runtime::{Options as GatewayOptions, Runtime as GatewayRuntime},
+};
