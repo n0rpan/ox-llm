@@ -83,6 +83,8 @@ pub struct Gate {
     pub wrap_up: std::sync::atomic::AtomicU8,
     /// Remaining uncached prompt + completion tokens for an unattended invocation.
     pub token_budget: Mutex<Option<u64>>,
+    /// Total charged usage, including non-chat requests and final-turn overspend.
+    pub run_tokens_used: Mutex<u64>,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -250,7 +252,17 @@ impl Handle {
         *lock(&self.shared.gate.token_budget)
     }
 
+    /// Invocation-wide uncached prompt + completion usage, not capped at the budget.
+    /// Includes compaction and tool prefill, which emit no assistant message events.
+    pub fn run_tokens_used(&self) -> u64 {
+        *lock(&self.shared.gate.run_tokens_used)
+    }
+
     pub(crate) fn account_tokens(&self, tokens: u64) {
+        {
+            let mut used = lock(&self.shared.gate.run_tokens_used);
+            *used = used.saturating_add(tokens);
+        }
         let exhausted = {
             let mut budget = lock(&self.shared.gate.token_budget);
             if let Some(left) = budget.as_mut() {

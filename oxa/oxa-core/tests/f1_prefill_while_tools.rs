@@ -926,4 +926,13 @@ fn run_token_budget_counts_new_tokens_from_tool_prefill() {
         session.handle().wrap_up_reason(),
         Some(oxa_core::WrapUpReason::TokenLimit)
     );
+    let total: u64 = reqs
+        .iter()
+        .map(|r| {
+            let u = r.usage.unwrap();
+            u64::from(u.prompt.saturating_sub(u.cached)) + u64::from(u.completion)
+        })
+        .sum();
+    assert!(total > spent, "includes final-turn overspend");
+    assert_eq!(session.handle().run_tokens_used(), total);
 }

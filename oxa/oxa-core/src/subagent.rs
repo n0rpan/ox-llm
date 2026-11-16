@@ -1359,6 +1359,7 @@ fn wait_child(
         let at = argv.len() - 1;
         argv.splice(at..at, ["--max-tokens".to_string(), left.to_string()]);
     }
+    let mut charged = 0u64;
     let mut rec = |line: &[u8], result: &mut ChildResult| {
         if let Some(a) = record(line, result) {
             on(a);
@@ -1373,6 +1374,15 @@ fn wait_child(
                         .unwrap_or(0)
                         .saturating_add(u["output"].as_u64().unwrap_or(0));
                     let _ = host.call(HostAction::AccountRunTokens(tokens));
+                    charged = charged.saturating_add(tokens);
+                } else if v["type"] == "run_usage" {
+                    if let Some(total) = v["tokens"].as_u64() {
+                        // Chat is charged as it arrives (also if the child crashes).
+                        // Reconcile the final total without charging chat twice.
+                        let extra = total.saturating_sub(charged);
+                        let _ = host.call(HostAction::AccountRunTokens(extra));
+                        charged = charged.saturating_add(extra);
+                    }
                 }
             }
         }

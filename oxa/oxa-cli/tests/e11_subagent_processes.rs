@@ -178,6 +178,78 @@ fn two_tasks_run_one_after_another() {
 }
 
 #[test]
+fn max_tokens_charges_child_compaction_before_starting_queued_child() {
+    let env = TestEnv::new();
+    setup(&env);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"subagent":{"enabled":true,"softTokens":2000}},"compaction":{"keepRecentTokens":100}}"#,
+    );
+    env.write("work/notes.txt", &"synthetic notes\n".repeat(500));
+    let mut summary = ScriptTurn::text("summary of earlier work");
+    summary.completion_tokens = Some(200_000);
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool(
+                "delegate",
+                "subagent",
+                r#"{"tasks":[{"agent":"scout","task":"first"},{"agent":"scout","task":"second"}]}"#,
+            ),
+            ScriptTurn::tool("read1", "read", r#"{"path":"notes.txt"}"#),
+            ScriptTurn::tool("read2", "read", r#"{"path":"notes.txt"}"#),
+            summary,
+            ScriptTurn::text("child wrap-up"),
+            ScriptTurn::text("parent wrap-up"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = oxa(
+        &env,
+        &server.url(),
+        &["--max-tokens", "30000", "-p", "delegate twice"],
+    );
+    let reqs = requests(&server);
+    assert_eq!(
+        out.status.code(),
+        Some(130),
+        "stdout:{}\nstderr:{}\nrequests:{:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+        reqs.iter()
+            .map(|r| (&r.session, &r.kind, r.usage))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(reqs.len(), 7);
+    let parent = &reqs[0].session;
+    let child = format!("{parent}.s1");
+    assert!(reqs[2..6].iter().all(|r| r.session == child));
+    assert_eq!(
+        reqs[4].kind,
+        "compaction",
+        "{:?}",
+        reqs.iter()
+            .map(|r| (&r.kind, r.max_tokens, r.usage))
+            .collect::<Vec<_>>()
+    );
+    let non_compaction_tokens: u64 = reqs
+        .iter()
+        .filter(|r| r.kind != "compaction")
+        .map(|r| {
+            let u = r.usage.unwrap();
+            u64::from(u.prompt.saturating_sub(u.cached)) + u64::from(u.completion)
+        })
+        .sum();
+    assert!(
+        non_compaction_tokens < 30_000,
+        "only compaction exhausts the budget"
+    );
+    assert_eq!(reqs[6].session, *parent, "no queued second child");
+    assert!(reqs[5..].iter().all(|r| r.max_tokens <= 1024));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));
+}
+
+#[test]
 fn max_tokens_wraps_up_child_and_parent_without_starting_queued_child() {
     let env = TestEnv::new();
     setup(&env);

@@ -1268,6 +1268,32 @@ fn run_token_budget_is_passed_at_spawn_and_child_usage_is_charged() {
 }
 
 #[test]
+fn child_run_usage_includes_non_chat_requests_without_double_charging() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    // 15 chat tokens plus 45 from compaction / tool prefill. The cumulative
+    // record includes the chat already reported and may exceed the child budget.
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"cacheRead":70,"output":5}}}' '{"type":"run_usage","tokens":60}'
+"#;
+    let h = hooks(&env, body, &host);
+    let _ = run(
+        &env,
+        &h,
+        json!({"tasks":[
+            {"agent":"scout","task":"first"},
+            {"agent":"worker","task":"second"},
+            {"agent":"scout","task":"third"}
+        ]}),
+    );
+    let args = argv(&env, "sess.s2");
+    let at = args.iter().position(|a| a == "--max-tokens").unwrap();
+    assert_eq!(args[at + 1], "40", "charge total usage exactly once");
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(0));
+    assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 2);
+}
+
+#[test]
 fn depleted_run_token_budget_starts_no_child() {
     let env = TestEnv::new();
     let host = MockHost::new(&env);

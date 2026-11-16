@@ -1095,6 +1095,15 @@ fn run_headless(
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
     write_notices(stderr, ui.notes);
+    if mode == RunMode::Json && built.supervised_child && max_tokens.is_some() {
+        // Private child/parent accounting: message_end omits summaries and tool
+        // prefill. Report the uncapped total, including the child's final turn.
+        let usage = serde_json::json!({
+            "type": "run_usage",
+            "tokens": session.handle().run_tokens_used(),
+        });
+        let _ = writeln!(stdout, "{usage}");
+    }
     finish_outcome(result, stderr)
 }
 
