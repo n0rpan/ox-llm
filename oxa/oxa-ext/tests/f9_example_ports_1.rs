@@ -215,6 +215,7 @@ impl Rig {
         let cwd = self.env.work();
         let spill = self.env.tmp();
         let cx = ToolCtx {
+            checked: &[],
             cwd: &cwd,
             spill_dir: &spill,
             sandbox: &sandbox,

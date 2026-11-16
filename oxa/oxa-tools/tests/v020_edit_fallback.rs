@@ -40,6 +40,7 @@ fn run(content: &[u8], args: &Value, tune: ToolTune) -> (ToolOutput, Vec<u8>) {
     let envs: Vec<(String, String)> = Vec::new();
     let cancel = CancelToken::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: env.root(),
         spill_dir: env.root(),
         sandbox: &sandbox,
