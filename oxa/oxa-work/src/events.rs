@@ -136,6 +136,17 @@ impl Facts {
     /// Stop before the next action if this call fails. Replaying the same checkpoint repairs
     /// a lost acknowledgement, a torn last line or an interrupted snapshot replacement.
     pub fn append(&self, checkpoint: Checkpoint, at_ms: u64, fact: Fact) -> Result<Event> {
+        self.append_prepared(checkpoint, at_ms, fact, |_| Ok(()))
+    }
+    /// Validate capacity under the facts lock, then let another protected store reserve its
+    /// mutation before the facts reservation. Never calls preparation for an existing identity.
+    pub(crate) fn append_prepared(
+        &self,
+        checkpoint: Checkpoint,
+        at_ms: u64,
+        fact: Fact,
+        prepare: impl FnOnce(&Event) -> Result<()>,
+    ) -> Result<Event> {
         let _lock = self.root.lock(LOCK)?;
         let (mut state, mut snapshot, journal) = self.recover()?;
         let sources = state.sources()?;
@@ -169,6 +180,7 @@ impl Facts {
         }
         // Fail capacity/semantic checks before durably reserving an observation.
         situation::apply(&mut snapshot, &event)?;
+        prepare(&event)?;
         state.pending = Some(event_value(&event)?);
         self.root.atomic(STATE, &state.bytes()?)?;
         if journal.current_bytes + bytes.len() > self.journal_bytes {

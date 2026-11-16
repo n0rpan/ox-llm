@@ -17,6 +17,7 @@ pub mod events;
 mod facts_io;
 pub mod incidents;
 pub mod situation;
+pub mod standing;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

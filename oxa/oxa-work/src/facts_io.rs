@@ -195,6 +195,15 @@ impl Root {
         self.sync()?;
         self.create(from, b"")
     }
+    pub(crate) fn durable(&self, leaf: &str) -> Result<()> {
+        let file = io(
+            self.options().read(true).write(true).open(self.path(leaf)),
+            "cannot open protected metadata",
+        )?;
+        private(&io(file.metadata(), "cannot inspect protected metadata")?, false)?;
+        io(file.sync_all(), "cannot sync protected metadata")?;
+        self.sync()
+    }
     fn sync(&self) -> Result<()> {
         sync_directory(&self.0)
     }
