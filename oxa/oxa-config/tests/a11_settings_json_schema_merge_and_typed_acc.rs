@@ -225,7 +225,7 @@ fn plus_minus_lists() {
     );
     assert_eq!(merged, json!({"defaultTools": ["grep"]}));
 
-    // A patch with no explicit base patches oxa's seven built-ins.
+    // A patch with no explicit base patches the default built-ins, including lead-only ask.
     let s = Settings::from_values(
         json!({"defaultTools": ["-bash", "+powershell", "+grep"]}),
         json!({}),
@@ -234,10 +234,14 @@ fn plus_minus_lists() {
     assert!(!tools.contains(&"bash".to_string()));
     assert!(tools.contains(&"read".to_string()) && tools.contains(&"ls".to_string()));
     assert!(tools.contains(&"grep".to_string()));
+    assert!(
+        tools.contains(&"ask".to_string()),
+        "patches must preserve lead-only ask"
+    );
     assert_eq!(
         tools.len(),
-        7,
-        "seven built-ins minus bash, plus powershell and grep was already present: {tools:?}"
+        8,
+        "eight built-ins minus bash, plus powershell and grep was already present: {tools:?}"
     );
 }
 

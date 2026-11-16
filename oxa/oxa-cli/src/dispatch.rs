@@ -367,10 +367,43 @@ struct Prep {
     name: Option<String>,
 }
 
-/// The one-line handshake warning of the engine (read by the `info` call of the session open;
-/// no request of its own).
-fn handshake_notice(built: &Built) -> Option<(Level, String)> {
-    built.engine.handshake_warning().map(|w| (Level::Warning, w))
+/// Startup warnings after opening the session, so restored/selected model limits are final.
+/// No extra engine requests: context tokens are a cheap estimate (four UTF-8 bytes per token).
+fn startup_notices(built: &Built, session: &Session) -> Vec<(Level, String)> {
+    const CONTEXT_WARNING_PERCENT: u64 = 5;
+    let mut notices: Vec<_> = built
+        .engine
+        .handshake_warning()
+        .map(|w| (Level::Warning, w))
+        .into_iter()
+        .collect();
+    let state = session.state();
+    let mut total = 0_u64;
+    let mut largest = None;
+    for file in &session.inner().resources.context_files {
+        let tokens = file.content.len().div_ceil(4) as u64;
+        total = total.saturating_add(tokens);
+        if largest.is_none_or(|(_, size)| tokens > size) {
+            largest = Some((file.path.as_path(), tokens));
+        }
+    }
+    let window = u64::from(state.n_ctx);
+    if window > 0 && total.saturating_mul(100) > window * CONTEXT_WARNING_PERCENT {
+        if let Some((path, tokens)) = largest {
+            let shown = if let Ok(rel) = path.strip_prefix(&built.cwd) {
+                rel.display().to_string()
+            } else if let Ok(rel) = path.strip_prefix(&built.dirs.home) {
+                format!("~/{}", rel.display())
+            } else {
+                path.display().to_string()
+            };
+            notices.push((Level::Warning, format!(
+                "context files use ~{total} tokens ({:.1}% of {}'s {window}-token window); largest: {shown} (~{tokens} tokens)",
+                total as f64 * 100.0 / window as f64, state.model,
+            )));
+        }
+    }
+    notices
 }
 
 /// `Session::open`, then pi's `--name` (`appendSessionInfo`).
@@ -404,6 +437,8 @@ struct Built {
     mode: Option<Mode>,
     /// A supervised subagent keeps SIGTERM as immediate supervisor cancellation.
     supervised_child: bool,
+    /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
+    ask_owner_present: bool,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -432,18 +467,27 @@ impl Built {
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
         let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
         jobs.set_sandbox(bash_sandbox.clone());
+        // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
+        let mut tools = oxa_tools::builtin_tools_with_bash_sandbox(
+            oxa_tools::ShellConfig {
+                shell_path: self.settings.shell_path(&self.dirs.home),
+                command_prefix: self.settings.shell_command_prefix(),
+            },
+            jobs.clone(),
+            bash_sandbox,
+        );
+        // Owner questions belong to lead sessions (including unattended leads). Keep worker
+        // declarations and their small frozen prefixes unchanged.
+        if !self.supervised_child {
+            tools.push(Arc::new(
+                oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
+                    .with_owner_present(self.ask_owner_present),
+            ));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
-            // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_bash_sandbox(
-                oxa_tools::ShellConfig {
-                    shell_path: self.settings.shell_path(&self.dirs.home),
-                    command_prefix: self.settings.shell_command_prefix(),
-                },
-                jobs.clone(),
-                bash_sandbox,
-            ),
+            tools,
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
@@ -872,6 +916,7 @@ fn prepare(
         thinking,
         mode: table_mode,
         supervised_child: child.nested(),
+        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
         hook_sets,
         yolo,
         bash_sandbox,
@@ -1079,7 +1124,7 @@ fn run_headless(
         Ok(s) => s,
         Err(e) => return finish_outcome(Err(e), stderr),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     if mode == RunMode::Print {
         // Printed before the run so a driver that kills a long task still knows what to resume.
@@ -1143,7 +1188,7 @@ fn run_rpc(
         Ok(s) => s,
         Err(e) => return finish_outcome(Err(e), stderr),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     let _limit = match crate::limits::LimitWatcher::start(
         session.handle(),
@@ -1185,7 +1230,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
@@ -1948,6 +1993,7 @@ mod session_scratch_tests {
             thinking: None,
             mode: None,
             supervised_child: false,
+            ask_owner_present: true,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
