@@ -30,6 +30,8 @@ pub enum Subcommand {
     ReportIssue(Vec<String>),
     /// P6: `oxa wipe --session <id> | --all [--yes] [--engine]`.
     Wipe(Vec<String>),
+    /// Publish a follow-up to a session's file inbox.
+    Send(Vec<String>),
 }
 
 /// A secret given on the command line. `Debug` never shows it.
@@ -185,6 +187,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "Update packages from their git or local sources (not oxa itself or model catalogs)",
     ),
     ("oxa list", "List installed packages"),
+    (
+        "oxa send <session-id> \"text\"",
+        "Queue a session follow-up, waking its TUI or RPC owner",
+    ),
     ("oxa config [-l]", "Print every setting with its value and source"),
     (
         "oxa mcp <command>",
@@ -389,6 +395,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
+        "send" => Subcommand::Send(rest.to_vec()),
         "status" => Subcommand::Status(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
