@@ -41,8 +41,6 @@ pub mod anthropic_stream;
 
 #[cfg(feature = "anthropic-client")]
 pub mod anthropic_client;
-#[cfg(feature = "anthropic-client")]
-mod sse;
 
 #[cfg(all(feature = "anthropic-client", feature = "pricing"))]
 pub mod openrouter;
