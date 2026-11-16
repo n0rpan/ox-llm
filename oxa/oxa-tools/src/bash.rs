@@ -313,10 +313,10 @@ pub(crate) fn git_config_note(output: &str, exit: Option<i32>) -> Option<String>
 /// failure of the sandbox. Say what happened and how to get the text. Only for a successful
 /// command whose output is empty (tool warnings such as mise's `WARN` lines do not count).
 pub(crate) fn gh_comments_note(command: &str, output: &str, exit: Option<i32>) -> Option<&'static str> {
-    // Output redirected to a file (including by a later pipeline stage) tells us nothing
-    // about the comment count. Conservatively skip redirects, except the common `2>&1`
-    // which only merges stderr into captured stdout and does not hide any comments.
-    if command.replace("2>&1", "").contains('>') {
+    // Redirects and pipelines can hide real comments. Skip both rather than guessing
+    // whether later stages preserve output (even `head` can discard it with `-n 0`).
+    // `2>&1` only merges stderr into captured stdout and does not hide any comments.
+    if command.replace("2>&1", "").contains('>') || command.contains('|') {
         return None;
     }
     let words: Vec<&str> = command.split_whitespace().collect();
@@ -859,7 +859,7 @@ echo '\''a'\'''"#
                 "empty gh comments should explain how to retrieve the issue text"
             );
         }
-        let res = run("gh pr view 5 --comments 2>&1 | head -80", b"", 0);
+        let res = run("gh pr view 5 -c 2>&1", b"", 0);
         assert!(
             res.text.contains("only the comments"),
             "captured PR comments should get the same explanation"
@@ -900,6 +900,31 @@ echo '\''a'\'''"#
             );
             assert!(!res.is_error);
             assert_eq!(res.text, "(no output)", "{cmd}");
+        }
+    }
+
+    /// A successful pipeline can hide real comments, so its empty output is inconclusive.
+    #[test]
+    fn gh_comments_filtered_output_gets_no_note() {
+        for cmd in [
+            "gh issue view 5 --comments | grep -i deploy || true",
+            "gh pr view 5 -c | sed -n '/x/p'",
+            "gh pr view 5 --comments | grep -v author",
+            "gh issue view 5 --comments|sed -n '/x/p'",
+            "gh pr view 5 --comments | head -n 0",
+        ] {
+            let sb = Fake::ok(b"", Some(0));
+            let (res, _) = run_with(
+                &sb,
+                json!({ "command": cmd }),
+                Mode::Workspace,
+                &CancelToken::new(),
+            );
+            assert!(!res.is_error);
+            assert!(
+                res.text == "(no output)",
+                "a pipeline's empty output must not receive a comments hint"
+            );
         }
     }
 
