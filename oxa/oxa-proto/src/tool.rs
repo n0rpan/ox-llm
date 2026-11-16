@@ -1,5 +1,6 @@
 use crate::{Access, CancelToken, Mode, Sandbox, Ui, Value};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Permission class of a tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -125,6 +126,19 @@ pub struct ToolCtx<'a> {
     /// How the built-ins shape their results in this epoch ([`ToolTune::default`] = the
     /// unshaped baseline; `diet` and the page caps shape it further).
     pub tune: ToolTune,
+    /// #517: the paths no tool may show (the policy's deny-list, [`Policy::path_filter`]).
+    /// The policy only judges the path a tool names, so a tool that walks a directory
+    /// (`grep`, `find`, `ls`) skips what this hides. `None` = nothing hidden.
+    ///
+    /// [`Policy::path_filter`]: crate::Policy::path_filter
+    pub hidden: Option<Arc<dyn PathFilter>>,
+}
+
+/// #517: the deny-list as a cheap check for the entries of a directory walk.
+pub trait PathFilter: Send + Sync + std::fmt::Debug {
+    /// `real` (absolute, its directories already resolved: the walk resolves its root once and
+    /// does not follow links) is on the deny-list and must not be listed or opened.
+    fn hides(&self, real: &Path) -> bool;
 }
 
 /// Per-epoch tuning of the built-in tools (V020-OPTIMIZE #2, OXA-LOCAL-FIRST T7, T8, F5, R5).
