@@ -14,7 +14,7 @@ WORKSPACES = ('oxa', 'engine', 'oxc-rs')
 PORTABLE_ENGINE = {'server', 'gguf', 'tokenizer', 'sched', 'chat', 'oxe-cli'}
 LANE_CONTRACT = {
     '.github/workflows/lane.yml', 'tools/ci/lane_select.py', 'tools/ci/lane_run.py',
-    'tools/ci/lane_queue.py', 'tools/ci/lane-nextest.toml',
+    'tools/ci/lane_queue.py', 'tools/ci/lane-nextest.toml', 'tools/ci/rust_cache_key.py',
     'tools/ci/tests/test_lane_select.py', 'tools/ci/tests/test_lane_run.py',
     'tools/ci/tests/test_lane_queue.py',
 }

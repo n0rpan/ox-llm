@@ -64,7 +64,9 @@ gh run watch <run-id> --exit-status
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
 consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use
-release-relevant features, dependency and compiler caches, and standard free Ubuntu x64/ARM runners.
+release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
+Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
+use their own namespace and branch scope, preserving the required workflows' main-cache policy.
 Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
 workflow does not replace or change the merge queue's required checks. Start full-workspace and
 release CI only when the change is close to done. Each started job records its queue delay in its
