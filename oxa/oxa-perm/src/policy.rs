@@ -252,7 +252,9 @@ impl PartialEq for ModePolicy {
             (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
-        self.grants == other.grants && self.guard == other.guard && same_switch
+        self.grants == other.grants
+            && self.guard == other.guard
+            && same_switch
     }
 }
 
@@ -381,13 +383,11 @@ impl Policy for ModePolicy {
             if denied {
                 return Decision::Deny(deny_reasons::SENSITIVE);
             }
-            // #492: the advertised built-in skills are read without asking, wherever the cwd is.
-            if matches!(a, Access::Read(_)) && self.guard.is_builtin_skill(&abs) {
-                return Decision::Allow;
-            }
-            // #522: the full output of a capped result is read without asking, so an
-            // unattended run can recover it, including output inherited by a fork/clone.
-            if matches!(a, Access::Read(_)) && self.guard.is_readable_spill(&abs) {
+            // #492, #522, #531: advertised built-in skills and this session's output
+            // (including fork/clone ancestry) are read without asking, wherever the cwd is.
+            if matches!(a, Access::Read(_))
+                && (self.guard.is_builtin_skill(&abs) || self.guard.is_readable_spill(&abs))
+            {
                 return Decision::Allow;
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.

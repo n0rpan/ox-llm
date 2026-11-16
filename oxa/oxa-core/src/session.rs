@@ -1494,7 +1494,8 @@ pub(crate) fn attach_ids(st: &mut SessionState) {
         // Header ids from old/hand-written files have not necessarily been validated. An
         // id must be one normal path component, never an escape from the spill root.
         let mut components = std::path::Path::new(&parent.id).components();
-        if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some()
+        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+            || components.next().is_some()
         {
             break;
         }
@@ -2032,6 +2033,7 @@ fn empty_prefix() -> FrozenPrefix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::{Access, Decision};
 
     fn deps(env: &oxa_fake::TestEnv, store: Arc<dyn SessionStore>) -> Deps {
         Deps {
@@ -2051,6 +2053,69 @@ mod tests {
             mode: None,
             session_id: None,
             jobs: Arc::new(oxa_tools::JobRegistry::new()),
+        }
+    }
+
+    /// #543: only the active session's spill output reads without a prompt. Session changes
+    /// must replace that scope, including the separate in-process clone/fork path.
+    #[test]
+    fn spill_reads_follow_the_active_session_only() {
+        let env = oxa_fake::TestEnv::new();
+        let store = Arc::new(MemStore::new());
+        let guarded_deps = || {
+            let mut d = deps(&env, store.clone());
+            d.dirs.tmp_dir = d.dirs.agent_dir.join("tmp");
+            d.policy = Box::new(oxa_perm::ModePolicy::new().with_guard(oxa_perm::PathGuard::new(
+                &d.dirs.home,
+                &d.dirs.agent_dir,
+                &d.dirs.tmp_dir,
+            )));
+            d
+        };
+        let check = |s: &Session, other_id: &str| {
+            let st = s.inner();
+            let own = st.dirs.tmp_dir.join(&st.sref.id).join("out.txt");
+            assert_eq!(st.spill_dir, own.parent().unwrap());
+            for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+                assert_eq!(
+                    st.policy.decide(mode, &Access::Read(own.clone()), &st.cwd),
+                    Decision::Allow,
+                    "the current session's output must stay readable ({mode:?})"
+                );
+                for rel in [format!("{other_id}/out.txt"), "codemode/out.txt".into()] {
+                    assert_eq!(
+                        st.policy
+                            .decide(mode, &Access::Read(st.dirs.tmp_dir.join(&rel)), &st.cwd),
+                        Decision::Ask,
+                        "unrelated output must still ask: {rel} ({mode:?})"
+                    );
+                }
+            }
+        };
+        let mut s = Session::open(guarded_deps(), Open::New).expect("open");
+        check(&s, "other-session");
+        let original = s.inner().sref.clone();
+        s.switch(Open::New, &mut VecSink::default(), &mut HeadlessUi::default())
+            .unwrap();
+        check(&s, &original.id);
+        let second = s.inner().sref.clone();
+        s.switch(
+            Open::Resume(original.clone()),
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+        check(&s, &second.id);
+        s.clone_session().expect("clone");
+        check(&s, &original.id);
+        drop(s);
+        for how in [
+            Open::Resume(original.clone()),
+            Open::Fork(original),
+            Open::Ephemeral,
+        ] {
+            let s = Session::open(guarded_deps(), how).expect("reopen");
+            check(&s, "other-session");
         }
     }
 
