@@ -69,6 +69,17 @@ impl GoalRuntime {
             state.goal.evidence = Some("Project done checks failed; completion refused.".into());
         }
     }
+    pub(crate) fn defer_completion(&self) -> Option<String> {
+        let mut state = self.lock();
+        if state.goal.status != GoalStatus::Done {
+            return None;
+        }
+        state.goal.status = GoalStatus::Pursuing;
+        state.goal.evidence.take()
+    }
+    pub(crate) fn finish_completion(&self, evidence: String) -> Result<(), oxa_proto::OxaError> {
+        self.lock().goal.finish(GoalStatus::Done, evidence)
+    }
     pub(crate) fn uncertain_request(&self) -> Result<(), oxa_proto::OxaError> {
         if self.engaged() {
             self.lock().goal.charge(None, 0, false)?;
@@ -220,6 +231,23 @@ fn wait_cancelled(cancel: &oxa_proto::CancelToken, interrupt: &oxa_proto::Cancel
     }
 }
 
+/// Engage before any request, including turn-start compaction.
+pub(crate) fn begin(st: &crate::SessionState) {
+    if let Some(goal) = &st.goal {
+        goal.begin(
+            *st.shared
+                .gate
+                .run_tokens_used
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        );
+    }
+}
+pub(crate) fn ensure_begin(st: &crate::SessionState) {
+    if st.goal.as_ref().is_some_and(|goal| !goal.engaged()) {
+        begin(st);
+    }
+}
 /// Account before choosing a terminal path; publish only after project checks.
 pub(crate) fn account(st: &mut crate::SessionState, turn: bool) -> Result<(), oxa_proto::OxaError> {
     if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
