@@ -1,0 +1,798 @@
+#![cfg(all(feature = "upstream-openai", feature = "anthropic-client", feature = "ledger"))]
+#[path = "common/openai.rs"]
+mod mock;
+use mock::{MockOpenAi, Reply};
+use oxc_gateway::openai::{
+    chatgpt_tokens,
+    client::{self, Auth, Cancellation, Chat, Client, Control, Event},
+    request,
+};
+use oxc_gateway::{rate_limits, secrets};
+use serde_json::{json, Value};
+use std::{
+    fs,
+    io::Write,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+const KEY: &str = "synthetic-openai-credential";
+struct Fixture {
+    root: PathBuf,
+    key: secrets::Key,
+}
+impl Fixture {
+    fn new() -> Self {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "openai-client-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("keys.json");
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        write!(f, "{}", json!({"openai":{"api_key":KEY}})).unwrap();
+        let key = secrets::read(&path, "openai").unwrap();
+        Self { root, key }
+    }
+    fn token_path(&self, fresh: bool) -> PathBuf {
+        let path = self.root.join("chatgpt-auth.json");
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        write!(f,"{}",json!({"access_token":KEY,"refresh_token":"synthetic-refresh","account_id":"synthetic-account","expires_at":if fresh{now+3600}else{1}})).unwrap();
+        path
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+fn chat<'a>(base: &'a str, payload: &'a Value, replay: &'a [Option<request::ReplayItems>]) -> Chat<'a> {
+    Chat {
+        base_url: base,
+        upstream_model: "synthetic-model",
+        alias: "synthetic-alias",
+        max_output: Some(128),
+        payload,
+        replay,
+        created: 7,
+    }
+}
+fn payload() -> Value {
+    json!({"messages":[{"role":"system","content":"Synthetic instructions"},{"role":"user","content":"Synthetic task"}],"stream":true,"stream_options":{"include_usage":false}})
+}
+#[tokio::test]
+async fn both_modes_three_tools_done_only_partial_and_empty_completed_output() {
+    for subscription in [false, true] {
+        for reply in [
+            Reply::multi_tool_no_deltas(),
+            Reply::multi_tool_partial_deltas(),
+            Reply::multi_tool_full_deltas(),
+        ] {
+            let mock = MockOpenAi::start(vec![reply]);
+            assert!(mock.address().ip().is_loopback());
+            let fixture = Fixture::new();
+            let base = if subscription {
+                mock.base_url().trim_end_matches("/v1").to_owned() + "/backend-api/codex"
+            } else {
+                mock.base_url()
+            };
+            let path = fixture.token_path(true);
+            let auth = if subscription {
+                Auth::Subscription {
+                    token_path: &path,
+                    refresh: client::Refresh {
+                        endpoint: &base,
+                        client_id: "synthetic-client",
+                        timeout: std::time::Duration::from_secs(1),
+                    },
+                }
+            } else {
+                Auth::ApiKey(&fixture.key)
+            };
+            let mut chunks = vec![];
+            let complete = Client::new()
+                .unwrap()
+                .stream(
+                    chat(&base, &payload(), &[]),
+                    auth,
+                    &Cancellation::default(),
+                    &mut |e| {
+                        if let Event::Chunk(c) = e {
+                            chunks.push(c)
+                        }
+                        Control::Continue
+                    },
+                )
+                .await
+                .unwrap();
+            let calls = complete.assistant["tool_calls"].as_array().unwrap();
+            assert_eq!(calls.len(), 3);
+            for (i, call) in calls.iter().enumerate() {
+                assert_eq!(call["id"], format!("call_synthetic_{i}"));
+                assert!(!call["function"]["arguments"].as_str().unwrap().is_empty());
+                let _: Value = serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+            }
+            let mut streamed: std::collections::BTreeMap<usize, (String, String, String)> =
+                Default::default();
+            for chunk in &chunks {
+                for call in chunk
+                    .pointer("/choices/0/delta/tool_calls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let entry = streamed
+                        .entry(call["index"].as_u64().unwrap() as usize)
+                        .or_default();
+                    entry.0.push_str(call["id"].as_str().unwrap_or(""));
+                    entry.1.push_str(
+                        call.pointer("/function/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                    );
+                    entry.2.push_str(
+                        call.pointer("/function/arguments")
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                    );
+                }
+            }
+            assert_eq!(streamed.len(), 3);
+            for (i, call) in calls.iter().enumerate() {
+                assert_eq!(
+                    (&streamed[&i].0, &streamed[&i].1, &streamed[&i].2),
+                    (
+                        &call["id"].as_str().unwrap().to_owned(),
+                        &call["function"]["name"].as_str().unwrap().to_owned(),
+                        &call["function"]["arguments"].as_str().unwrap().to_owned()
+                    )
+                );
+            }
+            let usage = complete.usage.unwrap();
+            assert_eq!(usage.prompt, Some(12));
+            assert_eq!(usage.output, Some(9));
+            assert_eq!(usage.cache_write, Some(0));
+            assert!(chunks.iter().all(|c| c.get("usage").is_none()));
+            let requests = mock.wait_for_requests(1);
+            let r = &requests[0];
+            assert_eq!(r.header("authorization"), Some(format!("Bearer {KEY}").as_str()));
+            assert_eq!(r.body["store"], false);
+            assert!(r.body.get("previous_response_id").is_none());
+            if subscription {
+                assert_eq!(r.target, "/backend-api/codex/responses");
+                assert_eq!(r.body["instructions"], "Synthetic instructions");
+                assert_eq!(r.header("chatgpt-account-id"), Some("synthetic-account"));
+                assert!(r.body.get("max_output_tokens").is_none())
+            } else {
+                assert_eq!(r.target, "/v1/responses");
+                assert_eq!(r.body["max_output_tokens"], 128);
+                assert!(r.header("chatgpt-account-id").is_none())
+            }
+            mock.assert_healthy();
+        }
+    }
+}
+
+fn answer() -> Reply {
+    Reply::events(vec![
+        json!({"type":"response.completed","response":{"status":"completed","output":[{"id":"msg_synthetic","type":"message","role":"assistant","content":[{"type":"output_text","text":"Synthetic answer"}]}],"usage":{"input_tokens":20,"output_tokens":7,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":2}}}}),
+    ])
+}
+fn tool_turn() -> Reply {
+    let mut events = vec![
+        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_synthetic","encrypted_content":"opaque-synthetic-reasoning","summary":[]}}),
+    ];
+    for i in 0..3 {
+        events.push(json!({"type":"response.output_item.done","output_index":i+1,"item":{"type":"function_call","id":format!("fc_{i}"),"call_id":format!("call_{i}"),"name":"read","arguments":format!("{{\"path\":\"file-{i}\"}}"),"status":"completed"}}));
+    }
+    events.push(json!({"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":12,"output_tokens":9}}}));
+    Reply::events(events)
+}
+#[tokio::test]
+async fn persisted_three_tool_history_continues_identically_in_new_process_both_modes() {
+    for subscription in [false, true] {
+        let mock = MockOpenAi::start(vec![tool_turn(), answer(), answer()]);
+        let fixture = Fixture::new();
+        let base = mock.base_url();
+        let path = fixture.token_path(true);
+        let auth = || {
+            if subscription {
+                Auth::Subscription {
+                    token_path: &path,
+                    refresh: client::Refresh {
+                        endpoint: &base,
+                        client_id: "synthetic-client",
+                        timeout: std::time::Duration::from_secs(1),
+                    },
+                }
+            } else {
+                Auth::ApiKey(&fixture.key)
+            }
+        };
+        let client = Client::new().unwrap();
+        let completed = client
+            .stream(
+                chat(&base, &payload(), &[]),
+                auth(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+        assert_eq!(completed.replay_items.len(), 4);
+        let mut next = payload();
+        let messages = next["messages"].as_array_mut().unwrap();
+        messages.push(completed.assistant);
+        for i in 0..3 {
+            messages.push(json!({"role":"tool","tool_call_id":format!("call_{i}"),"content":if i==1{"failed: synthetic permission denied"}else{"synthetic result"},"is_error":i==1}));
+        }
+        let replay = vec![Some(request::ReplayItems::new(completed.replay_items.clone()))];
+        let refused = client
+            .stream(
+                chat(&base, &next, &[]),
+                auth(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused, client::Error::Request("messages"));
+        assert_eq!(mock.requests().len(), 1);
+        client
+            .stream(
+                chat(&base, &next, &replay),
+                auth(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+        let history = fixture.root.join("history.json");
+        fs::write(&history,json!({"payload":next,"items":completed.replay_items,"subscription":subscription,"base":base,"token_path":path}).to_string()).unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "new_process_replay_child", "--nocapture"])
+            .env_clear()
+            .env("HOME", &fixture.root)
+            .env("PATH", "/usr/bin:/bin")
+            .env("OPENAI_REPLAY_FIXTURE", &history)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "new-process mock continuation failed");
+        let requests = mock.wait_for_requests(3);
+        assert_eq!(
+            requests[1].body_bytes, requests[2].body_bytes,
+            "new-process serialized replay must be byte-identical"
+        );
+        let input = requests[2].body["input"].as_array().unwrap();
+        let opaque = input.iter().position(|v| v["type"] == "reasoning").unwrap();
+        assert_eq!(input[opaque]["encrypted_content"], "opaque-synthetic-reasoning");
+        assert_eq!(
+            input
+                .iter()
+                .filter(|v| v["type"] == "function_call_output")
+                .count(),
+            3
+        );
+        assert!(input
+            .iter()
+            .any(|v| v["output"] == "failed: synthetic permission denied"));
+        mock.assert_healthy();
+    }
+}
+#[test]
+fn new_process_replay_child() {
+    let Some(path) = std::env::var_os("OPENAI_REPLAY_FIXTURE") else {
+        return;
+    };
+    let saved: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let fixture = Fixture::new();
+    let replay = [Some(request::ReplayItems::new(
+        saved["items"].as_array().unwrap().clone(),
+    ))];
+    let base = saved["base"].as_str().unwrap();
+    let path = PathBuf::from(saved["token_path"].as_str().unwrap());
+    let auth = if saved["subscription"] == true {
+        Auth::Subscription {
+            token_path: &path,
+            refresh: client::Refresh {
+                endpoint: base,
+                client_id: "synthetic-client",
+                timeout: std::time::Duration::from_secs(1),
+            },
+        }
+    } else {
+        Auth::ApiKey(&fixture.key)
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let result = Client::new()
+                .unwrap()
+                .stream(
+                    chat(base, &saved["payload"], &replay),
+                    auth,
+                    &Cancellation::default(),
+                    &mut |_| Control::Continue,
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.assistant["content"], "Synthetic answer");
+            assert_eq!(result.usage.unwrap().cache_read, Some(4));
+        });
+}
+#[tokio::test]
+async fn expired_token_refreshes_once_under_lock_and_uses_new_bearer() {
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-renewed-access","refresh_token":"synthetic-renewed-refresh","expires_in":3600}),
+    )]);
+    let upstream = MockOpenAi::start(vec![answer(), answer()]);
+    let fixture = Fixture::new();
+    let path = fixture.token_path(false);
+    let endpoint = refresh.base_url() + "/oauth/token";
+    let base = upstream.base_url();
+    let client = Client::new().unwrap();
+    for _ in 0..2 {
+        client
+            .stream(
+                chat(&base, &payload(), &[]),
+                Auth::Subscription {
+                    token_path: &path,
+                    refresh: client::Refresh {
+                        endpoint: &endpoint,
+                        client_id: "synthetic-client",
+                        timeout: std::time::Duration::from_secs(2),
+                    },
+                },
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(refresh.requests().len(), 1);
+    let r = &refresh.requests()[0];
+    assert_eq!(r.body["grant_type"], "refresh_token");
+    assert_eq!(r.body["refresh_token"], "synthetic-refresh");
+    assert_eq!(r.body["client_id"], "synthetic-client");
+    for r in upstream.requests() {
+        assert_eq!(r.header("authorization"), Some("Bearer synthetic-renewed-access"));
+        assert_eq!(r.header("chatgpt-account-id"), Some("synthetic-account"));
+    }
+    let record = chatgpt_tokens::read(&path).unwrap();
+    assert_eq!(record.refresh_token(), "synthetic-renewed-refresh");
+    assert!(!format!("{record:?}").contains("synthetic-renewed"));
+    refresh.assert_healthy();
+    upstream.assert_healthy();
+}
+
+#[tokio::test]
+async fn refresh_timeout_releases_lock_without_forwarding_or_replacing_tokens() {
+    let (reply, release) = Reply::json(json!({"access_token":"synthetic-new","expires_in":3600})).gated();
+    let refresh = MockOpenAi::start(vec![
+        reply,
+        Reply::json(json!({"access_token":"synthetic-new","expires_in":3600})),
+    ]);
+    let fixture = Fixture::new();
+    let path = fixture.token_path(false);
+    let before = fs::read(&path).unwrap();
+    let base = refresh.base_url();
+    let cancel = Cancellation::default();
+    let client = Client::new().unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client.stream(
+            chat(&base, &payload(), &[]),
+            Auth::Subscription {
+                token_path: &path,
+                refresh: client::Refresh {
+                    endpoint: &base,
+                    client_id: "synthetic-client",
+                    timeout: std::time::Duration::from_millis(50),
+                },
+            },
+            &cancel,
+            &mut |_| Control::Continue,
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(result, Err(client::Error::Credentials)));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(refresh.requests().len(), 1);
+    // A second real request must acquire the same lock and refresh successfully.
+    let upstream = MockOpenAi::start(vec![answer()]);
+    let upstream_base = upstream.base_url();
+    client
+        .stream(
+            chat(&upstream_base, &payload(), &[]),
+            Auth::Subscription {
+                token_path: &path,
+                refresh: client::Refresh {
+                    endpoint: &base,
+                    client_id: "synthetic-client",
+                    timeout: std::time::Duration::from_secs(1),
+                },
+            },
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    assert_eq!(refresh.requests().len(), 2);
+    let _ = release.send(());
+}
+#[tokio::test]
+async fn refusals_use_typed_classifiers_and_never_expose_credentials() {
+    for subscription in [false, true] {
+        let reply = if subscription {
+            Reply::raw(
+                429,
+                "application/json",
+                json!({"error":{"type":"usage_limit_reached","plan_type":KEY,"message":KEY,"resets_at":123}})
+                    .to_string()
+                    .into_bytes(),
+                vec![("Retry-After", "2".into())],
+            )
+        } else {
+            Reply::insufficient_quota(2)
+        };
+        let mock = MockOpenAi::start(vec![reply]);
+        let fixture = Fixture::new();
+        let path = fixture.token_path(true);
+        let base = mock.base_url();
+        let auth = if subscription {
+            Auth::Subscription {
+                token_path: &path,
+                refresh: client::Refresh {
+                    endpoint: &base,
+                    client_id: "synthetic-client",
+                    timeout: std::time::Duration::from_secs(1),
+                },
+            }
+        } else {
+            Auth::ApiKey(&fixture.key)
+        };
+        let error = Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &payload(), &[]),
+                auth,
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(!format!("{error:?} {error}").contains(KEY));
+        if subscription {
+            assert!(matches!(
+                error,
+                client::Error::Http {
+                    status: 429,
+                    refusal: Some(client::Refusal::Subscription(
+                        rate_limits::chatgpt::Refusal::UsageLimitReached { .. }
+                    ))
+                }
+            ))
+        } else {
+            assert!(matches!(
+                error,
+                client::Error::Http {
+                    status: 429,
+                    refusal: Some(client::Refusal::Api(rate_limits::Refusal::OutOfCredit))
+                }
+            ))
+        }
+    }
+}
+#[tokio::test]
+async fn cancellation_before_send_and_during_quiet_stream_is_sticky() {
+    let (reply, release) = answer().gated();
+    let mock = MockOpenAi::start(vec![reply]);
+    let fixture = Fixture::new();
+    let base = mock.base_url();
+    let cancel = Cancellation::default();
+    cancel.cancel();
+    let client = Client::new().unwrap();
+    assert!(matches!(
+        client
+            .stream(
+                chat(&base, &payload(), &[]),
+                Auth::ApiKey(&fixture.key),
+                &cancel,
+                &mut |_| Control::Continue
+            )
+            .await,
+        Err(client::Error::Cancelled)
+    ));
+    assert!(mock.requests().is_empty());
+    let cancel = Cancellation::default();
+    let other = cancel.clone();
+    let funded = payload();
+    let mut on = |_| Control::Continue;
+    let inference = client.stream(
+        chat(&base, &funded, &[]),
+        Auth::ApiKey(&fixture.key),
+        &cancel,
+        &mut on,
+    );
+    let stop = async {
+        while mock.requests().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await
+        }
+        other.cancel();
+    };
+    let (result, ()) = tokio::join!(inference, stop);
+    assert!(matches!(result, Err(client::Error::Cancelled)));
+    assert_eq!(mock.requests().len(), 1);
+    let _ = release.send(());
+}
+#[tokio::test]
+async fn body_bounds_content_type_eof_and_redirect_refusal() {
+    let fixture = Fixture::new();
+    for reply in [
+        Reply::raw(400, "application/json", vec![b'x'; 65537], vec![]),
+        Reply::raw(200, "text/plain", b"not SSE".to_vec(), vec![]),
+        Reply::events(vec![
+            json!({"type":"response.created","response":{"id":"synthetic"}}),
+        ]),
+    ] {
+        let mock = MockOpenAi::start(vec![reply]);
+        let base = mock.base_url();
+        let error = Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &payload(), &[]),
+                Auth::ApiKey(&fixture.key),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(error, client::Error::TooLarge | client::Error::Protocol));
+    }
+    let target = MockOpenAi::start(vec![answer()]);
+    let redirect = MockOpenAi::start(vec![Reply::raw(
+        307,
+        "application/json",
+        b"{}".to_vec(),
+        vec![("Location", target.base_url())],
+    )]);
+    let base = redirect.base_url();
+    let error = Client::new()
+        .unwrap()
+        .stream(
+            chat(&base, &payload(), &[]),
+            Auth::ApiKey(&fixture.key),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(error, client::Error::Http { status: 307, .. }));
+    assert!(target.requests().is_empty());
+}
+#[tokio::test]
+async fn final_private_usage_survives_cancelled_finish_delivery() {
+    let mock = MockOpenAi::start(vec![answer()]);
+    let fixture = Fixture::new();
+    let base = mock.base_url();
+    let mut usage = None;
+    let result=Client::new().unwrap().stream_with_usage(chat(&base,&payload(),&[]),Auth::ApiKey(&fixture.key),&Cancellation::default(),&mut |event|if matches!(event,Event::Chunk(ref c) if c.pointer("/choices/0/finish_reason").is_some_and(|v|!v.is_null())){Control::Stop}else{Control::Continue},&mut usage).await;
+    assert!(matches!(result, Err(client::Error::Cancelled)));
+    let usage = usage.unwrap();
+    assert_eq!(usage.prompt, Some(20));
+    assert_eq!(usage.cache_read, Some(4));
+    assert_eq!(usage.output, Some(7));
+}
+
+#[tokio::test]
+async fn refreshed_and_retired_credentials_are_redacted_from_decoded_fields() {
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-renewed-access","refresh_token":"synthetic-renewed-refresh","expires_in":3600}),
+    )]);
+    let fixture = Fixture::new();
+    let path = fixture.token_path(false);
+    let endpoint = refresh.base_url();
+    let text = format!(
+        "{KEY} synthetic-refresh synthetic-renewed-access synthetic-renewed-refresh synthetic-account"
+    );
+    let events = vec![
+        json!({"type":"response.output_item.added","output_index":0,"item":{"id":"msg_synthetic","type":"message","role":"assistant","content":[]}}),
+        json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":&text[..10]}),
+        json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":&text[10..]}),
+        json!({"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}),
+    ];
+    let upstream = MockOpenAi::start(vec![Reply::events(events)]);
+    let base = upstream.base_url();
+    let mut chunks = vec![];
+    let completed = Client::new()
+        .unwrap()
+        .stream(
+            chat(&base, &payload(), &[]),
+            Auth::Subscription {
+                token_path: &path,
+                refresh: client::Refresh {
+                    endpoint: &endpoint,
+                    client_id: "synthetic-client",
+                    timeout: std::time::Duration::from_secs(1),
+                },
+            },
+            &Cancellation::default(),
+            &mut |event| {
+                if let Event::Chunk(c) = event {
+                    chunks.push(c)
+                }
+                Control::Continue
+            },
+        )
+        .await
+        .unwrap();
+    let actual: String = chunks
+        .iter()
+        .filter_map(|v| v.pointer("/choices/0/delta/content")?.as_str())
+        .collect();
+    assert_eq!(actual, "[redacted] [redacted] [redacted] [redacted] [redacted]");
+    assert_eq!(completed.assistant["content"], actual);
+}
+#[tokio::test]
+async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
+    for reply in [
+        json!({"access_token":KEY,"expires_in":0,"error":"synthetic-refresh"}),
+        json!({"access_token":"","refresh_token":"synthetic-refresh","expires_in":3600}),
+        json!({"access_token":KEY,"expires_in":"synthetic-refresh"}),
+    ] {
+        let refresh = MockOpenAi::start(vec![Reply::json(reply)]);
+        let base = refresh.base_url();
+        let fixture = Fixture::new();
+        let path = fixture.token_path(false);
+        let before = fs::read(&path).unwrap();
+        let error = Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &payload(), &[]),
+                Auth::Subscription {
+                    token_path: &path,
+                    refresh: client::Refresh {
+                        endpoint: &base,
+                        client_id: "synthetic-client",
+                        timeout: std::time::Duration::from_secs(1),
+                    },
+                },
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, client::Error::Credentials);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let diagnostic = format!("{error:?} {error}");
+        assert!(!diagnostic.contains(KEY) && !diagnostic.contains("synthetic-refresh"));
+        assert_eq!(refresh.requests().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn missing_replay_refuses_before_any_token_file_access() {
+    let payload = json!({"messages":[{"role":"user","content":"synthetic"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_synthetic","type":"function","function":{"name":"read","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_synthetic","content":"error: synthetic missing file","is_error":true}]});
+    let mock = MockOpenAi::start(vec![]);
+    let base = mock.base_url();
+    let fixture = Fixture::new();
+    let absent = fixture.root.join("not-created.json");
+    let error = Client::new()
+        .unwrap()
+        .stream(
+            chat(&base, &payload, &[]),
+            Auth::Subscription {
+                token_path: &absent,
+                refresh: client::Refresh {
+                    endpoint: &base,
+                    client_id: "synthetic-client",
+                    timeout: std::time::Duration::from_secs(1),
+                },
+            },
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error, client::Error::Request("messages"));
+    assert!(mock.requests().is_empty());
+    assert!(!absent.exists());
+}
+#[test]
+fn completed_and_auth_debug_hide_private_values() {
+    let fixture = Fixture::new();
+    let auth = Auth::ApiKey(&fixture.key);
+    assert!(!format!("{auth:?}").contains(KEY));
+    let completed = client::Completed {
+        assistant: json!({"content":KEY}),
+        replay_items: vec![json!({"encrypted_content":"synthetic-refresh"})],
+        usage: None,
+        finish_reason: "stop",
+    };
+    let debug = format!("{completed:?}");
+    assert!(!debug.contains(KEY) && !debug.contains("synthetic-refresh"));
+}
+
+#[tokio::test]
+async fn dropping_refresh_future_releases_owned_http_work_and_lock() {
+    let (reply, release) = Reply::json(json!({"access_token":"synthetic-first","expires_in":3600})).gated();
+    let refresh = MockOpenAi::start(vec![
+        reply,
+        Reply::json(json!({"access_token":"synthetic-second","expires_in":3600})),
+    ]);
+    let fixture = Fixture::new();
+    let path = fixture.token_path(false);
+    let before = fs::read(&path).unwrap();
+    let endpoint = refresh.base_url();
+    let client = Client::new().unwrap();
+    let payload = payload();
+    let cancel = Cancellation::default();
+    let mut on = |_| Control::Continue;
+    let mut first = Box::pin(client.stream(
+        chat(&endpoint, &payload, &[]),
+        Auth::Subscription {
+            token_path: &path,
+            refresh: client::Refresh {
+                endpoint: &endpoint,
+                client_id: "synthetic-client",
+                timeout: std::time::Duration::from_secs(30),
+            },
+        },
+        &cancel,
+        &mut on,
+    ));
+    tokio::select! { result=&mut first=>panic!("refresh gate unexpectedly completed: {}",result.is_ok()), ()=async{while refresh.requests().is_empty(){tokio::time::sleep(std::time::Duration::from_millis(5)).await}}=>{} }
+    drop(first);
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let upstream = MockOpenAi::start(vec![answer()]);
+    let base = upstream.base_url();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client.stream(
+            chat(&base, &payload, &[]),
+            Auth::Subscription {
+                token_path: &path,
+                refresh: client::Refresh {
+                    endpoint: &endpoint,
+                    client_id: "synthetic-client",
+                    timeout: std::time::Duration::from_secs(1),
+                },
+            },
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(refresh.requests().len(), 2);
+    assert_eq!(
+        upstream.requests()[0].header("authorization"),
+        Some("Bearer synthetic-second")
+    );
+    let _ = release.send(());
+}
