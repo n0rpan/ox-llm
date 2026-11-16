@@ -344,3 +344,190 @@ pub fn credentials<E>(
     dir.replace(&updated)?;
     Ok(updated)
 }
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+
+    fn previous() -> TokenRecord {
+        TokenRecord::new(
+            "fake-old-access".into(),
+            "fake-old-refresh".into(),
+            "fake-old-account".into(),
+            10.0,
+        )
+        .unwrap()
+    }
+
+    // Synthetic unsigned metadata, not a credential or authentication proof.
+    fn unsigned(value: Value) -> String {
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let mut encoded = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = (u32::from(chunk[0]) << 16)
+                | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*chunk.get(2).unwrap_or(&0));
+            for shift in (0..chunk.len() + 1).map(|i| 18 - 6 * i) {
+                encoded.push(alphabet[((n >> shift) & 63) as usize] as char);
+            }
+        }
+        format!("unsigned.{encoded}.")
+    }
+
+    #[test]
+    fn refresh_preserves_omitted_null_empty_and_rotates_nonempty() {
+        for value in [
+            None,
+            Some(Value::Null),
+            Some(json!("")),
+            Some(json!("fake-rotated-refresh")),
+        ] {
+            let mut reply = json!({"access_token":"fake-new-access"});
+            if let Some(value) = value {
+                reply["refresh_token"] = value;
+            }
+            let result = record(&reply, &previous(), 100.0).unwrap();
+            assert_eq!(result.access_token(), "fake-new-access");
+            assert_eq!(
+                result.refresh_token(),
+                if reply["refresh_token"] == "fake-rotated-refresh" {
+                    "fake-rotated-refresh"
+                } else {
+                    "fake-old-refresh"
+                }
+            );
+            assert_eq!(result.account_id(), "fake-old-account");
+        }
+    }
+
+    #[test]
+    fn expiry_uses_positive_duration_before_claim_then_one_hour() {
+        let access = unsigned(json!({"exp":9000.5}));
+        for (duration, expected) in [
+            (json!(30.5), 130.5),
+            (json!(0), 9000.5),
+            (json!(-1), 9000.5),
+            (Value::Null, 9000.5),
+            (json!("30"), 9000.5),
+        ] {
+            let result = record(
+                &json!({"access_token":access,"expires_in":duration}),
+                &previous(),
+                100.0,
+            )
+            .unwrap();
+            assert_eq!(result.expires_at(), expected);
+        }
+        for claims in [json!({}), json!({"exp":"9000"})] {
+            assert_eq!(
+                record(&json!({"access_token":unsigned(claims)}), &previous(), 100.0)
+                    .unwrap()
+                    .expires_at(),
+                3700.0
+            );
+        }
+    }
+
+    #[test]
+    fn account_prefers_id_claim_then_access_then_previous() {
+        let access =
+            unsigned(json!({"https://api.openai.com/auth":{"chatgpt_account_id":"fake-access-account"}}));
+        for (id, expected) in [
+            (
+                unsigned(json!({"https://api.openai.com/auth":{"chatgpt_account_id":"fake-id-account"}})),
+                "fake-id-account",
+            ),
+            (unsigned(json!({})), "fake-access-account"),
+            ("malformed".into(), "fake-access-account"),
+        ] {
+            assert_eq!(
+                record(&json!({"access_token":access,"id_token":id}), &previous(), 100.0)
+                    .unwrap()
+                    .account_id(),
+                expected
+            );
+        }
+        assert_eq!(
+            record(&json!({"access_token":"opaque-fake-access"}), &previous(), 100.0)
+                .unwrap()
+                .account_id(),
+            "fake-old-account"
+        );
+    }
+
+    #[test]
+    fn unsigned_claim_decoder_handles_url_alphabet_padding_unicode_and_bad_payloads() {
+        let value = json!({"exp":1234,"note":"λ 🦀","https://api.openai.com/auth":{"chatgpt_account_id":"fake-account"}});
+        let token = unsigned(value.clone());
+        assert_eq!(claims(&token), value);
+        let payload = token.split('.').nth(1).unwrap();
+        assert_eq!(claims(&format!("unsigned.{payload}==.ignored-signature")), value);
+        for bad in [
+            "missing".to_owned(),
+            "unsigned.!.".into(),
+            "unsigned.YQ.".into(),
+            format!("unsigned.{}.", "A".repeat(MAX_BYTES as usize + 1)),
+        ] {
+            assert_eq!(claims(&bad), Value::Null);
+            let result = record(&json!({"access_token":bad}), &previous(), 100.0).unwrap();
+            assert_eq!(result.expires_at(), 3700.0);
+            assert_eq!(result.account_id(), "fake-old-account");
+        }
+        // Explicit URL-safe alphabet control: this decodes to valid JSON string "࿾".
+        assert_eq!(claims("unsigned.IuC_viI."), json!("࿾"));
+    }
+
+    #[test]
+    fn malformed_replies_and_nonfinite_clocks_have_fixed_errors() {
+        for reply in [
+            Value::Null,
+            json!([]),
+            json!({}),
+            json!({"access_token":""}),
+            json!({"access_token":12}),
+            json!({"access_token":"fake-sensitive-access","refresh_token":false}),
+        ] {
+            let error = record(&reply, &previous(), 100.0).unwrap_err();
+            assert_eq!(error, Error::InvalidRecord);
+            assert_eq!(error.to_string(), "invalid token record");
+            assert_eq!(format!("{error:?}"), "InvalidRecord");
+        }
+        for now in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                record(&json!({"access_token":"fake-sensitive-access"}), &previous(), now).unwrap_err(),
+                Error::InvalidRecord
+            );
+        }
+        assert_eq!(
+            record(
+                &json!({"access_token":"fake-sensitive-access","expires_in":f64::MAX}),
+                &previous(),
+                f64::MAX
+            )
+            .unwrap_err(),
+            Error::InvalidRecord
+        );
+    }
+
+    #[test]
+    fn exact_refresh_fields_are_borrowed_unencoded_and_debug_is_redacted() {
+        let form = refresh_form("fake-refresh+&=%", "fake-client+&=%");
+        assert_eq!(
+            form.as_fields(),
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", "fake-refresh+&=%"),
+                ("client_id", "fake-client+&=%")
+            ]
+        );
+        assert_eq!(format!("{form:?}"), "RefreshForm([redacted])");
+        let result = record(
+            &json!({"access_token":"fake-sensitive-access","refresh_token":"fake-sensitive-refresh"}),
+            &previous(),
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(format!("{result:?}"), "TokenRecord([redacted])");
+    }
+}
