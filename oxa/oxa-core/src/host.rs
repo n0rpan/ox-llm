@@ -1172,10 +1172,8 @@ fn tool_json(t: &Arc<dyn Tool>) -> Value {
 }
 
 fn state_json(st: &SessionState) -> Value {
-    let (steering, follow_up) = {
-        let q = st.shared.queue.lock().unwrap_or_else(|p| p.into_inner());
-        (q.steering.len(), q.follow_up.len())
-    };
+    let (steering, follow_up) = st.shared.snapshot();
+    let (steering, follow_up) = (steering.len(), follow_up.len());
     json!({
         "sessionId": st.sref.id,
         "model": st.model,

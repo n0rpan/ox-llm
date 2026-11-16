@@ -501,3 +501,37 @@ fn keymap_diagnostics_reported_in_print_mode() {
         c.err
     );
 }
+
+#[test]
+fn send_writes_an_inbox_message_without_contacting_the_engine() {
+    let env = TestEnv::new();
+    let r = go(
+        &env,
+        &closed_url(),
+        &["send", "session-638", "task finished, red"],
+    );
+    assert_eq!(r.code, 0, "{}", r.err);
+    let dirs = oxa_config::Dirs::under(env.root());
+    let files: Vec<_> = std::fs::read_dir(dirs.agent_dir.join("inbox/session-638"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 1);
+    assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "task finished, red");
+}
+
+#[test]
+fn send_rejects_missing_arguments_and_path_ids_without_an_engine() {
+    let env = TestEnv::new();
+    for words in [
+        vec!["send"],
+        vec!["send", "session-638"],
+        vec!["send", "../outside", "text"],
+        vec!["send", "id", "text", "extra"],
+    ] {
+        let r = go(&env, &closed_url(), &words);
+        assert_eq!(r.code, 2, "{words:?}: {}", r.err);
+        assert!(r.err.contains("Usage: oxa send"), "{}", r.err);
+        assert!(!r.err.contains("cannot reach the engine"));
+    }
+}
