@@ -1218,6 +1218,7 @@ dependencies = [
  "hmac",
  "nix",
  "num-traits",
+ "oxa-engine",
  "oxa-proto",
  "reqwest",
  "serde_json",
