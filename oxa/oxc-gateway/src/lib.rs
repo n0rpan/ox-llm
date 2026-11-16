@@ -6,6 +6,8 @@ mod anthropic_replay;
 pub mod gateway;
 #[cfg(feature = "anthropic-gateway")]
 pub mod runtime;
+#[cfg(feature = "share")]
+pub mod share;
 
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
