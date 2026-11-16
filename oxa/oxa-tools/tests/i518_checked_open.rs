@@ -137,3 +137,28 @@ fn a_write_whose_pinned_directory_became_a_link_is_refused() {
     let leftovers: Vec<_> = fs::read_dir(outside.parent().unwrap()).unwrap().collect();
     assert_eq!(leftovers.len(), 1, "no temp file left outside");
 }
+
+/// Codex review of #550: a link to a file whose name is not UTF-8 is written through to that
+/// file, not renamed over a look-alike with the replacement character.
+#[test]
+fn a_write_through_a_link_keeps_a_non_utf8_target_name() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let env = TestEnv::new();
+    let work = real(env.work());
+    let target = work.join(OsStr::from_bytes(b"caf\xff.txt"));
+    fs::write(&target, "old\n").unwrap();
+    let lookalike = work.join("caf\u{FFFD}.txt");
+    fs::write(&lookalike, "unrelated\n").unwrap();
+    symlink(&target, env.work().join("link")).unwrap();
+    let out = run_pinned(
+        &WriteTool::new(),
+        &env,
+        "link",
+        target.clone(),
+        json!({"content": "new\n"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "new\n");
+    assert_eq!(fs::read_to_string(&lookalike).unwrap(), "unrelated\n");
+}

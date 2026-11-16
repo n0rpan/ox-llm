@@ -4,7 +4,7 @@
 //! with the pin and refuses a mismatch (a link swapped by a background job in between). With
 //! nothing pinned (a direct call) a tool opens as before.
 use oxa_proto::ToolCtx;
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -53,8 +53,8 @@ fn is_at(expected: &Path, file: &File) -> io::Result<bool> {
 }
 
 /// A file name as a C string (`openat`/`renameat` take one component, relative to a directory).
-fn c_name(name: &str) -> io::Result<CString> {
-    CString::new(Path::new(name).as_os_str().as_bytes()).map_err(io::Error::other)
+fn c_name(name: impl AsRef<OsStr>) -> io::Result<CString> {
+    CString::new(name.as_ref().as_bytes()).map_err(io::Error::other)
 }
 
 /// Create `name` in the directory `dir` (never following a link there), write-only, new.
@@ -70,8 +70,9 @@ pub(crate) fn create_new_in(dir: &File, name: &str) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-/// Rename `from` to `to`, both in the directory `dir`.
-pub(crate) fn rename_in(dir: &File, from: &str, to: &str) -> io::Result<()> {
+/// Rename `from` to `to`, both in the directory `dir`. `to` keeps its raw bytes (a target name
+/// need not be UTF-8).
+pub(crate) fn rename_in(dir: &File, from: &str, to: &OsStr) -> io::Result<()> {
     let (f, t) = (c_name(from)?, c_name(to)?);
     let d = dir.as_raw_fd();
     // SAFETY: `dir` is an open directory and both names are valid C strings.

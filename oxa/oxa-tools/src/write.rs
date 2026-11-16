@@ -4,6 +4,7 @@ use crate::checked;
 use crate::descriptions::errors;
 use crate::read::arg_path;
 use oxa_proto::{Access, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -101,12 +102,10 @@ fn write_file(args: &Value, cx: &ToolCtx) -> Result<(usize, bool), String> {
         checked::verify_at(&parent, &dir).map_err(|e| write_io_error(path, &e))?;
     }
 
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let (tmp, file) = create_temp(&dir, &name).map_err(|e| write_io_error(path, &e))?;
-    match commit(file, &dir, &tmp, &name, content, existing.as_ref()) {
+    // The rename keeps the target's raw name; only the temp file's name is made readable.
+    let name = target.file_name().unwrap_or_default();
+    let (tmp, file) = create_temp(&dir, &name.to_string_lossy()).map_err(|e| write_io_error(path, &e))?;
+    match commit(file, &dir, &tmp, name, content, existing.as_ref()) {
         Ok(()) => Ok((content.len(), created)),
         Err(e) => {
             checked::remove_in(&dir, &tmp);
@@ -126,7 +125,7 @@ fn commit(
     mut file: File,
     dir: &File,
     tmp: &str,
-    name: &str,
+    name: &OsStr,
     content: &str,
     existing: Option<&fs::Metadata>,
 ) -> io::Result<()> {
