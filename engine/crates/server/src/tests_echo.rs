@@ -2212,3 +2212,82 @@ async fn trailing_assistant_continuation_refused_and_h6_unchanged() {
         "H6: a finished turn, no opener: {text:?}"
     );
 }
+
+/// Issue #583: the echo line's append and fsync must not sit between the generation and the
+/// reply. With the file-write lock held (a stalled disk), the non-stream body and the stream's
+/// final frames and `[DONE]` still arrive; the line is written once the disk answers.
+#[tokio::test(flavor = "multi_thread")]
+async fn echo_file_append_never_delays_the_reply() {
+    let tok = synth_tokenizer();
+    let dir = tmp_dir("n583");
+    let kw = json!({"enable_thinking": true, "preserve_thinking": true});
+    let s = st(
+        vec![
+            tok.encode("plan\n</think>\n\nOne", false, true),
+            tok.encode("plan\n</think>\n\nTwo", false, true),
+        ],
+        true,
+    );
+    s.echo.lock().unwrap().attach(&dir).unwrap();
+    let io = s.echo.lock().unwrap().io_lock_for_test();
+    let jsonl = || {
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+            .count()
+    };
+    let stalled = io.lock().unwrap();
+    let limit = std::time::Duration::from_secs(20);
+    let req = |stream: bool, sess: &str| {
+        let mut b = body(json!([{"role":"user","content":"go"}]), kw.clone());
+        b["stream"] = json!(stream);
+        (serde_json::to_vec(&b).unwrap(), sess.to_string())
+    };
+    let (b1, s1) = req(false, "sess-a");
+    let r = tokio::time::timeout(
+        limit,
+        crate::service::handle_session(
+            s.clone(),
+            "POST",
+            "/v1/chat/completions",
+            "",
+            &b1,
+            Some(s1),
+        ),
+    )
+    .await
+    .expect("the JSON reply does not wait for the echo file");
+    assert!(matches!(r, Reply::Json(200, _)));
+    let (b2, s2) = req(true, "sess-b");
+    let Reply::Stream(mut rx) = crate::service::handle_session(
+        s.clone(),
+        "POST",
+        "/v1/chat/completions",
+        "",
+        &b2,
+        Some(s2),
+    )
+    .await
+    else {
+        panic!("expected a stream")
+    };
+    let mut done = false;
+    while let Some(f) = tokio::time::timeout(limit, rx.recv())
+        .await
+        .expect("the stream does not wait for the echo file")
+    {
+        done |= f.contains("[DONE]");
+    }
+    assert!(done);
+    assert_eq!(jsonl(), 0, "the disk is stalled: nothing written yet");
+    drop(stalled);
+    for _ in 0..200 {
+        if jsonl() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(jsonl(), 2, "both lines reach their files afterwards");
+    let _ = std::fs::remove_dir_all(&dir);
+}

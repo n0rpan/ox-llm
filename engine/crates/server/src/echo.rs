@@ -481,7 +481,7 @@ fn append_line(p: &std::path::Path, line: &str) {
 /// Write generations of the echo files (N4): a group's counter rises when its file is dropped, the
 /// global one when every file goes or the directory changes (clear, budget 0, attach).
 #[derive(Default)]
-struct EchoIo {
+pub struct EchoIo {
     all: u64,
     groups: HashMap<String, u64>,
 }
@@ -575,6 +575,12 @@ impl EchoStore {
             compactions: 0,
             io: Default::default(),
         }
+    }
+
+    /// The file-write lock (tests hold it to stall the deferred appends).
+    #[cfg(test)]
+    pub fn io_lock_for_test(&self) -> std::sync::Arc<std::sync::Mutex<EchoIo>> {
+        self.io.clone()
     }
 
     /// Set the identity mixed into every key (drops records made under another identity).
