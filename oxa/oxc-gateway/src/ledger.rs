@@ -82,6 +82,14 @@ struct Inner {
     budgets: Mutex<HashMap<String, Budget>>,
     writer: Mutex<()>,
 }
+#[cfg(feature = "anthropic-gateway")]
+impl Ledger {
+    pub(crate) fn history_mac(&self) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.0.salt).expect("fixed-length ledger salt");
+        mac.update(b"oxa-provider-history-v1\0");
+        mac
+    }
+}
 #[derive(Clone)]
 pub struct Ledger(Arc<Inner>);
 #[derive(Clone)]
@@ -223,6 +231,9 @@ impl Daily {
     }
 }
 impl Entry {
+    pub(crate) fn ledger(&self) -> &Ledger {
+        &self.daily.ledger
+    }
     pub fn admitted(&mut self) {
         let admitted = *self.admitted.get_or_insert_with(Instant::now);
         self.row["admit_ms"] = json!(millis(self.started, admitted));
@@ -240,14 +251,27 @@ impl Entry {
     /// be injected through the supplied object. Pass the provider key to redact
     /// even catalog labels or provider finish strings before the append.
     pub fn append(
-        mut self,
+        self,
         fields: &Value,
         status: u16,
         error: Option<&'static str>,
         key: Option<&Key>,
     ) -> io::Result<Value> {
+        self.append_redacting(fields, status, error, &|row| {
+            if let Some(key) = key {
+                redaction::value(row, key);
+            }
+        })
+    }
+    pub(crate) fn append_redacting(
+        mut self,
+        fields: &Value,
+        status: u16,
+        error: Option<&'static str>,
+        redact: &dyn Fn(&mut Value),
+    ) -> io::Result<Value> {
         if fields["remote"] != true
-            || !["anthropic", "openai", "openrouter"]
+            || !["anthropic", "openai", "openrouter", "chatgpt"]
                 .contains(&fields["remote_provider"].as_str().unwrap_or(""))
             || fields["cost_usd"]
                 .as_f64()
@@ -293,6 +317,46 @@ impl Entry {
         {
             return Err(io::ErrorKind::InvalidData.into());
         }
+        match fields.get("billing") {
+            Some(value) if value == "subscription" => {
+                if fields["remote_provider"] != "chatgpt" || fields["cost_usd"].as_f64() != Some(0.0) {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                let requests = fields["subscription_requests"]
+                    .as_u64()
+                    .filter(|n| *n <= 1)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                let tokens = fields["subscription_tokens"]
+                    .as_u64()
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                if (requests == 0) != (settled == "not_forwarded")
+                    || (matches!(settled, "not_forwarded" | "refused") && tokens != 0)
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                self.row["billing"] = json!("subscription");
+                self.row["subscription_requests"] = json!(requests);
+                self.row["subscription_tokens"] = json!(tokens);
+            }
+            None => {
+                if fields["remote_provider"] == "chatgpt"
+                    || fields.get("subscription_requests").is_some()
+                    || fields.get("subscription_tokens").is_some()
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+            }
+            Some(value) if value == "metered" => {
+                if fields["remote_provider"] == "chatgpt"
+                    || fields.get("subscription_requests").is_some()
+                    || fields.get("subscription_tokens").is_some()
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                self.row["billing"] = json!("metered");
+            }
+            _ => return Err(io::ErrorKind::InvalidData.into()),
+        }
         self.row["settled"] = json!(settled);
         if let Some(finish) = fields["finish_reason"].as_str().filter(|value| {
             !value.is_empty()
@@ -317,9 +381,7 @@ impl Entry {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(key) = key {
-            redaction::value(&mut self.row, key);
-        }
+        redact(&mut self.row);
         append_private(&self.daily.path, &self.row)?;
         Ok(self.row)
     }

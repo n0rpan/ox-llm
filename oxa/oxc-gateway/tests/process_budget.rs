@@ -1,6 +1,7 @@
 #![cfg(feature = "accounting")]
 use oxc_gateway::{
     accounting::{Budget, Model, Outcome, Usage},
+    billing::{Billing, SubscriptionLimits},
     pricing::Price,
     spend::append_private,
 };
@@ -67,7 +68,9 @@ fn model() -> Model {
         upstream: "synthetic".into(),
         context: 1000,
         max_output: 100,
-        price: Price::from_model(&json!({"pricing":{"input":1,"output":2}})).unwrap(),
+        billing: oxc_gateway::billing::Billing::Metered(
+            Price::from_model(&json!({"pricing":{"input":1,"output":2}})).unwrap(),
+        ),
     }
 }
 struct Worker {
@@ -77,7 +80,15 @@ struct Worker {
 }
 impl Worker {
     fn new(path: &Path, cap: f64) -> Self {
-        Self::spawn(Command::new(std::env::current_exe().unwrap()), path, cap)
+        Self::spawn(Command::new(std::env::current_exe().unwrap()), path, cap, None)
+    }
+    fn subscription(path: &Path, limits: SubscriptionLimits) -> Self {
+        Self::spawn(
+            Command::new(std::env::current_exe().unwrap()),
+            path,
+            0.0,
+            Some(limits),
+        )
     }
     #[cfg(target_os = "linux")]
     fn traced(path: &Path, cap: f64, trace: &Path, inject: bool) -> Self {
@@ -97,9 +108,9 @@ impl Worker {
             command.args(["-e", "inject=fsync:error=EIO:when=1"]);
         }
         command.arg(std::env::current_exe().unwrap());
-        Self::spawn(command, path, cap)
+        Self::spawn(command, path, cap, None)
     }
-    fn spawn(mut command: Command, path: &Path, cap: f64) -> Self {
+    fn spawn(mut command: Command, path: &Path, cap: f64, limits: Option<SubscriptionLimits>) -> Self {
         let mut child = command
             .args([
                 "--exact",
@@ -110,6 +121,12 @@ impl Worker {
             .env("HOME", path.parent().unwrap())
             .env("OXC_BUDGET_TEST_PATH", path)
             .env("OXC_BUDGET_TEST_CAP", cap.to_string())
+            .env(
+                "OXC_SUBSCRIPTION_TEST_LIMITS",
+                limits
+                    .map(|l| format!("{},{}", l.requests(), l.tokens()))
+                    .unwrap_or_default(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -163,7 +180,22 @@ fn worker(path: PathBuf) {
     signal("ready");
     assert_eq!(input.next().unwrap().unwrap(), "go");
     let budget = Budget::new(path.clone());
-    let mut hold = match budget.reserve(&json!(cap), true, &model(), 100) {
+    let limits = std::env::var("OXC_SUBSCRIPTION_TEST_LIMITS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let (requests, tokens) = s.split_once(',').unwrap();
+            SubscriptionLimits::new(requests.parse().unwrap(), tokens.parse().unwrap()).unwrap()
+        });
+    let mut route = model();
+    let admitted = if limits.is_some() {
+        route.provider = "chatgpt".into();
+        route.billing = Billing::Subscription;
+        budget.reserve_subscription(limits, true, &route, 100)
+    } else {
+        budget.reserve(&json!(cap), true, &route, 100)
+    };
+    let mut hold = match admitted {
         Ok(hold) => {
             signal("reserved");
             hold
@@ -286,6 +318,58 @@ fn processes_share_holds_and_settled_spend() {
         "budget_exceeded",
         "settled spend survives a new process"
     );
+}
+
+#[test]
+fn subscription_processes_share_token_holds_actual_usage_and_request_counts() {
+    let home = Home::new();
+    let limits = SubscriptionLimits::new(3, 2300).unwrap();
+    let mut first = Worker::subscription(&home.path(), limits);
+    let mut second = Worker::subscription(&home.path(), limits);
+    assert_eq!(first.reserve(), "reserved");
+    assert_eq!(second.reserve(), "reserved");
+    let mut blocked = Worker::subscription(&home.path(), limits);
+    assert_eq!(blocked.reserve(), "subscription_limit_exceeded");
+    first.send("settle");
+    assert_eq!(first.read(), "done");
+    let mut third = Worker::subscription(&home.path(), limits);
+    assert_eq!(
+        third.reserve(),
+        "reserved",
+        "settled actual tokens replace the full-window hold"
+    );
+    second.send("settle");
+    assert_eq!(second.read(), "done");
+    let mut request_blocked = Worker::subscription(&home.path(), limits);
+    assert_eq!(request_blocked.reserve(), "subscription_limit_exceeded");
+    third.send("release");
+    assert_eq!(third.read(), "done");
+    let rows: Vec<Value> = fs::read_to_string(home.path())
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert_eq!(row["billing"], "subscription");
+        assert_eq!(row["cost_usd"], 0.0);
+        assert_eq!(row["subscription_requests"], 1);
+        assert_eq!(row["subscription_tokens"], 100);
+    }
+}
+
+#[test]
+fn crashed_subscription_processes_keep_unknown_token_holds() {
+    for command in ["crash", "commit-then-crash"] {
+        let home = Home::new();
+        let limits = SubscriptionLimits::new(10, 1500).unwrap();
+        let mut first = Worker::subscription(&home.path(), limits);
+        assert_eq!(first.reserve(), "reserved");
+        first.send(command);
+        assert_eq!(first.child.wait().unwrap().code(), Some(23));
+        let mut next = Worker::subscription(&home.path(), limits);
+        assert_eq!(next.reserve(), "subscription_limit_exceeded");
+    }
 }
 
 #[test]

@@ -1,0 +1,259 @@
+#![cfg(all(feature = "anthropic-gateway", feature = "upstream-openai"))]
+#[allow(dead_code)]
+#[path = "common/anthropic.rs"]
+mod anthropic;
+#[allow(dead_code)]
+#[path = "common/skeleton.rs"]
+mod skeleton;
+use oxc_gateway::{
+    accounting::{Outcome, Usage},
+    billing::SubscriptionLimits,
+    catalog::{Access, Model, Provider},
+    ledger::Context,
+    pricing::Price,
+    runtime::{Billing, OpenAiAuthHandle, Options, Runtime, Subscription},
+};
+use serde_json::{json, Value};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
+    time::Duration,
+};
+
+fn route(provider: Provider, upstream: &str) -> Model {
+    Model::new(
+        skeleton::MODEL,
+        provider,
+        upstream,
+        "https://example.invalid",
+        1000,
+        100,
+    )
+    .unwrap()
+}
+fn payload() -> Value {
+    json!({"model":skeleton::MODEL,"max_tokens":10,"messages":[]})
+}
+fn price(fixture: &skeleton::Fixture) -> Price {
+    Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).unwrap()
+}
+fn tokens(fixture: &skeleton::Fixture, access: &str) {
+    let path = fixture.key_path.parent().unwrap().join("chatgpt-auth.json");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .unwrap();
+    write!(
+        file,
+        "{}",
+        json!({"access_token":access,"refresh_token":"synthetic-refresh",
+        "account_id":"synthetic-account","expires_at":2_000_000_000})
+    )
+    .unwrap();
+}
+fn subscription(requests: u64, tokens: u64) -> Subscription {
+    Subscription {
+        limits: SubscriptionLimits::new(requests, tokens).unwrap(),
+        refresh_endpoint: "https://example.invalid/token".into(),
+        client_id: "synthetic-client-id".into(),
+        timeout: Duration::from_secs(15),
+    }
+}
+fn rows(fixture: &skeleton::Fixture) -> Vec<Value> {
+    fs::read_dir(&fixture.ledger_dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            path.extension()
+                .is_some_and(|s| s == "jsonl")
+                .then(|| fs::read_to_string(path).unwrap())
+        })
+        .flat_map(|text| {
+            text.lines()
+                .map(|s| serde_json::from_str(s).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn api_admission_owns_the_fresh_key_and_uses_trusted_private_usage() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    fs::write(
+        &fixture.key_path,
+        json!({"openai":{"api_key":anthropic::CREDENTIAL}}).to_string(),
+    )
+    .unwrap();
+    let runtime = Runtime::new(
+        [(
+            route(Provider::OpenAi, "synthetic-upstream"),
+            Some(Billing::Metered(price(&fixture))),
+        )],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options {
+            access: Access::Enabled,
+            daily_budget_usd: Some(1.0),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let mut call = runtime.begin(&payload(), Context::default()).unwrap();
+    let handle = call.openai_auth_handle().unwrap();
+    let OpenAiAuthHandle::ApiKey(key) = &handle else {
+        panic!("expected API key")
+    };
+    assert!(std::sync::Arc::ptr_eq(key, &call.key_handle().unwrap()));
+    assert_eq!(format!("{handle:?}"), "OpenAiAuthHandle([redacted])");
+    call.mark_forwarded();
+    call.metered_usage(Usage {
+        prompt: Some(100),
+        output: Some(5),
+        cache_read: Some(10),
+        cache_write: Some(0),
+        ..Usage::default()
+    });
+    let row = call.finish(Outcome::Complete, 200, None).unwrap();
+    assert_eq!(row["remote_provider"], "openai");
+    assert_eq!(row["billing"], "metered");
+    assert_eq!(row["settled"], "usage");
+    assert_eq!(row["cost_usd"], json!(0.000197));
+    assert!(!row.to_string().contains(anthropic::CREDENTIAL));
+}
+
+#[test]
+fn subscription_admission_requires_limits_before_credentials_and_audits_the_refusal() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    fs::write(
+        fixture.key_path.parent().unwrap().join("chatgpt-auth.json"),
+        "invalid synthetic JSON",
+    )
+    .unwrap();
+    let runtime = Runtime::new(
+        [(
+            route(Provider::ChatGpt, "synthetic-upstream"),
+            Some(Billing::Subscription),
+        )],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options {
+            access: Access::Enabled,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let error = runtime.begin(&payload(), Context::default()).err().unwrap();
+    assert_eq!(
+        (error.status, error.code),
+        (403, "subscription_limits_not_configured")
+    );
+    let rows = rows(&fixture);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["billing"], "subscription");
+    assert_eq!(rows[0]["subscription_requests"], 0);
+    assert_eq!(rows[0]["subscription_tokens"], 0);
+    assert_eq!(rows[0]["status"], 403);
+    assert_eq!(rows[0]["error"], "subscription_limits_not_configured");
+}
+
+#[test]
+fn subscription_owns_an_account_bound_handle_and_zero_usd_settlement_enforces_request_caps() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    tokens(&fixture, "synthetic-access");
+    let runtime = Runtime::new(
+        [(
+            route(Provider::ChatGpt, "synthetic-access-synthetic-refresh"),
+            Some(Billing::Subscription),
+        )],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options {
+            access: Access::Enabled,
+            subscription: Some(subscription(1, 2000)),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let mut call = runtime.begin(&payload(), Context::default()).unwrap();
+    let handle = call.openai_auth_handle().unwrap();
+    let OpenAiAuthHandle::Subscription {
+        token_path,
+        expected_account_id,
+        ..
+    } = &handle
+    else {
+        panic!("expected subscription")
+    };
+    assert_eq!(
+        token_path,
+        &fixture.key_path.parent().unwrap().join("chatgpt-auth.json")
+    );
+    assert_eq!(expected_account_id, "synthetic-account");
+    assert_eq!(format!("{handle:?}"), "OpenAiAuthHandle([redacted])");
+    assert!(call.key_handle().is_err());
+    call.mark_forwarded();
+    call.metered_usage(Usage {
+        prompt: Some(10),
+        output: Some(5),
+        cache_read: Some(2),
+        ..Usage::default()
+    });
+    let row = call.finish(Outcome::Complete, 200, None).unwrap();
+    assert_eq!(row["cost_usd"], 0.0);
+    assert_eq!(row["subscription_requests"], 1);
+    assert_eq!(row["subscription_tokens"], 15);
+    assert_eq!(row["settled"], "usage");
+    assert!(!row.to_string().contains("synthetic-access"));
+    assert!(!row.to_string().contains("synthetic-refresh"));
+    let error = runtime.begin(&payload(), Context::default()).err().unwrap();
+    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+}
+
+#[test]
+fn refreshing_a_bearer_does_not_change_the_stable_account_scope() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    tokens(&fixture, "synthetic-access-before");
+    let runtime = Runtime::new(
+        [(
+            route(Provider::ChatGpt, "synthetic-upstream"),
+            Some(Billing::Subscription),
+        )],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options {
+            access: Access::Enabled,
+            subscription: Some(subscription(10, 10000)),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let first = runtime.begin(&payload(), Context::default()).unwrap();
+    let scope = first.provider_account_scope();
+    first.finish(Outcome::Complete, 200, None).unwrap();
+    tokens(&fixture, "synthetic-access-after");
+    let second = runtime.begin(&payload(), Context::default()).unwrap();
+    assert_eq!(scope, second.provider_account_scope());
+    second.finish(Outcome::Complete, 200, None).unwrap();
+}
+
+#[test]
+fn subscription_billing_cannot_be_selected_for_an_api_provider() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    let error = Runtime::new(
+        [(
+            route(Provider::OpenAi, "synthetic-upstream"),
+            Some(Billing::Subscription),
+        )],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options::default(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!((error.status, error.code), (400, "invalid_billing"));
+    assert_eq!(fs::read_dir(&fixture.ledger_dir).unwrap().count(), 0);
+}

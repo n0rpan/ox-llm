@@ -1,5 +1,6 @@
 //! Short filesystem transactions shared by every process using one daily ledger.
 //! A crash keeps its holds. Broken state refuses admission rather than resetting it.
+use crate::billing::Counts;
 use nix::fcntl::{Flock, FlockArg};
 use serde_json::{json, Value};
 use std::{
@@ -35,13 +36,40 @@ fn options() -> OpenOptions {
     options
 }
 
+pub(crate) enum Reserved {
+    Metered(f64),
+    Subscription(u64),
+}
+impl Reserved {
+    fn from_value(value: &Value) -> io::Result<Self> {
+        if let Some(cost) = value.as_f64().filter(|cost| cost.is_finite() && *cost >= 0.0) {
+            return Ok(Self::Metered(cost));
+        }
+        let object = value
+            .as_object()
+            .filter(|o| o.len() == 1)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let tokens = object
+            .get("subscription_tokens")
+            .and_then(Value::as_u64)
+            .filter(|n| *n > 0)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        Ok(Self::Subscription(tokens))
+    }
+    fn to_value(&self) -> Value {
+        match self {
+            Self::Metered(cost) => json!(cost),
+            Self::Subscription(tokens) => json!({"subscription_tokens":tokens}),
+        }
+    }
+}
 pub(crate) struct Shared {
     _lock: Flock<File>,
     file: File,
     directory: PathBuf,
     fresh: bool,
     pub failed: bool,
-    pub holds: BTreeMap<String, f64>,
+    pub holds: BTreeMap<String, Reserved>,
 }
 impl Shared {
     pub fn open(ledger: &Path) -> io::Result<Self> {
@@ -89,18 +117,17 @@ impl Shared {
             }
             let mut total = 0.0;
             for (id, cost) in pending {
-                let cost = cost
-                    .as_f64()
-                    .filter(|cost| cost.is_finite() && *cost >= 0.0)
-                    .ok_or(io::ErrorKind::InvalidData)?;
+                let amount = Reserved::from_value(cost)?;
                 if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                total += cost;
+                if let Reserved::Metered(cost) = &amount {
+                    total += cost;
+                }
                 if !total.is_finite() {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                holds.insert(id.clone(), cost);
+                holds.insert(id.clone(), amount);
             }
         }
         let mut shared = Self {
@@ -111,28 +138,62 @@ impl Shared {
             failed,
             holds,
         };
+        shared.subscription_reserved()?;
         if fresh {
             shared.save()?;
         }
         Ok(shared)
     }
     pub fn reserved(&self) -> f64 {
-        self.holds.values().sum()
+        self.holds
+            .values()
+            .filter_map(|amount| match amount {
+                Reserved::Metered(cost) => Some(cost),
+                Reserved::Subscription(_) => None,
+            })
+            .sum()
+    }
+    pub fn subscription_reserved(&self) -> io::Result<Counts> {
+        self.holds
+            .values()
+            .try_fold(Counts::default(), |counts, amount| match amount {
+                Reserved::Metered(_) => Ok(counts),
+                Reserved::Subscription(tokens) => counts
+                    .add(Counts {
+                        requests: 1,
+                        tokens: *tokens,
+                    })
+                    .map_err(|_| io::ErrorKind::InvalidData.into()),
+            })
     }
     pub fn insert(&mut self, cost: f64) -> io::Result<String> {
+        self.insert_amount(Reserved::Metered(cost))
+    }
+    pub fn insert_subscription(&mut self, tokens: u64) -> io::Result<String> {
+        if tokens == 0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.insert_amount(Reserved::Subscription(tokens))
+    }
+    fn insert_amount(&mut self, amount: Reserved) -> io::Result<String> {
         if self.holds.len() >= MAX_HOLDS {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         let mut bytes = [0; 16];
         getrandom::fill(&mut bytes).map_err(|_| io::ErrorKind::Other)?;
         let id = format!("{:032x}", u128::from_be_bytes(bytes));
-        if self.holds.insert(id.clone(), cost).is_some() {
+        if self.holds.insert(id.clone(), amount).is_some() {
             return Err(io::ErrorKind::InvalidData.into());
         }
         Ok(id)
     }
     pub fn save(&mut self) -> io::Result<()> {
-        let bytes = serde_json::to_vec(&json!({"failed":self.failed,"holds":self.holds}))?;
+        let holds: BTreeMap<_, _> = self
+            .holds
+            .iter()
+            .map(|(id, amount)| (id, amount.to_value()))
+            .collect();
+        let bytes = serde_json::to_vec(&json!({"failed":self.failed,"holds":holds}))?;
         if self.fresh {
             // Ledger::open may have created several directory components.
             // Persist their names before writing a valid initial snapshot: a

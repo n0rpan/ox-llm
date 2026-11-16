@@ -1,8 +1,9 @@
 //! Process-shared reservations and settlement fields. A hold remains reserved until
 //! its row is written to the ledger; write failures stop spending.
 use crate::{
+    billing::{Billing, Counts, SubscriptionLimits},
     policy::{self, Refusal},
-    pricing::{Cache, Price},
+    pricing::Cache,
     reservations::Shared,
     spend::SpendReader,
 };
@@ -20,7 +21,7 @@ pub struct Model {
     pub upstream: String,
     pub context: u64,
     pub max_output: u64,
-    pub price: Price,
+    pub billing: Billing,
 }
 #[derive(Default)]
 struct State {
@@ -36,6 +37,7 @@ pub struct Hold {
     budget: Budget,
     model: Model,
     reserved: f64,
+    reserved_tokens: u64,
     output: u64,
     forwarded: bool,
     settled: bool,
@@ -66,6 +68,17 @@ pub enum Outcome {
     },
 }
 impl Usage {
+    fn total_tokens(&self) -> Option<u64> {
+        let (prompt, output) = self.prompt.zip(self.output)?;
+        let cached = self
+            .cache_read
+            .unwrap_or(0)
+            .checked_add(self.cache_write.unwrap_or(0))?;
+        if self.invalid_cache || cached > prompt {
+            return None;
+        }
+        prompt.checked_add(output)
+    }
     /// Consume canonical OpenAI usage after provider translation. Anthropic
     /// translators must include cache reads/writes in prompt and keep details.
     pub fn observe(&mut self, value: &Value) {
@@ -158,9 +171,11 @@ impl Budget {
             });
         }
         policy::daily_budget(cap, ledger_enabled, Some(0.0), 0.0, 0.0)?;
+        let Billing::Metered(price) = &model.billing else {
+            return Err(invalid_billing());
+        };
         let output = output.min(model.max_output);
-        let required = model
-            .price
+        let required = price
             .reservation(&model.provider, &model.upstream, model.context, output)
             .ok_or_else(exhausted)?;
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -179,11 +194,71 @@ impl Budget {
             budget: self.clone(),
             model: model.clone(),
             reserved: required,
+            reserved_tokens: 0,
             output,
             forwarded: false,
             settled: false,
             id,
         })
+    }
+    pub fn reserve_subscription(
+        &self,
+        limits: Option<SubscriptionLimits>,
+        ledger_enabled: bool,
+        model: &Model,
+        output: u64,
+    ) -> Result<Hold, Refusal> {
+        let limits = limits.ok_or_else(SubscriptionLimits::missing)?;
+        if !ledger_enabled {
+            return Err(Refusal::ledger());
+        }
+        if !matches!(model.billing, Billing::Subscription) || model.provider != "chatgpt" {
+            return Err(invalid_billing());
+        }
+        if output == 0 || model.max_output == 0 || model.context == 0 {
+            return Err(Refusal {
+                status: 400,
+                code: "invalid_value",
+                param: "max_tokens",
+                message: "Subscription context and output limits must be positive.",
+            });
+        }
+        let output = output.min(model.max_output);
+        let tokens = model.context.checked_add(output).ok_or_else(Refusal::ledger)?;
+        let required = Counts { requests: 1, tokens };
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.failed {
+            return Err(Refusal::ledger());
+        }
+        let mut shared = Shared::open(&self.path).map_err(|_| Refusal::ledger())?;
+        if shared.failed {
+            return Err(Refusal::ledger());
+        }
+        state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
+        let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
+        limits.check(state.reader.subscription(), held, required)?;
+        let id = shared
+            .insert_subscription(tokens)
+            .map_err(|_| Refusal::ledger())?;
+        shared.save().map_err(|_| Refusal::ledger())?;
+        Ok(Hold {
+            budget: self.clone(),
+            model: model.clone(),
+            reserved: 0.0,
+            reserved_tokens: tokens,
+            output,
+            forwarded: false,
+            settled: false,
+            id,
+        })
+    }
+}
+fn invalid_billing() -> Refusal {
+    Refusal {
+        status: 400,
+        code: "invalid_billing",
+        param: "model",
+        message: "The provider and billing class do not match.",
     }
 }
 impl Hold {
@@ -195,7 +270,11 @@ impl Hold {
     }
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
+        let Billing::Metered(price) = &model.billing else {
+            return self.subscription_record(usage, outcome);
+        };
         let mut row = json!({"remote":true,"remote_provider":model.provider,"remote_model":model.upstream});
+        row["billing"] = json!("metered");
         if matches!(outcome, Outcome::Refused) {
             row["cost_usd"] = json!(0.0);
             row["settled"] = json!("refused");
@@ -225,7 +304,7 @@ impl Hold {
         let cost = if invalid {
             None
         } else {
-            model.price.cost(
+            price.cost(
                 &model.provider,
                 &model.upstream,
                 usage.prompt.unwrap_or(0),
@@ -265,8 +344,7 @@ impl Hold {
                         .max(usage.output.unwrap_or(0))
                         .max((elapsed.as_secs_f64() * 300.0) as u64),
                 );
-                let estimate = model
-                    .price
+                let estimate = price
                     .cost(
                         &model.provider,
                         &model.upstream,
@@ -295,6 +373,47 @@ impl Hold {
                 row["settled"] = json!("reserved");
             }
             _ => row["settled"] = json!("usage"),
+        }
+        row
+    }
+    fn subscription_record(&self, usage: &Usage, outcome: Outcome) -> Value {
+        let mut row = json!({"remote":true,"remote_provider":self.model.provider,
+            "remote_model":self.model.upstream,"billing":"subscription","cost_usd":0.0,
+            "subscription_requests":u64::from(self.forwarded),"subscription_tokens":0});
+        if !self.forwarded {
+            row["settled"] = json!("not_forwarded");
+            return row;
+        }
+        if matches!(outcome, Outcome::Refused) {
+            row["settled"] = json!("refused");
+            return row;
+        }
+        for (field, value) in [
+            ("prompt_tokens", usage.prompt),
+            ("completion_tokens", usage.output),
+            ("cached_tokens", usage.cache_read),
+            ("cache_write_tokens", usage.cache_write),
+        ] {
+            if let Some(value) = value {
+                row[field] = json!(value);
+            }
+        }
+        let actual = usage.total_tokens();
+        let final_usage = matches!(
+            outcome,
+            Outcome::Complete
+                | Outcome::Cancelled {
+                    usage_final: true,
+                    ..
+                }
+        );
+        if let Some(actual) = actual.filter(|_| final_usage) {
+            row["subscription_tokens"] = json!(actual);
+            row["settled"] = json!("usage");
+        } else {
+            row["subscription_tokens"] = json!(self.reserved_tokens.max(actual.unwrap_or(0)));
+            row["settled"] = json!("reserved");
+            row["usage_missing"] = json!(true);
         }
         row
     }
