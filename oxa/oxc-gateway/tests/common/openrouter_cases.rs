@@ -204,6 +204,121 @@ async fn openrouter_cancel_on_final_chunk_preserves_private_usage() {
 }
 
 #[tokio::test]
+async fn openrouter_decoded_tool_arguments_refuse_held_key_and_preserve_clean_bytes() {
+    // Escapes exercise ordinary tool JSON decoding, not credential discovery.
+    let escaped: String = CREDENTIAL
+        .chars()
+        .map(|c| format!("\\u{:04x}", c as u32))
+        .collect();
+    let clean = r#"{ "path" : "note.txt", "meta\u0064ata" : [{"text":"benign \u03bb"}] }"#;
+    let cases = [
+        format!(r#"{{"path":"{escaped}"}}"#),
+        format!(r#"{{"metadata":[{{"value":"{escaped}"}}]}}"#),
+        format!(r#"{{"metadata":[{{"{escaped}":"value"}}]}}"#),
+        format!(r#"{{"{escaped}":"value"}}"#),
+        clean.to_owned(),
+    ];
+    for arguments in cases {
+        let benign = arguments == clean;
+        let calls = json!([
+            {"index":0,"id":"clean-first","type":"function",
+                "function":{"name":"read","arguments":"{\"path\":\"note.txt\"}"}},
+            {"index":1,"id":"synthetic-call","type":"function",
+                "function":{"name":"read","arguments":arguments}}
+        ]);
+        let mock = MockAnthropic::start(vec![wire(
+            vec![
+                json!({"choices":[{"index":0,"delta":{"tool_calls":calls},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+                "usage":{"prompt_tokens":21,"completion_tokens":5}}),
+            ],
+            true,
+        )]);
+        let (gateway, fixture) = gateway(&mock);
+        let mut output = Vec::new();
+        let mut done = false;
+        let result = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    match event {
+                        Event::Chunk(chunk) => output.push(chunk),
+                        Event::Done => done = true,
+                    }
+                    Control::Continue
+                },
+            )
+            .await;
+        if benign {
+            let completed = result.unwrap();
+            assert!(done);
+            let call = &completed.assistant["tool_calls"][1];
+            assert_eq!(call["id"], "synthetic-call");
+            assert_eq!(call["function"]["name"], "read");
+            assert_eq!(call["function"]["arguments"], clean);
+            let streamed = output
+                .iter()
+                .find_map(|chunk| chunk.pointer("/choices/0/delta/tool_calls"))
+                .unwrap();
+            assert_eq!(streamed[1]["function"]["arguments"], clean);
+            assert_eq!(streamed[1]["id"], "synthetic-call");
+            assert_eq!(rows(&fixture)[0]["settled"], "usage");
+        } else {
+            assert!(
+                result.is_err(),
+                "decoded held key must not reach executable calls"
+            );
+            assert!(!done);
+            assert!(
+                output
+                    .iter()
+                    .all(|chunk| chunk.pointer("/choices/0/delta/tool_calls").is_none()),
+                "even clean earlier calls must stay buffered on refusal"
+            );
+            assert_eq!(rows(&fixture)[0]["settled"], "reserved");
+        }
+        mock.finish();
+    }
+}
+
+#[tokio::test]
+async fn openrouter_held_key_equal_to_redaction_marker_is_still_refused() {
+    let mock = MockAnthropic::start(vec![wire(
+        vec![
+            json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"synthetic-call",
+            "function":{"name":"write","arguments":r#"{"path":"leak.txt","content":"[redacted]"}"#}}]},"finish_reason":null}]}),
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":21,"completion_tokens":5}}),
+        ],
+        true,
+    )]);
+    let (gateway, fixture) = gateway(&mock);
+    std::fs::write(
+        &fixture.key_path,
+        json!({"openrouter":{"api_key":"[redacted]"}}).to_string(),
+    )
+    .unwrap();
+    let result = gateway
+        .chat_payload(
+            &payload(true),
+            Context::default(),
+            &Cancellation::default(),
+            &mut |event| {
+                assert!(!matches!(event, Event::Done));
+                if let Event::Chunk(chunk) = event {
+                    assert!(chunk.pointer("/choices/0/delta/tool_calls").is_none());
+                }
+                Control::Continue
+            },
+        )
+        .await;
+    assert!(result.is_err());
+    mock.finish();
+}
+
+#[tokio::test]
 async fn openrouter_fragmented_tools_and_usage_on_finish_chunk() {
     let mut events = vec![
         json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"synthetic-","function":{"name":"re","arguments":"{\"path\":"}}]},"finish_reason":null}]}),

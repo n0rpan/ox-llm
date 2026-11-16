@@ -108,6 +108,96 @@ fn success(output: &Output) {
 }
 
 #[test]
+fn native_openrouter_refuses_decoded_held_key_before_executable_write() {
+    // Public synthetic fixture, created only under the isolated HOME outside the checkout.
+    const HELD: &str = "TEST-held-openrouter-770-public";
+    let escaped = HELD.replace('T', "\\u0054");
+    let cases = [
+        format!(r#"{{"path":"leak.txt","content":"{escaped}"}}"#),
+        format!(
+            r#"{{"path":"leak.txt","content":"clean","metadata":{{"items":[{{"value":"{escaped}"}}]}}}}"#
+        ),
+        format!(
+            r#"{{"path":"leak.txt","content":"clean","metadata":{{"items":[{{"{escaped}":"value"}}]}}}}"#
+        ),
+        format!(r#"{{"path":"leak.txt","content":"clean","{escaped}":"value"}}"#),
+        r#"{"path":"clean.txt","content":"benign \u03bb","meta\u0064ata":{"safe":"value"}}"#.to_owned(),
+    ];
+    for (index, arguments) in cases.into_iter().enumerate() {
+        let benign = index == 4;
+        let env = cloud_env();
+        let reply = |delta: Value, reason: &str| {
+            let mut wire = [
+                json!({"choices":[{"index":0,"delta":delta,"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}],
+                    "usage":{"prompt_tokens":21,"completion_tokens":5}}),
+            ]
+            .iter()
+            .map(|chunk| format!("data: {chunk}\n\n"))
+            .collect::<String>();
+            wire.push_str("data: [DONE]\n\n");
+            Reply::wire("text/event-stream", wire.as_bytes())
+        };
+        let mut replies = vec![reply(
+            json!({"tool_calls":[{"index":0,"id":"synthetic-write","type":"function",
+                "function":{"name":"write","arguments":arguments}}]}),
+            "tool_calls",
+        )];
+        if benign {
+            replies.push(reply(json!({"content":"Clean write completed"}), "stop"));
+        }
+        let mock = MockAnthropic::start(replies);
+        settings(&env, &mock.base_url(), true);
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        config["oxa"]["cloud"]["models"][MODEL]["provider"] = json!("openrouter");
+        // Admit the existing OpenRouter reservation, including its 25% headroom.
+        config["oxa"]["cloud"]["daily_budget_usd"] = json!(1.0);
+        fs::write(path, config.to_string()).unwrap();
+        write_key(&env, &json!({"openrouter":{"api_key":HELD}}).to_string());
+        let output = run(&env, &["--no-session", "-p", "Synthetic write control"], None);
+        assert!(
+            !env.work().join("leak.txt").exists(),
+            "case {index} executed an unsafe write"
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(HELD));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(HELD));
+        if benign {
+            success(&output);
+            assert_eq!(
+                fs::read_to_string(env.work().join("clean.txt")).unwrap(),
+                "benign λ"
+            );
+            assert_eq!(mock.requests().len(), 2);
+            let paid = rows(&env);
+            assert_eq!(paid.len(), 2);
+            assert!(paid.iter().all(|row| row["settled"] == "usage"));
+        } else {
+            assert!(!output.status.success(), "case {index} must refuse the call");
+            assert!(!env.work().join("clean.txt").exists());
+            assert_eq!(mock.requests().len(), 1);
+            let refused = rows(&env);
+            assert_eq!(refused.len(), 1);
+            assert_eq!(refused[0]["status"], 502);
+            assert_eq!(refused[0]["settled"], "reserved");
+        }
+        for request in mock.requests() {
+            assert_eq!(request.target, "/v1/chat/completions");
+            assert_eq!(
+                request.header("authorization"),
+                Some(format!("Bearer {HELD}").as_str())
+            );
+            assert_eq!(
+                request.body["provider"],
+                json!({"zdr":true,"data_collection":"deny"})
+            );
+        }
+        assert!(!json!(rows(&env)).to_string().contains(HELD));
+        mock.finish();
+    }
+}
+
+#[test]
 fn native_openrouter_discovery_tool_loop_and_settlement() {
     let env = cloud_env();
     env.write("work/note.txt", "SYNTHETIC ROUTER PROOF\n");

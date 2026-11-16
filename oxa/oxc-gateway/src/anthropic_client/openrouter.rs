@@ -290,17 +290,26 @@ impl<'a> Stream<'a> {
         }
         let mut tools = Vec::new();
         for (slot, tool) in self.tools.values_mut().enumerate() {
+            let arguments: Value =
+                serde_json::from_str(tool["function"]["arguments"].as_str().ok_or(Error::Protocol)?)
+                    .map_err(|_| Error::Protocol)?;
             if tool["id"].as_str().is_none_or(str::is_empty)
                 || tool["function"]["name"].as_str().is_none_or(str::is_empty)
-                || !serde_json::from_str::<Value>(
-                    tool["function"]["arguments"].as_str().ok_or(Error::Protocol)?,
-                )
-                .map_err(|_| Error::Protocol)?
-                .is_object()
+                || !arguments.is_object()
             {
                 return Err(Error::Protocol);
             }
-            redaction::value(tool, self.redactor.key);
+            // Executable arguments get decoded again by the tool dispatcher.
+            // Inspect that tree (including nested values and object keys) with
+            // the existing exact held-key redactor before releasing any calls.
+            // Refuse rather than rewrite identities or clean raw argument bytes.
+            let mut safe_arguments = arguments.clone();
+            let unsafe_arguments = redaction::value(&mut safe_arguments, self.redactor.key);
+            let mut safe_tool = tool.clone();
+            let unsafe_tool = redaction::value(&mut safe_tool, self.redactor.key);
+            if unsafe_arguments || unsafe_tool {
+                return Err(Error::Protocol);
+            }
             tools.push(tool.clone());
             tool["index"] = json!(slot);
         }

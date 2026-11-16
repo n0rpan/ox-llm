@@ -3,18 +3,33 @@
 use crate::secrets::Key;
 use serde_json::Value;
 
-pub fn value(value: &mut Value, key: &Key) {
+/// Redact the exact held key and report whether it occurred, including when
+/// the key itself equals the replacement marker. Visits every string and key.
+pub fn value(value: &mut Value, key: &Key) -> bool {
     match value {
-        Value::String(text) => *text = text.replace(key.expose(), "[redacted]"),
-        Value::Array(items) => items.iter_mut().for_each(|item| self::value(item, key)),
+        Value::String(text) => {
+            let found = text.contains(key.expose());
+            *text = text.replace(key.expose(), "[redacted]");
+            found
+        }
+        Value::Array(items) => {
+            let mut found = false;
+            for item in items {
+                found |= self::value(item, key);
+            }
+            found
+        }
         Value::Object(map) => {
             let old = std::mem::take(map);
+            let mut found = false;
             for (name, mut item) in old {
-                self::value(&mut item, key);
+                found |= name.contains(key.expose());
+                found |= self::value(&mut item, key);
                 map.insert(name.replace(key.expose(), "[redacted]"), item);
             }
+            found
         }
-        _ => {}
+        _ => false,
     }
 }
 
