@@ -1039,6 +1039,9 @@ fn terminal_notifications_follow_focus_and_policy_in_both_layouts() {
                 assert!(out.contains("\x1b]9;oxa: Run finished\x07"));
                 assert!(out.contains("\x1b]9;oxa: Permission required\x07"));
             }
+            if fullscreen {
+                assert_eq!(term.modes.first(), Some(&(oxa_tui::TermMode::AltScreen, true)));
+            }
             assert!(term.modes.contains(&(oxa_tui::TermMode::FocusReporting, true)));
             assert!(!term.mode_on(oxa_tui::TermMode::FocusReporting));
         }

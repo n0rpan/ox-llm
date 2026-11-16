@@ -348,7 +348,6 @@ impl<'a> Loop<'a> {
         // the terminal's cursor at the focused component's CURSOR_MARKER, for IME).
         Interactive::set_focused(&mut editor, true);
         let fullscreen = opts.fullscreen;
-        term.set_mode(TermMode::FocusReporting, true);
         let (cols, rows) = term.size();
         let viewport = Viewport::new(
             cols.max(1),
@@ -360,6 +359,7 @@ impl<'a> Loop<'a> {
             term.set_mode(TermMode::AltScreen, true);
             term.set_mode(TermMode::Mouse, true);
         }
+        term.set_mode(TermMode::FocusReporting, true);
         let scoped = opts.settings.list("enabledModels");
         let wheel = wheel_accel(&opts.settings, &opts.env);
         let clear_on_shrink = match opts
