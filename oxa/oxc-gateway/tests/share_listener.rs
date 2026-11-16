@@ -25,6 +25,7 @@ struct Fake {
     models: Vec<Model>,
     calls: AtomicUsize,
     messages: Mutex<Vec<Vec<Value>>>,
+    guests: Mutex<Vec<(String, String)>>,
     hold: bool,
     started: Notify,
     cancelled: Notify,
@@ -55,6 +56,7 @@ impl Fake {
             ],
             calls: AtomicUsize::new(0),
             messages: Mutex::new(Vec::new()),
+            guests: Mutex::new(Vec::new()),
             hold,
             started: Notify::new(),
             cancelled: Notify::new(),
@@ -69,10 +71,14 @@ impl Answer for Fake {
     async fn chat(
         &self,
         request: Request,
+        guest: Guest<'_>,
         output: Output,
         cancel: CancelToken,
     ) -> Result<Completed, Failure> {
         assert!(request.max_output <= 10);
+        assert_eq!(format!("{guest:?}"), "Guest([authenticated])");
+        let trusted = (guest.key_id().to_owned(), guest.key_name().to_owned());
+        self.guests.lock().unwrap().push(trusted.clone());
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.messages.lock().unwrap().push(request.messages);
         self.started.notify_one();
@@ -80,6 +86,10 @@ impl Answer for Fake {
             cancel.cancelled().await;
             self.cancelled.notify_one();
             self.release.notified().await; // Simulated model ownership during cleanup.
+            assert_eq!(
+                (guest.key_id(), guest.key_name()),
+                (trusted.0.as_str(), trusted.1.as_str())
+            );
             return Err(Failure::Failed);
         }
         output.text("Synthetic reply").await?;
@@ -232,7 +242,11 @@ async fn authenticated_stream_is_guest_only_settles_usage_and_revocation_is_fres
     assert!(stream.starts_with("HTTP/1.1 200"));
     assert!(stream.contains("Synthetic reply") && stream.contains("data: [DONE]"));
     assert!(stream.contains("\"prompt_tokens\":5") && stream.contains("\"completion_tokens\":3"));
-    assert!(!stream.contains(&r.bearer));
+    assert!(!stream.contains(&r.bearer) && !stream.contains("Device") && !stream.contains(&r.id));
+    assert_eq!(
+        *r.fake.guests.lock().unwrap(),
+        vec![(r.id.clone(), "Device".into())]
+    );
     assert_eq!(
         r.fake.messages.lock().unwrap()[0],
         json!([{"role":"user","content":"Synthetic request"}])
@@ -266,6 +280,9 @@ async fn tool_session_file_fields_and_subscription_routes_are_refused_before_bac
     for (field, value) in [
         ("tools", json!([])),
         ("tool_choice", json!("none")),
+        ("guest_key_name", json!("untrusted-claim")),
+        ("guest", json!({"key_name":"untrusted-claim"})),
+        ("origin", json!("oxa")),
         ("session", json!("owner")),
         ("resume", json!(true)),
         ("file", json!("/synthetic/path")),
@@ -526,6 +543,20 @@ async fn owner_status_groups_by_key_id_and_releases_each_request_after_cleanup()
                 .unwrap();
             clients.push(socket);
         }
+        assert_eq!(
+            *r.fake.guests.lock().unwrap(),
+            vec![
+                (r.id.clone(), "Device".into()),
+                (
+                    second_id.clone(),
+                    if distinct {
+                        "Tablet".into()
+                    } else {
+                        "Device".into()
+                    }
+                ),
+            ]
+        );
         let live = r.status.snapshot().unwrap();
         assert_eq!(live.connections, 2);
         assert_eq!(live.keys.len(), if distinct { 2 } else { 1 });
@@ -597,6 +628,41 @@ async fn owner_status_never_attributes_a_key_before_optional_peer_authorization(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn revoked_key_between_auth_and_admission_never_reaches_backend_metadata() {
+    let r = Running::start(
+        Config {
+            same_owner: true,
+            read_timeout: Duration::from_secs(2),
+            ..config()
+        },
+        limits(),
+        false,
+    )
+    .await;
+    r.network.hold_check.store(true, Ordering::SeqCst);
+    let body = body("local-model").to_string();
+    let header = r.header(
+        "POST",
+        "/v1/chat/completions",
+        &format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body.len()
+        ),
+    );
+    let address = r.address;
+    let client = tokio::spawn(exchange(address, format!("{header}\r\n{body}")));
+    tokio::time::timeout(Duration::from_secs(2), r.network.check_started.notified())
+        .await
+        .unwrap();
+    r.keys.revoke(&r.id).unwrap();
+    r.network.check_release.notify_one();
+    assert!(client.await.unwrap().starts_with("HTTP/1.1 401"));
+    assert_eq!(r.fake.calls.load(Ordering::SeqCst), 0);
+    assert!(r.fake.guests.lock().unwrap().is_empty());
+    r.close().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn successful_stream_retries_contended_settlement_and_finishes() {
     struct Locked {
         fake: Fake,
@@ -611,13 +677,14 @@ async fn successful_stream_retries_contended_settlement_and_finishes() {
         async fn chat(
             &self,
             request: Request,
+            guest: Guest<'_>,
             output: Output,
             cancel: CancelToken,
         ) -> Result<Completed, Failure> {
             let file = std::fs::File::open(&self.path).unwrap();
             *self.lock.lock().unwrap() =
                 Some(nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive).unwrap());
-            let result = self.fake.chat(request, output, cancel).await;
+            let result = self.fake.chat(request, guest, output, cancel).await;
             self.ready.notify_one();
             result
         }
