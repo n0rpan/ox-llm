@@ -182,18 +182,22 @@ impl Budget {
                 .read(true)
                 .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
                 .open(&path)?;
+            match file.try_lock() {
+                // The owner may have died before finishing the amount write.
+                Ok(()) if !forwarded => {
+                    fs::remove_file(&path)?;
+                    continue;
+                }
+                Ok(()) | Err(TryLockError::WouldBlock) => {}
+                Err(TryLockError::Error(error)) => return Err(error),
+            }
             let amount: f64 = io::read_to_string(&mut file)?
                 .trim()
                 .parse()
                 .ok()
                 .filter(|n: &f64| n.is_finite() && *n >= 0.0)
                 .ok_or(io::ErrorKind::InvalidData)?;
-            match file.try_lock() {
-                // Nobody holds it: its owner is gone.
-                Ok(()) if !forwarded => fs::remove_file(&path)?,
-                Ok(()) | Err(TryLockError::WouldBlock) => total += amount,
-                Err(TryLockError::Error(error)) => return Err(error),
-            }
+            total += amount;
         }
         Ok(total)
     }
@@ -278,21 +282,28 @@ impl Hold {
     }
     /// Persists the flag (a rename that keeps the owner's lock): if this process dies
     /// afterwards, other processes keep the hold reserved. A failure latches the budget.
-    pub fn mark_forwarded(&mut self) {
-        if self.forwarded {
-            return;
+    /// The caller must not send potentially paid bytes unless this succeeds.
+    pub fn mark_forwarded(&mut self) -> Result<(), Refusal> {
+        let budget = self.budget.clone();
+        let mut state = budget.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.failed {
+            return Err(Refusal::ledger());
         }
-        self.forwarded = true;
+        if self.forwarded {
+            return Ok(());
+        }
         let sent = self.path.with_extension("sent");
-        let moved = self.budget.exclusive().and_then(|_lock| {
+        let moved = budget.exclusive().and_then(|_lock| {
             fs::rename(&self.path, &sent)?;
             self.path = sent;
             Ok(())
         });
         if moved.is_err() {
-            let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
             state.failed = true;
+            return Err(Refusal::ledger());
         }
+        self.forwarded = true;
+        Ok(())
     }
     /// Remove the persisted hold. Call with the exclusive lock held, after the row.
     fn release(&mut self) {
@@ -415,9 +426,9 @@ impl Hold {
         // or the row, or briefly both - never neither.
         let lock = budget.exclusive();
         let result = lock.map_err(|_| Refusal::ledger()).and_then(|_lock| {
-            let result = write(&row).map_err(|_| Refusal::ledger());
+            write(&row).map_err(|_| Refusal::ledger())?;
             self.release();
-            result
+            Ok(())
         });
         if result.is_err() {
             state.failed = true;
