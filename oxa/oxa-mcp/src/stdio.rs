@@ -128,6 +128,12 @@ impl StdioTransport {
         session_cwd: &Path,
         home: &Path,
     ) -> Result<StdioTransport, OxaError> {
+        if !cfg!(target_os = "linux") {
+            return Err(OxaError::new(
+                codes::MCP,
+                "MCP child parent-death supervision is supported only on Linux",
+            ));
+        }
         let (argv, cwd) = stdio_plan(
             cfg,
             session_cwd,

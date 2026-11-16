@@ -67,6 +67,12 @@ impl Directory {
 }
 
 fn directory(agent_dir: &Path, id: &str) -> io::Result<Directory> {
+    if !cfg!(target_os = "linux") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "session inbox IPC is supported only on Linux",
+        ));
+    }
     if !valid_inbox_id(id) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

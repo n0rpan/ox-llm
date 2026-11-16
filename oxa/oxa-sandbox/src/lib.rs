@@ -429,6 +429,12 @@ pub struct NoSandbox;
 
 impl Sandbox for NoSandbox {
     fn check(&self) -> Result<(), OxaError> {
+        if !cfg!(target_os = "linux") {
+            return Err(OxaError::new(
+                oxa_proto::codes::NO_SANDBOX,
+                "sandbox unavailable: bubblewrap isolation is supported only on Linux",
+            ));
+        }
         Err(OxaError::new(
             oxa_proto::codes::NO_SANDBOX,
             "bwrap is not available; bash is disabled",
@@ -440,7 +446,11 @@ impl Sandbox for NoSandbox {
     }
     fn run(&self, _s: &ExecSpec, _c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
         ExecResult {
-            output: b"bwrap is not available; bash is disabled".to_vec(),
+            output: if cfg!(target_os = "linux") {
+                b"bwrap is not available; bash is disabled".to_vec()
+            } else {
+                b"sandbox unavailable: bubblewrap isolation is supported only on Linux".to_vec()
+            },
             exit: None,
             timed_out: false,
         }

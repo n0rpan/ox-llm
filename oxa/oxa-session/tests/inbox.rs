@@ -1,4 +1,7 @@
 //! The inbox is local IPC, not a socket, and must stay in private, no-follow directories.
+// This backend pins directories through /proc and watches Linux inotify events.
+#![cfg(target_os = "linux")]
+
 use oxa_fake::TestEnv;
 use oxa_session::{send_inbox, Inbox};
 use std::fs;

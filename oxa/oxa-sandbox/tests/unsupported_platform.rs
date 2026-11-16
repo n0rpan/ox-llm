@@ -37,6 +37,11 @@ fn sandbox_refuses_without_launching_or_emitting_command_output() {
     assert_eq!(result.exit, None);
     assert!(String::from_utf8_lossy(&live).contains("only on Linux"));
     assert!(!marker.exists());
+    let missing = oxa_sandbox::NoSandbox;
+    assert!(missing.check().unwrap_err().to_string().contains("only on Linux"));
+    assert!(
+        String::from_utf8_lossy(&missing.run(&spec, &cancel, &mut |_| {}).output).contains("only on Linux")
+    );
     assert!(
         oxa_sandbox::offline_argv("/bin:/usr/bin", &env.home(), env.root(), &[], &["true".into()]).is_err()
     );

@@ -957,6 +957,7 @@ fn set_006() {
 
 /// SET-008: `enabledModels` is a list of patterns over engine models.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_008() {
     // invariant: the patterns are matched against the engine's model ids (W3: a switch is a
     // new prefix epoch, never inside one). pi settings.md: "Model patterns used for startup
@@ -998,6 +999,7 @@ fn set_008() {
 
 /// SET-009: `hideThinkingBlock` hides the thinking blocks in the transcript.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_009() {
     // pi docs: settings.md `hideThinkingBlock` "Hide thinking blocks in the transcript."
     // app.thinking.toggle (ctrl+t) still shows them on demand.
@@ -1019,6 +1021,7 @@ fn set_009() {
 
 /// SET-010: `showCacheMissNotices` uses the exact `cached_tokens`; the cause from `miss_cause`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_010() {
     // invariant: W1/W2: the notice uses the engine's exact cached_tokens and miss_cause only.
     // pi settings.md `showCacheMissNotices` (default false): notices for cache misses only when
@@ -1061,6 +1064,7 @@ fn set_010() {
 
 /// SET-011: `cacheWarming` `off|streaming|idle`; maps to idle prefill.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_011() {
     // invariant: `streaming` = `idle` (H6 max_tokens:0 prefill + H3 background + H4 keep):
     // the boot preload at start and the park prefill after a /tree navigation; `off` sends
@@ -1120,6 +1124,7 @@ fn set_011() {
 
 /// SET-012: `steeringMode` `all|one-at-a-time`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_012() {
     // pi docs: settings.md `steeringMode` "How queued steering messages are delivered":
     // `one-at-a-time` (default) one per turn, `all` together. Two messages are steered (Enter
@@ -1165,6 +1170,7 @@ fn set_012() {
 
 /// SET-013: `followUpMode` `all|one-at-a-time`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_013() {
     // pi docs: settings.md `followUpMode` "How queued follow-up messages are delivered":
     // `one-at-a-time` (default) one per finished run, `all` together. Two follow-ups are queued
@@ -1208,6 +1214,7 @@ fn set_013() {
 
 /// SET-014: `externalEditor` (then `$VISUAL`, `$EDITOR`).
 #[test]
+#[cfg(target_os = "linux")]
 fn set_014() {
     // pi docs: settings.md `externalEditor` "Command opened by the external-editor keybinding."
     // The setting wins over $VISUAL, which wins over $EDITOR.
@@ -1251,6 +1258,7 @@ fn set_014() {
 
 /// SET-015: `doubleEscapeAction` `tree|fork|none`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_015() {
     // pi docs: settings.md `doubleEscapeAction` "Action for double Escape with an empty
     // editor": `tree` (default) opens /tree, `fork` the fork selector, `none` nothing. One
@@ -1306,6 +1314,7 @@ fn set_015() {
 
 /// SET-016: `treeFilterMode` (five values).
 #[test]
+#[cfg(target_os = "linux")]
 fn set_016() {
     // pi docs: settings.md `treeFilterMode` "Initial filter used by /tree": default, no-tools,
     // user-only, labeled-only, all. The navigator's position line names the active filter.
@@ -1635,6 +1644,7 @@ fn set_028() {
 
 /// SET-029: `branchSummary.reserveTokens`, `branchSummary.skipPrompt`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_029() {
     // pi docs: settings.md `branchSummary.reserveTokens` "Tokens reserved when summarizing
     // branch history" (oxa sends the abandoned wire whole, W1, so the reserve bounds the
@@ -1682,6 +1692,7 @@ fn set_029() {
 
 /// SET-030: `theme` (default `system`).
 #[test]
+#[cfg(target_os = "linux")]
 fn set_030() {
     // pi docs: settings.md `theme` (default `system`): "Built-in or custom theme name.
     // `system` derives colors from the terminal theme." The terminal answers OSC 10/11 at start;
@@ -1744,6 +1755,7 @@ fn set_030() {
 
 /// SET-031: `quietStartup` `true|false|"header"`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_031() {
     // pi docs: settings.md `quietStartup`: `true` hides the startup header and loaded-resource
     // listing; `"header"` keeps the header (version and key hints) but hides the model scope
@@ -1773,6 +1785,7 @@ fn set_031() {
 
 /// SET-032: `tuiMode` `regular|fullscreen`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_032() {
     // pi docs: settings.md `tuiMode` (default `fullscreen`); `--tui-mode` wins for one run.
     let alt = |settings: Value, args: &[&str]| {
@@ -1793,6 +1806,7 @@ fn set_032() {
 
 /// SET-033: `fullscreenExitOutput` `transcript|resume-hint`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_033() {
     // pi docs: settings.md `fullscreenExitOutput` "Output printed when fullscreen mode exits":
     // `transcript` (default) leaves the conversation on the normal screen, `resume-hint` only
@@ -1824,6 +1838,7 @@ fn set_033() {
 
 /// SET-034: `fullscreenScrollbar` `auto|always|hidden`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_034() {
     // pi docs: settings.md `fullscreenScrollbar` (default `auto`) "Fullscreen transcript
     // scrollbar behavior". pi scroll-view.ts: `auto` is transient (only when the transcript is
@@ -1867,6 +1882,7 @@ fn set_034() {
 
 /// SET-035: `fullscreenCopyOnSelect`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_035() {
     // pi docs: settings.md `fullscreenCopyOnSelect` (default true) "Copy selected text
     // automatically in fullscreen mode". A mouse drag over the reply selects it; on release the
@@ -1905,6 +1921,7 @@ fn set_035() {
 
 /// SET-036: `fullscreenWheelScrollLines` `auto` or 1..100.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_036() {
     // pi docs: settings.md `fullscreenWheelScrollLines`: lines per mouse-wheel event, 1..100;
     // `auto` (default) moves one line per isolated event (faster spins accelerate, up to 6:
@@ -1955,6 +1972,7 @@ fn set_036() {
 
 /// SET-037: `editorPaddingX` 0..3.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_037() {
     // pi docs: settings.md `editorPaddingX` "Horizontal editor padding from 0 to 3 cells".
     let col = |settings: Value| {
@@ -1971,6 +1989,7 @@ fn set_037() {
 
 /// SET-038: `outputPad` 0|1.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_038() {
     // pi docs: settings.md `outputPad` (default 1) "Horizontal transcript padding for messages,
     // tool output, `!` command output, and summary blocks".
@@ -1998,6 +2017,7 @@ fn set_038() {
 
 /// SET-039: `autocompleteMaxVisible` 3..20.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_039() {
     // pi docs: settings.md `autocompleteMaxVisible` (default 5) "Visible autocomplete entries,
     // from 3 to 20". The slash-command list under the editor shows that many rows.
@@ -2038,6 +2058,7 @@ fn set_041() {
 
 /// SET-042: `terminal.clearOnShrink`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_042() {
     // pi docs: settings.md `terminal.clearOnShrink` (default false; PI_CLEAR_ON_SHRINK=1 when
     // unset): "Clear empty rows when rendered content shrinks" (pi re-renders fully). In the
@@ -2103,6 +2124,7 @@ fn set_046() {
 
 /// SET-047: `markdown.codeBlockIndent`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_047() {
     // pi docs: settings.md `markdown.codeBlockIndent` (default two spaces) "Prefix used to
     // indent rendered code blocks".
@@ -2123,6 +2145,7 @@ fn set_047() {
 
 /// SET-048: `markdown.mermaid` `off|final|streaming`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_048() {
     // invariant: Mermaid is shown as a highlighted code block whatever the value (oxa draws no
     // diagrams); the setting is accepted without a diagnostic.
@@ -2338,6 +2361,7 @@ fn set_059() {
 
 /// SET-060: `enableSkillCommands`.
 #[test]
+#[cfg(target_os = "linux")]
 fn set_060() {
     // pi docs: settings.md `enableSkillCommands` (default true) "Register skills as
     // `/skill:name` commands": pi interactive-mode.ts offers them in the autocomplete only when
@@ -2405,6 +2429,7 @@ fn set_061() {
 /// KEY-001: `keybindings.json` in the agent directory overrides defaults; a list or a single
 /// key per id; conflicts reported.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_001() {
     // pi docs: keybindings.md "Assign keybindings": a configured value (one key or a list)
     // replaces the default; an empty list disables. pi's KeybindingsManager records a conflict
@@ -2447,6 +2472,7 @@ fn key_001() {
 /// KEY-002: key syntax: `ctrl+shift+alt+super` modifiers + key; kitty keyboard protocol and
 /// legacy sequences.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_002() {
     // pi docs: keybindings.md "Key syntax": `modifier+key`, modifiers ctrl, shift, alt, super
     // (combinable); special keys and f1-f12; super needs the kitty keyboard protocol.
@@ -2496,6 +2522,7 @@ fn key_002() {
 
 /// KEY-003: cursor movement in the editor.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_003() {
     // pi docs: keybindings.md "Cursor movement" (Linux defaults): cursorLeft (left, ctrl+b),
     // cursorRight (right, ctrl+f), cursorWordLeft (alt+left, ctrl+left, alt+b), cursorWordRight
@@ -2628,6 +2655,7 @@ fn key_003() {
 
 /// KEY-004: text editing in the editor.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_004() {
     // pi docs: keybindings.md "Text editing" (Linux defaults only): deleteCharBackward
     // (backspace), deleteCharForward (delete, ctrl+d), deleteWordBackward (ctrl+w,
@@ -2679,6 +2707,7 @@ fn key_004() {
 
 /// KEY-005: input: newline, submit, tab, copy.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_005() {
     // pi docs: keybindings.md "Input": tui.input.newLine (shift+enter, ctrl+j), submit (enter),
     // tab (tab: completion), copy (ctrl+c). shift+enter needs the kitty protocol (a legacy
@@ -2732,6 +2761,7 @@ fn key_005() {
 
 /// KEY-006: select lists.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_006() {
     // pi docs: keybindings.md "Selection": tui.select.up (up), down (down), pageUp (pageUp),
     // pageDown (pageDown), confirm (enter), cancel (escape, ctrl+c). Driven on the /thinking
@@ -2787,6 +2817,7 @@ fn key_006() {
 
 /// KEY-007: fullscreen scroll.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_007() {
     // pi docs: keybindings.md "Fullscreen": tui.altScreen.pageUp (pageUp), pageDown
     // (pageDown), halfPageUp / halfPageDown / lineUp / lineDown (no default), top (ctrl+home),
@@ -2854,6 +2885,7 @@ fn key_007() {
 
 /// KEY-008: fullscreen prompt jump.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_008() {
     // pi docs: keybindings.md "Fullscreen": tui.altScreen.previousPrompt (ctrl+shift+up,
     // ctrl+up), nextPrompt (ctrl+shift+down, ctrl+down) (Linux defaults only).
@@ -2899,6 +2931,7 @@ fn key_008() {
 
 /// KEY-009: fullscreen search.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_009() {
     // pi docs: keybindings.md "Fullscreen": tui.altScreen.search (ctrl+shift+f),
     // searchNext (enter, ctrl+g), searchPrevious (shift+enter, ctrl+shift+g), searchClose
@@ -2979,6 +3012,7 @@ fn key_009() {
 /// CSI-u and opens the search. (Pushed on the main screen only, the alternate screen stays
 /// legacy and ctrl+shift+f arrives as ctrl+f, the cursor key.)
 #[test]
+#[cfg(target_os = "linux")]
 fn key_009_kitty_protocol_on_the_alternate_screen() {
     let foot = TermProfile {
         name: "foot",
@@ -3024,6 +3058,7 @@ fn key_009_kitty_protocol_on_the_alternate_screen() {
 /// KEY-009 (O-199 first run): a terminal without the kitty keyboard protocol cannot send
 /// ctrl+shift+f (it sends ctrl+f). The footer then shows the fallback `alt+s`, which works.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_009_legacy_terminal_shows_and_takes_the_fallback() {
     // The footer's key hints are OXA's look (the harness drives pi's look by default).
     let t = Setup::new()
@@ -3049,6 +3084,7 @@ fn key_009_legacy_terminal_shows_and_takes_the_fallback() {
 
 /// KEY-010: application keys: interrupt, clear, exit, suspend, external editor.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_010() {
     // pi docs: keybindings.md "Application": app.interrupt (escape), app.clear (ctrl+c: clear,
     // then exit), app.exit (ctrl+d, empty editor), app.suspend (ctrl+z), app.editor.external
@@ -3146,6 +3182,7 @@ fn key_010() {
 
 /// KEY-011: `app.clipboard.pasteImage` (ctrl+v).
 #[test]
+#[cfg(target_os = "linux")]
 fn key_011() {
     // invariant: pasting attaches the file or image to the session; the wire gets the
     // placeholder, never the image (see SET-046). The clipboard is a stub `wl-paste` on a
@@ -3202,6 +3239,7 @@ fn key_011() {
 /// KEY-012: session keys: new, tree, fork, resume, togglePath, toggleSort, toggleNamedFilter,
 /// rename, delete, deleteNoninvasive.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_012() {
     // pi docs: keybindings.md "Sessions": app.session.new / tree / fork / resume (no default),
     // and in the session picker togglePath (ctrl+p), toggleSort (ctrl+s), toggleNamedFilter
@@ -3328,6 +3366,7 @@ fn key_012() {
 
 /// KEY-013: model keys: select, cycleForward, cycleBackward, save.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_013() {
     // invariant: over engine models (the endpoint's /v1/models); a switch is a new prefix
     // epoch (W3): the next request names the new model. Keys: app.model.select (ctrl+l),
@@ -3406,6 +3445,7 @@ fn key_013() {
 
 /// KEY-014: thinking keys: cycle, save, toggle.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_014() {
     // invariant: W6: the level is a boolean on the wire (`enable_thinking`); shift+tab stays the
     // thinking cycle (app.thinking.cycle), ctrl+t collapses or expands thinking blocks
@@ -3468,6 +3508,7 @@ fn key_014() {
 
 /// KEY-015: `app.mode.cycle` (alt+m): standard -> auto -> yolo.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_015() {
     // invariant: oxa only; the cycle is auto -> yolo -> standard (the default is alt+m).
     // The mode is display and permission state, never wire text (W3). Under yolo the badge
@@ -3515,6 +3556,7 @@ fn key_015() {
 
 /// KEY-016: display and queue: tools expand, message copy, follow-up, dequeue.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_016() {
     // pi docs: keybindings.md "Display and message queue": app.tools.expand (ctrl+o),
     // app.message.copy (ctrl+x), app.message.followUp (alt+enter), app.message.dequeue (alt+up).
@@ -3617,6 +3659,7 @@ fn key_016() {
 
 /// KEY-017: tree navigation.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_017() {
     // pi docs: keybindings.md "Tree navigation": app.tree.foldOrUp (ctrl+left, alt+left),
     // unfoldOrDown (ctrl+right, alt+right), editLabel (shift+l), toggleLabelTimestamp
@@ -3673,6 +3716,7 @@ fn key_017() {
 
 /// KEY-018: tree filters.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_018() {
     // pi docs: keybindings.md "Tree navigation": app.tree.filter.default (ctrl+d), noTools
     // (ctrl+t), userOnly (ctrl+u), labeledOnly (ctrl+l), all (ctrl+a), cycleForward (ctrl+o),
@@ -3720,6 +3764,7 @@ fn key_018() {
 
 /// KEY-019: scoped models selector.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_019() {
     // pi docs: keybindings.md "Scoped models selector": app.models.enableAll (ctrl+a),
     // clearAll (ctrl+x), reorderUp (alt+up), reorderDown (alt+down); app.models.save (ctrl+s)
@@ -3788,6 +3833,7 @@ fn key_019() {
 
 /// KEY-020: `app.models.toggleProvider` (ctrl+p) toggles all models of one engine endpoint.
 #[test]
+#[cfg(target_os = "linux")]
 fn key_020() {
     // invariant: toggles all models of one engine endpoint (one endpoint here: the local
     // engine of models.json, so all three models switch together).

@@ -339,12 +339,7 @@ pub fn die_with_parent(cmd: &mut Command) {
 pub fn die_with_parent(cmd: &mut Command) {
     // SAFETY: the child returns a fixed error before exec; no process is launched.
     unsafe {
-        cmd.pre_exec(|| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "parent-death supervision is supported only on Linux",
-            ))
-        });
+        cmd.pre_exec(|| Err(std::io::Error::from_raw_os_error(libc::ENOTSUP)));
     }
 }
 

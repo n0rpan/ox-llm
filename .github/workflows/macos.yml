@@ -30,7 +30,10 @@ jobs:
         shell: bash
         run: |
           test "$(uname -m)" = arm64
-          root=$(mktemp -d "$RUNNER_TEMP/oxa-macos.XXXXXX")
+          # Outside the account home, with macOS /tmp symlinks resolved: the unchanged
+          # credential-isolation guards must accept only synthetic fixture paths.
+          root=$(mktemp -d /tmp/oxa-macos.XXXXXX)
+          root=$(cd "$root" && pwd -P)
           mkdir -p "$root/home" "$root/cargo" "$root/rustup" "$root/tmp"
           export HOME="$root/home" CARGO_HOME="$root/cargo" RUSTUP_HOME="$root/rustup" TMPDIR="$root/tmp"
           rustup toolchain install 1.99.1 --profile minimal
@@ -40,7 +43,13 @@ jobs:
           echo "$RUSTUP_HOME/toolchains/1.99.1-aarch64-apple-darwin/bin" >> "$GITHUB_PATH"
       - name: Build release workspace (Linux release default features)
         working-directory: oxa
-        run: cargo build --release --locked --workspace
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" CARGO_HOME="$CARGO_HOME" \
+            RUSTUP_HOME="$RUSTUP_HOME" TMPDIR="$TMPDIR" CARGO_BUILD_JOBS=3 \
+            cargo build --release --locked --workspace
       - name: Test release workspace
         working-directory: oxa
-        run: cargo test --release --locked --workspace --no-fail-fast
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" CARGO_HOME="$CARGO_HOME" \
+            RUSTUP_HOME="$RUSTUP_HOME" TMPDIR="$TMPDIR" CARGO_BUILD_JOBS=3 \
+            cargo test --release --locked --workspace --no-fail-fast
