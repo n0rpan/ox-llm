@@ -38,7 +38,7 @@ pub struct Stream {
     reason: &'static str,
     usage: Option<Usage>,
     items: std::collections::BTreeMap<u64, Item>,
-    fields: std::collections::BTreeMap<(u64, u64, bool), String>,
+    fields: std::collections::BTreeMap<(u64, u64, &'static str), String>,
     next_slot: usize,
 }
 
@@ -167,12 +167,12 @@ impl Stream {
         &mut self,
         index: u64,
         part: u64,
-        reasoning: bool,
+        field: &'static str,
         text: &str,
         done: bool,
         out: &mut Vec<Value>,
     ) -> Result<(), ()> {
-        let previous = self.fields.entry((index, part, reasoning)).or_default();
+        let previous = self.fields.entry((index, part, field)).or_default();
         let delta = if done {
             text.strip_prefix(previous.as_str()).ok_or(())?
         } else {
@@ -180,18 +180,22 @@ impl Stream {
         };
         previous.push_str(delta);
         if !delta.is_empty() {
-            let key = if reasoning { "reasoning_content" } else { "content" };
-            out.push(self.chunk(json!({key:delta}), None));
+            out.push(self.chunk(json!({field:delta}), None));
         }
         Ok(())
     }
 
     fn item_text(&mut self, index: u64, item: &Value, out: &mut Vec<Value>) -> Result<(), ()> {
-        for (key, reasoning) in [("content", false), ("summary", true)] {
+        for (key, field) in [("content", "content"), ("summary", "reasoning_content")] {
             if let Some(parts) = item[key].as_array() {
                 for (part, value) in parts.iter().enumerate() {
-                    if let Some(text) = value["text"].as_str() {
-                        self.text(index, part as u64, reasoning, text, true, out)?;
+                    let (field, text_key) = if value["type"] == "refusal" {
+                        ("refusal", "refusal")
+                    } else {
+                        (field, "text")
+                    };
+                    if let Some(text) = value[text_key].as_str() {
+                        self.text(index, part as u64, field, text, true, out)?;
                     }
                 }
             }
@@ -233,7 +237,13 @@ impl Stream {
                 self.item(index, &v["item"])?;
                 if kind.ends_with(".done") {
                     self.item_text(index, &v["item"], &mut out)?;
-                    self.tool(index, &mut out)?;
+                    // A done item can still contain token-truncated arguments.
+                    // Only the terminal response tells us whether that is an error.
+                    if serde_json::from_str::<Value>(&self.items[&index].arguments)
+                        .is_ok_and(|v| v.is_object())
+                    {
+                        self.tool(index, &mut out)?;
+                    }
                 }
             }
             "response.function_call_arguments.delta" | "response.function_call_arguments.done" => {
@@ -258,6 +268,8 @@ impl Stream {
             }
             "response.output_text.delta"
             | "response.output_text.done"
+            | "response.refusal.delta"
+            | "response.refusal.done"
             | "response.reasoning_summary_text.delta"
             | "response.reasoning_summary_text.done" => {
                 let index = self.index(v)?;
@@ -269,9 +281,24 @@ impl Stream {
                 }]
                 .as_u64()
                 .ok_or(())?;
+                let refusal = kind.starts_with("response.refusal");
+                let field = if reasoning {
+                    "reasoning_content"
+                } else if refusal {
+                    "refusal"
+                } else {
+                    "content"
+                };
                 let done = kind.ends_with(".done");
-                let text = v[if done { "text" } else { "delta" }].as_str().ok_or(())?;
-                self.text(index, part, reasoning, text, done, &mut out)?;
+                let text_key = if !done {
+                    "delta"
+                } else if refusal {
+                    "refusal"
+                } else {
+                    "text"
+                };
+                let text = v[text_key].as_str().ok_or(())?;
+                self.text(index, part, field, text, done, &mut out)?;
             }
             "response.completed" | "response.incomplete" => {
                 let response = &v["response"];
@@ -298,7 +325,11 @@ impl Stream {
                     self.tool(index, &mut out)?;
                 }
                 self.reason = if incomplete {
-                    "length"
+                    if response["incomplete_details"]["reason"] == "content_filter" {
+                        "content_filter"
+                    } else {
+                        "length"
+                    }
                 } else if self.next_slot > 0 {
                     "tool_calls"
                 } else {
@@ -339,19 +370,28 @@ impl Stream {
         let text: String = self
             .fields
             .iter()
-            .filter(|((_, _, r), _)| !r)
+            .filter(|((_, _, field), _)| *field == "content")
             .map(|(_, v)| v.as_str())
             .collect();
         let reasoning: String = self
             .fields
             .iter()
-            .filter(|((_, _, r), _)| *r)
+            .filter(|((_, _, field), _)| *field == "reasoning_content")
             .map(|(_, v)| v.as_str())
             .collect();
         let mut assistant =
             json!({"role":"assistant", "content":if text.is_empty() { Value::Null } else { json!(text) }});
         if !reasoning.is_empty() {
             assistant["reasoning_content"] = json!(reasoning);
+        }
+        let refusal: String = self
+            .fields
+            .iter()
+            .filter(|((_, _, field), _)| *field == "refusal")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        if !refusal.is_empty() {
+            assistant["refusal"] = json!(refusal);
         }
         let mut calls: Vec<_> = self.items.values().filter(|i| i.emitted).map(|i| (i.slot, json!({
             "id":i.native["call_id"], "type":"function", "function":{"name":i.native["name"], "arguments":i.arguments}
@@ -542,6 +582,101 @@ mod tests {
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
             .collect();
         assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn truncated_item_done_preserves_incomplete_usage_without_a_tool_call() {
+        for include_output in [false, true] {
+            let item = json!({"type":"function_call", "id":"fc_a", "call_id":"call_fc_a",
+                "name":"read", "arguments":"{\"path\":"});
+            let (chunks, done) = run(vec![
+                added(0, "fc_a", "read"),
+                json!({"type":"response.function_call_arguments.delta", "item_id":"fc_a", "delta":"{\"path\":"}),
+                json!({"type":"response.function_call_arguments.done", "item_id":"fc_a", "arguments":"{\"path\":"}),
+                json!({"type":"response.output_item.done", "output_index":0, "item":item}),
+                json!({"type":"response.incomplete", "response":{
+                    "output":if include_output { vec![item] } else { vec![] },
+                    "incomplete_details":{"reason":"max_output_tokens"},
+                    "usage":{"input_tokens":10,"output_tokens":3}}}),
+            ]);
+            assert!(!done.failed);
+            assert_eq!(done.finish_reason, "length");
+            assert_eq!(done.usage.as_ref().unwrap().output_tokens, 3);
+            assert!(done.assistant.get("tool_calls").is_none());
+            assert!(chunks
+                .iter()
+                .all(|c| c.get("error").is_none() && c["choices"][0]["delta"].get("tool_calls").is_none()));
+            assert!(chunks
+                .iter()
+                .any(|c| c["choices"][0]["finish_reason"] == "length"));
+            assert_eq!(chunks.last().unwrap()["usage"]["completion_tokens"], 3);
+        }
+    }
+
+    #[test]
+    fn malformed_item_done_is_rejected_on_successful_terminal() {
+        let mut stream = Stream::new("test-model", 7, true);
+        let chunks = stream.event(&json!({"type":"response.output_item.done", "output_index":0,
+            "item":{"type":"function_call", "id":"fc_a", "call_id":"call_a", "name":"read", "arguments":"{"}}));
+        assert!(chunks.is_empty());
+        let chunks = stream.event(&terminal("response.completed"));
+        assert_eq!(chunks[0]["error"]["type"], "upstream_error");
+        assert!(stream.finish().failed);
+    }
+
+    #[test]
+    fn refusal_deltas_and_snapshots_preserve_separate_refusal_field() {
+        for mode in ["deltas", "item_done", "terminal"] {
+            let item = json!({"type":"message", "id":"msg_a", "content":[
+                {"type":"output_text","text":"Visible text"},
+                {"type":"refusal","refusal":"Cannot help"}]});
+            let mut events = vec![];
+            if mode == "deltas" {
+                events.extend([
+                    json!({"type":"response.refusal.delta", "output_index":0,"content_index":1,"delta":"Cannot "}),
+                    json!({"type":"response.refusal.done", "output_index":0,"content_index":1,"refusal":"Cannot help"}),
+                ]);
+            }
+            if mode != "terminal" {
+                events.push(json!({"type":"response.output_item.done", "output_index":0,"item":item}));
+            }
+            events.push(json!({"type":"response.completed", "response":{"output":[item]}}));
+            let (chunks, done) = run(events);
+            assert!(!done.failed);
+            assert_eq!(done.finish_reason, "stop");
+            assert_eq!(done.assistant["refusal"], "Cannot help");
+            assert_eq!(done.assistant["content"], "Visible text");
+            let refusal: String = chunks
+                .iter()
+                .filter_map(|c| c["choices"][0]["delta"]["refusal"].as_str())
+                .collect();
+            assert_eq!(refusal, "Cannot help");
+        }
+    }
+
+    #[test]
+    fn refusal_only_response_is_not_an_empty_success() {
+        let (chunks, done) = run(vec![json!({"type":"response.completed", "response":{"output":[
+            {"type":"message", "content":[{"type":"refusal","refusal":"Cannot help"}]}]}})]);
+        assert!(!done.failed);
+        assert_eq!(done.assistant["refusal"], "Cannot help");
+        assert!(done.assistant["content"].is_null());
+        assert!(chunks
+            .iter()
+            .any(|c| c["choices"][0]["delta"]["refusal"] == "Cannot help"));
+    }
+
+    #[test]
+    fn incomplete_content_filter_finish_reason() {
+        for kind in ["response.incomplete", "response.completed"] {
+            let (chunks, done) = run(vec![json!({"type":kind, "response":{
+                "status":"incomplete", "incomplete_details":{"reason":"content_filter"}}})]);
+            assert!(!done.failed);
+            assert_eq!(done.finish_reason, "content_filter");
+            assert!(chunks
+                .iter()
+                .any(|c| c["choices"][0]["finish_reason"] == "content_filter"));
+        }
     }
 
     #[test]
