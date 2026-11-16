@@ -129,6 +129,7 @@ struct Guard {
     host_since: Option<Instant>,
     loading_since: Option<Instant>,
     previous: Instant,
+    loading: bool,
 }
 impl Guard {
     fn new(baseline: MemorySample, now: Instant) -> Self {
@@ -137,6 +138,7 @@ impl Guard {
             host_since: None,
             loading_since: None,
             previous: now,
+            loading: true,
         }
     }
     // GUARD-2b: host floors for 3s, ready PSI >20% for 3s,
@@ -151,6 +153,7 @@ impl Guard {
             return Err(io::Error::other("memory clock or counter regressed"));
         }
         self.previous = now;
+        self.loading = loading;
         let immediate = !s.swap_limit_zero
             || s.swap_current_bytes != 0
             || s.oom_events > self.baseline.oom_events
@@ -294,9 +297,19 @@ impl Lifecycle {
         self.clock.lock().unwrap_or_else(|e| e.into_inner()).observed = now;
         let sample = memory.and_then(MemorySample::validate);
         let state = self.status().state;
-        if matches!(state, State::Starting | State::Ready | State::Backoff) {
+        if matches!(
+            state,
+            State::Starting | State::Ready | State::Backoff | State::Stopping
+        ) {
             let decision = match (&mut self.guard, &sample) {
-                (Some(guard), Ok(sample)) => guard.unsafe_sample(now, *sample, state != State::Ready),
+                (Some(guard), Ok(sample)) => {
+                    let loading = if state == State::Stopping {
+                        guard.loading
+                    } else {
+                        state != State::Ready
+                    };
+                    guard.unsafe_sample(now, *sample, loading)
+                }
                 _ => Err(io::Error::other("memory sample unavailable")),
             };
             let reason = match decision {
@@ -356,13 +369,8 @@ impl Lifecycle {
                 if self.control.take().is_some() {
                     self.clock.lock().unwrap_or_else(|e| e.into_inner()).last_use = now;
                 }
-                let last = self.clock.lock().unwrap_or_else(|e| e.into_inner()).last_use;
-                if self
-                    .policy
-                    .idle_timeout
-                    .is_some_and(|timeout| now.saturating_duration_since(last) >= timeout)
-                {
-                    if let Ok(lease) = self.queue.try_acquire() {
+                if let Some(timeout) = self.policy.idle_timeout {
+                    if let Some(lease) = idle_lease(now, &self.clock, timeout, || self.queue.try_acquire()) {
                         self.control = Some(lease);
                         self.stop(now, StopReason::Idle)?;
                     }
@@ -383,5 +391,49 @@ impl Drop for Lifecycle {
     fn drop(&mut self) {
         self.ready.store(false, Ordering::Release);
         self.queue.close();
+    }
+}
+
+// Acquire is a reservation boundary: another request may finish immediately
+// before it grants exclusive ownership. The deadline must reflect that release.
+fn idle_lease(
+    now: Instant,
+    clock: &Mutex<Clock>,
+    timeout: Duration,
+    acquire: impl FnOnce() -> Result<Lease, AdmissionError>,
+) -> Option<Lease> {
+    let lease = acquire().ok()?;
+    let last = clock.lock().unwrap_or_else(|e| e.into_inner()).last_use;
+    (now.saturating_duration_since(last) >= timeout).then_some(lease)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_at_idle_reservation_resets_the_deadline() {
+        let last = Instant::now();
+        let now = last + Duration::from_secs(20);
+        let queue = RequestQueue::new(0);
+        let clock = Arc::new(Mutex::new(Clock {
+            last_use: last,
+            observed: now,
+        }));
+        let active = RequestLease {
+            _lease: queue.try_acquire().unwrap(),
+            clock: clock.clone(),
+        };
+        // Deterministically schedule a real request release immediately before
+        // the queue grants the poll its idle reservation.
+        let reservation = idle_lease(now, &clock, Duration::from_secs(10), || {
+            drop(active);
+            queue.try_acquire()
+        });
+        assert!(
+            reservation.is_none(),
+            "request release must start a fresh idle interval"
+        );
+        assert!(queue.try_acquire().is_ok());
     }
 }

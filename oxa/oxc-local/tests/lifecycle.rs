@@ -345,3 +345,55 @@ fn queued_requests_block_idle_unload_and_owner_drop_wakes_them_closed() {
     drop(active);
     assert!(gate.try_acquire().is_err());
 }
+
+#[test]
+fn memory_fault_during_switch_cancels_launch_even_if_sampling_recovers() {
+    for missing in [false, true] {
+        let now = Instant::now();
+        let ready = std::env::temp_dir().join(format!("local-switch-{}-{missing}", std::process::id()));
+        let mut initial = model("one");
+        initial.config.executable = "/bin/sh".into();
+        initial.config.arguments = vec![
+            "-c".into(),
+            "trap '' TERM; : > \"$1\"; exec /bin/sleep 60".into(),
+            "fake-engine".into(),
+            ready.clone().into_os_string(),
+        ];
+        initial.config.term_grace = Duration::from_secs(10);
+        let mut owner = Lifecycle::new(0, Policy::default());
+        owner.load(initial, now, Ok(memory())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        poll(&mut owner, now, memory());
+        owner.load(model("two"), now, Ok(memory())).unwrap();
+        let mut fault = memory();
+        fault.oom_events += 1;
+        owner
+            .poll(
+                now,
+                if missing {
+                    Err(std::io::Error::other("unavailable"))
+                } else {
+                    Ok(fault)
+                },
+                || panic!("stopping probe"),
+            )
+            .unwrap();
+        assert_eq!(
+            owner.status().stop_reason,
+            Some(if missing {
+                StopReason::MemoryUnavailable
+            } else {
+                StopReason::MemoryPressure
+            })
+        );
+        stopped(&mut owner, now + Duration::from_secs(11));
+        poll(&mut owner, now + Duration::from_secs(20), memory());
+        assert_eq!(owner.status().pid, None);
+        assert_eq!(owner.status().model, None);
+        std::fs::remove_file(ready).unwrap();
+    }
+}
