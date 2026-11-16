@@ -53,8 +53,9 @@ cargo run --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli \
 
 It emits five samples of idle/streaming RSS and threads, startup/request time to
 the first text, and the overhead against a direct request with the same body.
-Results contain numbers only. This initial slice does not link the gateway into
-the production binary; consumer slices must measure their own footprint.
+Results contain numbers only. The default oxa binary does not link the gateway;
+the optional `oxa-engine/in-process-gateway` bridge is described below. Measure
+each consumer's binary with its selected features.
 
 The `cloud-only` feature provides a typed, immutable catalog. Construct validated
 `catalog::Model` values from trusted user settings, then create a `Catalog` with
@@ -74,7 +75,7 @@ rows are owner-only. Explicit session and idempotency identifiers use separate
 keyed HMAC domains. The entry API accepts no request body, and records no prompt,
 response, agent fingerprint or inferred session/gap telemetry. Billing fields
 are validated and serialized through one writer; failed appends fail admission
-closed. Cross-process admission follows the walking-skeleton series.
+closed. Admission uses the process-shared reservations described above.
 
 `KeyFile::prepare` binds an approved parent directory once per configuration;
 each read opens the key file afresh without following its final link and checks
@@ -101,8 +102,9 @@ redaction and is only appropriate without sensitive data.
 `finish` rejects truncated/error streams. Only terminal output usage followed by
 `message_stop` is trusted, with input, cache reads and cache writes kept separate.
 Trusted usage remains available when public usage is disabled. Native tests
-cover these contracts without Python peers or byte-exact goldens. Transport and
-the production caller that supplies the redactor follow in S5/S6.
+cover these contracts without Python peers or byte-exact goldens. The native
+`anthropic_client` transport supplies the credential redactor; the gateway
+settles the request before reporting success.
 
 `anthropic-gateway` composes typed catalog configuration, private admission,
 native transport and consuming settlement. `Runtime::new` takes validated model
