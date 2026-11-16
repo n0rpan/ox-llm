@@ -3,6 +3,9 @@
 //! navigation must settle the session to idle, so the next prompt starts a run, and a
 //! `/compact` with nothing to cut says so.
 
+// The existing PTY harness is Linux-only.
+#![cfg(target_os = "linux")]
+
 #[path = "support/tui_rig.rs"]
 mod rig;
 #[path = "support/tree_pty.rs"]

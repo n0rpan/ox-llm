@@ -4,6 +4,7 @@
 #![allow(dead_code, unused_imports)]
 
 use oxa_fake::{FakeOpts, FakeServer, Recorded, ScriptTurn, TestEnv};
+#[cfg(target_os = "linux")]
 pub use oxa_parity::pty::{PtyOpts, PtySession, Screen, TermProfile, DEFAULT_TIMEOUT};
 use oxa_proto::Role;
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ pub const WAIT: Duration = Duration::from_secs(30);
 
 /// A pty session with its engine and directories. Field order = drop order: the pty (and the
 /// child) go first, then the engine, then the dirs.
+#[cfg(target_os = "linux")]
 pub struct Rig {
     pub pty: PtySession,
     pub server: FakeServer,
@@ -20,6 +22,7 @@ pub struct Rig {
 }
 
 /// Options of [`Rig::start_with`].
+#[cfg(target_os = "linux")]
 pub struct RigOpts {
     pub size: (u16, u16),
     pub profile: TermProfile,
@@ -29,6 +32,7 @@ pub struct RigOpts {
     pub fake: FakeOpts,
 }
 
+#[cfg(target_os = "linux")]
 impl Default for RigOpts {
     fn default() -> RigOpts {
         RigOpts {
@@ -46,6 +50,7 @@ pub fn replies(n: usize) -> Vec<ScriptTurn> {
     (1..=n).map(|i| ScriptTurn::text(&format!("reply {i}"))).collect()
 }
 
+#[cfg(target_os = "linux")]
 impl Rig {
     /// A TUI session on an existing env (settings, sessions written before) with `script`.
     pub fn start_in(env: TestEnv, script: Vec<ScriptTurn>, opts: RigOpts) -> Rig {
@@ -209,6 +214,7 @@ pub fn session_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
 }
 
 /// The rows of the editor: between the last two horizontal rules at the bottom.
+#[cfg(target_os = "linux")]
 pub fn editor_rows(s: &Screen) -> Vec<String> {
     let rows = s.rows();
     let rules: Vec<usize> = rows
@@ -225,6 +231,7 @@ pub fn editor_rows(s: &Screen) -> Vec<String> {
 }
 
 /// The editor text (rows joined with `\n`, right-trimmed).
+#[cfg(target_os = "linux")]
 pub fn editor_text(s: &Screen) -> String {
     editor_rows(s)
         .iter()

@@ -25,9 +25,13 @@ use std::time::Duration;
 
 #[path = "support/tui_rig.rs"]
 mod rig;
+#[cfg(target_os = "linux")]
 #[path = "support/tree_pty.rs"]
 mod tree_pty;
-use rig::{session_lines, user_texts, Rig, RigOpts, Screen, WAIT};
+use rig::{session_lines, user_texts};
+#[cfg(target_os = "linux")]
+use rig::{Rig, RigOpts, Screen, WAIT};
+#[cfg(target_os = "linux")]
 use tree_pty::{open_tree, select_listed, select_row, selected};
 
 // ---------------------------------------------------------------- helpers
@@ -364,6 +368,7 @@ fn ses_001() {
 /// pi docs: sessions.md "`--continue` opens the most recent session for the current directory".
 /// invariant: W3 (the stored prefix bytes are replayed on continue; no new session is made).
 #[test]
+#[cfg(target_os = "linux")]
 fn ses_002() {
     let env = TestEnv::new();
     let server = FakeServer::start(
@@ -403,6 +408,7 @@ fn ses_002() {
 }
 
 /// SES-002, the interactive part: the `-r` picker through the pty.
+#[cfg(target_os = "linux")]
 fn ses_002_picker() {
     let env = TestEnv::new();
     three_sessions(&env);
@@ -505,6 +511,7 @@ fn ses_002_picker() {
 
 /// pi docs: sessions.md "Deleting a session uses `trash` when available" (picker delete).
 #[test]
+#[cfg(target_os = "linux")]
 fn ses_003() {
     // pi docs: sessions.md (the picker's delete); pi session-selector.ts `deleteSessionFile`:
     // the `trash` command first ("Session moved to trash"), unlink when it fails ("Session
@@ -796,6 +803,7 @@ fn file_of(env: &TestEnv, first: &str) -> Option<PathBuf> {
 }
 
 /// The picker's list rows (cursor column and text), between the search line and the bottom border.
+#[cfg(target_os = "linux")]
 fn picker_rows(s: &Screen) -> Vec<String> {
     let rows = s.rows();
     let Some(search) = rows.iter().position(|r| r.starts_with("> ")) else {
@@ -809,6 +817,7 @@ fn picker_rows(s: &Screen) -> Vec<String> {
 }
 
 /// `oxa -r` in the work directory with the three sessions; waits for the picker.
+#[cfg(target_os = "linux")]
 fn picker_rig(env: TestEnv, opts: RigOpts) -> Rig {
     let rig = Rig::start_in(
         env,
@@ -931,6 +940,7 @@ fn ses_010() {
 /// pi docs: sessions.md "Labels on entries" (`/tree`, Shift+L). Headless: a label is read and
 /// shown by the tree; the write is interactive-only.
 #[test]
+#[cfg(target_os = "linux")]
 fn ses_011() {
     // pi docs: sessions.md (`/tree` Shift+L labels an entry; session-format.md LabelEntry);
     // get_tree shows it (rpc.md).
