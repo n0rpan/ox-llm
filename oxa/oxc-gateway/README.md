@@ -14,6 +14,12 @@ and syncs the private settlement row. A short file lock covers spend, persisted
 holds and admission; it is released before any upstream work. Independent Budget
 instances and processes use the same private daily files. Failed writes or an
 abandoned potentially paid hold block further spending across processes.
+Call `mark_forwarded()?` before sending potentially paid bytes: it verifies the
+persisted hold and propagates a shared accounting failure to the caller.
+Missing/failed usage costs the full reservation; cancellation uses final usage
+or a bounded byte/time estimate including hidden reasoning and cache-write
+premiums. Known actual charges are never capped at the reservation;
+OpenRouter's reported cost is authoritative.
 
 The ledger directory must already be owned by this user with mode 0700. Daily
 `.budget-lock` and `.holds` files are owner-only and contain only random hold IDs,

@@ -451,7 +451,11 @@ fn a_killed_process_keeps_unknown_holds_even_before_forwarding() {
     child.wait().unwrap();
     // Main's durable snapshots deliberately retain every crashed owner's hold.
     assert_eq!(
-        budget.reserve(&json!(0.0015), true, &plain_model(), 100).err().unwrap().code,
+        budget
+            .reserve(&json!(0.0015), true, &plain_model(), 100)
+            .err()
+            .unwrap()
+            .code,
         "budget_exceeded"
     );
     let home = Home::new();
@@ -661,6 +665,27 @@ fn malformed_persisted_holds_are_never_reaped_or_reset() {
             .is_err());
         assert_eq!(fs::read_to_string(&holds).unwrap(), contents);
     }
+}
+
+#[test]
+fn forwarding_checks_other_instances_failure_latch() {
+    let home = Home::new();
+    let path = home.ledger();
+    let first = Budget::new(path.clone());
+    let other = Budget::new(path);
+    let mut hold = first.reserve(&json!(1), true, &model(), 32).unwrap();
+    let mut failed = other.reserve(&json!(1), true, &model(), 32).unwrap();
+    failed.mark_forwarded().unwrap();
+    assert!(failed
+        .finish(&Usage::default(), Outcome::Failed, |_| {
+            Err(io::ErrorKind::StorageFull.into())
+        })
+        .is_err());
+    // A hold admitted before another instance failed must not start paid work.
+    assert_eq!(
+        hold.mark_forwarded().unwrap_err().code,
+        "cloud_ledger_unavailable"
+    );
 }
 
 #[test]

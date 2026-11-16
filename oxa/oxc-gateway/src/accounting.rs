@@ -174,11 +174,15 @@ impl Hold {
     pub fn reserved(&self) -> f64 {
         self.reserved
     }
-    /// Verify the persisted reservation before sending potentially paid bytes.
+    /// On first forwarding, verify the persisted reservation before paid bytes.
     /// All holds already survive a process crash, including before forwarding.
     pub fn mark_forwarded(&mut self) -> Result<(), Refusal> {
+        // Admission failures must not prevent already-paid work from settling.
+        if self.forwarded {
+            return Ok(());
+        }
         let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
-        let checked = (|| {
+        let checked: io::Result<()> = (|| {
             let shared = Shared::open(&self.budget.path)?;
             if shared.failed || !shared.holds.contains_key(&self.id) {
                 return Err(io::ErrorKind::InvalidData.into());

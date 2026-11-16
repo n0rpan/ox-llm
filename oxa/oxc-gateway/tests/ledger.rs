@@ -151,7 +151,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         ..Context::default()
     };
     let entry = first.entry("synthetic-alias", context()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })
@@ -162,7 +162,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         .reserve(&json!(0.005), true, &model(), 1000)
         .unwrap();
     let entry = second.entry("synthetic-alias", context()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })
@@ -181,7 +181,7 @@ fn append_failure_stops_all_handles_and_is_not_retried() {
     let daily = ledger.day("20260102").unwrap();
     let mut hold = daily.budget().reserve(&json!(1), true, &model(), 1000).unwrap();
     let entry = daily.entry("synthetic-alias", Context::default()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let path = home.0.join("requests-20260102.jsonl");
     fs::create_dir(&path).unwrap();
     assert!(hold
@@ -221,7 +221,7 @@ fn midnight_does_not_move_an_admitted_charge_or_discard_an_outstanding_hold() {
         .reserve(&json!(0.005), true, &model(), 1000)
         .is_err());
     let entry = before.entry("synthetic-alias", Context::default()).unwrap();
-    held.mark_forwarded();
+    held.mark_forwarded().unwrap();
     held.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })
