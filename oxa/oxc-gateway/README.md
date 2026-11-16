@@ -14,6 +14,8 @@ and syncs the private settlement row. A short file lock covers spend, persisted
 holds and admission; it is released before any upstream work. Independent Budget
 instances and processes use the same private daily files. Failed writes or an
 abandoned potentially paid hold block further spending across processes.
+Call `mark_forwarded()?` before sending potentially paid bytes: it verifies the
+persisted hold and propagates a shared accounting failure to the caller.
 
 The ledger directory must already be owned by this user with mode 0700. Daily
 `.budget-lock` and `.holds` files are owner-only and contain only random hold IDs,

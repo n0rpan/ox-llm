@@ -151,14 +151,14 @@ fn worker(path: PathBuf) {
     };
     let mut command = input.next().unwrap().unwrap();
     if command == "forward" {
-        hold.mark_forwarded();
+        hold.mark_forwarded().unwrap();
         signal("forwarded");
         command = input.next().unwrap().unwrap();
     }
     match command.as_str() {
         "release" => drop(hold),
         "settle" => {
-            hold.mark_forwarded();
+            hold.mark_forwarded().unwrap();
             let usage = Usage {
                 prompt: Some(100),
                 output: Some(0),
@@ -168,7 +168,7 @@ fn worker(path: PathBuf) {
                 .unwrap();
         }
         "fail" => {
-            hold.mark_forwarded();
+            hold.mark_forwarded().unwrap();
             assert!(hold
                 .finish(&Usage::default(), Outcome::Failed, |_| Err(
                     std::io::ErrorKind::Other.into()
@@ -176,7 +176,7 @@ fn worker(path: PathBuf) {
                 .is_err());
         }
         "partial-fail" => {
-            hold.mark_forwarded();
+            hold.mark_forwarded().unwrap();
             assert!(hold
                 .finish(&Usage::default(), Outcome::Failed, |_| {
                     let mut file = fs::OpenOptions::new()
@@ -190,11 +190,11 @@ fn worker(path: PathBuf) {
                 .is_err());
         }
         "drop" => {
-            hold.mark_forwarded();
+            hold.mark_forwarded().unwrap();
             drop(hold);
         }
         "commit-then-crash" => {
-            hold.mark_forwarded();
+            hold.mark_forwarded().unwrap();
             hold.finish(&Usage::default(), Outcome::Complete, |row| {
                 append_private(&path, row)?;
                 std::process::exit(23);
@@ -202,7 +202,7 @@ fn worker(path: PathBuf) {
             .unwrap();
         }
         "crash" => {
-            hold.mark_forwarded();
+            hold.mark_forwarded().unwrap();
             std::process::exit(23);
         }
         _ => panic!("unknown worker command"),

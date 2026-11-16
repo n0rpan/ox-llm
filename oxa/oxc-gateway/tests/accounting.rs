@@ -183,7 +183,7 @@ fn settled_cache_tokens_and_reported_costs_become_remote_rows() {
     let path = home.ledger();
     let budget = Budget::new(path.clone());
     let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let usage = Usage {
         prompt: Some(1000),
         output: Some(4),
@@ -204,7 +204,7 @@ fn settled_cache_tokens_and_reported_costs_become_remote_rows() {
     assert_eq!(row["cache_write_tokens"], 40);
     assert_eq!(budget.spend().unwrap(), 0.000163);
     let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let usage = Usage {
         reported_cost: Some(0.00001),
         ..usage
@@ -223,7 +223,7 @@ fn missing_usage_charges_the_reservation_and_write_failures_block_further_spendi
     let budget = Budget::new(path.clone());
     let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
     let reserved = hold.reserved();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let row = hold
         .finish(&Usage::default(), Outcome::Complete, |row| append(&path, row))
         .unwrap();
@@ -231,7 +231,7 @@ fn missing_usage_charges_the_reservation_and_write_failures_block_further_spendi
     assert_eq!(row["settled"], "reserved");
     assert_eq!(row["usage_missing"], true);
     let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     assert!(hold
         .finish(&Usage::default(), Outcome::Failed, |_| Err(
             io::ErrorKind::PermissionDenied.into()
@@ -247,7 +247,7 @@ fn dropping_a_potentially_paid_hold_without_recording_fails_closed() {
     let home = Home::new();
     let budget = Budget::new(home.ledger());
     let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     drop(hold);
     assert_eq!(
         budget.reserve(&json!(1), true, &model(), 32).err().unwrap().code,
@@ -271,7 +271,7 @@ fn cancelled_cache_writes_include_hidden_output_and_final_usage_stays_exact() {
         ..Usage::default()
     };
     let mut hold = budget.reserve(&json!(1), true, &model, 32).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let cancel = Outcome::Cancelled {
         request_bytes: 100_000,
         streamed_bytes: 0,
@@ -282,7 +282,7 @@ fn cancelled_cache_writes_include_hidden_output_and_final_usage_stays_exact() {
     assert_eq!(row["cost_usd"], 0.20006);
     assert_eq!(row["settled"], "estimated");
     let mut hold = budget.reserve(&json!(1), true, &model, 32).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let row = hold
         .finish(
             &usage,
@@ -299,7 +299,7 @@ fn cancelled_cache_writes_include_hidden_output_and_final_usage_stays_exact() {
     assert_eq!(row["settled"], "usage");
     let mut hold = budget.reserve(&json!(1), true, &model, 32).unwrap();
     let reserved = hold.reserved();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let row = hold
         .finish(
             &Usage::default(),
@@ -322,7 +322,7 @@ fn cancellation_never_caps_a_known_charge_at_the_reservation() {
     let budget = Budget::new(path.clone());
     let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
     assert!(hold.reserved() < 0.004);
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let usage = Usage {
         reported_cost: Some(0.004),
         ..Usage::default()
@@ -348,7 +348,7 @@ fn settle_frames(frames: &[Value], outcome: Outcome) -> Value {
     let path = home.ledger();
     let budget = Budget::new(path.clone());
     let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let mut usage = Usage::default();
     for frame in frames {
         usage.observe(frame);
@@ -497,4 +497,42 @@ fn cancellation_uses_final_usage_or_a_bounded_estimate_including_hidden_output()
         assert_eq!(row["settled"], settled);
         assert_eq!(row["usage_missing"] == true, settled == "estimated");
     }
+}
+
+#[test]
+fn forwarding_checks_other_instances_failure_latch() {
+    let home = Home::new();
+    let path = home.ledger();
+    let first = Budget::new(path.clone());
+    let other = Budget::new(path);
+    let mut hold = first.reserve(&json!(1), true, &model(), 32).unwrap();
+    let mut failed = other.reserve(&json!(1), true, &model(), 32).unwrap();
+    failed.mark_forwarded().unwrap();
+    assert!(failed
+        .finish(&Usage::default(), Outcome::Failed, |_| {
+            Err(io::ErrorKind::StorageFull.into())
+        })
+        .is_err());
+    // A hold admitted before another instance failed must not start paid work.
+    assert_eq!(
+        hold.mark_forwarded().unwrap_err().code,
+        "cloud_ledger_unavailable"
+    );
+}
+
+#[test]
+fn forwarding_persistence_failure_is_returned_before_paid_bytes_can_be_sent() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(1), true, &model(), 32).unwrap();
+    let holds = path.with_file_name("requests-synthetic.jsonl.holds");
+    let snapshot = fs::read(&holds).unwrap();
+    fs::write(&holds, "invalid").unwrap();
+    assert!(hold.mark_forwarded().is_err());
+    fs::write(&holds, snapshot).unwrap();
+    // The failed budget stays latched; a retry must not silently permit sending.
+    assert!(hold.mark_forwarded().is_err());
+    drop(hold);
+    assert!(Budget::new(path).reserve(&json!(1), true, &model(), 32).is_ok());
 }
