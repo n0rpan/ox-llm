@@ -348,3 +348,38 @@ fn processes_refresh(recovery: bool) {
     }
     assert_eq!(fs::read(temp.0.join("refresh-called")).unwrap(), b"once");
 }
+
+#[test]
+fn nonblocking_refresh_reports_only_busy_and_preserves_checks() {
+    use nix::fcntl::{Flock, FlockArg};
+    let temp = Temp::new();
+    let path = temp.tokens(1.0);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(temp.0.join("chatgpt-auth.lock"))
+        .unwrap();
+    let held = Flock::lock(file, FlockArg::LockExclusive).unwrap();
+    let before = fs::read(&path).unwrap();
+    let busy = chatgpt_tokens::try_credentials(&path, |_| -> Result<TokenRecord, Error> {
+        panic!("busy lock must not call refresh")
+    })
+    .unwrap();
+    assert!(busy.is_none());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    drop(held);
+    let record = chatgpt_tokens::try_credentials(&path, |_| Ok::<_, Error>(renewed()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.access_token(), ACCESS);
+    let fresh = chatgpt_tokens::try_credentials(&path, never).unwrap().unwrap();
+    assert_eq!(fresh.access_token(), ACCESS);
+    let linked = temp.0.join("linked.json");
+    symlink(&path, &linked).unwrap();
+    assert!(matches!(
+        chatgpt_tokens::try_credentials(&linked, never),
+        Err(Error::Unavailable)
+    ));
+}
