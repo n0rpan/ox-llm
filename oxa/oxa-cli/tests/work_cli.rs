@@ -33,6 +33,8 @@ fn setup(env: &TestEnv, done: &str) {
     git(env, &env.work(), &["init", "--bare", "remote.git"]);
     git(env, &env.work(), &["init", "-b", "main", "project"]);
     let project = env.work().join("project");
+    git(env, &project, &["config", "user.name", "Test"]);
+    git(env, &project, &["config", "user.email", "test@example.invalid"]);
     env.write(
         "work/project/.oxa/settings.json",
         &format!(r#"{{"done":{done}}}"#),
@@ -1011,7 +1013,7 @@ fn worktree_reference_hooks_run_only_inside_the_sandbox() {
     setup(&env, "[]");
     let hook = env.write(
         "work/project/.git/hooks/reference-transaction",
-        "#!/bin/sh\nprintf escaped > \"$HOME/worktree-reference-escape\" 2>/dev/null || true\nprintf ran >> reference-hook-ran\ncat >/dev/null\n",
+        "#!/bin/sh\nprintf escaped > \"$HOME/worktree-reference-escape\" 2>/dev/null || true\nprintf ran > reference-hook-ran\ncat >/dev/null\n",
     );
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let record = run(&env, vec![ScriptTurn::text("finished")]);
@@ -1340,8 +1342,11 @@ fn security_failed_receipt_write_never_publishes_a_torn_record() {
     );
     let out = child.wait_with_output().unwrap();
     assert!(!out.status.success());
-    assert!(
-        !storage(&env).join("test.json").exists(),
-        "interrupted receipt write left a canonical partial record"
-    );
+    let retained: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(storage(&env).join("test.json")).unwrap())
+            .expect("the previously durable checkpoint remains complete JSON");
+    assert_eq!(retained["version"], 1);
+    assert_eq!(retained["record"]["step"], "worker", "{retained}");
+    assert_eq!(retained["record"]["outcome"], "running", "{retained}");
+    assert!(retained["record"]["checkpoint_revision"].as_u64().unwrap() > 0);
 }
