@@ -652,10 +652,17 @@ fn bash_tool_exit_code_and_timeout_lines() {
     assert_eq!(out.text, "(no output)");
 
     let notice = sb.persistence_notice().unwrap();
+    // #525: a successful command that merely mentions /tmp or TMPDIR gets no notice ...
     for command in ["echo TMPDIR", "echo /tmp"] {
         let out = run(serde_json::json!({ "command": command }));
         assert!(!out.is_error, "{}", out.text);
-        assert!(out.text.ends_with(notice), "{}", out.text);
+        assert!(!out.text.contains(notice), "{}", out.text);
+    }
+    // ... a failing one does, since the scratch lifetime may be the cause.
+    for command in ["cat /tmp/oxa-525-missing", "echo TMPDIR; exit 1"] {
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains(notice), "{}", out.text);
     }
     for error in [
         "Read-only file system",
@@ -682,7 +689,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
     );
     assert!(!out.is_error, "{}", out.text);
     assert_eq!(live, "scratch\n");
-    assert!(out.text.contains("discarded after each command"));
+    assert!(!out.text.contains(notice), "{}", out.text);
     let out = run(serde_json::json!({ "command": "test ! -e /tmp/oxa-98-tool" }));
     assert!(!out.is_error, "{}", out.text);
     let out = run(serde_json::json!({ "command": "echo lost > ~/oxa-98-tool" }));
