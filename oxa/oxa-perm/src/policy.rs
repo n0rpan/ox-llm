@@ -29,9 +29,6 @@ pub struct PathGuard {
     allow: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
-    /// Only the active session's spill directory, attached by `Policy::set_spill_dir`.
-    /// Its truncated output is read without asking (#564). Writes outside the cwd still ask.
-    spill: PathBuf,
     /// The home directory and its startup files, keys and agent settings
     /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
     /// directory or above it (O-199 first run: oxa started in `$HOME`).
@@ -68,7 +65,6 @@ impl PathGuard {
             deny,
             allow: vec![tmp_dir.to_path_buf()],
             read_allow: vec![agent_dir.join("builtin-skills")],
-            spill: PathBuf::new(),
             home: home.to_path_buf(),
             home_protected,
         }
@@ -93,12 +89,6 @@ impl PathGuard {
     /// Like [`PathGuard::denies`] for a read: the built-in skills are readable.
     pub fn denies_read(&self, p: &Path) -> bool {
         self.denies(p) && !self.is_builtin_skill(p)
-    }
-
-    /// #564: `p` (absolute) is inside the spill directory, where the full output of a truncated
-    /// tool result is saved.
-    pub fn is_spill(&self, p: &Path) -> bool {
-        !self.spill.as_os_str().is_empty() && is_inside(p, &self.spill)
     }
 
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
@@ -218,6 +208,8 @@ fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
 pub struct ModePolicy {
     grants: Vec<Access>,
     guard: PathGuard,
+    /// Only the active session's output is readable without asking, not all of agent/tmp.
+    spill_dir: Option<PathBuf>,
     /// #517: `guard` for the file tools' directory walks (`None` without a guard).
     hidden: Option<Arc<HiddenPaths>>,
     /// O-182: while on, a question of the table is answered with "allow" (see
@@ -232,7 +224,10 @@ impl PartialEq for ModePolicy {
             (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
-        self.grants == other.grants && self.guard == other.guard && same_switch
+        self.grants == other.grants
+            && self.guard == other.guard
+            && self.spill_dir == other.spill_dir
+            && same_switch
     }
 }
 
@@ -361,10 +356,11 @@ impl Policy for ModePolicy {
             if denied {
                 return Decision::Deny(deny_reasons::SENSITIVE);
             }
-            // #492: the advertised built-in skills are read without asking, wherever the cwd is.
-            // #564: so is the spill file a truncated tool result names.
+            // #492, #531: the advertised built-in skills and oxa's own spill files are read
+            // without asking, wherever the cwd is.
             if matches!(a, Access::Read(_))
-                && (self.guard.is_builtin_skill(&abs) || self.guard.is_spill(&abs))
+                && (self.guard.is_builtin_skill(&abs)
+                    || self.spill_dir.as_ref().is_some_and(|dir| is_inside(&abs, dir)))
             {
                 return Decision::Allow;
             }
@@ -395,7 +391,7 @@ impl Policy for ModePolicy {
     }
 
     fn set_spill_dir(&mut self, dir: &Path) {
-        self.guard.spill = dir.to_path_buf();
+        self.spill_dir = Some(dir.to_path_buf());
     }
 
     fn remember(&mut self, a: &Access) {
