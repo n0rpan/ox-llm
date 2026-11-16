@@ -76,6 +76,7 @@ impl EmbeddedGateway for Backend {
             origin: ledger::Origin::Oxa,
             session: Some(context.session),
             idempotency_key: Some(context.idempotency_key),
+            guest_key_name: None,
         };
         let mut deliver = |event| {
             let settled = matches!(event, Event::Done);
