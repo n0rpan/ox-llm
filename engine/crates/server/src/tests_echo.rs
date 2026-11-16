@@ -1753,7 +1753,7 @@ fn store_unit_late_deferred_append_after_a_compaction_keeps_the_newest_record() 
         es.maybe_compact("s:s"),
         "the compaction runs, with A and B in it"
     );
-    assert_eq!(es.compactions, 1);
+    assert_eq!(es.compactions(), 1);
     assert!(
         a.write(),
         "a compaction does not refuse an earlier pending line"
@@ -2241,6 +2241,152 @@ async fn trailing_assistant_continuation_refused_and_h6_unchanged() {
         text.ends_with("Hello<|im_end|>\n"),
         "H6: a finished turn, no opener: {text:?}"
     );
+}
+
+/// Background maintenance can run out of RAM order without overwriting a newer turn or
+/// deleting a newly recreated session's file.
+#[test]
+fn store_unit_deferred_maintenance_preserves_newer_writes() {
+    let g = Regen::new();
+    for direct in [false, true] {
+        let dir = tmp_dir("maintenance-order");
+        let mut es = reopen(&dir);
+        es.cfg.compact_bytes = 0;
+        for _ in 0..100 {
+            assert!(g.deferred(&mut es, "old").write());
+        }
+        es.cfg.compact_bytes = 1;
+        let a = g.deferred(&mut es, "first");
+        // A direct compaction can persist a large, newer turn whose append is still pending.
+        let reasoning = if direct {
+            "second".repeat(100)
+        } else {
+            "second".into()
+        };
+        let b = g.deferred(&mut es, &reasoning);
+        if direct {
+            assert!(es.maybe_compact("s:s"));
+            assert!(a.write());
+            drop(b); // Already persisted by the direct compaction, not by this append.
+        } else {
+            assert!(b.write());
+            assert!(a.write());
+        }
+        let mut reloaded = reopen(&dir);
+        assert_eq!(g.splice(&mut reloaded), (g.want(&reasoning), 1));
+        assert_eq!(
+            reloaded.n_records(),
+            3,
+            "no newer record lost to an older snapshot"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    let dir = tmp_dir("eviction-recreate");
+    let mut es = reopen(&dir);
+    assert!(g.deferred(&mut es, "old").write());
+    es.cfg.max_tokens = es.n_tokens();
+    let (_, old) = es.record_deferred(
+        &g.p,
+        &g.asst,
+        g.im_end,
+        &unit_msg("Done", "old"),
+        &g.gen("old"),
+        crate::echo::TurnEnd::Eog,
+        Some("other"),
+    );
+    let new = g.deferred(&mut es, "new");
+    assert!(new.write());
+    assert!(
+        !old.unwrap().write(),
+        "evicted append cannot resurrect its group"
+    );
+    let mut reloaded = reopen(&dir);
+    assert_eq!(reloaded.n_session_records("other"), 0);
+    assert_eq!(g.splice(&mut reloaded), (g.want("new"), 1));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Recording must stay RAM-only even when it evicts a session or schedules compaction.
+#[test]
+fn store_unit_deferred_maintenance_never_waits_for_disk() {
+    for compact in [false, true] {
+        for adopt in [false, true] {
+            let g = Regen::new();
+            let dir = tmp_dir("deferred-maintenance");
+            let mut es = reopen(&dir);
+            es.cfg.compact_bytes = 0;
+            for _ in 0..20 {
+                assert!(g.deferred(&mut es, "old").write());
+            }
+            if compact {
+                es.cfg.compact_bytes = 1;
+            } else {
+                es.cfg.max_tokens = es.n_tokens();
+            }
+            let io = es.io_lock_for_test();
+            let (release, resume) = std::sync::mpsc::channel::<()>();
+            let (locked, ready) = std::sync::mpsc::channel();
+            let disk = std::thread::spawn(move || {
+                let _lock = io.lock().unwrap();
+                locked.send(()).unwrap();
+                let _ = resume.recv_timeout(std::time::Duration::from_secs(5));
+            });
+            ready.recv().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let session = if compact { "s" } else { "new" };
+                let pending = if adopt {
+                    es.adopt(
+                        &g.rendered,
+                        &[(1, g.spans[0].0, g.spans[0].1)],
+                        &g.msgs,
+                        &[],
+                        Some(session),
+                    )
+                } else {
+                    let (kept, pending) = es.record_deferred(
+                        &g.p,
+                        &g.asst,
+                        g.im_end,
+                        &unit_msg("Done", "new"),
+                        &g.gen("new"),
+                        crate::echo::TurnEnd::Eog,
+                        Some(session),
+                    );
+                    assert!(kept);
+                    pending.into_iter().collect()
+                };
+                tx.send((es, pending)).unwrap();
+            });
+            let result = rx.recv_timeout(std::time::Duration::from_secs(1));
+            release.send(()).unwrap();
+            disk.join().unwrap();
+            worker.join().unwrap();
+            let (es, pending) = result.unwrap_or_else(|_| {
+                panic!("recording waited for disk: compact={compact}, adopt={adopt}")
+            });
+            assert!(es.n_records() > 0, "RAM insertion is immediate");
+            for p in pending {
+                p.write();
+            }
+            let reloaded = reopen(&dir);
+            assert!(reloaded.n_records() > 0);
+            if compact {
+                assert!(
+                    std::fs::read_to_string(echo_file(&dir))
+                        .unwrap()
+                        .lines()
+                        .count()
+                        < 20
+                );
+            } else {
+                assert_eq!(es.n_session_records("s"), 0);
+                assert_eq!(reloaded.n_session_records("s"), 0, "eviction reaches disk");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
 }
 
 /// Issue #583: the echo line's append and fsync must not sit between the generation and the

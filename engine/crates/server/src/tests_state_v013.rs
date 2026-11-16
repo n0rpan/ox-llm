@@ -435,7 +435,7 @@ fn echo_compaction_keeps_the_splice() {
             Some("s1")
         ));
     }
-    assert!(es.compactions > 0, "the file was compacted");
+    assert!(es.compactions() > 0, "the file was compacted");
     let f = files(&dir, ".jsonl");
     assert_eq!(f.len(), 1);
     let size = std::fs::metadata(&f[0]).unwrap().len();
@@ -460,7 +460,7 @@ fn echo_compaction_keeps_the_splice() {
         "the splice after a restart is the one before"
     );
     // distinct live records are never compacted away
-    let before = es2.compactions;
+    let before = es2.compactions();
     for i in 0..20u32 {
         let m = chat::ChatMsg {
             content: format!("Done {i}"),
@@ -470,7 +470,7 @@ fn echo_compaction_keeps_the_splice() {
     }
     let n_lines = std::fs::read_to_string(&f[0]).unwrap().lines().count();
     assert!(
-        n_lines >= 21 || es2.compactions > before,
+        n_lines >= 21 || es2.compactions() > before,
         "live records stay on disk"
     );
     let _ = std::fs::remove_dir_all(&dir);

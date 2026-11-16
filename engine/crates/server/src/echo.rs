@@ -38,6 +38,8 @@ use crate::prefix_store::Sha256;
 use chat::ChatMsg;
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokenizer::Token;
 
@@ -484,6 +486,54 @@ fn append_line(p: &std::path::Path, line: &str) {
 struct EchoIo {
     all: u64,
     groups: HashMap<String, u64>,
+    /// Eviction invalidates in RAM immediately; the next writer removes these files before
+    /// any append (including a new generation of the same session) can reach disk.
+    deletes: Vec<std::path::PathBuf>,
+}
+
+/// Called only under the file-write lock, on a blocking worker for deferred maintenance.
+fn compact_file(path: &std::path::Path, body: &str) -> bool {
+    let mut pending = path.as_os_str().to_os_string();
+    pending.push(".pending");
+    let pending = std::path::PathBuf::from(pending);
+    let result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&pending)?;
+        f.write_all(body.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&pending, path)?;
+        if let Some(d) = path.parent().and_then(|d| std::fs::File::open(d).ok()) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&pending);
+        eprintln!("oxe-server: echo records: compaction failed: {e}");
+        false
+    } else {
+        true
+    }
+}
+
+#[derive(Default)]
+struct FileStats {
+    bytes: AtomicU64,
+    newest_seq: AtomicU64,
+}
+
+fn flush_deletes(io: &Mutex<EchoIo>) {
+    let deletes = std::mem::take(&mut io.lock().unwrap_or_else(|p| p.into_inner()).deletes);
+    for path in deletes {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 impl EchoIo {
@@ -513,6 +563,12 @@ pub struct PendingAppend {
     line: String,
     group: String,
     epoch: (u64, u64),
+    seq: u64,
+    stats: Arc<FileStats>,
+    /// A RAM snapshot, never obtained while holding a disk lock. An older snapshot must not
+    /// overwrite a newer append that happened to reach disk first.
+    compact: Option<String>,
+    compactions: Arc<AtomicU64>,
     io: std::sync::Arc<std::sync::Mutex<EchoIo>>,
     file_write: std::sync::Arc<std::sync::Mutex<()>>,
 }
@@ -526,9 +582,11 @@ impl PendingAppend {
 
     /// Append and sync the line (under the file-write lock only). Returns whether it was written.
     pub fn write(self) -> bool {
-        // Lock order for writers and invalidators: file_write, then io. Never hold the
-        // epoch mutex over disk I/O: recording the next turn must not wait for this fsync.
+        // Only writers hold file_write over I/O. Eviction updates io and queues a deletion
+        // without this lock; draining deletions before appending preserves generation order.
+        // Never hold the epoch mutex over disk I/O.
         let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+        flush_deletes(&self.io);
         if self
             .io
             .lock()
@@ -539,6 +597,19 @@ impl PendingAppend {
             return false;
         }
         append_line(&self.path, &self.line);
+        let newest = self.stats.newest_seq.fetch_max(self.seq, Ordering::Relaxed);
+        if let Some(body) = self.compact {
+            if newest <= self.seq
+                && std::fs::symlink_metadata(&self.path)
+                    .is_ok_and(|m| m.is_file() && m.len() >= (body.len() as u64).saturating_mul(2))
+                && compact_file(&self.path, &body)
+            {
+                self.compactions.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if let Ok(md) = std::fs::symlink_metadata(&self.path) {
+            self.stats.bytes.store(md.len(), Ordering::Relaxed);
+        }
         true
     }
 }
@@ -560,13 +631,15 @@ pub struct EchoStore {
     dir: Option<std::path::PathBuf>,
     /// v0.1.3 compaction: the file size of a group at which its file is checked again
     next_check: HashMap<String, u64>,
-    /// files rewritten by compaction (diagnostics, tests)
-    pub compactions: u64,
+    /// Files rewritten by synchronous or deferred compaction (diagnostics, tests).
+    compactions: Arc<AtomicU64>,
+    file_stats: HashMap<String, Arc<FileStats>>,
     /// Short-held generation counters, separate from the file-write lock so preparing a
     /// deferred append never waits for an earlier append's disk I/O.
     io: std::sync::Arc<std::sync::Mutex<EchoIo>>,
-    /// N4: serialises appends, compaction and invalidation/deletion. Invalidators hold this
-    /// before updating io, so a cleared session cannot be resurrected by an in-flight append.
+    /// Serialises appends, compaction and deletion. Eviction invalidates under io alone;
+    /// writers drain queued deletions before appending. Explicit clears wait for this lock
+    /// and finish deletion before answering, including an append already in flight.
     file_write: std::sync::Arc<std::sync::Mutex<()>>,
 }
 
@@ -584,10 +657,15 @@ impl EchoStore {
             attach_index_cap: ECHO_ATTACH_INDEX_CAP,
             dir: None,
             next_check: HashMap::new(),
-            compactions: 0,
+            compactions: Default::default(),
+            file_stats: HashMap::new(),
             io: Default::default(),
             file_write: Default::default(),
         }
+    }
+
+    pub fn compactions(&self) -> u64 {
+        self.compactions.load(Ordering::Relaxed)
     }
 
     /// The file-write lock (tests hold it to stall the deferred appends).
@@ -686,10 +764,9 @@ impl EchoStore {
 
     /// [`EchoStore::record_turn`] without the disk write: the record is in RAM when this returns,
     /// and the line for its session file comes back to be written with [`PendingAppend::write`]
-    /// AFTER the caller has released the store's mutex (audit v0.1.2 N4: the fsync no longer
-    /// holds up a request that needs the store for its splice). A due compaction still runs here
-    /// (rare: a file of at least `compact_bytes` and twice its live records); it rewrites the file
-    /// with every live record, this one included, so no line is pending after it.
+    /// AFTER the caller has released the store's mutex. Eviction only queues deletions here;
+    /// due compaction is captured as a RAM snapshot. Neither waits for the file-write lock or
+    /// performs disk I/O until `write`, so stalled maintenance cannot delay the reply.
     #[allow(clippy::too_many_arguments)]
     pub fn record_deferred(
         &mut self,
@@ -760,27 +837,68 @@ impl EchoStore {
         let group = rec.group.clone();
         let kept = self.insert(key, rec);
         let pending = match (kept, line) {
-            // a compaction that ran now wrote this record already
-            (true, Some(line)) if !self.maybe_compact(&group) => {
-                self.group_file(&group).map(|path| {
-                    let epoch = self
-                        .io
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .epoch(&group);
-                    PendingAppend {
-                        path,
-                        line,
-                        group: group.clone(),
-                        epoch,
-                        io: self.io.clone(),
-                        file_write: self.file_write.clone(),
-                    }
-                })
-            }
+            (true, Some(line)) => self.prepare_append(&group, seq, line),
             _ => None,
         };
         (kept, pending)
+    }
+
+    fn group_body(&self, group: &str) -> String {
+        let mut recs: Vec<((u64, u64), String)> = self
+            .by_key
+            .iter()
+            .flat_map(|(k, v)| {
+                v.iter()
+                    .filter(|r| r.group == group)
+                    .map(|r| ((r.seq, r.id), record_line(&self.identity, k, r)))
+            })
+            .collect();
+        recs.sort_by_key(|r| r.0);
+        recs.into_iter().map(|r| r.1).collect()
+    }
+
+    fn prepare_append(&mut self, group: &str, seq: u64, line: String) -> Option<PendingAppend> {
+        let path = self.group_file(group)?;
+        let stats = self
+            .file_stats
+            .entry(group.to_string())
+            .or_default()
+            .clone();
+        // The writer publishes sizes, so the reply path does not even stat the file. A new
+        // file can wait until the next turn for compaction, just as a delayed append can.
+        let compact = if self.cfg.compact_bytes != 0
+            && stats.bytes.load(Ordering::Relaxed)
+                >= self
+                    .next_check
+                    .get(group)
+                    .copied()
+                    .unwrap_or(0)
+                    .max(self.cfg.compact_bytes)
+        {
+            let body = self.group_body(group);
+            self.next_check
+                .insert(group.to_string(), (body.len() as u64).saturating_mul(2));
+            Some(body)
+        } else {
+            None
+        };
+        let epoch = self
+            .io
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .epoch(group);
+        Some(PendingAppend {
+            path,
+            line,
+            group: group.to_string(),
+            epoch,
+            seq,
+            stats,
+            compact,
+            compactions: self.compactions.clone(),
+            io: self.io.clone(),
+            file_write: self.file_write.clone(),
+        })
     }
 
     /// v0.1.3 (lane B item 4): the echo files are append-only, so a regenerate loop, replaced
@@ -803,14 +921,7 @@ impl EchoStore {
         if !md.is_file() || md.len() < self.next_check.get(group).copied().unwrap_or(0).max(lim) {
             return false;
         }
-        let mut recs: Vec<((u64, u64), String)> = Vec::new();
-        for (k, v) in &self.by_key {
-            for r in v.iter().filter(|r| r.group == group) {
-                recs.push(((r.seq, r.id), record_line(&self.identity, k, r)));
-            }
-        }
-        recs.sort_by_key(|r| r.0);
-        let body: String = recs.into_iter().map(|r| r.1).collect();
+        let body = self.group_body(group);
         let live = body.len() as u64;
         // check again only once the file has grown to twice the live records
         self.next_check
@@ -818,39 +929,20 @@ impl EchoStore {
         if live.saturating_mul(2) > md.len() {
             return false;
         }
-        let mut pending = p.clone().into_os_string();
-        pending.push(".pending");
-        let pending = std::path::PathBuf::from(pending);
         // serialised with deferred appends (N4): none lands between the rewrite and the rename
         let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
-        let r = (|| -> std::io::Result<()> {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&pending)?;
-            f.write_all(body.as_bytes())?;
-            f.sync_all()?;
-            std::fs::rename(&pending, &p)?;
-            if let Some(d) = p.parent().and_then(|d| std::fs::File::open(d).ok()) {
-                let _ = d.sync_all();
+        flush_deletes(&self.io);
+        if compact_file(&p, &body) {
+            self.compactions.fetch_add(1, Ordering::Relaxed);
+            if let Some(stats) = self.file_stats.get(group) {
+                stats.bytes.store(live, Ordering::Relaxed);
+                stats
+                    .newest_seq
+                    .fetch_max(self.next_seq.saturating_sub(1), Ordering::Relaxed);
             }
-            Ok(())
-        })();
-        match r {
-            Ok(()) => {
-                self.compactions += 1;
-                true
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&pending);
-                eprintln!("oxe-server: echo records: compaction failed: {e}");
-                false
-            }
+            true
+        } else {
+            false
         }
     }
 
@@ -865,6 +957,7 @@ impl EchoStore {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         {
             let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+            flush_deletes(&self.io);
             self.io
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -991,6 +1084,24 @@ impl EchoStore {
                 let _ = std::fs::remove_file(p);
             }
         }
+        {
+            let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+            flush_deletes(&self.io);
+        }
+        self.file_stats.clear();
+        for group in self.groups.keys() {
+            let bytes = self
+                .group_file(group)
+                .and_then(|p| std::fs::symlink_metadata(p).ok())
+                .map_or(0, |m| m.len());
+            self.file_stats.insert(
+                group.clone(),
+                Arc::new(FileStats {
+                    bytes: AtomicU64::new(bytes),
+                    newest_seq: AtomicU64::new(self.next_seq.saturating_sub(1)),
+                }),
+            );
+        }
         Ok(n)
     }
 
@@ -1043,7 +1154,7 @@ impl EchoStore {
         self.n_tokens += rec.n_tokens();
         let protect = rec.group.clone();
         self.by_key.entry(key).or_default().push(rec);
-        self.evict_protecting(Some(&protect));
+        self.evict_protecting(Some(&protect), true);
         true
     }
 
@@ -1063,12 +1174,12 @@ impl EchoStore {
     }
 
     fn evict(&mut self) {
-        self.evict_protecting(None)
+        self.evict_protecting(None, false)
     }
 
     /// TTL first, then whole sessions, least recently used first (M4); `protect` (the session that
     /// was just written) goes last, and then only its oldest records.
-    fn evict_protecting(&mut self, protect: Option<&str>) {
+    fn evict_protecting(&mut self, protect: Option<&str>, deferred: bool) {
         let now = now_ms();
         let mut gone: Vec<(String, usize)> = Vec::new();
         let ttl_ms = self.cfg.ttl.as_millis() as u64;
@@ -1092,6 +1203,7 @@ impl EchoStore {
                 .min_by_key(|(_, g)| g.used)
                 .map(|(k, _)| k.clone());
             match victim {
+                Some(g) if deferred => self.drop_group_deferred(&g),
                 Some(g) => self.drop_group(&g),
                 None => {
                     // only the protected session is left: its oldest record goes
@@ -1106,20 +1218,28 @@ impl EchoStore {
             }
         }
         self.by_key.retain(|_, v| !v.is_empty());
+        self.file_stats.retain(|g, _| self.groups.contains_key(g));
     }
 
-    /// Drop every record of one session (eviction group), on disk too.
+    /// Explicit clears still complete disk deletion before answering.
     fn drop_group(&mut self, group: &str) {
-        // a deferred append of this group that has not run yet must not bring the file back (N4)
+        self.drop_group_deferred(group);
         let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
-        self.io
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .invalidate(group);
-        if let Some(p) = self.group_file(group) {
-            let _ = std::fs::remove_file(p);
+        flush_deletes(&self.io);
+    }
+
+    /// Eviction must not wait for a stalled append. Invalidate now and let the next writer
+    /// remove the old file before appending any new generation of this session.
+    fn drop_group_deferred(&mut self, group: &str) {
+        {
+            let mut io = self.io.lock().unwrap_or_else(|p| p.into_inner());
+            io.invalidate(group);
+            if let Some(p) = self.group_file(group) {
+                io.deletes.push(p);
+            }
         }
         self.next_check.remove(group);
+        self.file_stats.remove(group);
         for v in self.by_key.values_mut() {
             v.retain(|r| r.group != group);
         }
@@ -1173,6 +1293,7 @@ impl EchoStore {
     pub fn set_disk(&mut self, dir: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
         // budget 0 means nothing more on disk, deferred appends included (N4)
         let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+        flush_deletes(&self.io);
         self.io
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1187,6 +1308,7 @@ impl EchoStore {
     /// Drop every record (clear cache), on disk too.
     pub fn clear(&mut self) {
         let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+        flush_deletes(&self.io);
         self.io
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1200,6 +1322,8 @@ impl EchoStore {
         }
         self.by_key.clear();
         self.groups.clear();
+        self.file_stats.clear();
+        self.next_check.clear();
         self.n_tokens = 0;
     }
 
@@ -1422,24 +1546,9 @@ impl EchoStore {
                 .then(|| record_line(&self.identity, &key, &rec));
             let group = rec.group.clone();
             if self.insert(key, rec) {
-                if let Some(line) = line {
-                    if !self.maybe_compact(&group) {
-                        if let Some(path) = self.group_file(&group) {
-                            let epoch = self
-                                .io
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .epoch(&group);
-                            out.push(PendingAppend {
-                                path,
-                                line,
-                                group: group.clone(),
-                                epoch,
-                                io: self.io.clone(),
-                                file_write: self.file_write.clone(),
-                            });
-                        }
-                    }
+                if let Some(pending) = line.and_then(|line| self.prepare_append(&group, seq, line))
+                {
+                    out.push(pending);
                 }
             }
         }
