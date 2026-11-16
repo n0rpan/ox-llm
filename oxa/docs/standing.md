@@ -105,6 +105,10 @@ One fixed `standing` emitter uses the document revision. `StandingChanged` proje
 goal, one ask transition and an optional incident. Full rule/option/answer data stays in this
 protected file. It does not emit two different facts under one source/revision.
 
+Event pages honor both the requested count (at most 64) and the serialized byte limit.
+Large valid observations return smaller pages with `next` at the last included event;
+readers keep advancing through retained history and receive explicit retention gaps.
+
 Under Standing → Facts lock order, the facts module validates capacity/semantics and durably
 reserves an unpublished observation **before** the callback saves the pending policy. Other
 appenders cannot consume its projection capacity, even if the process dies in the callback.

@@ -1,7 +1,9 @@
 //! Durable facts journal and its bounded read view. Never opens runner task-state files.
 use crate::facts_io::Root;
 use crate::{situation, Result};
-use oxa_proto::work::{Checkpoint, Event, EventPage, Fact, Snapshot, MAX_EVENT_BYTES, MAX_SNAPSHOT_BYTES};
+use oxa_proto::work::{
+    Checkpoint, Event, EventPage, Fact, Snapshot, MAX_EVENT_BYTES, MAX_PAGE_BYTES, MAX_SNAPSHOT_BYTES,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -271,22 +273,39 @@ impl Facts {
             return Err("event cursor is ahead of the journal".into());
         }
         let first_available = journal.events.first().map_or(1, |event| event.seq);
-        let events: Vec<_> = journal
+        let mut page = EventPage {
+            after,
+            events: Vec::new(),
+            next: after.max(first_available - 1),
+            first_available,
+            gap: after.saturating_add(1) < first_available,
+        };
+        // The envelope's next cursor can grow to last_seq. An event's standalone wire
+        // encoding bounds its nested encoding; counting one comma per event is conservative.
+        // Encode each candidate once instead of repeatedly serializing a growing page.
+        let mut bytes = page.to_json().map_err(|error| error.to_string())?.len()
+            + state
+                .last_seq
+                .to_string()
+                .len()
+                .saturating_sub(page.next.to_string().len());
+        for event in journal
             .events
             .into_iter()
             .filter(|event| event.seq > after)
             .take(limit)
-            .collect();
-        let next = events
-            .last()
-            .map_or(after.max(first_available - 1), |event| event.seq);
-        let page = EventPage {
-            after,
-            events,
-            next,
-            first_available,
-            gap: after.saturating_add(1) < first_available,
-        };
+        {
+            let event_bytes = event.to_json().map_err(|error| error.to_string())?.len() + 1;
+            if bytes + event_bytes > MAX_PAGE_BYTES {
+                if page.events.is_empty() {
+                    return Err("event exceeds bounded page capacity".into());
+                }
+                break;
+            }
+            bytes += event_bytes;
+            page.next = event.seq;
+            page.events.push(event);
+        }
         page.to_json().map_err(|error| error.to_string())?;
         Ok(page)
     }
