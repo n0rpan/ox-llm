@@ -228,6 +228,20 @@ def parse_port(value: str) -> int:
                              ['unsupported_source', 'assertion_failed'])
             self.assertFalse(summary['passed'])
 
+    def test_interpreter_outside_usr_falls_back_to_system_python(self):
+        # #286: a venv or version-manager python lives outside /usr, which the sandbox does not
+        # mount; bwrap then failed with "execvp ...: No such file". Run the system python instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_python = Path(tmp) / 'venv/bin/python3'
+            venv_python.parent.mkdir(parents=True)
+            venv_python.write_bytes(b'')
+            with patch.object(screen.sys, 'executable', str(venv_python)):
+                argv = screen.sandbox_argv(Path('/c'), Path('/a'), Path('/k'))
+        interpreter = Path(argv[argv.index('-I') - 1])
+        self.assertTrue(interpreter.is_relative_to('/usr'), interpreter)
+        self.assertTrue(interpreter.is_file(), interpreter)
+        self.assertNotIn(tmp, ' '.join(argv))
+
     @unittest.skipUnless(shutil.which('bwrap'), 'Linux bwrap required')
     def test_sandbox_mounts_hide_home_network_and_protect_sources(self):
         # Trusted probe only, never model output: exercise the actual sandbox contract.
