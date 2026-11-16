@@ -110,6 +110,10 @@ pub struct Context<'a> {
     pub origin: Origin,
     pub session: Option<&'a str>,
     pub idempotency_key: Option<&'a str>,
+    /// Validated owner key name, never a bearer/header. API callers only;
+    /// persisted in `guest_key` as a separate-domain ledger-salted digest,
+    /// never raw text or a session/provider identity. None preserves owner calls.
+    pub guest_key_name: Option<&'a str>,
 }
 pub struct Entry {
     daily: Daily,
@@ -188,7 +192,11 @@ impl Daily {
         self.budget.clone()
     }
     pub fn entry(&self, model: &str, context: Context<'_>) -> io::Result<Entry> {
-        if model.is_empty() || model.len() > 128 {
+        if model.is_empty()
+            || model.len() > 128
+            || context.guest_key_name.is_some_and(|name| name.is_empty())
+            || (context.guest_key_name.is_some() && !matches!(context.origin, Origin::Api))
+        {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let started = Instant::now();
@@ -204,6 +212,11 @@ impl Daily {
                 "idempotency",
                 b"oxc-idempotency-v1\0".as_slice(),
                 context.idempotency_key,
+            ),
+            (
+                "guest_key",
+                b"oxc-guest-key-name-v1\0".as_slice(),
+                context.guest_key_name,
             ),
         ] {
             if let Some(value) = value.filter(|value| !value.is_empty()) {

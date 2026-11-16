@@ -676,7 +676,7 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
             .unwrap();
         assert_eq!(error, client::Error::SignedOut);
         let status = oxc_gateway::status::ProviderStatus {
-            remaining_usd: None,
+            remaining: None,
             source: oxc_gateway::status::Source::NotReported,
             state: error.subscription_state().unwrap(),
             checked_at: UNIX_EPOCH,
