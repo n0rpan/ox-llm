@@ -481,7 +481,6 @@ async fn openrouter_absent_or_invalid_reported_cost_uses_catalog() {
     }
 }
 
-
 #[tokio::test]
 async fn openrouter_preserves_catalog_thinking_mapping() {
     for (effort, expected) in [
@@ -496,8 +495,15 @@ async fn openrouter_preserves_catalog_thinking_mapping() {
         let (gateway, _fixture) = gateway(&mock);
         let mut request = payload(false);
         request["reasoning_effort"] = json!(effort);
-        gateway.chat_payload(&request, Context::default(), &Cancellation::default(),
-            &mut |_| Control::Continue).await.unwrap();
+        gateway
+            .chat_payload(
+                &request,
+                Context::default(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
         assert_eq!(mock.requests()[0].body["reasoning"], expected, "{effort}");
         mock.finish();
     }
@@ -518,23 +524,37 @@ async fn openrouter_length_discards_tools_and_preserves_terminal_metering() {
             let (gateway, fixture) = gateway(&mock);
             let mut output = Vec::new();
             let mut done = 0;
-            let completed = gateway.chat_payload(&payload(include_usage), Context::default(),
-                &Cancellation::default(), &mut |event| {
-                    match event {
-                        Event::Chunk(value) => output.push(value),
-                        Event::Done => {
-                            done += 1;
-                            assert_eq!(rows(&fixture)[0]["cost_usd"], 0.25);
+            let completed = gateway
+                .chat_payload(
+                    &payload(include_usage),
+                    Context::default(),
+                    &Cancellation::default(),
+                    &mut |event| {
+                        match event {
+                            Event::Chunk(value) => output.push(value),
+                            Event::Done => {
+                                done += 1;
+                                assert_eq!(rows(&fixture)[0]["cost_usd"], 0.25);
+                            }
                         }
-                    }
-                    Control::Continue
-                }).await.unwrap();
+                        Control::Continue
+                    },
+                )
+                .await
+                .unwrap();
             assert_eq!(done, 1);
             assert_eq!(completed.finish_reason, "length");
             assert!(completed.assistant.get("tool_calls").is_none());
-            assert!(output.iter().all(|value| value.pointer("/choices/0/delta/tool_calls").is_none()));
-            assert!(output.iter().any(|value| value.pointer("/choices/0/finish_reason") == Some(&json!("length"))));
-            assert_eq!(output.iter().any(|value| value.get("usage").is_some()), include_usage);
+            assert!(output
+                .iter()
+                .all(|value| value.pointer("/choices/0/delta/tool_calls").is_none()));
+            assert!(output
+                .iter()
+                .any(|value| value.pointer("/choices/0/finish_reason") == Some(&json!("length"))));
+            assert_eq!(
+                output.iter().any(|value| value.get("usage").is_some()),
+                include_usage
+            );
             assert!(!json!(output).to_string().contains(CREDENTIAL));
             let row = rows(&fixture).pop().unwrap();
             assert_eq!(row["settled"], "usage");
