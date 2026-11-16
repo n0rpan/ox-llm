@@ -2,7 +2,7 @@
 //! imports start no runtime, listener, refresh worker or model supervisor.
 use super::{
     admission::Admission,
-    keys::{Error as KeyError, Store},
+    keys::{Error as KeyError, KeyInfo, Store},
     protocol,
     status::{Activity, Status, MAX_CONNECTIONS},
 };
@@ -109,6 +109,26 @@ impl Output {
         }
     }
 }
+/// Borrowed authenticated metadata from durable quota admission, never a bearer.
+/// Kept separate from model history; use only for owner accounting/policy.
+/// Fields are private so callers cannot manufacture an authenticated guest.
+pub struct Guest<'a> {
+    key: &'a KeyInfo,
+}
+impl Guest<'_> {
+    pub fn key_id(&self) -> &str {
+        &self.key.id
+    }
+    pub fn key_name(&self) -> &str {
+        &self.key.name
+    }
+}
+impl std::fmt::Debug for Guest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Guest([authenticated])")
+    }
+}
+
 /// The future must retain model ownership until generation/cancellation cleanup
 /// has stopped, and never detach background model work. The listener joins it.
 pub trait Answer: Send + Sync + 'static {
@@ -116,6 +136,7 @@ pub trait Answer: Send + Sync + 'static {
     fn chat(
         &self,
         request: Request,
+        guest: Guest<'_>,
         output: Output,
         cancel: CancelToken,
     ) -> impl Future<Output = Result<Completed, Failure>> + Send;
@@ -585,6 +606,7 @@ async fn connection<A: Answer, T: Tailnet>(
     let backend = async {
         let future = answer.chat(
             request,
+            Guest { key: admission.key() },
             Output {
                 send: tx,
                 cancel: cancel.clone(),

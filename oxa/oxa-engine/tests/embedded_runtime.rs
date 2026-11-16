@@ -107,7 +107,7 @@ fn actual_gateway_delivers_on_the_caller_thread_and_keeps_discovery_private() {
     assert_eq!(turn.msg.content.as_deref(), Some(text.as_str()));
     assert_eq!((turn.usage.prompt, turn.usage.completion), (21, 5));
     assert_eq!(mock.requests()[0].body["max_tokens"], 16);
-    mock.assert_healthy();
+    mock.finish();
 }
 #[test]
 fn cancellation_wakes_a_live_header_wait_and_settles_before_returning() {
