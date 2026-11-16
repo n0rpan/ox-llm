@@ -496,6 +496,7 @@ pub fn run_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::StopReason;
 
     /// #483: a failed call says why on the progress line.
     #[test]
