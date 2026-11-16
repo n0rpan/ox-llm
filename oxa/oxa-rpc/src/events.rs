@@ -5,7 +5,7 @@ use oxa_proto::{
     codes, AgentEvent, CompactionResult, Entry, EntryBody, EventMessage, EventSink, MessageDelta, OxaError,
     Role, StopReason, ToolCall, Usage, Value,
 };
-use oxa_session::{encode_entry, encode_header, SessionHeader};
+use oxa_session::{encode_header, encode_visible_entry as encode_entry, SessionHeader};
 use serde_json::{json, Map};
 use std::io::Write;
 
@@ -252,7 +252,7 @@ pub fn message_to_json(m: &EventMessage) -> Value {
     }
 }
 
-/// pi's persisted entry JSON (the same object `oxa_session::encode_entry` writes).
+/// The visible entry JSON; session-private provider replay is excluded.
 pub fn entry_to_json(e: &Entry) -> Value {
     let mut buf = Vec::new();
     encode_entry(e, &mut buf);
