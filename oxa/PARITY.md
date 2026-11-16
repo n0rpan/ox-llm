@@ -55,7 +55,7 @@ pi page(s): cli.md. Tests: `oxa-parity/tests/cli.rs`.
 | CLI-029 | `-xt`, `--exclude-tools <list>`: applied last, MCP included | P |  | `cli.rs::cli_029` |
 | CLI-030 | `-nbt`, `--no-builtin-tools` | P |  | `cli.rs::cli_030` |
 | CLI-031 | `-nt`, `--no-tools` | P |  | `cli.rs::cli_031` |
-| CLI-032 | Default enabled tools are `read`, `bash`, `edit`, `write` | A | all 7 built-ins on by default; `subagent` is on too where the model allows it (not on the Rust Flash engine, not below a 32K window; `oxa.subagent.enabled` wins); `defaultTools` restores pi's four | `cli.rs::cli_032` |
+| CLI-032 | Default tools are `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ask` | A | lead sessions also offer `subagent` where the model allows it (not Flash or below 32K; `oxa.subagent.enabled` wins); `defaultTools` replaces the selection | `cli.rs::cli_032` |
 | CLI-034 | Built-in extensions `codemode` and `tool_search` are off by default; MCP turns them on when needed | A | `tool_search` returns matches as text; calls go through the frozen `call_tool` dispatcher (W3) | `cli.rs::cli_034` |
 | CLI-035 | `-e`, `--extension <path>`: file, directory or `builtin:<name>`; repeatable | A | JavaScript in QuickJS; a `.ts` file is always rejected, with a hint to write JavaScript | `cli.rs::cli_035` |
 | CLI-036 | `-ne`, `--no-extensions`: explicit `-e` still loads | P |  | `cli.rs::cli_036` |

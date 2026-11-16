@@ -25,8 +25,17 @@ fn normalize(error: Error) -> OxaError {
     if matches!(error, Error::Upstream(ClientError::Cancelled)) {
         return OxaError::new(codes::ABORTED, "request cancelled");
     }
-    let refusal = error.refusal();
-    crate::info::http_error_with(refusal.status, refusal.body().to_string().as_bytes(), None)
+    let mut refusal = error.refusal();
+    if refusal.code == "budget_not_configured" {
+        refusal.message = "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.";
+    }
+    let normalized =
+        crate::info::http_error_with(refusal.status, refusal.body().to_string().as_bytes(), None);
+    if normalized.code == codes::BUDGET_EXHAUSTED {
+        normalized.with_hint("adjust oxa.cloud.daily_budget_usd in oxa user settings, or wait for the next spend day; this is not retried")
+    } else {
+        normalized
+    }
 }
 impl EmbeddedGateway for Backend {
     fn discovery(&self) -> Result<GatewayDiscovery, OxaError> {
@@ -76,6 +85,7 @@ impl EmbeddedGateway for Backend {
             origin: ledger::Origin::Oxa,
             session: Some(context.session),
             idempotency_key: Some(context.idempotency_key),
+            guest_key_name: None,
         };
         let mut deliver = |event| {
             let settled = matches!(event, Event::Done);
