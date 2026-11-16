@@ -42,6 +42,19 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".local/share/keyrings",
     ".config/op",
     ".config/Bitwarden",
+    // #523: container registry logins, Copilot's OAuth token, age keys, build-tool and
+    // gem registry credentials, cloud CLI tokens and remotes.
+    ".config/containers/auth.json",
+    ".local/share/containers/auth.json",
+    ".config/github-copilot",
+    ".config/sops/age",
+    ".m2/settings.xml",
+    ".gradle/gradle.properties",
+    ".gem/credentials",
+    ".config/rclone",
+    ".config/hcloud",
+    ".config/doctl",
+    ".s3cfg",
     ".pki",
     ".mozilla",
     ".thunderbird",
@@ -227,6 +240,32 @@ mod tests {
     }
 
     use super::*;
+
+    /// #523: common registry, cloud-CLI and key files are on the deny-list.
+    #[test]
+    fn common_credential_files_are_denied() {
+        let home = Path::new("/home/u");
+        let deny = sensitive_paths(home, None);
+        for rel in [
+            ".config/containers/auth.json",
+            ".local/share/containers/auth.json",
+            ".config/github-copilot/apps.json",
+            ".config/sops/age/keys.txt",
+            ".m2/settings.xml",
+            ".gradle/gradle.properties",
+            ".gem/credentials",
+            ".config/rclone/rclone.conf",
+            ".config/hcloud/cli.toml",
+            ".config/doctl/config.yaml",
+            ".s3cfg",
+        ] {
+            let p = home.join(rel);
+            assert!(
+                deny.iter().any(|d| p.starts_with(d)),
+                "{rel} is not denied: {deny:?}"
+            );
+        }
+    }
 
     #[test]
     fn the_walk_stops_at_home_and_never_goes_above_it() {
