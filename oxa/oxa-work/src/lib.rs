@@ -55,9 +55,9 @@ fn checked(command: Command) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().into())
 }
-fn git(repo: &Path, args: &[&str]) -> Command {
-    let mut c = Command::new("git");
-    c.current_dir(repo).args(args);
+fn git(policy: &RunPolicy, repo: &Path, args: &[&str]) -> Command {
+    let mut c = Command::new(&policy.git_binary);
+    c.env("PATH", &policy.host_path).current_dir(repo).args(args);
     c
 }
 
@@ -98,13 +98,24 @@ fn validate(task: &Task) -> Result<()> {
 }
 
 /// Issue text is data, passed as one prompt argument; gh never invokes a shell.
-pub fn issue_task(repo: &Path, number: u64, model: String) -> Result<Task> {
+pub fn issue_task(
+    repo: &Path,
+    gh: &Path,
+    host_path: &std::ffi::OsStr,
+    number: u64,
+    model: String,
+) -> Result<Task> {
     if number == 0 {
         return Err("issue number must be positive".into());
     }
-    let mut c = Command::new("gh");
-    c.current_dir(repo)
-        .args(["issue", "view", &number.to_string(), "--json", "title,body"]);
+    let mut c = Command::new(gh);
+    c.env("PATH", host_path).current_dir(repo).args([
+        "issue",
+        "view",
+        &number.to_string(),
+        "--json",
+        "title,body",
+    ]);
     let text = checked(c)?;
     let issue: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let title = issue["title"].as_str().ok_or("issue title missing")?;
@@ -134,6 +145,10 @@ fn done_commands(root: &Path) -> Result<Vec<String>> {
 }
 /// Private runner data stays outside every workspace and writable Git bind.
 pub struct RunPolicy {
+    /// Absolute tool path approved by the front end's trusted-executable checks.
+    pub git_binary: PathBuf,
+    /// Installed tools only; repository code is invoked inside the sandbox.
+    pub host_path: std::ffi::OsString,
     pub offline: bool,
     pub storage: PathBuf,
 }
@@ -150,7 +165,7 @@ fn acceptance(
     root: &Path,
     source: &Path,
     commands: &[String],
-    offline: bool,
+    policy: &RunPolicy,
     lock: &fs::File,
 ) -> Result<String> {
     if commands.is_empty() {
@@ -161,10 +176,11 @@ fn acceptance(
         commands: commands.to_vec(),
     };
     let mut command = Command::new(binary);
-    if offline {
+    if policy.offline {
         command.arg("--offline");
     }
     let out = command
+        .env("PATH", &policy.host_path)
         .current_dir(root)
         .args([
             "work",
@@ -196,10 +212,15 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
 }
 pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &RunPolicy) -> Result<Record> {
     validate(task)?;
-    let root = checked(git(repo, &["rev-parse", "--show-toplevel"]))?;
+    let root = checked(git(policy, repo, &["rev-parse", "--show-toplevel"]))?;
     let root = PathBuf::from(root);
-    checked(git(&root, &["check-ref-format", "--branch", &task.branch]))?;
+    checked(git(
+        policy,
+        &root,
+        &["check-ref-format", "--branch", &task.branch],
+    ))?;
     let common = checked(git(
+        policy,
         &root,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ))?;
@@ -257,24 +278,17 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
         }
         let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
         checked(git(
+            policy,
             &root,
             &["worktree", "add", "-b", &task.branch, tree_arg, &task.base],
         ))?;
         let tree = tree.canonicalize().map_err(|e| e.to_string())?;
-        let initial = checked(git(&tree, &["rev-parse", "HEAD"]))?;
+        let initial = checked(git(policy, &tree, &["rev-parse", "HEAD"]))?;
         let commands = done_commands(&tree)?;
-        let first = worker::run(
-            binary,
-            &tree,
-            task,
-            &task.prompt,
-            policy.offline,
-            &lock_file,
-            None,
-        )?;
+        let first = worker::run(binary, &tree, task, &task.prompt, policy, &lock_file, None)?;
         record.worker = Some(first.result.clone());
         record.session_id = first.session.clone();
-        let failures = acceptance(binary, &tree, &root, &commands, policy.offline, &lock_file)?;
+        let failures = acceptance(binary, &tree, &root, &commands, policy, &lock_file)?;
         if let Some(error) = first.failure() {
             return Err(format!("{error}\nAcceptance checks:\n{failures}"));
         }
@@ -284,13 +298,13 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
                 &tree,
                 task,
                 &format!("External acceptance checks failed. Repair once:\n{failures}"),
-                policy.offline,
+                policy,
                 &lock_file,
                 first.session.as_deref(),
             )?;
             record.worker = Some(repair.result.clone());
             record.session_id = repair.session.clone();
-            let failures = acceptance(binary, &tree, &root, &commands, policy.offline, &lock_file)?;
+            let failures = acceptance(binary, &tree, &root, &commands, policy, &lock_file)?;
             if let Some(error) = repair.failure() {
                 return Err(format!("{error}\nAcceptance checks:\n{failures}"));
             }
@@ -299,8 +313,8 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
                 return Ok(Outcome::Red);
             }
         }
-        let head = checked(git(&tree, &["rev-parse", "HEAD"]))?;
-        let dirty = checked(git(&tree, &["status", "--porcelain"]))?;
+        let head = checked(git(policy, &tree, &["rev-parse", "HEAD"]))?;
+        let dirty = checked(git(policy, &tree, &["status", "--porcelain"]))?;
         Ok(if head == initial && dirty.is_empty() {
             Outcome::NothingToDo
         } else {

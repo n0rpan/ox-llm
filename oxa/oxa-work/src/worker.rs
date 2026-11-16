@@ -1,5 +1,5 @@
 //! Consume the child's headless contract without retaining its event stream.
-use crate::{Result, Task};
+use crate::{Result, RunPolicy, Task};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
@@ -60,15 +60,16 @@ pub(crate) fn run(
     root: &Path,
     task: &Task,
     prompt: &str,
-    offline: bool,
+    policy: &RunPolicy,
     lock: &File,
     session: Option<&str>,
 ) -> Result<Worker> {
     let mut command = Command::new(binary);
     command
+        .env("PATH", &policy.host_path)
         .current_dir(root)
         .args(["--mode=json", "--model", &task.model]);
-    if offline {
+    if policy.offline {
         command.arg("--offline");
     }
     if let Some(id) = session {

@@ -12,6 +12,10 @@ IDs and branches must be unique; branches must be new. For a GitHub issue use
 `oxa work --issue 123 --model your-model`. This explicitly invokes your installed,
 authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
 when the environment or user settings enable offline mode.
+Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
+validated executables outside the repository. Worker and check-supervisor PATHs
+exclude project directories, relative entries and unsafe aliases; project tools
+can still run by explicit path inside the sandbox.
 
 Each task runs a child `oxa --mode=json` with its model and a saved session. The installed offline policy,
 including a parent `--offline` flag, is passed to every child. Normal agent permission, trust and

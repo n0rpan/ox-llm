@@ -609,3 +609,91 @@ fn acceptance_preserves_the_normal_read_only_git_configuration() {
         "acceptance rewrote executable Git configuration"
     );
 }
+
+#[test]
+fn github_lookup_ignores_project_local_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let bad = env.write("work/project/bin/gh", "#!/bin/sh\nprintf invoked > \"$HOME/project-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    let good = env.write("tmp/trusted/gh", "#!/bin/sh\nprintf invoked > \"$HOME/trusted-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    for path in [&bad, &good] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}:{}",
+        bad.parent().unwrap().display(),
+        good.parent().unwrap().display(),
+        std::env::var("PATH").unwrap()
+    );
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("finished")],
+        &["work", "--issue", "42", "--model", "fake"],
+        Some(path),
+    );
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert!(
+        !env.home().join("project-gh-ran").exists(),
+        "project executable ran on the host"
+    );
+    assert!(
+        env.home().join("trusted-gh-ran").exists(),
+        "the trusted mock must handle issue lookup"
+    );
+}
+
+#[test]
+fn runner_git_queries_ignore_project_local_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let bad = env.write("work/project/bin/git", "#!/bin/sh\nprintf invoked > \"$HOME/project-git-ran\" 2>/dev/null || true\nexec /usr/bin/git \"$@\"\n");
+    std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bad.parent().unwrap().display(),
+        std::env::var("PATH").unwrap()
+    );
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("finished")],
+        &["work", "../tasks.json"],
+        Some(path),
+    );
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert!(
+        !env.home().join("project-git-ran").exists(),
+        "project executable ran on the host"
+    );
+}
+
+#[test]
+fn untrusted_issue_input_never_spawns_even_a_trusted_gh() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    oxa_perm::TrustStore::default()
+        .save(
+            &env.agent_dir().join("trust.json"),
+            &env.work().join("project"),
+            false,
+        )
+        .unwrap();
+    let gh = env.write("tmp/gh", "#!/bin/sh\nprintf invoked > \"$HOME/issue-lookup-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env(
+            "PATH",
+            format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("trust"));
+    assert!(!env.home().join("issue-lookup-ran").exists());
+}
