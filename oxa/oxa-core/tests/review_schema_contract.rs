@@ -2,8 +2,7 @@
 //!
 //! This is deliberately not a projected or simplified schema: accepting a copy
 //! with unsupported constraints removed would hide the shipping incompatibility.
-//! Currently blocked on schema-subset compatibility and a validator diagnostic
-//! API: `OutputSchema::matches` returns only a bool, not an instance error path.
+//! `OutputSchema::matches` returns only a bool, not an instance error path.
 
 use oxa_core::output_schema::OutputSchema;
 use serde_json::{json, Value};
@@ -45,6 +44,33 @@ fn review_schema_accepts_two_sample_outputs() {
     ] {
         assert!(schema.matches(&sample.to_string()), "rejected {sample}");
     }
+}
+
+#[test]
+fn review_schema_enforces_finding_constraints() {
+    let schema = shipped_schema();
+    for (field, invalid) in [
+        ("title", json!("")),
+        ("body", json!("")),
+        ("path", json!("")),
+        ("priority", json!(-1)),
+        ("priority", json!(4)),
+        ("priority", json!(1.5)),
+        ("confidence", json!(-0.01)),
+        ("confidence", json!(1.01)),
+        ("line_start", json!(0)),
+        ("line_start", json!(1.5)),
+        ("line_end", json!(0)),
+        ("line_end", json!(1.5)),
+        ("extra", json!(true)),
+    ] {
+        let mut sample = sample_finding();
+        sample["findings"][0][field] = invalid;
+        assert!(!schema.matches(&sample.to_string()), "accepted {sample}");
+    }
+    let mut extra_root = sample_finding();
+    extra_root["extra"] = json!(true);
+    assert!(!schema.matches(&extra_root.to_string()));
 }
 
 #[test]
