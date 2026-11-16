@@ -45,6 +45,9 @@ class CloudCase(unittest.TestCase):
             self.stack.close()
 
     def start(self, *, enabled=True, budget=1.0, offline=False, models=None, mock=None, base_suffix='/v1'):
+        if self.stack is not None:  # a second start() must not leak the first stack's patches
+            self.stack.close()
+            self.stack = None
         mock = mock or self.upstream
         table = models if models is not None else profiles()
         for row in table.values():

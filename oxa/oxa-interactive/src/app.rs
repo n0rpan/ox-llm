@@ -1959,7 +1959,12 @@ fn apply_delta(vm: &mut ViewModel, d: &MessageDelta) {
                 .find(|b| matches!(b, Block::Tool(t) if t.state == ToolState::Streaming))
             {
                 t.args_raw.push_str(delta);
-                t.args = parse_args(&t.args_raw);
+                // A partial JSON object never parses: skip the quadratic re-parse until it closes.
+                if t.args_raw.trim_end().ends_with('}') {
+                    t.args = parse_args(&t.args_raw);
+                } else {
+                    t.args = Value::Null;
+                }
             }
         }
         MessageDelta::ToolcallEnd { call, .. } => match tool_index(vm, &call.id) {
@@ -2327,5 +2332,67 @@ mod live_bash_tests {
         assert!(o.len() <= LIVE_BASH_MAX + LIVE_BASH_NOTE.len());
         assert!(o.len() > LIVE_BASH_MAX / 2);
         assert!(o.ends_with('é'));
+    }
+}
+
+#[cfg(test)]
+mod toolcall_stream_tests {
+    use super::*;
+
+    /// Once the streamed arguments stop parsing again, the view must not keep the older value.
+    #[test]
+    fn streamed_args_follow_the_text_between_closing_braces() {
+        let mut vm = ViewModel::default();
+        apply_delta(
+            &mut vm,
+            &MessageDelta::ToolcallStart {
+                index: 0,
+                id: "c1".into(),
+                name: "t".into(),
+            },
+        );
+        let push = |vm: &mut ViewModel, d: &str| {
+            apply_delta(
+                vm,
+                &MessageDelta::ToolcallDelta {
+                    index: 0,
+                    delta: d.into(),
+                },
+            )
+        };
+        let args = |vm: &ViewModel| match vm.blocks.last() {
+            Some(Block::Tool(t)) => t.args.clone(),
+            _ => panic!("no tool block"),
+        };
+        push(&mut vm, "{\"a\":{\"x\":1}");
+        assert_eq!(args(&vm), Value::Null);
+        push(&mut vm, "}");
+        assert_eq!(args(&vm), serde_json::json!({"a": {"x": 1}}));
+    }
+
+    #[test]
+    fn stale_args_are_cleared_when_text_stops_parsing() {
+        let mut vm = ViewModel::default();
+        apply_delta(
+            &mut vm,
+            &MessageDelta::ToolcallStart {
+                index: 0,
+                id: "c1".into(),
+                name: "t".into(),
+            },
+        );
+        for d in ["{\"a\":1}", ",\"b\":2"] {
+            apply_delta(
+                &mut vm,
+                &MessageDelta::ToolcallDelta {
+                    index: 0,
+                    delta: d.into(),
+                },
+            );
+        }
+        match vm.blocks.last() {
+            Some(Block::Tool(t)) => assert_eq!(t.args, Value::Null),
+            _ => panic!(),
+        }
     }
 }

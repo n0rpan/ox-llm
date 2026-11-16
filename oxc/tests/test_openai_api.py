@@ -115,6 +115,18 @@ class KeyAndCors(unittest.TestCase):
         self.assertIsNone(openai_api.cors_origin(['http://x.test'], star, False))  # "*" needs an API key
         self.assertEqual(openai_api.cors_origin(['http://x.test'], star, True), 'http://x.test')
 
+    def test_cors_never_echoes_a_line_break_into_a_header(self):
+        # A folded request header ("a\r\n b") reaches us with CR/LF in its value; echoing it
+        # would let the client write into our response headers (code scanning alert 5).
+        star = {'openai_api': {'cors_origins': ['*']}}
+        self.assertIsNone(openai_api.cors_origin(['http://x.test\r\n X-Evil: 1'], star, True))
+        headers = dict(openai_api.cors_headers('http://x.test', preflight=True,
+                                               request_headers='authorization\r\n X-Evil: 1'))
+        self.assertEqual(headers['Access-Control-Allow-Headers'], 'authorization, content-type')
+        headers = dict(openai_api.cors_headers('http://x.test', preflight=True,
+                                               request_headers='Authorization, X-Stainless-Os'))
+        self.assertEqual(headers['Access-Control-Allow-Headers'], 'Authorization, X-Stainless-Os')
+
 
 class RequestFixes(unittest.TestCase):
     def test_flash_range(self):

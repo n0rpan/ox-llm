@@ -371,6 +371,30 @@ fn hint_idle_empty_editor_shows_default_keys() {
     assert!(text.contains("ctrl+d exit"), "{text:?}");
 }
 
+/// #346: a first Ctrl+C on an empty editor arms the quit; the hint bar must show the clear
+/// key as the exit (warning) so the no-op press is not left unexplained, and drop the plain
+/// exit key to avoid two "exit" hints.
+#[test]
+fn hint_idle_armed_shows_clear_key_as_exit() {
+    let armed = hints(
+        HintContext::Idle {
+            has_text: false,
+            slash: false,
+            armed: true,
+        },
+        true,
+    );
+    assert!(
+        armed.contains(&format!("{} exit", key("app.clear"))),
+        "the armed exit must show the clear key: {armed:?}"
+    );
+    assert!(armed.contains("ctrl+c exit"), "{armed:?}");
+    assert!(!armed.contains("ctrl+d exit"), "{armed:?}");
+    // The other idle hints stay visible.
+    assert!(armed.contains("/ commands"), "{armed:?}");
+    assert!(armed.contains("enter send"), "{armed:?}");
+}
+
 #[test]
 fn hint_search_only_in_fullscreen() {
     let idle = HintContext::Idle {

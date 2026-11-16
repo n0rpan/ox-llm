@@ -1108,6 +1108,15 @@ def main(argv=None):
     if words and words[0] in RETIRED_KEYS:
         print(RETIRED_KEYS[words[0]], file=sys.stderr)
         return 2
+    if words and words[0] in ('login', 'logout'):
+        # oxc login chatgpt [--paste] / oxc logout chatgpt: the experimental,
+        # opt-in ChatGPT subscription sign-in (runtime/cloud_chatgpt.py).
+        try:
+            module = runtime_module('cloud_chatgpt')
+        except RuntimeError as error:
+            print('oxc: ' + str(error), file=sys.stderr)
+            return 1
+        return module.main(words)
     if words and words[0] == 'uninstall':
         # oxc uninstall [--apply] [--remove-models] [--json]: dry run by default; keeps model weights
         # unless --remove-models. Its own parser (runtime/uninstall.py).
