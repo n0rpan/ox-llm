@@ -215,6 +215,13 @@ const SCHEMA: &[KeyDef] = &[
         "\"brave\"",
     ),
     key("packages", Kind::Any, "[]"),
+    // #202: the permission mode at start; a project's value may only lower it
+    // (`Settings::default_permission_mode`).
+    key(
+        "permissions.defaultMode",
+        Kind::Enum(&["standard", "auto", "yolo", "plan"]),
+        "\"auto\"",
+    ),
     key("prompts", Kind::StringList, "[]"),
     key("quietStartup", Kind::Any, "false"),
     key("retry.baseDelayMs", Kind::Number, "2000"),

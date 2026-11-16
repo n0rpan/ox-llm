@@ -62,8 +62,8 @@ The table lists the default bindings. Every binding can be changed in `~/.oxa/ag
 | Ctrl+D | exit when the editor is empty |
 | Ctrl+Z | suspend to the shell (`fg` resumes) |
 | Ctrl+G | edit the prompt in `$VISUAL` / `$EDITOR` (or `externalEditor`) |
-| Alt+M | cycle the permission mode: plan, workspace, ask |
-| Ctrl+Alt+O | toggle YOLO: no permission prompts (the sandbox stays on) |
+| Alt+M | cycle the permission mode: standard, auto, yolo |
+| Ctrl+Alt+O | toggle yolo: full access, no prompts, bash without the sandbox |
 
 Queued steering and follow-up messages show above the editor as `Steering:` and `Follow-up:` lines. `steeringMode` and `followUpMode` (see [settings.md](settings.md)) decide whether the queue is sent one message at a time or all at once.
 
@@ -127,8 +127,9 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/model [pattern]` | select a model, or switch directly to a matching one |
 | `/scoped-models` | choose which models Ctrl+P cycles through |
 | `/thinking [level]` | set the thinking level: off, minimal, low, medium, high, xhigh, max |
-| `/mode [plan\|workspace\|ask]` | set the permission mode |
-| `/yolo [on\|off]` | toggle YOLO: permission questions are auto-approved; the sandbox and the deny-list stay on |
+| `/mode [standard\|auto\|yolo\|plan\|workspace\|ask] [--save]` | set the permission mode; no argument opens the picker; `--save` makes it the default |
+| `/auto` | permission mode auto: no prompts; the sandbox and the deny-list stay on |
+| `/yolo [on\|off]` | toggle yolo, full access: no prompts, bash without the sandbox, no deny-list or protected paths for file tools |
 | `/settings` | open the settings selector |
 | `/theme [name]` | choose a theme |
 | `/compact [instructions]` | compact the context now, with optional guidance for the summary |
@@ -168,16 +169,16 @@ The permission mode is shown on the footer as well. A notice reports each cache 
 With the default `oxa` skin the footer is a single-line HUD instead of two lines. It shows the same status, laid out left to right:
 
 - `OXA` — the brand, always.
-- YOLO badge — a flame and the count of auto-approved questions, only when YOLO is on.
+- YOLO badge — a flame, `YOLO full access` and the count of auto-approved questions, only in yolo mode.
 - The model, with the thinking level and the thinking note.
 - `CTX` — a meter and the percentage of the window used, and `used/n_ctx` when the window is known.
 - `CACHE` — a meter and the percentage of the last request, when a cache hit is known.
 - Decode speed (`tok/s`), only while the engine reports timings.
 - The activity badge, always present; `READY` when idle.
 - `repairs N` and `no summary`, only when they apply.
-- The permission mode and the profile word, only when set.
+- The permission mode (`standard`, `auto`, `yolo`, `plan` or `ask`), always shown, and the profile word when set.
 
-Parts with no data are hidden, and on a narrow terminal parts are dropped in this order until the line fits: the profile word, the decode speed, the cache meter, the `used/n_ctx` figures, `repairs N` / `no summary`, then the context meter shrinks to 5 cells, then the thinking note, the whole `CACHE` part, the thinking level and finally the permission mode. The model name, the `CTX` percentage, the activity badge and `OXA` are kept; the model name is only cut when nothing else is left.
+Parts with no data are hidden, and on a narrow terminal parts are dropped in this order until the line fits: the profile word, the decode speed, the cache meter, the `used/n_ctx` figures, `repairs N` / `no summary`, then the context meter shrinks to 5 cells, then the thinking note, the whole `CACHE` part, the thinking level. The permission mode, the model name, the `CTX` percentage, the activity badge and `OXA` are kept; the model name is only cut when nothing else is left.
 
 ## Selectors
 

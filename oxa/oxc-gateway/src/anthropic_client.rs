@@ -14,6 +14,8 @@ use reqwest::{
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt, time::Duration};
 
+pub mod models;
+
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
 /// Shared cancellation across oxa, admission and provider I/O. Async waits wake
