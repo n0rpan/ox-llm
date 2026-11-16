@@ -122,13 +122,12 @@ fn print_uses_native_gateway_without_python_or_controller() {
         &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string(),
     );
     fs::set_permissions(&secrets, fs::Permissions::from_mode(0o600)).unwrap();
-    // Actual S7 contract: native Anthropic, fixed protected key and agent-ledger paths.
+    // Release default: native Anthropic without a selection switch; fixed protected paths.
     let settings = json!({
         "defaultProjectTrust": "always",
         "defaultThinkingLevel": "off",
         "retry": {"enabled": false},
         "oxa": {
-            "engine": {"inProcessCloud": true},
             "cloud": {
                 "daily_budget_usd": 1.0,
                 "models": {"mock-native": {

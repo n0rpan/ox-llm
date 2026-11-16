@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run as root in a fresh archlinux:latest container, with artifacts mounted at /artifacts.
 set -euo pipefail
-pacman -Syu --noconfirm --needed base-devel namcap python bubblewrap rust cmake ninja git
+pacman -Syu --noconfirm --needed base-devel namcap python bubblewrap rust cmake ninja git strace
 useradd -m builder
 install -d -o builder -g builder /build
 cp /artifacts/* /build/
@@ -18,8 +18,8 @@ pkgver=$(sed -n 's/^pkgver=//p' /recipes/ox-llm/PKGBUILD)
 [[ $(sed -n 's/^pkgver=//p' /recipes/ox-llm-bin/PKGBUILD) == "$pkgver" ]]
 cp "ox-llm-$VERSION-linux-$(uname -m).tar.gz" "ox-llm-$pkgver-linux-$(uname -m).tar.gz"
 export OX_BINARY_SHA256=$(sha256sum "ox-llm-$pkgver-linux-$(uname -m).tar.gz" | cut -d' ' -f1)
-# Verify the binary package and then a real source rebuild (including check()).
-for variant in ox-llm-bin ox-llm; do
+# Rebuild first so both installed variants use the same immutable-source proof harness.
+for variant in ox-llm ox-llm-bin; do
   install -d -o builder -g builder "/build/$variant"
   cp "/recipes/$variant/PKGBUILD" "/recipes/$variant/native.install" "/build/$variant/"
   cp /build/*.tar.gz "/build/$variant/"
@@ -44,6 +44,23 @@ for variant in ox-llm-bin ox-llm; do
   esac
   for binary in oxa oxe-server; do cmp "$payload/$binary" "/usr/bin/$binary"; done
   python -B /smoke.py
+  # Reuse #682 on each actual installed ELF, including the independently rebuilt source package.
+  source_root="/build/ox-llm/src/ox-llm-$OX_SOURCE_COMMIT"
+  receipt="/packages/NO-PYTHON-PROOF-$variant.txt"
+  { printf 'source=%s\n' "$OX_SOURCE_COMMIT"; sha256sum "$package" | cut -d' ' -f1;
+    (cd /usr/bin && sha256sum oxa); } > "$receipt"
+  proof_home=$(mktemp -d)
+  chown builder:builder "$proof_home"
+  trap 'rm -rf "$proof_home"' EXIT
+  runuser -u builder -- env -i PATH=/usr/bin:/bin HOME="$proof_home" \
+    CARGO_HOME=/home/builder/.cargo RUSTUP_HOME=/home/builder/.rustup \
+    SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+    OXA_TEST_RELEASE_OXA=/usr/bin/oxa OXA_TEST_REQUIRE_RELEASE_ARTIFACT=1 \
+    bash -eu -c 'source "$1/packaging/release/environment.sh"; cd oxa; cargo fetch --locked;
+      CARGO_NET_OFFLINE=true cargo test --release --locked -p oxa-cli --test no_python_in_path' proof "$source_root" \
+    2>&1 | tee -a "$receipt"
+  rm -rf "$proof_home"
+  trap - EXIT
   pacman -Qkk "$variant"
   pacman -Rns --noconfirm "$variant"
   while read -r path; do
@@ -56,4 +73,4 @@ for variant in ox-llm-bin ox-llm; do
 done
 
 cd /packages
-sha256sum -- *.pkg.tar.zst namcap-*.txt > SHA256SUMS
+sha256sum -- *.pkg.tar.zst namcap-*.txt NO-PYTHON-PROOF-*.txt > SHA256SUMS

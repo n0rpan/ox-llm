@@ -56,3 +56,8 @@ it publishes no standalone legacy controller, Flash or image payload. Verify the
 published archive and SBOM checksums and their attestation against the selected
 source/run. No author lane creates tags/releases, changes queue policy or
 substitutes a manual binary rebuild for qualified bytes.
+
+The Arch gate runs the same no-Python target against each installed package binary,
+including the independent source rebuild. Receipts pin source, package and binary
+hashes; the native switch is omitted so the release default itself must select the
+gateway. Missing proof inputs fail rather than falling back to a development ELF.
