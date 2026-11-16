@@ -235,3 +235,71 @@ mod main_contract {
         }
     }
 }
+
+#[test]
+fn shipped_rejects_fractional_priority_and_confidence_over_one() {
+    let schema = OutputSchema::new(
+        serde_json::from_str(include_str!(
+            "../../oxa-resources/builtin-skills/review/findings.schema.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    for (priority, confidence) in [("1.0000000000000001", "0.5"), ("1", "1.0000000000000001")] {
+        let text = format!(
+            r#"{{"findings":[{{"title":"x","body":"x","priority":{priority},"confidence":{confidence},"path":"src/example.rs","line_start":1,"line_end":1}}],"overall_verdict":"incorrect"}}"#
+        );
+        assert!(!schema.matches(&text), "accepted {text}");
+    }
+}
+#[test]
+fn confidence_over_one_is_rejected() {
+    let schema = OutputSchema::new(json!({"type":"number","maximum":1})).unwrap();
+    assert!(!schema.matches("1.0000000000000001"));
+}
+#[test]
+fn numeric_bound_does_not_panic_on_large_json_number() {
+    let schema = OutputSchema::new(json!({"type":"number","minimum":0})).unwrap();
+    assert!(schema.matches("1e400"));
+}
+
+#[test]
+fn lossless_numbers_preserve_syntax_enum_and_extreme_exponents() {
+    let number = OutputSchema::new(json!({"type":"number","minimum":0,"maximum":1})).unwrap();
+    for text in [
+        "0",
+        "-0",
+        "0.000000000000000000000001",
+        "1.0000000000000000",
+        "1e-999999999999999999999999999999999999999999999",
+    ] {
+        assert!(number.matches(text), "{text}");
+    }
+    for text in [
+        "-0.000000000000000000000001",
+        "1.0000000000000001",
+        "1e99999999999999999999999999999999999999999999",
+        "01",
+        "1.",
+        "1e",
+        "--1",
+        "+1",
+        "1-1",
+        "NaN",
+    ] {
+        assert!(!number.matches(text), "{text}");
+    }
+    let integer = OutputSchema::new(json!({"type":"integer"})).unwrap();
+    for text in ["1e400", "10e-1", "100.00e-2", "0e-9999999999999999999999999"] {
+        assert!(integer.matches(text), "{text}");
+    }
+    for text in ["1e-400", "1.0000000000000001", "1e-9999999999999999999999999"] {
+        assert!(!integer.matches(text), "{text}");
+    }
+    let nested = OutputSchema::new(json!({"enum":[{"n":[1,2]}]})).unwrap();
+    assert!(nested.matches(r#"{"n":[1.00,20e-1]}"#));
+    assert!(!nested.matches(r#"{"n":[1.0000000000000001,2]}"#));
+    assert!(!nested.matches(r#"{"n":["1",2]}"#));
+    let string = OutputSchema::new(json!({"enum":["1e400\\\"1"]})).unwrap();
+    assert!(string.matches(&json!("1e400\\\"1").to_string()));
+}

@@ -20,11 +20,14 @@ impl OutputSchema {
 
     /// Validate a JSON answer, returning the first failure's JSON Pointer and reason.
     pub fn validate(&self, text: &str) -> Result<(), OutputValidationError> {
-        let value = serde_json::from_str::<Value>(text).map_err(|_| OutputValidationError {
+        let (shape, numbers) = number_views(text);
+        let invalid = || OutputValidationError {
             instance_path: String::new(),
             message: "Invalid JSON",
-        })?;
-        validate_value(&self.0, &value, "")
+        };
+        let value = serde_json::from_str::<Value>(&shape).map_err(|_| invalid())?;
+        let numbers = serde_json::from_str::<Value>(&numbers).map_err(|_| invalid())?;
+        validate_value(&self.0, &value, &numbers, "")
     }
 }
 
@@ -82,44 +85,229 @@ fn check_schema(schema: &Value, depth: usize) -> Result<(), &'static str> {
     Ok(())
 }
 
-// JSON Schema compares numbers by value, not by integer/float representation, also
-// inside containers. Do not round integers to f64: distinct large integers would alias.
-fn schema_equal(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Number(a), Value::Number(b)) => {
-            let integer =
-                |n: &serde_json::Number| n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
-            match (integer(a), integer(b)) {
-                (Some(a), Some(b)) => a == b,
-                (Some(i), None) => b.as_f64().is_some_and(|f| f.fract() == 0.0 && f as i128 == i),
-                (None, Some(i)) => a.as_f64().is_some_and(|f| f.fract() == 0.0 && f as i128 == i),
-                (None, None) => a == b,
+// Preserve numeric lexemes before serde_json can round them (including builds
+// without arbitrary_precision). Both views use serde_json's syntax/depth checks:
+// numbers become zero in the shape and quoted lexemes in the numeric view.
+// Strings/escapes are copied untouched. This is lexical preservation, not a second
+// schema validator; all constraint decisions remain in validate_value below.
+fn number_views(text: &str) -> (String, String) {
+    let bytes = text.as_bytes();
+    let (mut shape, mut numbers) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() {
+                let c = bytes[i];
+                i += 1;
+                if c == b'\\' {
+                    i = (i + 1).min(bytes.len());
+                } else if c == b'"' {
+                    break;
+                }
+            }
+        } else if bytes[i] == b'-' || bytes[i].is_ascii_digit() {
+            i += 1;
+            while i < bytes.len() && matches!(bytes[i], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-') {
+                i += 1;
+            }
+            let token = &text[start..i];
+            // A number's grammar must be checked before replacing it; parsing a
+            // single token also rejects leading zeroes/trailing numeric junk.
+            if !decimal_syntax(token) {
+                return (String::new(), String::new());
+            }
+            shape.push(b'0');
+            numbers.push(b'"');
+            numbers.extend_from_slice(token.as_bytes());
+            numbers.push(b'"');
+            continue;
+        } else {
+            i += 1;
+        }
+        shape.extend_from_slice(&bytes[start..i]);
+        numbers.extend_from_slice(&bytes[start..i]);
+    }
+    // Copies preserve UTF-8; replacements contain only ASCII.
+    (
+        String::from_utf8(shape).unwrap(),
+        String::from_utf8(numbers).unwrap(),
+    )
+}
+
+fn decimal_syntax(text: &str) -> bool {
+    let b = text.as_bytes();
+    let mut i = usize::from(b.first() == Some(&b'-'));
+    match b.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            i += 1;
+            while b.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
             }
         }
+        _ => return false,
+    }
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let start = i;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == start {
+            return false;
+        }
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(b.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let start = i;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == start {
+            return false;
+        }
+    }
+    i == b.len()
+}
+
+// Signed decimal addition for the exponent only. Its work is proportional to
+// input length, never to the exponent's value (no expanded powers of ten).
+fn exponent_add(a: &str, delta: i64) -> String {
+    let negative = a.starts_with('-');
+    let a = a.trim_start_matches(['-', '+']).trim_start_matches('0');
+    let b = delta.unsigned_abs().to_string();
+    let same = negative == (delta < 0);
+    let cmp = a.len().cmp(&b.len()).then_with(|| a.cmp(&b));
+    let (large, small, sign) = if !cmp.is_lt() {
+        (a, b.as_str(), negative)
+    } else {
+        (b.as_str(), a, delta < 0)
+    };
+    let mut out = Vec::new();
+    let mut carry = 0i16;
+    let mut small = small.bytes().rev();
+    for digit in large.bytes().rev() {
+        let x = i16::from(digit - b'0');
+        let y = small.next().map_or(0, |c| i16::from(c - b'0'));
+        let n = if same { x + y + carry } else { x - y + carry };
+        out.push((n.rem_euclid(10) as u8) + b'0');
+        carry = if same {
+            n / 10
+        } else if n < 0 {
+            -1
+        } else {
+            0
+        };
+    }
+    if carry > 0 {
+        out.push(b'1');
+    }
+    while out.last() == Some(&b'0') {
+        out.pop();
+    }
+    if out.is_empty() {
+        return "0".into();
+    }
+    if sign {
+        out.push(b'-');
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap()
+}
+
+fn signed_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let an = a.starts_with('-');
+    let bn = b.starts_with('-');
+    if an != bn {
+        return bn.cmp(&an);
+    }
+    let a = a.trim_start_matches('-');
+    let b = b.trim_start_matches('-');
+    let cmp = a.len().cmp(&b.len()).then_with(|| a.cmp(b));
+    if an {
+        cmp.reverse()
+    } else {
+        cmp
+    }
+}
+
+struct Decimal {
+    negative: bool,
+    digits: String,
+    order: String,
+}
+impl Decimal {
+    fn new(raw: &str) -> Self {
+        let negative = raw.starts_with('-');
+        let raw = raw.trim_start_matches('-');
+        let (mantissa, exp) = raw.split_once(['e', 'E']).unwrap_or((raw, "0"));
+        let fraction = mantissa.split_once('.').map_or(0, |(_, f)| f.len());
+        let digits = mantissa.replace('.', "");
+        let digits = digits.trim_start_matches('0');
+        if digits.is_empty() {
+            return Self {
+                negative: false,
+                digits: "0".into(),
+                order: "0".into(),
+            };
+        }
+        let order = exponent_add(exp, digits.len() as i64 - fraction as i64);
+        Self {
+            negative,
+            digits: digits.trim_end_matches('0').into(),
+            order,
+        }
+    }
+    fn integer(&self) -> bool {
+        self.digits == "0" || signed_cmp(&self.order, &self.digits.len().to_string()).is_ge()
+    }
+    fn cmp(&self, b: &Self) -> std::cmp::Ordering {
+        if self.negative != b.negative {
+            return b.negative.cmp(&self.negative);
+        }
+        let cmp = if self.digits == "0" || b.digits == "0" {
+            (self.digits != "0").cmp(&(b.digits != "0"))
+        } else {
+            signed_cmp(&self.order, &b.order).then_with(|| {
+                let n = self.digits.len().max(b.digits.len());
+                self.digits
+                    .bytes()
+                    .chain(std::iter::repeat(b'0'))
+                    .take(n)
+                    .cmp(b.digits.bytes().chain(std::iter::repeat(b'0')).take(n))
+            })
+        };
+        if self.negative {
+            cmp.reverse()
+        } else {
+            cmp
+        }
+    }
+}
+
+fn schema_equal(schema: &Value, value: &Value, raw: &Value) -> bool {
+    match (schema, value) {
+        (Value::Number(a), Value::Number(_)) => Decimal::new(&a.to_string())
+            .cmp(&Decimal::new(raw.as_str().unwrap()))
+            .is_eq(),
         (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| schema_equal(a, b))
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .enumerate()
+                    .all(|(i, (a, b))| schema_equal(a, b, &raw[i]))
         }
         (Value::Object(a), Value::Object(b)) => {
             a.len() == b.len()
                 && a.iter()
-                    .all(|(key, value)| b.get(key).is_some_and(|b| schema_equal(value, b)))
+                    .all(|(k, a)| b.get(k).is_some_and(|b| schema_equal(a, b, &raw[k])))
         }
-        _ => left == right,
-    }
-}
-
-// Compare mixed integer/float bounds without rounding large JSON integers to f64.
-fn number_cmp(a: &serde_json::Number, b: &serde_json::Number) -> std::cmp::Ordering {
-    let integer = |n: &serde_json::Number| n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
-    match (integer(a), integer(b)) {
-        (Some(a), Some(b)) => a.cmp(&b),
-        (Some(a), None) => {
-            let b = b.as_f64().expect("JSON number");
-            a.cmp(&(b as i128))
-                .then_with(|| 0.0_f64.partial_cmp(&b.fract()).unwrap())
-        }
-        (None, Some(_)) => number_cmp(b, a).reverse(),
-        (None, None) => a.as_f64().partial_cmp(&b.as_f64()).unwrap(),
+        _ => schema == value,
     }
 }
 
@@ -127,7 +315,12 @@ fn pointer_child(path: &str, key: &str) -> String {
     format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"))
 }
 
-fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), OutputValidationError> {
+fn validate_value(
+    schema: &Value,
+    value: &Value,
+    raw: &Value,
+    path: &str,
+) -> Result<(), OutputValidationError> {
     let fail = |message| OutputValidationError {
         instance_path: path.to_owned(),
         message,
@@ -138,9 +331,7 @@ fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), Outpu
             "array" => value.is_array(),
             "string" => value.is_string(),
             "number" => value.is_number(),
-            "integer" => value
-                .as_number()
-                .is_some_and(|n| n.is_i64() || n.is_u64() || n.as_f64().is_some_and(|n| n.fract() == 0.0)),
+            "integer" => value.is_number() && Decimal::new(raw.as_str().unwrap()).integer(),
             _ => false,
         };
         if !valid {
@@ -148,7 +339,7 @@ fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), Outpu
         }
     }
     if let Some(choices) = schema.get("enum").and_then(Value::as_array) {
-        if !choices.iter().any(|choice| schema_equal(choice, value)) {
+        if !choices.iter().any(|choice| schema_equal(choice, value, raw)) {
             return Err(fail("Value is not in enum"));
         }
     }
@@ -161,7 +352,7 @@ fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), Outpu
             return Err(fail("String is shorter than minLength"));
         }
     }
-    if let Some(number) = value.as_number() {
+    if value.is_number() {
         for (keyword, forbidden) in [
             ("minimum", std::cmp::Ordering::Less),
             ("maximum", std::cmp::Ordering::Greater),
@@ -169,7 +360,9 @@ fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), Outpu
             if schema
                 .get(keyword)
                 .and_then(Value::as_number)
-                .is_some_and(|bound| number_cmp(number, bound) == forbidden)
+                .is_some_and(|bound| {
+                    Decimal::new(raw.as_str().unwrap()).cmp(&Decimal::new(&bound.to_string())) == forbidden
+                })
             {
                 return Err(fail(if keyword == "minimum" {
                     "Number is below minimum"
@@ -195,7 +388,7 @@ fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), Outpu
         for (key, child_value) in object {
             let child_path = pointer_child(path, key);
             if let Some(child_schema) = props.and_then(|props| props.get(key)) {
-                validate_value(child_schema, child_value, &child_path)?;
+                validate_value(child_schema, child_value, &raw[key], &child_path)?;
             } else if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
                 return Err(OutputValidationError {
                     instance_path: child_path,
@@ -206,7 +399,7 @@ fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), Outpu
     }
     if let (Some(items), Some(array)) = (schema.get("items"), value.as_array()) {
         for (index, item) in array.iter().enumerate() {
-            validate_value(items, item, &pointer_child(path, &index.to_string()))?;
+            validate_value(items, item, &raw[index], &pointer_child(path, &index.to_string()))?;
         }
     }
     Ok(())
@@ -216,6 +409,36 @@ fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), Outpu
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn decimal_order_matches_exact_scaled_integer_arithmetic() {
+        let samples: Vec<_> = (-9i128..=9)
+            .flat_map(|n| (-3i32..=3).map(move |e| (format!("{n}e{e}"), n * 10i128.pow((e + 3) as u32))))
+            .collect();
+        for (a, scaled_a) in &samples {
+            assert_eq!(Decimal::new(a).integer(), scaled_a % 1000 == 0, "{a}");
+            for (b, scaled_b) in &samples {
+                assert_eq!(
+                    Decimal::new(a).cmp(&Decimal::new(b)),
+                    scaled_a.cmp(scaled_b),
+                    "{a} versus {b}"
+                );
+            }
+        }
+        assert_eq!(exponent_add("999999999999999999999", 1), "1000000000000000000000");
+        assert_eq!(
+            exponent_add("-1000000000000000000000", 1),
+            "-999999999999999999999"
+        );
+        assert_eq!(
+            exponent_add("-999999999999999999999", -1),
+            "-1000000000000000000000"
+        );
+        assert_eq!(
+            Decimal::new("1e999999999999999999999").cmp(&Decimal::new("10e999999999999999999998")),
+            std::cmp::Ordering::Equal
+        );
+    }
 
     #[test]
     fn enum_uses_numeric_value_equality_recursively() {
