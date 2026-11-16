@@ -1,6 +1,6 @@
 # Tools
 
-The model acts through tools. oxa has seven built-in tools, all on by default, and a few optional ones: `subagent`, `web_search`, `codemode`, `tool_search` and `call_tool`. Extensions and MCP servers add more. Every tool result is capped before it reaches the model.
+The model acts through tools. oxa has seven file/command built-in tools and the lead-session `ask` tool, all on by default, and a few optional ones: `subagent`, `web_search`, `codemode`, `tool_search` and `call_tool`. Extensions and MCP servers add more. Every tool result is capped before it reaches the model.
 
 See [tools and context handling](tools-context.md) for the defaults and formats.
 
@@ -86,6 +86,29 @@ Under `oxa.thinking.policy: auto` the first reply after your prompt thinks. The 
   The footer shows `thinking: auto→on` while it is on, and the transcript shows a note with the reason each time it turns on.
 
 The thinking level `off` (Shift+Tab, `/thinking`) always wins: nothing turns thinking on. The policy `fixed` sends the level on every request. Switching thinking between requests changes no byte already sent, so the prompt cache is kept.
+
+## ask
+
+`ask` is for decisions that need the owner's input, not routine work. Its arguments are
+`{question, options: [{label, detail}, ...], recommended}`: provide 2–4 distinct, non-empty
+option labels with details, and use an exact option label for `recommended`.
+
+- Interactive sessions show the existing selection dialog, with details and the recommended
+  option marked. Escape dismisses it without approving or selecting the recommendation.
+- RPC hosts with an owner present opt in with `OXA_RPC_OWNER_PRESENT=1` when launching oxa.
+  Then `ask` emits the existing `extension_ui_request` with `method: "select"`; respond with
+  the chosen option's displayed string using `extension_ui_response`. This capability affects
+  only `ask`, not permission dialogs or extension UI. RPC without this opt-in is unattended.
+- Print/JSON and unattended RPC sessions return immediately with `no owner; proceed on the recommended option`
+  and append the question, options, recommendation, working directory and session ID to
+  `~/.oxa/agent/asks.jsonl` (under `OXA_AGENT_DIR` if overridden). This private, append-only
+  JSON Lines file lets an unattended runner collect questions for later review. A journal
+  write failure is reported in the tool result but does not stall work.
+
+Only lead sessions declare `ask`; subagent workers keep their existing tool prefixes.
+`--exclude-tools ask`, an explicit tool allowlist, and `--no-tools` can disable it.
+An answer or automatic recommendation never grants file, shell or network permissions:
+normal permission checks remain in force.
 
 ## subagent
 

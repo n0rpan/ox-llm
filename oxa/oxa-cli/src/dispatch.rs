@@ -439,6 +439,8 @@ struct Built {
     mode: Option<Mode>,
     /// A supervised subagent keeps SIGTERM as immediate supervisor cancellation.
     supervised_child: bool,
+    /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
+    ask_owner_present: bool,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -467,18 +469,27 @@ impl Built {
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
         let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
         jobs.set_sandbox(bash_sandbox.clone());
+        // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
+        let mut tools = oxa_tools::builtin_tools_with_bash_sandbox(
+            oxa_tools::ShellConfig {
+                shell_path: self.settings.shell_path(&self.dirs.home),
+                command_prefix: self.settings.shell_command_prefix(),
+            },
+            jobs.clone(),
+            bash_sandbox,
+        );
+        // Owner questions belong to lead sessions (including unattended leads). Keep worker
+        // declarations and their small frozen prefixes unchanged.
+        if !self.supervised_child {
+            tools.push(Arc::new(
+                oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
+                    .with_owner_present(self.ask_owner_present),
+            ));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
-            // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_bash_sandbox(
-                oxa_tools::ShellConfig {
-                    shell_path: self.settings.shell_path(&self.dirs.home),
-                    command_prefix: self.settings.shell_command_prefix(),
-                },
-                jobs.clone(),
-                bash_sandbox,
-            ),
+            tools,
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
@@ -920,6 +931,7 @@ fn prepare(
         thinking,
         mode: table_mode,
         supervised_child: child.nested(),
+        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
         hook_sets,
         yolo,
         bash_sandbox,
@@ -1999,6 +2011,7 @@ mod session_scratch_tests {
             thinking: None,
             mode: None,
             supervised_child: false,
+            ask_owner_present: true,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
